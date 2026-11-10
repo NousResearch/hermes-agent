@@ -70,12 +70,42 @@ fails. The provider deduplicates the selection and runs one root
 `pnpm install --frozen-lockfile --trust-lockfile --prod=false` filtered to the
 selected workspaces and their workspace dependencies. The root project is always
 included. It includes development and optional dependencies. pnpm enforces the
-root `engines` pin; the provider enforces the exact `devEngines` pnpm version
-(`pmOnFail: ignore` keeps that pin out of the lockfile). pnpm runs dependency
+root `engines` pin; the provider enforces the exact `pm/lock.json` pnpm version
+(`pmOnFail: ignore` keeps any pnpm pin out of the lockfile). pnpm runs dependency
 build scripts only for the packages `allowBuilds` in `pnpm-workspace.yaml` names
 (`strictDepBuilds` fails the install on any other). The lockfile is trusted
 here: the `minimumReleaseAge` policy is verified in CI, where it is written.
-A `node_modules` tree that npm installed is removed before the first pnpm install.
+Every install starts from empty trees, which also clears a `node_modules` tree that
+npm installed. The previous trees are moved to `.cache/node-deps-previous` and deleted
+only once the install and the Electron preparation succeed; a failed install puts them
+back, and the run after a killed one recovers them. Both generations are on disk while
+pnpm runs. A tree that cannot be moved (a mount point, or a `.cache` on another
+filesystem) is deleted in place as before and cannot be restored. Runs in one checkout
+are serialised by `.cache/node-deps.lock` (`node-deps-lock.mjs`, with its heartbeat,
+watcher and relay programs beside it). Its owner refreshes the lock's mtime every
+second (a failed refresh is retried on the next beat), and a lock that nobody has
+refreshed for 30 s is broken, whatever pid, host or PID namespace it names; the run that
+breaks it replaces it in one rename and waits 2 s before touching the trees. An owner
+stopped for longer (Ctrl-Z) loses the lock. pnpm and Electron's installer run under a
+watcher outside the job (a session of its own; on Windows, `taskkill /T /F`) that re-reads
+the lock every 250 ms and kills the child's process tree once the lock is no longer its
+run's, so a stopped pnpm is killed while still stopped and never resumes into the new
+owner's trees; pnpm itself stays in the job, so Ctrl-C and Ctrl-Z reach it as before, and
+on POSIX a SIGTERM aimed at node-deps alone is passed on to it. Between those children, the run
+re-reads the lock before every move, restore, delete and receipt write and exits without
+touching the trees once it is no longer its own. What is left: a run stopped (or a
+container frozen, watcher included) between one of those checks and the step after it can,
+once resumed, do that one step in the new owner's trees; a freeze that also stops the
+watcher lets the resumed pnpm write for up to one poll (250 ms) before it is killed; and a
+process pnpm started that left its tree (daemonized) is not killed; nor is pnpm when
+node-deps, its relay and the watcher are all SIGKILLed at once (`pkill -9 node`), and it
+keeps writing into whatever tree the next owner certifies. `hermes update`, or
+deleting `node_modules`, repairs a tree left that way. A live owner is waited for at most
+10 minutes; then the run fails. Downloads retry with pnpm's defaults, except for a source
+launch (`hermes --tui`, the dashboard), which retries once unless the user set a count
+where pnpm 12 reads one (`pnpm_config_fetch_retries`, or `fetchRetries` in pnpm's
+`config.yaml` or `pnpm-workspace.yaml`; pnpm 12 ignores `fetch-retries` in an npmrc and
+`npm_config_fetch_retries`), so an unreachable registry fails it in about 10 s instead of 70 s.
 `--pnpm ARGS...` instead runs the same resolved pnpm with `ARGS`.
 
 The prepared source needs these inputs:
@@ -99,8 +129,10 @@ project `.npmrc`, `pnpm_config_*`/`npm_config_*` settings, Node/pnpm versions,
 OS/architecture, and the install arguments (the exact workspace union). It also
 checks pnpm's installed-tree lock (`node_modules/.pnpm/lock.yaml`) and the
 manifest of every package in the virtual store.
-A missing or mismatched receipt runs `pnpm install` again; failed installs cannot
-leave a reusable receipt. Omit `--reuse` to always run the install.
+A missing or mismatched receipt runs `pnpm install` again. A failed install leaves
+the previous trees and their receipt, which is reused only for the inputs it names;
+the receipt is written only when pnpm's installed-tree lock holds this lockfile's
+entries. Omit `--reuse` to always run the install.
 Source launchers add `--no-install` when PM's lazy-install policy is disabled.
 That mode still reuses a matching completed receipt, but rejects stale or missing
 dependencies before mutating the tree. Explicit build/update operations may install.
@@ -219,7 +251,9 @@ source checkout as the output root. Builders without a runtime environment
 prepare one with `scripts/build/icon_environment.py`.
 
 The desktop native tree contains prepared packages, including `node-pty` with
-its compiled binding. macOS also requires `get-windows/main`. The provider owns
+its compiled binding. `get-windows` is optional: when staging degraded it away
+the app ships without window enumeration, but a staged copy on macOS must include
+its `main` helper. The provider owns
 the architecture and Electron ABI match. `--platform` defaults to the running
 Node platform and controls native-file checks. It does not cross-compile a
 binding. `--typecheck` enables the desktop renderer TypeScript check and defaults
@@ -422,7 +456,8 @@ These locations define the interfaces described here:
 | TUI product and development output | `tui.mjs:25–103` |
 | Web inputs and TypeScript check | `web.mjs:8–71` |
 | Desktop inputs and native checks | `desktop.mjs:11–69` |
-| Locked workspace union | `node-deps.mjs:84–149` |
+| Locked workspace union | `node-deps.mjs` (`dependencyInputs`, `prepareNodeDependencies`) |
+| Checkout lock and child supervision | `node-deps-lock.mjs`, `node-deps-heartbeat.mjs`, `node-deps-watcher.mjs`, `node-deps-relay.mjs` |
 | Python provider | `../../pm/operations.py`, `../../pm/environment.py` |
 | Agent input fields and checks | `inputs.py:30–115` |
 | Agent assembly and outputs | `agent.py:76–168` |

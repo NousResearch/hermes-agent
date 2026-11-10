@@ -45,6 +45,8 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
+    # A saved gateway's sign-in redirect: its one-use state is the credential (gateway_connections_oauth).
+    "/webapp/gateway-connections/oauth/callback",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 # Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and
@@ -260,6 +262,22 @@ def _cookie_write_refusal(
     return None
 
 
+async def _serve_bearer(request: Request, call_next: Callable[[Request], Awaitable[Response]],
+                        bearer: str, cookie_logout: bool) -> Response:
+    if cookie_logout:
+        return await call_next(request)
+    if not webapp_sign_in.access_token_works_alone(request, bearer):
+        return _unauth_response(request, reason="invalid_or_expired_session")
+    try:
+        bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
+    except ProviderError as e:
+        return unreachable_response(str(e))
+    if bearer_session is not None:
+        request.state.session = bearer_session
+        return await call_next(request)
+    return _unauth_response(request, reason="invalid_or_expired_session")
+
+
 async def gated_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Engaged only when ``app.state.auth_required is True``."""
@@ -286,18 +304,7 @@ async def gated_auth_middleware(
     # sign-in work here: a browser login's tokens work only as its cookies, which sign-out ends.
     bearer = _extract_bearer(request)
     if bearer:
-        if cookie_logout:
-            return await call_next(request)
-        if not webapp_sign_in.access_token_works_alone(request, bearer):
-            return _unauth_response(request, reason="invalid_or_expired_session")
-        try:
-            bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
-        except ProviderError as e:
-            return unreachable_response(str(e))
-        if bearer_session is not None:
-            request.state.session = bearer_session
-            return await call_next(request)
-        return _unauth_response(request, reason="invalid_or_expired_session")
+        return await _serve_bearer(request, call_next, bearer, cookie_logout)
 
     gateway = webapp_sign_in.cookie_gateway(request)
     at, _rt = read_session_cookies(request, gateway)

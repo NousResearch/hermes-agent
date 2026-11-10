@@ -278,12 +278,6 @@ hermes skills uninstall <skill-name>
 | [**publish-site**](../user-guide/skills/optional/web-development/web-development-publish-site.md) | Versioned site deploys to GitHub/Cloudflare/Netlify Pages. |
 | [**scrollcraft**](../user-guide/skills/optional/web-development/web-development-scrollcraft.md) | Premium scroll-driven landing pages; scroll = timeline. |
 
-## yuanbao
-
-| Skill | Description |
-|-------|-------------|
-| [**yuanbao**](../user-guide/skills/optional/yuanbao/yuanbao-yuanbao.md) | Yuanbao (元宝) groups: @mention users, query info/members. |
-
 ---
 
 ## Contributing Optional Skills

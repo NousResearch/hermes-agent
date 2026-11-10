@@ -1,0 +1,42 @@
+name: hyperrizz
+title: Hyperrizz
+repo: https://github.com/mojomast/hyperrizz
+sha: 35c482e22413ee43c74955bd6da7fe7b053cdd9b
+subdir: ""
+description: >-
+  Agent-led HyperFrames films with a live review pane, frame notes, revisions and
+  on-demand full Studio. Runs local Node/Chromium/FFmpeg subprocesses and background
+  jobs; npm downloads pinned dependencies on first build. Project code runs locally.
+  Stores projects in profile-scoped plugin data. No API keys or hosted generation.
+  Disclosure — spawns local Node/Chromium/FFmpeg child processes with a minimal
+  non-secret environment; runs background build/check/render workers and an optional
+  loopback Studio sidecar (token-gated, 512 KiB capture budget, no redirects);
+  project write can edit the project's scripts/*.mjs and package.json, and build/check/render
+  run them with Node at the user's full privileges (no filesystem or network sandbox), the same
+  power as file writes plus the terminal; npm ci runs package lifecycle scripts; the embedded
+  HyperFrames Studio server listens on loopback without a token; Desktop pane uses ctx.rest only; post_tool_call binds projects to the host session;
+  no credentials, no telemetry, no self-update.
+maintainer: mojomast
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mojomast/hyperrizz#readme
+version: "2.1.0"
+image: https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hermes-review-pane.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hermes-review-pane.png
+  - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hyperframes-studio.jpg
+  - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/examples/broadcast-lab.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Linux is the tested production platform; macOS is declared but not yet tested."
+capabilities:
+  provides_tools:
+    - hyperrizz_project
+    - hyperrizz_review
+    - hyperrizz_produce
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

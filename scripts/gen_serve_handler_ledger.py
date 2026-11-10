@@ -6,7 +6,8 @@ One row per handler ``hermes serve`` exposes: every HTTP/WebSocket route of the 
 and every JSON-RPC method a ``/api/ws`` client can call (the legacy ``tui_gateway.server._methods``
 table plus the verbs the session authority serves). ``gateway.ping``, the ``/api/ws`` heartbeat, is
 answered by the transport before dispatch and has no row. Dashboard-plugin API routes depend on which
-plugins are installed and enabled, so they are one row: the ``/api/plugins/{name}/{path}`` mount.
+plugins are installed and enabled, so they are one row: the ``/api/plugins/{name}/{path}`` mount. Plugin
+JSON-RPC methods are one row too: the declared ``plugin.{plugin_id}.{name}`` namespace.
 
 Columns are derived from code, never judged:
 
@@ -76,6 +77,7 @@ def _collect() -> dict:
     from gateway.session_group_controls import GROUP_METHODS
     from hermes_cli.web_server import app
     from tui_gateway import server
+    from tui_gateway.contracts.registry import CANONICAL_NAMESPACES
     from tui_gateway.ws_legacy_fallback import legacy_fallback_allowed
 
     interactive = SimpleNamespace(capabilities=_PURPOSE_CAPABILITIES["interactive"])
@@ -99,6 +101,8 @@ def _collect() -> dict:
         "routes": routes,
         "legacy": sorted(server._methods),
         "served": sorted(set(AuthorityConnection.handlers(MagicMock())) | set(GROUP_METHODS) | {"profiles.list"}),
+        # Dynamic method families (``plugin.<plugin_id>.<name>``): one row per declared pattern.
+        "namespaces": sorted(CANONICAL_NAMESPACES),
         # The authority serves these only for a session-owned call; an account-owned one gets -32601.
         "account_owned_fallback": sorted(CONNECTION_METHODS),
         # Legacy methods ws.py keeps on the authority's -32601, by the predicate it calls.
@@ -145,6 +149,8 @@ def rows(facts: dict) -> list[dict]:
            for route in facts["routes"]]
     out += [{"handler": method, "kind": "rpc", **_rpc_row(method, facts)}
             for method in sorted(set(facts["legacy"]) | set(facts["served"]))]
+    out += [{"handler": name, "kind": "rpc", "current_path": "authority (after its own verbs); standalone: unknown method",
+             "decision": "authority", "ref": ""} for name in facts.get("namespaces", ())]
     for row in out:
         if row["handler"] in DECISIONS:
             row["decision"], row["ref"] = DECISIONS[row["handler"]]

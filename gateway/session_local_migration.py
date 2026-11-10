@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
@@ -95,6 +96,11 @@ def legacy_launch_params(row):
         # an endpoint left without a provider is a custom route, never one to pair with the
         # profile's provider.
         route.setdefault('provider', 'custom')
+    if (route.get('provider', 'custom') != 'custom'
+            and urlsplit(route.get('base_url', '')).scheme not in ('', 'http', 'https')):
+        # A provider's own pseudo-address (process://, moa://) is not an endpoint the session picked,
+        # and replayed as a launch override it is refused (#142779, #147676). The provider is the route.
+        route.pop('base_url')
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})
@@ -207,6 +213,10 @@ def _route_is_usage_stamp(row):
     return str(row.get('billing_provider') or '').strip().lower() == 'custom'
 
 
+def _profile_default(model_cfg):
+    return str(model_cfg.get('default') or '').strip() if isinstance(model_cfg, dict) else str(model_cfg or '').strip()
+
+
 def _configured_owner(saved, config):
     """The configured named entry (``providers:``/``custom_providers:``) serving the saved URL, or None."""
     from gateway.session_route_identity import resolved_route, same_route
@@ -277,11 +287,21 @@ def adopt_legacy_session(authority, actor, row):
     config = _load_gateway_config()
     params, api_mode = legacy_bot_chat_launch(row, params, api_mode, config)
     model_cfg = config.get('model')
+    healed = None
+    if 'provider' not in params and params.get('model') and params['model'] != _profile_default(model_cfg):
+        # A row with a model but no provider would run on the profile's slot, which serves another model
+        # (#132648); its saved URL/wire may be stamps of exactly those misrouted turns.
+        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        if healed := empty_provider_identity(params.get('base_url'), params['model']):
+            params['provider'] = healed
+            params.pop('base_url', None)
+            api_mode = None
+    # A healed entry is its own route, even when it shares a relay URL with the profile's entry.
     if isinstance(model_cfg, dict) and ('provider' in params or 'base_url' in params):
         from gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
         saved = {'provider': params.get('provider', model_cfg.get('provider')), 'base_url': params.get('base_url')}
         # ``auto`` matches every route, so an ``auto`` side proves nothing about the saved endpoint.
-        if ('auto' not in (resolved_route(model_cfg, config)[0], resolved_route(saved, config)[0])
+        if (not healed and 'auto' not in (resolved_route(model_cfg, config)[0], resolved_route(saved, config)[0])
                 and same_route(saved, model_cfg, config)):
             # The profile still selects this endpoint: resume on the profile's route, so its own
             # credential (inline key, ${ENV} key, key_env) keeps its normal precedence.

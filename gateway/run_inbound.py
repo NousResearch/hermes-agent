@@ -373,8 +373,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
         except Exception:
             return None
-        if _pending_clarify is None:
-            return None
+        if _pending_clarify is None or self._refused_clarify(event, _pending_clarify.clarify_id):
+            return None  # another member's message is their own message, not this clarify's answer
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 
@@ -391,7 +391,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
             return None
-        _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
+        # Settle only the clarify the sender was checked against: transcription awaits, and the
+        # session may hold another member's question by now. If ours is gone, this is a message.
+        _text_outcome = _clarify_mod.attempt_text_response(_pending_clarify.clarify_id, _raw_clarify_reply)
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(
                 "Gateway intercepted clarify text response (session=%s, id=%s)",
@@ -425,21 +427,72 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # Native-choice prompts reject unmatched prose so it continues through normal busy
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
-            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, _clarify_mod.CANCELLED):
-                # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
-                # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
-                # retire_clarify_card runs before its first await, so the agent thread's own expiry
-                # notice (scheduled once the wait unblocks) finds nothing and stays a no-op.
-                _clarify_adapter = self._delivery_adapter_for(source)
-                # Class lookup: a MagicMock adapter must not fabricate the method.
-                if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
-                    try:
-                        await _clarify_adapter.retire_clarify_card(
-                            _pending_clarify.clarify_id,
-                            t("gateway.clarify.cancelled"))
-                    except Exception:
-                        logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
+            # Read before the release awaits the card update: the turn may end meanwhile.
+            _generation = self._current_session_run_generation(_quick_key)
+            if await self._release_pending_clarify(_pending_clarify, source):
+                # The user moved on: their message takes over the turn whatever busy_input_mode
+                # says (queue or steer would leave the agent carrying on without the answer).
+                # Bound to this turn's run generation: once it ends, the normal policy applies.
+                event._clarify_superseded = _generation
         return None
+
+    def _refused_clarify(self, event: MessageEvent, clarify_id: str) -> Optional[str]:
+        """The localized refusal when *event*'s sender may not answer clarify *clarify_id* (not its
+        requester, an approver, or this bot's admin), else None."""
+        from gateway.approval_actor import clarify_refusal, refusal_text
+        requester = clarify_refusal(clarify_id, event.sender_id() or "", admin_ids=self._prompt_admin_ids(event))
+        return refusal_text(requester) if requester else None
+
+    def _refused_slash_confirm(self, event: MessageEvent, session_key: str, confirm_id: str) -> Optional[str]:
+        """The localized refusal when *event*'s sender may not answer slash confirm *confirm_id*, else None."""
+        from gateway.approval_actor import refusal_text, slash_confirm_refusal
+        requester = slash_confirm_refusal(session_key, confirm_id, event.sender_id() or "",
+                                          admin_ids=self._prompt_admin_ids(event))
+        return refusal_text(requester) if requester else None
+
+    def _prompt_admin_ids(self, event: MessageEvent):
+        from gateway.slash_access import policy_for_runner_source
+        return policy_for_runner_source(self, event.source).admin_user_ids
+
+    async def _release_pending_clarify(self, pending, source) -> bool:
+        """Withdraw *pending* as CANCELLED and retire its card; False if it already settled.
+
+        Adapters with a persistent native card (Slack Block Kit) retire it now, before the message
+        that could not answer it is routed, so its buttons stop advertising a dead answer path. The
+        pop inside ``retire_clarify_card`` runs before its first await, so the agent thread's own
+        expiry notice (scheduled once the wait unblocks) finds nothing and stays a no-op.
+        """
+        from tools import clarify_gateway as _clarify_mod
+        if not _clarify_mod.resolve_gateway_clarify(pending.clarify_id, _clarify_mod.CANCELLED):
+            return False
+        _clarify_adapter = self._delivery_adapter_for(source)
+        # Class lookup: a MagicMock adapter must not fabricate the method.
+        if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+            try:
+                await _clarify_adapter.retire_clarify_card(
+                    pending.clarify_id, t("gateway.clarify.cancelled"))
+            except Exception:
+                logger.debug("Failed to retire clarify card after cancellation", exc_info=True)
+        return True
+
+    async def _release_clarify_owning_turn(self, session_key: str, source) -> bool:
+        """Withdraw the prompt blocking *session_key*'s turn, so a command needing it can land.
+
+        A pending clarify owns the turn: the agent is parked in the tool, so nothing reaches the
+        next iteration prep that a ``/steer`` drains into (#145161). The prompt is not answered
+        here — it is withdrawn exactly the way ``agent.clarify_timeout`` withdraws it, and the
+        steer this caller is about to accept then lands on the unblocked turn.
+        """
+        from tools import clarify_gateway as _clarify_mod
+        pending = _clarify_mod.get_pending_for_session(session_key, include_choice_prompts=True)
+        if pending is None:
+            return False
+        released = await self._release_pending_clarify(pending, source)
+        if released:
+            logger.info(
+                "Released pending clarify %s before a command that needed the turn (session=%s)",
+                pending.clarify_id, session_key)
+        return released
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the
     # bang/slash-stripped free-text spelling.
@@ -479,6 +532,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             or self._slash_confirm_text_choices().get(_norm_reply)
         )
         if _confirm_choice is not None:
+            if _refusal := self._refused_slash_confirm(event, _quick_key, _pending_confirm.get("confirm_id") or ""):
+                return _refusal  # left pending for its requester
             _resolved = await _slash_confirm_mod.resolve(
                 _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
             )
@@ -617,6 +672,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return True, None
         return False, None
 
+    def _hm_drop_held_input(self, event: MessageEvent) -> None:
+        """An idle /stop, /new or /reset past the slash-access gate and command hooks: the text or media
+        burst the receiving adapter still holds is the old chat's, so it never becomes a turn after
+        the command (#81370). A refused or hook-denied command leaves the caller's input alone."""
+        if (adapter := self._intake_adapter_for(event.source)) is not None:
+            adapter._discard_text_debounce(adapter._event_session_key(event))
+
     async def _hm_stop_owner_turn(self, _quick_key: str) -> None:
         """Messaging /stop and /new (busy, idle or confirmed) act on the authority's turn, as main
         cancelled the adapter task that ran it and dropped its pending slot. Cancels the still-queued
@@ -660,8 +722,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _hm_busy_telegram_grace_queue(
         self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
     ) -> bool:
-        """Queue a Telegram text follow-up that lands within the post-start grace window."""
-        _grace = float(os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0"))
+        """Queue a Telegram text follow-up that lands within the post-start grace window.
+
+        Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0
+        via ``_float_env`` — a config typo must not crash the inbound handler.
+        """
+        from gateway.run import _float_env
+        _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
         _grace_state = self._peek_session_state(_quick_key)
         _started_at = _grace_state.turn.started_ts if _grace_state else 0
         if not (
@@ -726,6 +793,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # — that copy was never consumed and grew unbounded.
         running_agent.interrupt(_interrupt_text)
 
+    def _clarify_takeover(self, event: MessageEvent, _quick_key: str) -> bool:
+        """True while the turn whose clarify this message cancelled still owns the session."""
+        generation = getattr(event, "_clarify_superseded", None)
+        return generation is not None and generation == self._current_session_run_generation(_quick_key)
+
     async def _hm_busy_preempt(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
         """busy_input_mode for a follow-up the durable FIFO is about to admit, through main's own busy
         resolution (voice transcribed into steer/interrupt, steer folded into the turn, busy ack).
@@ -733,12 +805,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
         a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        mode = self._effective_busy_input_mode(source)
+        superseded = self._clarify_takeover(event, _quick_key)
+        mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
         adapter = self._delivery_adapter_for(source)
         if (self._draining or adapter is None or running_agent is None or running_agent is _AGENT_PENDING_SENTINEL
-                or (event.message_type == MessageType.TEXT and mode != "steer"
+                or (event.message_type == MessageType.TEXT and mode != "steer" and not superseded
                     and self._effective_busy_text_mode(source) == "queue")):
             return False
         outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
@@ -763,7 +836,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _handled:
             return _result
 
-        effective_busy_input_mode = self._effective_busy_input_mode(source)
+        effective_busy_input_mode = ("interrupt" if self._clarify_takeover(event, _quick_key)
+                                     else self._effective_busy_input_mode(source))
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 
@@ -812,7 +886,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     ) -> tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """Resolve the slash command (aliases, access gate, hooks) → ``(handled, result, command,
         canonical)``; when ``handled`` the caller returns ``result`` as-is (may be None)."""
-        from hermes_cli.commands import is_gateway_known_command, resolve_command as _resolve_cmd
+        from hermes_cli.commands import (is_gateway_known_command, is_interrupt_then_dispatch,
+                                         resolve_command as _resolve_cmd)
 
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
@@ -851,6 +926,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if new_command is not None:
             command = new_command
             _cmd_def, canonical = _canon(command)
+        if is_interrupt_then_dispatch(canonical):
+            self._hm_drop_held_input(event)
         return False, None, command, canonical
 
     async def _hm_confirm_destructive(self, event, command: str, detail: str, handler) -> tuple[bool, Optional[str]]:

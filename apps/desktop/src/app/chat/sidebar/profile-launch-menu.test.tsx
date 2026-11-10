@@ -77,3 +77,30 @@ it('distinguishes the same profile on another source and reports a rejected defa
   expect(notifyError).toHaveBeenCalled()
   expect(notify).not.toHaveBeenCalled()
 })
+
+it("offers a Webapp tab's window and default actions only for its own gateway's profiles", () => {
+  // A tab and the windows it opens run on the gateway serving the page; Mini is one it relays to.
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+  try {
+    render(
+      <I18nProvider configClient={null}>
+        <ProfileLaunchContextMenu connectionId="mini" label="Mini research" profile="research">
+          <button type="button">Mini research</button>
+        </ProfileLaunchContextMenu>
+        <ProfileLaunchContextMenu connectionId="local" label="Hub research" profile="research">
+          <button type="button">Hub research</button>
+        </ProfileLaunchContextMenu>
+      </I18nProvider>
+    )
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Mini research' }))
+    expect(screen.queryByRole('menuitem')).toBeNull()
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Hub research' }))
+    expect(screen.getByRole('menuitem', { name: 'Open in new window' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Set as default' })).toBeTruthy()
+  } finally {
+    delete window.document.documentElement.dataset.hermesDesktopHost
+  }
+})

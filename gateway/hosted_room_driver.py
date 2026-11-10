@@ -96,6 +96,13 @@ _GENERATION_TRANSITIONS = {
     "defer": (
         "indeterminate", "status='deferred', result_json=?, terminal_at=?, updated_at=?", _INDETERMINATE_STALE,
         "indeterminate task changed during deferral"),
+    "defer_stopping": (
+        "stopping", "status='deferred', result_json=?, terminal_at=?, updated_at=?",
+        "stopping task generation changed", "stopping task changed during deferral"),
+    "reopen_deferred": (
+        "deferred",
+        "status='indeterminate', result_json=NULL, terminal_at=NULL, started_at=?, indeterminate_at=?, updated_at=?",
+        "deferred task generation changed", "deferred task changed during reopen"),
     "requeue_deferred": (
         "deferred",
         f"{_REQUEUE_SET}, result_json=NULL, started_at=NULL, terminal_at=NULL, indeterminate_at=NULL, updated_at=?",
@@ -408,10 +415,16 @@ def _lease_row_matches(row: sqlite3.Row | None, lease: DriverLease) -> bool:
     ) == (lease.gateway_id, lease.authority_epoch, lease.process_generation, lease.lease_generation)
 
 
-def _require_active_lease(conn: sqlite3.Connection, lease: DriverLease, *, now: float) -> sqlite3.Row:
+def _require_active_lease(
+    conn: sqlite3.Connection, lease: DriverLease, *, now: float, allow_expired: bool = False
+) -> sqlite3.Row:
+    """Authority match + lease-row generation match + unreleased must hold; ``allow_expired``
+    additionally tolerates plain expiry of our own lease (live first-party settlement only)."""
     _require_room_authority(conn, lease.room_id, lease.gateway_id, lease.authority_epoch)
     row = conn.execute(_SELECT_LEASE, (lease.room_id,)).fetchone()
-    if not _lease_row_matches(row, lease) or row["released_at"] is not None or float(row["expires_at"]) <= now:
+    if not _lease_row_matches(row, lease) or row["released_at"] is not None or (
+        not allow_expired and float(row["expires_at"]) <= now
+    ):
         raise StaleLeaseError("driver lease is stale or expired")
     return row
 
@@ -480,12 +493,14 @@ def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None,
+    allow_expired_lease: bool = False) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
     is raised. ``lease_first`` checks the lease before the row load (recovery paths) instead of after the
-    replay (settlement paths: an identical replay still succeeds after the lease moved on).
+    replay (settlement paths: an identical replay still succeeds after the lease moved on);
+    ``allow_expired_lease`` relaxes only that post-replay check and never the lease-first one.
     """
     params = (*set_params, identity.room_id, identity.task_id, *fence_params)
     with _transaction(db_path) as conn:
@@ -495,7 +510,7 @@ def _transition(
         if replay is not None and (replayed := replay(row)) is not None:
             return replayed
         if lease is not None and not lease_first:
-            _require_active_lease(conn, lease, now=now)
+            _require_active_lease(conn, lease, now=now, allow_expired=allow_expired_lease)
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
@@ -679,13 +694,21 @@ def start_task(
 
 
 def settle_task(
-    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    allow_expired_lease: bool = False
 ) -> dict[str, Any]:
-    """Commit one terminal result if every lease and task fence still matches."""
+    """Commit one terminal result if every lease and task fence still matches.
+
+    ``allow_expired_lease`` serves the live in-process terminal callback only: plain expiry of our
+    own unreleased, un-reclaimed lease must not discard an already-completed first-party result, so
+    the post-replay check drops only its ``expires_at > now`` term. Reclaim, release and authority
+    transfer still fence; historical harvest paths keep the strict check.
+    """
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _run_fence_transition(
         db_path, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now, replay=replay,
-        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
+        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
+        allow_expired_lease=allow_expired_lease)
 
 
 def settle_stopping_task(
@@ -742,6 +765,21 @@ def defer_indeterminate_task(
     db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
     expected_cancel_generation: int, reason: Any, clock: Clock) -> dict[str, Any]:
     """Fence one uncertain attempt and release later room work."""
+    return _defer(db_path, identity, lease, "defer", expected_execution_generation, expected_cancel_generation,
+                  reason=reason, clock=clock)
+
+
+def defer_unconfirmed_stop(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, reason: Any, clock: Clock) -> dict[str, Any]:
+    """Release later room work behind a Stop its member never confirmed: deferred, never cancelled."""
+    return _defer(db_path, identity, lease, "defer_stopping", expected_execution_generation,
+                  expected_cancel_generation, reason=reason, clock=clock)
+
+
+def _defer(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, name: str, expected_execution_generation: int,
+    expected_cancel_generation: int, *, reason: Any, clock: Clock) -> dict[str, Any]:
     _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
     reason = _identifier(reason, label="defer_reason")
     result_json = _canonical_json({"reason": reason, "retryable": True})
@@ -750,7 +788,7 @@ def defer_indeterminate_task(
         deferred = _generations_match(row, "deferred", expected_execution_generation, expected_cancel_generation)
         return _task_from_row(row, idempotent=True) if deferred and row["result_json"] == result_json else None
     return _generation_transition(
-        db_path, identity, lease, "defer", expected_execution_generation, expected_cancel_generation, now=now,
+        db_path, identity, lease, name, expected_execution_generation, expected_cancel_generation, now=now,
         replay=replay, set_params=(result_json, now, now))
 
 
@@ -763,6 +801,18 @@ def requeue_deferred_task(
     return _generation_transition(
         db_path, identity, lease, "requeue_deferred", expected_execution_generation, expected_cancel_generation,
         now=now, set_params=(now,))
+
+
+def reopen_deferred_task(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    """Return a deferred turn to indeterminate at its same generation (its peer still owns that generation).
+    The retry restarts the attempt's clock: its time limit counts from now, not from the first start."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    now = _timestamp(clock)
+    return _generation_transition(
+        db_path, identity, lease, "reopen_deferred", expected_execution_generation, expected_cancel_generation,
+        now=now, set_params=(now, now, now))
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:
@@ -829,6 +879,25 @@ def complete_task_cancel(
         db_path, identity, now=now, replay=_cancel_replay(cancel_id), guard=guard, sql=_COMPLETE_STOP_SQL,
         set_params=(now, now), fence_params=(cancel_id, expected_cancel_generation),
         stale="task changed during stop acknowledgement")
+
+
+def mark_attempt_indeterminate(
+    db_path: DbPath, attempt: TaskAttempt, lease: DriverLease, *, clock: Clock
+) -> None:
+    """Retire exactly the unwatched attempt, even if another control renewed its lease."""
+    _check_same_room(lease, attempt.identity)
+    now = _timestamp(clock)
+    with _transaction(db_path) as conn:
+        _require_active_lease(conn, lease, now=now)
+        row = _load_task(conn, attempt.identity)
+        if not _generations_match(row, "running", attempt.execution_generation, attempt.cancel_generation):
+            return
+        conn.execute(
+            _generation_update("status='indeterminate', indeterminate_at=?, updated_at=?", "running"),
+            (now, now, attempt.identity.room_id, attempt.identity.task_id,
+             attempt.execution_generation, attempt.cancel_generation))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, lease.room_id)
 
 
 def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[str, list[TaskIdentity]]:

@@ -103,12 +103,19 @@ def test_shared_logins_with_no_launch_auth_json_still_report_shared(launch):
     assert result.mirrored["auth"] == "shared"
 
 
-def test_clone_skips_bundled_skills_unless_asked(launch):
+def test_only_a_fresh_profile_gets_bundled_skills(launch):
     cloned = provision_profile(ProfileCreateRequest(name="a", clone_from="default", clone_config=True))
-    assert cloned.skills_seeded is None
-    asked = provision_profile(ProfileCreateRequest(name="b", clone_from="default", clone_config=True,
-                                                   seed_skills=True))
-    assert asked.skills_seeded == {"copied": ["s"]}
+    full = provision_profile(ProfileCreateRequest(name="b", clone_all=True))
+    assert (cloned.skills_seeded, full.skills_seeded) == (None, None)
+
+
+def test_a_rejected_model_pick_is_reported_and_the_create_still_succeeds(launch, monkeypatch):
+    from hermes_cli.model_switch import ModelSwitchResult
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+                        lambda **_kw: ModelSwitchResult(success=False, error_message="Unknown provider 'nope'."))
+    result = provision_profile(ProfileCreateRequest(name="work", provider="nope", model="m"))
+    assert (result.model_set, result.model_error, result.warnings) == (False, "Unknown provider 'nope'.", [])
+    assert result.path.is_dir()
 
 
 def test_alias_collision_is_reported_not_written(launch, monkeypatch):

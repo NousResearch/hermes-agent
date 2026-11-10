@@ -203,9 +203,6 @@ def _resolve_profile_dir(name: str) -> Path:
 
 
 _SKILLS_PROFILE_LOCK = threading.RLock()
-# Held across a config.yaml load -> mutate -> save span (config._CONFIG_LOCK covers each call only);
-# an RLock because nested writers take it again.
-_CONFIG_MUTATION_LOCK = threading.RLock()
 
 
 @contextmanager

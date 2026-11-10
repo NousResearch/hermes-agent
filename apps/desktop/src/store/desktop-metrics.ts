@@ -29,7 +29,7 @@
  * instead of overwriting each other; the backend latches each day and area once.
  */
 
-import { randomUuid } from '@hermes/shared'
+import { JsonRpcGatewayError, randomUuid } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
@@ -243,6 +243,14 @@ export function slowFrameBucket(durationMs: number): SlowFrameBucket | null {
         : 'gte_5s'
 }
 
+/** Long-animation-frame histogram buckets: the browser reports frames of 50 ms and up, so the first
+ *  band sits below the 100 ms slow_frame threshold; the rest match slowFrameBucket. */
+export type LongFrameBucket = '50ms_to_100ms' | SlowFrameBucket
+
+export function longFrameBucket(durationMs: number): LongFrameBucket | null {
+  return durationMs >= 50 && durationMs < 100 ? '50ms_to_100ms' : slowFrameBucket(durationMs)
+}
+
 export type DesktopFrictionDetail =
   BackendDisconnectDetail | DesktopNoticeId | ErrorToastCategory | RendererCrashDetail | SlowFrameBucket
 
@@ -326,6 +334,15 @@ const RAGE_CLICK_COUNT = 3
 /** A gap between interactions longer than this is idle, not active time. */
 export const ACTIVE_IDLE_GAP_MS = 5 * 60_000
 const PENDING_DAYS_MAX = 7
+
+const LONG_FRAME_BUCKETS: readonly LongFrameBucket[] = [
+  '50ms_to_100ms',
+  '100ms_to_250ms',
+  '250ms_to_1s',
+  '1s_to_5s',
+  'gte_5s'
+]
+
 const QUEUE_MAX = 50
 const PRE_CONSENT_MAX = 100
 const DROP_SETTLE_MS = 3000
@@ -341,7 +358,10 @@ interface DayAggregate {
   actions: Record<string, number>
   botCount: number
   day: string
+  /** Long frames per bucket while visible, uncapped (one RPC per finished day carries them). */
+  frames: Partial<Record<LongFrameBucket, number>>
   modes: Partial<Record<DesktopMode, ModeDay>>
+  visibleMs: number
 }
 
 interface MetricsState {
@@ -396,14 +416,19 @@ function utcDay(now = Date.now()): string {
 }
 
 function emptyDay(day: string): DayAggregate {
-  return { actions: {}, botCount, day, modes: {} }
+  return { actions: {}, botCount, day, frames: {}, modes: {}, visibleMs: 0 }
 }
 
-function dayHasUse(day: DayAggregate): boolean {
+/** Anything for `shared_metrics.desktop_daily` (button presses, mode use). */
+function dayHasDailyUse(day: DayAggregate): boolean {
   return (
     Object.values(day.actions).some(n => n > 0) ||
     Object.values(day.modes).some(mode => (mode?.activeMs ?? 0) > 0 || (mode?.messages ?? 0) > 0)
   )
+}
+
+function dayHasUse(day: DayAggregate): boolean {
+  return day.visibleMs > 0 || dayHasDailyUse(day)
 }
 
 function finite(value: unknown): number {
@@ -432,7 +457,24 @@ function readDay(raw: unknown): DayAggregate | null {
     }
   }
 
-  return { actions, botCount: finite(source.botCount), day: source.day as string, modes }
+  const frames: DayAggregate['frames'] = {}
+
+  for (const bucket of LONG_FRAME_BUCKETS) {
+    const count = finite(source.frames?.[bucket])
+
+    if (count > 0) {
+      frames[bucket] = count
+    }
+  }
+
+  return {
+    actions,
+    botCount: finite(source.botCount),
+    day: source.day as string,
+    frames,
+    modes,
+    visibleMs: finite(source.visibleMs)
+  }
 }
 
 function readState(): MetricsState {
@@ -739,6 +781,28 @@ export function noteMessageSent(mode: DesktopMode = $workspaceMode.get()): void 
   }
 }
 
+/** A batch of long animation frames seen while the window was visible (durations in ms). */
+export function recordLongFrames(durations: readonly number[]): void {
+  withState(current => {
+    for (const duration of durations) {
+      const bucket = longFrameBucket(duration)
+
+      if (bucket) {
+        current.today.frames[bucket] = (current.today.frames[bucket] ?? 0) + 1
+      }
+    }
+  })
+}
+
+/** Visible window time, the long-frame rate's denominator. */
+export function noteVisibleTime(ms: number): void {
+  if (ms > 0) {
+    withState(current => {
+      current.today.visibleMs += ms
+    })
+  }
+}
+
 /** Configured bots (Bot Mode roster = Hermes profiles) — a count, never names. */
 export function setDesktopBotCount(count: number): void {
   botCount = Math.max(0, Math.floor(finite(count)))
@@ -830,35 +894,79 @@ async function flushPendingDays(): Promise<void> {
     const [owner, requester] = [scope, request]
 
     for (let day = withState(current => current.pending[0]); day; day = withState(current => current.pending[0])) {
-      const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_daily', {
-        actions: Object.entries(day.actions)
-          .filter(([, count]) => count > 0)
-          .map(([key, count]) => {
-            const at = key.lastIndexOf('|')
+      const reported = day.day
+      const settled = () => scope === owner && request === requester
 
-            return { action: key.slice(0, at), count, via: key.slice(at + 1) }
-          }),
-        bot_count: day.botCount,
-        day: day.day,
-        modes: (['bots', 'sessions'] as const)
-          .filter(mode => day.modes[mode])
-          .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
-      })
+      if (dayHasDailyUse(day)) {
+        if (!(await sendDaily(requester, day)) || !settled()) {
+          return
+        }
 
-      if (result?.recorded !== true || scope !== owner || request !== requester) {
-        return
+        // The daily half is in: a retry of the histogram must not resend it.
+        withState(current => {
+          const entry = current.pending.find(pending => pending.day === reported)
+
+          if (entry) {
+            entry.actions = {}
+            entry.modes = {}
+          }
+        })
       }
 
-      const reported = day.day
+      if (day.visibleMs > 0 && (!(await sendLongFrames(requester, day)) || !settled())) {
+        return
+      }
 
       withState(current => {
         current.pending = current.pending.filter(entry => entry.day !== reported)
       })
     }
   } catch {
-    // An older backend or a flap: the day stays pending for the next attach.
+    // A flap: the day stays pending for the next attach.
   } finally {
     flushingDays = false
+  }
+}
+
+async function sendDaily(requester: SharedMetricsRequester, day: DayAggregate): Promise<boolean> {
+  const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_daily', {
+    actions: Object.entries(day.actions)
+      .filter(([, count]) => count > 0)
+      .map(([key, count]) => {
+        const at = key.lastIndexOf('|')
+
+        return { action: key.slice(0, at), count, via: key.slice(at + 1) }
+      }),
+    bot_count: day.botCount,
+    day: day.day,
+    modes: (['bots', 'sessions'] as const)
+      .filter(mode => day.modes[mode])
+      .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
+  })
+
+  return result?.recorded === true
+}
+
+/** True once settled. A backend without the method (-32601: older than the histogram) settles it
+ *  unrecorded, so the day never sticks behind a report that runtime cannot take. */
+async function sendLongFrames(requester: SharedMetricsRequester, day: DayAggregate): Promise<boolean> {
+  try {
+    const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_long_frames', {
+      day: day.day,
+      frames: LONG_FRAME_BUCKETS.filter(bucket => (day.frames[bucket] ?? 0) > 0).map(bucket => ({
+        bucket,
+        count: day.frames[bucket]!
+      })),
+      visible_ms: day.visibleMs
+    })
+
+    return result?.recorded === true
+  } catch (error) {
+    if (error instanceof JsonRpcGatewayError && error.code === -32601) {
+      return true
+    }
+
+    throw error
   }
 }
 

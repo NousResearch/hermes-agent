@@ -196,6 +196,18 @@ def _(rid, params: dict) -> dict:
         bot_count=params.get("bot_count"),
     )
     return _ok(rid, {"recorded": recorded})
+
+
+@method("shared_metrics.desktop_long_frames")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One finished Desktop day's long-frame histogram with its visible time; ``{recorded}`` as for
+    ``desktop_daily``."""
+    from hermes_cli.observability.shared_metrics_desktop import record_desktop_long_frames
+
+    recorded = record_desktop_long_frames(
+        day=params.get("day"), frames=params.get("frames"), visible_ms=params.get("visible_ms"))
+    return _ok(rid, {"recorded": recorded})
 # ---- end v5 desktop ----
 
 

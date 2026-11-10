@@ -812,6 +812,18 @@ export interface SharedMetricsDesktopActionDay {
 export interface SharedMetricsDesktopDailyResult {
   recorded: boolean
 }
+/** One finished UTC day's long-frame histogram and visible window time, aggregated on the client. ``day`` (YYYY-MM-DD) only latches a resend and is never recorded. */
+export interface SharedMetricsDesktopLongFramesParams {
+  profile?: string | null
+  day: string
+  frames?: SharedMetricsDesktopLongFrameCount[]
+  visible_ms?: number
+}
+/** Long animation frames counted in one duration bucket while the window was visible. */
+export interface SharedMetricsDesktopLongFrameCount {
+  bucket: '50ms_to_100ms' | '100ms_to_250ms' | '250ms_to_1s' | '1s_to_5s' | 'gte_5s'
+  count: number
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -6700,6 +6712,8 @@ export interface RpcMethods {
   'shared_metrics.desktop_feature_use': { params: SharedMetricsDesktopFeatureUseParams; result: OkResult }
   /** Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on). */
   'shared_metrics.desktop_friction': { params: SharedMetricsDesktopFrictionParams; result: OkResult }
+  /** Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry. */
+  'shared_metrics.desktop_long_frames': { params: SharedMetricsDesktopLongFramesParams; result: SharedMetricsDesktopDailyResult }
   /** Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on). */
   'shared_metrics.desktop_onboarding': { params: SharedMetricsDesktopOnboardingParams; result: OkResult }
   /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
@@ -7013,6 +7027,7 @@ export const RPC_METHODS = [
   'shared_metrics.desktop_dislike',
   'shared_metrics.desktop_feature_use',
   'shared_metrics.desktop_friction',
+  'shared_metrics.desktop_long_frames',
   'shared_metrics.desktop_onboarding',
   'shared_metrics.set',
   'shared_metrics.slash_command',

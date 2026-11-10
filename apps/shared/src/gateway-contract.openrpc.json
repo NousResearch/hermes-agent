@@ -3859,6 +3859,24 @@
       }
     },
     {
+      "name": "shared_metrics.desktop_long_frames",
+      "summary": "Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsDesktopLongFramesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsDesktopDailyResult"
+        }
+      }
+    },
+    {
       "name": "shared_metrics.desktop_onboarding",
       "summary": "Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on).",
       "params": [
@@ -42029,6 +42047,72 @@
           "detail"
         ],
         "title": "SharedMetricsDesktopFrictionParams",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFrameCount": {
+        "additionalProperties": false,
+        "description": "Long animation frames counted in one duration bucket while the window was visible.",
+        "properties": {
+          "bucket": {
+            "enum": [
+              "50ms_to_100ms",
+              "100ms_to_250ms",
+              "250ms_to_1s",
+              "1s_to_5s",
+              "gte_5s"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket",
+          "count"
+        ],
+        "title": "SharedMetricsDesktopLongFrameCount",
+        "type": "object"
+      },
+      "SharedMetricsDesktopLongFramesParams": {
+        "additionalProperties": false,
+        "description": "One finished UTC day's long-frame histogram and visible window time, aggregated on the client.\n``day`` (YYYY-MM-DD) only latches a resend and is never recorded.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/SharedMetricsDesktopLongFrameCount"
+            },
+            "title": "Frames",
+            "type": "array"
+          },
+          "visible_ms": {
+            "default": 0,
+            "title": "Visible Ms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "SharedMetricsDesktopLongFramesParams",
         "type": "object"
       },
       "SharedMetricsDesktopModeDay": {

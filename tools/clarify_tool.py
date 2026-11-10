@@ -112,9 +112,12 @@ def _result(normalized: list[dict], reply: dict, shown: list[dict] | None = None
     return json.dumps(result, ensure_ascii=False)
 
 
-def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
+def clarify_tool(questions, callback: Optional[Callable] = None, secret_env: Optional[str] = None) -> str:
     """Ask 1-5 questions in one call. ``callback(questions) -> {"answers", "outcome", "notice"?}``
     is platform injected (cli.py / gateway / tui_gateway) and receives the normalized list."""
+    if secret_env:
+        from tools.clarify_secret import ask_secret
+        return ask_secret(questions, str(secret_env).strip(), interactive=callback is not None)
     normalized, error = _normalize_questions(questions)
     if error:
         return tool_error(error)
@@ -177,7 +180,9 @@ CLARIFY_SCHEMA = {
         "cancelled, timed_out or undelivered, with a notice saying why "
         "when the wait ended without a submit. Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
-        "confirmation (the terminal tool handles that)."
+        "confirmation (the terminal tool handles that). To get an API key, "
+        "token or password, pass secret_env with one question: a plain "
+        "question would put the secret in the chat log."
     ),
     "parameters": {
         "type": "object",
@@ -206,6 +211,14 @@ CLARIFY_SCHEMA = {
                     "required": ["question"],
                 },
             },
+            "secret_env": {
+                "type": "string",
+                "description": (
+                    "Env var NAME, e.g. WEATHER_API_KEY. Required whenever you ask for an API key, "
+                    "token or password: the user types it into a masked prompt, it is stored for "
+                    "this profile and you only get NAME back; use it as $NAME in commands. Ask one "
+                    "question (what it is, where it is used), no choices."),
+            },
         },
         "required": ["questions"],
     },
@@ -218,7 +231,8 @@ registry.register(
     name="clarify",
     toolset="clarify",
     schema=CLARIFY_SCHEMA,
-    handler=lambda args, **kw: clarify_tool(args.get("questions"), callback=kw.get("callback")),
+    handler=lambda args, **kw: clarify_tool(
+        args.get("questions"), callback=kw.get("callback"), secret_env=args.get("secret_env")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

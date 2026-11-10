@@ -1,0 +1,20 @@
+name: hermes-parallel
+repo: https://github.com/kOs-tile/hermes-parallel
+sha: "3ba1a65ec8fed25634b904c0cd527ed315d573d4"
+description: Run three isolated, verified file futures inside Hermes, compare, then choose one to apply.
+maintainer: kOs-tile
+tier: community
+category: tools
+version: "1.0.4"
+capabilities:
+  provides_tools:
+    - parallel_begin
+    - parallel_stage
+    - parallel_explore
+    - parallel_preview
+    - parallel_compare
+    - parallel_gallery
+    - parallel_review_worktrees
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

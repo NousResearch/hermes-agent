@@ -473,12 +473,16 @@ class TestScanSkill:
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text(
             "# Skill\n\nLoad dotenv explicitly: `import os; from dotenv import load_dotenv; "
-            'load_dotenv(os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), ".env"))`\n',
+            'load_dotenv(os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), ".env"))`\n'
+            "Never call `load_dotenv(HERMES_HOME/.env)` to get a key.\n",
             encoding="utf-8")
         (skill_dir / "run.py").write_text(
             "from dotenv import dotenv_values\nfrom hermes_constants import get_hermes_home\n"
             'keys = dotenv_values(get_hermes_home() / ".env")\n'
-            'load_dotenv("./project.env")\n', encoding="utf-8")
+            'load_dotenv("./project.env")\n'
+            # Not the Hermes .env: a .hermes name that is not a path segment, or a lower-case variable.
+            'load_dotenv(".hermes-project.env")\nload_dotenv("myapp.hermes.env")\n'
+            'load_dotenv(hermes_home_env_path)\n', encoding="utf-8")
         result = scan_skill(skill_dir, source="community")
         hits = {(fi.file, fi.line, fi.severity) for fi in result.findings if fi.pattern_id == "hermes_env_dotenv"}
         assert hits == {("SKILL.md", 3, "high"), ("run.py", 3, "high")}

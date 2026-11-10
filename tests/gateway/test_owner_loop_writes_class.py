@@ -164,13 +164,13 @@ async def _first_read_adoption(authority, owner, tmp_path, db):
 # (case, module holding the write's name, name, driver): the writer lock is taken just before
 # the named call runs.
 CASES = [
-    ('model-prepare', 'gateway.session_mutations', 'mutate_runtime_session', _model_prepare),
-    ('claim-reopen', 'gateway.session_local_recovery', 'reopen_local_session', _claim_reopen),
-    ('acp-idle-after-turn', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_idle_after_turn),
-    ('acp-detach', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
-    ('create-title-hidden', 'gateway.session_local_title', 'title_new_session', _create_titled_hidden),
-    ('native-register', 'gateway.session.SessionStore', 'get_or_create_session', _native_register),
-    ('initialize-epoch', 'gateway.session_authority', 'begin_runtime_epoch', _initialize),
+    ('model-prepare', 'hermes_agent.gateway.session_mutations', 'mutate_runtime_session', _model_prepare),
+    ('claim-reopen', 'hermes_agent.gateway.session_local_recovery', 'reopen_local_session', _claim_reopen),
+    ('acp-idle-after-turn', 'hermes_agent.gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_idle_after_turn),
+    ('acp-detach', 'hermes_agent.gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
+    ('create-title-hidden', 'hermes_agent.gateway.session_local_title', 'title_new_session', _create_titled_hidden),
+    ('native-register', 'hermes_agent.gateway.session.SessionStore', 'get_or_create_session', _native_register),
+    ('initialize-epoch', 'hermes_agent.gateway.session_authority', 'begin_runtime_epoch', _initialize),
     ('initialize-compression-adoption', 'hermes_agent.hermes_state_local_lineage', 'adopt_untracked_compression',
      _initialize_adoption),
     ('first-read-compression-adoption', 'hermes_agent.hermes_state_local_lineage', 'adopt_untracked_compression',

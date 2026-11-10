@@ -49,8 +49,12 @@ API_KEY = "e2e-handoff-api-server-key"
 NEXT_MARKER = "docs/e2e-handoff-next-marker.txt"
 # NEXT moves a module the gateway imports at boot and rewrites its importer, as a layout change does;
 # the relaunched gateway can serve a turn only from the moved file.
-NEXT_MOVE = ("gateway/run_background.py", "gateway/run_turn_background.py")
-NEXT_MOVE_IMPORTER = ("gateway/run_turn.py", "from gateway.run_background import", "from gateway.run_turn_background import")
+NEXT_MOVE = ("hermes_agent/gateway/run_background.py", "hermes_agent/gateway/run_turn_background.py")
+NEXT_MOVE_IMPORTER = (
+    "hermes_agent/gateway/run_turn.py",
+    "from hermes_agent.gateway.run_background import",
+    "from hermes_agent.gateway.run_turn_background import",
+)
 
 
 # -- refs ---------------------------------------------------------------------------------------

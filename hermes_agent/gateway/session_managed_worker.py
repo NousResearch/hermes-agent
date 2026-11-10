@@ -589,7 +589,8 @@ async def _spawn_registered_worker(authority, ref, row):
     generation = row.get('generation')
     try:
         env = await asyncio.to_thread(_worker_env, authority)
-        cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
+        from hermes_cli._startup_fast import project_root_str
+        cwd = Path(await asyncio.to_thread(project_root_str))
         from hermes_agent.gateway.session_worker_spawn import acquire_process
         from hermes_agent.gateway.session_managed_worker_log import worker_log_path
         log_path = worker_log_path(authority.profile_id)

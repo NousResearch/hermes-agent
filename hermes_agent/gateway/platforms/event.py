@@ -1,7 +1,7 @@
 """Inbound message event types shared by every gateway platform adapter.
 
 A leaf module: adapters, helpers and the runner import it, so it must not import from
-gateway.platforms.*.
+hermes_agent.gateway.platforms.*.
 """
 
 import re

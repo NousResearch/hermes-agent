@@ -61,6 +61,17 @@ hermes-agent/
 │   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 │   ├── batch_runner.py           # 批量轨迹生成
 │   │
+│   ├── gateway/                  # 消息平台 gateway
+│   │   ├── run.py                # GatewayRunner——消息分发（大文件）
+│   │   ├── session.py            # SessionStore——对话持久化
+│   │   ├── delivery.py           # 出站消息投递
+│   │   ├── pairing.py            # DM 配对授权
+│   │   ├── hooks.py              # Hook 发现与生命周期事件
+│   │   ├── mirror.py             # 跨会话消息镜像
+│   │   ├── status.py             # Token 锁、profile 范围的进程追踪
+│   │   └── platforms/            # 核心入站适配器：api_server、webhook、
+│   │                             #   msgraph_webhook
+│   │
 │   ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
 │   └── cron/                     # 调度器（jobs.py、scheduler.py）
 │
@@ -111,17 +122,6 @@ hermes-agent/
 │   ├── env_passthrough.py    # 沙箱环境变量透传
 │   ├── ansi_strip.py         # ANSI 转义字符剥离
 │   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity）
-│
-├── gateway/                  # 消息平台 gateway
-│   ├── run.py                # GatewayRunner——消息分发（大文件）
-│   ├── session.py            # SessionStore——对话持久化
-│   ├── delivery.py           # 出站消息投递
-│   ├── pairing.py            # DM 配对授权
-│   ├── hooks.py              # Hook 发现与生命周期事件
-│   ├── mirror.py             # 跨会话消息镜像
-│   ├── status.py             # Token 锁、profile 范围的进程追踪
-│   └── platforms/            # 核心入站适配器：api_server、webhook、
-│                             #   msgraph_webhook
 │
 ├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
 │                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、

@@ -126,7 +126,14 @@ hermes-agent/
 ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 ├── hermes_agent/             # el paquete de Python
 │   ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
-│   └── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
+│   ├── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
+│   │
+│   └── gateway/                  # Gateway de mensajería
+│       ├── run.py                    # GatewayRunner — ciclo de vida de plataformas, enrutamiento de mensajes, cron
+│       ├── config.py                 # Resolución de configuración de plataformas
+│       ├── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
+│       └── platforms/                # Adaptadores de plataformas
+│           ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
 ├── agent/                    # Internos del agente (módulos extraídos)
 │   ├── prompt_builder.py         # Ensamblaje del prompt del sistema (identidad, habilidades, archivos de contexto, memoria)
@@ -164,13 +171,6 @@ hermes-agent/
 │   └── environments/             # Backends de ejecución del terminal
 │       ├── base.py                   # ABC BaseEnvironment
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
-│
-├── gateway/                  # Gateway de mensajería
-│   ├── run.py                    # GatewayRunner — ciclo de vida de plataformas, enrutamiento de mensajes, cron
-│   ├── config.py                 # Resolución de configuración de plataformas
-│   ├── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
-│   └── platforms/                # Adaptadores de plataformas
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS

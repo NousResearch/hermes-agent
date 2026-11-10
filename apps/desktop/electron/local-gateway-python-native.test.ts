@@ -29,7 +29,7 @@ test.skipIf(process.platform !== 'win32')('native pipe tickets reuse one helper 
   const code = `
 import json, sys
 from pathlib import Path
-from gateway.runtime_bootstrap_windows import NativeControlServer
+from hermes_agent.gateway.runtime_bootstrap_windows import NativeControlServer
 counter = 0
 def handle(raw, subject):
     global counter

@@ -89,8 +89,8 @@ def test_a_stand_in_that_cannot_be_built_retries_later_and_never_turns_auto_resu
     from tools.delegate_tool_auto_resume import tick
     parent, model, sid = _limited_child_of_session(tmp_path)
     factory, start = _start(_runner(), model, [])
-    target = ("gateway.run.GatewayRunner._resolve_session_agent_runtime" if broken == "route"
-              else "gateway.run_auto_resume._stand_in_parent")
+    target = ("hermes_agent.gateway.run.GatewayRunner._resolve_session_agent_runtime" if broken == "route"
+              else "hermes_agent.gateway.run_auto_resume._stand_in_parent")
     with patch(target, side_effect=RuntimeError("no credentials")), patch("run_agent.AIAgent", side_effect=factory):
         assert tick(start, capacity=3) == []
     state, _pinned, record = _db_rows(parent)[sid]

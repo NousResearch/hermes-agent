@@ -6,17 +6,17 @@ import pytest
 from hermes_agent.gateway.relay.egress import _is_missing_gateway_relay
 
 
-@pytest.mark.parametrize("name", ["gateway", "gateway.relay", "gateway.relay.egress"])
+@pytest.mark.parametrize("name", ["hermes_agent.gateway", "hermes_agent.gateway.relay", "hermes_agent.gateway.relay.egress"])
 def test_relay_guard_reads_a_missing_target_or_parent_as_absence(name):
     assert _is_missing_gateway_relay(ModuleNotFoundError(name=name)) is True
 
 
 @pytest.mark.parametrize("exc", [
-    ModuleNotFoundError(name="gateway.relay.egress.dependency"),
-    ModuleNotFoundError(name="gateway.relay.egress_dependency"),
+    ModuleNotFoundError(name="hermes_agent.gateway.relay.egress.dependency"),
+    ModuleNotFoundError(name="hermes_agent.gateway.relay.egress_dependency"),
     ModuleNotFoundError(name="requests"),
     ModuleNotFoundError(name=None),
-    ImportError(name="gateway.relay.egress"),
+    ImportError(name="hermes_agent.gateway.relay.egress"),
 ])
 def test_relay_guard_reads_anything_else_as_a_fault(exc):
     assert _is_missing_gateway_relay(exc) is False

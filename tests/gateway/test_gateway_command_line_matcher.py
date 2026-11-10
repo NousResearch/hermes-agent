@@ -26,6 +26,7 @@ ACCEPT = [
     "python -m hermes_cli/main.py gateway run",
     "python gateway/run.py",
     "python -m gateway.run",   # module spelling of the dedicated entrypoint
+    "python -m hermes_agent.gateway.run",  # the same entrypoint under its moved package name
     "hermes-gateway.exe",
     "hermes gateway",          # bare `hermes gateway` defaults to run
     "hermes gateway run",

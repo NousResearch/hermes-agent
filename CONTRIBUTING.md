@@ -302,7 +302,15 @@ hermes-agent/
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 ├── hermes_agent/             # the Python package
 │   ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
-│   └── batch_runner.py           # Parallel batch processing for trajectory generation
+│   ├── batch_runner.py           # Parallel batch processing for trajectory generation
+│   │
+│   └── gateway/                  # Messaging gateway
+│       ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
+│       ├── slash_commands_*.py       # Gateway slash command handler mixins
+│       ├── config.py                 # Platform configuration resolution
+│       ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
+│       └── platforms/                # Platform adapters
+│           ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
 ├── agent/                    # Agent internals (extracted modules)
 │   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)
@@ -348,14 +356,6 @@ hermes-agent/
 │   └── environments/             # Terminal execution backends
 │       ├── base.py                   # BaseEnvironment ABC
 │       ├── local.py, docker.py, ssh.py, modal.py, daytona.py
-│
-├── gateway/                  # Messaging gateway
-│   ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
-│   ├── slash_commands_*.py       # Gateway slash command handler mixins
-│   ├── config.py                 # Platform configuration resolution
-│   ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
-│   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

@@ -104,7 +104,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         # I previously admitted the nameless case to protect the CLI/cron path;
         # that reasoning was wrong, because that path does not produce one.
         if not isinstance(exc, ModuleNotFoundError) or (
-            exc.name != "gateway.relay.egress" and not "gateway.relay.egress".startswith(f"{exc.name}.")
+            exc.name != "hermes_agent.gateway.relay.egress" and not "hermes_agent.gateway.relay.egress".startswith(f"{exc.name}.")
         ):
             logger.exception(
                 "relay egress module failed to import for %s — refusing the send",

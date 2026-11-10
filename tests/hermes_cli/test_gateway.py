@@ -48,10 +48,10 @@ def _run_native_windows_gateway_start_diag(
             assert "_HERMES_GATEWAY_BREAKAWAY" not in os.environ
             return True
 
-        fake_run = types.ModuleType("gateway.run")
+        fake_run = types.ModuleType("hermes_agent.gateway.run")
         fake_run.start_gateway = start_gateway
         fake_run._exit_after_graceful_shutdown = lambda code: None
-        sys.modules["gateway.run"] = fake_run
+        sys.modules["hermes_agent.gateway.run"] = fake_run
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
@@ -163,10 +163,10 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
                 return False
             raise SystemExit(int(outcome.split(":", 1)[1]))
 
-        fake_run = types.ModuleType("gateway.run")
+        fake_run = types.ModuleType("hermes_agent.gateway.run")
         fake_run.start_gateway = start_gateway
         setattr(fake_run, "_exit_after_graceful_shutdown", sys.exit)
-        sys.modules["gateway.run"] = fake_run
+        sys.modules["hermes_agent.gateway.run"] = fake_run
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None

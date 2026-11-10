@@ -577,7 +577,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # standalone owner invisible to the multiplex preflight).
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"
-    if any(tokens[i] == "-m" and tokens[i + 1] == "gateway.run" for i in range(len(tokens) - 1)):
+    if any(tokens[i] == "-m" and tokens[i + 1] in ("gateway.run", "hermes_agent.gateway.run") for i in range(len(tokens) - 1)):
         return "run"
     # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
     # `gateway run --replace` does not recognise it as a running gateway, skips the

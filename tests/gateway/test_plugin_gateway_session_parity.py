@@ -120,7 +120,7 @@ async def test_keyed_local_injection_stays_inside_the_plugins_own_profile(tmp_pa
             await async_wait_until(lambda: _plugin_rows(authorities[name], sessions[name][0], text), timeout=10,
                                    what=f"the same-profile plugin admission {text!r}")
 
-        with caplog_at("gateway.run") as records:
+        with caplog_at("hermes_agent.gateway.run") as records:
             assert await asyncio.to_thread(alpha_ctx.inject_message, "cross", session_key=beta_key) is False
             # Dispatch rechecks before entering the target profile's scope.
             assert await runner._dispatch_plugin_message_injection(
@@ -137,7 +137,7 @@ async def test_keyed_local_injection_stays_inside_the_plugins_own_profile(tmp_pa
             _ACTIVE_POLICY.set(SimpleNamespace(platform="cli", cwd=str(tmp_path)))
             return in_betas_scope(lambda: beta_ctx.inject_message("cross"))
 
-        with caplog_at("gateway.run") as beta_records:
+        with caplog_at("hermes_agent.gateway.run") as beta_records:
             assert await asyncio.to_thread(
                 in_betas_scope, lambda: beta_ctx.inject_message("cross", session_key=alpha_key)) is False
             assert await asyncio.to_thread(contextvars.copy_context().run, keyless_in_beta_scope_for_alphas_turn) is False
@@ -185,7 +185,7 @@ async def test_keyed_messaging_injection_stays_inside_the_plugins_own_profile(tm
     for manager in (default_manager, beta_manager):
         _publish(runner, manager)
 
-    with caplog_at("gateway.run") as records:
+    with caplog_at("hermes_agent.gateway.run") as records:
         assert await asyncio.to_thread(beta_ctx.inject_message, "cross", session_key=key) is False
         # Dispatch rechecks.
         assert await runner._dispatch_plugin_message_injection(

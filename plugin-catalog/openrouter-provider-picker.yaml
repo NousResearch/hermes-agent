@@ -1,6 +1,6 @@
 name: openrouter-provider-picker
 repo: https://github.com/PotatoWareGit/hermes-openrouter-provider
-sha: 67cc12663726c330e02b8fbba849faed2ef80e29
+sha: afba3e648ecbfd18688f845e9f3ec7cf86315ff5
 description: >-
   Pick which upstream providers serve each OpenRouter model, per model, from a
   desktop UI (Settings › Plugins › Provider Routing) or an agent tool. Writes
@@ -22,10 +22,10 @@ tier: community
 category: models
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/PotatoWareGit/hermes-openrouter-provider#readme
-version: "1.0.0"
-image: https://raw.githubusercontent.com/PotatoWareGit/hermes-openrouter-provider/67cc12663726c330e02b8fbba849faed2ef80e29/assets/banner.png
+version: "1.0.1"
+image: https://raw.githubusercontent.com/PotatoWareGit/hermes-openrouter-provider/afba3e648ecbfd18688f845e9f3ec7cf86315ff5/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/PotatoWareGit/hermes-openrouter-provider/67cc12663726c330e02b8fbba849faed2ef80e29/assets/screenshot-routing.png
+  - https://raw.githubusercontent.com/PotatoWareGit/hermes-openrouter-provider/afba3e648ecbfd18688f845e9f3ec7cf86315ff5/assets/screenshot-routing.png
 title: "OpenRouter Provider Picker"
 platforms: []
 readme: true

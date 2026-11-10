@@ -136,6 +136,21 @@ def test_literal_hash_normalization_preserves_markdown_regions(content):
     assert escape_literal_hash_prefixes("Use ```x``` here.\n\n#89 open.") == "Use ```x``` here.\n\n\\#89 open."
 
 
+@pytest.mark.parametrize("content, expected", [
+    # A backtick run with text after it is code inside the fence, not its closer.
+    ("```\ntext ``` trailing\n#inside\n```\n#outside", "```\ntext ``` trailing\n#inside\n```\n\\#outside"),
+    ("~~~~\n~~~ x\n#inside\n~~~~\n#outside", "~~~~\n~~~ x\n#inside\n~~~~\n\\#outside"),
+    # A quoted fence ends with its blockquote.
+    ("> ```\n> #inside\n#outside", "> ```\n> #inside\n\\#outside"),
+    # A code span never pairs across a blank line.
+    ("`open\n\n#89\nclose`", "`open\n\n\\#89\nclose`"),
+])
+def test_literal_hash_fences_close_like_commonmark(content, expected):
+    from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
+
+    assert escape_literal_hash_prefixes(content) == expected
+
+
 def test_rich_payload_is_linear_in_unclosed_backtick_runs():
     """A full rich-cap reply of unclosed backtick runs of distinct lengths (`a``a```a...) builds its
     payload well inside one second; a per-run rescan blocked the event loop for seconds."""
@@ -151,6 +166,13 @@ def test_rich_payload_is_linear_in_unclosed_backtick_runs():
 
     assert time.perf_counter() - started < 1.0
     assert payload["markdown"].startswith("\\#89")
+
+    # Fence-like lines that never close, and backtick runs split by paragraphs.
+    unit = "```py\ntext ``` trailing\n#89\n> ```\n`open\n\n"
+    content = (unit * (adapter.RICH_MESSAGE_MAX_CHARS // len(unit)))[: adapter.RICH_MESSAGE_MAX_CHARS]
+    started = time.perf_counter()
+    adapter._rich_message_payload(content)
+    assert time.perf_counter() - started < 1.0
 
 
 @pytest.mark.asyncio

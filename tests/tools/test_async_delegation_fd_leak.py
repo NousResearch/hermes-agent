@@ -71,7 +71,7 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     ad.get_durable_delegation("nope")
     ad.recover_abandoned_delegations()
     ad.restore_undelivered_completions(queue.Queue())
-    ad.mark_completion_delivered("nope")
+    ad.complete_completion_delivery("nope", "claim-0")
     ad.claim_completion_delivery("nope", "claim-1")
 
     assert opened, "expected at least one connection to be opened"

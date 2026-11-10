@@ -134,7 +134,7 @@ def _claim(db, conn, session_id, payload, *, execution_id):
     row = _owned(conn, session_id, execution_id, payload['delegation_id'])
     _text(payload['claim_id'])
     now = time.time()
-    if row['state'] in ('running', 'finalizing'):
+    if row['state'] == 'running':
         return {'value': False}
     changed = conn.execute('''UPDATE async_delegations SET delivery_claim=?,delivery_claimed_at=?,
         delivery_attempts=delivery_attempts+1,updated_at=? WHERE delegation_id=? AND delivery_state='pending'

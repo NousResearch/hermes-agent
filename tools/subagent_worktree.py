@@ -61,19 +61,6 @@ def resolve_repo_root(path: Optional[str]) -> Optional[str]:
     return (result.stdout.strip() or None) if result.returncode == 0 else None
 
 
-def _ensure_gitignore_entry(repo_root: str) -> None:
-    """Best-effort: keep ``.worktrees/`` out of git status."""
-    gitignore = Path(repo_root) / ".gitignore"
-    try:
-        existing = gitignore.read_text(encoding="utf-8-sig", errors="replace") if gitignore.exists() else ""
-        if ".worktrees/" not in existing.splitlines():
-            with open(gitignore, "a", encoding="utf-8") as f:
-                sep = "\n" if existing and not existing.endswith("\n") else ""
-                f.write(f"{sep}.worktrees/\n")
-    except Exception as exc:
-        logger.debug("subagent worktree: could not update .gitignore: %s", exc)
-
-
 def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated worktree for one child; None (silent downgrade) outside git/on failure."""
     repo_root = resolve_repo_root(parent_cwd)
@@ -84,7 +71,8 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
     wt_path = Path(repo_root) / ".worktrees" / wt_name
     try:
         wt_path.parent.mkdir(parents=True, exist_ok=True)
-        _ensure_gitignore_entry(repo_root)
+        from hermes_cli.worktree_ops import _ensure_worktrees_gitignored
+        _ensure_worktrees_gitignored(repo_root)
         base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
         base_commit = base.stdout.strip() if base.returncode == 0 else ""
         # The checkout runs the repo-named smudge filter; skip isolation when it cannot be neutralized.

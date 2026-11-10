@@ -169,7 +169,7 @@ def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one
     working copy. Git-only and local-backend-only; otherwise silently ignored."""
-    return bool(_cfg().get("worktree_isolation", False))
+    return is_truthy_value(_cfg().get("worktree_isolation", False))
 
 def _get_max_async_children() -> int:
     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
@@ -437,8 +437,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
-            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"or set delegation.base_url/delegation.api_key for a direct endpoint."
         ) from exc
 
     api_key = runtime.get("api_key", "")

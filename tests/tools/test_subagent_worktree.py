@@ -309,6 +309,13 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertIn("/x/wt", note)
         self.assertIn("hermes-subagent/subagent-1", note)
 
+    def test_quoted_false_worktree_isolation_stays_off(self):
+        from tools import delegate_tool_config
+
+        for raw, expected in (("false", False), ("no", False), ("true", True), (True, True)):
+            with mock.patch("tools.delegate_tool._load_config", return_value={"worktree_isolation": raw}):
+                self.assertIs(delegate_tool_config._get_worktree_isolation(), expected, raw)
+
 
 class WorktreePayloadSchemaTests(unittest.TestCase):
     """The parent agent reads ONE schema under ``entry["worktree"]``.

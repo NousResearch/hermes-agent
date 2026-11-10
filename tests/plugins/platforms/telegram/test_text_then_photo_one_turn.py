@@ -112,3 +112,27 @@ async def test_photo_in_another_topic_does_not_hold_the_question():
         assert (first.text, first.media_urls, first.source.thread_id) == ("Is this a real study?", [], "10")
         await async_wait_until(lambda: adapter.handle_message.await_count >= 2, timeout=5)
     assert adapter.handle_message.await_args_list[1].args[0].media_urls == ["/tmp/post.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_observe_only_photo_does_not_hold_the_question():
+    """A photo that only reaches the observed transcript (not addressed to the bot) never joins a
+    turn, so it must not hold the sender's question while it downloads."""
+    adapter = _adapter()
+    release = asyncio.Event()
+    adapter._gate_or_observe = lambda *_a, **_kw: True  # the question addresses the bot
+    adapter._should_process_message = lambda *_a, **_kw: False  # the photo does not
+    adapter._should_observe_unmentioned_group_message = lambda _msg: True
+    adapter._observe_unmentioned_group_message = MagicMock()
+
+    async def slow_observe_cache(*_a, **_kw):
+        await release.wait()
+    adapter._cache_observed_media = slow_observe_cache
+    await adapter._handle_text_message(_update(_text("Is this a real study?")), MagicMock())
+    photo = asyncio.create_task(adapter._handle_media_message(_update(_slow_photo(release)), MagicMock()))
+    try:
+        await async_wait_until(lambda: adapter.handle_message.await_count >= 1, timeout=2)
+    finally:
+        release.set()
+        await photo
+    assert adapter.handle_message.await_args_list[0].args[0].text == "Is this a real study?"

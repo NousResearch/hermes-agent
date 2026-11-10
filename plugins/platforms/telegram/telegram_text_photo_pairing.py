@@ -6,7 +6,7 @@ the photo is still downloading and then waits in its own 0.8 s burst batch, so t
 the question without the image and then got the image as a second turn (#33270).
 
 Updates of one chat run one after another, so when the image's handler starts, the text it belongs
-with is still pending. The handler *claims* that text batch before it awaits anything. Once its normal
+with is still pending. Once the image passed the group gate, the handler *claims* that text batch before it awaits anything. Once its normal
 quiet period is up, a claimed text flush waits for the image handler (bounded by
 ``CLAIM_MAX_WAIT_SECONDS``), and the image *absorbs* the text when it reaches the photo batcher.
 A lone text, or an image that arrives after the text already flushed, is unchanged.
@@ -45,19 +45,16 @@ def _is_image(msg: Any) -> bool:
     return bool(getattr(msg, "photo", None)) or (doc is not None and is_image_document(doc))
 
 
-def _claim_pending_text(adapter: Any, msg: Any) -> None:
-    """Pin the text-only batch waiting to flush in the lane this image's own text would batch under.
+def claim_pending_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
+    """Pin the text-only batch waiting to flush in the lane the image's own ``event`` would batch under.
 
-    The lane is the image's text-batch key (topic recovery and observed-group sender included), so an
-    image in topic B never holds the same user's question in topic A: that question flushes on time.
+    Called once the image passed the group gate (an observe-only photo never joins a turn, so it must
+    not hold one) and before the handler's first await. The lane is the event's text-batch key (topic
+    recovery and observed-group sender included): a photo in topic B never holds topic A's question.
     """
     sender = getattr(getattr(msg, "from_user", None), "id", None)
-    chat = getattr(getattr(msg, "chat", None), "id", None)
-    if not _is_image(msg) or sender is None or chat is None or not any(
-            pending.source is not None and str(pending.source.chat_id) == str(chat)
-            for pending in adapter._pending_text_batches.values()):
-        return  # nothing pending in this chat: skip building the event
-    event = adapter._apply_telegram_group_observe_attribution(adapter._build_message_event(msg, MessageType.TEXT))
+    if not _is_image(msg) or sender is None:
+        return
     key = adapter._text_batch_key(copy.copy(event))  # topic recovery rewrites in place
     pending = adapter._pending_text_batches.get(key)
     if (pending is None or str(pending.sender_id()) != str(sender)  # observed groups keep the sender off the source
@@ -93,12 +90,10 @@ def absorb_claimed_text(adapter: Any, msg: Any, event: MessageEvent) -> None:
 
 
 def tracking_media_items(handler):
-    """Decorate the media handler: album tracking, plus a claim on a pending text that lives until it returns."""
+    """Decorate the media handler: album tracking, and the release of its text claim when it returns."""
     @functools.wraps(handler)
     async def wrapper(adapter, update, context):
         msg = adapter._effective_update_message(update)
-        if msg is not None:
-            _claim_pending_text(adapter, msg)  # synchronous: before the handler's first await
         try:
             return await handler(adapter, update, context)
         finally:

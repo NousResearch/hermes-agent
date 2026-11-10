@@ -257,7 +257,7 @@ EXTENSION_SOURCES = frozenset({"bundled", "catalog", "hub", "local", "other", "u
 EXTENSION_OUTCOMES = frozenset({"failed", "success"})
 # Every built-in backend in tools/terminal_tool_config.py::_BUILTIN_BACKENDS.
 TERMINAL_BACKENDS = frozenset({
-    "daytona", "docker", "local", "managed_modal", "modal", "other", "singularity", "ssh", "vercel_sandbox",
+    "daytona", "docker", "local", "managed_modal", "modal", "other", "singularity", "ssh", "vercel_sandbox", "wsl",
 })
 AUX_TASKS = _CatalogValues("aux_task_names", extra=frozenset({"none", "other"}))
 SLASH_COMMANDS = _CatalogValues("slash_command_names", extra=frozenset({"plugin", "skill", "unknown"}))

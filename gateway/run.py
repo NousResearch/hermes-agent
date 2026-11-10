@@ -2016,7 +2016,17 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        "persistent_shell": "TERMINAL_PERSISTENT_SHELL"}
+        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+        "wsl_distro": "TERMINAL_WSL_DISTRO",
+        "wsl_cwd": "TERMINAL_WSL_CWD",
+        "local_cwd": "TERMINAL_LOCAL_CWD",
+        "docker_cwd": "TERMINAL_DOCKER_CWD",
+        "ssh_cwd": "TERMINAL_SSH_CWD",
+        "singularity_cwd": "TERMINAL_SINGULARITY_CWD",
+        "modal_cwd": "TERMINAL_MODAL_CWD",
+        "daytona_cwd": "TERMINAL_DAYTONA_CWD",
+        "vercel_sandbox_cwd": "TERMINAL_VERCEL_SANDBOX_CWD",
+        "managed_modal_cwd": "TERMINAL_MANAGED_MODAL_CWD"}
     for _cfg_key, _env_var in _terminal_env_map.items():
         if _cfg_key not in _terminal_cfg:
             continue

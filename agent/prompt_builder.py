@@ -742,6 +742,16 @@ WSL_ENVIRONMENT_HINT = (
     "files, translate to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover the Windows username if needed."
 )
 
+# Hermes on Windows, tools inside a WSL2 distro. Distinct from WSL_ENVIRONMENT_HINT,
+# which describes a Hermes process that is itself running inside WSL.
+_WSL_BACKEND_HINT = (
+    "Terminal backend: wsl. ALL your tools — `terminal`, `read_file`, `write_file`, `patch`, `search_files` — "
+    "execute inside your WSL2 distribution, a Linux environment. Use Linux paths for everything: "
+    "`/home/<user>/...` for WSL files, `/mnt/c/` for the Windows C: drive, `/mnt/d/` for D:, and so on. "
+    "Do NOT use Windows paths (`C:\\...`), `winget`, or PowerShell — those will fail. "
+    "Install packages with the distro's own package manager."
+)
+
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
@@ -1014,15 +1024,20 @@ def _embedder_environment_hint() -> str:
 def build_environment_hints() -> str:
     """Execution-environment block: local backends get host OS/home/cwd; remote/sandbox
     backends get ONLY the backend's own state (the agent's tools cannot touch the host).
-    WSL and embedder hints are appended."""
+    The WSL2 backend gets a static Linux hint (no live ``wsl.exe`` probe). A Hermes
+    process that is itself inside WSL still gets WSL_ENVIRONMENT_HINT."""
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
-    is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
-    hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
-    # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
-    # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
-    if not is_remote_backend:
-        hints.append(_bot_screen_hint())
-    hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
+    if backend == "wsl":
+        hints = [_WSL_BACKEND_HINT]
+    else:
+        is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
+        hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+        # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
+        # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
+        if not is_remote_backend:
+            hints.append(_bot_screen_hint())
+        if is_wsl():
+            hints.append(WSL_ENVIRONMENT_HINT)
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 
 

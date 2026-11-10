@@ -5,6 +5,7 @@ take effect; setup.py re-exports the public entry points."""
 import json
 import logging
 import os
+import platform as _platform
 from pathlib import Path
 from tools import tool_backend_helpers
 
@@ -248,6 +249,13 @@ def _setup_backend_ssh(config: dict) -> None:
             _setup.print_info("  Check your SSH key and host settings.")
 
 
+def _setup_backend_wsl(config: dict) -> None:
+    _setup.print_success("Terminal backend: WSL2")
+    _setup.print_info("Commands and file tools run inside your WSL2 distribution.")
+    _setup.print_info("Use Linux paths; Windows drives are mounted under /mnt/<drive>/.")
+    config.setdefault("terminal", {}).pop("cwd", None)
+
+
 def _setup_backend_plugin(config: dict, backend: str) -> None:
     try:
         from agent.terminal_env_registry import get_provider
@@ -260,15 +268,27 @@ def _setup_backend_plugin(config: dict, backend: str) -> None:
         _setup.print_warning(f"Backend plugin setup hook failed: {exc}")
 
 
-_BUILTIN_TERMINAL_BACKENDS = [
-    ("local", "Local - run directly on this machine (default)"),
-    ("docker", "Docker/Podman - isolated container with configurable resources"),
-    ("modal", "Modal - serverless cloud sandbox"), ("ssh", "SSH - run on a remote machine"),
-    ("daytona", "Daytona - persistent cloud development environment"),
-    ("vercel_sandbox", "Vercel Sandbox - cloud microVM with snapshot filesystem persistence")]
+def _builtin_terminal_backends():
+    """Built-in setup choices. WSL2 is offered only on Windows; other hosts have no wsl.exe."""
+    backends = [
+        ("local", "Local - run directly on this machine (default)"),
+        ("docker", "Docker/Podman - isolated container with configurable resources"),
+    ]
+    if _platform.system() == "Windows":
+        backends.append(("wsl", "WSL2 - Windows Subsystem for Linux (native, no Docker overhead)"))
+    backends.extend([
+        ("modal", "Modal - serverless cloud sandbox"),
+        ("ssh", "SSH - run on a remote machine"),
+        ("daytona", "Daytona - persistent cloud development environment"),
+        ("vercel_sandbox", "Vercel Sandbox - cloud microVM with snapshot filesystem persistence"),
+    ])
+    return backends
+
+
 _TERMINAL_BACKEND_SETUP = {
     "local": _setup_backend_local, "docker": _setup_backend_docker, "modal": _setup_backend_modal,
-    "daytona": _setup_backend_daytona, "vercel_sandbox": _setup_backend_vercel, "ssh": _setup_backend_ssh}
+    "daytona": _setup_backend_daytona, "vercel_sandbox": _setup_backend_vercel, "ssh": _setup_backend_ssh,
+    "wsl": _setup_backend_wsl}
 # Backend -> env var mirrored from config after setup (config.yaml is the source of truth, but
 # terminal_tool reads these from .env).
 _BACKEND_ENV_MIRROR = {"modal": ("TERMINAL_MODAL_MODE", "modal_mode", "auto"),
@@ -282,7 +302,7 @@ def setup_terminal_backend(config: dict):
                  "This affects tool execution, file access, and isolation.",
                  f"   Guide: {_setup._DOCS_BASE}/user-guide/configuration#terminal-backend-configuration", None)
     current_backend = _setup.cfg_get(config, "terminal", "backend", default="local")
-    backends = list(_BUILTIN_TERMINAL_BACKENDS)
+    backends = _builtin_terminal_backends()
     # Plugin-registered backends (~/.hermes/plugins/). Fail-soft: a broken plugin must not take
     # the wizard down.
     plugin_backend_names = []

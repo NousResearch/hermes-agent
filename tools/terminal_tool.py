@@ -22,6 +22,8 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import platform
+import re
 import sys
 import time
 import threading
@@ -751,8 +753,26 @@ def _ensure_terminal_env_bridged() -> None:
 # Default cwd per backend; plugins may declare ``default_cwd``; anything else (container backends) is "/root".
 _DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD}
 
+# First-use cwd already written to config.yaml this process. Not mirrored into
+# os.environ: a live env already has the path, and publishing TERMINAL_*_CWD
+# would hide TERMINAL_CWD from later readers in the same process.
+_AUTO_SAVED_CWDS: set[str] = set()
+
+# Shared TERMINAL_CWD left behind by another backend. WSL keeps Linux homes and
+# drive mounts; local/ssh drop container defaults.
+# Prefixes that end with ``/`` match only that directory's children. ``/tmp`` and
+# ``/opt`` also match the directory itself, but not a longer name (``/tmpfoo``).
+# no-tmp: ok — WSL cwd prefix, a path inside the distro, not a host scratch dir
+_WSL_CWD_KEEP_PREFIXES = ("/home/", "/mnt/", "/root/", "/tmp", "/opt")
+_STALE_SHARED_CWDS = {"/workspace", "/root", "/home"}
+_WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[/\\]?(.*)$")
+_MNT_RE = re.compile(r"^/mnt/([a-z])(/.*)?$")
+
 
 def _backend_default_cwd(env_type: str) -> str:
+    if env_type == "wsl":
+        # Empty asks WslEnvironment to probe $HOME inside the distro.
+        return ""
     if env_type == "local":
         return _safe_getcwd()
     if env_type in _DEFAULT_CWD_BY_BACKEND:
@@ -765,15 +785,121 @@ def _backend_default_cwd(env_type: str) -> str:
     return "/root"
 
 
-def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
-    """``(cwd, host_cwd)`` from TERMINAL_CWD for *env_type*.
+def _is_kept_wsl_cwd(cwd: str) -> bool:
+    """True when *cwd* is a Linux path the WSL backend should keep.
 
-    Container backends are sanity-checked: with Docker cwd passthrough the host
-    path is remapped to /workspace and tracked as host_cwd; otherwise host paths
-    are discarded in favor of the backend default.
+    ``/tmp`` and ``/opt`` match that directory or a child (``/tmp/x``), not a
+    name that merely starts with those letters (``/tmpfoo``).
+    """
+    for prefix in _WSL_CWD_KEEP_PREFIXES:
+        if prefix.endswith("/"):
+            if cwd.startswith(prefix):
+                return True
+        elif cwd == prefix or cwd.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def _discard_stale_shared_cwd(env_type: str, cwd: str, default_cwd: str) -> str:
+    """Drop a shared ``TERMINAL_CWD`` that belongs to a different backend."""
+    if not cwd:
+        return cwd
+    if env_type == "wsl" and not _is_kept_wsl_cwd(cwd):
+        logger.info("Ignoring TERMINAL_CWD=%r for wsl (not a Linux path). Probing $HOME.", cwd)
+        return ""
+    if env_type in {"local", "ssh"} and cwd in _STALE_SHARED_CWDS:
+        logger.info("Ignoring TERMINAL_CWD=%r for %s (container default). Using %r.", cwd, env_type, default_cwd)
+        return default_cwd
+    return cwd
+
+
+def _convert_cross_backend_cwd(env_type: str, cwd: str, *, system: str | None = None) -> str:
+    """Translate drive paths at the Windows/WSL boundary.
+
+    ``/mnt/<drive>`` becomes a Windows path only for the local backend on
+    Windows. SSH (and every other backend) keeps the string it was given.
+    ``system`` is the host OS name (``platform.system()``); tests pass it
+    directly so the conversion is data, not a faked interpreter.
+    """
+    host = platform.system() if system is None else system
+    if env_type == "wsl" and cwd:
+        match = _WIN_DRIVE_RE.match(cwd)
+        if match:
+            drive = match.group(1).lower()
+            tail = match.group(2).replace("\\", "/")
+            converted = f"/mnt/{drive}/{tail}" if tail else f"/mnt/{drive}"
+            logger.info("Converted Windows cwd %r to WSL path %r", cwd, converted)
+            return converted
+        if not cwd.startswith("/"):
+            logger.info("Ignoring relative cwd %r for wsl. Probing $HOME.", cwd)
+            return ""
+    elif env_type == "local" and host == "Windows" and cwd.startswith("/mnt/"):
+        match = _MNT_RE.match(cwd)
+        if match:
+            tail = (match.group(2) or "").replace("/", "\\")
+            # A backslash inside an f-string expression is a SyntaxError on
+            # Python 3.11 (allowed only from 3.12). Keep the separator outside.
+            windows_root = "\\"
+            converted = match.group(1).upper() + ":" + (tail or windows_root)
+            logger.info("Converted WSL cwd %r to Windows path %r", cwd, converted)
+            return converted
+    return cwd
+
+
+def _maybe_persist_backend_cwd(env_type: str, cwd: str, default_cwd: str) -> None:
+    """Remember a WSL cwd in config.yaml, once per process.
+
+    Only ``wsl`` is written. Resolving cwd for local, docker, ssh, and the
+    other backends must not rewrite the user's config — they already take
+    their directory from ``TERMINAL_CWD`` or from an explicit
+    ``terminal.<backend>_cwd`` the user set. Those explicit keys are still
+    bridged for every backend; this function does not create them.
+
+    The write is config.yaml only, not the current process environment, so a
+    save cannot mask ``TERMINAL_CWD`` for later readers in this process. The
+    next launch bridges ``terminal.wsl_cwd`` to ``TERMINAL_WSL_CWD``.
+    """
+    if env_type != "wsl" or not cwd or cwd == default_cwd or env_type in _AUTO_SAVED_CWDS:
+        return
+    _AUTO_SAVED_CWDS.add(env_type)
+    key = f"terminal.{env_type}_cwd"
+    try:
+        from hermes_cli.config import (
+            _set_nested,
+            _worker_config_snapshot,
+            _write_user_config,
+            get_config_path,
+            require_readable_config_before_write,
+        )
+        if _worker_config_snapshot() is not None:
+            return
+        config_path = get_config_path()
+        user_config = require_readable_config_before_write(config_path)
+        _set_nested(user_config, key, cwd)
+        _write_user_config(config_path, user_config)
+        logger.info("Remembered %s=%r", key, cwd)
+    except (Exception, SystemExit):
+        logger.debug("Could not remember %s", key, exc_info=True)
+
+
+def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
+    """``(cwd, host_cwd)`` for *env_type*.
+
+    ``TERMINAL_<BACKEND>_CWD``, when set, wins over the shared ``TERMINAL_CWD``.
+    Drive-letter paths are converted before the stale-path filter, then
+    container rules run. Only the WSL backend writes that resolved directory
+    back to ``terminal.wsl_cwd`` (see :func:`_maybe_persist_backend_cwd`).
     """
     default_cwd = _backend_default_cwd(env_type)
-    cwd = _tenv("TERMINAL_CWD", default_cwd)
+    backend_cwd = _tenv(f"TERMINAL_{env_type.upper()}_CWD").strip()
+    explicit_backend_cwd = bool(backend_cwd)
+    cwd = backend_cwd if explicit_backend_cwd else _tenv("TERMINAL_CWD", default_cwd)
+    # Convert before the stale-path filter. A Windows drive path does not start
+    # with /home or /mnt, and would otherwise be thrown away before it can
+    # become the WSL mount it actually is.
+    cwd = _convert_cross_backend_cwd(env_type, cwd)
+    if not explicit_backend_cwd:
+        cwd = _discard_stale_shared_cwd(env_type, cwd, default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     # The backend's own default is an in-sandbox path: its ``~`` is the sandbox home, not ours.
     if cwd and cwd != default_cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
@@ -807,6 +933,8 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
                     "(host/relative path won't work in sandbox). Using %r instead.",
                     cwd, env_type, default_cwd)
         cwd = default_cwd
+    if not explicit_backend_cwd:
+        _maybe_persist_backend_cwd(env_type, cwd, default_cwd)
     return cwd, host_cwd
 
 
@@ -840,6 +968,7 @@ def _get_env_config() -> dict[str, Any]:
 
     return {
         "env_type": env_type,
+        "wsl_distro": _tenv("TERMINAL_WSL_DISTRO", "").strip(),
         "modal_mode": coerce_modal_mode(_tenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": _tenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_image_pinned": _tenv("TERMINAL_DOCKER_IMAGE_PINNED", "0") == "1",

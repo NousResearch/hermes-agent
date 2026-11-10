@@ -48,9 +48,19 @@ def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
 
 def _terminal_backend_rows() -> list[dict[str, str]]:
     """Built-in picker rows plus plugin-registered backends, computed per request
-    so a plugin installed after server start still shows up."""
+    so a plugin installed after server start still shows up. WSL2 is listed only
+    when this process is Windows — a remote Linux backend has no wsl.exe."""
     from hermes_cli.web_server_profiles import _TERMINAL_BACKENDS
-    return [*_TERMINAL_BACKENDS, *_plugin_terminal_backend_rows()]
+    rows = list(_TERMINAL_BACKENDS)
+    if sys.platform == "win32":
+        wsl = {
+            "name": "wsl",
+            "label": "WSL2",
+            "description": "Run commands and file tools inside a WSL2 distribution (native, no Docker overhead).",
+        }
+        idx = next((i + 1 for i, row in enumerate(rows) if row["name"] == "docker"), len(rows))
+        rows.insert(idx, wsl)
+    return [*rows, *_plugin_terminal_backend_rows()]
 
 
 def _probe_docker_backend(_cfg) -> tuple:
@@ -109,6 +119,28 @@ def _probe_modal_backend(_cfg) -> tuple:
     )
 
 
+def _probe_wsl_backend(_cfg) -> tuple:
+    if sys.platform != "win32":
+        return ("unavailable", "WSL2 is only available when the backend runs on Windows.")
+    try:
+        from tools.environments.wsl import _find_wsl, _hidden_window_kwargs
+        exe = _find_wsl()
+    except Exception as exc:
+        return ("needs_setup", str(exc))
+    try:
+        proc = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL, check=False,
+            **_hidden_window_kwargs(),
+        )
+    except Exception as exc:
+        return ("unavailable", f"wsl probe failed: {exc}")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "wsl --version failed").strip()
+        return ("needs_setup", detail)
+    return ("ready", "")
+
+
 def _probe_daytona_backend(_cfg) -> tuple:
     if _env_value("DAYTONA_API_KEY"):
         return ("ready", "")
@@ -121,6 +153,7 @@ _BACKEND_PROBES = {
     "ssh": _probe_ssh_backend,
     "modal": _probe_modal_backend,
     "daytona": _probe_daytona_backend,
+    "wsl": _probe_wsl_backend,
 }
 
 

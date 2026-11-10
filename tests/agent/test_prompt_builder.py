@@ -912,6 +912,44 @@ class TestEnvironmentHints:
         # The factual host block must still come first.
         assert result.index("Host:") < result.index("OpenShell")
 
+    def test_wsl_backend_hint_is_distribution_agnostic(self):
+        import agent.prompt_builder as _pb
+
+        hint = _pb._WSL_BACKEND_HINT
+        assert "Linux" in hint
+        assert "/mnt/c/" in hint
+        assert "PowerShell" in hint
+        assert "Debian" not in hint
+        assert "apt-get" not in hint
+
+    def test_build_environment_hints_for_wsl_backend_does_not_probe(self, monkeypatch):
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "wsl")
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+
+        def _explode(*_a, **_k):
+            raise AssertionError("wsl backend hint must not spawn an environment")
+
+        monkeypatch.setattr(_pb, "_probe_remote_backend", _explode)
+        _pb._BACKEND_PROBE_CACHE.clear()
+        result = _pb.build_environment_hints()
+        assert "Terminal backend: wsl" in result
+        assert "/mnt/" in result
+        assert "User home directory:" not in result
+        assert "Debian" not in result
+
+    def test_build_environment_hints_on_wsl_host_keeps_host_lines(self, monkeypatch):
+        import agent.prompt_builder as _pb
+
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        _pb._BACKEND_PROBE_CACHE.clear()
+        result = _pb.build_environment_hints()
+        assert "/mnt/" in result
+        assert "WSL" in result
+        assert "User home directory:" in result
+
 
 
 

@@ -299,3 +299,37 @@ def test_unsupported_tts_selection_is_retained_without_installing(extra, monkeyp
     assert setup_tts._tts_local_install_step(extra) == extra
     output = capsys.readouterr().out
     assert "not supported" in output and "selection is saved" in output
+
+
+@pytest.mark.parametrize(
+    ("system", "offers_wsl"),
+    [("Windows", True), ("Linux", False), ("Darwin", False)],
+)
+def test_terminal_backend_choices_offer_wsl_only_on_windows(monkeypatch, system, offers_wsl):
+    captured = {}
+
+    def fake_prompt_choice(question, choices, default=0):
+        assert question == "Select terminal backend:"
+        captured["choices"] = choices
+        return default
+
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr(setup_mod, "prompt_choice", fake_prompt_choice)
+    setup_mod.setup_terminal_backend({"terminal": {"backend": "local"}})
+    choices = captured["choices"]
+    assert any(choice.startswith("WSL2") for choice in choices) is offers_wsl
+    assert not any(choice.startswith("Singularity") for choice in choices)
+
+
+def test_wsl_setup_drops_shared_cwd(monkeypatch):
+    def fake_prompt_choice(question, choices, default=0):
+        return next(i for i, choice in enumerate(choices) if choice.startswith("WSL2"))
+
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(setup_mod, "prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(setup_mod, "save_config", lambda config: None)
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda *args, **kwargs: None)
+    config = {"terminal": {"backend": "local", "cwd": r"C:\Users\me"}}
+    setup_mod.setup_terminal_backend(config)
+    assert config["terminal"]["backend"] == "wsl"
+    assert "cwd" not in config["terminal"]

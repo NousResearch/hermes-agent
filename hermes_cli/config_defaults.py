@@ -283,6 +283,8 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
+        # WSL2 distribution for ``terminal.backend: wsl`` (``wsl -d``). Empty uses the default distro.
+        "wsl_distro": "",
         "modal_mode": "auto",
         # Remote-backend connection-class failures (SSH host unreachable, Docker daemon down):
         # "warn" = structured degraded tool result with reason + retry hint; "fail" = raise error +

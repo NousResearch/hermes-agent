@@ -1,4 +1,4 @@
-import { Button, host, randomUuid } from '@hermes/plugin-sdk'
+import { Button, host, LruCache, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
 import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
@@ -339,12 +339,24 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       return !source || source === binding.connectionId
     }
 
-    // One naming rooms refreshes only their views (no list: something process-wide moved).
+    // One naming rooms refreshes only their views (no list: something process-wide moved). The same broadcast
+    // reaches this window once per socket open to its backend: a broadcast_id this view already read for is a
+    // copy, and queues no second read. A push without one (an older backend) always reads.
+    const seenBroadcasts = new LruCache<string, true>(64)  // copies land ms apart: a short memory is enough
+
     const unsubscribe = typeof host.onEvent === 'function'
       ? host.onEvent('groups.changed', event => {
-        const rooms = (event as { payload?: { room_ids?: unknown } }).payload?.room_ids
+        const { room_ids: rooms, broadcast_id: id } = (event as { payload?: { room_ids?: unknown; broadcast_id?: unknown } }).payload ?? {}
 
-        if (!cancelled && fromThisRoute(event) && (!Array.isArray(rooms) || rooms.includes(binding.roomId))) {poll()}
+        if (cancelled || !fromThisRoute(event) || (Array.isArray(rooms) && !rooms.includes(binding.roomId))) {return}
+
+        if (typeof id === 'string' && id) {
+          if (seenBroadcasts.has(id)) {return}
+
+          seenBroadcasts.set(id, true)
+        }
+
+        poll()
       })
       : undefined
 

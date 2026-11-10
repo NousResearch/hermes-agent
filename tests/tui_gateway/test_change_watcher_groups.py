@@ -63,7 +63,7 @@ def room_watch(tmp_path, monkeypatch):
         """One watcher pass (broadcast + driver wake), far enough apart that no interval or floor applies."""
         server._broadcast_watched_changes(now=float(next(clock)))
         server._wake_room_drivers()
-        return [payload for ev, payload in events if ev == "groups.changed"]
+        return [{k: v for k, v in payload.items() if k != "broadcast_id"} for ev, payload in events if ev == "groups.changed"]
 
     tick()  # first sighting seeds silently
     return shared, tick, services, events
@@ -123,7 +123,9 @@ def test_a_burst_inside_the_floor_is_held_and_then_names_every_room(room_watch):
     server._broadcast_watched_changes(now=101.0)  # inside the 1 s floor of the last broadcast: held
     assert len(events) == 1
     server._broadcast_watched_changes(now=101.6)
-    assert [payload for _ev, payload in events] == [{"room_ids": ["room-1"]}, {"room_ids": ["room-2"]}]
+    assert [payload["room_ids"] for _ev, payload in events] == [["room-1"], ["room-2"]]
+    ids = [payload["broadcast_id"] for _ev, payload in events]
+    assert len(set(ids)) == 2 and all(ids), "each broadcast has its own id"
 
 
 def test_only_the_store_whose_log_grew_wakes_its_driver(room_watch, tmp_path):
@@ -246,6 +248,14 @@ def test_live_status_never_waits_for_the_policy_lock(tmp_path):
     reader.join(5)
     assert not waited, "live_status_sig waited on _policy_lock"
     assert any(row[0] == "action" for row in result["sig"]["room-1"])
+
+
+def test_status_reads_every_row_it_splits_into_activity_and_retry():
+    """status() reads only the driver's shown rows, then splits them by these sets: a status missing from the
+    driver's set would drop out of member activity and Retry with no error."""
+    shown = set(driver.SHOWN_TASK_STATUSES)
+    assert {*hosted_room_service._LIVE_STATUSES, *hosted_room_service._RETRYABLE_STATUSES} == shown
+    assert set(hosted_room_service._STOPPABLE_STATUSES) == shown
 
 
 def test_a_room_service_lists_approval_cards_before_retry(tmp_path):

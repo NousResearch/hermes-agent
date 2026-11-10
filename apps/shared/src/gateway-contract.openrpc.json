@@ -19718,7 +19718,7 @@
       },
       "GroupsChangedPayload": {
         "additionalProperties": true,
-        "description": "``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent\nwhen something process-wide moved (every open room re-reads).",
+        "description": "``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent\nwhen something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the\nsame frame reaches a window once per open socket, and a copy needs no second read.",
         "properties": {
           "room_ids": {
             "anyOf": [
@@ -19734,6 +19734,18 @@
             ],
             "default": null,
             "title": "Room Ids"
+          },
+          "broadcast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Broadcast Id"
           }
         },
         "title": "GroupsChangedPayload",

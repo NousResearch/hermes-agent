@@ -217,3 +217,21 @@ def test_local_child_workspace_keeps_the_process_directory(image_home, monkeypat
 
     parent = SimpleNamespace(_subdirectory_hints=None, terminal_cwd=None, cwd=None)
     assert _resolve_workspace_hint(parent) == image_home
+
+@pytest.mark.parametrize("remote_cwd", ["~/project", "project"])
+def test_ssh_child_workspace_never_expands_remote_relative_cwd_on_host(
+    image_home, monkeypatch, remote_cwd,
+):
+    """A remote-relative cwd must not become a host-only WORKSPACE PATH in a child's prompt."""
+    from tools.delegate_tool_progress import _resolve_workspace_hint
+
+    # An unrelated host directory happens to have the remote cwd's name.
+    # On SSH, ~ and relative paths must resolve on the target, never here.
+    (Path(image_home) / "project").mkdir()
+    monkeypatch.setenv("HOME", image_home)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", remote_cwd)
+    monkeypatch.chdir(image_home)
+    parent = SimpleNamespace(_subdirectory_hints=None, terminal_cwd=None, cwd=None)
+    assert _resolve_workspace_hint(parent) is None
+

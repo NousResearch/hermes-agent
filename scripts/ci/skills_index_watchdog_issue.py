@@ -38,7 +38,7 @@ WATCHDOGS = {
 **Status:** `{status}`
 **Detail:** {detail}
 
-The Skills Hub at /docs/skills depends on `/docs/api/skills-index.json`.
+The Hermes Marketplace and the CLI depend on `/docs/api/skills-index.json`.
 The unified index is rebuilt by `.github/workflows/skills-index.yml` (cron 6/18 UTC)
 and `.github/workflows/deploy-site.yml` (on every push affecting website/skills).
 If this issue keeps reopening, check the latest runs:

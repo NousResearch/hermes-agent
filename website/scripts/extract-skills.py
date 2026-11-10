@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract skill metadata into website/static/api/skills.json for the Skills Hub page.
+"""Extract skill metadata into website/static/api/skills.json for the published skills feed.
 
 Two data sources:
 
@@ -78,8 +78,7 @@ CATEGORY_LABELS = {
 }
 
 # Map the source ids the unified index emits to the friendly labels the
-# Skills Hub UI uses. Keep these in sync with the SOURCE_CONFIG dict in
-# website/src/pages/skills/index.tsx.
+# skills feed publishes.
 UNIFIED_SOURCE_LABELS = {
     "official": "official",   # treated as our "optional" tier in the UI
     "skills.sh": "skills.sh",
@@ -204,7 +203,7 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
     """Best-effort clickable URL to the skill's origin (repo / detail page).
 
     Community skills have no generated docs page, so without this the
-    expanded card on the Skills Hub gives users nowhere to go to read the
+    Marketplace skill page gives users nowhere to go to read the
     actual SKILL.md before installing. We prefer an explicit URL the source
     adapter already collected (``extra.detail_url`` / ``extra.repo_url``),
     then fall back to synthesizing one from the identifier shape.
@@ -374,7 +373,7 @@ def extract_unified_index_skills():
     """Read website/static/api/skills-index.json — the canonical multi-source index.
 
     Returns ``(skills, meta)`` where ``meta`` carries the index's
-    ``generated_at`` timestamp and total count so the Skills Hub page can
+    ``generated_at`` timestamp and total count so consumers can
     show a "Last refreshed …" badge. Returns ``(None, None)`` when the
     index file is absent or malformed (caller falls back to the legacy
     cache).

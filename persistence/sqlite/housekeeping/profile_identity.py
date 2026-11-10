@@ -1,16 +1,20 @@
 """``ProfileIdentityRepository`` on SQLite: the profile rekey and purge of the bound ``state.db``, each one write
-transaction; a facet whose lazily created table or column the store lacks is skipped and counted ``None``."""
+transaction; a facet whose lazily created table or column the store lacks is skipped and counted ``None``. The
+rekey also moves the API binding and local policy receipts in ``state_meta``."""
 
 from __future__ import annotations
 
 import json
 import time
+from typing import Optional
 
 from persistence.housekeeping.profile_identity import (
     ProfileIdentityCollision, ProfilePurgeCounts, ProfileRekeyCounts,
 )
 
 from .._backend import SQLiteStore, register_repository, translated
+from ..conversation._store.local import API_BINDING_PREFIX, POLICY_PREFIX
+from ..gateway._local_lineage import _receipt
 
 __all__ = ["SQLiteProfileIdentityRepository"]
 
@@ -34,6 +38,57 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
         table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
         for table in _OPTIONAL_TABLE_NAMES if table in existing
     }
+
+
+def _moved_key(key: object, old: str, new: str) -> Optional[str]:
+    """*key* moved from the ``agent:<old>:`` session-key namespace to ``agent:<new>:``, or None when
+    it is not a string in that namespace."""
+    old_ns = f"agent:{old}:"
+    if isinstance(key, str) and key.startswith(old_ns):
+        return f"agent:{new}:" + key[len(old_ns):]
+    return None
+
+
+def _rekey_entry(entry: dict, old: str, new: str) -> bool:
+    """Move one serialized ``SessionEntry`` (a routing row, a session receipt) from profile *old*
+    to *new*: its ``agent:<old>:`` session-key namespace and its ``origin.profile``. True when
+    either changed."""
+    changed = False
+    if (session_key := _moved_key(entry.get("session_key"), old, new)) is not None:
+        entry["session_key"] = session_key
+        changed = True
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and origin.get("profile") == old:
+        origin["profile"] = new
+        changed = True
+    return changed
+
+
+def _rekey_session_receipts(conn, prefix: str, old: str, new: str) -> int:
+    """Rewrite the session receipts under *prefix* a profile rename would strand; returns how many
+    changed.
+
+    Every receipt stores the route it was minted on, as its top-level ``route`` and in its
+    ``entry``. Only the ``agent:<old>:`` namespace and ``origin.profile`` move. ``profile_id``
+    stays as stored: it is the home that minted the receipt, and a local session id hashes it.
+    """
+    rewritten = 0
+    rows = conn.execute("SELECT key, value FROM state_meta WHERE key GLOB ?", (prefix + "*",)).fetchall()
+    for key, raw in rows:
+        if (payload := _receipt(raw)) is None:
+            continue
+        changed = False
+        if (route := _moved_key(payload.get("route"), old, new)) is not None:
+            payload["route"] = route
+            changed = True
+        entry = payload.get("entry")
+        if isinstance(entry, dict) and _rekey_entry(entry, old, new):
+            changed = True
+        if changed:
+            conn.execute("UPDATE state_meta SET value=? WHERE key=?",
+                         (json.dumps(payload, ensure_ascii=False), key))
+            rewritten += 1
+    return rewritten
 
 
 class SQLiteProfileIdentityRepository:
@@ -136,16 +191,14 @@ class SQLiteProfileIdentityRepository:
                     except (ValueError, TypeError):
                         payload = None
                     if isinstance(payload, dict):
-                        if isinstance(payload.get("session_key"), str) and payload["session_key"].startswith(old_ns):
-                            payload["session_key"] = new_ns + payload["session_key"][ns_len:]
-                        origin = payload.get("origin")
-                        if isinstance(origin, dict) and origin.get("profile") == old:
-                            origin["profile"] = new
+                        _rekey_entry(payload, old, new)
                         new_json = json.dumps(payload, ensure_ascii=False)
                 conn.execute(
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
+            counts["api_binding_receipts"] = _rekey_session_receipts(conn, API_BINDING_PREFIX, old, new)
+            counts["local_policy_receipts"] = _rekey_session_receipts(conn, POLICY_PREFIX, old, new)
 
         with translated():
             self._store.holder()._execute_write(_do)

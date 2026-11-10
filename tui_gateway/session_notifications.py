@@ -150,6 +150,14 @@ _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
 
+# TANDY-FORK (kb-sub-cache): "does this board have ANY platform='tui' subscription?" is
+# probed at most once per board per TTL, process-wide, instead of once per board per 5 s
+# poll per live session. With zero subscriptions and 40/46 boards empty the uncached walk
+# was 52% of dashboard CPU. A board WITH a subscription still runs the unchanged claim
+# path every poll; only a brand-new subscription waits up to TTL to be noticed.
+_KB_SUBS_ANY_TTL = 60.0
+_kb_subs_any_cache: dict[str, tuple[float, bool]] = {}
+
 
 def _notif_release_turn(session: dict) -> None:
     with session["history_lock"]:
@@ -459,50 +467,12 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_stray_delegate_keys(session: dict, session_key: str) -> tuple:
-    """This session's marked delegate subagent ids, looked up once per live session. Before the reserved child
-    kept its ``_delegate_from`` marker, ``kanban_create`` resolved the parent's key to the unmarked child and
-    subscribed the card under the child's id, so its completions went to the subagent (#150198)."""
-    if (cached := session.get("_kanban_stray_keys")) is not None:
-        return cached
-    import sqlite3
-    try:
-        with _session_db(session) as db:
-            if db is None:
-                return ()  # store unavailable: not cached, so a later poll retries
-            from hermes_state_delegate_children import delegate_descendant_ids
-            keys = tuple(delegate_descendant_ids(db, session_key))
-    except sqlite3.Error as exc:  # busy/locked store: not cached, so a later poll retries
-        _notif_log_failure("kanban stray-subscription lookup failed", exc)
-        return ()
-    session["_kanban_stray_keys"] = keys
-    return keys
-
-
-def _kb_reclaim_stray_subs(_kbn, slug: str, session_key: str, stray: tuple) -> bool:
-    """Re-key ``tui`` subscriptions bound to this session's own subagents back onto it. True when the board is
-    clean afterwards (nothing to move, or moved); False on a DB error so the caller retries next poll."""
-    import sqlite3
-    from hermes_cli import kanban_db_connect as _kbc
-    try:
-        if not any(_kbn.count_notify_subs(board=slug, platform="tui", chat_id=k) for k in stray):
-            return True
-        with contextlib.closing(_kbc.connect(board=slug)) as conn:
-            _kbn.retarget_notify_subs(conn, platform="tui", from_chat_ids=stray, to_chat_id=session_key)
-        return True
-    except sqlite3.Error as exc:  # busy/locked board: the caller retries next poll
-        _notif_log_failure(f"kanban stray-subscription reclaim failed on {slug}", exc)
-        return False
-
-
-def _kb_poll_board(_kb, slug: str, session_key: str, stray: tuple = (), unreclaimed: list | None = None) -> list:
+def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
     writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
-    falls through so delivery is preserved). A board whose stray-subscription reclaim failed lands in ``unreclaimed``."""
+    falls through so delivery is preserved)."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
-    if stray and not _kb_reclaim_stray_subs(_kbn, slug, session_key, stray) and unreclaimed is not None:
-        unreclaimed.append(slug)
     with contextlib.suppress(Exception):
         if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
             return []
@@ -564,10 +534,28 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    stray, unreclaimed = _kb_stray_delegate_keys(session, session_key), []
-    texts = [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key, stray, unreclaimed)]
-    if stray and not unreclaimed:
-        session["_kanban_stray_keys"] = ()  # every board is clean; stop probing
+    try:
+        from hermes_cli import kanban_db_notify as _kbn
+    except Exception:
+        _kbn = None
+    import time as _time  # local: this split module has no module-level `time` import
+    now = _time.monotonic()
+    texts: list = []
+    for resolved, slug in unique.items():
+        cached = _kb_subs_any_cache.get(resolved)
+        if cached is None or (now - cached[0]) > _KB_SUBS_ANY_TTL:
+            if _kbn is None:
+                has_any = True  # fail open: never stop polling on an import problem
+            else:
+                try:
+                    has_any = _kbn.count_notify_subs(board=slug, platform="tui") > 0
+                except Exception:
+                    has_any = True  # fail open: an unreadable board keeps its delivery path
+            cached = (now, has_any)
+            _kb_subs_any_cache[resolved] = cached
+        if not cached[1]:
+            continue  # no subscription on this board at all — nothing can be delivered
+        texts.extend(_kb_poll_board(_kb, slug, session_key))
     return texts
 
 

@@ -182,6 +182,20 @@ def test_stored_error_keeps_the_exception_line(monkeypatch, tmp_path):
     assert stored.endswith("401 Client Error: Unauthorized for url: /orders")
 
 
+def test_long_url_on_the_last_line_does_not_hide_the_status(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    url = "https://api.example.invalid/orders?cursor=" + "x" * 300
+    server_error = _SCRIPT_TRACEBACK + "500 Server Error: Internal Server Error for url: " + url
+    auth_error = _SCRIPT_TRACEBACK + "401 Client Error: Unauthorized for url: " + url
+
+    id1, _ = inc.upsert_incident("job-1", server_error)
+    id2, new2 = inc.upsert_incident("job-1", server_error)
+    id3, new3 = inc.upsert_incident("job-1", auth_error)
+
+    assert (id2, new2) == (id1, False)
+    assert id3 != id1 and new3 is True, "the tail is all URL here; the status starts the line"
+
+
 # ── Redaction / classification ─────────────────────────────────────────────
 
 

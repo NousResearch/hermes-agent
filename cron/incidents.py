@@ -42,6 +42,8 @@ _FAILURE_TYPE_ORDER = (
 MAX_ERROR_CHARS = 500
 # Long errors keep both ends, for the signature and the stored text. A failing script reports its
 # exit code and traceback, so every exception it raises shares the head; the exception is the tail.
+# The signature also keeps the start of the last line: a long URL after the exception's name and
+# status fills the tail on its own.
 _ERROR_END_CHARS = 200
 # Measured durations ("idle for 603s", "retry in 12.5 seconds") differ run to run for the same
 # failure, so they are masked out of the signature. Status codes and other numbers still count.
@@ -137,10 +139,16 @@ def _head_and_tail(text: str, limit: int, sep: str = "") -> str:
     return text[:_ERROR_END_CHARS] + sep + text[len(text) - (limit - _ERROR_END_CHARS - len(sep)):]
 
 
+def _signature_text(error: str) -> str:
+    return _DURATION_RE.sub("#s", _normalize_error(error))
+
+
 def _error_signature(job_id: str, error: str) -> str:
-    """Dedup key: stable for same job + same normalized error head and tail."""
-    normalized = _DURATION_RE.sub("#s", _normalize_error(error))
-    normalized = _head_and_tail(normalized, 2 * _ERROR_END_CHARS)
+    """Dedup key: stable for same job + same normalized error head, last-line start and tail."""
+    normalized = _signature_text(error)
+    if len(normalized) > 2 * _ERROR_END_CHARS:
+        last_line = _signature_text(str(error or "").rstrip().rpartition("\n")[2])
+        normalized = _head_and_tail(normalized, 2 * _ERROR_END_CHARS) + "\n" + last_line[:_ERROR_END_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 

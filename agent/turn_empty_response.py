@@ -212,18 +212,30 @@ def recover_empty_response(
     # final response instead of fallback or retries.
     _partial_streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
     if agent._has_content_after_think_block(_partial_streamed):
-        _turn_exit_reason = "partial_stream_recovery"
         _recovered = agent._strip_think_blocks(_partial_streamed).strip()
-        logger.info(
-            "Partial stream content delivered (%d chars) — using as final response",
-            len(_recovered),
+        # Reject raw tool call markup or broken parameter fragments so they don't leak as final answer
+        _is_tool_call_fragment = (
+            any(tag in _recovered for tag in ("</parameter>", "<parameter", "<tool_call>", "</tool_call>", "<function="))
+            or _recovered.endswith("</parameter>")
         )
-        agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content " "as final response")
-        final_response = _recovered
-        # A streamed fragment isn't a confirmed preview: gateway fallback delivery
-        # sends the text plus the abnormal-turn explanation.
-        agent._response_was_previewed = False
-        return _verdict("break")
+        if not _is_tool_call_fragment:
+            _turn_exit_reason = "partial_stream_recovery"
+            logger.info(
+                "Partial stream content delivered (%d chars) — using as final response",
+                len(_recovered),
+            )
+            agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content as final response")
+            final_response = _recovered
+            # A streamed fragment isn't a confirmed preview: gateway fallback delivery
+            # sends the text plus the abnormal-turn explanation.
+            agent._response_was_previewed = False
+            return _verdict("break")
+        else:
+            logger.warning(
+                "Partial stream content contained unparsed tool-call fragment (%d chars) — skipping stream recovery: %r",
+                len(_recovered),
+                _recovered[:100],
+            )
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.
     # With substantive tools it was mid-task narration and the empty reply is a choke;

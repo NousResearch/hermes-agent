@@ -403,8 +403,8 @@ class GatewayAgentCacheMixin:
     def _clear_conversation_scope(self, session_key: str, *, reason: str) -> None:
         """THE single conversation-boundary funnel (/new, /resume, suspension replacement,
         compression-exhausted reset). New conversation-scoped dicts go in _CONVERSATION_SCOPED_STATE
-        so every boundary picks them up. Turn-scoped state (_running_agents/_ts, slot leases, turn-
-        lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
+        so every boundary picks them up. Turn-scoped state (_running_agents/turn.started_ts, slot leases,
+        turn-lease tokens) is owned by _release_running_agent_state and NOT cleared. Idle agent-cache
         eviction is NOT a boundary (a resumed turn rebuilds from these). getattr-guarded.
 
         Why a funnel: these boundaries used to each carry a hand-copied pop-list of the per-session dicts,

@@ -159,7 +159,7 @@ class _MessageFilter(_Filter):
 _FILTERS = SimpleNamespace(
     MessageFilter=_MessageFilter,
     TEXT=_has("text"), COMMAND=_has("text", lambda text: bool(text) and text.startswith("/")),
-    LOCATION=_has("location"), VENUE=_has("venue"), PHOTO=_has("photo"), VIDEO=_has("video"),
+    LOCATION=_has("location"), VENUE=_has("venue"), CONTACT=_has("contact"), PHOTO=_has("photo"), VIDEO=_has("video"),
     VIDEO_NOTE=_has("video_note"), AUDIO=_has("audio"), VOICE=_has("voice"),
     Document=SimpleNamespace(ALL=_has("document")), Sticker=SimpleNamespace(ALL=_has("sticker")),
     CHECKLIST=_has("checklist"),

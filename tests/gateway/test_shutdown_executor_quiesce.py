@@ -51,7 +51,6 @@ class _FakeGateway:
         self._exit_code = None
         self._restart_drain_timeout = 0.01
         self._running_agents = {}
-        self._running_agents_ts = {}
         self._agent_cache = OrderedDict()
         self._agent_cache_lock = threading.Lock()
         self.adapters = {}
@@ -59,8 +58,6 @@ class _FakeGateway:
         self._failed_platforms = []
         self._shutdown_event = asyncio.Event()
         self._pending_messages = {}
-        self._pending_approvals = {}
-        self._busy_ack_ts = {}
         self._executor_lock = threading.Lock()
         self._executor_closing = False
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -116,7 +113,6 @@ class _FakeGateway:
 
     def _release_running_agent_state(self, session_key, **_kwargs):
         self._running_agents.pop(session_key, None)
-        self._running_agents_ts.pop(session_key, None)
         return False
 
     def close_all_session_db_handles(self):

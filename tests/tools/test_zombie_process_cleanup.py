@@ -202,14 +202,12 @@ class TestGatewayCleanupWiring:
         runner = object.__new__(GatewayRunner)
         runner._running = True
         runner._running_agents = {}
-        runner._running_agents_ts = {}
         # __init__ always binds ``config``; the shutdown notice now walks every served
         # profile's configured home channels from it, not just the live adapters.
         runner.config = GatewayConfig()
         runner.adapters = {}
         runner._background_tasks = set()
         runner._pending_messages = {}
-        runner._pending_approvals = {}
         runner._pending_model_notes = {}
         runner._shutdown_event = asyncio.Event()
         runner._exit_reason = None
@@ -226,7 +224,6 @@ class TestGatewayCleanupWiring:
         runner._busy_input_mode = "interrupt"
         runner._agent_cache = {}
         runner._agent_cache_lock = threading.Lock()
-        runner._shutdown_all_gateway_honcho = lambda: None
         runner._update_runtime_status = MagicMock()
 
         mock_agent_1 = MagicMock()

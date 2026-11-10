@@ -635,6 +635,21 @@ def _build_polling_app(monkeypatch, adapter):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("extra, expected", [({}, False), ({"drop_pending_on_cold_boot": True}, True)])
+async def test_cold_connect_answers_offline_backlog_unless_configured(monkeypatch, extra, expected):
+    """#143123: a cold boot hands PTB start_polling drop_pending_updates=False by default, so
+    messages sent while the gateway was off are answered; an explicit true still drops them."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra=extra))
+    captured = _build_polling_app(monkeypatch, adapter)
+
+    ok = await adapter.connect()  # cold boot
+
+    assert ok is True
+    assert captured["drop_pending_updates"] is expected
+    await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
 async def test_reconnect_preserves_pending_updates(monkeypatch):
     """A watcher reconnect (is_reconnect=True) preserves the queue Telegram
     accumulated during the outage — the core of #46621."""

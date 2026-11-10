@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 343
+   "undecided": 344
   },
   "rpc": {
    "authority": 108,
@@ -175,6 +175,7 @@
   {"current_path": "hermes_cli.web_routers.skills:scan_skill_hub", "decision": "undecided", "handler": "GET /api/skills/hub/scan", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:search_skills_hub", "decision": "undecided", "handler": "GET /api/skills/hub/search", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:list_skills_hub_sources", "decision": "undecided", "handler": "GET /api/skills/hub/sources", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.skills:list_skill_hub_updates", "decision": "undecided", "handler": "GET /api/skills/hub/updates", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_ssh_ownership", "decision": "undecided", "handler": "GET /api/ssh/ownership", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_status", "decision": "undecided", "handler": "GET /api/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_system_stats", "decision": "undecided", "handler": "GET /api/system/stats", "kind": "http", "ref": ""},

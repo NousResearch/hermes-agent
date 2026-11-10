@@ -256,83 +256,137 @@ def test_a_failed_write_leaves_no_plaintext_in_a_log_handlers_kept_exception(tmp
                     f"({frame.filename}:{frame.lineno})")
 
 
+#: One write's plaintext, in the forms a writer or reporter might hold it in (the suite's
+#: frame walker hunts every form; this test plants it, so its own frame must hold none when
+#: the walker runs).
+_HOSTILE_MARKER = 'zHostile\nWriter"\\Secret72'
+
 #: How an injected writer fails, each channel naming the value it saw: a plain exception's
 #: message, an OSError's strerror, an OSError's filename, a refusal typed as the store's own,
-#: an OSError whose errno slot holds whatever the failing code put there — Python allows a
-#: string, so a writer that fails as ``OSError(value, ...)`` names the value in ``errno`` — and
-#: an exception whose very class is named after the value (``type(value, (OSError,), {})``):
-#: the class name is the failing code's own text too, and a fresh error that copies it names
-#: the value as surely as one that copies a message.
-_WRITER_FAILURES = {
-    "plain": lambda value: ValueError("validation saw " + value),
-    "strerror": lambda value: OSError(5, "writer saw " + value),
-    "filename": lambda value: OSError(5, "I/O failed", value),
-    "refusal": lambda value: SecretAdminRefused("plugin refused " + value),
-    "string errno": lambda value: OSError(value, "write failed"),
-    "class name": lambda value: type(value, (OSError,), {})(5, "the writer failed"),
-}
+#: an OSError whose errno slot holds whatever the failing code put there (Python allows a
+#: string), an exception whose very class is named after the value, an exception whose args
+#: tuple or notes carry it, an exception group nesting a failure that names it — and the two
+#: channels that break the reading itself: an OSError whose errno is an int too large for
+#: Python to format, and one whose errno property raises with the value it saw. Every one of
+#: them is writer-controlled: nothing vouches any of them free of the value.
+_HOSTILE_CHANNELS = ("message", "strerror", "filename", "refusal", "string errno", "class name",
+                     "args", "note", "group", "huge errno", "raising errno")
 
 
-@pytest.mark.parametrize("kind", sorted(_WRITER_FAILURES))
-def test_a_failed_writes_fresh_error_names_none_of_the_writers_text(tmp_path, monkeypatch, kind):
-    """A writer (or a backend plugin) that fails naming the value it saw — in its message, in
-    an OSError's strerror, in an OSError's filename, in a refusal it typed as the store's own,
-    in the errno slot of an OSError it built with the value's text, in an exception class it
-    named after the value —
-    puts nothing in the error the caller reads: whatever fails part-way through the write is
-    re-raised as the port's own fresh error, whose message the port wrote — a fixed failure
-    category (``os-error``, ``encode-error`` or ``write-error``) and, for an OSError, its
-    errno number — never the failing code's own text, which nothing vouches free of the
-    value, its class name included."""
+def _hostile_failure(kind: str, marker: str) -> BaseException:
+    """The failure a hostile writer raises through the channel *kind* names, each carrying
+    *marker* — the value (or record) the write handed it — in that channel."""
+    if kind == "message":
+        return ValueError("validation saw " + marker)
+    if kind == "strerror":
+        return OSError(5, "writer saw " + marker)
+    if kind == "filename":
+        return OSError(5, "I/O failed", marker)
+    if kind == "refusal":
+        return SecretAdminRefused("plugin refused " + marker)
+    if kind == "string errno":
+        return OSError(marker, "write failed")
+    if kind == "class name":
+        return type(marker, (OSError,), {})(5, "the writer failed")
+    if kind == "args":
+        failed = OSError("the writer failed")
+        failed.args = (marker,)
+        return failed
+    if kind == "note":
+        failed = OSError(5, "the writer failed")
+        failed.add_note(marker)
+        return failed
+    if kind == "group":
+        return ExceptionGroup("the writer failed", [OSError(5, "writer saw " + marker)])
+    if kind == "huge errno":
+        return OSError(10 ** 5000, marker)
+    if kind == "raising errno":
+        class broken_errno(OSError):
+            @property
+            def errno(self):
+                raise RuntimeError(marker)
+        return broken_errno(5, "the writer failed")
+    raise LookupError(f"no such hostile writer channel: {kind!r}")
+
+
+def _planted_here(exc: BaseException) -> BaseException:
+    """*exc* with this module's own frames trimmed from its traceback: this module plants the
+    plaintext itself, and the suite's chain walker skips only its own frames."""
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_frame.f_code.co_filename == __file__:
+        tb = tb.tb_next
+    exc.__traceback__ = tb
+    return exc
+
+
+@pytest.mark.parametrize("kind", _HOSTILE_CHANNELS)
+@pytest.mark.parametrize("operation", ["set", "set_auth"])
+def test_whatever_the_writer_raises_the_failed_writes_error_is_the_ports_own(tmp_path, monkeypatch, operation, kind):
+    """A writer (or a backend plugin) that fails can carry the value it saw anywhere an
+    exception can carry text — its message, an OSError's strerror or filename, a refusal
+    typed as the store's own, the errno slot (Python allows a string there), its args tuple,
+    its notes, its very class name, an exception group's members — or in a channel whose
+    reading itself is hostile: an errno too large an int for Python to format, an errno
+    property that raises with the value. The write path reads none of it: whatever the
+    writer raises, the error the caller reads is exactly the port's own fixed failure — a
+    message naming only the operation and the key it targeted, no cause, no context, no
+    notes, none of the failing code's text — and no frame the error's traceback passes
+    through holds the value (or record)."""
     from tests.conformance.secrets.mutants import apply_mutant
     apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
     store = backend.open("a")
-    marker = 'zFresh\nMessage"\\Secret53'
+    record = {"token": _HOSTILE_MARKER, "refresh": _HOSTILE_MARKER}
 
-    def writer(name, value):
-        raise _WRITER_FAILURES[kind](value)
+    def writer(*args, **kwargs):
+        raise _hostile_failure(kind, _HOSTILE_MARKER)
 
-    monkeypatch.setattr("hermes_cli.config.save_env_value", writer)
     with backend.bind("a"):
-        with pytest.raises(SecretWriteFailed) as failed:
-            store.set(NEW_NAME, marker, level="agent")
-    assert failed.value.__context__ is None and failed.value.__cause__ is None
-    text = str(failed.value) + repr(failed.value) + repr(failed.value.args) + "".join(
-        str(arg) for arg in failed.value.args)
-    for form in _plaintext_forms(marker):
-        assert form not in text, f"the fresh error carries the writer's own text: {failed.value!r}"
+        if operation == "set":
+            monkeypatch.setattr("hermes_cli.config.save_env_value", writer)
+            with pytest.raises(SecretWriteFailed) as failed:
+                store.set(NEW_NAME, _HOSTILE_MARKER, level="agent")
+        else:
+            monkeypatch.setattr("hermes_cli.auth._save_auth_store", writer)
+            with pytest.raises(SecretWriteFailed) as failed:
+                store.set_auth(SEED_PROVIDER, record)
+    raised = failed.value
+    # This test planted the value (and record): its own bindings must not read as leaks.
+    del record, writer
+    assert raised.__context__ is None and raised.__cause__ is None
+    assert not getattr(raised, "__notes__", [])
+    expected = (f"the credential write failed: set {NEW_NAME!r}" if operation == "set"
+                else f"the credential write failed: set_auth {SEED_PROVIDER!r}")
+    assert str(raised) == expected, f"the failed write's error is not the port's fixed one: {raised!r}"
+    text = str(raised) + repr(raised) + repr(raised.args) + "".join(str(arg) for arg in raised.args)
+    for form in _plaintext_forms(_HOSTILE_MARKER):
+        assert form not in text, f"the fresh error carries the writer's own text: {raised!r}"
+    assert_no_frame_holds(_planted_here(raised), _HOSTILE_MARKER)
 
 
-def test_a_failed_auth_writes_fresh_error_names_none_of_the_writers_text(tmp_path, monkeypatch):
-    """As the env writer's test, through the auth store's own writers: a refusal the merge's
-    helper types as the store's own, and an OSError carrying the record in its strerror and
-    filename, surface as the port's fresh error carrying none of the failing code's text."""
+@pytest.mark.parametrize("signal_kind", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("operation", ["set", "set_auth"])
+def test_a_writers_interrupt_or_exit_is_not_the_writes_failure_and_passes(tmp_path, monkeypatch, operation, signal_kind):
+    """The write path catches the writer's *failures*, and only those: a KeyboardInterrupt or
+    SystemExit is the process asking to stop, not the writer failing, so it propagates
+    unchanged — never re-made into the port's fixed write failure, never swallowed."""
     from tests.conformance.secrets.mutants import apply_mutant
     apply_mutant(monkeypatch)  # only under test_mutants.py, which names a broken backend
     backend, _homes, _provider = local_backend(tmp_path, monkeypatch)
     store = backend.open("a")
-    marker = 'zFresh\nAuth"\\Record61'
-    record = {"token": marker, "refresh": marker}
 
-    def refusing_merge(auth_store, provider_id, state, *, set_active=True):
-        raise SecretAdminRefused("plugin refused " + marker)
-
-    def failing_save(auth_store, target_path=None):
-        raise OSError(5, "writer saw " + marker, marker)
+    def writer(*args, **kwargs):
+        raise signal_kind()
 
     with backend.bind("a"):
-        monkeypatch.setattr("hermes_cli.auth._store_provider_state", refusing_merge)
-        with pytest.raises(SecretWriteFailed) as refused:
-            store.set_auth(SEED_PROVIDER, record)
-        monkeypatch.setattr("hermes_cli.auth._save_auth_store", failing_save)
-        with pytest.raises(SecretWriteFailed) as failed:
-            store.set_auth(SEED_PROVIDER, record)
-    for raised in (refused.value, failed.value):
-        assert raised.__context__ is None and raised.__cause__ is None
-        text = str(raised) + repr(raised) + repr(raised.args) + "".join(str(arg) for arg in raised.args)
-        for form in _plaintext_forms(marker):
-            assert form not in text, f"the fresh error carries the writer's own text: {raised!r}"
+        if operation == "set":
+            monkeypatch.setattr("hermes_cli.config.save_env_value", writer)
+            with pytest.raises(signal_kind):
+                store.set(NEW_NAME, "value", level="agent")
+        else:
+            monkeypatch.setattr("hermes_cli.auth._save_auth_store", writer)
+            with pytest.raises(signal_kind):
+                store.set_auth(SEED_PROVIDER, {"token": "value"})
 
 
 def test_the_newline_stripped_form_of_a_short_marker_is_not_hunted():

@@ -24,7 +24,7 @@ from typing import Any, Optional
 from hermes_scope import LOCAL_TENANT, current_scope
 from hermes_secret_port import (
     LEVELS, SecretAdminRefused, SecretLevelRefused, SecretPinRefused, SecretStore, SecretStoreProvider,
-    fresh_write_error,
+    write_failure,
 )
 
 
@@ -37,10 +37,15 @@ class LocalSecretStore(SecretStore):
     into) runs before the value (or record) is bound in any frame below the write method, and
     the write itself calls nothing that logs with the live exception — today's loaders do log
     their failures, so the auth store loads before the record reaches any frame. On any
-    failure the method deletes its own value binding and raises outside the except block with
-    the chain slots cleared: the port's own refusal as it raised it, and any other failure as
-    the fresh error :func:`hermes_secret_port.fresh_write_error` built — the error's traceback
-    holds only this method's frame and the caller's, and every frame that held the plaintext
+    failure the write path records only that the write failed — it never reads the writer's
+    exception, whose every attribute is text the failing code chose and a channel a hostile
+    writer can carry the value through (an errno property that raises with the value it saw,
+    an errno too large for Python to format, and reading one must never be able to preempt
+    the cleanup) — and once its except block has exited, dropping the failure and its
+    traceback, it deletes the method's own value (or record) binding and raises outside it
+    with ``from None``: the port's own refusal as it raised it, and any other failure as the
+    fixed error :func:`hermes_secret_port.write_failure` built — the error's traceback holds
+    only this method's frame and the caller's, and every frame that held the plaintext
     is gone.
     """
 
@@ -102,28 +107,32 @@ class LocalSecretStore(SecretStore):
             require_env_writable(name, "set")
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failure = None
+        failed = False
         if refusal is None:
             try:
                 self._write_secret(name, value)
-            except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
-                failure = fresh_write_error(exc)
+            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
+                # Only the fact that the write failed is recorded: the failure itself — its
+                # message, type, errno, notes, group members, every attribute writer text —
+                # is neither read nor kept, and it is gone with its traceback when this
+                # block exits. Reading it is what a hostile writer attacks through (an
+                # errno property that raises with the value it saw, an errno too large for
+                # Python to format), and reading it can never preempt the cleanup below.
+                failed = True
         del value
         del level
         if refusal is not None:
             raise refusal
-        if failure is not None:
-            failure.__context__ = None
-            failure.__cause__ = None
-            raise failure
+        if failed:
+            raise write_failure("set", name) from None
 
     def _write_secret(self, name: str, value: str) -> None:
         """The write itself — the only code that binds the value (see :meth:`set`): today's
         writer, at today's path (``get_env_path()`` honors the profile-home override the pin
         just matched), with every check and validation behind it. Today's writer logs nothing
         with the live exception, so no failure it raises is ever retained by a log handler
-        with the value in a frame of its traceback; the fresh error :meth:`set` raises in its
-        place names only the failure's fixed category and errno."""
+        with the value in a frame of its traceback; the fixed error :meth:`set` raises in
+        its place names only the operation and the key."""
         from hermes_cli.config import save_env_value
         save_env_value(name, value)
 
@@ -157,8 +166,7 @@ class LocalSecretStore(SecretStore):
             self._pin(administering=True)
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failure = None
-        store = None
+        failed = False
         if refusal is None:
             from hermes_cli import auth
             try:
@@ -171,16 +179,17 @@ class LocalSecretStore(SecretStore):
                     store = auth._load_auth_store()
                     # The write itself: the only code that binds the record.
                     self._write_auth_record(store, provider, record)
-            except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
-                failure = fresh_write_error(exc)
+            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
+                # As ``set``: only the fact that the write failed is recorded; the failure
+                # itself, its text unread and its frames still holding the record, is gone
+                # when this block exits.
+                failed = True
             store = None
         del record
         if refusal is not None:
             raise refusal
-        if failure is not None:
-            failure.__context__ = None
-            failure.__cause__ = None
-            raise failure
+        if failed:
+            raise write_failure("set_auth", provider) from None
 
     def _write_auth_record(self, store: dict[str, Any], provider: str, record: dict[str, Any]) -> None:
         """The record's merge and atomic replace — today's transaction tail, byte for byte: the

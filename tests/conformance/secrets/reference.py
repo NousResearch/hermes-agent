@@ -15,7 +15,7 @@ from hermes_conformance.secrets import Backend
 from hermes_scope import Group, Owner, Principal, Scope, current_scope
 from hermes_secret_port import (
     LEVELS, SecretAdminRefused, SecretPinRefused, SecretStore, SecretStoreProvider,
-    fresh_write_error,
+    write_failure,
 )
 
 
@@ -43,10 +43,12 @@ class MemorySecretStore(SecretStore):
     As the port's contract requires, a failed write holds no value on any error path: every
     check and validation that can fail (the placement checks, the fixture's pinned-key write
     lock) runs before the value (or record) is bound in any frame below the write method, and
-    the write itself is the only code that binds it. On any failure the method deletes its own
-    value binding and raises outside the except block with the chain slots cleared: the
-    port's own refusal as it raised it, and any other failure as the fresh error
-    (:func:`hermes_secret_port.fresh_write_error`) — so the error's traceback holds only this
+    the write itself is the only code that binds it. On any failure the write path records
+    only that the write failed — never reading the writer's exception — and once its except
+    block has dropped the failure and its traceback, it deletes the method's own value (or
+    record) binding and raises outside it with ``from None``: the port's own refusal as it
+    raised it, and any other failure as the fixed error
+    (:func:`hermes_secret_port.write_failure`) — so the error's traceback holds only this
     frame and the caller's, and the frame that held the value is gone.
     """
 
@@ -114,20 +116,18 @@ class MemorySecretStore(SecretStore):
                 raise ValueError("the key is pinned by an administrator; this store refuses to change it")
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failure = None
+        failed = False
         if refusal is None:
             try:
                 self._write_secret(where, key, name, value)
-            except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
-                failure = fresh_write_error(exc)
+            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
+                failed = True
         del value
         del level
         if refusal is not None:
             raise refusal
-        if failure is not None:
-            failure.__context__ = None
-            failure.__cause__ = None
-            raise failure
+        if failed:
+            raise write_failure("set", name) from None
 
     def _write_secret(self, where, key, name: str, value: str) -> None:
         """The write itself — the only code that binds the value (see :meth:`set`), with the
@@ -171,19 +171,17 @@ class MemorySecretStore(SecretStore):
             key = self._pin(administering=True).agent
         except BaseException as exc:  # health: allow BLE001 -- the port's own refusal, re-raised below
             refusal = exc
-        failure = None
+        failed = False
         if refusal is None:
             try:
                 self._write_auth_record(key, provider, record)
-            except BaseException as exc:  # health: allow BLE001 -- the fresh error below is all that survives
-                failure = fresh_write_error(exc)
+            except Exception:  # health: allow BLE001 -- the writer's failure is never inspected or kept
+                failed = True
         del record
         if refusal is not None:
             raise refusal
-        if failure is not None:
-            failure.__context__ = None
-            failure.__cause__ = None
-            raise failure
+        if failed:
+            raise write_failure("set_auth", provider) from None
 
     def _write_auth_record(self, key, provider: str, record: dict[str, Any]) -> None:
         """The write itself — the only code that binds the record (see :meth:`set_auth`), with

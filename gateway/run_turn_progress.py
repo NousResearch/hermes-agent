@@ -714,9 +714,16 @@ class GatewayTurnProgressMixin:
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
-        if st.flood_pending and st.can_edit and st.progress_msg_id is not None:
-            st.owed_bubbles.append((st.progress_msg_id, self._progress_text(st.progress_lines)))
-        st.progress_msg_id, st.progress_lines = None, []
+        carried: list = []
+        if st.flood_pending and st.can_edit and st.progress_msg_id is not None and st.progress_lines:
+            # The window kept the overflow roll from running, so the bubble may hold more than one
+            # message: owe the closed bubble one cap-sized edit and carry the rest into the next
+            # bubble, where the roll sends it and stops at a flood refusal. A whole-buffer edit makes
+            # the adapter split it and re-post its continuations on every retry (#151789).
+            first, *rest = self._split_progress_groups(st, st.progress_lines)
+            st.owed_bubbles.append((st.progress_msg_id, self._progress_text(first)))
+            carried = [line for group in rest for line in group]
+        st.progress_msg_id, st.progress_lines = None, carried
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
     def _progress_absorb(self, st, raw) -> Any:
@@ -808,7 +815,11 @@ class GatewayTurnProgressMixin:
             return False
         if st.owed_bubbles:
             result = await self._edit_progress_message(st, *st.owed_bubbles[0])
-            if result.success or not (getattr(result, "retryable", False) or _note_flood(st, result)):
+            # A partial split already put its head on screen: replaying it re-posts those
+            # continuations, so it is settled once (a flood refusal still opens the window).
+            partial = BasePlatformAdapter._is_partial_delivery(result)
+            flooded = not result.success and _note_flood(st, result)
+            if result.success or partial or not (getattr(result, "retryable", False) or flooded):
                 st.owed_bubbles.pop(0)
             return True
         if not await self._roll_progress_overflow_if_needed(st):

@@ -228,6 +228,17 @@ class TestTerminalToolConfig:
 
 
 class TestSSHPreflight:
+    def test_preflight_uses_resolved_client_outside_path(self, monkeypatch):
+        """#152246: preflight must accept the same native client used for connections."""
+        preferred = {tool: f"/native/OpenSSH/{tool}.exe" for tool in ("ssh", "scp")}
+        monkeypatch.setattr(ssh_env, "_windows_openssh", preferred.__getitem__)
+        monkeypatch.setattr(
+            ssh_env.shutil, "which",
+            lambda executable: executable if executable in preferred.values() else None,
+        )
+
+        ssh_env._ensure_ssh_available()
+
     def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):
         monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: None)
 

@@ -49,7 +49,7 @@ def _windows_openssh(name: str) -> str:
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
     for tool in ("ssh", "scp"):
-        if not shutil.which(tool):
+        if not shutil.which(_windows_openssh(tool)):
             raise RuntimeError(f"{tool.upper()} is not installed or not in PATH. "
                                "Install OpenSSH client: apt install openssh-client")
 

@@ -1,0 +1,29 @@
+name: lifeboat
+version: "0.1.0"
+repo: https://github.com/superskie/lifeboat
+sha: 14d60292b15161c0838a5d1f5779cfda93ddea24
+description: "Rescue what a sweeper bot left behind in a drained EVM wallet: claims, unstakes and transfers in one EIP-7702 transaction paid by a fresh operator, sent only after you approve the exact text. Disclosure: signs with the private key of the already drained wallet (LIFEBOAT_VICTIM_KEY, read through the Hermes secret scope) and sends on-chain transactions when LIFEBOAT_ENABLE_EXECUTE=1; calls the RPC of each chain you use and the public Blockscout API of each chain for the scan and the sweep history; stores plans, receipts, sweep evidence and sealed one-time operator keys under its plugin data directory; no telemetry, no background threads."
+maintainer: superskie
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/superskie/lifeboat#readme
+platforms: []
+known_issues:
+  - "Runs only for a wallet with a sweep on record (gas that arrived and left again within five minutes, at least twice). There is no switch to turn this off."
+  - "After a rescue the wallet stays delegated to the batch contract and the leaked key still controls it. Never use that wallet again."
+  - "On seven chains the explorer cannot be read by scripts, so the scan lists only the native balance there and you name the tokens yourself."
+capabilities:
+  provides_tools:
+    - lifeboat_scan
+    - lifeboat_plan
+    - lifeboat_simulate
+    - lifeboat_status
+    - lifeboat_execute
+    - lifeboat_sweep_back
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - LIFEBOAT_VICTIM_KEY
+    - LIFEBOAT_SAFE_ADDRESS

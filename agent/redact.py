@@ -43,7 +43,7 @@ REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
 _VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
-_VAULT_REDACTION_LOCK = threading.Lock()
+_VAULT_REDACTION_LOCK = threading.RLock()  # GC finalizers can log through this registry again.
 
 
 def _vault_scope() -> str:

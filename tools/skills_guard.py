@@ -10,7 +10,9 @@ destination; future coverage belongs as a fourth "mechanical" tier next to agent
 import re
 import fnmatch
 import hashlib
+import io
 import json
+import tokenize
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, UTC
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v10"
+SCANNER_VERSION = "skills-guard-v11"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -615,18 +617,37 @@ def _unicode_char_name(char: str) -> str:
     return _INVISIBLE_CHAR_NAMES.get(char, f"U+{ord(char):04X}")
 
 
+# A STRING token opens a triple-quoted block after at most a two-char prefix (r/b/f combos).
+_TRIPLE_QUOTE_OPEN_RE = re.compile(r'^[A-Za-z]{0,2}(?:"""|\'\'\')')
+# 3.12+ splits f-strings into FSTRING_START/MIDDLE/END tokens; only the quote delimiters are prose.
+_FSTRING_START, _FSTRING_MIDDLE, _FSTRING_END = (
+    getattr(tokenize, name, None) for name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"))
+_FSTRING_BOUNDARY_TYPES = {t for t in (_FSTRING_START, _FSTRING_END) if t is not None}
+
+
 def _compute_docstring_lines(lines: list) -> set:
     """1-indexed lines inside or on the boundary of triple-quoted strings (opening, interior, closing, and
-    one-line docstrings), so ``os.environ`` in prose is not scored. Heuristic: a triple quote inside a string
-    literal is miscounted, but the common false-positive shapes are covered."""
+    one-line docstrings), so ``os.environ`` in prose is not scored. Computed structurally from Python-lexer
+    tokens rather than quote counting: one unbalanced triple quote used to toggle the counter and let a
+    bundle author mark arbitrary payload lines as prose. Any lexer failure fails closed — no line is
+    exempted, so every pattern still runs. Callers scope the skip to ``_DOCSTRING_EXEMPT_PATTERN_IDS``."""
     doc_lines: set = set()
-    inside = False
-    for i, line in enumerate(lines, start=1):
-        was_in, counts = inside, [line.count(marker) for marker in ('"""', "'''")]
-        inside ^= sum(counts) % 2 == 1  # each odd marker count toggles; two odd counts cancel
-        if was_in or inside or any(counts):
-            doc_lines.add(i)
-    return doc_lines
+    fstrings: list = []  # open f-strings (3.12+), True when triple-quoted
+    expr_lines: set = set()  # lines holding a ``{...}`` expression: code, never prose
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO('\n'.join(lines)).readline):
+            if tok.type == _FSTRING_START:
+                fstrings.append(bool(_TRIPLE_QUOTE_OPEN_RE.match(tok.string)))
+            elif tok.type == _FSTRING_END and fstrings:
+                fstrings.pop()
+            if ((tok.type == tokenize.STRING or tok.type in _FSTRING_BOUNDARY_TYPES)
+                    and _TRIPLE_QUOTE_OPEN_RE.match(tok.string)) or tok.type == _FSTRING_MIDDLE and fstrings and fstrings[-1]:
+                doc_lines.update(range(tok.start[0], tok.end[0] + 1))
+            elif fstrings and tok.type not in _FSTRING_BOUNDARY_TYPES and tok.type != _FSTRING_MIDDLE:
+                expr_lines.update(range(tok.start[0], tok.end[0] + 1))
+    except (tokenize.TokenError, SyntaxError):  # unparsable input must never silence the pattern passes
+        return set()
+    return doc_lines - expr_lines
 
 
 def _mask_markdown_link_destinations(line: str) -> str:
@@ -695,6 +716,11 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     return out
 
 
+# Only python_os_environ was tuned for docstring prose; every other pattern must still fire inside a
+# triple-quoted string, since wrapping a payload in one is an evasion, not a false positive.
+_DOCSTRING_EXEMPT_PATTERN_IDS = frozenset({"python_os_environ"})
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
@@ -702,17 +728,29 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
     try:
-        lines = file_path.read_text(encoding='utf-8-sig').split('\n')
-    except (UnicodeDecodeError, OSError):
+        raw = file_path.read_bytes()
+    except OSError:
         return []
-    findings = []
+    try:
+        text = raw.decode('utf-8-sig')
+        findings = []
+    except UnicodeDecodeError as exc:
+        # Malformed input raises suspicion instead of silencing the scan: decode with replacement so every
+        # pattern pass still runs, and flag the file (one bad byte used to exempt it entirely).
+        text = raw.decode('utf-8-sig', errors='replace')
+        bad_line = exc.object[:exc.start].count(b'\n') + 1  # offsets index the BOM-stripped bytes
+        findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
+                            "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
+    lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')  # read_bytes skips newline translation
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
+            if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
+                continue
             scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
-            if i not in docstring_lines and pattern.search(scan_line):
+            if pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)

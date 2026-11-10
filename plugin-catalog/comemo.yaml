@@ -1,12 +1,12 @@
 name: comemo
 repo: https://github.com/andausman/comemo
-sha: 318b39c62cbd8c8e6611e27e6841d4d96d7364f1
+sha: b75fd7727bc1377c868411fb12c30926cb906749
 version: "1.0.0"
 description: "Composite memory meta-provider for Hermes Agent. Comemo multiplexes
   Honcho, Mem0, and Supermemory simultaneously — write fan-out goes to all configured
   providers in parallel, reads merge and deduplicate results across them. Failed writes
   are queued in a local SQLite retry store and replayed at the next session start.
-  Maintained by AndaLabX. Disclosure — conversation turns and recall queries are
+  Maintained by Anda Usman. Disclosure — conversation turns and recall queries are
   forwarded to each enabled backend: Honcho (api.honcho.dev by default, or the
   base_url you configure) under HONCHO_API_KEY; Mem0 (api.mem0.ai by default) under
   MEM0_API_KEY; Supermemory (api.supermemory.ai) under SUPERMEMORY_API_KEY. Only

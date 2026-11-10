@@ -143,9 +143,17 @@ export function ProjectOverviewRow({
   // mid-collapse from resurrecting the long list on reopen.
   const openRef = useRef(open)
   openRef.current = open
+  // Every collapse bumps the counter, so a fetch that lands after the row was
+  // closed and reopened sees a stale token instead of openRef true again.
+  const requestVersion = useRef(0)
+  // Request token, not an atom mirror: a collapse invalidates fetches that are
+  // still in flight so their response cannot restore the list it threw away.
+  // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
     if (!open) {
+      requestVersion.current += 1
       setExpanded(null)
+      setExpanding(false)
     }
   }, [open])
   const limit = showAllSessions || expanded ? Infinity : PROJECT_PREVIEW_COUNT
@@ -182,11 +190,26 @@ export function ProjectOverviewRow({
       return
     }
 
+    const request = ++requestVersion.current
     setExpanding(true)
     fetchProjectSessions(project.id, { supersedable: false })
-      .then(tree => void (tree && openRef.current && setExpanded(tree)))
-      .catch(() => onEnter?.(project.id))
-      .finally(() => setExpanding(false))
+      .then(tree => {
+        // A response that outlived its row (collapsed, maybe reopened) must not
+        // restore the long list the collapse threw away.
+        if (tree && openRef.current && request === requestVersion.current) {
+          setExpanded(tree)
+        }
+      })
+      .catch(() => {
+        if (openRef.current && request === requestVersion.current) {
+          onEnter?.(project.id)
+        }
+      })
+      .finally(() => {
+        if (request === requestVersion.current) {
+          setExpanding(false)
+        }
+      })
   }
 
   const lead = reorderable ? (

@@ -1,6 +1,6 @@
 name: dosbox-full-auto
 repo: https://github.com/EternalNooblet/dosbox-automation-is-not-your-nanny
-sha: cad64893f8eed9bcccc218ab4edae0cc2364c0b8
+sha: cbf8bace2efd82f1a4bbc236e202228b830a9320
 subdir: plugins/dosbox-full-auto
 description: "All-in-one solution for controlling DOSBox apps with your agent. Self-contained DOSBox-automation with built-in MCP server, registers in Hermes and exposes 55 tools via the dosbox-mcp-driving skill such as vision based mouse movement, live process memory reading and more."
 version: "0.1.0"
@@ -13,6 +13,4 @@ capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
-  requires_env:
-    - VLLM_API_KEY
 tier: community

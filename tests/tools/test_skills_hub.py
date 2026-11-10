@@ -144,6 +144,76 @@ class TestTrustLevelFor:
                 "browsable via `hermes skills browse`."
             )
 
+class TestGitHubSecondaryRateLimit:
+    """A 403 with quota still remaining is GitHub's secondary limiter, not exhaustion."""
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Accept": "application/vnd.github+json"}
+        return GitHubSource(auth=auth)
+
+    def test_secondary_403_retries_and_does_not_flag_exhaustion(self, monkeypatch):
+        import tools.skills_hub as hub
+
+        src = self._source()
+        calls = {"n": 0}
+        waits = []
+
+        def fake_get(url, **_kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(
+                    403,
+                    headers={"X-RateLimit-Remaining": "12", "Retry-After": "2"},
+                )
+            return httpx.Response(200, json={"ok": True})
+
+        monkeypatch.setattr(hub, "_skills_hub_http_get", fake_get)
+        monkeypatch.setattr("tools.skills_hub_github.time.sleep", lambda seconds: waits.append(seconds))
+
+        resp = src._github_get("https://api.github.com/repos/o/r")
+
+        assert resp is not None and resp.status_code == 200
+        assert calls["n"] == 2
+        assert waits == [2.0]
+        assert src._rate_limited is False
+
+    def test_primary_quota_403_still_flags_exhaustion(self, monkeypatch):
+        import tools.skills_hub as hub
+
+        src = self._source()
+
+        def fake_get(url, **_kw):
+            return httpx.Response(403, headers={"X-RateLimit-Remaining": "0"})
+
+        monkeypatch.setattr(hub, "_skills_hub_http_get", fake_get)
+        monkeypatch.setattr("tools.skills_hub_github.time.sleep", lambda _seconds: None)
+
+        resp = src._github_get("https://api.github.com/repos/o/r", max_retries=1)
+
+        assert resp is not None and resp.status_code == 403
+        assert src._rate_limited is True
+
+    def test_403_without_remaining_header_is_not_retried(self, monkeypatch):
+        import tools.skills_hub as hub
+
+        src = self._source()
+        calls = {"n": 0}
+
+        def fake_get(url, **_kw):
+            calls["n"] += 1
+            return httpx.Response(403, headers={})
+
+        monkeypatch.setattr(hub, "_skills_hub_http_get", fake_get)
+        monkeypatch.setattr("tools.skills_hub_github.time.sleep", lambda _seconds: None)
+
+        resp = src._github_get("https://api.github.com/repos/o/r")
+
+        assert resp is not None and resp.status_code == 403
+        assert calls["n"] == 1
+        assert src._rate_limited is False
+
+
 class TestGitHubSourceFileFetch:
     def test_quotes_decoded_support_path_before_contents_api_fetch(self):
         src = GitHubSource(auth=MagicMock(spec=GitHubAuth))

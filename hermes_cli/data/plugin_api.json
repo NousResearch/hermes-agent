@@ -62,6 +62,23 @@
       ]
     },
     {
+      "source": "developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements",
+      "entries": [
+        "persistence",
+        "persistence.conversation.messages",
+        "persistence.conversation.search",
+        "persistence.conversation.sessions",
+        "persistence.housekeeping.maintenance",
+        "persistence.housekeeping.state_meta",
+        "persistence_assembly",
+        "sqlite_support:apply_wal_with_fallback",
+        "sqlite_support:apply_database_pragmas",
+        "storage_errors:classify_persistence_error",
+        "storage_errors:is_sqlite_lock_error",
+        "storage_errors:is_malformed_db_error"
+      ]
+    },
+    {
       "source": "PluginContext (hermes_cli/plugins_context.py)",
       "entries": [
         "agent.context_references",

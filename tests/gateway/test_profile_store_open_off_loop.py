@@ -16,6 +16,7 @@ async def test_secondary_store_opens_run_off_the_loop_in_their_own_scope(tmp_pat
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
+    from persistence_assembly import store_location
 
     root, homes = _reserve_homes(tmp_path, monkeypatch)
     process_ownership.reserve([home for _, home in homes])
@@ -41,9 +42,10 @@ async def test_secondary_store_opens_run_off_the_loop_in_their_own_scope(tmp_pat
             assert tid != loop_thread, f"{parent}/state.db was opened on the event loop"
             assert scope == parent, "the worker opened a store outside that profile's scope"
         for _name, home in homes:
-            assert runner.session_authorities.for_home(home).db.db_path.parent.resolve() == home.resolve()
+            authority = runner.session_authorities.for_home(home)
+            assert store_location(authority.persistence.scope).parent.resolve() == home.resolve()
     finally:
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            authority.db.close()
+            authority.persistence.close()
         for _, home in homes:
             process_ownership.release(home)

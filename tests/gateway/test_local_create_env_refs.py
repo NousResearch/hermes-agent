@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under
 
 
 async def _owner(home, monkeypatch):
@@ -14,7 +15,7 @@ async def _owner(home, monkeypatch):
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setenv('HERMES_HOME', str(home))  # a single-profile owner: this IS the launch home
     store = SessionStore(home / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
                              _evict_cached_agent=lambda route: None)
     owner = await initialize_session_authority(runner, profile_id=str(home), instance_id='fixture')
@@ -24,10 +25,9 @@ async def _owner(home, monkeypatch):
 def _created_model(owner, actor, home, request_id):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': 'cli', 'cwd': str(home),
                                               'toolsets': []})
-    return restore_policy(local_receipt(owner.db, ref.session_id)['policy']).config()['model']
+    return restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy).config()['model']
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ async def test_new_session_expands_config_refs_against_current_profile_env(tmp_p
         assert current_secret_scope() is None  # the read's scope never outlives the build
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -69,7 +69,6 @@ async def test_exact_create_retry_after_an_env_rotation_returns_the_original_ses
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
     from hermes_cli import model_switch
-    from hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(
@@ -87,15 +86,15 @@ async def test_exact_create_retry_after_an_env_rotation_returns_the_original_ses
         with monkeypatch.context() as old:  # the pre-change create: the daemon's start env
             old.setattr(session_local, 'load_profile_config', lambda home=None: _load_gateway_config())
             ref = create_local_session(owner, connection.actor, dict(params))
-        saved = local_receipt(owner.db, ref.session_id)['policy']
+        saved = owner.persistence.bindings.receipt(ref.session_id).policy
         assert restore_policy(saved).config()['model']['base_url'] == 'http://boot.invalid/v1'
         (home / '.env').write_text('CFG4_BASE_URL=http://rotated.invalid/v1\n')
         model_switch.DIRECT_ALIASES.clear()
         assert create_local_session(owner, connection.actor, dict(params)) == ref
-        assert local_receipt(owner.db, ref.session_id)['policy'] == saved
+        assert owner.persistence.bindings.receipt(ref.session_id).policy == saved
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -106,7 +105,6 @@ async def test_new_alias_session_uses_the_current_profile_env(tmp_path, monkeypa
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
     from hermes_cli import model_switch
-    from hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(
@@ -124,7 +122,7 @@ async def test_new_alias_session_uses_the_current_profile_env(tmp_path, monkeypa
     def created(request_id):
         ref = create_local_session(owner, connection.actor, {
             'request_id': request_id, 'source': 'cli', 'cwd': str(home), 'toolsets': [], 'model': 'alias-env'})
-        policy = restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
+        policy = restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy)
         return policy.model, policy.config()['model']['base_url']
     try:
         assert created('first') == ('model-alias', 'http://rotated.invalid/v1')
@@ -132,7 +130,7 @@ async def test_new_alias_session_uses_the_current_profile_env(tmp_path, monkeypa
         assert created('second') == ('model-alias', 'http://rotated-again.invalid/v1')
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 def test_bound_scope_is_kept(tmp_path, monkeypatch):

@@ -9,6 +9,10 @@ import pytest
 from agent.anthropic_message_convert import convert_messages_to_anthropic
 from agent.message_sanitization import stale_thinking_reaches_wire
 from agent.model_metadata import estimate_tokens_rough
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 ANTHROPIC = ("anthropic", "https://api.anthropic.com")
 NOUS = ("nous", "https://inference-api.nousresearch.com/v1/messages")
@@ -77,11 +81,9 @@ def _native_turn(agent, question, size, sig):
 
 
 def _session_db(tmp_path, *session_ids):
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     for session_id in session_ids:
-        db.create_session(session_id, source="cli", model="claude-opus-4-6")
+        seed_session(db, session_id, "cli", model="claude-opus-4-6")
     return db
 
 
@@ -92,7 +94,7 @@ def _agent(db, session_id="s1", model="claude-opus-4-6", route=ANTHROPIC):
 
     agent = SimpleNamespace(
         api_mode="anthropic_messages", provider=route[0], model=model, base_url=route[1],
-        session_id=session_id, _session_db=db, _persist_disabled=False,
+        session_id=session_id, _session_db=db, persistence=db, _persist_disabled=False,
         _current_turn_timestamp=1.0, ephemeral_system_prompt="", prefill_messages=[],
         tools=[], _use_prompt_caching=False, _usage_anchor=None, verbose_logging=False,
         reasoning_callback=None, stream_delta_callback=None, _stream_callback=None, log_prefix="",
@@ -112,7 +114,7 @@ def _agent(db, session_id="s1", model="claude-opus-4-6", route=ANTHROPIC):
         model, provider=route[0], base_url=route[1], api_mode=agent.api_mode,
         quiet_mode=True, config_context_length=200_000,
     )
-    agent.context_compressor.bind_session_state(db, session_id)
+    agent.context_compressor.bind_session_state(db, session_id, persistence=db)
     return agent
 
 
@@ -348,9 +350,9 @@ def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(
     if boundary == "compression_child":
         # Rotation publishes the child with the session's initial model_config, then carries
         # per-session state; the child's retained tail still holds the rejected rows.
-        db.publish_compression_child(
-            parent_session_id="s1", child_session_id="s1-child", source="cli",
-            model=agent.model, model_config={}, messages=later[2:], require_compression_lease=False,
+        db.lineage.publish_compression_child(
+            "s1", CompressionChild("s1-child", "cli", model=agent.model, model_config={}),
+            [NewMessage.from_live(message) for message in later[2:]], require_compression_lease=False,
         )
         agent.session_id = "s1-child"
         _carry_session_state_to_child(agent, "s1", None)
@@ -365,3 +367,50 @@ def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(
     # The rejected carrier's visible answer and tool call still replay; only thinking goes.
     assert ("tool_use" in repr(wire)) is (boundary == "carrier")
     assert "secret chain" not in repr(wire)
+
+
+@pytest.mark.parametrize("boundary", ["rebuild", "compression_child"])
+def test_rejected_thinking_is_stored_and_read_through_the_writer_handle(tmp_path, monkeypatch, boundary):
+    """An agent with a writer's storage handle beside its store persists and restores the rejection
+    through the handle, across a rebuild and onto a compression child."""
+    import persistence_assembly
+    from agent.conversation_compression import _carry_session_state_to_child
+
+    db = _session_db(tmp_path, "s1")
+    _patch_assembly_loop(monkeypatch)
+    with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path)) as handle:
+        agent = _agent(db)
+        agent.persistence = handle
+        rejected = _signed_turn("Q1", "A1", "sig_rejected_1")
+        _reject_signatures(agent, rejected)
+        later = rejected + _signed_turn("Q3", "A3", "sig_kept") + [{"role": "user", "content": "continue"}]
+        if boundary == "compression_child":
+            db.lineage.publish_compression_child(
+                "s1", CompressionChild("s1-child", "cli", model=agent.model, model_config={}),
+                [NewMessage.from_live(message) for message in later[2:]], require_compression_lease=False,
+            )
+            agent.session_id = "s1-child"
+            _carry_session_state_to_child(agent, "s1", None)
+            later = later[2:]
+        reader = _agent(db, agent.session_id)
+        reader.persistence = handle
+        _, wire = _assemble_and_wire(reader, later)
+
+    assert [block.get("signature") for block in _thinking_blocks(wire)] == ["sig_kept"]
+    assert db.sessions.get_model_config_value(agent.session_id, "_anthropic_rejected_thinking")
+
+
+def test_a_resumed_compressor_prices_no_stored_rejected_thinking_in_its_tail(tmp_path):
+    """A fresh process on a session whose signatures Anthropic rejected reads the stored rejection
+    through the compressor's store handle, so its tail walk charges none of that thinking."""
+    db = _session_db(tmp_path, "s1")
+    _reject_signatures(_agent(db), _signed_turn("Q1", "A1", "sig_rejected_1"))
+    assert db.sessions.get_model_config_value("s1", "_anthropic_rejected_thinking")
+    compressor = _agent(db).context_compressor
+
+    def tail_tokens(size):
+        history = _signed_turn("Q1", "A1", "sig_rejected_1", thinking="x" * size)
+        history += [{"role": "user", "content": "continue"}]
+        return compressor._walk_tail_budget(history, 0, 10**9, 0, cut_at_break=False)[1]
+
+    assert tail_tokens(8000) == tail_tokens(1)

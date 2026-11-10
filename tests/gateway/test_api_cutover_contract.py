@@ -5,6 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_api_turn import admit_api_turn, api_execution
+from gateway.session_authority import admission_row
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages
 
 
 def test_declared_key_is_durable_and_cannot_rebind(api, owner):
@@ -20,8 +25,8 @@ def test_declared_key_is_durable_and_cannot_rebind(api, owner):
     # Explicit and chained selections never transfer their identity to a header.
     admit(ref.session_id, 'other', bind=False)
     assert api._declared_conversation_session('other') is None
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         admit(ref.session_id, 'other')
     assert api._declared_conversation_session('conversation') == ref.session_id
 
@@ -55,13 +60,13 @@ def test_api_author_is_admission_scoped_not_session_identity(api, owner):
     from gateway.session_api_turn import prepare_api_execution
     from gateway.run_turn_runner import TurnRunner
     from gateway.turn_context import TurnContext
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     author = {'id': 'bot:peer', 'name': 'Peer', 'is_bot': True}
     args = dict(session_id='author', request_id='one', user_message='hello', conversation_history=[], turn_author=author)
     _, ref, row = admit_api_turn(api, **args)
     assert row['payload']['api_turn_v1']['turn_author'] == author
     author['name'] = 'changed'
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         admit_api_turn(api, **args)
     owner.sessions.clear()
     from gateway.session_api import restore_api_session
@@ -87,7 +92,7 @@ def test_api_author_is_admission_scoped_not_session_identity(api, owner):
 def test_persisted_owner_scope_is_private_strict_and_legacy_safe(api, owner):
     from gateway.platforms.api_server_authority_runs import run_projection
     from gateway.session_api_turn import owns_api_run, prepare_api_execution
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     scope = 'a' * 64
     authority, ref, row = admit_api_turn(
@@ -99,7 +104,7 @@ def test_persisted_owner_scope_is_private_strict_and_legacy_safe(api, owner):
     assert owns_api_run(api, 'run_private_owner', scope)
 
     for malformed in ('A' * 64, 'a' * 63, 'g' * 64, 7):
-        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        with pytest.raises(AuthorityRefusal, match='invalid_params'):
             admit_api_turn(
                 api, session_id='invalid-owner', user_message='x',
                 conversation_history=[], run_owner_scope=malformed)
@@ -117,7 +122,6 @@ def test_compressed_api_conversation_keeps_its_root_queue_and_follows_the_tip(ap
     declared conversation (and a follower already queued behind the compressing turn) must keep
     admitting/executing on the root instead of failing ``admission_conflict``."""
     from gateway.session_api_turn import check_api_turn
-    from hermes_state_runtime import claim_session_input, list_session_admissions
 
     def admit(request_id):
         return admit_api_turn(api, request_id=request_id, gateway_session_key='compressed',
@@ -125,12 +129,12 @@ def test_compressed_api_conversation_keeps_its_root_queue_and_follows_the_tip(ap
     _, ref, first = admit('first')
     if queued_follower:
         follower = admit('follower')[2]
-    claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
-    owner.db.append_message(ref.session_id, 'user', 'first')
+    owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id)
+    seed_messages(owner.persistence, ref.session_id, {'role': 'user', 'content': 'first'})
     child = ref.session_id + '-child'
-    owner.db.publish_compression_child(parent_session_id=ref.session_id, child_session_id=child,
-                                       source='api_server', messages=[{'role': 'user', 'content': 'summary'}],
-                                       require_compression_lease=False)
+    owner.persistence.lineage.publish_compression_child(
+        ref.session_id, CompressionChild(session_id=child, source='api_server'),
+        [NewMessage.from_live({'role': 'user', 'content': 'summary'})], require_compression_lease=False)
     route = owner.sessions[ref.session_id].route
     assert owner.runner.session_store.advance_compression_session(route, ref.session_id, child) is not None
     if queued_follower:
@@ -139,8 +143,8 @@ def test_compressed_api_conversation_keeps_its_root_queue_and_follows_the_tip(ap
         _, again, row = admit('second')
         assert again == ref and row['target_session_id'] == ref.session_id
     assert owner.runner.session_store.peek_session_id(route) == child
-    assert {r['target_session_id'] for r in list_session_admissions(owner.db, session_id=ref.session_id,
-                                                                     pending_only=False)} == {ref.session_id}
+    assert {r.target_session_id for r in owner.persistence.admissions.list(session_id=ref.session_id,
+                                                                            pending_only=False)} == {ref.session_id}
     assert first['target_session_id'] == ref.session_id
 
 
@@ -151,12 +155,11 @@ async def test_a_turn_queued_with_browser_control_recovers_and_runs_without_it(a
     from gateway.session_api_turn import recover_api_turns
     from gateway.session_ingress import execute_admission
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
     _, ref, row = admit_api_turn(api, session_id='legacy-browser-control', request_id='queued-turn',
                                  user_message='hello', conversation_history=[])
     stored = json.loads(json.dumps(row['payload']))
     stored['api_turn_v1']['browser_control'] = {'principal': 'principal:default:abc', 'transport_family': 'local-api'}
-    owner.db._execute_write(lambda conn: conn.execute(
+    raw_holder(owner.persistence)._execute_write(lambda conn: conn.execute(
         'UPDATE session_admissions SET payload_json=? WHERE admission_id=?', (json.dumps(stored), row['admission_id'])))
     owner.sessions.clear()  # the upgraded gateway knows the session only from its store
     scheduled = []
@@ -164,7 +167,7 @@ async def test_a_turn_queued_with_browser_control_recovers_and_runs_without_it(a
     recover_api_turns(api)
     assert scheduled == [ref.session_id]
 
-    [legacy] = list_session_admissions(owner.db, session_id=ref.session_id)
+    [legacy] = [admission_row(record) for record in owner.persistence.admissions.list(session_id=ref.session_id)]
     assert 'browser_control' in legacy['payload']['api_turn_v1']
     seen = []
 

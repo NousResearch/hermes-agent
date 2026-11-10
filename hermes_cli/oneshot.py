@@ -37,19 +37,28 @@ _AUX_COUNTERS = (
 )
 
 
-def _auxiliary_usage(session_db, session_id: Optional[str]) -> dict[str, dict]:
-    """Per-task aux usage recorded for *session_id*'s lineage (``{}`` without a store / session)."""
-    if session_db is None or not session_id:
+def _auxiliary_usage(session_db, session_id: Optional[str], *, persistence=None) -> dict[str, dict]:
+    """Per-task aux usage recorded for *session_id*'s lineage, read through *persistence* (``{}`` without a
+    handle / session)."""
+    if persistence is None or not session_id:
         return {}
     try:
-        return session_db.auxiliary_usage_by_task(session_id)
+        return {
+            task: {
+                "api_calls": usage.api_call_count, "input_tokens": usage.tokens.input_tokens,
+                "output_tokens": usage.tokens.output_tokens, "cache_read_tokens": usage.tokens.cache_read_tokens,
+                "cache_write_tokens": usage.tokens.cache_write_tokens,
+                "reasoning_tokens": usage.tokens.reasoning_tokens, "estimated_cost_usd": usage.estimated_cost_usd,
+            }
+            for task, usage in persistence.usage.auxiliary_usage_by_task(session_id).items()
+        }
     except Exception:
         logging.debug("oneshot: auxiliary usage read failed", exc_info=True)
         return {}
 
 
 def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict],
-                            fallback_session_id: Optional[str] = None) -> None:
+                            fallback_session_id: Optional[str] = None, *, persistence=None) -> None:
     """Store this run's auxiliary usage on *result* as the delta against the pre-turn snapshot
     (a resumed session already carries earlier runs' aux rows). Waits (bounded) for the auto-title
     thread first: it bills from a daemon thread and can still be in flight when the turn returns.
@@ -57,7 +66,7 @@ def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict],
     from agent.title_generator import wait_for_title_upgrades
 
     wait_for_title_upgrades()
-    after = _auxiliary_usage(session_db, result.get("session_id") or fallback_session_id)
+    after = _auxiliary_usage(session_db, result.get("session_id") or fallback_session_id, persistence=persistence)
     by_task: dict[str, dict] = {}
     for task, counters in after.items():
         prior = before.get(task, {})

@@ -60,6 +60,7 @@ served_profile_runtime = late("served_profile_runtime", "gateway.status_served")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
 
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
@@ -78,19 +79,20 @@ def _safe_call(mod, fn_name: str, default):
 def _count_status_active_sessions() -> int:
     """Best-effort status garnish. Opens read-only (via the shared stale-schema heal) so
     /api/status never routinely writes to state.db while another Hermes process uses it."""
-    from hermes_state import _default_db_path
+    from persistence.conversation.sessions import SessionQuery, SessionWindow
+
     # The heal helper bootstraps a missing store; this garnish must not — on a fresh install
     # /api/status polls would otherwise create state.db before the user's first session.
-    if not Path(_default_db_path()).exists():
+    db_path = _session_db_path_for_profile(None)
+    if not db_path.exists():
         return 0
-    db = _open_session_db_for_profile(None, read_only=True)
+    store = _open_session_db_for_profile(None, read_only=True)
     try:
-        sessions = db.list_sessions_rich(limit=50, compact_rows=True)
+        sessions = store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50), compact_rows=True)
         now = time.time()
-        return sum(1 for s in sessions if s.get("ended_at") is None
-                   and (now - s.get("last_active", s.get("started_at", 0))) < 300)
+        return sum(1 for s in sessions if s.session.ended_at is None and (now - s.last_active) < 300)
     finally:
-        db.close()
+        store.close()
 
 
 async def _status_active_sessions() -> int:
@@ -501,16 +503,16 @@ def _status_local_reads() -> dict[str, Any]:
 
 def _fts_rebuild_status() -> Optional[dict[str, Any]]:
     """Deferred FTS rebuild progress of this home's state.db (read-only open), or None."""
-    from hermes_state import SessionDB as _SDB
-    from hermes_constants import get_hermes_home as _ghh
-    _db_path = _ghh() / "state.db"
-    if not _db_path.exists():
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+    scope = profile_scope()
+    if not store_exists(scope):
         return None
-    _sdb = _SDB(db_path=_db_path, read_only=True)
-    try:
-        return _sdb.fts_rebuild_status()
-    finally:
-        _sdb.close()
+    with open_persistence_reader(scope.profile_dir) as _store:
+        _rebuild = _store.search.search_index_rebuild_status()
+    if _rebuild is None:
+        return None
+    return {"pending": True, "total": _rebuild.total, "indexed": _rebuild.indexed,
+            "percent": min(100, int(100 * _rebuild.indexed / _rebuild.total))}
 
 
 #: What the gateway's Webapp answers a caller who has not signed in: liveness, version and the

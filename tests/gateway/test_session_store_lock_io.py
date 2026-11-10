@@ -12,6 +12,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -57,15 +58,21 @@ class _TrackedLock:
 
 
 def _db_with_rows(rows: dict) -> MagicMock:
-    """Mock SessionDB where ``get_session`` maps session_id -> row dict."""
+    """Mock store (legacy and storage handle) where ``get_session`` / ``sessions.get`` map session_id -> row."""
     db = MagicMock()
     db.get_session.side_effect = lambda sid: rows.get(sid)
-    db.find_latest_gateway_session_for_peer.return_value = None
-    db.reopen_session.return_value = None
-    db.create_session.return_value = None
+    db.sessions.get.side_effect = lambda sid: SimpleNamespace(**rows[sid]) if sid in rows else None
+    db.routing.latest_session_for_peer.return_value = None
     # Identity compression tip (no child session).
-    db.get_compression_tip.side_effect = lambda sid: sid
+    db.get_compression_tip.side_effect = db.lineage.tip.side_effect = lambda sid: sid
     return db
+
+
+def _peer(**row):
+    """The ``routing.latest_session_for_peer`` answer for a recovered row."""
+    session = SimpleNamespace(session_id=row.pop("id"), session_key=row.pop("session_key", None), message_count=0,
+                              last_activity_at=None, origin=None, **row)
+    return SimpleNamespace(session=session, has_messages=False)
 
 
 def _make_store(tmp_path, db_mock=None) -> SessionStore:
@@ -74,7 +81,7 @@ def _make_store(tmp_path, db_mock=None) -> SessionStore:
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     if db_mock is not None:
-        store._db = db_mock
+        store._db, store._persistence_beside = db_mock, lambda db: db
     store._loaded = True
     store._lock = _TrackedLock()
     return store
@@ -171,10 +178,8 @@ class TestRecoverOutsideLock:
         """``_recover_session_from_db`` must run with the lock released."""
         source = _source()
         db = _db_with_rows({})
-        db.find_latest_gateway_session_for_peer.return_value = {
-            "id": "sid_recovered",
-            "started_at": datetime.now().timestamp(),
-        }
+        db.routing.latest_session_for_peer.return_value = _peer(
+            id="sid_recovered", started_at=datetime.now().timestamp())
         store = _make_store(tmp_path, db)
         # No entry seeded -- forces the recovery path.
 
@@ -223,7 +228,7 @@ def test_concurrent_same_key_returns_one_published_session(tmp_path):
     key = store._generate_session_key(source)
     assert entries[0] is entries[1]
     assert entries[0].session_id == store._entries[key].session_id
-    created_ids = {call.kwargs["session_id"] for call in db.create_session.call_args_list}
+    created_ids = {call.args[0].session_id for call in db.sessions.create.call_args_list}
     assert created_ids == {entries[0].session_id}
 
 
@@ -234,21 +239,16 @@ def test_auto_reset_does_not_recover_session_being_ended(tmp_path):
     key = store._generate_session_key(source)
     old = _seed_entry(store, key, "old-session")
     old.suspended = True
-    db.find_latest_gateway_session_for_peer.return_value = {
-        "id": old.session_id,
-        "session_key": key,
-        "started_at": old.created_at.timestamp(),
-    }
+    db.routing.latest_session_for_peer.return_value = _peer(
+        id=old.session_id, session_key=key, started_at=old.created_at.timestamp())
 
     entry = store.get_or_create_session(source)
 
     assert entry.session_id != old.session_id
     assert entry.was_auto_reset is True
-    db.reopen_session.assert_not_called()
-    # Auto-reset now writes through promote_to_session_reset (upgrades
+    db.sessions.reopen.assert_not_called()
+    # Auto-reset now writes through sessions.promote_to_reset (upgrades
     # accidental agent_close/ws_orphan_reap ends) with the specific
     # auditable reason — a suspended session resets as "suspended".
-    db.promote_to_session_reset.assert_called_once_with(
-        old.session_id, "suspended"
-    )
-    db.end_session.assert_not_called()
+    db.sessions.promote_to_reset.assert_called_once_with(old.session_id, "suspended")
+    db.sessions.end.assert_not_called()

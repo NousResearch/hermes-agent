@@ -30,7 +30,8 @@ def test_tui_worktree_quit_removes_only_a_clean_idle_tree(tmp_path, monkeypatch,
     from hermes_cli import main_tui_launch
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
@@ -42,15 +43,14 @@ def test_tui_worktree_quit_removes_only_a_clean_idle_tree(tmp_path, monkeypatch,
 
     def ink(_argv, cwd=None, env=None):
         db_path = get_hermes_home() / 'state.db'
-        db = SessionDB(db_path=db_path)
-        db.create_session('tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
-        if case != 'clean':
-            db.append_message('tui-wt', 'user', 'hello')
-        if case != 'pending_turn':
-            # Ink's exit detaches with ``tui_shutdown``; the owner ends the idle row once no other
-            # viewer holds it (gateway/session_viewer_close.py).
-            db.end_session('tui-wt', 'tui_shutdown')
-        db.close()
+        with open_persistence(profile_scope(home=db_path.parent)) as store:
+            seed_session(store, 'tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
+            if case != 'clean':
+                seed_messages(store, 'tui-wt', {'role': 'user', 'content': 'hello'})
+            if case != 'pending_turn':
+                # Ink's exit detaches with ``tui_shutdown``; the owner ends the idle row once no other
+                # viewer holds it (gateway/session_viewer_close.py).
+                store.sessions.end('tui-wt', 'tui_shutdown')
         if case == 'pending_turn':  # an accepted turn the gateway has not finished yet
             conn = sqlite3.connect(db_path)
             conn.execute(
@@ -80,11 +80,12 @@ def test_tui_worktree_quit_removes_only_a_clean_idle_tree(tmp_path, monkeypatch,
 
 
 def _quit_with(tmp_path, monkeypatch, prepare):
-    """Run ``hermes --tui -w`` whose Ink session ``prepare(db, cwd)`` shapes, then quit; the tree."""
+    """Run ``hermes --tui -w`` whose Ink session ``prepare(store, cwd)`` shapes, then quit; the tree."""
     from hermes_cli import main_tui_launch
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
@@ -95,11 +96,10 @@ def _quit_with(tmp_path, monkeypatch, prepare):
     monkeypatch.setattr(main_tui_launch, '_print_tui_exit_summary', lambda *_: None)
 
     def ink(_argv, cwd=None, env=None):
-        db = SessionDB(db_path=get_hermes_home() / 'state.db')
-        db.create_session('tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
-        db.append_message('tui-wt', 'user', 'every 10m: run the tests')
-        prepare(db, env['HERMES_TUI_CWD'])
-        db.close()
+        with open_persistence(profile_scope(home=get_hermes_home())) as store:
+            seed_session(store, 'tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
+            seed_messages(store, 'tui-wt', {'role': 'user', 'content': 'every 10m: run the tests'})
+            prepare(store, env['HERMES_TUI_CWD'])
         Path(env['HERMES_TUI_ACTIVE_SESSION_FILE']).write_text(json.dumps({'session_id': 'tui-wt'}))
         return 0
 
@@ -128,9 +128,9 @@ def test_quit_keeps_a_clean_tree_while_the_gateway_has_scheduled_work_for_its_se
     """N8 review F4: ``/loop`` / ``/heartbeat`` / an active ``/goal`` on the ``--tui -w`` session
     keeps running on the gateway after the viewer quits; between ticks no admission is pending, and
     removing the tree made the next tick run in a missing cwd (``workspace_unavailable``)."""
-    def prepare(db, _cwd):
-        db.set_meta(f'{kind}:tui-wt', _scheduled(kind))
-        db.end_session('tui-wt', 'tui_shutdown')
+    def prepare(store, _cwd):
+        store.state_meta.set(f'{kind}:tui-wt', _scheduled(kind))
+        store.sessions.end('tui-wt', 'tui_shutdown')
     tree, repo, wt_info = _quit_with(tmp_path, monkeypatch, prepare)
     assert tree.is_dir(), f'{kind}: tree removed while the gateway still schedules work in it'
     assert wt_info['branch'] in _branches(repo)
@@ -138,9 +138,9 @@ def test_quit_keeps_a_clean_tree_while_the_gateway_has_scheduled_work_for_its_se
 
 @pytest.mark.parametrize('kind', ['loop', 'heartbeat', 'goal'])
 def test_finished_scheduled_work_does_not_keep_the_tree(tmp_path, monkeypatch, kind):
-    def prepare(db, _cwd):
-        db.set_meta(f'{kind}:tui-wt', _scheduled(kind, status='cleared'))
-        db.end_session('tui-wt', 'tui_shutdown')
+    def prepare(store, _cwd):
+        store.state_meta.set(f'{kind}:tui-wt', _scheduled(kind, status='cleared'))
+        store.sessions.end('tui-wt', 'tui_shutdown')
     tree, repo, wt_info = _quit_with(tmp_path, monkeypatch, prepare)
     assert not tree.exists() and wt_info['branch'] not in _branches(repo)
 
@@ -148,7 +148,7 @@ def test_finished_scheduled_work_does_not_keep_the_tree(tmp_path, monkeypatch, k
 def test_quit_keeps_the_tree_while_another_viewer_still_holds_the_session(tmp_path, monkeypatch):
     """Ink's exit detaches with ``tui_shutdown``; the owner leaves the row open while another viewer
     (a Desktop window on the same session) still holds it, and that viewer's next turn needs the cwd."""
-    tree, repo, wt_info = _quit_with(tmp_path, monkeypatch, lambda db, _cwd: None)
+    tree, repo, wt_info = _quit_with(tmp_path, monkeypatch, lambda store, _cwd: None)
     assert tree.is_dir()
     assert wt_info['branch'] in _branches(repo)
 
@@ -156,10 +156,12 @@ def test_quit_keeps_the_tree_while_another_viewer_still_holds_the_session(tmp_pa
 @pytest.mark.parametrize('bound', ['workdir', 'origin'])
 def test_quit_keeps_the_tree_while_a_cron_job_is_bound_to_it(tmp_path, monkeypatch, bound):
     from cron import jobs
+    from tests.fixtures.storage_holder import raw_holder
 
-    def prepare(db, cwd):
-        db.end_session('tui-wt', 'tui_shutdown')
-        db._execute_write(lambda conn: conn.execute("UPDATE sessions SET chat_id='local-chat' WHERE id='tui-wt'"))
+    def prepare(store, cwd):
+        store.sessions.end('tui-wt', 'tui_shutdown')
+        raw_holder(store)._execute_write(
+            lambda conn: conn.execute("UPDATE sessions SET chat_id='local-chat' WHERE id='tui-wt'"))
         if bound == 'workdir':
             jobs.create_job('run the tests', 'every 10m', workdir=cwd)
         else:

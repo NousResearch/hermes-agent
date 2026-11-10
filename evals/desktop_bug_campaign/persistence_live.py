@@ -4,13 +4,34 @@ import json
 import os
 from pathlib import Path
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def stored_rows(db, session_id):
+    """``(role, content, active)`` of every stored row of the session, rewound and archived rows included, in insertion order."""
+    from persistence.conversation.messages import TranscriptRead, TranscriptView
+    from persistence.core.conventions import RowVisibility
+    from persistence_assembly import open_persistence_reader
+    with open_persistence_reader(db) as store:
+        rows = store.messages.read_transcript(session_id, TranscriptRead(view=TranscriptView.ALL))
+    return [(r.role, r.content, int(r.visibility is RowVisibility.ACTIVE)) for r in rows]
+
+
+def generations(db, session_id):
+    """``(groups, duplicate_active_groups)`` of the session's stored rows: each (role, content) stored more than once
+    as ``(role, content, its active flags in insertion order joined by commas, count)``, sorted by role and content, and
+    how many of those pairs hold more than one active row."""
+    groups = {}
+    for role, content, active in stored_rows(db, session_id):
+        groups.setdefault((role, content), []).append(active)
+    repeated = sorted((key, actives) for key, actives in groups.items() if len(actives) > 1)
+    return ([(role, content, ','.join(map(str, actives)), len(actives)) for (role, content), actives in repeated],
+            sum(1 for _key, actives in repeated if actives.count(1) > 1))
 
 
 def main():
@@ -130,9 +151,7 @@ def main():
                 for i in range(12):
                     turn(sid, f'Historical note {i}: ' + ('The worker keeps the project history and decisions in its own profile. ' * 100))
                 result['compression'] = rpc('session.compress', {'session_id': sid})
-                with sqlite3.connect(profile / 'state.db') as db:
-                    result['generations'] = db.execute('SELECT role, content, GROUP_CONCAT(active), COUNT(*) FROM messages WHERE session_id=? GROUP BY role, content HAVING COUNT(*)>1', (key,)).fetchall()
-                    result['duplicate_active_groups'] = db.execute('SELECT COUNT(*) FROM (SELECT role, content FROM messages WHERE session_id=? AND active=1 GROUP BY role, content HAVING COUNT(*)>1)', (key,)).fetchone()[0]
+                result['generations'], result['duplicate_active_groups'] = generations(profile / 'state.db', key)
             if args.reset:
                 try:
                     result['reset'] = rpc('tools.configure', {'session_id': sid, 'action': 'enable', 'names': ['web']})
@@ -153,8 +172,7 @@ def main():
                 result['ownership_after_failure'] = rpc('probe.ownership', {'session_id': sid})
             result['stores'] = {}
             for name, p in [('launch', home), ('worker', profile)]:
-                with sqlite3.connect(p / 'state.db') as db:
-                    result['stores'][name] = db.execute('SELECT role, content, active FROM messages WHERE session_id=? ORDER BY id', (key,)).fetchall()
+                result['stores'][name] = stored_rows(p / 'state.db', key)
             result['wrong_profile_writes'] = any('PERSISTENCE_AFTER_REBUILD' in str(row) for row in result['stores']['launch'])
             if args.invalid_targets:
                 result['target_controls'] = {str(p): rpc('session.list', {'profile': p}) for p in (None, 'default', 'worker')}

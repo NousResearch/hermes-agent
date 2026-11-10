@@ -353,11 +353,11 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
     """A secondary profile with no ACTIVE loop must not get its runtime scope entered on
     every tick (each entry re-parses the profile's config/secrets — the dominant idle-CPU
     cost on multiplex gateways); a profile holding an active loop must still be scanned."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     work_home = tmp_path / "profiles" / "work"
     work_home.mkdir(parents=True)
-    work_db = SessionDB(db_path=work_home / "state.db")
+    work_db = open_persistence(profile_scope(home=work_home))
     goals._DB_CACHE[str(work_home)] = work_db
 
     scopes = [(None, None), ("work", work_home)]
@@ -415,9 +415,9 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
 
         # An ACTIVE loop row in the work profile's store opens the gate.
         await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
-        raw = loops._get_session_db().get_meta("loop:sid-gateway-loop")
+        raw = loops._get_session_db().state_meta.get("loop:sid-gateway-loop")
         assert raw
-        work_db.set_meta("loop:sid-work-loop", raw)
+        work_db.state_meta.set("loop:sid-work-loop", raw)
         await _run_one_tick()
         assert entered == [work_home], (
             f"profile with an active loop must still be scanned; got {entered}")
@@ -426,7 +426,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         entered.clear()
         cleared = loops.LoopState.from_json(raw)
         cleared.status = "cleared"
-        work_db.set_meta("loop:sid-work-loop", cleared.to_json())
+        work_db.state_meta.set("loop:sid-work-loop", cleared.to_json())
         await _run_one_tick()
         assert entered == [], f"cleared loop row must not open the gate; got {entered}"
 

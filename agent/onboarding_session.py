@@ -25,27 +25,29 @@ def with_onboarding(enabled) -> list[str]:
     return [*enabled, "onboarding"]
 
 
-def onboarding_toolsets(enabled, db, session_id: str):
+def onboarding_toolsets(enabled, db, session_id: str, *, persistence=None):
     """*enabled* plus ``onboarding`` for a chat whose run is in progress. Decided once, at agent build:
     the tool array is part of the cached prefix, so a finished run keeps setup_beat (as a refusal)
     until the session is rebuilt."""
-    from agent.onboarding_flow import is_active
+    from session_rules.onboarding_flow import is_active
     from agent.onboarding_record import load
     if keeps_toolsets(enabled):
         return enabled
-    return with_onboarding(enabled) if is_active(load(db, session_id)) else enabled
+    return with_onboarding(enabled) if is_active(load(db, session_id, persistence=persistence)) else enabled
 
 
-def onboarding_chat_toolsets(enabled, db, session_id: str):
+def onboarding_chat_toolsets(enabled, db, session_id: str, *, persistence=None):
     """The session authority's per-turn fold-in: *enabled* plus ``onboarding`` for a chat that is or was
     an onboarding chat. Keyed on the record existing, never on the run being open, because the
     authority resolves toolsets every turn and the tool array is part of the cached prefix: a run that
     ends must not change it mid-conversation (setup_beat answers a finished run with a refusal)."""
+    from agent.agent_init_session import writer_interface
     from agent.onboarding_record import load
     if keeps_toolsets(enabled) or db is None:
         return enabled
-    tip = db.get_compression_tip(session_id) or session_id
-    return with_onboarding(enabled) if load(db, tip) is not None else enabled
+    store = writer_interface(persistence, db)
+    tip = (store.lineage.tip(session_id) if store is not None else db.get_compression_tip(session_id)) or session_id
+    return with_onboarding(enabled) if load(db, tip, persistence=persistence) is not None else enabled
 
 
 def carry_onboarding_toolset(enabled, agent):
@@ -58,12 +60,13 @@ def carry_onboarding_toolset(enabled, agent):
 def onboarding_prelude(agent, history: Iterable[dict]) -> Iterator[tuple[str, str, dict]] | None:
     """The opening's scripted step, greeting and name card, while the name beat was never shown. A
     greeting already in the chat (a relaunch) is not said twice."""
-    from agent.onboarding_flow import PENDING, is_active
+    from agent.agent_init_session import agent_interface
+    from session_rules.onboarding_flow import PENDING, is_active
     from agent.onboarding_record import load
     from agent.onboarding_text import greeting
     if not builds_onboarding(agent):
         return None
-    record = load(agent._session_db, agent.session_id)
+    record = load(agent._session_db, agent.session_id, persistence=agent_interface(agent))
     if record is None or not is_active(record) or record["beats"]["name"] != PENDING:
         return None
     hello = greeting((record.get("facts") or {}).get("locale"))
@@ -77,12 +80,13 @@ def onboarding_prelude(agent, history: Iterable[dict]) -> Iterator[tuple[str, st
 def onboarding_turn_note(agent, *, history_empty: bool, card_waiting: bool) -> str:
     """Before a user turn in the onboarding chat, while no card waits: which card is closed and how to
     bring it back."""
-    from agent.onboarding_flow import is_active
+    from agent.agent_init_session import agent_interface
+    from session_rules.onboarding_flow import is_active
     from agent.onboarding_record import load
     from agent.onboarding_text import turn_note
     if history_empty or card_waiting or not builds_onboarding(agent):
         return ""
-    record = load(agent._session_db, agent.session_id)
+    record = load(agent._session_db, agent.session_id, persistence=agent_interface(agent))
     return (turn_note(record) or "") if record is not None and is_active(record) else ""
 
 

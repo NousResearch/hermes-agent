@@ -164,7 +164,7 @@ def _has_nonempty_user_text(messages: list[dict]) -> bool:
     ``role="assistant"`` summary does not satisfy backends that require an
     actual user query, so checking role and content together is the point.
     """
-    from agent.context_compressor import _content_text_for_contains
+    from session_rules.turns import _content_text_for_contains
 
     return any(
         m.get("role") == "user"

@@ -8,7 +8,6 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
-from hermes_state_runtime import list_session_admissions
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -56,7 +55,7 @@ async def _setup(tmp_path, monkeypatch, mode):
 
 def _admitted(authority):
     return [row for sid in authority.sessions
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 @pytest.mark.asyncio
@@ -82,7 +81,7 @@ async def test_busy_voice_note_steers_with_transcript_folds_and_acks(tmp_path, m
         assert sent, 'no busy ack'
         assert _admitted(authority) == []  # steered text is inside the run, never replayed
     finally:
-        authority.db.close()
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
@@ -107,4 +106,4 @@ async def test_busy_voice_note_interrupts_with_transcript_in_interrupt_mode(tmp_
         assert agent.interrupts == [('TRANSCRIBED stop that',)], agent.interrupts
         assert sent, 'no busy ack'
     finally:
-        authority.db.close()
+        runner.session_store.close_all_db_handles()

@@ -262,8 +262,9 @@ def test_resume_snapshot_carries_the_resident_agents_own_readouts():
     from gateway.session_usage import snapshot_usage
     row = {'input_tokens': 150, 'output_tokens': 40, 'cache_read_tokens': 800, 'cache_write_tokens': 50,
            'api_call_count': 3, 'model': 'm'}
-    authority = SimpleNamespace(sessions={'s': SimpleNamespace(compression_count=0)},
-                                db=SimpleNamespace(get_session=lambda sid: row if sid == 's' else None))
+    record = SimpleNamespace(as_session_row=lambda: row)
+    authority = SimpleNamespace(sessions={'s': SimpleNamespace(compression_count=0)}, persistence=SimpleNamespace(
+        sessions=SimpleNamespace(get=lambda sid: record if sid == 's' else None)))
     ref = SimpleNamespace(session_id='s')
     usage = snapshot_usage(authority, ref, _agent())
     assert usage['cache_hit_pct'] == 9 and usage['avg_tps'] == 10.0 and usage['calls'] == 2

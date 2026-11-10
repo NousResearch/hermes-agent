@@ -176,7 +176,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     screen, retitle the window or restyle the panel. Pure-reasoning assistant rows with no
     visible output are skipped, as are tool-call-only rows when ``resume_skip_tool_only``.
     """
-    from agent.message_metadata import withheld_prompt_text
+    from session_rules.turns import withheld_prompt_text
     from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
     max_user_len = int(disp.get("resume_max_user_chars", 300))
     max_asst_len = int(disp.get("resume_max_assistant_chars", 200))
@@ -707,6 +707,7 @@ class CLIAgentSetupMixin:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
+                persistence=getattr(self._session_db, "persistence", None),
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
                 connection_update_callback=None if single_query_mode else self._connection_on_change,
                 # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
@@ -796,14 +797,14 @@ class CLIAgentSetupMixin:
         if not self._session_db:
             return None
         from cli import logger
-        from hermes_state import SessionResumeTooLargeError
+        from persistence.conversation.messages import ResumeTooLarge
         try:
             safety_check = getattr(self._session_db, "assert_resume_safe", None)
             if not callable(safety_check):
                 return None
             safety_check(getattr(self, "_resume_read_id", None) or self.session_id,
                          **({"tip_only": True} if tip_only else {}))
-        except SessionResumeTooLargeError as exc:
+        except ResumeTooLarge as exc:
             return str(exc)
         except Exception as exc:
             logger.warning(
@@ -834,7 +835,7 @@ class CLIAgentSetupMixin:
         if (kanban_refusal := kanban_resume_refusal(self._session_db, self._resume_read_id)):
             self._console_print(f"[bold red]{_escape(kanban_refusal)}[/]")
             self._resumed = False
-            from hermes_state_ids import new_session_id
+            from session_rules.session_ids import new_session_id
             self.session_id = new_session_id(self.session_start)
             return False
         resume_limit_error = self._resume_history_limit_error()

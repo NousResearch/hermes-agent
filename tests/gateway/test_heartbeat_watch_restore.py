@@ -11,7 +11,7 @@ from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionStore, SessionSource
 from hermes_cli import goals
 from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 
 
 @pytest.mark.asyncio
@@ -24,7 +24,7 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
     (named / 'config.yaml').write_text('{}')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(home))
-    dbs = {str(p): SessionDB(db_path=p / 'state.db') for p in (home, named)}
+    dbs = {str(p): open_persistence(profile_scope(home=p)) for p in (home, named)}
     monkeypatch.setattr(goals, '_DB_CACHE', dbs)
     config = GatewayConfig(multiplex_profiles=True)
     store = SessionStore(home / 'sessions', config)
@@ -92,7 +92,7 @@ async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, mo
     (named / 'config.yaml').write_text('{}')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(home))
-    dbs = {str(p): SessionDB(db_path=p / 'state.db') for p in (home, named)}
+    dbs = {str(p): open_persistence(profile_scope(home=p)) for p in (home, named)}
     monkeypatch.setattr(goals, '_DB_CACHE', dbs)
     config = GatewayConfig(multiplex_profiles=True)
     store = SessionStore(home / 'sessions', config)
@@ -114,29 +114,29 @@ async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, mo
         assert runner._heartbeat_watch == {}
 
         # A cleared heartbeat keeps its row (status=cleared): still nothing to restore.
-        dbs[str(named)].set_meta('heartbeat:old', HeartbeatState(
+        dbs[str(named)].state_meta.set('heartbeat:old', HeartbeatState(
             prompt='p', interval_seconds=60, status='cleared').to_json())
         await restore_heartbeat_watches(runner)
         assert sweeps == []
 
         # An ACTIVE row in the secondary store opens the gate.
-        dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
+        dbs[str(named)].state_meta.set('heartbeat:live', HeartbeatState(
             prompt='p', interval_seconds=60, status='active').to_json())
         await restore_heartbeat_watches(runner)
         assert sweeps == [1]
 
         # A `-p work` multiplexer's routing home is the named profile; an active heartbeat that
         # lives only in the DEFAULT store must still bring the sweep back.
-        dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
+        dbs[str(named)].state_meta.set('heartbeat:live', HeartbeatState(
             prompt='p', interval_seconds=60, status='cleared').to_json())
         store._routing_home = named
         await restore_heartbeat_watches(runner)
         assert sweeps == [1], 'no active row anywhere: still idle'
-        dbs[str(home)].set_meta('heartbeat:root', HeartbeatState(
+        dbs[str(home)].state_meta.set('heartbeat:root', HeartbeatState(
             prompt='p', interval_seconds=60, status='active').to_json())
         await restore_heartbeat_watches(runner)
         assert sweeps == [1, 1], 'active row in the default store must be seen from a named routing home'
-        dbs[str(home)].set_meta('heartbeat:root', HeartbeatState(
+        dbs[str(home)].state_meta.set('heartbeat:root', HeartbeatState(
             prompt='p', interval_seconds=60, status='cleared').to_json())
 
         # Fail OPEN: a store the probe cannot open must not suppress the sweep.
@@ -187,7 +187,7 @@ async def test_restore_enters_each_profile_scope_once_per_scan(tmp_path, monkeyp
     (named / 'config.yaml').write_text('{}')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(home))
-    dbs = {str(p): SessionDB(db_path=p / 'state.db') for p in (home, named)}
+    dbs = {str(p): open_persistence(profile_scope(home=p)) for p in (home, named)}
     monkeypatch.setattr(goals, '_DB_CACHE', dbs)
     config = GatewayConfig(multiplex_profiles=True)
     store = SessionStore(home / 'sessions', config)

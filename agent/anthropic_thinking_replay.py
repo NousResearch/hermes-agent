@@ -52,9 +52,12 @@ def tracks_rejected_thinking(agent: Any) -> bool:
     ) in SIGNED_REPLAY_ROUTES
 
 
-def rejected_thinking_fingerprints(session_db: Any, session_id: Any) -> set[str]:
+def rejected_thinking_fingerprints(session_db: Any, session_id: Any, *, persistence: Any = None) -> set[str]:
     """The persisted rejection fingerprints of ``session_id``."""
-    getter = getattr(session_db, "get_session_model_config_value", None)
+    from agent.agent_init_session import writer_interface
+    store = writer_interface(persistence, session_db)
+    getter = (store.sessions.get_model_config_value if store is not None
+              else getattr(session_db, "get_session_model_config_value", None))
     if not session_id or not callable(getter):
         return set()
     try:
@@ -65,13 +68,13 @@ def rejected_thinking_fingerprints(session_db: Any, session_id: Any) -> set[str]
     return {value for value in raw if isinstance(value, str) and value} if isinstance(raw, list) else set()
 
 
-def session_rejected_thinking(holder: Any, session_db: Any, session_id: Any) -> set[str]:
+def session_rejected_thinking(holder: Any, session_db: Any, session_id: Any, *, persistence: Any = None) -> set[str]:
     """``holder``'s in-memory fingerprints for ``session_id``, else the persisted ones. The in-memory
     set is authoritative: it outlives a failed or disabled persist."""
     cached = getattr(holder, "_anthropic_rejected_thinking", None)
     if isinstance(cached, tuple) and cached[0] == session_id:
         return cached[1]
-    return rejected_thinking_fingerprints(session_db, session_id)
+    return rejected_thinking_fingerprints(session_db, session_id, persistence=persistence)
 
 
 def _bind(agent: Any, session_id: Any, rejected: set[str]) -> None:
@@ -85,8 +88,10 @@ def _bind(agent: Any, session_id: Any, rejected: set[str]) -> None:
 
 def _rejected(agent: Any) -> set[str]:
     # Keyed by session: /new, /resume, /branch and compression rotate ``session_id`` on a live agent.
+    from agent.agent_init_session import agent_interface
     session_id = getattr(agent, "session_id", None)
-    rejected = session_rejected_thinking(agent, getattr(agent, "_session_db", None), session_id)
+    rejected = session_rejected_thinking(agent, getattr(agent, "_session_db", None), session_id,
+                                         persistence=agent_interface(agent))
     _bind(agent, session_id, rejected)
     return rejected
 
@@ -94,7 +99,10 @@ def _rejected(agent: Any) -> set[str]:
 def _persist(agent: Any, rejected: set[str]) -> None:
     if getattr(agent, "_persist_disabled", False):
         return
-    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    patcher = (store.sessions.patch_model_config if store is not None
+               else getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None))
     session_id = getattr(agent, "session_id", None)
     if not session_id or not callable(patcher):
         return
@@ -198,7 +206,9 @@ def carry_rejected_thinking_to_session(agent: Any, old_session_id: str) -> None:
     if isinstance(cached, tuple) and cached[0] == old_session_id:
         rejected = set(cached[1])
     else:
-        rejected = rejected_thinking_fingerprints(getattr(agent, "_session_db", None), old_session_id)
+        from agent.agent_init_session import agent_interface
+        rejected = rejected_thinking_fingerprints(getattr(agent, "_session_db", None), old_session_id,
+                                                  persistence=agent_interface(agent))
     if not rejected:
         return
     rejected |= _rejected(agent)

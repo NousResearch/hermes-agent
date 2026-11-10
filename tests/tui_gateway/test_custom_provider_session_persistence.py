@@ -23,12 +23,16 @@ Related investigation: GH #44070 / PR #44099 (credential-pool base_url
 pinning); same family of resolved-vs-requested identity loss.
 """
 
+import contextlib
 import json
 import types
 from unittest.mock import MagicMock, patch
 
 import hermes_cli.runtime_provider as rp
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 MIMO_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 MIMO_KEY = "sk-mimo-entry-key"
@@ -298,13 +302,14 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
 
         captured = {}
 
-        class _DB:
-            def create_session(self, key, **kwargs):
-                captured.update(kwargs)
+        def create(spec):
+            captured["model_config"] = spec.model_config
 
         from tui_gateway import server as srv
 
-        monkeypatch.setattr(srv, "_get_db", lambda: _DB())
+        persistence = types.SimpleNamespace(sessions=types.SimpleNamespace(create=create, get=lambda _key: None))
+        monkeypatch.setattr(srv, "_get_db", lambda: object())
+        monkeypatch.setattr(srv, "_persistence_for", lambda _db: contextlib.nullcontext(persistence))
         monkeypatch.setattr(srv, "_resolve_model", lambda: "mimo-v2.5-pro")
 
         session = {
@@ -592,7 +597,7 @@ class TestRoomPlumbingRuntimeOverrides:
 class TestFollowProfileConfigRuntimeOverrides:
     def test_composer_pick_on_bot_chat_survives_resume_until_profile_model_changes(self, monkeypatch, tmp_path):
         """Production path, A->B->A shape: a composer /model pick on a follow_profile_config Bot Chat under
-        profile B persists its provenance marker into B's real SessionDB row via ``_apply_model_switch``;
+        profile B persists its provenance marker into B's real state.db row via ``_apply_model_switch``;
         ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
         model is unchanged, and drops it once B's profile model moves. Launch home A has a different
         model the whole time, so the compare must run under B's scope, not the launch profile's."""
@@ -604,15 +609,14 @@ class TestFollowProfileConfigRuntimeOverrides:
             (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n", encoding="utf-8")
             (home / ".env").write_text("", encoding="utf-8")
         stored = "20260919-000000-botc"
-        db = SessionDB(db_path=secondary / "state.db")
-        db.create_session(stored, "desktop", model="profile/default",
-                          model_config={"model": "profile/default", "provider": "nous", "follow_profile_config": True})
-        db.append_message(stored, "user", "hi")
-        db.append_message(stored, "assistant", "hello")
+        db = open_persistence(profile_scope(home=secondary))
+        seed_session(db, stored, "desktop", model="profile/default",
+                     model_config={"model": "profile/default", "provider": "nous", "follow_profile_config": True})
+        seed_messages(db, stored, {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"})
 
         class _FakeAgent:
             model, provider, base_url, api_key, api_mode = "profile/default", "nous", "", "", ""
-            _session_db = db
+            _session_db = persistence = db
 
             def switch_model(self, **kw):
                 self.model, self.provider = kw["new_model"], kw["new_provider"]
@@ -620,7 +624,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         monkeypatch.setenv("HERMES_HOME", str(launch))
         monkeypatch.setattr(server, "_hermes_home", str(launch))
         monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
-        monkeypatch.setattr(server, "_get_db", lambda: SessionDB(db_path=launch / "state.db"))
+        monkeypatch.setattr(server, "_get_db", lambda: storage_handle(launch))
         monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
         monkeypatch.setattr(server, "_schedule_resume_hydration", lambda *a, **k: None)
         monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
@@ -641,7 +645,7 @@ class TestFollowProfileConfigRuntimeOverrides:
             ):
                 server._apply_model_switch("sid-live", live, "glm-5.1")
 
-            row = json.loads(db.get_session(stored)["model_config"])
+            row = json.loads(session_row(db, stored)["model_config"])
             assert row["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
             assert row["model"] == "zai/glm-5.1"
 
@@ -694,11 +698,8 @@ class TestFollowProfileConfigRuntimeOverrides:
             session = server._sessions[resp["result"]["session_id"]]
             assert session["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
             assert server._ensure_session_db_row(session)
-            db = SessionDB(db_path=secondary / "state.db")
-            try:
-                row = db.get_session(session["session_key"])
-            finally:
-                db.close()
+            with open_persistence(profile_scope(home=secondary)) as db:
+                row = session_row(db, session["session_key"])
             with server._profile_build_scope(secondary):
                 restored = server._stored_session_runtime_overrides(row)["model_override"]
             assert (restored["model"], restored["provider"]) == ("zai/glm-5.1", "zai")
@@ -810,11 +811,12 @@ class TestFollowProfileConfigRuntimeOverrides:
 
         captured = {}
 
-        class FakeDB:
-            def create_session(self, *args, **kwargs):
-                captured["model_config"] = kwargs.get("model_config")
+        def create(spec):
+            captured["model_config"] = spec.model_config
 
-        monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+        persistence = types.SimpleNamespace(sessions=types.SimpleNamespace(create=create, get=lambda _key: None))
+        monkeypatch.setattr(server, "_get_db", lambda: object())
+        monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(persistence))
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
 
         session = {
@@ -835,11 +837,12 @@ class TestFollowProfileConfigRuntimeOverrides:
 
         captured = {}
 
-        class FakeDB:
-            def create_session(self, *args, **kwargs):
-                captured["model_config"] = kwargs.get("model_config")
+        def create(spec):
+            captured["model_config"] = spec.model_config
 
-        monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+        persistence = types.SimpleNamespace(sessions=types.SimpleNamespace(create=create, get=lambda _key: None))
+        monkeypatch.setattr(server, "_get_db", lambda: object())
+        monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(persistence))
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
 
         session = {

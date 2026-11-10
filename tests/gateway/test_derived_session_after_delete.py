@@ -9,13 +9,23 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from tests.fixtures.storage_holder import raw_holder, reclaim_tombstones
+
+
+def _delete(authority, sid):
+    """Delete *sid* as the delete door does; returns the removed ids."""
+    from gateway.session_ingress_media import native_inputs_root
+    from session_retention import after_sessions_removed
+    store = authority.persistence
+    removed = store.sessions.delete(sid, media_root=str(native_inputs_root()))
+    after_sessions_removed(store, store.scope.profile_dir, removed, reason='delete', primary=sid)
+    return removed
 
 
 def _delete_past_the_horizon(authority, sid):
-    from hermes_state_mutation_retirement import prune_retired_tombstones
-    assert authority.db.delete_session(sid)
+    assert _delete(authority, sid)
     authority.sessions.pop(sid, None)
-    authority.db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
+    reclaim_tombstones(authority.persistence)
 
 
 @pytest.mark.asyncio
@@ -30,8 +40,8 @@ async def test_a_hosted_room_member_rebinds_on_a_new_session_after_a_delete(api,
     later = HostedMemberDispatch.from_mapping(dict(dispatch.as_mapping(), task_id='task-2', execution_generation=2))
     rebound = await api._ensure_hosted_member_session(later)
     assert rebound != deleted
-    assert owner.db.get_session(deleted) is None, 'the deleted member session was recreated'
-    assert owner.db.get_session(rebound)['title'] == f'Group: {dispatch.room_id}'
+    assert owner.persistence.sessions.get(deleted) is None, 'the deleted member session was recreated'
+    assert owner.persistence.sessions.get(rebound).title == f'Group: {dispatch.room_id}'
     assert await api._ensure_hosted_member_session(later) == rebound
     owner.sessions.pop(rebound, None)  # a restart restores the binding from its durable receipt
     assert restore_api_session(owner, rebound).session_id == rebound
@@ -51,7 +61,7 @@ async def a2a(tmp_path, monkeypatch):
     monkeypatch.setattr(run, '_resolve_gateway_model', lambda config: 'fixture')
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = run.GatewayRunner.__new__(run.GatewayRunner)
-    runner.adapters, runner.session_store, runner._session_db, runner._draining = {}, store, store._db, False
+    runner.adapters, runner.session_store, runner._session_db, runner._draining = {}, store, store.persistence, False
     authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
     authority._schedule = lambda ref: None
 
@@ -63,13 +73,13 @@ async def a2a(tmp_path, monkeypatch):
         finally:
             await conn.close()
     yield authority, forward
-    authority.db.close()
+    store.close_all_db_handles()
 
 
 def _settle(authority, sid):
     """The context's queued input ran to completion (this authority schedules nothing)."""
-    authority.db.end_session(sid, 'test')
-    authority.db._execute_write(lambda c: c.execute(
+    authority.persistence.sessions.end(sid, 'test')
+    raw_holder(authority.persistence)._execute_write(lambda c: c.execute(
         "UPDATE session_admissions SET status='terminal', outcome='completed' WHERE target_session_id=?", (sid,)))
 
 
@@ -85,7 +95,7 @@ async def test_an_a2a_peer_context_continues_on_a_new_session_after_a_delete(a2a
     assert 'result' in later, later
     moved = later['result']['session_id']
     assert moved != deleted
-    assert authority.db.get_session(deleted) is None, 'the deleted context session was recreated'
+    assert authority.persistence.sessions.get(deleted) is None, 'the deleted context session was recreated'
     again = await forward('third', 'still there?')
     assert again['result']['session_id'] == moved
 
@@ -96,9 +106,9 @@ async def test_an_a2a_exact_retry_after_a_delete_is_not_run_again(a2a):
     first = await forward('first', 'hello')
     deleted = first['result']['session_id']
     _settle(authority, deleted)
-    assert authority.db.delete_session(deleted)  # within the retry horizon
+    assert _delete(authority, deleted)  # within the retry horizon
     authority.sessions.pop(deleted, None)
     retry = await forward('first', 'hello')
     assert 'result' not in retry, retry
-    rows = authority.db._read_all("SELECT target_session_id FROM session_admissions")
+    rows = raw_holder(authority.persistence)._read_all("SELECT target_session_id FROM session_admissions")
     assert rows == [], f'the retried input was admitted again: {rows}'

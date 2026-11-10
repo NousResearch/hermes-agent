@@ -1,6 +1,6 @@
 """ACP session manager — maps ACP sessions to Hermes AIAgent instances.
 
-Sessions are persisted to the shared SessionDB (``~/.hermes/state.db``) so they
+Sessions are persisted to the shared session store (``~/.hermes/state.db``) so they
 survive process restarts and appear in ``session_search``; ``load_session`` /
 ``resume_session`` after an editor reconnect restore the full history from there.
 """
@@ -19,6 +19,7 @@ import time
 import uuid
 from datetime import datetime, timezone, UTC
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,63 @@ def _first_user_preview(history: list[dict[str, Any]], default: str) -> str:
                  if m.get("role") == "user" and str(m.get("content") or "").strip()), default)
 
 
+def _open_beside(db: Any) -> Any:
+    """A storage interface handle on ``db``'s store file: ``db`` itself when it is one; None without one (no store, a
+    store without a path, or a file other than its folder's ``state.db``, the one file a handle opens)."""
+    from persistence_assembly import Persistence
+    from persistence_beside import open_beside
+    if isinstance(db, Persistence):
+        return db
+    path = getattr(db, "db_path", None)
+    if not isinstance(path, (str, Path)) or Path(path).name != "state.db":
+        return None
+    return open_beside(Path(path).parent)
+
+
+# Message-dict key -> ``NewMessage`` field for the keys a transcript write persists.
+_NEW_MESSAGE_FIELDS = (
+    ("timestamp", "timestamp"), ("tool_calls", "tool_calls"), ("tool_name", "tool_name"),
+    ("tool_call_id", "tool_call_id"), ("display_kind", "display_kind"), ("_compressed_summary", "compressed_summary"),
+    ("api_content", "api_content"), ("display_metadata", "display_metadata"), ("observed", "observed"),
+    ("effect_disposition", "effect_disposition"), ("finish_reason", "finish_reason"), ("reasoning", "reasoning"),
+    ("reasoning_content", "reasoning_content"), ("reasoning_details", "reasoning_details"),
+    ("codex_reasoning_items", "codex_reasoning_items"), ("codex_message_items", "codex_message_items"),
+    ("message_uid", "message_uid"), ("_absorbed_message_uids", "absorbed_message_uids"),
+    ("_tool_call_uids", "tool_call_uids"), ("_tool_call_uid", "tool_call_uid"), ("token_count", "token_count"),
+    ("data_use", "data_use"),
+)
+
+
+def _new_message(msg: dict[str, Any]) -> Any:
+    """One live message dict as the ``NewMessage`` a transcript write takes; ``message_id`` stands in for a missing
+    ``platform_message_id``."""
+    from persistence.conversation.messages import NewMessage
+    fields = {name: msg[key] for key, name in _NEW_MESSAGE_FIELDS if msg.get(key) is not None}
+    for name in ("tool_calls", "absorbed_message_uids", "data_use"):
+        if isinstance(fields.get(name), list):
+            fields[name] = tuple(fields[name])
+    for name in ("compressed_summary", "observed"):
+        if name in fields:
+            fields[name] = bool(fields[name])
+    platform_message_id = msg.get("platform_message_id") or msg.get("message_id")
+    if platform_message_id:
+        fields["platform_message_id"] = platform_message_id
+    return NewMessage(role=msg.get("role", "unknown"), content=msg.get("content"), **fields)
+
+
+def _stamp_rows(history: list[dict[str, Any]], rows: Any) -> None:
+    """Carry each written row's identity onto its live message dict, as the store stamps a dict it inserts."""
+    for msg, row in zip(history, rows):
+        msg["message_uid"] = row.message_uid
+        if row.tool_call_uids:
+            msg["_tool_call_uids"] = dict(row.tool_call_uids)
+        if row.tool_call_uid:
+            msg["_tool_call_uid"] = row.tool_call_uid
+        msg["timestamp"], msg["_row_id"] = row.timestamp, int(row.id)
+        if row.db_row_snapshot is not None:
+            msg["_db_row_snapshot"] = row.db_row_snapshot
+
+
 @dataclass
 class SessionState:
     """Tracks per-session state for an ACP-managed Hermes agent."""
@@ -157,11 +215,11 @@ class SessionManager:
     """Thread-safe manager for ACP sessions backed by Hermes AIAgent instances.
 
     Sessions are held in-memory for fast access **and** persisted to the shared
-    SessionDB so they survive restarts and are searchable via ``session_search``."""
+    session store so they survive restarts and are searchable via ``session_search``."""
 
     def __init__(self, agent_factory=None, db=None):
         """``agent_factory``: AIAgent-like factory (tests); default builds a real AIAgent from
-        the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
+        the runtime provider config. ``db``: the session store; default lazily opens ``~/.hermes/state.db``."""
         self._sessions: dict[str, SessionState] = {}
         self._lock = threading.Lock()
         # Serializes DB restores: session construction runs off the event loop, so two
@@ -169,6 +227,8 @@ class SessionManager:
         self._restore_lock = threading.Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        # The storage interface handle on the same store file; every session read and write goes through it.
+        self._persistence = _open_beside(db)
         self._cwd_backfilled = False
 
     # ---- public API ---------------------------------------------------------
@@ -245,10 +305,8 @@ class SessionManager:
 
     def _catalog_rows(self) -> dict[str, dict[str, Any]]:
         from acp_adapter.catalog import read_catalog_rows
-        from pathlib import Path
-
-        path = Path(self._db_instance.db_path) if self._db_instance is not None else get_hermes_home() / "state.db"
-        return read_catalog_rows(path)
+        handle = self._persistence
+        return read_catalog_rows(handle.scope.profile_dir if handle is not None else get_hermes_home())
 
     def display_history(self, session_id: str) -> Optional[list[dict[str, Any]]]:
         """The DURABLE DISPLAY projection for a session (``include_compacted``): what a reopened
@@ -256,11 +314,13 @@ class SessionManager:
         keeps a safety-refused turn's retained ``content_refused`` row, which the model context
         dropped (``active = 0``). ``None`` when the DB is unavailable (e.g. a test agent factory),
         so callers fall back to the in-memory model history."""
+        from persistence.conversation.messages import ConversationRequest, TranscriptView
         db = self._get_db()
         if db is None:
             return None
         try:
-            return db.get_messages_as_conversation(session_id, include_compacted=True)
+            return [message.as_openai_message() for message in db.messages.read_conversation(
+                session_id, ConversationRequest(view=TranscriptView.DISPLAY))]
         except Exception:
             logger.debug("Failed to load ACP display history for %s", session_id, exc_info=True)
             return None
@@ -301,15 +361,15 @@ class SessionManager:
         contract the TUI gateway's resume path uses. Best-effort: teardown
         must never raise. Returns the number of sessions ended.
         """
-        db = self._get_db()
-        if db is None:
+        persistence = self._get_persistence()
+        if persistence is None:
             return 0
         with self._lock:
             session_ids = list(self._sessions.keys())
         ended = 0
         for session_id in session_ids:
             try:
-                db.end_session(session_id, end_reason)
+                persistence.sessions.end(session_id, end_reason)
                 ended += 1
             except Exception:
                 logger.debug("Failed to end ACP session %s", session_id, exc_info=True)
@@ -317,7 +377,7 @@ class SessionManager:
             logger.info("Ended %d ACP session(s) on shutdown (%s)", ended, end_reason)
         return ended
 
-    # ---- persistence via SessionDB ------------------------------------------
+    # ---- persistence via the session store -----------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
                        history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
@@ -332,33 +392,42 @@ class SessionManager:
         return state
 
     def _get_db(self):
-        """Lazily acquire the process-shared SessionDB; ``None`` if unavailable (e.g. import
-        error in a minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
-        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured. The
-        registry handle is the one in-process tools (delegation, session_search, goals) also
-        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
+        """Lazily open the process-shared session store; ``None`` if unavailable (e.g. import
+        error in a minimal test env). ``HERMES_HOME`` is resolved here, not at import time, so
+        test fixtures that change the env var later are honoured. The store is the one in-process
+        tools (delegation, session_search, goals) also open, so the ACP server holds ONE writer on
+        state.db instead of two (#100896); it is its own storage interface handle."""
         if self._db_instance is None:
             try:
-                from hermes_state_registry import acquire
-                self._db_instance = acquire(get_hermes_home() / "state.db")
+                from persistence_assembly import open_persistence, profile_scope
+                self._db_instance = open_persistence(profile_scope(home=get_hermes_home()), eager=True)
             except Exception:
-                logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
-        if self._db_instance is not None and not self._cwd_backfilled:
+                logger.debug("Session store unavailable for ACP persistence", exc_info=True)
+        if self._db_instance is not None and self._persistence is None:
+            self._persistence = _open_beside(self._db_instance)
+        if self._persistence is not None and not self._cwd_backfilled:
             # Rows minted before the adapter wrote the cwd column still carry the workspace
             # in model_config; one idempotent UPDATE per process repairs them (#115705).
             self._cwd_backfilled = True
             try:
-                repaired = self._db_instance.backfill_acp_session_cwd()
+                repaired = self._persistence.sessions.backfill_acp_session_cwds()
                 if repaired:
                     logger.info("Backfilled cwd for %d ACP session(s) from model_config", repaired)
             except Exception:
                 logger.debug("ACP session cwd backfill failed", exc_info=True)
         return self._db_instance
 
+    def _get_persistence(self):
+        """The storage interface handle beside the store ``_get_db`` holds; ``None`` while there is none."""
+        return self._persistence if self._get_db() is not None else None
+
     def _persist(self, state: SessionState) -> None:
         """Create/update the session record, then sync the live message set."""
+        from persistence.conversation.messages import ReplaceMode
+        from persistence.conversation.sessions import NewSession, ReplaceSessionConfig
         db = self._get_db()
-        if db is None:
+        persistence = self._persistence if db is not None else None
+        if persistence is None:
             return
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
@@ -370,15 +439,16 @@ class SessionManager:
                 session_meta[key] = value.strip()
 
         try:
-            if db.get_session(state.session_id) is None:
+            if persistence.sessions.get(state.session_id) is None:
                 if not state.history:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
-                db.create_session(session_id=state.session_id, source="acp", model=model_str,
-                                  model_config=session_meta, cwd=state.cwd or None)
+                persistence.sessions.create(NewSession(session_id=state.session_id, source="acp", model=model_str,
+                                                       model_config=session_meta, cwd=state.cwd or None))
             else:
                 try:
-                    db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
+                    persistence.sessions.replace_session_config(
+                        state.session_id, ReplaceSessionConfig(model_config=session_meta, model=model_str))
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
                 # The create branch above is not the live path: an agent that owns
@@ -411,7 +481,9 @@ class SessionManager:
             # create/fork every row is active (== full replace), and archived rows survive.
             # Unconditional because an existence probe would fail OPEN on DB error and can
             # race a concurrent archive_and_compact. Still rolls back on mid-rewrite failure.
-            db.replace_messages(state.session_id, state.history, active_only=True)
+            result = persistence.messages.replace_transcript(
+                state.session_id, [_new_message(m) for m in state.history], ReplaceMode.PRESERVE_EXISTING_ARCHIVE)
+            _stamp_rows(state.history, result.rows)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 
@@ -421,11 +493,11 @@ class SessionManager:
         Returns None when the row does not exist yet (a contentless session is
         deliberately ephemeral until it has history) or the DB is unavailable.
         """
-        db = self._get_db()
-        if db is None or not state.cwd:
+        persistence = self._get_persistence()
+        if persistence is None or not state.cwd:
             return None
         try:
-            return db.update_session_cwd(state.session_id, state.cwd)
+            return persistence.sessions.update_cwd(state.session_id, state.cwd)
         except Exception:
             logger.debug("Failed to persist ACP session cwd column for %s",
                          state.session_id, exc_info=True)
@@ -451,9 +523,9 @@ class SessionManager:
                 branch, root = git_probe.branch(cwd), git_probe.common_repo_root(cwd)
                 if not (branch or root):
                     return
-                db = self._get_db()
-                if db is not None:
-                    db.publish_session_git_metadata(session_id, cwd, generation, branch, root)
+                persistence = self._get_persistence()
+                if persistence is not None:
+                    persistence.sessions.publish_git_metadata(session_id, cwd, generation, branch, root)
             except Exception:
                 logger.debug("Failed to publish ACP git metadata for %s", session_id, exc_info=True)
 
@@ -461,33 +533,35 @@ class SessionManager:
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
         """Load an ACP session from the database into memory, recreating the AIAgent."""
-        db = self._get_db()
-        if db is None:
+        from persistence.conversation.messages import ConversationRequest
+        persistence = self._get_persistence()
+        if persistence is None:
             return None
         try:
-            row = db.get_session(session_id)
+            row = persistence.sessions.get(session_id)
         except Exception:
             logger.debug("Failed to query DB for ACP session %s", session_id, exc_info=True)
             return None
-        if row is None or row.get("source") != "acp":
+        if row is None or row.source != "acp":
             return None
 
         # A previous adapter process stamped the row ended at its stdio
         # shutdown (#118216); resuming the conversation reopens it, the same
         # contract the TUI gateway's cold-resume path uses.
-        if row.get("ended_at") is not None:
+        if row.ended_at is not None:
             try:
-                db.reopen_session(session_id)
+                persistence.sessions.reopen(session_id)
             except Exception:
                 logger.debug("Failed to reopen ACP session %s", session_id, exc_info=True)
 
-        meta = _parse_model_config(row.get("model_config"))
-        cwd, model = meta.get("cwd", "."), row.get("model") or None
+        meta = dict(row.model_config)
+        cwd, model = meta.get("cwd", "."), row.model or None
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
         try:
-            history = db.get_messages_as_conversation(session_id, repair_alternation=True)
+            history = [message.as_openai_message() for message in persistence.messages.read_conversation(
+                session_id, ConversationRequest(repair_alternation=True))]
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
@@ -495,8 +569,8 @@ class SessionManager:
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                requested_provider=meta.get("provider") or row.billing_provider,
+                base_url=meta.get("base_url") or row.billing_base_url)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
@@ -539,6 +613,7 @@ class SessionManager:
             enabled_toolsets = _expand_acp_enabled_toolsets(sorted(resolved - mcp_servers), sorted(mcp_servers))
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
+            "persistence": self._get_persistence(),
             "enabled_toolsets": list(enabled_toolsets),
             # agent.disabled_toolsets is subtracted at tool granularity by the agent, as on the CLI/gateway/cron.
             "disabled_toolsets": (list(disabled_toolsets) if disabled_toolsets is not None

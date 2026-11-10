@@ -14,12 +14,105 @@ from unittest.mock import Mock, patch
 import pytest
 
 from gateway.owner_identity import host_owner_subject as _owner
+import persistence_assembly
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
+from persistence.conversation.messages import (
+    ConversationMessage, ConversationRequest, ReplaceMode, ReplaceResult, ResumeConversations, TranscriptView,
+)
+from persistence.conversation.sessions import TitleSource
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tools import async_delegation as ad
 from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
+
+
+_NO_LEDGER_WORK = types.SimpleNamespace(pending_ledger_status=lambda _key: None)  # no ledger holds work
+
+
+def _lineage_persistence_for(db):
+    """``server._persistence_for`` over a fake store whose ``resolve_resume_target`` answers the lineage."""
+    return contextlib.nullcontext(None if db is None else types.SimpleNamespace(lineage=db, runtime=_NO_LEDGER_WORK))
+
+
+def _stored(row):
+    """A stored session record double: ``row``'s columns as attributes, and ``as_session_row``."""
+    return types.SimpleNamespace(**{"cwd": None, "git_branch": None, "git_repo_root": None, "system_prompt": None,
+                                    **row}, as_session_row=lambda: dict(row))
+
+
+def _listing(rows):
+    """Listing entries whose rows are ``rows``."""
+    return tuple(types.SimpleNamespace(as_list_row=lambda row=row: dict(row)) for row in rows)
+
+
+def _replay(rows):
+    """Stored conversation messages whose replay dicts are ``rows``."""
+    return tuple(types.SimpleNamespace(as_openai_message=lambda row=row: dict(row)) for row in rows)
+
+
+def _copied(session_id, messages):
+    """The rows a transcript write received, as ``{role, content, session_id}`` dicts."""
+    return [{"role": m.role, "content": m.content, "session_id": session_id} for m in messages]
+
+
+def _fakes_are_handles(monkeypatch, *fake_types):
+    """Each store of ``fake_types`` is its own storage handle, as a store opened through the interface is; any other
+    store keeps the handle beside it."""
+    real_for, real_beside = server._persistence_for, server._persistence_beside
+    monkeypatch.setattr(server, "_persistence_beside", lambda db: db if isinstance(db, fake_types) else real_beside(db))
+    monkeypatch.setattr(server, "_persistence_for",
+                        lambda db: contextlib.nullcontext(db) if isinstance(db, fake_types) else real_for(db))
+
+
+def _stores_open_as(monkeypatch, make_store):
+    """Every store the gateway opens through the storage interface is ``make_store(<the store's file>)``."""
+    monkeypatch.setattr(persistence_assembly, "open_persistence",
+                        lambda scope, **_kwargs: make_store(persistence_assembly.store_location(scope)))
+
+
+class _HandleRepositories:
+    """A fake store that is its own storage handle: every repository it is read through is the fake itself."""
+
+    sessions = messages = lineage = coordination = property(lambda self: self)
+
+
+class _ResumeStore(_HandleRepositories):
+    """A fake store answering the reads ``session.resume`` makes for an empty stored session."""
+
+    def get(self, _session_id):
+        return None
+
+    def get_by_title(self, _title):
+        return None
+
+    def is_kanban_owned(self, _session_id):
+        return False
+
+    def retire_undrained_queue_rows(self, _session_id):
+        return 0
+
+    def resolve_resume_target(self, session_id):
+        return session_id
+
+    def tip(self, session_id):
+        return session_id
+
+    def assert_resume_safe(self, *_args, **_kwargs):
+        return 0
+
+    def read_conversation(self, *_args, **_kwargs):
+        return ()
+
+    def read_resume_conversations(self, _session_id):
+        return ResumeConversations(model=(), display=())
+
+    def ancestor_display_prefix(self, _session_id):
+        return ()
 
 
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
@@ -186,18 +279,24 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
         def __exit__(self, *_args):
             return False
 
-    class FakeDb:
+    from persistence.authority.coordination import HandoffState, HandoffStatus
+
+    class FakeDb(_HandleRepositories):
         def __init__(self, state):
             self.state = state
             self.failed_with = None
 
-        def get_handoff_state(self, _key):
-            return {"state": self.state, "platform": "telegram", "error": None}
+        def get_handoff(self, *, session_id):
+            return HandoffState(state=HandoffStatus(self.state), platform="telegram", error=None)
 
-        def fail_handoff(self, _key, error):
+        def fail_handoff(self, *, session_id, error, only_states=None):
+            if only_states is not None and self.state not in only_states:
+                return False
             self.failed_with = error
             self.state = "failed"
+            return True
 
+    _fakes_are_handles(monkeypatch, FakeDb)
     sid = "rt-handoff"
     server._sessions[sid] = {"session_key": "stored-handoff"}
     try:
@@ -3279,43 +3378,23 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
     captured = {}
     target = "tip-omit" if omit_messages else "tip-full"
 
-    class FakeDB:
-        def get_session(self, target):
-            return {"id": target}
+    lineage = [{"role": "user", "content": "root prompt"}, {"role": "assistant", "content": "root answer"}]
+    tip = [{"role": "user", "content": "tip prompt"}]
 
-        def reopen_session(self, target):
-            captured["reopened"] = target
+    class FakeDB(_ResumeStore):
+        def get(self, target):
+            return _stored({"id": target})
 
-        def get_resume_conversations(self, session_id):
-            return (
-                self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
-            )
+        def read_resume_conversations(self, session_id):
+            captured.setdefault("history_calls", []).append((session_id, True, True))
+            return ResumeConversations(model=_replay(tip), display=_replay(lineage))
 
-        def get_ancestor_display_prefix(self, _sid):
-            return []
-
-        def get_messages_as_conversation(
-            self,
-            target,
-            include_ancestors=False,
-            repair_alternation=False,
-            include_row_ids=False,
-            **_kwargs,
-        ):
-            captured.setdefault("history_calls", []).append(
-                (target, include_ancestors, include_row_ids)
-            )
-            return (
-                [
-                    {"role": "user", "content": "root prompt"},
-                    {"role": "assistant", "content": "root answer"},
-                ]
-                if include_ancestors
-                else [{"role": "user", "content": "tip prompt"}]
-            )
+        def read_conversation(self, target, request):
+            captured.setdefault("history_calls", []).append((target, request.include_lineage, request.include_row_ids))
+            return _replay(lineage if request.include_lineage else tip)
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    _fakes_are_handles(monkeypatch, FakeDB)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
@@ -3352,177 +3431,6 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
     assert resp["result"]["messages_omitted"] is omit_messages
 
 
-def test_live_visible_history_falls_back_without_db_or_key():
-    in_memory = [{"role": "user", "content": "hi"}]
-    # No DB handle available.
-    assert server._live_visible_history({"session_key": "s"}, None, in_memory) == in_memory
-
-    # DB available but the session has no persist key yet.
-    class DB:
-        def get_messages_as_conversation(self, *a, **k):  # pragma: no cover - not reached
-            raise AssertionError("must not query without a session_key")
-
-    assert server._live_visible_history({}, DB(), in_memory) == in_memory
-
-
-def test_live_visible_history_falls_back_when_db_empty():
-    """A brand-new live session whose first turn hasn't been flushed keeps its
-    in-memory history rather than rendering empty."""
-    in_memory = [{"role": "user", "content": "fresh turn not flushed yet"}]
-
-    class EmptyDB:
-        def get_messages_as_conversation(self, *a, **k):
-            return []
-
-    assert server._live_visible_history({"session_key": "s"}, EmptyDB(), in_memory) == in_memory
-
-
-def test_live_visible_history_falls_back_when_db_raises():
-    in_memory = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
-
-    class BrokenDB:
-        def get_messages_as_conversation(self, *a, **k):
-            raise RuntimeError("db exploded")
-
-    assert server._live_visible_history({"session_key": "s"}, BrokenDB(), in_memory) == in_memory
-
-
-def test_live_visible_history_keeps_candidate_and_fresh_tail():
-    """The hard case: the persisted candidate (missing from in-memory) AND a
-    not-yet-flushed live turn (missing from the DB) must BOTH survive."""
-    # Persisted display: has the verification candidate, lags the newest turn.
-    db_display = [
-        {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "long substantive answer",
-         "finish_reason": "verification_required"},
-        {"role": "assistant", "content": "terse verified reply"},
-    ]
-    # In-memory model history: candidate collapsed out, but has a fresh turn 2.
-    in_memory = [
-        {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "terse verified reply"},
-        {"role": "user", "content": "turn 2 not flushed"},
-        {"role": "assistant", "content": "turn 2 reply not flushed"},
-    ]
-
-    class DB:
-        def get_messages_as_conversation(self, key, include_ancestors=False, repair_alternation=False, **_kwargs):
-            return list(db_display)
-
-    result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
-    assert result == [
-        {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "long substantive answer",
-         "finish_reason": "verification_required"},
-        {"role": "assistant", "content": "terse verified reply"},
-        {"role": "user", "content": "turn 2 not flushed"},
-        {"role": "assistant", "content": "turn 2 reply not flushed"},
-    ]
-
-
-def test_reconcile_display_with_live_trusts_db_when_tail_absent():
-    """If the DB tail isn't in memory (DB ahead / diverged), don't duplicate —
-    serve the persisted display."""
-    db_display = [
-        {"role": "user", "content": "a"},
-        {"role": "assistant", "content": "b"},
-    ]
-    in_memory = [{"role": "user", "content": "unrelated"}]
-    assert server._reconcile_display_with_live(db_display, in_memory) == db_display
-    assert server._reconcile_display_with_live([], in_memory) == in_memory
-    assert server._reconcile_display_with_live(db_display, []) == db_display
-
-
-def test_live_visible_history_keeps_an_unflushed_repeat_of_the_last_turn_real_db(tmp_path):
-    """The live tail is anchored on the last DB row's durable id, not its text: sending the same words again
-    ("ok" -> "done") before the flush must not fold the new turn into the persisted one."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s1", source="tui")
-    db.append_message("s1", role="user", content="ok")
-    db.append_message("s1", role="assistant", content="done")
-    live = db.get_messages_as_conversation("s1") + [
-        {"role": "user", "content": "ok"}, {"role": "assistant", "content": "done"}]
-
-    merged = server._live_visible_history({"session_key": "s1"}, db, live)
-    assert [m["content"] for m in merged] == ["ok", "done", "ok", "done"]
-    # Fully flushed: the same four rows, never doubled.
-    for msg in live[2:]:
-        db.append_message("s1", role=msg["role"], content=msg["content"])
-    flushed = db.get_messages_as_conversation("s1")
-    assert [m["content"] for m in server._live_visible_history({"session_key": "s1"}, db, flushed)] == [
-        "ok", "done", "ok", "done"]
-
-
-def test_live_visible_history_matches_eager_resume_with_real_db(tmp_path):
-    """E2E cross-builder consistency against a real SessionDB.
-
-    A persisted verification candidate (finish_reason=verification_required)
-    is collapsed out of the model history by repair_message_sequence but kept
-    in the display lineage (#65919). The warm/live projection
-    (_live_visible_history) must equal the eager session.resume display
-    projection — both keeping the candidate — so switching to a live session
-    shows the same substantive answer a cold resume would.
-    """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s1", source="tui")
-    db.append_message("s1", role="user", content="do the thing")
-    db.append_message(
-        "s1", role="assistant", content="long substantive answer",
-        finish_reason="verification_required",
-    )
-    db.append_message(
-        "s1", role="assistant", content="terse verified reply", finish_reason="stop",
-    )
-
-    model_history, display_history = db.get_resume_conversations("s1")
-
-    # The divergence #65919 introduced: candidate absent from the model
-    # projection, present in the display projection.
-    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
-    assert any("long substantive" in (m.get("content") or "") for m in display_history)
-
-    # Eager session.resume serves the display projection.
-    eager_messages = server._history_to_messages(display_history)
-    # Warm/live reuse: in-memory history is the collapsed model projection.
-    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
-    # They must agree — the candidate survives the warm switch.
-    assert server._history_to_messages(live_history) == eager_messages
-    assert any(m.get("text") == "long substantive answer" for m in eager_messages)
-
-
-def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_path):
-    """Real-DB variant of the combined case: a candidate from turn 1 AND a
-    fully-flushed turn 2 both appear once."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s1", source="tui")
-    db.append_message("s1", role="user", content="turn 1")
-    db.append_message(
-        "s1", role="assistant", content="candidate answer",
-        finish_reason="verification_required",
-    )
-    db.append_message("s1", role="assistant", content="verified reply", finish_reason="stop")
-    db.append_message("s1", role="user", content="turn 2")
-    db.append_message("s1", role="assistant", content="turn 2 reply", finish_reason="stop")
-
-    model_history, _display_history = db.get_resume_conversations("s1")
-    live_history = server._live_visible_history({"session_key": "s1"}, db, list(model_history))
-    texts = [m.get("text") for m in server._history_to_messages(live_history)]
-
-    assert texts == [
-        "turn 1",
-        "candidate answer",
-        "verified reply",
-        "turn 2",
-        "turn 2 reply",
-    ]
-
-
 def test_live_session_payload_reads_profile_db_not_launch_db(monkeypatch, tmp_path):
     """Warm/live reuse for a non-launch profile session must open that
     profile's state.db, not the process launch DB.
@@ -3533,30 +3441,24 @@ def test_live_session_payload_reads_profile_db_not_launch_db(monkeypatch, tmp_pa
     fell back to collapsed in-memory model history — while eager
     ``session.resume`` against the same profile still showed them.
     """
-    from hermes_state import SessionDB
-
     launch_home = tmp_path / "launch"
     profile_home = tmp_path / "profile"
     launch_home.mkdir()
     profile_home.mkdir()
 
-    launch_db = SessionDB(db_path=launch_home / "state.db")
-    profile_db = SessionDB(db_path=profile_home / "state.db")
-    profile_db.create_session("s-profile", source="tui")
-    profile_db.append_message("s-profile", role="user", content="do the thing")
-    profile_db.append_message(
+    launch_db = storage_handle(launch_home)
+    profile_db = storage_handle(profile_home)
+    seed_session(profile_db, "s-profile", "tui")
+    seed_messages(
+        profile_db,
         "s-profile",
-        role="assistant",
-        content="long substantive answer",
-        finish_reason="verification_required",
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "long substantive answer", "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "terse verified reply", "finish_reason": "stop"},
     )
-    profile_db.append_message(
-        "s-profile",
-        role="assistant",
-        content="terse verified reply",
-        finish_reason="stop",
-    )
-    model_history, display_history = profile_db.get_resume_conversations("s-profile")
+    resumed = profile_db.messages.read_resume_conversations("s-profile")
+    model_history = [m.as_openai_message() for m in resumed.model]
+    display_history = [m.as_openai_message() for m in resumed.display]
     assert not any("long substantive" in (m.get("content") or "") for m in model_history)
     assert any("long substantive" in (m.get("content") or "") for m in display_history)
 
@@ -3587,17 +3489,13 @@ def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch,
     verbatim display projection so a persisted verification candidate is not
     collapsed out of the watch window (#65919 sibling of the warm-payload fix).
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("child1", source="tui")
-    db.append_message("child1", role="user", content="child prompt")
-    db.append_message(
-        "child1", role="assistant", content="child substantive answer",
-        finish_reason="verification_required",
-    )
-    db.append_message(
-        "child1", role="assistant", content="child terse reply", finish_reason="stop",
+    db = storage_handle(tmp_path)
+    seed_session(db, "child1", "tui")
+    seed_messages(
+        db, "child1",
+        {"role": "user", "content": "child prompt"},
+        {"role": "assistant", "content": "child substantive answer", "finish_reason": "verification_required"},
+        {"role": "assistant", "content": "child terse reply", "finish_reason": "stop"},
     )
 
     lease = types.SimpleNamespace(session_id="child1", release=lambda: None)
@@ -3638,26 +3536,35 @@ def test_session_resume_deferred_history_acknowledges_and_reuses(monkeypatch):
     loaded = {"role": "user", "content": "loaded"}
 
     class FakeDB:
-        def get_session(self, target):
-            return {"id": target, "message_count": 1200}
+        """The launch store; its reads go through ``persistence``."""
 
-        def resolve_resume_session_id(self, target):
-            return target
+    class FakeMessages:
+        def assert_resume_safe(self, *_args, **_kwargs):
+            return 0
 
-        def reopen_session(self, target):
-            assert target == "large-session"
-
-        def get_resume_conversations(self, target):
+        def read_resume_conversations(self, target):
             history_calls.append(("resume", target))
             history_started.set()
             assert release_history.wait(timeout=2.0)
-            return [loaded], [ancestor, loaded]
+            return ResumeConversations(
+                model=(ConversationMessage.from_openai_message(loaded),),
+                display=(ConversationMessage.from_openai_message(ancestor), ConversationMessage.from_openai_message(loaded)))
 
-        def get_ancestor_display_prefix(self, target):
+    class FakeLineage:
+        def resolve_resume_target(self, target):
+            return target
+
+        def ancestor_display_prefix(self, target):
             history_calls.append(("prefix", target))
-            return [ancestor]
+            return (ConversationMessage.from_openai_message(ancestor),)
 
+    persistence = types.SimpleNamespace(
+        sessions=_ResumeStore(), messages=FakeMessages(), lineage=FakeLineage())
+    persistence.sessions.get = lambda target: _stored({"id": target, "message_count": 1200})
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
+    monkeypatch.setattr(server, "_persistence_beside", lambda db: persistence if isinstance(db, FakeDB) else None)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
     monkeypatch.setattr(
@@ -3724,28 +3631,27 @@ def test_session_resume_deferred_history_failure_can_retry(monkeypatch):
     attempts = 0
 
     class FakeDB:
-        def get_session(self, target):
-            return {"id": target, "message_count": 1}
+        """The launch store; its reads go through ``persistence``."""
 
-        def resolve_resume_session_id(self, target):
-            return target
+    class FakeMessages:
+        def assert_resume_safe(self, *_args, **_kwargs):
+            return 0
 
-        def reopen_session(self, _target):
-            pass
-
-        def get_resume_conversations(self, _target):
+        def read_resume_conversations(self, _target):
             nonlocal attempts
             attempts += 1
             if attempts == 1:
                 first_released.set()
                 raise RuntimeError("sqlite read failed")
-            loaded = [{"role": "user", "content": "retry loaded"}]
-            return loaded, loaded
+            loaded = (ConversationMessage.from_openai_message({"role": "user", "content": "retry loaded"}),)
+            return ResumeConversations(model=loaded, display=loaded)
 
-        def get_ancestor_display_prefix(self, _target):
-            return []
-
+    persistence = types.SimpleNamespace(sessions=_ResumeStore(), messages=FakeMessages(), lineage=_ResumeStore())
+    persistence.sessions.get = lambda target: _stored({"id": target, "message_count": 1})
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
+    monkeypatch.setattr(server, "_persistence_beside", lambda db: persistence if isinstance(db, FakeDB) else None)
     monkeypatch.setattr(
         server,
         "_claim_active_session_slot",
@@ -3793,25 +3699,24 @@ def test_session_resume_deferred_history_close_cancels_build(monkeypatch):
     build_started = threading.Event()
 
     class FakeDB:
-        def get_session(self, target):
-            return {"id": target, "message_count": 1}
+        """The launch store; its reads go through ``persistence``."""
 
-        def resolve_resume_session_id(self, target):
-            return target
+    class FakeMessages:
+        def assert_resume_safe(self, *_args, **_kwargs):
+            return 0
 
-        def reopen_session(self, _target):
-            pass
-
-        def get_resume_conversations(self, _target):
+        def read_resume_conversations(self, _target):
             history_started.set()
             assert release_history.wait(timeout=2.0)
-            loaded = [{"role": "user", "content": "late"}]
-            return loaded, loaded
+            loaded = (ConversationMessage.from_openai_message({"role": "user", "content": "late"}),)
+            return ResumeConversations(model=loaded, display=loaded)
 
-        def get_ancestor_display_prefix(self, _target):
-            return []
-
+    persistence = types.SimpleNamespace(sessions=_ResumeStore(), messages=FakeMessages(), lineage=_ResumeStore())
+    persistence.sessions.get = lambda target: _stored({"id": target, "message_count": 1})
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
+    monkeypatch.setattr(server, "_persistence_beside", lambda db: persistence if isinstance(db, FakeDB) else None)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
     monkeypatch.setattr(
@@ -3853,29 +3758,20 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     the response generated after compression. session.resume must follow the
     compression tip via resolve_resume_session_id.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     base = int(time.time()) - 10_000
-    db.create_session("parent_root", source="tui")
-    db.append_message(
-        "parent_root", role="user", content="pre-compression turn",
-        timestamp=base + 10,
-    )
-    db.end_session("parent_root", "compression")
-    db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
-    db.append_message(
-        "cont_tip", role="assistant", content="post-compression reply",
-        timestamp=base + 110,
-    )
-    conn = db._conn
-    assert conn is not None
-    conn.execute(
-        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'parent_root'",
-        (base, base + 50),
-    )
-    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,))
-    conn.commit()
+    seed_session(db, "parent_root", "tui")
+    seed_messages(db, "parent_root", {"role": "user", "content": "pre-compression turn", "timestamp": base + 10})
+    db.sessions.end("parent_root", "compression")
+    seed_session(db, "cont_tip", "tui", parent_session_id="parent_root")
+    seed_messages(db, "cont_tip", {"role": "assistant", "content": "post-compression reply", "timestamp": base + 110})
+    raw_holder(db)._execute_write(lambda conn: (
+        conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'parent_root'",
+            (base, base + 50),
+        ),
+        conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,)),
+    ))
 
     captured = {}
 
@@ -3919,35 +3815,25 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
 def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     captured = {}
 
-    class FakeDB:
-        def get_session(self, target):
-            return {
+    class FakeDB(_ResumeStore):
+        def get(self, target):
+            return _stored({
                 "id": target,
                 "model": "gpt-5.4",
                 "billing_provider": "openai-codex",
                 "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
-            }
+            })
 
-        def reopen_session(self, target):
-            pass
-
-        def get_resume_conversations(self, session_id):
-            return (
-                self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
-            )
-
-        def get_ancestor_display_prefix(self, _sid):
-            return []
-
-        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False, **_kwargs):
-            return [{"role": "user", "content": "hello"}]
+        def read_resume_conversations(self, _session_id):
+            hello = _replay([{"role": "user", "content": "hello"}])
+            return ResumeConversations(model=hello, display=hello)
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
         captured.update(kwargs)
         return types.SimpleNamespace(model="gpt-5.4", provider="openai-codex")
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    _fakes_are_handles(monkeypatch, FakeDB)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
@@ -3989,36 +3875,23 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     profile_home.mkdir(parents=True)
     captured = {}
 
-    class ProfileDB:
-        def get_session(self, _target):
-            return {"id": target, "cwd": str(profile_cwd)}
+    class ProfileDB(_ResumeStore):
+        def get(self, _target):
+            return _stored({"id": target, "cwd": str(profile_cwd), "git_branch": "main",
+                            "git_repo_root": str(profile_cwd)})
 
-        def get_session_by_title(self, _target):
-            return None
+        def read_resume_conversations(self, _session_id):
+            hello = _replay([{"role": "user", "content": "hello"}])
+            return ResumeConversations(model=hello, display=hello)
 
-        def reopen_session(self, _target):
-            captured["reopened"] = _target
-
-        def get_resume_conversations(self, session_id):
-            return (
-                self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
-            )
-
-        def get_ancestor_display_prefix(self, _sid):
-            return []
-
-        def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False, **_kwargs):
-            return [{"role": "user", "content": "hello"}]
-
-        def update_session_cwd(self, *_args):
+        def update_cwd(self, *_args, **_kwargs):
             raise AssertionError("profile row already has cwd")
 
-    class LaunchDB:
-        def get_session(self, _target):
-            return {"id": target, "cwd": str(launch_cwd)}
+    class LaunchDB(_ResumeStore):
+        def get(self, _target):
+            return _stored({"id": target, "cwd": str(launch_cwd)})
 
-        def update_session_cwd(self, *_args):
+        def update_cwd(self, *_args, **_kwargs):
             captured["launch_update"] = True
 
     profile_db = ProfileDB()
@@ -4038,8 +3911,9 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
     monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
+    _stores_open_as(monkeypatch, lambda _path: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
+    _fakes_are_handles(monkeypatch, ProfileDB, LaunchDB)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(
         server,
@@ -4094,21 +3968,32 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     captured = {}
 
     class ProfileDB:
-        def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None):
-            captured["profile_update"] = (session_id, cwd)
-
         def close(self):
             captured["profile_closed"] = True
 
     class LaunchDB:
-        def update_session_cwd(self, *_args):
-            captured["launch_update"] = True
+        pass
 
     profile_db = ProfileDB()
 
+    class Sessions:
+        """The handle beside ``db``: records which store took the cwd write."""
+
+        def __init__(self, db):
+            self._db = db
+
+        def update_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None):
+            if self._db is profile_db:
+                captured["profile_update"] = (session_id, cwd)
+            else:
+                captured["launch_update"] = True
+
+    monkeypatch.setattr(server, "_persistence_for",
+                        lambda db: contextlib.nullcontext(types.SimpleNamespace(sessions=Sessions(db))))
+
     from tools import terminal_tool_lifecycle
 
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
+    _stores_open_as(monkeypatch, lambda _path: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_vm", lambda _key: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
@@ -4210,14 +4095,20 @@ def test_openrouter_session_resume_restores_provider():
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 
-    class FakeDB:
-        def get_session(self, session_id):
+    class FakeSessions:
+        def get(self, session_id):
             assert session_id == "stored-session"
-            return {"model_config": '{"_branched_from":"root"}'}
+            return types.SimpleNamespace(model_config={"_branched_from": "root"})
 
-        def update_session_meta(self, session_id, model_config_json, model=None):
-            updates["meta"] = (session_id, json.loads(model_config_json), model)
+        def replace_session_config(self, session_id, command):
+            updates["meta"] = (session_id, dict(command.model_config), command.model)
 
+    class FakeDB:
+        pass
+
+    persistence = types.SimpleNamespace(sessions=FakeSessions())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
     agent = types.SimpleNamespace(
         model="gpt-5.4",
         provider="openai-codex",
@@ -4246,16 +4137,22 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     )
 
 
-def test_persist_live_session_runtime_preserves_explicit_normal_tier():
+def test_persist_live_session_runtime_preserves_explicit_normal_tier(monkeypatch):
     updates = {}
 
+    class FakeSessions:
+        def get(self, _session_id):
+            return types.SimpleNamespace(model_config={"service_tier": "priority"})
+
+        def replace_session_config(self, _session_id, command):
+            updates["config"] = dict(command.model_config)
+
     class FakeDB:
-        def get_session(self, _session_id):
-            return {"model_config": '{"service_tier":"priority"}'}
+        pass
 
-        def update_session_meta(self, _session_id, model_config_json, model=None):
-            updates["config"] = json.loads(model_config_json)
-
+    persistence = types.SimpleNamespace(sessions=FakeSessions())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
     agent = types.SimpleNamespace(
         model="gpt-5.4",
         provider="openai-codex",
@@ -5152,14 +5049,12 @@ def test_ws_orphan_reap_spares_turn_reattached_within_grace(monkeypatch):
 
 
 def test_session_resume_does_not_rebind_after_client_gone_interrupt_claim(monkeypatch):
-    class _DB:
-        def get_session(self, session_id):
+    class _DB(_ResumeStore):
+        def get(self, session_id):
             assert session_id == "stored-sid"
-            return {"id": session_id, "cwd": "/tmp"}
+            return _stored({"id": session_id, "cwd": "/tmp"})
 
-        def resolve_resume_session_id(self, session_id):
-            return session_id
-
+    _fakes_are_handles(monkeypatch, _DB)
     live_transport = object()
     session = _session(
         session_key="stored-sid",
@@ -5885,15 +5780,9 @@ def test_lazy_unpersisted_resume_rebinds_transport_and_cancels_reap(monkeypatch)
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
     monkeypatch.setattr(server, "current_transport", lambda: live_transport)
-    # get_session/get_session_by_title miss -> forces the unpersisted branch
-    monkeypatch.setattr(
-        server,
-        "_get_db",
-        lambda: types.SimpleNamespace(
-            get_session=lambda _t: None,
-            get_session_by_title=lambda _t: None,
-        ),
-    )
+    # sessions.get/get_by_title miss -> forces the unpersisted branch
+    monkeypatch.setattr(server, "_get_db", lambda: _ResumeStore())
+    _fakes_are_handles(monkeypatch, _ResumeStore)
 
     session = _session(
         session_key="stored-lazy",
@@ -6252,21 +6141,22 @@ def test_session_title_creates_row_and_sets_immediately_when_not_ready(monkeypat
     """
     state = {"row": None, "title": None, "ensured": False}
 
-    class _FakeDB:
-        def get_session_title(self, _key):
+    class _FakeDB(_HandleRepositories):
+        def get_title(self, _key):
             return state["title"]
 
-        def get_session(self, _key):
-            return state["row"]
+        def get(self, _key):
+            return None if state["row"] is None else _stored(state["row"])
 
-        def set_session_title(self, _key, title):
-            # Mirrors SessionDB: UPDATE affects 0 rows until the row exists.
+        def set_title(self, _key, title):
+            # Mirrors the store: the UPDATE affects 0 rows until the row exists.
             if state["row"] is None:
                 return False
             state["title"] = title
             return True
 
     fake_db = _FakeDB()
+    _fakes_are_handles(monkeypatch, _FakeDB)
 
     def _fake_ensure_row(_session):
         # The real _ensure_session_db_row does an INSERT OR IGNORE.
@@ -6316,17 +6206,18 @@ def test_session_title_falls_back_to_queue_when_row_create_fails(monkeypatch):
     ``pending_title`` exactly as before.
     """
 
-    class _FakeDB:
-        def get_session_title(self, _key):
+    class _FakeDB(_HandleRepositories):
+        def get_title(self, _key):
             return None
 
-        def get_session(self, _key):
+        def get(self, _key):
             return None
 
-        def set_session_title(self, _key, _title):
+        def set_title(self, _key, _title):
             return False
 
     fake_db = _FakeDB()
+    _fakes_are_handles(monkeypatch, _FakeDB)
 
     def _fake_ensure_row(_session):
         # Simulate a persist that didn't take — row still absent.
@@ -6408,10 +6299,11 @@ def test_notification_event_follows_compression_continuation(monkeypatch):
     monkeypatch.setattr(server, "_sessions", {"old-sid": old_parent, "tip-sid": live_tip})
 
     class _DB:
-        def resolve_resume_session_id(self, session_id):
+        def resolve_resume_target(self, session_id):
             return "new-tip" if session_id == "old-parent" else session_id
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_persistence_for", _lineage_persistence_for)
     evt = {"type": "async_delegation", "session_key": "old-parent"}
 
     assert server._notification_event_belongs_elsewhere("old-sid", old_parent, evt) is True
@@ -6437,10 +6329,11 @@ def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch
     )
 
     class _DB:
-        def resolve_resume_session_id(self, session_id):
+        def resolve_resume_target(self, session_id):
             return "new-tip" if session_id == "old-parent" else session_id
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_persistence_for", _lineage_persistence_for)
     evt = {
         "type": "async_delegation",
         "session_key": "old-parent",
@@ -6464,15 +6357,9 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"role": "user", "content": "first"},
@@ -6482,6 +6369,7 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     ]
     server._sessions["trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     # If the guard ever lets a negative ordinal through, these would run and the
     # session would be marked busy; failing here makes that regression loud.
     monkeypatch.setattr(
@@ -6606,15 +6494,9 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"role": "user", "content": "first"},
@@ -6626,6 +6508,7 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
     ]
     server._sessions["unconfirmed-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -6666,20 +6549,35 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
         server._sessions.pop("unconfirmed-trunc-sid", None)
 
 
+def _route_store(monkeypatch, **repositories):
+    """Answer the gateway's storage interface calls through a stand-in handle carrying ``repositories``."""
+    handle = types.SimpleNamespace(**{"runtime": _NO_LEDGER_WORK, **repositories})
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(handle))
+    return handle
+
+
+def _written(messages):
+    """``messages`` as the transcript rows a replace writes."""
+    return [server._new_message(message) for message in messages]
+
+
+def _capture_session_rows(monkeypatch, project):
+    """Route session-row creation through a stand-in handle; each created row is recorded as ``project(spec)``."""
+    created = []
+    monkeypatch.setattr(server, "_get_db", lambda: object())
+    _route_store(monkeypatch, sessions=types.SimpleNamespace(create=lambda spec: created.append(project(spec)),
+                                                             get=lambda _key: None))
+    return created
+
+
 def test_prompt_submit_truncates_by_message_id(monkeypatch):
     """#82756: truncate_before_message_id resolves target message and cuts history accurately."""
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"id": "msg-1", "role": "user", "content": "first"},
@@ -6689,6 +6587,7 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
     ]
     server._sessions["msg-id-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: None
     )
@@ -6711,7 +6610,7 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
         )
         assert resp.get("result") is not None
         assert len(replaced) == 1
-        assert replaced[0][1] == history[:2]
+        assert replaced[0][1] == _written(history[:2])
     finally:
         server._sessions.pop("msg-id-trunc-sid", None)
 
@@ -6728,15 +6627,9 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"_row_id": 101, "role": "user", "content": "first"},
@@ -6748,6 +6641,7 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
         history=list(history), session_key=None
     )
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
     # This invariant ends at durable truncation; no model turn is requested by
@@ -6772,7 +6666,7 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
         assert len(replaced) == 1
         # Keyed by the session id, never None (the FK-violating value).
         assert replaced[0][0] == "null-key-trunc-sid"
-        assert replaced[0][1] == history[:2]
+        assert replaced[0][1] == _written(history[:2])
     finally:
         # The prompt worker resolves server bindings when it runs. Reap it before
         # monkeypatch teardown or it can consume the next test's notification.
@@ -6825,15 +6719,9 @@ def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"_row_id": 101, "role": "user", "content": "first"},
@@ -6843,6 +6731,7 @@ def test_prompt_submit_refuses_ordinal_only_when_history_has_row_ids(monkeypatch
     ]
     server._sessions["ordinal-only-durable-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -6884,16 +6773,19 @@ def test_prompt_submit_refuses_ordinal_only_when_durable_history_is_unstamped(mo
     ]
 
     class _FakeDB:
-        def get_messages_as_conversation(self, key, **kwargs):
+        def read_conversation(self, key, request):
             assert key == "session-key"
-            assert kwargs["include_row_ids"] is True
-            return [dict(message, _row_id=100 + index) for index, message in enumerate(history)]
+            assert request.include_row_ids is True
+            return tuple(ConversationMessage.from_openai_message(dict(message, _row_id=100 + index))
+                         for index, message in enumerate(history))
 
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+        def replace_transcript(self, key, messages, mode, **_kwargs):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     server._sessions["unstamped-durable-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -6928,15 +6820,9 @@ def test_prompt_submit_truncates_by_row_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"_row_id": 101, "role": "user", "content": "first"},
@@ -6947,6 +6833,7 @@ def test_prompt_submit_truncates_by_row_id(monkeypatch):
     sess = _session(history=list(history))
     server._sessions["row-id-trunc-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     started = []
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: started.append(k)
@@ -6970,7 +6857,7 @@ def test_prompt_submit_truncates_by_row_id(monkeypatch):
         assert len(sess["history"]) == 2
         assert sess["history"][-1]["content"] == "reply 1"
         assert len(replaced) == 1
-        assert replaced[0][1] == history[:2]
+        assert replaced[0][1] == _written(history[:2])
     finally:
         server._sessions.pop("row-id-trunc-sid", None)
 
@@ -6980,15 +6867,9 @@ def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"_row_id": "101", "role": "user", "content": "first"},
@@ -6999,6 +6880,7 @@ def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
     sess = _session(history=list(history))
     server._sessions["str-row-id-trunc-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
 
     try:
@@ -7114,7 +6996,7 @@ def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
     """
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     verbatim = [
         {"_row_id": 12131, "role": "user", "content": "first"},
@@ -7138,16 +7020,15 @@ def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def get_messages_as_conversation(
-            self, key, include_ancestors=False, repair_alternation=False,
-            include_row_ids=False, **_kwargs
-        ):
+        def read_conversation(self, key, request):
             assert key == "session-key"
-            assert include_row_ids is True
-            return copy.deepcopy(repaired if repair_alternation else verbatim)
+            assert request.include_row_ids is True
+            return tuple(ConversationMessage.from_openai_message(m)
+                         for m in copy.deepcopy(repaired if request.repair_alternation else verbatim))
 
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False, **_kwargs):
+        def replace_transcript(self, key, messages, mode, **_kwargs):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     import contextlib
 
@@ -7163,6 +7044,7 @@ def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
     server._sessions["merged-marker-sid"] = _session(history=list(live))
     monkeypatch.setattr(server, "_session_db", _fake_session_db)
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
@@ -7186,39 +7068,32 @@ def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
         # durable fallback healed the live list's missing stamps first.)
         assert len(replaced) == 1
         assert replaced[0][0] == "session-key"
-        assert replaced[0][1] == [
-            {"role": "user", "content": "first", "_row_id": 12131},
-            {"role": "assistant", "content": "reply 1", "_row_id": 12133},
-        ]
-        assert len(server._sessions["merged-marker-sid"]["history"]) == 2
+        assert replaced[0][1] == _written([
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply 1"},
+        ])
+        assert [m.get("_row_id") for m in server._sessions["merged-marker-sid"]["history"]] == [12131, 12133]
     finally:
         server._sessions.pop("merged-marker-sid", None)
 
 
 def _mk_merge_fake_db(verbatim, repaired, replaced):
-    """SessionDB stand-in answering exactly like the real store: the repaired view
+    """Store stand-in answering exactly like the real store: the repaired view
     (what `_load_durable_truncation_history` historically loaded) has the user;user
     run merged away, the un-repaired view keeps every physical row."""
 
     class _FakeDB:
-        def get_messages_as_conversation(
-            self,
-            key,
-            include_ancestors=False,
-            repair_alternation=False,
-            include_row_ids=False,
-            **_kwargs,
-        ) -> list:
+        def read_conversation(self, key, request):
             import copy as _copy
 
             assert key == "session-key"
-            assert include_row_ids is True
-            return _copy.deepcopy(repaired if repair_alternation else verbatim)
+            assert request.include_row_ids is True
+            return tuple(ConversationMessage.from_openai_message(m)
+                         for m in _copy.deepcopy(repaired if request.repair_alternation else verbatim))
 
-        def replace_messages(
-            self, key, messages, active_only=False, archive_dropped=False, **_kwargs
-        ):
+        def replace_transcript(self, key, messages, mode, **_kwargs):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     return _FakeDB()
 
@@ -7236,7 +7111,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
     import contextlib
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     verbatim = [
         {"_row_id": 201, "role": "user", "content": "first"},
@@ -7276,6 +7151,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
     server._sessions["marker-merge-sid"] = _session(history=list(live))
     monkeypatch.setattr(server, "_session_db", _fake_session_db)
     monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    _route_store(monkeypatch, messages=fake_db)
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
@@ -7299,7 +7175,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
         # survive (durable rows healed their stamps onto the live list).
         assert len(replaced) == 1
         assert replaced[0][0] == "session-key"
-        assert [m["content"] for m in replaced[0][1]] == [
+        assert [m.content for m in replaced[0][1]] == [
             "first",
             "reply 1",
             verbatim[2]["content"],
@@ -7321,7 +7197,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
     import contextlib
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     verbatim = [
         {"_row_id": 301, "role": "user", "content": "first"},
@@ -7353,6 +7229,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
     server._sessions["plain-merge-sid"] = _session(history=list(live))
     monkeypatch.setattr(server, "_session_db", _fake_session_db)
     monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    _route_store(monkeypatch, messages=fake_db)
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
 
@@ -7375,7 +7252,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
         assert len(replaced) == 1
         # The cut retains 303: deriving it from the physical durable prefix
         # keeps the inner row boundary instead of collapsing the pair.
-        assert [m["content"] for m in replaced[0][1]] == [
+        assert [m.content for m in replaced[0][1]] == [
             "first",
             "reply 1",
             "prompt whose turn was cut off",
@@ -7419,15 +7296,9 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"_row_id": 101, "role": "user", "content": "first"},
@@ -7437,6 +7308,7 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     ]
     server._sessions["empty-trunc-sid"] = _session(history=list(history))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -7568,7 +7440,7 @@ def test_completion_ownership_lineage_lookup_failure_fails_closed(monkeypatch):
     from tools.process_registry import process_registry
 
     class _BrokenDB:
-        def resolve_resume_session_id(self, _session_key):
+        def resolve_resume_target(self, _session_key):
             raise RuntimeError("lineage database unavailable")
 
     session = _session(session_key="unrelated-live-session")
@@ -7584,6 +7456,7 @@ def test_completion_ownership_lineage_lookup_failure_fails_closed(monkeypatch):
     isolated_queue.put(event)
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+    monkeypatch.setattr(server, "_persistence_for", _lineage_persistence_for)
 
     drained = process_registry.drain_notifications(
         session_key="unrelated-live-session",
@@ -7727,7 +7600,7 @@ def test_notification_poller_delivers_owned_events(
     from tools.process_registry import process_registry
 
     class _CompressionDB:
-        def resolve_resume_session_id(self, key):
+        def resolve_resume_target(self, key):
             return resolved_key if key == "old-parent-key" and resolved_key else key
 
     delivered = []
@@ -7741,6 +7614,7 @@ def test_notification_poller_delivers_owned_events(
         lambda _rid, _sid, _session, text, **_kw: delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
+    monkeypatch.setattr(server, "_persistence_for", _lineage_persistence_for)
 
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
@@ -8109,11 +7983,12 @@ def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage
     from tools.process_registry import process_registry
 
     class _CompressionDB:
-        def resolve_resume_session_id(self, key):
+        def resolve_resume_target(self, key):
             return "new-child-key" if key == "old-parent-key" else key
 
     _configure_immediate_prompt_run(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
+    monkeypatch.setattr(server, "_persistence_for", _lineage_persistence_for)
     ownership_checks = []
     original_owns_event = server._session_owns_notification_event
 
@@ -8238,15 +8113,9 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
 
 def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     """An explicitly chosen workspace is persisted as the session cwd."""
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: {
+        "key": spec.session_id, "source": spec.source, "model": spec.model, "model_config": spec.model_config,
+        "cwd": spec.cwd})
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
@@ -8259,15 +8128,9 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
 
 
 def test_ensure_session_db_row_persists_session_source(monkeypatch):
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: {
+        "key": spec.session_id, "source": spec.source, "model": spec.model, "model_config": spec.model_config,
+        "cwd": spec.cwd})
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
@@ -8284,15 +8147,9 @@ def test_ensure_session_db_row_records_a_terminal_workspace(monkeypatch, tmp_pat
     with no cwd and no git_repo_root, so the sidebar could never place the
     session under its project.
     """
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: {
+        "key": spec.session_id, "source": spec.source, "model": spec.model, "model_config": spec.model_config,
+        "cwd": spec.cwd})
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
@@ -8307,15 +8164,9 @@ def test_ensure_session_db_row_records_a_terminal_workspace(monkeypatch, tmp_pat
 def test_ensure_session_db_row_defaults_desktop_to_no_workspace(monkeypatch, tmp_path):
     """The desktop launches from wherever the bundle was opened, so an unpicked
     cwd is an artifact — those chats stay null and group under "No workspace"."""
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
-            created.append(
-                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
-            )
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: {
+        "key": spec.session_id, "source": spec.source, "model": spec.model, "model_config": spec.model_config,
+        "cwd": spec.cwd})
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "source": "desktop", "cwd": str(tmp_path)})
@@ -8334,15 +8185,8 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
     chat. The override model + a model_config carrying provider/reasoning/
     service_tier must be persisted so session.resume restores all three.
     """
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
-            created.append(
-                {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
-            )
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: {
+        "key": spec.session_id, "model": spec.model, "model_config": spec.model_config, "cwd": spec.cwd})
     monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
 
     server._ensure_session_db_row(
@@ -8366,13 +8210,7 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
 def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
     """A chat that made no explicit pick falls back to the global model and
     writes no model_config (so it tracks the profile default)."""
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None, user_id=None):
-            created.append({"model": model, "model_config": model_config})
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: {"model": spec.model, "model_config": spec.model_config})
     monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
 
     server._ensure_session_db_row({"session_key": "k1", "model_override": None})
@@ -8392,13 +8230,14 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
         def __init__(self, db_path=None):
             created.append({"db_path": db_path})
 
-        def create_session(self, key, **kwargs):
-            created[-1].update({"key": key, "profile_name": kwargs.get("profile_name")})
-
         def close(self):
             pass
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _ProfileDB)
+    def create(spec):
+        created[-1].update({"key": spec.session_id, "profile_name": spec.profile_name})
+
+    _stores_open_as(monkeypatch, _ProfileDB)
+    _route_store(monkeypatch, sessions=types.SimpleNamespace(create=create, get=lambda _key: None))
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row(
@@ -8416,13 +8255,7 @@ def test_ensure_session_db_row_stamps_launch_profile_name(monkeypatch):
     (profile-keyed matching) and break @session:<profile>/<id> deep links, and
     the #94724 one-shot backfill cannot keep repairing rows minted after it
     ran (#99222)."""
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, **kwargs):
-            created.append({"key": key, "profile_name": kwargs.get("profile_name")})
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: {"key": spec.session_id, "profile_name": spec.profile_name})
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
 
@@ -8433,17 +8266,17 @@ def test_ensure_session_db_row_stamps_launch_profile_name(monkeypatch):
 
 
 def test_session_title_clears_pending_after_persist(monkeypatch):
-    class _FakeDB:
+    class _FakeDB(_HandleRepositories):
         def __init__(self):
             self.title = "old"
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return self.title
 
-        def get_session(self, _key):
-            return {"id": _key, "title": self.title}
+        def get(self, _key):
+            return _stored({"id": _key, "title": self.title})
 
-        def set_session_title(self, _key, title):
+        def set_title(self, _key, title):
             self.title = title
             return True
 
@@ -8451,6 +8284,7 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
     emitted = []
     server._sessions["sid"] = _session(pending_title="stale")
     monkeypatch.setattr(server, "_get_db", lambda: db)
+    _fakes_are_handles(monkeypatch, _FakeDB)
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
     try:
         resp = server.handle_request(
@@ -8471,22 +8305,23 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
 
 
 def test_session_title_does_not_queue_noop_when_row_exists(monkeypatch):
-    class _FakeDB:
+    class _FakeDB(_HandleRepositories):
         def __init__(self):
             self.title = "same title"
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return self.title
 
-        def get_session(self, _key):
-            return {"id": _key, "title": self.title}
+        def get(self, _key):
+            return _stored({"id": _key, "title": self.title})
 
-        def set_session_title(self, _key, _title):
+        def set_title(self, _key, _title):
             # Simulate sqlite UPDATE rowcount==0 for no-op update.
             return False
 
     server._sessions["sid"] = _session(pending_title="stale")
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _fakes_are_handles(monkeypatch, _FakeDB)
     try:
         resp = server.handle_request(
             {
@@ -8504,12 +8339,13 @@ def test_session_title_does_not_queue_noop_when_row_exists(monkeypatch):
 
 
 def test_session_title_get_falls_back_to_pending_when_db_read_throws(monkeypatch):
-    class _FakeDB:
-        def get_session_title(self, _key):
+    class _FakeDB(_HandleRepositories):
+        def get_title(self, _key):
             raise RuntimeError("db temporarily locked")
 
     server._sessions["sid"] = _session(pending_title="queued title")
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _fakes_are_handles(monkeypatch, _FakeDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
@@ -8520,23 +8356,24 @@ def test_session_title_get_falls_back_to_pending_when_db_read_throws(monkeypatch
 
 
 def test_session_title_get_retries_persist_for_pending_title(monkeypatch):
-    class _FakeDB:
+    class _FakeDB(_HandleRepositories):
         def __init__(self):
             self.title = ""
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return self.title
 
-        def set_session_title(self, _key, title):
+        def set_title(self, _key, title):
             self.title = title
             return True
 
-        def get_session(self, _key):
-            return {"id": _key, "title": self.title}
+        def get(self, _key):
+            return _stored({"id": _key, "title": self.title})
 
     db = _FakeDB()
     server._sessions["sid"] = _session(pending_title="queued title")
     monkeypatch.setattr(server, "_get_db", lambda: db)
+    _fakes_are_handles(monkeypatch, _FakeDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
@@ -8548,23 +8385,24 @@ def test_session_title_get_retries_persist_for_pending_title(monkeypatch):
 
 
 def test_session_title_get_retries_pending_even_when_db_has_title(monkeypatch):
-    class _FakeDB:
+    class _FakeDB(_HandleRepositories):
         def __init__(self):
             self.title = "auto title"
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return self.title
 
-        def set_session_title(self, _key, title):
+        def set_title(self, _key, title):
             self.title = title
             return True
 
-        def get_session(self, _key):
-            return {"id": _key, "title": self.title}
+        def get(self, _key):
+            return _stored({"id": _key, "title": self.title})
 
     db = _FakeDB()
     server._sessions["sid"] = _session(pending_title="queued title")
     monkeypatch.setattr(server, "_get_db", lambda: db)
+    _fakes_are_handles(monkeypatch, _FakeDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
@@ -8576,12 +8414,13 @@ def test_session_title_get_retries_pending_even_when_db_has_title(monkeypatch):
 
 
 def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch):
-    class _FakeDB:
-        def get_session_title(self, _key):
+    class _FakeDB(_HandleRepositories):
+        def get_title(self, _key):
             return ""
 
     server._sessions["sid"] = _session()
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _fakes_are_handles(monkeypatch, _FakeDB)
     try:
         resp = server.handle_request(
             {
@@ -8597,18 +8436,19 @@ def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch)
 
 
 def test_session_title_set_maps_valueerror_to_user_error(monkeypatch):
-    class _FakeDB:
-        def get_session_title(self, _key):
+    class _FakeDB(_HandleRepositories):
+        def get_title(self, _key):
             return ""
 
-        def get_session(self, _key):
-            return {"id": _key}
+        def get(self, _key):
+            return _stored({"id": _key})
 
-        def set_session_title(self, _key, _title):
+        def set_title(self, _key, _title):
             raise ValueError("Title already in use")
 
     server._sessions["sid"] = _session()
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _fakes_are_handles(monkeypatch, _FakeDB)
     try:
         resp = server.handle_request(
             {
@@ -8625,18 +8465,19 @@ def test_session_title_set_maps_valueerror_to_user_error(monkeypatch):
 
 
 def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
-    class _FakeDB:
-        def get_session_title(self, _key):
+    class _FakeDB(_HandleRepositories):
+        def get_title(self, _key):
             return ""
 
-        def get_session(self, _key):
+        def get(self, _key):
             raise RuntimeError("row lookup failed")
 
-        def set_session_title(self, _key, _title):
+        def set_title(self, _key, _title):
             return False
 
     server._sessions["sid"] = _session()
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _fakes_are_handles(monkeypatch, _FakeDB)
     try:
         resp = server.handle_request(
             {
@@ -8673,8 +8514,10 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
             }
 
     class _FakeDB:
-        def set_session_title(self, _key, _title):
-            raise ValueError("Title already in use")
+        pass
+
+    def _title_in_use(_key, _title):
+        raise ValueError("Title already in use")
 
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **kw):
@@ -8702,6 +8545,7 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
 
     server._sessions["sid"] = session
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, sessions=types.SimpleNamespace(set_title=_title_in_use))
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
@@ -10369,20 +10213,25 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def get_session(self, _key):
-            return {"model_config": {}}
+        def close(self):
+            pass
 
-        def update_session_meta(self, key, model_config, model):
+    class FakeSessions:
+        def get(self, _key):
+            return types.SimpleNamespace(model_config={})
+
+        def replace_session_config(self, key, command):
             seen["persisted"].append(
                 {
                     "key": key,
-                    "model": model,
-                    "config": json.loads(model_config),
+                    "model": command.model,
+                    "config": dict(command.model_config),
                 }
             )
 
-        def close(self):
-            pass
+    persistence = types.SimpleNamespace(sessions=FakeSessions())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDb) else None))
 
     def fake_make_agent(_sid, _key, **kwargs):
         nonlocal make_calls
@@ -10419,7 +10268,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
         "hermes_cli.model_selection_guards.combined_selection_warning",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr("hermes_state_registry.acquire", FakeDb)
+    _stores_open_as(monkeypatch, FakeDb)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_transfer_db_to_agent", barrier_transfer)
     monkeypatch.setattr(
@@ -10710,32 +10559,37 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         def _build_system_prompt(self, _system_message=None):
             return f"Model: {self.model}\nProvider: {self.provider}"
 
-    class SessionDB:
+    class _Store:
         def __init__(self):
             self.model_config = None
             self.system_prompt = None
             self.messages = []
 
-        def get_session(self, _session_id):
-            return {"model_config": self.model_config}
+    class Sessions:
+        def get(self, _session_id):
+            return types.SimpleNamespace(model_config=db.model_config or {})
 
-        def update_session_meta(self, _session_id, model_config_json, _model=None):
-            self.model_config = model_config_json
+        def replace_session_config(self, _session_id, command):
+            db.model_config = dict(command.model_config)
 
         def update_system_prompt(self, _session_id, system_prompt):
-            self.system_prompt = system_prompt
+            db.system_prompt = system_prompt
 
-        def append_message(self, session_id, role, content=None, **_kwargs):
-            self.messages.append(
-                {"session_id": session_id, "role": role, "content": content}
+    class Messages:
+        def append(self, session_id, message):
+            db.messages.append(
+                {"session_id": session_id, "role": message.role, "content": message.content}
             )
 
         def deactivate_messages_by_display_kind(self, _session_id, _display_kind):
             return 0
 
     agent = Agent()
-    db = SessionDB()
+    db = _Store()
     agent._session_db = db
+    persistence = types.SimpleNamespace(sessions=Sessions(), messages=Messages())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda store: contextlib.nullcontext(persistence if store is db else None))
     session = _session(agent=agent)
     server._sessions["sid"] = session
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
@@ -11533,6 +11387,14 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
     )
     monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    def read_conversation(key, request):
+        assert key == "session-key"
+        assert request.include_lineage is True
+        return tuple(ConversationMessage(role=m["role"], content=m["content"], db_persisted=False)
+                     for m in history_from_db)
+
+    _route_store(monkeypatch, messages=types.SimpleNamespace(read_conversation=read_conversation))
     monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
 
     cases = {
@@ -12220,16 +12082,17 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     )
     server._sessions["sid"] = _session(agent=agent, running=True)
 
-    class _DB:
-        def get_session(self, key):
+    class _DB(_HandleRepositories):
+        def get(self, key):
             assert key == "session-key"
-            return {
+            return _stored({
                 "title": "Live TUI",
                 "started_at": 1_700_000_000,
                 "updated_at": 1_700_000_060,
-            }
+            })
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _fakes_are_handles(monkeypatch, _DB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
@@ -12583,7 +12446,6 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
         SUMMARY_PREFIX,
         _SUMMARY_END_MARKER,
     )
-    from hermes_state import SessionDB
 
     class _Mgr:
         enabled = True
@@ -12602,11 +12464,11 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
             f"{_SUMMARY_END_MARKER}\n\nREAL ASK"
         ),
     }
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("rollback-carrier", source="tui")
-    db.append_message("rollback-carrier", "user", carrier["content"])
-    db.append_message("rollback-carrier", "assistant", "answer")
-    durable = db.get_messages_as_conversation("rollback-carrier")
+    db = storage_handle(tmp_path)
+    seed_session(db, "rollback-carrier", "tui")
+    seed_messages(db, "rollback-carrier", {"role": "user", "content": carrier["content"]},
+                  {"role": "assistant", "content": "answer"})
+    durable = conversation(db, "rollback-carrier")
     agent = types.SimpleNamespace(
         _checkpoint_mgr=_Mgr(),
         _session_messages=list(durable),
@@ -12636,8 +12498,8 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
         assert remaining[0]["display_kind"] == "hidden"
         assert SUMMARY_PREFIX in remaining[0]["content"]
         assert "REAL ASK" not in remaining[0]["content"]
-        cold = db.get_messages_as_conversation(
-            "rollback-carrier", include_row_ids=True
+        cold = conversation(
+            db, "rollback-carrier", ConversationRequest(include_row_ids=True)
         )
         assert len(cold) == 1
         assert cold[0]["content"] == remaining[0]["content"]
@@ -12646,8 +12508,8 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
         assert agent._session_messages == remaining
         assert agent._last_flushed_db_idx == 1
         assert agent._db_flush_scan_prefix == remaining
-        inactive = db.get_messages_as_conversation(
-            "rollback-carrier", include_inactive=True
+        inactive = conversation(
+            db, "rollback-carrier", ConversationRequest(view=TranscriptView.ALL)
         )
         assert any("REAL ASK" in str(message.get("content")) for message in inactive)
         assert any(message.get("content") == "answer" for message in inactive)
@@ -13046,11 +12908,17 @@ def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
 
 def test_session_info_includes_session_title(monkeypatch):
     class _FakeDB:
-        def get_session_title(self, key):
+        pass
+
+    class _FakeSessions:
+        def get_title(self, key):
             assert key == "session-key"
             return "Dashboard title"
 
+    persistence = types.SimpleNamespace(sessions=_FakeSessions())
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, _FakeDB) else None))
 
     info = server._session_info(
         types.SimpleNamespace(tools=[], model="test/model", provider="openai-codex"),
@@ -13632,18 +13500,12 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, *_args, **_kwargs):
-            return []
+        def read_conversation(self, *_args, **_kwargs):
+            return ()
 
-        def replace_messages(
-            self,
-            session_id,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, session_id, messages, mode, reject_active_turn_lease=False):
             self.replaced.append((session_id, list(messages)))
+            return ReplaceResult(rows=())
 
     stub_db = _StubDb()
 
@@ -13653,6 +13515,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        _route_store(monkeypatch, messages=stub_db)
 
         resp = server.handle_request(
             {
@@ -13676,7 +13539,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
             {"role": "assistant", "content": "edited reply"},
         ]
         assert server._sessions["sid"]["history_version"] == 2
-        assert stub_db.replaced == [("session-key", original_history[:2])]
+        assert stub_db.replaced == [("session-key", _written(original_history[:2]))]
     finally:
         server._sessions.pop("sid", None)
 
@@ -13757,20 +13620,14 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     server._sessions["trunc-fail-sid"] = sess
 
     class _FailDb:
-        def get_messages_as_conversation(self, *_args, **_kwargs):
-            return []
+        def read_conversation(self, *_args, **_kwargs):
+            return ()
 
-        def replace_messages(
-            self,
-            session_id,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, session_id, messages, mode, reject_active_turn_lease=False):
             raise OSError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
+    _route_store(monkeypatch, messages=_FailDb())
     monkeypatch.setattr(
         server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -13858,18 +13715,12 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, *_args, **_kwargs):
-            return []
+        def read_conversation(self, *_args, **_kwargs):
+            return ()
 
-        def replace_messages(
-            self,
-            session_id,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, session_id, messages, mode, reject_active_turn_lease=False):
             self.replaced.append((session_id, list(messages)))
+            return ReplaceResult(rows=())
 
     stub_db = _StubDb()
 
@@ -13879,6 +13730,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        _route_store(monkeypatch, messages=stub_db)
 
         # ordinal=1 means "truncate before the 2nd-from-last real user turn"
         # which is "first". The display_kind marker must NOT shift the ordinal.
@@ -13904,7 +13756,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         assert seen["history"] == original_history[:2], (
             f"Expected truncation to first 2 messages, got {seen['history']}"
         )
-        assert stub_db.replaced == [("session-key", original_history[:2])], (
+        assert stub_db.replaced == [("session-key", _written(original_history[:2]))], (
             f"Expected DB replace with first 2 messages, got {stub_db.replaced}"
         )
     finally:
@@ -13966,21 +13818,15 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, *_args, **_kwargs):
+        def read_conversation(self, *_args, **_kwargs):
             # Empty durable transcript: proves this ephemeral-style session
             # may take the ordinal-only path past the durability gate.
-            return []
+            return ()
 
-        def replace_messages(
-            self,
-            session_id,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, session_id, messages, mode, reject_active_turn_lease=False):
             assert reject_active_turn_lease is True
             self.replaced.append((session_id, list(messages)))
+            return ReplaceResult(rows=())
 
     stub_db = _StubDb()
 
@@ -13990,6 +13836,7 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        _route_store(monkeypatch, messages=stub_db)
 
         resp = server.handle_request(
             {
@@ -14006,7 +13853,7 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert seen["prompt"] == "edited post B"
         assert seen["history"] == tip_history[:2]
-        assert stub_db.replaced == [("session-key", tip_history[:2])]
+        assert stub_db.replaced == [("session-key", _written(tip_history[:2]))]
     finally:
         server._sessions.pop("sid", None)
 
@@ -15620,22 +15467,11 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         server._sessions.update(_saved_sessions)
 
 
-def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
-    fake_mod = types.ModuleType("hermes_state")
-
-    class _BrokenSessionDB:
-        def __init__(self):
-            raise RuntimeError("locking protocol")
-
-    fake_mod.SessionDB = _BrokenSessionDB
-
-    def _broken_shared(_db_path=None):
+def test_get_db_degrades_cleanly_when_the_store_fails_to_open(monkeypatch):
+    def _broken_open(_scope, **_kwargs):
         raise RuntimeError("locking protocol")
 
-    monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
-    fake_registry = types.ModuleType("hermes_state_registry")
-    fake_registry.acquire = _broken_shared
-    monkeypatch.setitem(sys.modules, "hermes_state_registry", fake_registry)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", _broken_open)
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)
 
@@ -15646,21 +15482,10 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
 def test_ensure_session_db_row_false_when_store_unavailable(monkeypatch):
     """Store unavailable → False, so prompt.submit can fail the send loudly
     instead of streaming into a store that will never save it (#98924)."""
-    fake_mod = types.ModuleType("hermes_state")
-
-    class _BrokenSessionDB:
-        def __init__(self):
-            raise RuntimeError("utf-8 boom")
-
-    fake_mod.SessionDB = _BrokenSessionDB
-
-    def _broken_shared(_db_path=None):
+    def _broken_open(_scope, **_kwargs):
         raise RuntimeError("utf-8 boom")
 
-    monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
-    fake_registry = types.ModuleType("hermes_state_registry")
-    fake_registry.acquire = _broken_shared
-    monkeypatch.setitem(sys.modules, "hermes_state_registry", fake_registry)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", _broken_open)
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)
 
@@ -15668,13 +15493,7 @@ def test_ensure_session_db_row_false_when_store_unavailable(monkeypatch):
 
 
 def test_ensure_session_db_row_true_when_row_persisted(monkeypatch):
-    created = []
-
-    class _FakeDB:
-        def create_session(self, key, **_kwargs):
-            created.append(key)
-
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    created = _capture_session_rows(monkeypatch, lambda spec: spec.session_id)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     assert server._ensure_session_db_row({"session_key": "k1", "cwd": "/tmp"}) is True
@@ -15838,18 +15657,21 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
     (profile_home / "state.db").write_bytes(b"")
     seen: dict = {}
 
-    class LaunchDB:
-        def list_sessions_rich(self, **kwargs):
-            seen["launch"] = True
-            return [{"id": "launch-1", "source": "tui", "title": "L"}]
+    class LaunchDB(_HandleRepositories):
+        scope = types.SimpleNamespace(profile_dir=tmp_path)
 
-    class ProfileDB:
+        def list_sessions(self, _query, _window, *, compact_rows=False):
+            seen["launch"] = True
+            return _listing([{"id": "launch-1", "source": "tui", "title": "L"}])
+
+    class ProfileDB(_HandleRepositories):
         def __init__(self, db_path=None):
             seen["db_path"] = db_path
+            self.scope = types.SimpleNamespace(profile_dir=Path(db_path).parent)
 
-        def list_sessions_rich(self, **kwargs):
+        def list_sessions(self, _query, _window, *, compact_rows=False):
             seen["profile"] = True
-            return [
+            return _listing([
                 {
                     "id": "ml-1",
                     "source": "tui",
@@ -15858,7 +15680,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
                     "started_at": 1,
                     "message_count": 1,
                 }
-            ]
+            ])
 
         def close(self):
             seen["closed"] = True
@@ -15869,6 +15691,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
         "hermes_cli.web_server_sessions._open_session_db_at_path",
         lambda db_path, *, read_only: ProfileDB(db_path=db_path),
     )
+    _fakes_are_handles(monkeypatch, LaunchDB, ProfileDB)
 
     resp = server.handle_request(
         {
@@ -15890,19 +15713,19 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
 
-    class LaunchDB:
-        def list_sessions_rich(self, **kwargs):
-            return [{"id": "launch-tip", "source": "tui", "title": "L", "started_at": 9}]
+    class LaunchDB(_HandleRepositories):
+        def list_sessions(self, _query, _window, *, compact_rows=False):
+            return _listing([{"id": "launch-tip", "source": "tui", "title": "L", "started_at": 9}])
 
-    class ProfileDB2:
+    class ProfileDB2(_HandleRepositories):
         def __init__(self, db_path=None):
             self.db_path = db_path
 
-        def list_sessions_rich(self, **kwargs):
-            return [
+        def list_sessions(self, _query, _window, *, compact_rows=False):
+            return _listing([
                 {"id": "tool-noise", "source": "tool", "title": "t", "started_at": 9},
                 {"id": "ml-tip", "source": "desktop", "title": "M", "started_at": 3},
-            ]
+            ])
 
         def close(self):
             pass
@@ -15913,6 +15736,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
         "hermes_cli.web_server_sessions._open_session_db_at_path",
         lambda db_path, *, read_only: ProfileDB2(db_path=db_path),
     )
+    _fakes_are_handles(monkeypatch, LaunchDB, ProfileDB2)
 
     resp = server.handle_request(
         {
@@ -15952,11 +15776,11 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
             )
         return config
 
-    class ProfileDB:
-        def get_session(self, _key):
-            return {"id": _key}
+    class ProfileDB(_HandleRepositories):
+        def get(self, _key):
+            return _stored({"id": _key})
 
-        def request_handoff(self, _key, platform):
+        def request_handoff(self, *, session_id, platform):
             return platform == "discord"
 
     @contextlib.contextmanager
@@ -15966,6 +15790,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
     monkeypatch.setattr("gateway.config.load_gateway_config", load_config)
     monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
     monkeypatch.setattr(server, "_session_db", profile_db)
+    _fakes_are_handles(monkeypatch, ProfileDB)
     server._sessions["handoff-profile"] = {
         "running": False,
         "session_key": "desktop-coder-session",
@@ -16025,32 +15850,32 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
     profile_home.mkdir(parents=True)
     seen: dict = {}
 
-    class LaunchDB:
-        def get_session_title(self, _key):
+    class LaunchDB(_HandleRepositories):
+        def get_title(self, _key):
             seen["launch_read"] = True
             return "from-launch"
 
-        def set_session_title(self, _key, _title):
+        def set_title(self, _key, _title):
             seen["launch_write"] = True
             return True
 
-        def get_session(self, _key):
-            return {"id": _key, "title": "from-launch"}
+        def get(self, _key):
+            return _stored({"id": _key, "title": "from-launch"})
 
-    class ProfileDB:
+    class ProfileDB(_HandleRepositories):
         def __init__(self, db_path=None):
             self.db_path = db_path
             seen["db_path"] = db_path
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return seen.get("title")
 
-        def get_session(self, _key):
+        def get(self, _key):
             if "title" in seen:
-                return {"id": _key, "title": seen["title"]}
+                return _stored({"id": _key, "title": seen["title"]})
             return None
 
-        def set_session_title(self, _key, title):
+        def set_title(self, _key, title):
             seen["title"] = title
             seen["profile_write"] = True
             return True
@@ -16070,7 +15895,8 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    _stores_open_as(monkeypatch, ProfileDB)
+    _fakes_are_handles(monkeypatch, LaunchDB, ProfileDB)
     try:
         set_resp = server.handle_request(
             {
@@ -16100,18 +15926,18 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
     profile_home.mkdir(parents=True)
     seen: dict = {}
 
-    class LaunchDB:
-        def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
+    class LaunchDB(_HandleRepositories):
+        def read_conversation(self, _key, _request):
             seen["launch"] = True
-            return [{"role": "user", "content": "launch"}]
+            return _replay([{"role": "user", "content": "launch"}])
 
-    class ProfileDB:
+    class ProfileDB(_HandleRepositories):
         def __init__(self, db_path=None):
             seen["db_path"] = db_path
 
-        def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
+        def read_conversation(self, _key, _request):
             seen["profile"] = True
-            return [{"role": "user", "content": "from-profile"}]
+            return _replay([{"role": "user", "content": "from-profile"}])
 
         def close(self):
             seen["closed"] = True
@@ -16127,7 +15953,8 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    _stores_open_as(monkeypatch, ProfileDB)
+    _fakes_are_handles(monkeypatch, LaunchDB, ProfileDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.history", "params": {"session_id": "sid"}}
@@ -16146,14 +15973,14 @@ def test_session_history_ships_durable_row_ids(monkeypatch):
     targets by content against this projection (#87059 client half)."""
     seen: dict = {}
 
-    class _Db:
-        def get_messages_as_conversation(self, _key, include_ancestors=False, include_row_ids=False, **_kwargs):
-            seen["include_row_ids"] = include_row_ids
+    class _Db(_HandleRepositories):
+        def read_conversation(self, _key, request):
+            seen["include_row_ids"] = request.include_row_ids
 
-            return [
+            return _replay([
                 {"role": "user", "content": "hello", "_row_id": 41},
                 {"role": "assistant", "content": "hi"},
-            ]
+            ])
 
     server._sessions["rowid-hist-sid"] = {
         "session_key": "rowid-sess",
@@ -16165,6 +15992,7 @@ def test_session_history_ships_durable_row_ids(monkeypatch):
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: _Db())
+    _fakes_are_handles(monkeypatch, _Db)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.history", "params": {"session_id": "rowid-hist-sid"}}
@@ -16183,18 +16011,18 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
     profile_home.mkdir(parents=True)
     seen: dict = {}
 
-    class LaunchDB:
-        def get_session(self, _key):
+    class LaunchDB(_HandleRepositories):
+        def get(self, _key):
             seen["launch"] = True
-            return {"id": _key, "title": "launch-title", "started_at": 1}
+            return _stored({"id": _key, "title": "launch-title", "started_at": 1})
 
-    class ProfileDB:
+    class ProfileDB(_HandleRepositories):
         def __init__(self, db_path=None):
             seen["db_path"] = db_path
 
-        def get_session(self, _key):
+        def get(self, _key):
             seen["profile"] = True
-            return {"id": _key, "title": "profile-title", "started_at": 42}
+            return _stored({"id": _key, "title": "profile-title", "started_at": 42})
 
         def close(self):
             seen["closed"] = True
@@ -16210,7 +16038,8 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    _stores_open_as(monkeypatch, ProfileDB)
+    _fakes_are_handles(monkeypatch, LaunchDB, ProfileDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
@@ -16229,30 +16058,39 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     profile_home.mkdir(parents=True)
     seen: dict = {}
 
-    class LaunchDB:
-        def get_session(self, _key):
-            seen["launch"] = True
-            return {"id": _key, "source": "tui"}
+    import dataclasses
 
-        def end_session(self, _key, _reason):
-            seen["launch_end"] = True
+    from persistence.conversation.sessions import SessionRecord
+
+    record = SessionRecord(**{f.name: None for f in dataclasses.fields(SessionRecord)} | {"source": "tui"})
+
+    class LaunchDB:
+        pass
 
     class ProfileDB:
         def __init__(self, db_path=None):
             seen["db_path"] = db_path
 
-        def get_session(self, _key):
-            seen["profile"] = True
-            return {"id": _key, "source": "tui"}
-
-        def end_session(self, key, reason):
-            seen["ended"] = (key, reason)
-
         def close(self):
             seen["closed"] = True
 
+    def handle_for(db):
+        profile = isinstance(db, ProfileDB)
+
+        def get(_key):
+            seen["profile" if profile else "launch"] = True
+            return record
+
+        def end(key, *, session_key, end_reason):
+            seen["ended" if profile else "launch_end"] = (key, end_reason)
+            return True
+
+        return contextlib.nullcontext(types.SimpleNamespace(
+            sessions=types.SimpleNamespace(get=get), runtime=types.SimpleNamespace(end_unless_ledger_busy=end)))
+
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    _stores_open_as(monkeypatch, ProfileDB)
+    monkeypatch.setattr(server, "_persistence_for", handle_for)
     session = {
         "session_key": "ml-sess",
         "profile_home": str(profile_home),
@@ -16274,53 +16112,49 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen: dict = {"msgs": []}
 
-    class LaunchDB:
-        def get_session_title(self, _key):
+    class LaunchDB(_HandleRepositories):
+        def get_title(self, _key):
             seen["launch"] = True
             return "L"
 
-        def create_session(self, *a, **k):
+        def create(self, _spec):
             seen["launch_create"] = True
 
-        def append_message(self, **k):
+        def append_batch(self, *a, **k):
             seen["launch_msg"] = True
 
-        def set_session_title(self, *a, **k):
+        def set_title(self, *a, **k):
             return True
 
-    class ProfileDB:
+    class ProfileDB(_HandleRepositories):
         def __init__(self, db_path=None):
             seen["db_path"] = db_path
             seen.setdefault("inits", 0)
             seen["inits"] += 1
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return "parent"
 
-        def get_next_title_in_lineage(self, current):
+        def next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
-        def create_session(self, new_key, **kwargs):
-            seen["created"] = new_key
-            seen["parent"] = kwargs.get("parent_session_id")
-            seen["profile_name"] = kwargs.get("profile_name")
+        def create(self, spec):
+            seen["created"] = spec.session_id
+            seen["parent"] = spec.parent_session_id
+            seen["profile_name"] = spec.profile_name
 
-        def append_message(self, **kwargs):
-            seen["msgs"].append(kwargs)
+        def append_batch(self, session_id, messages, **kwargs):
+            seen["msgs"].extend(_copied(session_id, messages))
+            return types.SimpleNamespace(outcomes=())
 
-        def append_messages_batch(self, session_id, messages, **kwargs):
-            for m in messages:
-                seen["msgs"].append(dict(m, session_id=session_id))
-            return list(range(1, len(messages) + 1))
-
-        def set_session_title(self, key, title):
+        def set_title(self, key, title):
             seen["title"] = (key, title)
             return True
 
-        def get_session(self, key):
-            return {"id": key, "cwd": str(tmp_path)}
+        def get(self, key):
+            return _stored({"id": key, "cwd": str(tmp_path)})
 
-        def update_session_cwd(self, *a, **k):
+        def update_cwd(self, *a, **k):
             return None
 
         def close(self):
@@ -16346,7 +16180,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    _stores_open_as(monkeypatch, ProfileDB)
+    _fakes_are_handles(monkeypatch, LaunchDB, ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
 
     def _fake_make_agent(*a, **k):
@@ -16409,28 +16244,39 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
 
     seen: dict = {}
 
-    class _FakeDB:
-        def get_session_title(self, key):
+    class _FakeSessions:
+        def get_title(self, key):
             seen["parent_title"] = key
             return "My Parent Session"
 
-        def get_next_title_in_lineage(self, current):
+        def next_title_in_lineage(self, current):
             return f"{current} #2"
 
-        def create_session(self, key, **kwargs):
-            seen["created"] = key
-            seen["parent"] = kwargs.get("parent_session_id")
-            seen["branched_from"] = (kwargs.get("model_config") or {}).get("_branched_from")
+        def get(self, _key):
+            return None
 
-        def append_messages_batch(self, session_id, messages, **kwargs):
-            seen["messages"] = list(messages)
+        def create(self, spec):
+            seen["created"] = spec.session_id
+            seen["parent"] = spec.parent_session_id
+            seen["branched_from"] = (spec.model_config or {}).get("_branched_from")
 
         def set_auto_title(self, key, title, *, source):
             seen["title"] = title
-            seen["title_source"] = source
+            seen["title_source"] = source.value
             return True
 
+    class _FakeMessages:
+        def append_batch(self, session_id, messages, **kwargs):
+            seen["messages"] = _copied(session_id, messages)
+            return types.SimpleNamespace(outcomes=())
+
+    class _FakeDB:
+        """The launch store; its writes go through ``persistence``."""
+
+    persistence = types.SimpleNamespace(sessions=_FakeSessions(), messages=_FakeMessages())
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, _FakeDB) else None))
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -16497,19 +16343,20 @@ def test_session_branch_stored_copies_parent_history_without_returning_transcrip
         def __exit__(self, *_args):
             return False
 
-    class _FakeDB:
-        def get_resume_conversations(self, key):
+    class _FakeDB(_HandleRepositories):
+        def read_resume_conversations(self, key):
             assert key == "parent"
-            return [], [
+            return ResumeConversations(model=(), display=_replay([
                 {"role": "user", "content": "first question", "timestamp": 1},
                 {"role": "assistant", "content": "first answer", "timestamp": 2},
-            ]
+            ]))
 
     class _FakeAgent:
         model = "test-model"
 
     seen: dict = {}
     db = _FakeDB()
+    _fakes_are_handles(monkeypatch, _FakeDB)
 
     monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(db))
     monkeypatch.setattr(
@@ -16547,10 +16394,16 @@ def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):
             self.model = "test-model"
 
     class _BrokenDB:
-        def get_session_title(self, key):
+        pass
+
+    class _BrokenSessions:
+        def get_title(self, key):
             raise RuntimeError("db down")
 
+    persistence = types.SimpleNamespace(sessions=_BrokenSessions())
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, _BrokenDB) else None))
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -16595,24 +16448,34 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
 
     seen: dict = {}
 
-    class _FakeDB:
-        def get_session_title(self, key):
+    class _FakeSessions:
+        def get_title(self, _key):
             return "Parent"
 
-        def get_next_title_in_lineage(self, current):
+        def next_title_in_lineage(self, current):
             return f"{current} #2"
 
-        def create_session(self, key, **kwargs):
-            seen["created"] = key
+        def get(self, _key):
+            return None
 
-        def append_messages_batch(self, session_id, messages, **kwargs):
+        def create(self, spec):
+            seen["created"] = spec.session_id
+
+        def discard_unadmitted(self, session_id, *, media_root):
+            seen["deleted"] = session_id
+            return (session_id,)
+
+    class _FakeMessages:
+        def append_batch(self, session_id, messages, **kwargs):
             raise RuntimeError("transcript write failed")
 
-        def discard_unadmitted_session(self, session_id):
-            seen["deleted"] = session_id
-            return True
+    class _FakeDB:
+        """The launch store; its writes go through ``persistence``."""
 
+    persistence = types.SimpleNamespace(sessions=_FakeSessions(), messages=_FakeMessages())
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, _FakeDB) else None))
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -16662,19 +16525,17 @@ def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
             self.model = "test-model"
 
     class _FakeDB:
-        def get_session_title(self, key):
-            return "Parent"
-
-        def get_next_title_in_lineage(self, current):
-            return f"{current} #2"
-
         def create_session(self, key, **kwargs):
             pass
 
         def append_messages_batch(self, session_id, messages, **kwargs):
             raise OSError(28, "No space left on device")
 
+    persistence = types.SimpleNamespace(sessions=types.SimpleNamespace(
+        get_title=lambda _key: "Parent", next_title_in_lineage=lambda current: f"{current} #2"))
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, _FakeDB) else None))
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -16777,34 +16638,30 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     )
     seen: dict = {"msgs": []}
 
-    class ProfileDB:
+    class ProfileDB(_HandleRepositories):
         def __init__(self, db_path=None):
             pass
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return "parent"
 
-        def get_next_title_in_lineage(self, current):
+        def next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
-        def create_session(self, new_key, **kwargs):
-            seen["created"] = new_key
+        def create(self, spec):
+            seen["created"] = spec.session_id
 
-        def append_message(self, **kwargs):
-            seen["msgs"].append(kwargs)
+        def append_batch(self, session_id, messages, **kwargs):
+            seen["msgs"].extend(_copied(session_id, messages))
+            return types.SimpleNamespace(outcomes=())
 
-        def append_messages_batch(self, session_id, messages, **kwargs):
-            for m in messages:
-                seen["msgs"].append(dict(m, session_id=session_id))
-            return list(range(1, len(messages) + 1))
-
-        def set_session_title(self, key, title):
+        def set_title(self, key, title):
             return True
 
-        def get_session(self, key):
-            return {"id": key, "cwd": str(tmp_path)}
+        def get(self, key):
+            return _stored({"id": key, "cwd": str(tmp_path)})
 
-        def update_session_cwd(self, *a, **k):
+        def update_cwd(self, *a, **k):
             return None
 
         def close(self):
@@ -16830,7 +16687,8 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    _stores_open_as(monkeypatch, ProfileDB)
+    _fakes_are_handles(monkeypatch, ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
 
     def _fake_make_agent(*a, **k):
@@ -16880,49 +16738,49 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         def get_session_title(self, _key):
             return "launch"
 
-    class ProfileDB:
-        def __init__(self, db_path=None):
-            seen.setdefault("inits", 0)
-            seen["inits"] += 1
-
-        def get_session_title(self, _key):
+    class ProfileSessions:
+        def get_title(self, _key):
             return "parent"
 
-        def get_next_title_in_lineage(self, current):
+        def next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
-        def get_resume_conversations(self, key):
+        def get(self, _key):
+            return types.SimpleNamespace(cwd=str(tmp_path), git_branch=None, git_repo_root=None, system_prompt=None)
+
+        def update_cwd(self, *args, **kwargs):
+            return None
+
+        def create(self, _spec):
+            return None
+
+        def set_title(self, _key, _title):
+            return True
+
+        def set_auto_title(self, _key, _title, *, source):
+            seen["title_source"] = source.value
+            return True
+
+    class ProfileMessages:
+        def append_batch(self, session_id, messages, **kwargs):
+            seen["msgs"].extend(_copied(session_id, messages))
+            return types.SimpleNamespace(outcomes=())
+
+        def read_resume_conversations(self, key):
             assert key == "parent-key"
             # The model projection has already been compacted to a summary + tail;
             # the display projection still contains every visible turn.
-            return (
-                [{"role": "assistant", "content": "compact summary"}],
-                display_history,
+            return ResumeConversations(
+                model=(ConversationMessage.from_openai_message({"role": "assistant", "content": "compact summary"}),),
+                display=tuple(ConversationMessage.from_openai_message(message) for message in display_history),
             )
 
-        def create_session(self, _new_key, **_kwargs):
-            return None
+    class ProfileDB:
+        """The parent profile's store; its reads and writes go through ``persistence``."""
 
-        def append_message(self, **kwargs):
-            seen["msgs"].append(kwargs)
-
-        def append_messages_batch(self, session_id, messages, **kwargs):
-            for message in messages:
-                seen["msgs"].append(dict(message, session_id=session_id))
-            return list(range(1, len(messages) + 1))
-
-        def set_session_title(self, _key, _title):
-            return True
-
-        def set_auto_title(self, _key, _title, *, source="llm"):
-            seen["title_source"] = source
-            return True
-
-        def get_session(self, key):
-            return {"id": key, "cwd": str(tmp_path)}
-
-        def update_session_cwd(self, *args, **kwargs):
-            return None
+        def __init__(self, db_path=None):
+            seen.setdefault("inits", 0)
+            seen["inits"] += 1
 
         def close(self):
             return None
@@ -16951,8 +16809,11 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         "cwd": str(tmp_path),
     }
     server._sessions["parent"] = parent
+    persistence = types.SimpleNamespace(sessions=ProfileSessions(), messages=ProfileMessages())
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    _stores_open_as(monkeypatch, ProfileDB)
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, ProfileDB) else None))
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None))
     monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: FakeAgent())
     monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: {})
@@ -17444,12 +17305,18 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
 
 def test_session_active_list_reports_live_sessions(monkeypatch):
     class _DB:
-        def get_session_title(self, key):
+        pass
+
+    class _Sessions:
+        def get_title(self, key):
             return {"key-a": "Research", "key-b": "Implement"}.get(key, "")
 
     previous_sessions = dict(server._sessions)
     server._sessions.clear()
+    persistence = types.SimpleNamespace(sessions=_Sessions())
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, _DB) else None))
     server._sessions["sid-a"] = _session(
         agent=types.SimpleNamespace(model="model-a"),
         history=[{"role": "user", "content": "find docs"}],
@@ -17750,14 +17617,15 @@ def test_session_activate_can_omit_duplicate_desktop_transcript(monkeypatch):
 def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
-    class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
-            return [
+    class _DB(_HandleRepositories):
+        def list_sessions(self, _query, _window, *, compact_rows=False):
+            return _listing([
                 {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
-            ]
+            ])
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _fakes_are_handles(monkeypatch, _DB)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.most_recent", "params": {}}
@@ -17769,11 +17637,12 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
 
 
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
-    class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
-            return [{"id": "tool-1", "source": "tool", "started_at": 1}]
+    class _DB(_HandleRepositories):
+        def list_sessions(self, _query, _window, *, compact_rows=False):
+            return _listing([{"id": "tool-1", "source": "tool", "started_at": 1}])
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _fakes_are_handles(monkeypatch, _DB)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.most_recent", "params": {}}
@@ -17786,14 +17655,15 @@ def test_session_most_recent_skips_unknown_source_rows(monkeypatch):
     """#54320: a token-accounting guard placeholder (source='unknown') must never be
     picked for auto-resume — the row can outrank the session the user actually opened."""
 
-    class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
-            return [
+    class _DB(_HandleRepositories):
+        def list_sessions(self, _query, _window, *, compact_rows=False):
+            return _listing([
                 {"id": "guard-1", "source": "unknown", "title": "", "started_at": 101},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 100},
-            ]
+            ])
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _fakes_are_handles(monkeypatch, _DB)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.most_recent", "params": {}}
@@ -17804,11 +17674,12 @@ def test_session_most_recent_skips_unknown_source_rows(monkeypatch):
 
 
 def test_session_most_recent_returns_null_when_only_unknown_rows(monkeypatch):
-    class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
-            return [{"id": "guard-1", "source": "unknown", "started_at": 1}]
+    class _DB(_HandleRepositories):
+        def list_sessions(self, _query, _window, *, compact_rows=False):
+            return _listing([{"id": "guard-1", "source": "unknown", "started_at": 1}])
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _fakes_are_handles(monkeypatch, _DB)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.most_recent", "params": {}}
@@ -17822,11 +17693,12 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     callers don't have to special-case JSON-RPC error envelopes for
     'no answer' (Copilot review on #17130)."""
 
-    class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+    class _BrokenDB(_HandleRepositories):
+        def list_sessions(self, _query, _window, *, compact_rows=False):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+    _fakes_are_handles(monkeypatch, _BrokenDB)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.most_recent", "params": {}}
@@ -20774,7 +20646,7 @@ def _branched_marker(db, session_key):
     return next(
         (
             m
-            for m in db.get_messages_as_conversation(session_key)
+            for m in conversation(db, session_key)
             if m.get("display_kind") == "personality_switch"
         ),
         None,
@@ -20784,7 +20656,7 @@ def _branched_marker(db, session_key):
 def _branched_assistant(db, session_key):
     return next(
         m
-        for m in db.get_messages_as_conversation(session_key)
+        for m in conversation(db, session_key)
         if m["role"] == "assistant"
     )
 
@@ -20797,9 +20669,7 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
     branch resuming without the parent's reasoning, preserved thinking blocks or
     Codex encrypted-reasoning/message-item continuation state.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session = _session(
         session_key="branch-key",
         parent_session_id="parent-key",
@@ -20807,7 +20677,7 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         seeded=True,  # stamped by session.create: this history exists only in memory
     )
     try:
-        db.create_session("branch-key", source="tui")
+        seed_session(db, "branch-key", "tui")
         monkeypatch.setattr(server, "_get_db", lambda: db)
 
         server._persist_branch_seed(session)
@@ -20834,12 +20704,10 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
     Same drop as the seed path: the copy loop wrote only role/content, so the
     new session row replayed without the reasoning context the parent had.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     server._sessions["sid"] = _session(history=_branch_history())
     try:
-        db.create_session("session-key", source="tui")
+        seed_session(db, "session-key", "tui")
         monkeypatch.setattr(server, "_get_db", lambda: db)
         monkeypatch.setattr(server, "_new_session_key", lambda: "branch-key")
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
@@ -20859,7 +20727,7 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
-        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_DERIVED
+        assert db.sessions.get_title_source("branch-key") == TitleSource.DERIVED
         assistant = _branched_assistant(db, "branch-key")
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT
@@ -21024,18 +20892,12 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, *_args, **_kwargs):
-            return []
+        def read_conversation(self, *_args, **_kwargs):
+            return ()
 
-        def replace_messages(
-            self,
-            session_id,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, session_id, messages, mode, reject_active_turn_lease=False):
             self.replaced.append((session_id, list(messages)))
+            return ReplaceResult(rows=())
 
     session = _session(
         agent=_Agent(),
@@ -21075,6 +20937,7 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         monkeypatch.setattr(server, "_get_usage", lambda _a: {})
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+        _route_store(monkeypatch, messages=stub_db)
 
         # The client counts three user bubbles (first=0, second=1, third=2) —
         # it never sees the pivot. Rewinding to "third" must cut exactly there.
@@ -21093,7 +20956,7 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
         expected = history_before[:third_index]
-        assert stub_db.replaced == [("session-key", expected)], (
+        assert stub_db.replaced == [("session-key", _written(expected))], (
             "the pivot shifted the ordinal: the cut landed at "
             f"{len(stub_db.replaced[0][1]) if stub_db.replaced else None} instead of {third_index}"
         )
@@ -21117,7 +20980,7 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
     the FTS entry goes with them. Guarding the *aim* of a rewind still leaves
     every other way of aiming it wrong terminal, so the write itself has to
     stop destroying. The storage-layer contract this relies on is pinned in
-    tests/hermes_state/test_replace_messages_archive_siblings.py.
+    tests/contracts/test_replace_transcript_contract.py.
     """
 
     captured = {}
@@ -21141,20 +21004,13 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
             self._target()
 
     class _StubDb:
-        def get_messages_as_conversation(self, *_args, **_kwargs):
-            return []
+        def read_conversation(self, *_args, **_kwargs):
+            return ()
 
-        def replace_messages(
-            self,
-            session_id,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
-            captured["active_only"] = active_only
-            captured["archive_dropped"] = archive_dropped
+        def replace_transcript(self, session_id, messages, mode, reject_active_turn_lease=False):
+            captured["mode"] = mode
             captured["reject_active_turn_lease"] = reject_active_turn_lease
+            return ReplaceResult(rows=())
 
     server._sessions["archive-trunc-sid"] = _session(
         agent=_Agent(),
@@ -21173,6 +21029,7 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         monkeypatch.setattr(server, "_get_usage", lambda _a: {})
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_get_db", lambda: _StubDb())
+        _route_store(monkeypatch, messages=_StubDb())
 
         resp = server.handle_request(
             {
@@ -21188,11 +21045,11 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
-        assert captured.get("archive_dropped") is True, (
+        assert captured.get("mode") is ReplaceMode.ARCHIVE_DROPPED, (
             "a rewind must soft-archive the turns it drops, not DELETE them"
         )
         # #80216: still must not touch rows archived by an earlier compaction.
-        assert captured.get("active_only") is True
+        assert captured.get("mode") is not ReplaceMode.DESTRUCTIVE
         assert captured.get("reject_active_turn_lease") is True
     finally:
         server._sessions.pop("archive-trunc-sid", None)
@@ -21203,15 +21060,9 @@ def test_prompt_submit_unmatched_row_id_refuses_even_with_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     history = [
         {"_row_id": 101, "role": "user", "content": "first"},
@@ -21222,6 +21073,7 @@ def test_prompt_submit_unmatched_row_id_refuses_even_with_ordinal(monkeypatch):
     sess = _session(history=list(history))
     server._sessions["fallback-row-id-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -21254,15 +21106,9 @@ def test_prompt_submit_unmatched_message_id_refuses_even_with_ordinal(monkeypatc
     replaced = []
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
     # Production-shaped history: no renderer "id" keys on user dicts.
     history = [
@@ -21274,6 +21120,7 @@ def test_prompt_submit_unmatched_message_id_refuses_even_with_ordinal(monkeypatc
     sess = _session(history=list(history))
     server._sessions["synthetic-msg-id-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -21319,23 +21166,18 @@ def test_prompt_submit_row_id_resolves_via_db_when_memory_lacks_stamps(monkeypat
     ]
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
-        def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
-            assert include_row_ids is True
-            return list(durable_history)
+        def read_conversation(self, key, request):
+            assert request.include_row_ids is True
+            return tuple(ConversationMessage.from_openai_message(m) for m in durable_history)
 
     sess = _session(history=list(live_history), session_key="db-row-key")
     server._sessions["db-row-resolve-sid"] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
 
     try:
@@ -21361,20 +21203,26 @@ def test_prompt_submit_row_id_resolves_via_db_when_memory_lacks_stamps(monkeypat
         server._sessions.pop("db-row-resolve-sid", None)
 
 
+def _insert_rows(db, session_key, messages):
+    """Store *messages* as rows of *session_key* and stamp each dict with its stored row id, uid and timestamp, as
+    the store's transcript insert does to the live dicts it writes."""
+    seed_messages(db, session_key, *messages)
+    for message, row in zip(messages, transcript_rows(db, session_key)):
+        message.update(_row_id=row["id"], message_uid=row["message_uid"], timestamp=row["timestamp"])
+
+
 def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
     monkeypatch, tmp_path
 ):
-    """#82959 production path: real SessionDB insert → live history without
+    """#82959 production path: real store insert → live history without
     _row_id (turn rewrite) → truncate_before_row_id cuts durable + memory.
 
     No hand-seeded ids and no MagicMock state manager — the contract that
     #82766 review said unit fixtures must exercise.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "rowid-trunc.db")
+    db = storage_handle(tmp_path / "rowid-trunc")
     session_key = "real-db-row-trunc"
-    db.create_session(session_key, "cli")
+    seed_session(db, session_key, "cli")
     msgs = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "reply 1"},
@@ -21383,9 +21231,7 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
         {"role": "user", "content": "third"},
         {"role": "assistant", "content": "reply 3"},
     ]
-    with db._lock:
-        db._insert_message_rows(db._conn, session_key, msgs)
-        db._conn.commit()
+    _insert_rows(db, session_key, msgs)
     row_ids = [m["_row_id"] for m in msgs]
     assert all(isinstance(r, int) and r > 0 for r in row_ids)
 
@@ -21423,8 +21269,8 @@ def test_prompt_submit_row_id_real_sessiondb_resolve_without_memory_stamps(
         assert sess["history"][1]["content"] == "reply 1"
         # Durable active transcript matches the cut plus the prompt just sent, which is durable at
         # submit (#111868) — before the turn runs (archive_dropped keeps inactive rows;
-        # get_messages_as_conversation returns active only).
-        active = db.get_messages_as_conversation(session_key)
+        # the conversation read returns active only).
+        active = conversation(db, session_key)
         assert [m["content"] for m in active] == ["first", "reply 1", "rewound second"]
         # Heal stamps for subsequent rewinds when memory lined up with DB.
         assert sess["history"][0].get("_row_id") is not None
@@ -21436,22 +21282,18 @@ def test_prompt_submit_row_id_real_sessiondb_unknown_refuses_despite_ordinal(
     monkeypatch, tmp_path
 ):
     """#82959 fail-closed: unknown row_id + valid ordinal must not truncate
-    real SessionDB (the mass-delete class when durable id cannot resolve).
+    the real store (the mass-delete class when durable id cannot resolve).
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "rowid-refuse.db")
+    db = storage_handle(tmp_path / "rowid-refuse")
     session_key = "real-db-row-refuse"
-    db.create_session(session_key, "cli")
+    seed_session(db, session_key, "cli")
     msgs = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "reply 1"},
         {"role": "user", "content": "second"},
         {"role": "assistant", "content": "reply 2"},
     ]
-    with db._lock:
-        db._insert_message_rows(db._conn, session_key, msgs)
-        db._conn.commit()
+    _insert_rows(db, session_key, msgs)
 
     live_history = [{"role": m["role"], "content": m["content"]} for m in msgs]
     sess = _session(history=list(live_history), session_key=session_key)
@@ -21465,7 +21307,7 @@ def test_prompt_submit_row_id_real_sessiondb_unknown_refuses_despite_ordinal(
         server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
     )
 
-    n_before = len(db.get_messages_as_conversation(session_key))
+    n_before = len(conversation(db, session_key))
     try:
         resp = server.handle_request(
             {
@@ -21484,7 +21326,7 @@ def test_prompt_submit_row_id_real_sessiondb_unknown_refuses_despite_ordinal(
         assert resp.get("error") is not None
         assert resp["error"]["code"] == 4018
         assert len(sess["history"]) == 4
-        assert len(db.get_messages_as_conversation(session_key)) == n_before
+        assert len(conversation(db, session_key)) == n_before
     finally:
         server._sessions.pop(sid, None)
 
@@ -21496,20 +21338,16 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
     must refuse (4018), not zip-stamp durable ids positionally and cut the
     wrong turn. Probe 4a from the PR #83202 review.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "rowid-misalign-content.db")
+    db = storage_handle(tmp_path / "rowid-misalign-content")
     session_key = "real-db-row-misalign-content"
-    db.create_session(session_key, "cli")
+    seed_session(db, session_key, "cli")
     msgs = [
         {"role": "user", "content": "A"},
         {"role": "assistant", "content": "ra"},
         {"role": "user", "content": "B"},
         {"role": "assistant", "content": "rb"},
     ]
-    with db._lock:
-        db._insert_message_rows(db._conn, session_key, msgs)
-        db._conn.commit()
+    _insert_rows(db, session_key, msgs)
     rid_b = msgs[2]["_row_id"]
     original_row_ids = [message["_row_id"] for message in msgs]
 
@@ -21533,7 +21371,7 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
         server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
     )
 
-    n_before = len(db.get_messages_as_conversation(session_key))
+    n_before = len(conversation(db, session_key))
     try:
         resp = server.handle_request(
             {
@@ -21553,7 +21391,7 @@ def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
         # Fail-closed: nothing stamped onto the misaligned dicts, nothing cut.
         assert all("_row_id" not in m for m in sess["history"])
         assert len(sess["history"]) == 4
-        assert len(db.get_messages_as_conversation(session_key)) == n_before
+        assert len(conversation(db, session_key)) == n_before
     finally:
         server._sessions.pop(sid, None)
 
@@ -21567,20 +21405,16 @@ def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
     addressed user turn, never a positionally mis-aimed one. Probe 4b from
     the PR #83202 review.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "rowid-misalign-role.db")
+    db = storage_handle(tmp_path / "rowid-misalign-role")
     session_key = "real-db-row-misalign-role"
-    db.create_session(session_key, "cli")
+    seed_session(db, session_key, "cli")
     msgs = [
         {"role": "user", "content": "A"},
         {"role": "assistant", "content": "ra"},
         {"role": "user", "content": "B"},
         {"role": "assistant", "content": "rb"},
     ]
-    with db._lock:
-        db._insert_message_rows(db._conn, session_key, msgs)
-        db._conn.commit()
+    _insert_rows(db, session_key, msgs)
     rid_b = msgs[2]["_row_id"]
     original_row_ids = [message["_row_id"] for message in msgs]
 
@@ -21663,23 +21497,18 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
     ]
 
     class _FakeDB:
-        def replace_messages(
-            self,
-            key,
-            messages,
-            active_only=False,
-            archive_dropped=False,
-            reject_active_turn_lease=False,
-        ):
+        def replace_transcript(self, key, messages, mode, reject_active_turn_lease=False):
             replaced.append((key, list(messages)))
+            return ReplaceResult(rows=())
 
-        def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
-            return [dict(m) for m in durable_history]
+        def read_conversation(self, key, request):
+            return tuple(ConversationMessage.from_openai_message(dict(m)) for m in durable_history)
 
     sess = _session(history=list(live_history), session_key="db-fallback-verify-key")
     sid = "db-fallback-verify-sid"
     server._sessions[sid] = sess
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    _route_store(monkeypatch, messages=_FakeDB())
     monkeypatch.setattr(
         server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
     )
@@ -21732,11 +21561,9 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
     the first rewind. The submit response must return the fresh survivor ids,
     and a second rewind using them must succeed where the stale id fail-closes.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "rowid-consec.db")
+    db = storage_handle(tmp_path / "rowid-consec")
     session_key = "real-db-consec-rewind"
-    db.create_session(session_key, "cli")
+    seed_session(db, session_key, "cli")
     msgs = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "reply 1"},
@@ -21745,9 +21572,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         {"role": "user", "content": "third"},
         {"role": "assistant", "content": "reply 3"},
     ]
-    with db._lock:
-        db._insert_message_rows(db._conn, session_key, msgs)
-        db._conn.commit()
+    _insert_rows(db, session_key, msgs)
     original_row_ids = [m["_row_id"] for m in msgs]
 
     sess = _session(history=[dict(m) for m in msgs], session_key=session_key)
@@ -21827,7 +21652,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         _join_turn_thread(sess)
         assert len(sess["history"]) == 2
         assert sess["history"][0]["content"] == "first"
-        active = db.get_messages_as_conversation(session_key)
+        active = conversation(db, session_key)
         # The cut, plus the prompt just sent (durable at submit, #111868).
         assert [m["content"] for m in active] == ["first", "reply 1", "rewound second (same id)"]
         # And the second response rebinds again: one surviving user turn.
@@ -21841,11 +21666,9 @@ def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
     monkeypatch, tmp_path
 ):
     """The bounded map classifies physical active IDs before user;user repair."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "rowid-repaired-wedge.db")
+    db = storage_handle(tmp_path / "rowid-repaired-wedge")
     session_key = "real-db-rowid-repaired-wedge"
-    db.create_session(session_key, "cli")
+    seed_session(db, session_key, "cli")
     physical = [
         {"role": "user", "content": "first fragment"},
         {"role": "user", "content": "second fragment"},
@@ -21853,12 +21676,10 @@ def test_prompt_submit_rebind_map_clears_active_row_hidden_by_sequence_repair(
         {"role": "user", "content": "target"},
         {"role": "assistant", "content": "target reply"},
     ]
-    with db._lock:
-        db._insert_message_rows(db._conn, session_key, physical)
-        db._conn.commit()
+    _insert_rows(db, session_key, physical)
     physical_ids = [message["_row_id"] for message in physical]
-    repaired = db.get_messages_as_conversation(
-        session_key, repair_alternation=True, include_row_ids=True
+    repaired = conversation(
+        db, session_key, ConversationRequest(repair_alternation=True, include_row_ids=True)
     )
     # Provider repair merges the wedge and necessarily drops the second
     # physical user's row identity from the replay view.
@@ -22006,9 +21827,15 @@ def test_persist_live_session_system_prompt_uses_profile_home(monkeypatch, tmp_p
             return f"System prompt from {home}\n{soul}"
 
     class FakeDB:
+        pass
+
+    class FakeSessions:
         def update_system_prompt(self, session_id, prompt):
             pass
 
+    persistence = types.SimpleNamespace(sessions=FakeSessions())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
     agent = FakeAgent()
     agent._session_db = FakeDB()
     session = {
@@ -22044,9 +21871,15 @@ def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch)
             return "plain prompt"
 
     class FakeDB:
+        pass
+
+    class FakeSessions:
         def update_system_prompt(self, session_id, prompt):
             pass
 
+    persistence = types.SimpleNamespace(sessions=FakeSessions())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
     agent = FakeAgent()
     agent._session_db = FakeDB()
     session = {
@@ -22060,7 +21893,7 @@ def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch)
     assert agent._cached_system_prompt == "plain prompt"
 
 
-def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_path):
+def test_persist_live_session_system_prompt_restores_pre_existing_override(monkeypatch, tmp_path):
     """reset_hermes_home_override() restores the previous ContextVar state,
     not just the unset case: when a caller already holds an override, the
     persist call must scope to the session's profile and then hand the
@@ -22089,9 +21922,15 @@ def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_p
             return "inner prompt"
 
     class FakeDB:
+        pass
+
+    class FakeSessions:
         def update_system_prompt(self, session_id, prompt):
             pass
 
+    persistence = types.SimpleNamespace(sessions=FakeSessions())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
     agent = FakeAgent()
     agent._session_db = FakeDB()
     session = {
@@ -22149,9 +21988,15 @@ def test_persist_live_session_system_prompt_binds_session_cwd(monkeypatch, tmp_p
             return f"Current working directory: {resolve_agent_cwd()}"
 
     class FakeDB:
+        pass
+
+    class FakeSessions:
         def update_system_prompt(self, session_id, prompt):
             persisted["prompt"] = prompt
 
+    persistence = types.SimpleNamespace(sessions=FakeSessions())
+    monkeypatch.setattr(
+        server, "_persistence_for", lambda db: contextlib.nullcontext(persistence if isinstance(db, FakeDB) else None))
     agent = FakeAgent()
     agent._session_db = FakeDB()
     session = {
@@ -22187,11 +22032,11 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     new_cwd.mkdir()
     captured = {}
 
-    class FakeDB:
-        def get_session(self, session_id):
-            return {"id": session_id}
+    class FakeDB(_HandleRepositories):
+        def get(self, session_id):
+            return _stored({"id": session_id})
 
-        def update_session_cwd(self, session_id, cwd, branch=None, root=None, replace_git_meta=True):
+        def update_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None, *, replace_git_meta=False):
             captured["row_update"] = (session_id, cwd)
 
         def close(self):
@@ -22204,6 +22049,7 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
         yield FakeDB()
 
     monkeypatch.setattr(server, "_profile_db", _fake_db)
+    _fakes_are_handles(monkeypatch, FakeDB)
     monkeypatch.setattr(
         server.git_probe,
         "branch",
@@ -22288,12 +22134,13 @@ def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tm
     (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
     monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
 
-    class _DB:
-        def get_session(self, key):
-            return {"session_key": key}
-        def update_session_cwd(self, *a, **k):
+    class _DB(_HandleRepositories):
+        def get(self, key):
+            return _stored({"session_key": key})
+        def update_cwd(self, *a, **k):
             return 1
     monkeypatch.setattr(server, "_profile_db", lambda params, **_kw: contextlib.nullcontext(_DB()))
+    _fakes_are_handles(monkeypatch, _DB)
     monkeypatch.setattr(server.git_probe, "branch", lambda c: None)
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda c: None)
 

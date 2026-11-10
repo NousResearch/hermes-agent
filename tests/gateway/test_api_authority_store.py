@@ -8,33 +8,34 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_authority import SessionAuthority
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture
 def owned_api(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     runner = SimpleNamespace(_draining=False)
     runner.session_authority = SessionAuthority(
-        runner, profile_id='default', instance_id='api-test', db=db,
-        epoch=begin_runtime_epoch(db, instance_id='api-test'))
+        runner, profile_id='default', instance_id='api-test',
+        epoch=db.runtime.begin_epoch(instance_id='api-test'), persistence=db)
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={'key': 'owned-api-test-secret'}))
     adapter.gateway_runner = runner
     yield adapter, db
     adapter._close_cached_session_dbs()
     adapter._response_store.close()
     adapter._run_idempotency_store.close()
-    db.close()
 
 
 @pytest.mark.asyncio
 async def test_bound_api_borrows_selected_authority_store(owned_api):
     adapter, db = owned_api
-    db.create_session('owned-session', source='api_server')
-    assert adapter._ensure_session_db() is db
-    assert await adapter._ensure_session_db_async() is db
+    seed_session(db, 'owned-session', 'api_server')
+    store = adapter.gateway_runner.session_authority.persistence
+    assert adapter._ensure_store() is store
+    assert await adapter._ensure_store_async() is store
     app = web.Application()
     app.router.add_get('/api/sessions/{session_id}', adapter._handle_get_session)
     async with TestClient(TestServer(app)) as client:
@@ -45,7 +46,7 @@ async def test_bound_api_borrows_selected_authority_store(owned_api):
         assert reply.status == 200, await reply.text()
         assert (await reply.json())['session']['id'] == 'owned-session'
     adapter._close_cached_session_dbs()
-    assert db.get_session('owned-session')['id'] == 'owned-session'
+    assert session_row(db, 'owned-session')['id'] == 'owned-session'
 
 
 @pytest.mark.asyncio
@@ -53,12 +54,12 @@ async def test_bound_api_never_opens_unserved_home(owned_api, tmp_path, monkeypa
     adapter, db = owned_api
     other = tmp_path / 'unserved'
     monkeypatch.setenv('HERMES_HOME', str(other))
-    # Even an explicit legacy override cannot bypass runtime profile selection.
+    # Even an explicit override cannot bypass runtime profile selection.
     adapter._session_db = db
-    assert adapter._ensure_session_db() is None
-    assert await adapter._ensure_session_db_async() is None
+    assert adapter._ensure_store() is None
+    assert await adapter._ensure_store_async() is None
     assert not (other / 'state.db').exists()
     adapter.gateway_runner.session_authority = None
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    assert adapter._ensure_session_db() is None
-    assert await adapter._ensure_session_db_async() is None
+    assert adapter._ensure_store() is None
+    assert await adapter._ensure_store_async() is None

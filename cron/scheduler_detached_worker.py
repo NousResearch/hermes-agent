@@ -1,7 +1,7 @@
 """Cron: teardown of a worker that outlived its ``run_job``.
 
 ``ThreadPoolExecutor.shutdown(wait=False)`` after an inactivity timeout does not stop a
-worker already inside ``run_conversation``. Finalizing its SessionDB from ``run_job``'s
+worker already inside ``run_conversation``. Finalizing its store handle from ``run_job``'s
 ``finally`` would close a handle the worker is still writing to — the checkpoint/WAL-unlink
 overlap behind #102827. The worker's Future owns the teardown instead.
 """
@@ -16,18 +16,17 @@ from typing import Optional
 
 
 def _close_late_session_db_result(future: concurrent.futures.Future) -> None:
-    """Done-callback: close a SessionDB whose constructor finished after run_job's init timeout
+    """Done-callback: close a store handle whose open finished after run_job's init timeout
     (worker abandoned via ``shutdown(wait=False)``), else its .db/WAL/SHM handles leak to EMFILE.
 
-    If the constructor later completes inside that abandoned worker, the Future's result — an open
-    SessionDB holding .db / WAL / SHM file handles — would be orphaned and never closed, leaking
+    If the open later completes inside that abandoned worker, the Future's result (a handle on an
+    open store holding .db / WAL / SHM file handles) would be orphaned and never closed, leaking
     descriptors until EMFILE (#72782). This callback retrieves and closes that eventual late result.
     """
     with contextlib.suppress(Exception):
-        db = future.result()
-        if db is not None:
-            from hermes_state_registry import release_or_close
-            release_or_close(db)
+        handle = future.result()
+        if handle is not None:
+            handle.close()
 
 
 def defer_teardown_to_running_worker(

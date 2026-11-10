@@ -1,7 +1,6 @@
 """Canonical message insertion and attachment rollback share one write fence."""
 
 import sqlite3
-from contextlib import contextmanager
 
 import pytest
 
@@ -11,12 +10,14 @@ from gateway.hosted_room_attachments import (
     HostedRoomAttachmentStore,
     UNCOMMITTED_TTL_SECONDS,
 )
+from persistence.gateway.hosted_rooms import EventCursorConflictError
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _staged(tmp_path, *, kind="message.member", viewer=True):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     hosted_rooms.create_room(
-        db, room_id="files", name="Files", members=[], authority_gateway_id="home"
+        db, placement="profile", room_id="files", name="Files", members=[], authority_gateway_id="home"
     )
     store = HostedRoomAttachmentStore(db, clock=lambda: 1000.0)
     uploaded = store.put(
@@ -42,6 +43,7 @@ def _staged(tmp_path, *, kind="message.member", viewer=True):
         hold_until_event=True,
     )
     args = dict(
+        placement="profile",
         room_id="files",
         event_id="message",
         kind=kind,
@@ -84,14 +86,14 @@ def test_rollback_and_canonical_append_have_one_winner(tmp_path, kind, publish_f
         assert _read(store, manifest) == b"exact output"
         assert hosted_rooms.append_event(db, **args)["idempotent"]
         assert (
-            hosted_rooms.read_events(db, room_id="files")["events"][0]["seq"]
+            hosted_rooms.read_events(db, placement="profile", room_id="files")["events"][0]["seq"]
             == committed["seq"]
         )
     else:
         assert _abort(store, manifest)
-        with pytest.raises(hosted_rooms.EventCursorConflictError):
+        with pytest.raises(EventCursorConflictError):
             hosted_rooms.append_event(db, **args)
-        assert hosted_rooms.room_state(db, room_id="files")["latest_seq"] == 0
+        assert hosted_rooms.room_state(db, placement="profile", room_id="files")["latest_seq"] == 0
         with pytest.raises(AttachmentNotFoundError):
             _read(store, manifest)
         store.commit_message(
@@ -110,23 +112,25 @@ def test_append_validates_after_entering_its_sql_write_transaction(
     tmp_path, monkeypatch
 ):
     db, store, manifest, args = _staged(tmp_path)
-    transaction = hosted_rooms._transaction
+    from persistence.sqlite.gateway._hosted_store import HostedFiles
+    transaction = HostedFiles._hosted_write
+    aborted = []
 
-    @contextmanager
-    def rollback_before_begin(*values, **kwargs):
-        _abort(store, manifest)
-        with transaction(*values, **kwargs) as conn:
-            yield conn
+    def rollback_before_begin(self, *values, **kwargs):
+        if not aborted:
+            aborted.append(True)
+            _abort(store, manifest)
+        return transaction(self, *values, **kwargs)
 
-    monkeypatch.setattr(hosted_rooms, "_transaction", rollback_before_begin)
-    with pytest.raises(hosted_rooms.EventCursorConflictError):
+    monkeypatch.setattr(HostedFiles, "_hosted_write", rollback_before_begin)
+    with pytest.raises(EventCursorConflictError):
         hosted_rooms.append_event(db, **args)
-    assert hosted_rooms.read_events(db, room_id="files")["events"] == []
+    assert hosted_rooms.read_events(db, placement="profile", room_id="files")["events"] == []
 
 
 def _append_to_other_room(db, args):
     hosted_rooms.create_room(
-        db, room_id="other", name="Other", members=[], authority_gateway_id="home"
+        db, placement="profile", room_id="other", name="Other", members=[], authority_gateway_id="home"
     )
     args["room_id"] = "other"
 
@@ -145,10 +149,10 @@ _INVALIDATE_APPEND = {
 def test_append_requires_exact_live_room_visible_commitment(tmp_path, invalid):
     db, _store, _manifest, args = _staged(tmp_path, viewer=invalid != "private")
     _INVALIDATE_APPEND[invalid](db, args)
-    with pytest.raises(hosted_rooms.EventCursorConflictError):
+    with pytest.raises(EventCursorConflictError):
         hosted_rooms.append_event(db, **args)
-    assert hosted_rooms.room_state(db, room_id=args["room_id"])["latest_seq"] == 0
-    with sqlite3.connect(db) as conn:
+    assert hosted_rooms.room_state(db, placement="profile", room_id=args["room_id"])["latest_seq"] == 0
+    with sqlite3.connect(tmp_path / "state.db") as conn:
         assert (
             conn.execute("SELECT expires_at FROM hosted_room_attachments").fetchone()[0]
             is not None
@@ -159,7 +163,7 @@ def test_canonical_append_retains_files_before_caller_can_crash_or_prune(tmp_pat
     db, store, manifest, args = _staged(tmp_path)
     hosted_rooms.append_event(db, **args)
     # No service retain_event/ACK call has run after append.
-    assert store.prune(now=1001.0 + UNCOMMITTED_TTL_SECONDS) == 0
+    assert store._repository._prune("profile", 1001.0 + UNCOMMITTED_TTL_SECONDS) == 0
     assert _read(store, manifest) == b"exact output"
 
 
@@ -176,11 +180,11 @@ def test_failed_event_insert_rolls_back_attachment_retention(tmp_path, monkeypat
         )
         raise RuntimeError("event capacity failed")
 
-    monkeypatch.setattr(hosted_rooms, "_prepare_event", fail)
+    monkeypatch.setattr("persistence.sqlite.gateway.hosted_rooms._prepare_event", fail)
     with pytest.raises(RuntimeError, match="event capacity failed"):
         hosted_rooms.append_event(db, **args)
     assert _abort(store, manifest) == 1
-    with sqlite3.connect(db) as conn:
+    with sqlite3.connect(tmp_path / "state.db") as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM hosted_room_events").fetchone()[0] == 0
         )
@@ -239,6 +243,6 @@ def test_append_does_not_read_blob_bytes_inside_its_write_fence(tmp_path, monkey
         raise AssertionError("canonical append must do metadata-only SQL work")
 
     with monkeypatch.context() as fence:
-        fence.setattr(HostedRoomAttachmentStore, "_read_blob", unexpected_io)
+        fence.setattr("persistence.sqlite.gateway.hosted_room_attachments._read_blob", unexpected_io)
         hosted_rooms.append_event(db, **args)
     assert _read(store, manifest) == b"exact output"

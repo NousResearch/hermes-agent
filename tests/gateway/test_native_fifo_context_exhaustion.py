@@ -12,12 +12,12 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
+from gateway.session_authority import SessionAuthority, admission_row, initialize_session_authority
 from gateway.session_contract import SessionRef
 from gateway.session_ingress_context import native_callback
 from hermes_constants import get_hermes_home
-from hermes_state_runtime import list_session_admissions
 from plugins.platforms.discord.adapter import DiscordAdapter
+from persistence_assembly import close_stores_under
 
 _REAL_SCHEDULE = SessionAuthority._schedule  # the fixture parks scheduling; races restore it
 
@@ -42,7 +42,7 @@ async def native(monkeypatch):
     finally:
         from gateway.session_runtime_workers import mutation_tasks
         await asyncio.gather(*mutation_tasks(authority))
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 async def _admit(native, text, event=None):
@@ -54,7 +54,7 @@ async def _admit(native, text, event=None):
 @pytest.mark.asyncio
 async def test_exhaustion_reset_runs_queued_native_messages_on_the_fresh_session(native, monkeypatch):
     from gateway.session_results import execution_result
-    runner, authority, db = native.runner, native.authority, native.authority.db
+    runner, authority, db = native.runner, native.authority, native.authority.persistence
     admitted = [await _admit(native, text) for text in ("A", "B", "C")]
     old = admitted[0][1].ref
     executed, fresh = [], {}
@@ -81,9 +81,9 @@ async def test_exhaustion_reset_runs_queued_native_messages_on_the_fresh_session
     if new in authority.sessions:
         await authority._drain(SessionRef(authority.profile_id, new))
     assert executed == [("A", old.session_id), ("B", new), ("C", new), ("D", new)]
-    old_rows = list_session_admissions(db, session_id=old.session_id, pending_only=False)
+    old_rows = [admission_row(record) for record in db.admissions.list(session_id=old.session_id, pending_only=False)]
     assert [(r["request_id"], r["status"]) for r in old_rows] == [("A", "terminal")]
-    new_rows = list_session_admissions(db, session_id=new, pending_only=False)
+    new_rows = [admission_row(record) for record in db.admissions.list(session_id=new, pending_only=False)]
     assert [(r["request_id"], r["status"], r["outcome"]) for r in new_rows] == [
         (t, "terminal", "completed") for t in ("B", "C", "D")]
     # The re-home keeps each message's admission identity; a transport retry of B dedupes onto it.
@@ -101,7 +101,7 @@ async def test_exhaustion_reset_is_ordered_with_redelivery_and_cleanup(native, m
     the moved row (no UNIQUE collision rolling the whole move back); and the reset schedules the
     moved rows only after the conversation cleanup and topic binding sync."""
     from gateway.session_results import execution_result
-    runner, authority, db = native.runner, native.authority, native.authority.db
+    runner, authority, db = native.runner, native.authority, native.authority.persistence
     loop = asyncio.get_running_loop()
     admitted = [await _admit(native, text) for text in ("A", "B", "C")]
     old = admitted[0][1].ref
@@ -148,7 +148,7 @@ async def test_exhaustion_reset_is_ordered_with_redelivery_and_cleanup(native, m
         assert events == ["clear", "sync", "schedule"]
     await authority._drain(SessionRef(authority.profile_id, new))
     assert executed == ["A", "B", "C"]
-    new_rows = list_session_admissions(db, session_id=new, pending_only=False)
+    new_rows = [admission_row(record) for record in db.admissions.list(session_id=new, pending_only=False)]
     assert [(r["request_id"], r["admission_id"], r["status"]) for r in new_rows] == [
         ("B", admitted[1][1].admission_id, "terminal"), ("C", admitted[2][1].admission_id, "terminal")]
 
@@ -216,7 +216,7 @@ async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(
     route's admission turn and queues behind it there."""
     import threading
     from gateway.session_results import execution_result
-    runner, authority, db = native.runner, native.authority, native.authority.db
+    runner, authority, db = native.runner, native.authority, native.authority.persistence
     loop = asyncio.get_running_loop()
     admitted = [await _admit(native, text) for text in ("A", "B", "C")]
     old = admitted[0][1].ref
@@ -261,7 +261,7 @@ async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(
     assert retry.ref.session_id == late_d.ref.session_id == new
     await authority._drain(SessionRef(authority.profile_id, new))
     assert executed == [("A", old.session_id), ("B", new), ("C", new), ("D", new)]
-    assert [r["request_id"] for r in list_session_admissions(db, session_id=old.session_id, pending_only=False)] == ["A"]
+    assert [r["request_id"] for r in [admission_row(record) for record in db.admissions.list(session_id=old.session_id, pending_only=False)]] == ["A"]
 
 
 @pytest.mark.asyncio

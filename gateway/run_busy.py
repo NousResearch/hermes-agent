@@ -468,12 +468,11 @@ class GatewayBusySessionMixin:
             return False
         except Exception:
             return _assume_active("session", session_key)
-        session_db = getattr(self, "_session_db", None)
-        if not session_id or session_db is None:
+        store = getattr(self, "persistence", None)
+        if not session_id or store is None:
             return False
-        raw_db = getattr(session_db, "_db", session_db)
         try:
-            holder = await asyncio.to_thread(raw_db.get_compression_lock_holder, str(session_id))
+            holder = await asyncio.to_thread(store.coordination.get_compression_lock_holder, session_id=str(session_id))
             # Production returns Optional[str]. Reject non-strings so a MagicMock auto-attr (or any
             # unexpected truthy) cannot look like a held lock and skip hygiene.
             # See #96953.

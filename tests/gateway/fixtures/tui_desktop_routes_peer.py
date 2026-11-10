@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import sys
 import traceback
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 
 _CONFIG = '''gateway:
   multiplex_profiles: false
@@ -69,19 +71,25 @@ async def _call(reader, method, **params):
     return await reader.dispatch({'id': method, 'method': method, 'params': params})
 
 
+def _reactions(store, session_id, row_id):
+    """The reactions stored on the session's row *row_id*."""
+    [row] = [row for row in transcript_rows(store, session_id) if row['id'] == row_id]
+    return (row['display_metadata'] or {}).get('reactions', [])
+
+
 async def _react(authority, ws, reader, sid, marker, receipt):
     from tests.gateway.fixtures.local_recovery_probe import rpc
     from gateway.session_ancillary import physical_target
     from gateway.session_contract import SessionRef
     target = physical_target(authority, SessionRef(authority.profile_id, sid))
-    user_row = authority.db.append_message(target, 'user', 'REACT_USER_TEXT')
-    authority.db.append_message(target, 'assistant', 'REACT_ASSISTANT_TEXT')
+    user_row, _ = seed_messages(authority.persistence, target, {'role': 'user', 'content': 'REACT_USER_TEXT'},
+                                {'role': 'assistant', 'content': 'REACT_ASSISTANT_TEXT'})
     added = await rpc(ws, 'message.react', session_id=sid, row_id=user_row, emoji='👍')
     assert added.get('result', {}).get('row_id') == user_row, added
     assert [r['emoji'] for r in added['result']['reactions']] == ['👍'], added
-    assert [r['emoji'] for r in authority.db.get_message_reactions(target, user_row)] == ['👍']
+    assert [r['emoji'] for r in _reactions(authority.persistence, target, user_row)] == ['👍']
     newest = await rpc(ws, 'message.react', session_id=sid, newest_role='assistant', emoji='❤️')
-    assert newest.get('result', {}).get('row_id') == authority.db.latest_message_row_id(target, role='assistant'), newest
+    assert newest.get('result', {}).get('row_id') == authority.persistence.messages.latest_row_id(target, role='assistant'), newest
     cleared = await rpc(ws, 'message.react', session_id=sid, row_id=user_row, emoji=None)
     assert cleared.get('result', {}).get('reactions') == [], cleared
     for params, reason in [({'row_id': 999999, 'emoji': '👍'}, 'not_found'),
@@ -91,7 +99,7 @@ async def _react(authority, ws, reader, sid, marker, receipt):
         assert _error(denied) == reason, (params, denied)
     denied = await _call(reader, 'message.react', session_id=sid, row_id=user_row, emoji='👎')
     assert _error(denied) == 'permission_denied', denied
-    assert authority.db.get_message_reactions(target, user_row) == []
+    assert _reactions(authority.persistence, target, user_row) == []
     receipt['reacted'] = True
 
 
@@ -188,7 +196,7 @@ async def _commands(authority, ws, reader, sid, marker, receipt):
     assert calls[-1] == 'FOUR'
     unknown = await rpc(ws, 'slash.exec', session_id=sid, command='no-such-command')
     assert _error(unknown) == 'unsupported_command', unknown
-    assert not authority.db.get_messages(sid), 'a command started a turn'
+    assert not transcript_rows(authority.persistence, sid), 'a command started a turn'
     receipt['commands'] = True
 
 

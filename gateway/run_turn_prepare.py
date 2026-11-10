@@ -333,13 +333,15 @@ class GatewayTurnPrepareMixin:
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
-        uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
-        if not session_id or agent is None or self._session_db is None:
+        calls the plain verbs, not their awaitable view."""
+        store = self.persistence
+        if not session_id or agent is None or store is None:
             return
         model = getattr(agent, "model", None)
         if not model:
             return
         from hermes_cli.runtime_provider_custom import session_provider_identity
+        from persistence.conversation.sessions import ReplaceSessionConfig
         runtime = {
             "provider": session_provider_identity(getattr(agent, "provider", None),
                                                   getattr(agent, "requested_provider", None),
@@ -350,8 +352,7 @@ class GatewayTurnPrepareMixin:
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
-            db = self._session_db._db
-            row = db.get_session(session_id)
+            row = store.sessions.get(session_id)
             if not row:
                 return
             # Legacy backfill: canonical Bot Chats created BEFORE the follow_profile_config contract existed
@@ -360,17 +361,12 @@ class GatewayTurnPrepareMixin:
             # registry, and pre-policy rows may be visible OR hidden), so mirror that rule here. Without
             # this, every Bot Chat that already exists in the field stays pinned to its stale stored
             # provider until the user deletes it — the exact live-report shape (#89497 / #94818).
-            raw_config = row.get("model_config")
-            config = {}
-            with suppress(Exception):
-                config = json.loads(raw_config) if raw_config else {}
-            if not isinstance(config, dict):
-                config = {}
+            config = dict(row.model_config)
             gateway_runtime = dict(config.get("gateway_runtime") or {})
-            if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
+            if row.model == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
                 return
             config["gateway_runtime"] = runtime
-            db.update_session_meta(session_id, json.dumps(config), model=model)
+            store.sessions.replace_session_config(session_id, ReplaceSessionConfig(model_config=config, model=model))
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
@@ -425,12 +421,16 @@ class GatewayTurnPrepareMixin:
         claim = getattr(event, "_claimed_owner", None)
         if claim is not None:
             from gateway.session_authorities import active_authority
+            from gateway.session_persistence import authority_persistence
+            from persistence.core.errors import StoreUnavailable
             authority, (owner, generation) = active_authority(self), claim
             # /new and /reset latch a Stop for the claimed generation before they move the route;
             # /resume, /branch and compression don't, so those turns run where the route points.
             stopped = generation in (authority.pending_stops.get(owner), authority.delivered_stops.get(owner))
+            if stopped and (store := authority_persistence(authority)) is None:
+                raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
             if stopped and session_entry.session_id not in await asyncio.to_thread(
-                    authority.db.get_compression_chain, owner):  # preflight's continuation walk
+                    store.lineage.chain, owner):  # preflight's continuation walk
                 # It settles interrupted, as that Stop would have, and never runs on the fresh one.
                 logger.warning("Dropping a stopped claimed turn: its route moved from %s to %s before it ran",
                                owner, session_entry.session_id)
@@ -458,8 +458,8 @@ class GatewayTurnPrepareMixin:
         publication = self._telegram_topic_publication_token(source)
         binding = None
         try:
-            if self._session_db:
-                binding = await self._session_db.get_telegram_topic_binding(
+            if (store := self.persistence) is not None:
+                binding = await store.aio.routing.get_topic_binding(
                     chat_id=str(source.chat_id), thread_id=str(source.thread_id),
                     profile_name=self._telegram_topic_profile_name(source),
                 )
@@ -473,15 +473,15 @@ class GatewayTurnPrepareMixin:
             except Exception:
                 logger.debug("Failed to record Telegram topic binding", exc_info=True)
             return session_entry
-        stored_session_id = str(binding.get("session_id") or "")
+        stored_session_id = str(binding.session_id or "")
         bound_session_id = stored_session_id
         # A binding pointing at a pre-compression parent is walked forward to the tip so the next
         # message resumes the compressed child instead of reloading the oversized parent.
         # Returns the input unchanged when the session isn't a compression parent, so this is cheap and
         # safe. See #20470, #29712, #33414.
-        if bound_session_id and self._session_db is not None:
+        if bound_session_id and (store := self.persistence) is not None:
             try:
-                canonical_session_id = await self._session_db.get_compression_tip(bound_session_id)
+                canonical_session_id = await store.aio.lineage.tip(bound_session_id)
             except Exception:
                 logger.debug("compression-tip lookup failed for %s", bound_session_id, exc_info=True)
                 canonical_session_id = bound_session_id
@@ -491,7 +491,7 @@ class GatewayTurnPrepareMixin:
             # A binding whose sessions row is gone (deleted with foreign_keys OFF, so ON DELETE CASCADE
             # never fired) is stale, not a resume target: switching onto it lets the next peer refresh
             # re-create the row and the topic silently re-adopts an old transcript (#139283).
-            if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
+            if (store := self.persistence) is not None and not await store.aio.sessions.get(bound_session_id):
                 logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
                                "keeping the current session and rebinding", session_key, bound_session_id)
                 try:  # CAS on the stale id: a /new that rebound the topic during the await wins

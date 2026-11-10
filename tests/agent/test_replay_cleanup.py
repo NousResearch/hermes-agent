@@ -99,7 +99,9 @@ import json
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.turn_context import build_api_messages
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 class _SendAgent:
@@ -134,23 +136,23 @@ def test_send_wire_matches_replay_wire_after_db_round_trip(tmp_path):
     same persisted prefix are identical through the real transport, sidecars applied; the
     durable transcript is untouched; rows appended by the CURRENT turn are never rewritten."""
     now = 10_000.0
-    db = SessionDB(db_path=tmp_path / "t.db")
-    db.create_session(session_id="s1", source="cli")
-    db.append_message("s1", role="user", content="hello", api_content="hello [with memory]", timestamp=now - 300)
-    db.append_message("s1", role="assistant", content="hi", timestamp=now - 299)
-    db.append_message("s1", role="user", content="confirm reboot", timestamp=now - 120)
-    db.append_message("s1", role="assistant", content="", tool_calls=[
-        {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}], timestamp=now - 119)
-    db.append_message("s1", role="tool", content='{"output": "[execution interrupted — user stop]", "exit_code": -1}', tool_call_id="c1", tool_name="read_file", timestamp=now - 118)
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "s1", "cli")
+    seed_messages(db, "s1", {"role": "user", "content": "hello", "api_content": "hello [with memory]", "timestamp": now - 300})
+    seed_messages(db, "s1", {"role": "assistant", "content": "hi", "timestamp": now - 299})
+    seed_messages(db, "s1", {"role": "user", "content": "confirm reboot", "timestamp": now - 120})
+    seed_messages(db, "s1", {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}], "timestamp": now - 119})
+    seed_messages(db, "s1", {"role": "tool", "content": '{"output": "[execution interrupted — user stop]", "exit_code": -1}', "tool_call_id": "c1", "tool_name": "read_file", "timestamp": now - 118})
     # A successful result that merely QUOTES an interrupt marker is NOT replay debris.
     grep_hit = json.dumps({"output": "docs.txt:12: [execution interrupted — user stop]\nloop.py:4: [Command interrupted]", "exit_code": 0})
     doc_text = "how interrupts render:\n[Command interrupted]\n(the marker above is documentation)"
-    db.append_message("s1", role="assistant", content="", tool_calls=[
+    seed_messages(db, "s1", {"role": "assistant", "content": "", "tool_calls": [
         {"id": "c2", "type": "function", "function": {"name": "search_files", "arguments": "{}"}},
-        {"id": "c3", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}], timestamp=now - 110)
-    db.append_message("s1", role="tool", content=grep_hit, tool_call_id="c2", tool_name="search_files", timestamp=now - 109)
-    db.append_message("s1", role="tool", content=doc_text, tool_call_id="c3", tool_name="read_file", timestamp=now - 108)
-    persisted = db.get_messages_as_conversation("s1")
+        {"id": "c3", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}], "timestamp": now - 110})
+    seed_messages(db, "s1", {"role": "tool", "content": grep_hit, "tool_call_id": "c2", "tool_name": "search_files", "timestamp": now - 109})
+    seed_messages(db, "s1", {"role": "tool", "content": doc_text, "tool_call_id": "c3", "tool_name": "read_file", "timestamp": now - 108})
+    persisted = conversation(db, "s1")
     db.close()
     assert persisted[0].get("api_content") == "hello [with memory]" and persisted[2].get("timestamp")
 

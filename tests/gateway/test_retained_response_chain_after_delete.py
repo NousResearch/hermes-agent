@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from tests.fixtures.storage_holder import reclaim_tombstones
 
 _API_KEY = 'test-key'
 _AUTH = {'Authorization': 'Bearer ' + _API_KEY}
@@ -22,8 +23,6 @@ _AUTH = {'Authorization': 'Bearer ' + _API_KEY}
 async def test_a_deleted_chain_continues_on_a_new_generation(api, owner, path, continuation):
     from gateway.session_authority import SessionAuthority
     from gateway.session_results import execution_result
-    from hermes_state_mutation_retirement import prune_retired_tombstones
-    from hermes_state_runtime import begin_runtime_epoch
 
     async def handle(event):
         execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
@@ -42,17 +41,17 @@ async def test_a_deleted_chain_continues_on_a_new_generation(api, owner, path, c
         response_id = json.loads(await opened.text())['id']
         deleted_sid = api._current_response_store().get(response_id)['session_id']
         assert (await client.delete('/api/sessions/' + deleted_sid, headers=_AUTH)).status == 200
-        owner.db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
+        reclaim_tombstones(owner.persistence)
         # Past the horizon is a later process: a fresh authority over the same store.
         owner.runner.session_authority = SessionAuthority(
-            owner.runner, profile_id='default', instance_id='later', db=owner.db,
-            epoch=begin_runtime_epoch(owner.db, instance_id='later'))
+            owner.runner, profile_id='default', instance_id='later', persistence=owner.persistence,
+            epoch=owner.persistence.runtime.begin_epoch(instance_id='later'))
         target = response_id if continuation == 'previous_response_id' else 'project'
         resumed = await client.post(path, json={'input': 'what number?', continuation: target},
                                     headers={**_AUTH, 'Idempotency-Key': 'fresh'})
         body = await resumed.text()
         assert resumed.status in (200, 202), f'{resumed.status}: {body}'
-        assert owner.db.get_session(deleted_sid) is None, 'the deleted transcript id was recreated'
+        assert owner.persistence.sessions.get(deleted_sid) is None, 'the deleted transcript id was recreated'
 
 
 @pytest.mark.asyncio

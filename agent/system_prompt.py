@@ -214,7 +214,12 @@ def _session_start_like(agent: Any, now: Any) -> Any:
     session_id = getattr(agent, "session_id", None)
     db = getattr(agent, "_session_db", None)
     try:
-        root_id = db.get_conversation_root(session_id) if db is not None and isinstance(session_id, str) and session_id else None
+        root_id = None
+        if db is not None and isinstance(session_id, str) and session_id:
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(agent)
+            root_id = (store.lineage.conversation_root(session_id) if store is not None
+                       else db.get_conversation_root(session_id))
     except Exception:
         root_id = None
     for candidate in (root_id, session_id):
@@ -232,17 +237,17 @@ def _agent_home(agent: Any) -> Optional[Path]:
     """The agent's OWN profile home, or None to use ambient resolution.
     A bound HERMES_HOME ContextVar override wins (the gateway multiplexes
     profiles over one shared session DB and binds the home per turn); else the
-    parent of ``_session_db.db_path`` — ground truth on threads that lost the
+    profile home of the agent's store — ground truth on threads that lost the
     ContextVar, where ambient resolution would leak the launch profile.
 
     1. Surfaces that multiplex several profiles over ONE shared session DB (the messaging gateway:
     ``gateway/run.py`` hands every agent the launch-home ``state.db`` and binds the profile home per turn
     via ``_profile_runtime_scope`` + ``copy_context``) would otherwise have the db-derived launch home STOMP
     the correctly-bound profile — inverting the leak this helper exists to fix (found by @kshitijk4poor's
-    post-merge probe on #86313). 2. Fallback: the home containing the agent's ``_session_db.db_path``
-    (``<home>/state.db``) — ground truth on threads that lost the ContextVar (ContextVars don't propagate
-    into ``threading.Thread``), where the unbound build previously fell back to the launch home and leaked
-    the default profile's skills/identity into a bot prompt.
+    post-merge probe on #86313). 2. Fallback: the profile home of the agent's storage handle, else the home
+    containing its ``_session_db.db_path`` (``<home>/state.db``) — ground truth on threads that lost the
+    ContextVar (ContextVars don't propagate into ``threading.Thread``), where the unbound build previously fell
+    back to the launch home and leaked the default profile's skills/identity into a bot prompt.
     """
     try:
         from hermes_constants import get_hermes_home_override
@@ -252,6 +257,10 @@ def _agent_home(agent: Any) -> Optional[Path]:
     except Exception:
         pass
     try:
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        if store is not None:
+            return store.scope.profile_dir
         db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
         return Path(db_path).parent if db_path else None
     except Exception:
@@ -356,9 +365,13 @@ def _bot_mode_parts(agent: Any) -> list[str]:
         from tools.bot_mode_probe import BOT_CHAT_TITLE, epoch_line, get_bot_mode_protocol_section
         _title = str(getattr(agent, "_session_title_hint", "") or "").strip()
         if not _title:
+            from agent.agent_init_session import agent_interface
             _sdb = getattr(agent, "_session_db", None)
             _sid = getattr(agent, "session_id", None)
-            _title = str((_sdb.get_session_title(_sid) if (_sdb and _sid) else None) or "").strip()
+            if _sdb and _sid:
+                _store = agent_interface(agent)
+                _title = str((_store.sessions.get_title(_sid) if _store is not None
+                              else _sdb.get_session_title(_sid)) or "").strip()
         _bot_section = get_bot_mode_protocol_section(_agent_home(agent)) if _title == BOT_CHAT_TITLE else None
         if _bot_section:
             parts.append(_bot_section)
@@ -651,7 +664,13 @@ def _session_prompt(agent: Any) -> Optional[str]:
     if db is None or not isinstance(session_id, str) or not session_id:
         return None
     try:
-        row = db.get_session(session_id)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        if store is not None:
+            record = store.sessions.get(session_id)
+            row = {"system_prompt": record.system_prompt} if record is not None else None
+        else:
+            row = db.get_session(session_id)
     except Exception:
         logger.debug("workspace snapshot: session row read failed (session=%s)", session_id, exc_info=True)
         return None

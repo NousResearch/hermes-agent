@@ -18,13 +18,16 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence_assembly import profile_scope
 
 
 @pytest.fixture(autouse=True)
 def _fresh_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     yield
 
 
@@ -60,8 +63,19 @@ def _event(text="hello agent"):
     )
 
 
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._scope().profile_dir))
+
+
+def _execute(sql, params=()):
+    _holder()._execute_write(lambda conn: conn.execute(sql, params))
+
+
 def _rows():
-    with dl._connect() as conn:
+    with _holder()._read_ctx() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'delivery_obligations'").fetchone() is None:
+            return []  # the ledger creates its table on its first use of the store
         return conn.execute(
             """SELECT obligation_id, state, content, adapter_profile
                FROM delivery_obligations"""
@@ -204,10 +218,9 @@ class TestProducerHook:
         # Row is stuck in 'attempting' (or failed if retry wrapper caught it):
         # either way it is non-delivered and recoverable.
         assert rows[0][1] in ("attempting", "failed")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1"
-            )
+        _execute(
+            "UPDATE delivery_obligations SET owner_pid=999999999, owner_started_at=1"
+        )
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
         assert claimed[0]["needs_marker"] is True

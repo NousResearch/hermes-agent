@@ -27,7 +27,7 @@ from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
-# Read-only SessionDB methods main's CLI calls (served by the WAL reader).
+# Read-only SessionDB methods main's CLI calls (served by the storage interface reader).
 _READS = frozenset({
     "get_session", "get_session_title", "get_session_by_title", "resolve_resume_session_id",
     "get_messages_as_conversation", "get_resume_conversations", "assert_resume_safe",
@@ -42,7 +42,7 @@ _GATEWAY_OWNED = frozenset({
     "update_session_model", "patch_session_model_config", "maybe_auto_archive",
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
 })
-# Mutations the owner refuses without the execution generation they were read at (hermes_state_runtime).
+# Mutations the owner refuses without the execution generation they were read at.
 _GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress", "workspace"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
@@ -69,6 +69,8 @@ class GatewaySessionStore:
         self.snapshots: dict[str, dict] = {}
         self.current: dict | None = None
         self._reader = None
+        self.persistence = None  # the storage interface reader ``_reader`` reads through
+        self._handles = None
         self._create_parameters = None
 
     def __bool__(self):
@@ -76,9 +78,9 @@ class GatewaySessionStore:
 
     def close_reader(self):
         """Release this viewer's SQLite handles before offline maintenance; keep its RPC store."""
-        if self._reader is not None:
-            self._reader.close()
-            self._reader = None
+        if self._handles is not None:
+            self._handles.close()
+            self._handles = self._reader = self.persistence = None
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
@@ -89,20 +91,31 @@ class GatewaySessionStore:
             path = get_hermes_home() / "state.db"
             if not path.exists():
                 return None
+            from contextlib import ExitStack
+
+            from persistence_assembly import open_persistence_reader
+            handles = ExitStack()
             try:
-                from hermes_state import SessionDB
-                self._reader = SurfaceLabelReader(SessionDB(db_path=path, read_only=True))
+                store = handles.enter_context(open_persistence_reader(path))
+                store.ready()
             except Exception as exc:  # health: allow BLE001 -- reads find nothing; retried on the next read
+                handles.close()
                 logger.debug("read-only state.db unavailable: %s", exc)
+                return None
+            self._handles, self.persistence = handles, store
+            self._reader = SurfaceLabelReader(store)
         return self._reader
 
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
         if name in _READS:
-            if name in {"sanitize_title", "session_yolo_enabled"}:
-                from hermes_state import SessionDB
-                return getattr(SessionDB, name)
+            if name == "sanitize_title":
+                from persistence.conversation.sessions import sanitize_title
+                return sanitize_title
+            if name == "session_yolo_enabled":
+                from persistence.conversation.sessions import session_yolo_enabled
+                return lambda session_meta: session_yolo_enabled((session_meta or {}).get("model_config"))
             db = self._db()
             if db is None:
                 return _noop
@@ -230,29 +243,31 @@ class GatewaySessionStore:
         """Main's ``SessionDB.rewind_user_turn`` (``/undo N``, ``/retry``) as ``session.mutate rewind``.
         The user turn is located on the gateway's snapshot transcript (its rows carry ``row_id``),
         checked against the CLI's warm view exactly as main checks it, then rewound by that row id."""
-        from agent.context_compressor import history_before_user_originated_turn, retryable_user_text
-        from agent.message_content import flatten_message_text
-        from agent.session_persistence import _is_ephemeral_scaffolding
-        from hermes_state_rewind import (
-            _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
+        from session_rules.turns import (
+            history_before_user_originated_turn, retryable_user_text, flatten_message_text,
+        )
+        from session_rules.turns import (
+            _is_ephemeral_scaffolding, HISTORY_CHANGED, comparison_content, user_indices,
+        )
+        from persistence.conversation.messages import RewindTargetUnavailable, UserTurnRewind
         snapshot = self.call("session.resume", session_id=session_id)
         durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
-        durable_user = _user_indices(durable)
+        durable_user = user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
         if user_ordinal >= len(durable_user):
-            raise RewindTargetUnavailableError("target user message is no longer in session history")
+            raise RewindTargetUnavailable("target user message is no longer in session history")
         target = durable[durable_user[user_ordinal]]
         durable_prefix, live_view = history_before_user_originated_turn(durable, durable_user[user_ordinal])
         prefix = [{k: v for k, v in m.items() if k != "row_id"} for m in durable_prefix]
         if warm_history is not None:
             warm = [m for m in warm_history if not _is_ephemeral_scaffolding(m)]
-            warm_user = _user_indices(warm)
+            warm_user = user_indices(warm)
             if len(warm_user) != len(durable_user):
-                raise RuntimeError(_HISTORY_CHANGED)
+                raise RuntimeError(HISTORY_CHANGED)
             prefix, warm_live = history_before_user_originated_turn(warm, warm_user[user_ordinal])
-            if _comparison_content(live_view) != _comparison_content(warm_live):
-                raise RuntimeError(_HISTORY_CHANGED)
+            if comparison_content(live_view) != comparison_content(warm_live):
+                raise RuntimeError(HISTORY_CHANGED)
         live_text = retryable_user_text(live_view.get("content")) if require_retryable else None
         if not isinstance(target.get("row_id"), int):
             raise RuntimeError("rewind target has no durable row identity")
@@ -260,7 +275,7 @@ class GatewaySessionStore:
                             expected_revision=snapshot["revision"],
                             expected_generation=snapshot["execution_generation"],
                             operation="rewind", payload={"target_message_id": target["row_id"]}) or {}
-        return RewindOutcome(
+        return UserTurnRewind(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
             rewound_count=int(receipt.get("rewound_count") or 0), turns_undone=len(durable_user) - user_ordinal)
@@ -271,12 +286,9 @@ class GatewaySessionStore:
         self.call("config.set", session_id=session_id, key="yolo", value="1" if enabled else "0")
 
     def _title_holder(self, session_id, title):
-        db = self._db()
-        if db is None or not title:
+        if self._db() is None or not title:
             return None
-        with db._read_ctx() as conn:
-            row = conn.execute("SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id)).fetchone()
-        return row[0] if row else None
+        return self.persistence.sessions.title_holder(title, excluding=session_id)
 
     def _leave(self, session_id):
         """Drop this viewer's subscription record and return its id. The connection's SessionState holds
@@ -337,16 +349,10 @@ class GatewaySessionStore:
     def delete_session_if_empty(self, session_id, sessions_dir=None):
         """Main's quit-immediately prune, as a gateway delete: only a row with no messages, no title
         and no children (checked on the read-only reader; the gateway deletes the lineage)."""
-        db = self._db()
-        if db is None:
+        if self._db() is None:
             return False
         try:
-            with db._read_ctx() as conn:
-                empty = conn.execute(
-                    "SELECT 1 FROM sessions WHERE id = ? AND title IS NULL"
-                    " AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
-                    " AND NOT EXISTS (SELECT 1 FROM sessions child WHERE child.parent_session_id = sessions.id)",
-                    (session_id,)).fetchone()
+            empty = self.persistence.sessions.is_empty_candidate(session_id)
         except Exception as exc:  # health: allow BLE001 -- a failed probe keeps the row (never deletes on doubt)
             logger.debug("empty-session probe failed: %s", exc)
             return False
@@ -388,25 +394,22 @@ class GatewaySessionStore:
 
 
 class SurfaceLabelReader:
-    """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
-    also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
-    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made. The
-    surface predicate runs in SQL, before LIMIT/OFFSET.
+    """Main's read-only ``SessionDB`` reads, served by a storage interface handle in their dict and list
+    shapes. Source-filtered listings read main's labels: ``source='cli'`` also matches a gateway row
+    labelled ``local`` that the CLI created (``created_source='cli'``), so main's /resume picker,
+    /sessions, /history and bare ``-c`` find the sessions the CLI made. The surface predicate runs in
+    the store, before LIMIT/OFFSET. The caller owns and closes ``store``.
     """
 
-    def __init__(self, db):
-        self._wrapped = db
+    def __init__(self, store):
+        self.persistence = store
         self._has_column = False
-
-    def __getattr__(self, name):
-        return getattr(self._wrapped, name)
 
     def _has_created_source_column(self) -> bool:
         """Read-only opens don't migrate, so ``created_source`` may be missing. Only "present" is
         cached: a lock or I/O error is not proof of absence, and another connection may add it."""
         if not self._has_column:
-            rows = self._wrapped._read_all("PRAGMA table_info(sessions)")
-            self._has_column = any(row[1] == "created_source" for row in rows)
+            self._has_column = self.persistence.sessions.records_created_surface()
         return self._has_column
 
     def _expand(self, requested):
@@ -439,27 +442,129 @@ class SurfaceLabelReader:
         live, surfaces = expanded
         return call(live, limit, offset, surfaces)
 
+    # -- listings --------------------------------------------------------------------------
     def search_sessions(self, source=None, limit=20, offset=0, **kw):
         return self._labelled(
             source, limit, offset,
-            lambda src, lim, off, surfaces: self._wrapped.search_sessions(
-                source=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
+            lambda src, lim, off, surfaces: self._search(src, lim, off, surfaces, **kw))
+
+    def _search(self, source, limit, offset, local_created_sources, *, workspace_key=None, skip_launch_stubs=False):
+        from persistence.conversation.sessions import SessionWindow
+        entries = self.persistence.sessions.search_sessions(
+            sources=([source] if isinstance(source, str) else list(source)) if source else None,
+            workspace_key=workspace_key, local_created_sources=local_created_sources,
+            skip_launch_stubs=skip_launch_stubs, window=SessionWindow(limit=limit, offset=offset))
+        return [{**entry.session.as_session_row(), "last_active": entry.last_active} for entry in entries]
 
     def list_sessions_rich(self, source=None, sources=None, limit=20, offset=0, **kw):
         requested = sources if sources else ([source] if source else None)
         if not requested:
-            return self._wrapped.list_sessions_rich(limit=limit, offset=offset, **kw)
+            return self._list(None, limit, offset, None, **kw)
         return self._labelled(
             requested, limit, offset,
-            lambda src, lim, off, surfaces: self._wrapped.list_sessions_rich(
-                sources=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
+            lambda src, lim, off, surfaces: self._list(src, lim, off, surfaces, **kw))
+
+    def _list(self, sources, limit, offset, local_created_sources, *, exclude_sources=None,
+              order_by_last_active=False, search_query=None, compact_rows=False, **filters):
+        from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+        query = SessionQuery(
+            sources=tuple(sources) if sources else None, exclude_sources=tuple(exclude_sources or ()),
+            order=SessionOrder.LAST_ACTIVE if order_by_last_active else SessionOrder.STARTED_AT,
+            search_text=search_query,
+            local_created_sources=tuple(local_created_sources) if local_created_sources else None, **filters)
+        entries = self.persistence.sessions.list_sessions(
+            query, SessionWindow(limit=limit, offset=offset), compact_rows=compact_rows)
+        return [entry.as_list_row() for entry in entries]
 
     def session_count(self, source=None, sources=None, **kw):
         expanded = self._expand(sources or source)
         if expanded is None:
-            return self._wrapped.session_count(source=source, sources=sources, **kw)
+            requested = [source] if source else sources
+            return self._count(requested, None, **kw)
         live, surfaces = expanded
-        return self._wrapped.session_count(sources=live, local_created_sources=surfaces, **kw)
+        return self._count(live, surfaces, **kw)
+
+    def _count(self, sources, local_created_sources, *, exclude_sources=None, **filters):
+        from persistence.conversation.sessions import SessionCountQuery
+        return self.persistence.sessions.count_sessions(SessionCountQuery(
+            sources=tuple(sources) if sources else None, exclude_sources=tuple(exclude_sources or ()),
+            local_created_sources=tuple(local_created_sources) if local_created_sources else None, **filters))
+
+    # -- rows and titles -------------------------------------------------------------------
+    def get_session(self, session_id):
+        record = self.persistence.sessions.get(session_id)
+        return None if record is None else record.as_session_row()
+
+    def get_session_by_title(self, title):
+        record = self.persistence.sessions.get_by_title(title)
+        return None if record is None else record.as_session_row()
+
+    def get_session_title(self, session_id):
+        return self.persistence.sessions.get_title(session_id)
+
+    def resolve_session_by_title(self, title):
+        return self.persistence.sessions.resolve_by_title(title)
+
+    def get_next_title_in_lineage(self, base_title):
+        return self.persistence.sessions.next_title_in_lineage(base_title)
+
+    def is_kanban_owned_session(self, session_id):
+        return self.persistence.sessions.is_kanban_owned(session_id)
+
+    def get_session_model_config_value(self, session_id, key, default=None):
+        return self.persistence.sessions.get_model_config_value(session_id, key, default)
+
+    def get_meta(self, key):
+        return self.persistence.state_meta.get(key)
+
+    def get_handoff_state(self, session_id):
+        """``{"state", "platform", "error"}``, or None without a handoff record or when the read fails."""
+        state = self.persistence.coordination.get_handoff(session_id=session_id)
+        if state is None:
+            return None
+        return {"state": state.state.value, "platform": state.platform, "error": state.error}
+
+    # -- lineage and transcripts -----------------------------------------------------------
+    def resolve_resume_session_id(self, session_id):
+        return self.persistence.lineage.resolve_resume_target(session_id)
+
+    def get_compression_tip(self, session_id):
+        return self.persistence.lineage.tip(session_id)
+
+    def get_messages_as_conversation(self, session_id, include_ancestors=False, include_inactive=False,
+                                     repair_alternation=False, include_row_ids=False, include_compacted=False):
+        from persistence.conversation.messages import ConversationRequest
+        request = ConversationRequest(view=_transcript_view(include_inactive, include_compacted),
+                                      include_lineage=include_ancestors, repair_alternation=repair_alternation,
+                                      include_row_ids=include_row_ids)
+        return [message.as_openai_message() for message in self.persistence.messages.read_conversation(
+            session_id, request)]
+
+    def get_resume_conversations(self, session_id):
+        resume = self.persistence.messages.read_resume_conversations(session_id)
+        return ([message.as_openai_message() for message in resume.model],
+                [message.as_openai_message() for message in resume.display])
+
+    def assert_resume_safe(self, session_id, max_messages=None, *, tip_only=False):
+        if max_messages is None:
+            from storage_limits import resolved_max_resume_messages
+            max_messages = resolved_max_resume_messages()
+        return self.persistence.messages.assert_resume_safe(session_id, max_messages=max_messages, tip_only=tip_only)
+
+    def get_messages(self, session_id, include_inactive=False, include_compacted=False, limit=None, offset=0,
+                     latest=False, after_id=None, include_ancestors=False):
+        from persistence.conversation.messages import TranscriptRead
+        request = TranscriptRead(view=_transcript_view(include_inactive, include_compacted), limit=limit,
+                                 offset=offset, latest=latest, after_id=after_id, include_lineage=include_ancestors)
+        return [row.as_wire_row() for row in self.persistence.messages.read_transcript(session_id, request)]
+
+
+def _transcript_view(include_inactive, include_compacted):
+    """The transcript view main's ``include_inactive`` / ``include_compacted`` flags select."""
+    from persistence.conversation.messages import TranscriptView
+    if include_inactive:
+        return TranscriptView.ALL
+    return TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE
 
 
 _CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")

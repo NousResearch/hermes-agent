@@ -32,16 +32,16 @@ def _write_config(home: Path, *, auto_archive_days: int) -> None:
 @pytest.fixture
 def two_profile_homes(tmp_path, monkeypatch):
     """Launch profile 'a' never archives; served profile 'b' archives immediately."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     _write_config(home_a, auto_archive_days=3650)
     _write_config(home_b, auto_archive_days=0)
 
-    db = SessionDB(db_path=home_b / "state.db")
-    db.create_session("s1", "cli")
-    db.append_message("s1", "user", "hello")
-    db.close()
+    with open_persistence(profile_scope(home=home_b)) as store:
+        seed_session(store, "s1", "cli")
+        seed_messages(store, "s1", {"role": "user", "content": "hello"})
 
     # Process home is the LAUNCH profile's.
     monkeypatch.setenv("HERMES_HOME", str(home_a))
@@ -53,13 +53,11 @@ def two_profile_homes(tmp_path, monkeypatch):
 
 
 def _archived(db_path: Path) -> bool:
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
 
-    db = SessionDB(db_path=db_path)
-    try:
-        return bool((db.get_session("s1") or {}).get("archived"))
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=db_path.parent)) as store:
+        return bool((session_row(store, "s1") or {}).get("archived"))
 
 
 def test_auto_archive_uses_the_swept_profiles_own_retention_config(two_profile_homes):

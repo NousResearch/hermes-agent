@@ -18,7 +18,6 @@ from tests.gateway.test_surface_admission import _admissions, _authority, _wait_
 async def test_display_fields_are_admitted_and_bound_to_their_own_turn(tmp_path, monkeypatch):
     from gateway.response_filters import display_kind_for_event, display_metadata_for_event
     from gateway.session_controls import AuthorityConnection
-    from hermes_state_runtime import list_session_admissions
 
     seen = []
     async def answer(event):
@@ -44,10 +43,10 @@ async def test_display_fields_are_admitted_and_bound_to_their_own_turn(tmp_path,
     finally:
         await connection.close()
 
-    rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
-    assert rows['paste']['payload']['display_v1'] == {'title_preview': 'P' * 1000}
-    assert rows['hidden']['payload']['display_v1'] == {'kind': 'hidden'}
-    assert 'display_v1' not in rows['plain']['payload'] and 'minted' not in rows
+    rows = {row.request_id: row for row in authority.persistence.admissions.list(session_id='s', pending_only=False)}
+    assert rows['paste'].payload['display_v1'] == {'title_preview': 'P' * 1000}
+    assert rows['hidden'].payload['display_v1'] == {'kind': 'hidden'}
+    assert 'display_v1' not in rows['plain'].payload and 'minted' not in rows
     assert seen == [
         ('paste', None, {'title_preview': 'P' * 1000}, None, {}),
         ('hidden', 'hidden', {}, None, {}),

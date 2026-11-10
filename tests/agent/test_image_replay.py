@@ -6,10 +6,12 @@ from pathlib import Path
 import pytest
 
 from agent.image_routing import build_native_content_parts
-from agent.session_persistence import _durable_content
+from session_rules.turns import _durable_content
 from agent.turn_context import build_api_messages
 from gateway.session_ingress_media import capture_native_media
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 _PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
@@ -51,12 +53,12 @@ def _live_turn(tmp_path, name, text, data=_PNG):
 
 def _rebuilt_request(tmp_path, live_turns):
     """Persist ``live_turns`` through the DB projection, reload as the API server does, send a follow-up."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="s", source="api_server")
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "api_server")
     for i, turn in enumerate(live_turns):
-        db.append_message("s", role="user", content=_durable_content(turn["content"]), timestamp=1000.0 + 2 * i)
-        db.append_message("s", role="assistant", content=f"reply {i}", timestamp=1001.0 + 2 * i)
-    history = db.get_messages_as_conversation("s") + [{"role": "user", "content": "and the expiry date?"}]
+        seed_messages(db, "s", {"role": "user", "content": _durable_content(turn["content"]), "timestamp": 1000.0 + 2 * i})
+        seed_messages(db, "s", {"role": "assistant", "content": f"reply {i}", "timestamp": 1001.0 + 2 * i})
+    history = conversation(db, "s") + [{"role": "user", "content": "and the expiry date?"}]
     request, _ = build_api_messages(
         _Agent(), history, current_turn_user_idx=len(history) - 1,
         ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
@@ -68,11 +70,11 @@ def test_replay_window_is_resolved_once_per_turn(tmp_path):
     changes mid-turn; the next turn picks the change up."""
     _config()
     live, _ = _live_turn(tmp_path, "label.png", "What is on this label?")
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="s", source="api_server")
-    db.append_message("s", role="user", content=_durable_content(live["content"]), timestamp=1000.0)
-    db.append_message("s", role="assistant", content="reply", timestamp=1001.0)
-    history = db.get_messages_as_conversation("s") + [{"role": "user", "content": "and the expiry date?"}]
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "api_server")
+    seed_messages(db, "s", {"role": "user", "content": _durable_content(live["content"]), "timestamp": 1000.0})
+    seed_messages(db, "s", {"role": "assistant", "content": "reply", "timestamp": 1001.0})
+    history = conversation(db, "s") + [{"role": "user", "content": "and the expiry date?"}]
     agent = _Agent()
 
     def first_user_row():
@@ -161,14 +163,14 @@ def test_growing_session_drops_replayed_images_in_sticky_batches(tmp_path):
     """Ten single-image turns, keep=3, one request per turn through ``build_api_messages``: earlier
     rows change at most once per batch of ``keep`` new images, and a dropped image never returns."""
     _config(replay_recent_images=3)
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="s", source="api_server")
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "api_server")
     previous, dropped, rewrites = [], set(), 0
     for n in range(10):
         live, _ = _live_turn(tmp_path, f"p{n}.png", f"photo {n}", data=_PNG + bytes([n]))
-        db.append_message("s", role="user", content=_durable_content(live["content"]), timestamp=1000.0 + 2 * n)
-        db.append_message("s", role="assistant", content=f"reply {n}", timestamp=1001.0 + 2 * n)
-        history = db.get_messages_as_conversation("s") + [{"role": "user", "content": "and now?"}]
+        seed_messages(db, "s", {"role": "user", "content": _durable_content(live["content"]), "timestamp": 1000.0 + 2 * n})
+        seed_messages(db, "s", {"role": "assistant", "content": f"reply {n}", "timestamp": 1001.0 + 2 * n})
+        history = conversation(db, "s") + [{"role": "user", "content": "and now?"}]
         request, _ = build_api_messages(
             _Agent(), history, current_turn_user_idx=len(history) - 1,
             ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")

@@ -33,10 +33,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str):
+def _build_agent_with_db(db, session_id: str):
     """Build an AIAgent wired to ``db`` and pinned to ``session_id``.
 
     Mirrors the helper in ``test_rotation_flush_persisted_boundary_68196.py``:
@@ -52,7 +56,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -86,7 +90,7 @@ def _contents(rows):
     return [r.get("content") for r in rows]
 
 
-def _seed_drifted_session(db: SessionDB, session_id: str):
+def _seed_drifted_session(db, session_id: str):
     """Seed the RED shape: in-memory transcript + a longer durable parent.
 
     Returns ``(agent, messages)`` where ``messages`` is the in-memory
@@ -95,11 +99,11 @@ def _seed_drifted_session(db: SessionDB, session_id: str):
     instruction.  The DB meanwhile carries TWO extra rows written by a
     concurrent writer, so ``len(durable_parent) > len(messages)``.
     """
-    db.create_session(session_id, source="desktop")
-    db.append_message(session_id, "user", "persisted question")
-    db.append_message(session_id, "assistant", "persisted answer")
+    seed_session(db, session_id, "desktop")
+    seed_messages(db, session_id, {"role": "user", "content": "persisted question"},
+                  {"role": "assistant", "content": "persisted answer"})
 
-    loaded = db.get_messages_as_conversation(session_id)
+    loaded = conversation(db, session_id)
     messages = [*loaded, {"role": "user", "content": "LIVE USER INSTRUCTION"}]
 
     agent = _build_agent_with_db(db, session_id)
@@ -108,10 +112,10 @@ def _seed_drifted_session(db: SessionDB, session_id: str):
     agent._persist_user_message_idx = len(messages) - 1
 
     # Concurrent writer commits rows while preflight waits on the lease.
-    db.append_message(session_id, "assistant", "concurrent row 1")
-    db.append_message(session_id, "assistant", "concurrent row 2")
+    seed_messages(db, session_id, {"role": "assistant", "content": "concurrent row 1"},
+                  {"role": "assistant", "content": "concurrent row 2"})
 
-    assert len(db.get_messages_as_conversation(session_id)) > len(messages)
+    assert len(conversation(db, session_id)) > len(messages)
     return agent, messages
 
 
@@ -125,13 +129,13 @@ def test_adoption_preserves_unpersisted_live_user_tail(tmp_path: Path) -> None:
     + ONE live tail, in insertion (id) order — no duplicates, no reordering,
     no dropped rows.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     agent, messages = _seed_drifted_session(db, "PREFLIGHT_ADOPT_PARENT")
 
     agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    parent_rows = db.get_messages_as_conversation(
-        "PREFLIGHT_ADOPT_PARENT", include_inactive=True
+    parent_rows = conversation(
+        db, "PREFLIGHT_ADOPT_PARENT", ConversationRequest(view=TranscriptView.ALL)
     )
     contents = _contents(parent_rows)
 
@@ -172,13 +176,13 @@ def _keep_protected_tail(messages, **_kw):
 
 def test_adopted_snapshot_rows_are_not_recloned_as_foreign_tail(tmp_path: Path) -> None:
     """Rows included in the adopted snapshot must not be cloned after its handoff."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     agent, messages = _seed_drifted_session(db, "ADOPTED_PARENT")
     agent.context_compressor.compress.side_effect = _keep_protected_tail
 
     agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    child = _contents(db.get_messages_as_conversation(agent.session_id))
+    child = _contents(conversation(db, agent.session_id))
     assert child.count("LIVE USER INSTRUCTION") == 1
 
 
@@ -188,17 +192,16 @@ def test_row_committed_after_adopted_snapshot_read_is_cloned_once(tmp_path: Path
     The lease watermark must come from the snapshot itself, not from a fresh MAX(id) read that would
     also cover the new row and drop it from the child.
     """
-    db_path = tmp_path / "state.db"
-    db = SessionDB(db_path=db_path)
+    db = storage_handle(tmp_path)
     agent, messages = _seed_drifted_session(db, "SNAPSHOT_WINDOW_PARENT")
-    other_writer = SessionDB(db_path=db_path)
-    original_loader = SessionDB.get_messages_as_conversation
+    other_writer = open_persistence(profile_scope(home=tmp_path))
+    original_loader = type(db.messages).read_conversation
     committed: list = []
 
-    def _commit_after_snapshot_read(self, session_id, *args, **kwargs):
-        result = original_loader(self, session_id, *args, **kwargs)
-        if kwargs.get("include_row_ids") and session_id == "SNAPSHOT_WINDOW_PARENT" and not committed:
-            other_writer.append_message(session_id, "user", "SNAPSHOT WINDOW ROW")
+    def _commit_after_snapshot_read(self, session_id, request=ConversationRequest(), *args, **kwargs):
+        result = original_loader(self, session_id, request, *args, **kwargs)
+        if request.include_row_ids and session_id == "SNAPSHOT_WINDOW_PARENT" and not committed:
+            seed_messages(other_writer, session_id, {"role": "user", "content": "SNAPSHOT WINDOW ROW"})
             committed.append(True)
         return result
 
@@ -211,7 +214,7 @@ def test_row_committed_after_adopted_snapshot_read_is_cloned_once(tmp_path: Path
     agent.context_compressor.compress.side_effect = _record_then_keep_tail
 
     try:
-        with patch.object(SessionDB, "get_messages_as_conversation", _commit_after_snapshot_read):
+        with patch.object(type(db.messages), "read_conversation", _commit_after_snapshot_read):
             agent._compress_context(messages, "sys", approx_tokens=120_000)
     finally:
         other_writer.close()
@@ -220,7 +223,7 @@ def test_row_committed_after_adopted_snapshot_read_is_cloned_once(tmp_path: Path
     assert len(compressor_inputs) == 1
     assert "concurrent row 1" in _contents(compressor_inputs[0])
     assert not [m for m in compressor_inputs[0] if "_row_id" in m], compressor_inputs[0]
-    child = _contents(db.get_messages_as_conversation(agent.session_id))
+    child = _contents(conversation(db, agent.session_id))
     assert child.count("LIVE USER INSTRUCTION") == 1, child
     assert child.count("SNAPSHOT WINDOW ROW") == 1, child
 
@@ -245,7 +248,7 @@ def test_adoption_skipped_when_preflush_fails_keeps_live_input(
     (persistence-isolated fork / no session DB). All three must behave
     identically: no snapshot adoption, live input handed to the compressor.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     agent, messages = _seed_drifted_session(db, "PREFLIGHT_ADOPT_FLUSH_FAIL")
 
     seen: list = []

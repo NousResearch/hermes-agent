@@ -294,12 +294,15 @@ tail re-parses every commit, scales linearly with current length, and
 nothing about Streamdown's architecture changes that without forking. The
 fix is to stop having that work *block* the main thread.
 
-`<DeferStreamingText>` in `markdown-text.tsx` is a 12-line wrapper that
-reads the message-part state via `useMessagePartText`, runs it through
-`useDeferredValue`, and re-publishes via assistant-ui's
-`<TextMessagePartProvider>`. The inner `StreamdownTextPrimitive` reads the
-deferred value through the normal `useMessagePartText` hook — no fork,
-no internal-path imports, fully on the assistant-ui public API.
+`MarkdownTextSurface` in `markdown-text.tsx` reads the message-part state
+via `useMessagePartText`, runs it through `useDeferredValue`, and
+republishes it via assistant-ui's `<TextMessagePartProvider>`. The inner
+`StreamdownTextPrimitive` reads the deferred part through the normal hook.
+There is no fork and no internal-path import; it uses only assistant-ui's
+public API. Do not swap this for the primitive's own `defer` prop: that
+prop defers only after `preprocess` has run, so `preprocessWithTailRepair`
+would run at urgent priority on every flush. Measured in jsdom, that costs
+5-10 ms per 50 KB flush, against about 0.5 ms with the outer defer.
 
 What React's concurrent scheduler now does:
 
@@ -309,11 +312,11 @@ What React's concurrent scheduler now does:
   Streamdown render gets deprioritized — input stays responsive even
   while a 100 ms parse is queued.
 
-Streamdown already uses `useTransition` internally for its block-array
-setState; `useDeferredValue` here just lifts the deferral all the way up
-to the consumer text boundary, so the whole pipeline — preprocess,
-block split, repair, parse, render — runs at low priority during streaming.
-This is the industry-standard approach (see
+Streamdown 2.7 has no `useTransition`. It derives its block list with
+`useMemo` from the text it is given. Deferring the part at the consumer
+boundary is therefore what pushes the whole pipeline (preprocess, block
+split, parse, render) to low priority while streaming. This is the
+industry-standard approach (see
 [Streamdown architecture analysis](https://tigerabrodi.blog/how-to-build-a-performant-ai-markdown-renderer)
 and Chrome's [LLM-response render best practices](https://developer.chrome.google.cn/docs/ai/render-llm-responses)).
 
@@ -333,42 +336,59 @@ clean run logged **MUTATIONS=0** — React skipped every intermediate
 text state and only committed the final one, the textbook
 useDeferredValue behaviour.
 
-### Not fixed: Streamdown markdown re-parse cost (the elephant)
+### What still costs CPU per flush (the elephant, as of 2026-11)
 
-Total CPU spent in micromark/mdast/hast pipeline per 5 s window is still
-the same ~700 ms. With `useDeferredValue` that work no longer blocks
-input, but if you watch a CPU profile you'll see the same hot functions
-(`Tn$1`, `bn$1`, `m$1`, `parser`, `compile`).
+The ~700 ms per 5 s micromark/mdast/hast figure above was measured on a
+build that re-parsed the whole message on every flush. That no longer
+happens:
 
-The path to actually *reduce* that cost (not just defer it) is to
-replace the parser with a state machine like
-[Flowdown](https://github.com/Atomics-hub/flowdown) — process each
-character exactly once, emit DOM ops directly, no re-parse of the prefix
-on every token. Claimed ~2,000× over `marked`. Trades: not a
-`react-markdown`-compatible API, no rehype security pipeline, would
-require replacing Streamdown wholesale. Worth investigating only if
-even the deferred work shows up in user-perceptible ways (e.g.
-trackpad-scrolling a stream-in-progress stutters).
+- **Settled blocks are frozen.** Streamdown renders one memoized `Block`
+  per markdown block, and `parseMarkdownIntoBlocksCached`
+  (`src/lib/markdown-blocks.ts`) reuses the previous parse's settled
+  blocks, lexing only the suffix. On a flush, every Block except the last
+  one or two keeps its content and bails out. This is the "render in
+  stable segments" and "memoize per prefix" idea, done without a fork.
+- **Preprocess is deferred.** See the section above.
+- **Stream end does not re-parse.** Streaming state reaches the code and
+  paragraph overrides through `MarkdownStreamingContext`, so the
+  `components` table keeps its identity and Block memos hold when a reply
+  finishes. Only the code blocks re-render, from plain code to Shiki, in
+  place. Measured in jsdom: 755 ms down to 10 ms for a 50 KB reply.
+- **The splitter's exact cache drops superseded streamed prefixes.** It
+  used to keep up to 256 full-length copies per stream (~12 MB after a
+  50 KB reply).
 
-The synthetic harness now mirrors the real upstream pipeline via the
+What remains grows with message length, all in the deferred render:
+
+1. `preprocessMarkdown` makes full-text regex passes, and the remend
+   boundary scan is O(N). Both are deferred but not reduced.
+   Per-block caching is unsafe as-is, because several passes are not
+   prefix-local: the last `Sources` section decides whether `[n]` markers
+   survive, an open reasoning tag strips to the end, and dangling-fence
+   scrubbing depends on later text.
+2. The splitter's bookkeeping (hash, `startsWith`, `slice`) is O(N) but
+   cheap.
+3. **Single giant tail block.** The last block re-runs the full
+   remark → rehype (parse5, sanitize, harden) → JSX pipeline every flush.
+   When that block is the whole message (one long paragraph or list, a big
+   table, an open code fence), this is still O(N) per flush. The
+   `--chunk 'word '` stream scenario is the worst case. Only a sub-block
+   split or a different parser fixes it.
+
+Not pursued: replacing the parser with a state machine like
+[Flowdown](https://github.com/Atomics-hub/flowdown) (it claims ~2,000×
+over `marked`, but it is not `react-markdown`-compatible, has no rehype
+security pipeline, and would mean replacing Streamdown wholesale), and
+moving parsing to a Web Worker (the largest surgery, requiring
+double-buffered hast). Revisit them only if item 3 shows up in
+user-perceptible ways, for example trackpad scrolling stuttering during a
+long single-paragraph stream.
+
+The synthetic harness mirrors the real upstream pipeline via the
 `flushMinMs` option in `__PERF_DRIVE__.stream({ flushMinMs: 33 })`, so
-future Streamdown / Flowdown experiments can A/B without LLM credit cost.
-The synthetic numbers tracked the one real-LLM run we caught within
-noise, so it's a reliable proxy.
-
-Possible approaches (none implemented here):
-
-1. **Coalesce/throttle Streamdown updates** — render at most every 32 ms
-   instead of every set-state. Reduces parses but doesn't reduce
-   per-parse cost; trades latency for smoothness.
-2. **Memoize per-prefix** — diff the new text against the prior parsed
-   version; only re-parse the changed suffix.
-3. **Render in stable segments** — close-form historical paragraphs as
-   immutable React nodes; only the live tail goes through markdown each
-   token. Probably the highest-impact change but requires forking or
-   patching `@assistant-ui/react-streamdown`.
-4. **Move parsing to a Web Worker** — main thread no longer blocks on
-   markdown. Largest surgery; requires double-buffered hast.
+future experiments can A/B without LLM credit cost. The synthetic numbers
+tracked the one real-LLM run we caught within noise, so it is a reliable
+proxy.
 
 ### Vite dev-build issue (separate)
 

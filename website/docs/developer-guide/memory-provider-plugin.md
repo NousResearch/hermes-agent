@@ -196,7 +196,7 @@ workspace; absent or empty cwd remains unpinned.
 | Method | When Called | Use Case |
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
-| `prefetch(query, *, session_id="")` | Before each API call | Return recalled context as `str`, or `MemoryPrefetchResult` with optional observations |
+| `prefetch(query, *, session_id="")` | During turn preparation, before the tool loop | Return recalled context as `str`, or `MemoryPrefetchResult` with optional observations |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |

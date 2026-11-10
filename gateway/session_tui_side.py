@@ -113,6 +113,7 @@ def _side_agent(authority, policy, live, task_id, **overrides):
         session_id=task_id, platform=policy.platform, session_db=authority.db,
         fallback_model=refresh_fallback() if callable(refresh_fallback) else None,
         load_soul_identity=not policy.ignore_rules, skip_memory=policy.ignore_rules,
+        skip_memory_prompt=policy.ignore_rules,
         side_agent=True)
     kwargs.update(overrides)
     return AIAgent(**kwargs)

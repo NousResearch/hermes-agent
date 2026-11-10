@@ -182,6 +182,7 @@ class GatewaySessionAgentMixin:
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=not bool(policy and policy.ignore_rules),
             skip_memory=bool(policy and policy.ignore_rules),
+            skip_memory_prompt=bool(policy and policy.ignore_rules),
             pass_session_id=bool(policy and policy.pass_session_id),
             # A local session's frozen budget (`--run-budget` / its profile's agent.run_budget_seconds);
             # None leaves the agent reading the owner's config, as before.

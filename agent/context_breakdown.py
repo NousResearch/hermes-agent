@@ -89,6 +89,8 @@ def _split_tools(tools: Sequence[dict]) -> tuple[list[dict], list[dict], list[di
 
 
 def _memory_blocks(agent: Any) -> tuple[str, str]:
+    if getattr(agent, "skip_memory_prompt", False):
+        return "", ""
     memory_block = user_block = ""
     store = getattr(agent, "_memory_store", None)
     try:

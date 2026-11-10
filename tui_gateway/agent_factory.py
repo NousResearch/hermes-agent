@@ -683,7 +683,8 @@ def _make_agent(
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        skip_context_files=ignore_rules, skip_memory=ignore_rules, skip_memory_prompt=ignore_rules,
+        fallback_model=_load_fallback_model(),
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
         request_overrides=runtime.get("request_overrides"),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))

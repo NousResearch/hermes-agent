@@ -302,6 +302,7 @@ def _build_child_agent(
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
                     skip_context_files=True, skip_memory=not child_checkpoint_required,
+                    skip_memory_prompt=getattr(parent_agent, "skip_memory_prompt", False),
                     memory_agent_context="subagent", clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)

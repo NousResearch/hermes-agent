@@ -2091,12 +2091,12 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None, memory_agent_context: str | None = None,
-    tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    tool_result_metadata_callback: Optional[Callable[..., dict]] = None, skip_memory_prompt: bool = False,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
-        skip_context_files = skip_memory = skip_background_review = True
+        skip_context_files = skip_memory = skip_memory_prompt = skip_background_review = True
         load_soul_identity = False
         prefill_messages = []
         fallback_model = {}

@@ -536,6 +536,10 @@ def _memory_parts(agent: Any) -> list[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
     tools the toolset config gated off)."""
+    # Isolation is independent of store availability: flush/background agents
+    # still need a working memory tool when skip_memory skips the provider.
+    if getattr(agent, "skip_memory_prompt", False):
+        return []
     parts: list[str] = []
     if agent._memory_store:
         for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):

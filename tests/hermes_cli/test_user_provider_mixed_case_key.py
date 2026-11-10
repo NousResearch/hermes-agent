@@ -125,3 +125,24 @@ def test_typed_model_declared_by_builtin_named_key_keeps_custom_runtime(key):
     assert runtime["provider"] == "custom"
     assert (runtime["base_url"].rstrip("/"), runtime["api_key"]) == (
         base_url, "mixed-key-123456")
+
+
+@pytest.mark.parametrize("key", ["Anthropic", "OpenRouter"])
+def test_dashboard_main_pick_of_builtin_named_key_runs_where_it_validated(key, monkeypatch):
+    """The dashboard's main-model save goes through its own normalizer before ``switch_model``: the
+    endpoint it validates and saves is the one the next turn runs on (#151775). Both built-ins hold
+    a key, so a pick that validates one route and saves another shows up as a different key."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-builtin-123456")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-builtin-123456")
+    from hermes_cli.config import atomic_config_write, load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.web_server_config import _apply_main_model_assignment, _prepare_main_assignment
+
+    config_path, _ = _write_config(key)
+    cfg = load_config()
+    _, result = _prepare_main_assignment(cfg, key, "m1", "", "")
+    atomic_config_write(config_path, {"model": _apply_main_model_assignment(cfg["model"], result),
+                                      "providers": cfg["providers"]})
+
+    runtime = resolve_runtime_provider(target_model="m1")
+    assert (runtime["base_url"].rstrip("/"), runtime["api_key"]) == (result.base_url.rstrip("/"), result.api_key)

@@ -1195,6 +1195,7 @@ A provider can also accept **peer passes** (`supports_peer_pass = True` + `verif
 - Control actions are written to `logs/dashboard-auth.log` as `peer_control` events with the pass holder, and jobs created through the route record the holder as `peer_principal` in their origin.
 
 The bundled Nous provider verifies peer passes with the same Portal keys and audience as dashboard sign-ins; dashboard sign-ins carry `agent_dashboard:access`, peer passes carry only the peer permissions.
+A Portal token without `agent_dashboard:access`, including one with no `scope` claim at all, never opens a dashboard session.
 
 ### Verifying the gate is on
 

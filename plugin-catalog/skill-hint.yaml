@@ -5,7 +5,7 @@
 # files, there is nothing to download and nothing replaces itself at runtime.
 name: skill-hint
 repo: https://github.com/kosmo888/skill-hint
-sha: "4acd7031e02df65b1e354627dc4bf9b1c58f9f02"   # tag v1.0.0
+sha: "85384d1778926f811bf49f5c5d4f258453643204"   # tag v1.0.0
 description: "Local-first skill discovery: on each user turn it runs a BM25 query over the
   installed skill library and injects up to three candidate skill names, only when the match is
   confident — catches colloquial phrasing, shorthand and non-English wording that a
@@ -23,7 +23,7 @@ requires_hermes: ">=0.22.0"
 docs_url: https://github.com/kosmo888/skill-hint#readme
 version: "1.0.0"
 title: "Skill Hint"
-image: https://raw.githubusercontent.com/kosmo888/skill-hint/4acd7031e02df65b1e354627dc4bf9b1c58f9f02/media/banner.png
+image: https://raw.githubusercontent.com/kosmo888/skill-hint/85384d1778926f811bf49f5c5d4f258453643204/media/banner.png
 platforms: []
 capabilities:
   provides_tools: []

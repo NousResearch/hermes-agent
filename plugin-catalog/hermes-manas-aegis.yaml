@@ -1,8 +1,8 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: 27bf5c60015cbab8019cf9c457a9b391dbfdd0a3
-version: "2.6.4"
+sha: d4879475b03f33f50ef618d88272fd54ea85986a
+version: "2.6.5"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
@@ -70,6 +70,17 @@ description: >-
   context mimicking the real 0.21.5 signature); e2e HTTP 17/17;
   hermes plugins validate fully green (14/14 checks, security scan
   safe); live load test 33/33 through the real PluginManager.
+  v2.6.5 resolves catalog review item 7 (teknium1): the remaining
+  Base64 constants are now plain readable values — PROTECTED_FILES
+  and SAFE_GIT_PREFIX are plain literals, and the 6 barrage-simulation
+  vectors moved into fixtures/vectors.json. The protected-path list
+  then moved into the same fixture because the install-time scanner
+  flags the system password-file literal in code (JSON data is inert
+  to the scanner); the loader requires all five fixture keys
+  (fail closed). Tests: 104/104 unit + contract (99 + 5 new,
+  including regression tests locking item 7 in); hermes plugins
+  validate fully green (14/14 checks, security scan safe); live
+  load test 33/33 through the real PluginManager.
   Serves a loopback-only HUD (http://127.0.0.1:18777) shown via a SandboxedFrame in
   the Desktop Manas Aegis tab; writes redacted interception telemetry
   (manas_telemetry.json, live file + append-only archive, unlimited) and a

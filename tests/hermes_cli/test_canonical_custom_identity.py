@@ -100,6 +100,103 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     assert rp.canonical_custom_identity(config_provider="Legacy Endpoint") == "custom:legacy-endpoint"
 
 
+RELAY_URL = "https://relay.example.invalid/api/anthropic"
+RELAY_MODEL = "glm-5.3-flash"
+
+
+@pytest.fixture
+def two_scopes_one_model(monkeypatch):
+    """Two accounts on one relay: same endpoint AND the same model id, one ``key_env`` each.
+
+    Neither signal the recovery paths lean on can tell them apart — only the configured name can,
+    which is why that name must survive the lookup instead of being re-derived from the URL."""
+    config = {
+        "providers": {
+            "glm-flash": {
+                "api": RELAY_URL,
+                "key_env": "GLM_FLASH_KEY",
+                "default_model": RELAY_MODEL,
+                "models": [RELAY_MODEL],
+            },
+            "glm-flash-echo": {
+                "api": RELAY_URL,
+                "key_env": "GLM_FLASH_ECHO_KEY",
+                "default_model": RELAY_MODEL,
+                "models": [RELAY_MODEL],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", dict)
+    return config
+
+
+def test_configured_candidate_keeps_its_own_identity(two_scopes_one_model):
+    """Regression: the candidate was resolved to an entry and then thrown away in favour of a
+    base_url lookup, which answers the FIRST scope on a shared endpoint. Asking for the second
+    scope healed to the first one — and billed its key (#118285)."""
+    assert rp.canonical_custom_identity(config_provider="glm-flash-echo") == "custom:glm-flash-echo"
+    assert rp.canonical_custom_identity(config_provider="glm-flash") == "custom:glm-flash"
+
+
+def test_model_leg_refuses_to_pick_between_scopes_that_share_it(two_scopes_one_model):
+    """Both scopes serve the model, so the model leg has nothing to choose with. Answering the
+    first entry is arbitrary — the same wrong-scope failure, one signal lower."""
+    assert rp.find_custom_provider_identity_by_model(RELAY_MODEL) is None
+
+
+def test_ambiguous_model_lets_the_configured_provider_decide(two_scopes_one_model, monkeypatch):
+    """Silence from the weak signal must fall through to the signal that does name a scope."""
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "glm-flash-echo"})
+    assert rp.canonical_custom_identity(model=RELAY_MODEL) == "custom:glm-flash-echo"
+
+
+RELAY_A_URL = "https://relay-a.internal/v1"
+RELAY_B_URL = "https://relay-b.internal/v1"
+
+
+@pytest.fixture
+def two_relays_one_model(monkeypatch):
+    """Two accounts, two *different* relays, one model id between them — the production shape
+    reported on #118457.
+
+    Distinct endpoints matter because the model leg must never consult the URL: if it did, this
+    fixture and the shared-endpoint one would disagree, and only this one would notice."""
+    config = {
+        "providers": {
+            "glm-flash": {
+                "api": RELAY_A_URL,
+                "key_env": "GLM_KEY_A",
+                "default_model": RELAY_MODEL,
+                "models": [RELAY_MODEL],
+            },
+            "glm-flash-echo": {
+                "api": RELAY_B_URL,
+                "key_env": "GLM_ECHO_KEY_B",
+                "default_model": RELAY_MODEL,
+                "models": [RELAY_MODEL],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", dict)
+    return config
+
+
+def test_model_leg_is_ambiguous_across_distinct_relays_too(two_relays_one_model):
+    """Two relays, one model id: the model leg has no URL to consult, so it goes silent here
+    exactly as it does when the endpoint is shared. The configured scope then decides — checked in
+    *both* directions, so a URL-dependent tie-break cannot pass by answering what insertion order
+    would have answered anyway."""
+    assert rp.find_custom_provider_identity_by_model(RELAY_MODEL) is None
+    assert rp.canonical_custom_identity(
+        model=RELAY_MODEL, config_provider="glm-flash-echo") == "custom:glm-flash-echo"
+    assert rp.canonical_custom_identity(
+        model=RELAY_MODEL, config_provider="glm-flash") == "custom:glm-flash"
+
+
 class TestIsRoutableProvider:
     """``is_routable_provider`` gates session-resume fallback: a persisted
     provider name that no longer resolves (renamed/removed) must be detected

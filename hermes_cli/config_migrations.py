@@ -122,6 +122,27 @@ def _rewrite_stale_default(*, old: Any, **kw: Any) -> Callable[[dict[str, Any], 
     return functools.partial(_rewrite_key, match=lambda cur: cur == old, **kw)
 
 
+def _rewrite_stale_defaults(results: dict[str, Any], quiet: bool, *, section: str, rows: Any) -> None:
+    """Rewrite every ``<section>.<key>`` still equal to its OLD default to its new one (None =
+    delete) in ONE write: a failing step is retried whole, so a half-landed one would rewrite
+    again a value the user set back since. *rows*: (key, old, new, added, message)."""
+    config = read_raw_config()
+    raw = config.get(section)
+    due = [row for row in rows if isinstance(raw, dict) and raw.get(row[0]) == row[1]]
+    if not due:
+        return
+    for key, _old, new, _added, _message in due:
+        if new is None:
+            del raw[key]
+        else:
+            raw[key] = new
+    _persist_migration(config)
+    for *_row, added, message in due:
+        results["config_added"].append(added)
+        if not quiet:
+            print(message)
+
+
 def _lower_is(word: str) -> Callable[[Any], bool]:
     return lambda cur: isinstance(cur, str) and cur.strip().lower() == word
 
@@ -660,19 +681,12 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
     # is a pin and a pin recreates a persisted Docker container without asking; unpinned, the
     # runtime keeps an existing sandbox and the CLI / Screen pane ask first. A pinned image stays.
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
-    for legacy in LEGACY_SANDBOX_IMAGES:
-        for key, old in (
-            ("docker_image", legacy),
-            ("modal_image", legacy),
-            ("daytona_image", legacy),
-            ("singularity_image", f"docker://{legacy}"),
-        ):
-            _rewrite_stale_default(
-                section="terminal", key=key, old=old, new=None,
-                added=f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
-                message=f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image "
-                        f"({DEFAULT_SANDBOX_IMAGE})",
-            )(results, quiet)
+    _rewrite_stale_defaults(results, quiet, section="terminal", rows=[
+        (key, old, None, f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
+         f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image ({DEFAULT_SANDBOX_IMAGE})")
+        for legacy in LEGACY_SANDBOX_IMAGES
+        for key, old in (("docker_image", legacy), ("modal_image", legacy), ("daytona_image", legacy),
+                         ("singularity_image", f"docker://{legacy}"))])
 
 
 #: Registry of (target_version, step), strictly ascending (one step per version: a failing step
@@ -707,31 +721,16 @@ def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
             print("  ✓ Cleared TERMINAL_VERCEL_RUNTIME from .env (was the old default; the image is used instead)")
 
 
-_CURATOR_44 = (  # key, old default, new default, message
-    ("stale_after_days", 30, 14, "  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks."),
-    ("archive_after_days", 90, 30, (
+# 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
+# touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
+# defaults are rewritten; an explicit user value is preserved. Both keys land in one write.
+_migrate_to_44 = functools.partial(_rewrite_stale_defaults, section="curator", rows=(
+    ("stale_after_days", 30, 14, "curator.stale_after_days=14 (was: 30)",
+     "  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks."),
+    ("archive_after_days", 90, 30, "curator.archive_after_days=30 (was: 90)", (
         "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to skills/.archive/ "
         "(recoverable with `hermes curator restore`). Set it back to 90 to keep the old window.")),
-)
-
-
-def _migrate_to_44(results: dict[str, Any], quiet: bool) -> None:
-    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
-    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
-    # defaults are rewritten; an explicit user value is preserved. One write for both: a step is
-    # retried whole, so a half-landed one would rewrite again a value the user set back since.
-    config = read_raw_config()
-    curator = config.get("curator")
-    due = [row for row in _CURATOR_44 if isinstance(curator, dict) and curator.get(row[0]) == row[1]]
-    if not due:
-        return
-    for key, _old, new, _message in due:
-        curator[key] = new
-    _persist_migration(config)
-    for key, old, new, message in due:
-        results["config_added"].append(f"curator.{key}={new} (was: {old})")
-        if not quiet:
-            print(message)
+))
 
 
 _RETIRED_TIRITH_KEYS = ("tirith_enabled", "tirith_path", "tirith_timeout", "tirith_fail_open")

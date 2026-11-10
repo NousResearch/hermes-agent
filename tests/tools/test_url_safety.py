@@ -788,9 +788,9 @@ class TestIsAlwaysBlockedUrlEdgeCases:
         with patch("tools.url_safety.urlparse", side_effect=RuntimeError("boom")):
             assert is_always_blocked_url("http://example.com/") is False
 
-    def test_empty_hostname_returns_false(self):
-        """URL with no hostname returns False."""
-        assert is_always_blocked_url("http://") is False
+    def test_empty_hostname_blocked_as_ambiguous_authority(self):
+        """URL with no hostname is blocked: the authority is not introduced by //."""
+        assert is_always_blocked_url("http://") is True
 
     def test_ipv6_literal_metadata_blocked(self):
         """IPv6 metadata IP (fd00:ec2::254) is in the always-blocked set."""

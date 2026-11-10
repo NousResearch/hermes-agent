@@ -21,13 +21,15 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   onTabChange?: (id: string) => void
   /** Secondary filters shown full-width on their own row below (expands). */
   filters?: ReactNode
-  onSearchChange: (value: string) => void
-  searchPlaceholder: string
+  /** Header search; a shell that hides it (or whose tabs own their search) omits these. */
+  onSearchChange?: (value: string) => void
+  searchPlaceholder?: string
   /** Data-derived rotating placeholder nudges (see SearchField.hints). */
   searchHints?: string[]
-  searchValue: string
+  searchValue?: string
   /** Hide the search field when there's nothing to search (empty dataset). */
   searchHidden?: boolean
+  tabsAlign?: 'center' | 'start'
   /** Right-aligned control in the header's trailing cell (e.g. a refresh button)
    *  so mouse users get a visible affordance for the refresh hotkey. */
   searchTrailingAction?: ReactNode
@@ -36,18 +38,20 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
 function ShellTabs({
   tabs,
   activeTab,
-  onTabChange
+  onTabChange,
+  align
 }: {
   tabs: PageShellTab[]
   activeTab?: string
   onTabChange?: (id: string) => void
+  align?: 'center' | 'start'
 }) {
   return (
     <ResponsiveTabs
       onChange={id => onTabChange?.(id)}
       tabs={tabs}
       value={activeTab ?? tabs[0]?.id ?? ''}
-      wideClassName="justify-center"
+      wideClassName={align === 'start' ? 'justify-start' : 'justify-center'}
     />
   )
 }
@@ -64,6 +68,7 @@ export function PageSearchShell({
   searchHints,
   searchValue,
   searchHidden = false,
+  tabsAlign = 'center',
   searchTrailingAction,
   ...props
 }: PageSearchShellProps) {
@@ -91,26 +96,26 @@ export function PageSearchShell({
       */}
       <div className="shrink-0">
         {(hasTabs || !searchHidden) && (
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
-            <div className="flex min-w-0 items-center justify-start">
-              {!searchHidden && (
+          <div className={cn('grid items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]', tabsAlign === 'start' ? 'grid-cols-[minmax(0,1fr)_auto_auto] px-6 pt-[calc(var(--titlebar-height)+1.5rem)]' : 'grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]')}>
+            <div className={cn('flex min-w-0 items-center justify-start', tabsAlign === 'start' ? 'col-start-2 row-start-1 justify-end' : '', searchHidden && tabsAlign === 'start' && 'hidden')}>
+              {!searchHidden && onSearchChange && (
                 <SearchField
                   containerClassName="max-w-[45vw]"
                   hints={searchHints}
                   onChange={onSearchChange}
-                  placeholder={searchPlaceholder}
-                  value={searchValue}
+                  placeholder={searchPlaceholder ?? ''}
+                  value={searchValue ?? ''}
                 />
               )}
             </div>
             {hasTabs ? (
-              <div className="flex min-w-0 items-center justify-center" data-tour="page-tabs">
-                <ShellTabs activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} />
+              <div className={cn('flex min-w-0 items-center', tabsAlign === 'start' ? 'col-start-1 row-start-1 justify-start' : 'justify-center')} data-tour="page-tabs">
+                <ShellTabs activeTab={activeTab} align={tabsAlign} onTabChange={onTabChange} tabs={tabs!} />
               </div>
             ) : (
               <span />
             )}
-            <div className="flex min-w-0 items-center justify-end">{searchTrailingAction}</div>
+            <div className={cn('flex min-w-0 items-center justify-end', tabsAlign === 'start' && 'col-start-3 row-start-1')}>{searchTrailingAction}</div>
           </div>
         )}
         {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}

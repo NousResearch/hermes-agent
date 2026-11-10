@@ -1,7 +1,8 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,15 +25,17 @@ import type {
   AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
+  ModelAssignmentRequest,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
-import { findCatalogProvider } from '@/lib/model-options'
+import { catalogProviderMatches, findCatalogProvider } from '@/lib/model-options'
 import { composerServiceTier } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { showLargeModelNotice } from '@/store/agent-notices'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError, readableError } from '@/store/notifications'
@@ -42,12 +45,18 @@ import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
+import {
+  AUX_FOLLOW_BASE,
+  AuxFollowBaseButton,
+  auxMainRoute,
+  AuxTaskRouteSummary,
+  useAuxTaskRows
+} from './aux-task-rows'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
-import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
 // the provider/model catalog loads, instead of collapsing to a centered
@@ -58,15 +67,17 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
       {(subpage === undefined || subpage === 'main') && (
         <section>
           <Skeleton className="mb-3 h-3 w-72 max-w-full" />
-          <div className="flex flex-wrap items-center gap-2">
-            <Skeleton className="h-8 w-40" />
-            <Skeleton className="h-8 w-60 max-w-full" />
+          <div className="grid gap-1">
+            <ListRowSkeleton />
+            <ListRowSkeleton />
+          </div>
+          <div className="flex justify-end pt-1">
             <Skeleton className="h-8 w-16" />
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-            <Skeleton className="h-3 w-16" />
-            <Skeleton className="h-8 w-28" />
-            <Skeleton className="h-6 w-20" />
+          <div className="mt-6 grid gap-1">
+            <Skeleton className="mb-1 h-3 w-16" />
+            <ListRowSkeleton />
+            <ListRowSkeleton />
           </div>
         </section>
       )}
@@ -95,30 +106,89 @@ function isProviderReady(p?: ModelOptionProvider): boolean {
   return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
 }
 
-// Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
-// hints make the assignments readable; raw task keys (vision, mcp, …) are
-// opaque to most users.
-interface AuxTaskMeta {
-  key: string
+const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
+
+// Options for the main provider Select: the full catalog, but a saved provider
+// missing from it stays visible (Radix renders a blank trigger when the
+// controlled value has no matching item) while remaining out of the real
+// inventory used for readiness/setup metadata.
+function mainProviderOptionsFor(providers: readonly ModelOptionProvider[], selectedProvider: string) {
+  const options = providers.length ? providers : NO_PROVIDERS
+
+  return selectedProvider && !findCatalogProvider(providers, selectedProvider)
+    ? [{ name: selectedProvider, slug: selectedProvider, models: [] as string[] }, ...providers]
+    : options
 }
 
-const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision' },
-  { key: 'compression' },
-  { key: 'skills_hub' },
-  { key: 'approval' },
-  { key: 'mcp' },
-  { key: 'title_generation' },
-  { key: 'review' },
-  // Same three canonical slots the backend serves but the list below used to
-  // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
-  { key: 'triage_specifier' },
-  { key: 'kanban_decomposer' },
-  { key: 'profile_describer' },
-  { key: 'curator' }
-]
+// True when the provider row is a configured endpoint the backend may know
+// more models for than the normal (non-refresh) options load probed: that
+// load probes only the CURRENT custom provider, so a named custom_providers
+// entry the user just switched to arrives empty until an explicit refresh.
+function mayDiscoverModels(row: ModelOptionProvider | undefined): boolean {
+  if (!row || row.authenticated === false || (row.models?.length ?? 0) > 0) {
+    return false
+  }
 
-const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
+  return !!row.api_url || row.source === 'model-config' || row.is_user_defined === true
+}
+
+// Switching to a configured endpoint whose models list is empty triggers one
+// refresh-scoped options fetch so the row populates without blocking the
+// switch (#59063). The normal (non-refresh) load probes only the CURRENT
+// custom provider, so a freshly-selected one arrives empty. On failure the
+// selection stays empty and the user can still type a custom model id in
+// ModelSelect.
+function refreshEmptyProviderModels(
+  slug: string,
+  providers: readonly ModelOptionProvider[],
+  scopeProfile: string | undefined,
+  isCurrentEpoch: () => boolean,
+  apply: (providers: ModelOptionProvider[]) => void
+): void {
+  if (!mayDiscoverModels(providers.find(p => catalogProviderMatches(p, slug)))) {
+    return
+  }
+
+  getGlobalModelOptions({ refresh: true }, scopeProfile)
+    .then(options => {
+      if (isCurrentEpoch()) {
+        apply(options.providers || [])
+      }
+    })
+    .catch(() => {})
+}
+
+// User-driven provider switch for the main picker: a provider's model list is
+// per-provider, so switching must not carry the previous provider's model
+// over — ModelSelect's withActive() would keep painting it as a selectable
+// row, and Apply would pin the new provider to the old provider's model
+// (#59063). Programmatic switches (initial load, profile switch,
+// activate-key auto-select) set state directly and keep their own model
+// restore semantics.
+function switchProviderFor(
+  providers: readonly ModelOptionProvider[],
+  scopeProfile: string | undefined,
+  profileEpoch: { current: number },
+  setCatalogProviders: (rows: ModelOptionProvider[]) => void,
+  setSelectedProvider: Dispatch<SetStateAction<string>>,
+  setSelectedModel: Dispatch<SetStateAction<string>>
+) {
+  return (slug: string) => {
+    const epoch = profileEpoch.current
+
+    setSelectedProvider((prev: string) => {
+      if (prev === slug) {
+        return prev
+      }
+
+      setSelectedModel('')
+
+      return slug
+    })
+
+    refreshEmptyProviderModels(slug, providers, scopeProfile, () => profileEpoch.current === epoch, setCatalogProviders)
+  }
+}
 
 // A slot is complete when both halves are chosen. Changing a slot's provider
 // intentionally clears its model (see updateMoaSlot), so every provider change
@@ -229,6 +299,83 @@ interface ModelSettingsProps {
   scopeProfile?: string
 }
 
+function MainModelDefaults({
+  effortValue,
+  fastOn,
+  fastSupported,
+  onChange,
+  reasoningSupported,
+  speedValue,
+  ultrafastSupported
+}: {
+  effortValue: string
+  fastOn: boolean
+  fastSupported: boolean
+  onChange: (key: string, value: boolean | string) => Promise<void>
+  reasoningSupported: boolean
+  speedValue: SpeedTier
+  ultrafastSupported: boolean
+}) {
+  const { t } = useI18n()
+  const m = t.settings.model
+
+  return (
+    <div className="mt-6 grid gap-1">
+      <p className="mb-1 text-xs text-muted-foreground">{m.defaultsLabel}</p>
+      {reasoningSupported && (
+        <ListRow
+          action={
+            <Select onValueChange={value => void onChange('agent.reasoning_effort', value)} value={effortValue}>
+              <SelectTrigger aria-label={m.reasoning} className={cn('min-w-28', CONTROL_TEXT)}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REASONING_EFFORT_VALUES.map(value => (
+                  <SelectItem key={value} value={value}>
+                    {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+          title={m.reasoning}
+        />
+      )}
+      {ultrafastSupported ? (
+        <ListRow
+          action={
+            <Select onValueChange={value => void onChange('agent.service_tier', value)} value={speedValue}>
+              <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="normal">{m.speedStandard}</SelectItem>
+                {fastSupported && <SelectItem value="fast">{t.shell.modelOptions.fast}</SelectItem>}
+                <SelectItem value="ultrafast">{t.shell.modelOptions.ultrafast}</SelectItem>
+              </SelectContent>
+            </Select>
+          }
+          title={m.speed}
+        />
+      ) : (
+        fastSupported && (
+          <ListRow
+            action={
+              <Switch
+                aria-label={t.shell.modelOptions.fast}
+                checked={fastOn}
+                onCheckedChange={checked => void onChange('agent.service_tier', checked ? 'fast' : 'normal')}
+                size="xs"
+              />
+            }
+            title={t.shell.modelOptions.fast}
+          />
+        )
+      )}
+    </div>
+  )
+}
+
 export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
@@ -271,14 +418,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // place — mirrors the onboarding ApiKeyForm but scoped to the model picker.
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
-
-  // Deep link from the vision Capabilities detail (?tab=config:model&aux=vision):
-  // scroll the auxiliary task row into view and flash it once the list loads.
-  useDeepLinkHighlight({
-    elementId: task => `aux-task-${task}`,
-    param: 'aux',
-    ready: task => showAuxiliary && !loading && AUX_TASKS.some(meta => meta.key === task)
-  })
 
   // Every profile-scoped async here captures this and bails before writing back,
   // so a request in flight when the user switches profiles can't paint profile
@@ -399,16 +538,20 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   })
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
+  const mainProviderOptions = mainProviderOptionsFor(providers, selectedProvider)
 
-  // Radix renders a blank trigger when the controlled value has no matching
-  // item. Keep a missing saved provider visible in the main selector while
-  // leaving it out of the real inventory used for readiness/setup metadata.
-  const mainProviderOptions = useMemo(
+  // User-driven switch: never carries the old provider's model over (#59063).
+  const switchProvider = useMemo(
     () =>
-      selectedProvider && !findCatalogProvider(providers, selectedProvider)
-        ? [{ name: selectedProvider, slug: selectedProvider, models: [] }, ...providers]
-        : providerOptions,
-    [providerOptions, providers, selectedProvider]
+      switchProviderFor(
+        providers,
+        scopeProfile,
+        profileEpoch,
+        setCatalogProviders,
+        setSelectedProvider,
+        setSelectedModel
+      ),
+    [providers, scopeProfile]
   )
 
   // MoA reference/aggregator slots must never be the moa virtual provider —
@@ -585,7 +728,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [m.loadFailed, scopeProfile, setCaughtError]
   )
 
-  const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
+  const { auxRows, auxiliaryTaskLabel } = useAuxTaskRows(auxiliary?.tasks, { loading, visible: showAuxiliary })
 
   const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
     () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
@@ -713,7 +856,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // custom / local endpoint is NOT an OAuth provider, so it gets the dedicated
   // local-endpoint form (URL + optional API key) instead of being dead-ended
   // on the OAuth picker (the original "booted back to the first screen" loop).
-  const startProviderSetup = useCallback(() => {
+  const startProviderSetup = () => {
     const rowSlug = selectedProviderRow?.slug.trim() ?? ''
     const slug = rowSlug || selectedProvider.trim()
 
@@ -732,7 +875,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       // provider picker instead of deep-linking an unknown or stale slug.
       startManualOnboarding(undefined, scopeProfile)
     }
-  }, [scopeProfile, selectedProvider, selectedProviderRow])
+  }
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {
@@ -760,6 +903,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       const provider = result.provider || selectedProvider
       const model = result.model || selectedModel
       setMainModel({ provider, model })
+
+      if (result.notice) {
+        showLargeModelNotice(result.notice)
+      }
       setSwitchStaleAux(result.stale_aux ?? [])
       notify({ kind: 'success', title: m.mainAppliedTitle, message: m.mainAppliedMessage(model) })
 
@@ -800,26 +947,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [providers]
   )
 
-  const setAuxiliaryToMain = useCallback(
-    async (task: string) => {
-      if (!mainModel) {
-        return
-      }
-
+  const assignAuxiliary = useCallback(
+    async (task: string, route: Omit<ModelAssignmentRequest, 'scope' | 'task'>) => {
       setApplying(true)
       setError('')
 
       try {
-        await setModelAssignment(
-          {
-            model: mainModel.model,
-            provider: mainModel.provider,
-            scope: 'auxiliary',
-            task,
-            ...endpointForProvider(mainModel.provider)
-          },
-          scopeProfile
-        )
+        await setModelAssignment({ ...route, scope: 'auxiliary', task }, scopeProfile)
         await refresh()
       } catch (err) {
         setCaughtError(err, m.loadFailed)
@@ -827,7 +961,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         setApplying(false)
       }
     },
-    [endpointForProvider, m.loadFailed, mainModel, refresh, scopeProfile, setCaughtError]
+    [m.loadFailed, refresh, scopeProfile, setCaughtError]
   )
 
   const applyAuxiliaryDraft = useCallback(
@@ -947,70 +1081,89 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       {showMain && (
         <section>
           <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Select onValueChange={setSelectedProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
-              <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder={m.provider} />
-              </SelectTrigger>
-              <SelectContent>
-                {mainProviderOptions.map(provider => (
-                  <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                    {provider.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {needsSetup ? (
-              setupIsApiKey ? (
-                <>
-                  <Input
-                    autoComplete="off"
-                    className={cn('min-w-60 flex-1', CONTROL_TEXT)}
-                    onChange={event => setApiKeyDraft(event.target.value)}
-                    onKeyDown={event => {
-                      if (isSubmitEnter(event)) {
-                        void activateApiKeyProvider()
-                      }
-                    }}
-                    placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
-                    type="password"
-                    value={apiKeyDraft}
-                  />
-                  <Button
-                    disabled={!apiKeyDraft.trim() || activating}
-                    onClick={() => void activateApiKeyProvider()}
-                    size="sm"
+          <div className="grid gap-1">
+            <ListRow
+              action={
+                <Select onValueChange={switchProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
+                  <SelectTrigger
+                    aria-label={m.provider}
+                    className={cn(
+                      'w-full min-w-0 max-w-full @2xl:w-72 [&_[data-slot=select-value]]:truncate',
+                      CONTROL_TEXT
+                    )}
                   >
-                    {activating && <Loader2 className="size-3.5 animate-spin" />}
-                    {activating ? 'Activating...' : 'Activate'}
-                  </Button>
-                </>
-              ) : (
-                <Button onClick={startProviderSetup} size="sm" variant="textStrong">
-                  {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
-                </Button>
-              )
-            ) : (
-              <>
-                <ModelSelect
-                  className="min-w-60"
-                  models={selectedProviderModels}
-                  onValueChange={setSelectedModel}
-                  provider={selectedProviderRow}
-                  providerSlug={selectedProvider}
-                  value={selectedModel}
-                />
-                <Button
-                  disabled={!selectedProvider || !selectedModel || applying}
-                  onClick={() => void applyMainModel()}
-                  size="sm"
-                >
-                  {applying && <Loader2 className="size-3.5 animate-spin" />}
-                  {applying ? m.applying : t.common.apply}
-                </Button>
-              </>
-            )}
+                    <SelectValue placeholder={m.provider} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mainProviderOptions.map(provider => (
+                      <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                        {provider.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              }
+              title={m.provider}
+            />
+            <ListRow
+              action={
+                needsSetup ? (
+                  setupIsApiKey ? (
+                    <div className="grid w-full min-w-0 max-w-full @2xl:w-72 justify-items-end gap-2">
+                      <Input
+                        autoComplete="off"
+                        className={cn('min-w-0', CONTROL_TEXT)}
+                        onChange={event => setApiKeyDraft(event.target.value)}
+                        onKeyDown={event => {
+                          if (isSubmitEnter(event)) {
+                            void activateApiKeyProvider()
+                          }
+                        }}
+                        placeholder={`Paste ${selectedProviderRow?.key_env ?? 'API key'}`}
+                        type="password"
+                        value={apiKeyDraft}
+                      />
+                      <Button
+                        disabled={!apiKeyDraft.trim() || activating}
+                        onClick={() => void activateApiKeyProvider()}
+                        size="sm"
+                      >
+                        {activating && <Loader2 className="size-3.5 animate-spin" />}
+                        {activating ? 'Activating...' : 'Activate'}
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button onClick={startProviderSetup} size="sm" variant="textStrong">
+                      {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
+                    </Button>
+                  )
+                ) : (
+                  <ModelSelect
+                    aria-label={m.model}
+                    className="w-full min-w-0 max-w-full @2xl:w-72 [&_[data-slot=select-value]]:truncate"
+                    models={selectedProviderModels}
+                    onValueChange={setSelectedModel}
+                    provider={selectedProviderRow}
+                    providerSlug={selectedProvider}
+                    value={selectedModel}
+                  />
+                )
+              }
+              title={m.model}
+            />
           </div>
+          {!needsSetup && (
+            <div className="flex justify-end pt-1">
+              <Button
+                disabled={!selectedProvider || !selectedModel || applying}
+                onClick={() => void applyMainModel()}
+                size="sm"
+              >
+                {applying && <Loader2 className="size-3.5 animate-spin" />}
+                {applying ? m.applying : t.common.apply}
+              </Button>
+            </div>
+          )}
           {needsSetup && !setupIsApiKey && selectedProviderRow && (
             <p className="mt-2 text-xs text-muted-foreground">
               {selectedProviderRow?.auth_type === 'api_key'
@@ -1019,60 +1172,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             </p>
           )}
           {config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported) && (
-            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-              <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
-              {reasoningSupported && (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="shrink-0 whitespace-nowrap">{m.reasoning}</span>
-                  <Select
-                    onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
-                    value={effortValue}
-                  >
-                    <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {REASONING_EFFORT_VALUES.map(value => (
-                        <SelectItem key={value} value={value}>
-                          {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              {ultrafastSupported ? (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="shrink-0 whitespace-nowrap">{m.speed}</span>
-                  <Select
-                    onValueChange={value => void writeAgentDefault('agent.service_tier', value)}
-                    value={speedValue}
-                  >
-                    <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="normal">{m.speedStandard}</SelectItem>
-                      {fastSupported && <SelectItem value="fast">{t.shell.modelOptions.fast}</SelectItem>}
-                      <SelectItem value="ultrafast">{t.shell.modelOptions.ultrafast}</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : (
-                fastSupported && (
-                  <label className="flex items-center gap-2 text-xs">
-                    {t.shell.modelOptions.fast}
-                    <Switch
-                      checked={fastOn}
-                      onCheckedChange={checked =>
-                        void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
-                      }
-                      size="xs"
-                    />
-                  </label>
-                )
-              )}
-            </div>
+            <MainModelDefaults
+              effortValue={effortValue}
+              fastOn={fastOn}
+              fastSupported={fastSupported}
+              onChange={writeAgentDefault}
+              reasoningSupported={reasoningSupported}
+              speedValue={speedValue}
+              ultrafastSupported={ultrafastSupported}
+            />
           )}
           {errorNotice}
           {switchStaleAux.length > 0 && (
@@ -1119,8 +1227,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             </div>
           )}
           <div className="grid gap-1">
-            {AUX_TASKS.map(meta => {
-              const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
+            {auxRows.map(meta => {
+              const copy = m.tasks[meta.key] ?? { label: meta.label ?? meta.key, hint: meta.hint ?? meta.key }
               const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
               const isAuto = !current || !current.provider || current.provider === 'auto'
               const isEditing = editingAuxTask === meta.key
@@ -1131,9 +1239,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     action={
                       !isEditing && (
                         <div className="flex shrink-0 items-center gap-1.5">
+                          {meta.inheritFrom && !isAuto && (
+                            <AuxFollowBaseButton
+                              baseLabel={auxiliaryTaskLabel(meta.inheritFrom)}
+                              disabled={applying}
+                              onFollow={() => void assignAuxiliary(meta.key, AUX_FOLLOW_BASE)}
+                            />
+                          )}
                           <Button
                             disabled={!mainModel || applying}
-                            onClick={() => void setAuxiliaryToMain(meta.key)}
+                            onClick={() =>
+                              mainModel && void assignAuxiliary(meta.key, auxMainRoute(mainModel, endpointForProvider))
+                            }
                             size="sm"
                             variant="text"
                           >
@@ -1220,22 +1337,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                       )
                     }
                     description={
-                      <span className="font-mono text-[0.68rem]">
-                        {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
-                        {!isAuto && current.base_url && (
-                          <span className="text-muted-foreground"> · {current.base_url}</span>
-                        )}
-                        {current?.reasoning_effort && (
-                          <span className="text-muted-foreground">
-                            {' · '}
-                            {current.reasoning_effort === 'none'
-                              ? `${m.reasoning} ${m.reasoningOff}`
-                              : isReasoningEffort(current.reasoning_effort)
-                                ? t.shell.modelOptions[current.reasoning_effort]
-                                : current.reasoning_effort}
-                          </span>
-                        )}
-                      </span>
+                      <AuxTaskRouteSummary
+                        current={current}
+                        inheritLabel={meta.inheritFrom ? auxiliaryTaskLabel(meta.inheritFrom) : undefined}
+                      />
                     }
                     title={
                       <span className="flex items-baseline gap-2">

@@ -29,7 +29,7 @@ PINS_PATH = REPO_ROOT / "pm" / "lock.json"
 
 # Standalone installers cannot read the shared mirror layout before checkout.
 sys.path.insert(0, str(REPO_ROOT))
-from pm.artifact_mirror import mirror_url  # noqa: E402
+from pm.artifact_mirror import mirror_url
 
 BEGIN_MARK = "# --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---"
 END_MARK = "# --- END GENERATED: bootstrap pins ---"

@@ -29,7 +29,7 @@ def probe_devices(engine_dir: Path, backend: str) -> list[dict]:
         out = subprocess.run(
             [sys.executable, "-I", str(Path(__file__).resolve()), str(engine_dir), backend],
             stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=20, creationflags=windows_hide_flags())
+            errors="replace", timeout=20, creationflags=windows_hide_flags(), check=False)
         devices = json.loads(out.stdout) if out.returncode == 0 else []
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return []

@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zhHantCronControl } from './zh-hant_cron_control'
 
 export const zhHantCommandCenter = {
   commandCenter: {
@@ -167,6 +168,32 @@ export const zhHantCommandCenter = {
     restartNow: '立即重新啟動',
     restarting: '正在重新啟動…',
     restartFailedManual: '閘道重新啟動失敗 — 請手動重新啟動並檢查閘道日誌。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: '不需要機器人權杖',
+      intro: (platform: string) => `${platform} 透過共用的 Hermes 機器人連到這個代理。連結你的 ${platform} 帳號，再傳訊息給機器人就能和代理對話。`,
+      link: (platform: string) => `連結 ${platform}`,
+      linkAnother: (platform: string) => `連結另一個 ${platform} 帳號`,
+      linkedAccounts: '已連結的帳號',
+      unlink: '取消連結',
+      unlinkFailed: '無法取消連結這個帳號',
+      stepOpen: (platform: string) => `1. 用手機掃描 QR 碼，或在 ${platform} 開啟機器人。`,
+      stepSend: '2. 用要連結的帳號傳這則訊息給機器人：',
+      open: (platform: string) => `開啟 ${platform}`,
+      copy: '複製訊息',
+      copied: '已複製',
+      copyFailed: (command: string) => `複製失敗。請改為輸入 ${command}。`,
+      waiting: '正在等待機器人收到你的訊息。這組代碼只能用一次。',
+      linked: (platform: string) => `${platform} 帳號已連結。傳訊息給機器人就能和代理對話。`,
+      expired: '代碼在使用前已過期。請取得新代碼後再試一次。',
+      refused: (platform: string) => `${platform} 拒絕了連結。請取得新代碼後再試一次。`,
+      qrAlt: (platform: string) => `共用 ${platform} 機器人的 QR 碼`,
+      managed: '由 Team Gateway 管理',
+      managedNote: (platform: string) => `此執行個體的訊息由 Team Gateway 承載，因此閘道每次啟動都會關閉 ${platform} 的直接連線。若要與中繼同時使用，請在閘道環境中設定 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直接連線會使執行個體無法縮減到零，並可能重複傳遞訊息）。`,
+      managedIntro: '此代理的帳號在 Nous Portal 中連結。',
+      openPortal: '在 Nous Portal 中連結帳號',
+      noNewAccount: (platform: string) => `此代碼已失效，且沒有出現新帳號。如果你的 ${platform} 帳號不在清單中，請取得新代碼後再試一次。`
+    },
     telegramQr: {
       title: '選擇連接 Telegram 機器人的方式',
       subtitle: '兩種方式都會連接由你控制的機器人，憑證僅儲存在此 Hermes 安裝中。',
@@ -320,18 +347,17 @@ export const zhHantCommandCenter = {
     exported: '設定檔已匯出',
     failedImport: '匯入設定檔失敗',
     failedExport: '匯出設定檔失敗',
+    exportNeedsHost: name => `瀏覽器無法儲存設定檔封存。請在 Hermes 主機上執行：hermes profile export ${name}`,
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
+    notServedHere: '此處未提供',
     switchToProfile: name => `切換至 ${name}`,
     switchToConnection: name => `切換至 ${name}`,
     switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
     fleet: {
       localDevice: '此裝置（本機後端——若未安裝 Hermes 則會安裝，否則開啟新的工作階段）',
-      switchDeviceTitle: '切換到此裝置？',
-      switchDeviceDesc: '這會在這台電腦上開啟新的工作階段。目前的對話仍留在另一個閘道。',
-      switchDeviceConfirm: '切換',
-      installDeviceTitle: '切換到此裝置？',
+      installDeviceTitle: '在此裝置上安裝 Hermes？',
       installDeviceDesc: '這會在本機安裝 Hermes，然後在這台電腦上開啟新的工作階段。確認之前不會開始安裝。',
       installDeviceConfirm: '本機安裝',
       connectExistingInstead: '改為連線現有環境'
@@ -441,6 +467,7 @@ export const zhHantCommandCenter = {
   },
 
   cron: {
+    control: zhHantCronControl,
     close: '關閉排程',
     title: '排程工作',
     count: count => `${count} 個工作`,
@@ -505,6 +532,7 @@ export const zhHantCommandCenter = {
     last: '上次：',
     next: '下次：',
     noRuns: '尚無執行',
+    queuedRun: '排隊中的執行',
     manage: '管理',
     showRuns: '顯示執行記錄',
     hideRuns: '隱藏執行記錄',

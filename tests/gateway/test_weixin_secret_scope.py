@@ -11,7 +11,7 @@ import pytest
 
 from agent import secret_scope
 from gateway.config import PlatformConfig
-from gateway.platforms.weixin import WeixinAdapter, _wx_secret
+from plugins.platforms.weixin.adapter import WeixinAdapter, _wx_secret
 
 
 @pytest.fixture()

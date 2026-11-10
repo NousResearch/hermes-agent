@@ -91,10 +91,11 @@ and are restarted once, as after a bridge update.
 
 ## Prerequisites
 
-- **Node.js v18+** and **npm** — the WhatsApp bridge runs as a Node.js process
+- **Node.js v20+** and **npm** — the WhatsApp bridge runs as a Node.js process
 - **A phone with WhatsApp** installed (for scanning the QR code)
 
-Unlike older browser-driven bridges, the current Baileys-based bridge does **not** require a local Chromium or Puppeteer dependency stack.
+Ordinary QR pairing does not need a browser. Accounts that require passkey verification
+also need an installed Chrome or Edge browser with access to that account's passkey.
 
 ---
 
@@ -119,6 +120,32 @@ The wizard will:
 4. Point your camera at the terminal QR code
 
 Once paired, the wizard confirms the connection and exits. Your session is saved automatically.
+
+### Accounts requiring a passkey
+
+If WhatsApp requests a passkey after the QR scan, run the interactive setup with
+the path to your installed Chrome or Edge executable:
+
+```text
+hermes whatsapp --passkey-browser "/absolute/path/to/browser"
+```
+
+The path above is a placeholder; replace it with the actual browser executable
+on your machine. Setup opens WhatsApp Web in a temporary browser window to
+complete its passkey request. Approve the request using your account's passkey.
+If setup displays a confirmation code, compare it with your phone and confirm
+only if the codes match. The browser closes when the request completes or is
+cancelled. Hermes enables WhatsApp only after pairing succeeds.
+
+The temporary window does not inherit your regular Chrome or Edge profile or
+its signed-in password manager. Your passkey must be available through the
+authentication options that window offers. Availability of phone and OS passkeys,
+and real-account WhatsApp acceptance, still need end-to-end validation.
+
+This path needs an interactive terminal and graphical browser on the machine
+running setup. It is not available through dashboard onboarding or a headless
+SSH session. The browser is needed during passkey pairing, not for normal
+messaging after pairing.
 
 :::tip
 If the QR code looks garbled, make sure your terminal is at least 60 columns wide and supports
@@ -247,6 +274,12 @@ whatsapp:
 ```
 
 When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+Delivery and read status of the messages Hermes sends is logged to `gateway.log`, one line per status change (`server_ack`, `delivered`, `read`, `played`, or `error` with WhatsApp's error code). In groups, each recipient's receipt is its own line with `recipient=`. Messages typed by a person on the linked phone are not logged.
+
+```
+[WhatsApp] WhatsApp delivery status: message=3EB0A1 chat=15551234567@s.whatsapp.net status=read at=1760000000
+```
 
 ---
 

@@ -198,7 +198,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
         with teams_adapter._suppress_third_party_dotenv():
             dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
             # Also exercise the real bind importer under the same suppress.
-            from microsoft_teams.apps import App  # noqa: F401
+            from microsoft_teams.apps import App
 
         assert CANARY_KEY not in os.environ
 

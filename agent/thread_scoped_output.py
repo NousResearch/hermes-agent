@@ -19,11 +19,11 @@ __all__ = ["thread_scoped_silence"]
 
 _install_lock = threading.Lock()
 # Proxy installed per attribute ("stdout"/"stderr"): never double-wrap.
-_installed: dict[str, "_ThreadRoutingStream"] = {}
+_installed: dict[str, _ThreadRoutingStream] = {}
 # One process-lifetime sink per stream: global redirects that displace and
 # restore a proxy must not leak a new /dev/null descriptor each time.
 _sinks: dict[str, TextIO] = {}
-_routing_states: dict[str, "_RoutingState"] = {}
+_routing_states: dict[str, _RoutingState] = {}
 
 
 class _RoutingState:
@@ -87,7 +87,7 @@ class _ThreadRoutingStream:
         return getattr(self._target(), name)
 
 
-def _ensure_installed(attr: str, passthrough: TextIO) -> "_ThreadRoutingStream":
+def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:
     """Install (idempotently) a routing proxy as ``sys.<attr>`` and return it."""
     with _install_lock:
         proxy = _installed.get(attr)

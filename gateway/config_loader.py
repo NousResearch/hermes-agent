@@ -244,10 +244,15 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_blo
     return bridged
 
 
-def shared_loop_targets(registry) -> list:
-    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging)."""
+def shared_loop_targets(registry, entries=None) -> list:
+    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging).
+
+    *entries* are the plugin entries to bridge (``load_yaml_layer`` passes only the configured
+    ones, see ``gateway.platform_activation``); None means every registered plugin platform."""
     targets: list = list(Platform)
-    for entry in registry.plugin_entries() if registry is not None else ():
+    if entries is None:
+        entries = registry.plugin_entries() if registry is not None else ()
+    for entry in entries:
         with contextlib.suppress(ValueError, KeyError):
             if (plat := Platform(entry.name)) not in targets:
                 targets.append(plat)
@@ -379,14 +384,16 @@ def bridge_platform_shared_keys(
 def apply_plugin_yaml_hooks(
     yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry,
     warned: Optional[set] = None, authored: Optional[dict] = None, managed_extra: Optional[dict] = None,
+    entries: Optional[list] = None,
 ) -> None:
     """Plugin-owned YAML→env config bridges (``PlatformEntry.apply_yaml_config_fn``). Order: shared-key
-    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``."""
+    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``.
+    *entries* limits the dispatch to those platforms (None = every registered entry)."""
     if registry is None:
         return
     if authored is None:
         authored = snapshot_authored_extra(platforms_data)
-    for entry in registry.all_entries():
+    for entry in registry.all_entries() if entries is None else entries:
         # Plugin-owned YAML→env config bridges (#24836). See ``PlatformEntry.apply_yaml_config_fn`` for the
         # hook contract. Order: shared-key loop (above) → this dispatch → legacy hardcoded blocks (below;
         # no-op when a hook already set their env var) → ``_apply_env_overrides()`` after
@@ -486,15 +493,12 @@ def read_yaml_layers(home: Path) -> dict:
     (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
     ``load_gateway_config()`` on which files count.
     """
-    config_yaml_path = home / "config.yaml"
-    yaml_cfg: dict = {}
-    if config_yaml_path.exists():
-        # The installer seeds config.yaml by copying cli-config.yaml.example (~120 KB, almost all
-        # comments), and nothing caches this loader — so the pure-Python parser dominates the load.
-        from utils import fast_safe_load
+    from hermes_cli.config_backend import config_exists, read_config_doc
 
-        with open(config_yaml_path, encoding="utf-8-sig") as f:
-            yaml_cfg = fast_safe_load(f) or {}
+    config_path = Path(home) / "config.yaml"
+    yaml_cfg: dict = {}
+    if config_exists(config_path):
+        yaml_cfg = read_config_doc(config_path) or {}
 
     from hermes_cli.config import _expand_env_vars
 
@@ -529,7 +533,14 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         logger.debug("plugin discovery skipped: %s", e)
         registry = None
 
-    targets = shared_loop_targets(registry)
+    # Only platforms this profile configures (a block above, a gateway.json row, their env/.env) are
+    # materialized: importing every deferred adapter to read its hooks cost each cold start ~0.5 s.
+    entries = None
+    if registry is not None:
+        from gateway.platform_activation import activation_predicate
+        entries = registry.configured_entries(activation_predicate(
+            yaml_cfg=yaml_cfg, platform_names=platforms_data, home=home, registry=registry))
+    targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
     # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
     authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
@@ -539,5 +550,16 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     bridge_platform_shared_keys(
         yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
-                            warned=warned, authored=authored, managed_extra=managed_extra)
+                            warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
     bridge_core_env_settings(yaml_cfg, platforms_data)
+
+
+def load_gateway_config_file(gateway_config_file: str):
+    """``gateway --config <file>``: a ``GatewayConfig`` from an explicit local YAML file. Refused
+    when the config backend has no file tooling (Remote Config: config comes only from the plane)."""
+    import hermes_yaml as yaml
+    from gateway.config import GatewayConfig
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("gateway --config <file>")
+    with open(gateway_config_file, encoding="utf-8-sig") as f:
+        return GatewayConfig.from_dict(yaml.safe_load(f) or {})

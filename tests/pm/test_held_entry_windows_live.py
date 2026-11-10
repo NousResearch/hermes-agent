@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 
 from pm.lock import Facts
-from tests.pm.test_pm_core import pm_env as pm_env  # noqa: F401 — fixture
-from tests.pm._fixtures import served as served  # noqa: F401 — fixture
+from tests.pm.test_pm_core import pm_env as pm_env  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.pm._fixtures import served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.mark.platforms("windows")
-def test_mapped_dll_in_replaced_entry_does_not_fail_reinstall(pm_env):  # noqa: F811
+def test_mapped_dll_in_replaced_entry_does_not_fail_reinstall(pm_env):
     from pm.cli import cmd_gc
     from pm.install import ensure
 
@@ -51,7 +51,7 @@ def test_mapped_dll_in_replaced_entry_does_not_fail_reinstall(pm_env):  # noqa: 
 
 
 @pytest.mark.platforms("windows")
-def test_read_only_file_in_replaced_entry_is_removed_on_reinstall(pm_env):  # noqa: F811
+def test_read_only_file_in_replaced_entry_is_removed_on_reinstall(pm_env):
     import os
     import stat
 

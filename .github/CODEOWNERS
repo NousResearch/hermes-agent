@@ -15,6 +15,10 @@
 /scripts/check                  @NousResearch/hermes-agent-core
 /scripts/code_health/           @NousResearch/hermes-agent-core
 
+# The committed system prompt + tools[] render every session sends (scripts/ci/prompt_surface.py).
+# The prompt-surface-review ruleset requires one hermes-agent-core approval here; this line requests it.
+/tests/fixtures/prompt_surface/ @NousResearch/hermes-agent-core
+
 # eslint configs can define custom ``fix`` functions that run arbitrary code.
 eslint.config.*                 @NousResearch/hermes-agent-core
 /.prettierrc                    @NousResearch/hermes-agent-core
@@ -37,12 +41,16 @@ pyproject.toml                  @NousResearch/hermes-agent-core
 package.json                    @NousResearch/hermes-agent-core
 uv.lock                         @NousResearch/hermes-agent-core
 *package-lock.json              @NousResearch/hermes-agent-core
+/pnpm-lock.yaml                 @NousResearch/hermes-agent-core
 /flake.lock                     @NousResearch/hermes-agent-core
 /pm/lock.json                   @NousResearch/hermes-agent-core
 *Dockerfile                     @NousResearch/hermes-agent-core
 
-# The npm supply-chain quarantine (min-release-age) lives here.
+# A root .npmrc (registry, auth) would apply to every pnpm install.
 .npmrc                          @NousResearch/hermes-agent-core
+# The pnpm workspace's quarantine (minimumReleaseAge), its overrides, and the
+# dependencies allowed to run build scripts (allowBuilds) live here.
+/pnpm-workspace.yaml            @NousResearch/hermes-agent-core
 
 # Where PM fetches artifacts from.
 /pm/artifact-mirror.json        @NousResearch/hermes-agent-core
@@ -56,5 +64,3 @@ uv.lock                         @NousResearch/hermes-agent-core
 # The trust model and the scope authority for security reports.
 /SECURITY.md                    @NousResearch/hermes-agent-core
 
-# Each entry pins a third-party repo by sha; editing it changes what users install.
-/plugin-catalog/                @NousResearch/hermes-agent-core

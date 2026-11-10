@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { $gateway } from './gateway'
+import { setHapticsMuted } from './haptics'
 import {
   clearPluginNotifyHandlers,
   dispatchNativeNotification,
@@ -144,7 +145,9 @@ describe('dispatchNativeNotification preferences', () => {
   it('suppresses everything when the master switch is off', () => {
     setNativeNotifyEnabled(false)
     dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
-    dispatchNativeNotification({ kind: 'turnDone', sessionId: freshSession(), title: 'done' })
+    const sessionId = freshSession()
+    setActiveSessionId(sessionId)
+    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
     expect(notify).not.toHaveBeenCalled()
   })
 
@@ -379,5 +382,27 @@ describe('respondToApprovalAction', () => {
     await respondToApprovalAction('bg', 'approve')
 
     expect(request).not.toHaveBeenCalled()
+  })
+})
+
+describe('app sounds mute', () => {
+  afterEach(() => setHapticsMuted(false))
+
+  const fire = () => {
+    const sessionId = freshSession()
+    setActiveSessionId(sessionId)
+    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
+    dispatchPluginNativeNotification(freshSession(), { title: 'Opportunity' })
+
+    return notify.mock.calls.map(([payload]) => payload.silent)
+  }
+
+  it('sends OS notifications silently while app sounds are muted', () => {
+    setHapticsMuted(true)
+    expect(fire()).toEqual([true, true])
+  })
+
+  it('leaves OS notification sound alone when not muted', () => {
+    expect(fire()).toEqual([undefined, undefined])
   })
 })

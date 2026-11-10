@@ -1,0 +1,22 @@
+name: sessionguard
+repo: https://github.com/Whydiriki700/sessionguard
+sha: 5f809202e23fb2b15f9367d788755fdee8667ec0
+title: SessionGuard
+description: "Work survives the session. Keeps a local work-state checkpoint for every session, built from tool evidence: current task, files touched, recent tool calls and outcomes, failure count, and the agent's own progress notes saved through the session_checkpoint tool. A checkpoint closes only when the agent marks its task done; otherwise the next session from the same origin (same platform and sender) is briefed from the most recent open checkpoint, so work interrupted by a dead process, a dropped gateway, or a compaction resumes from evidence instead of a lossy transcript. Subagent and cron sessions neither record checkpoints nor receive briefings. Disclosure: observes user messages (only the latest task text is kept, truncated, with credential-shaped values redacted), tool call arguments (stored only as short summaries), and turn outcomes, in profiles where it is enabled; all state is stored locally under $HERMES_HOME/sessionguard/; makes no network calls."
+maintainer: Whydiriki700
+tier: community
+category: tools
+version: "0.1.1"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Whydiriki700/sessionguard
+platforms: []
+capabilities:
+  provides_tools:
+    - session_checkpoint
+    - sessionguard_status
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

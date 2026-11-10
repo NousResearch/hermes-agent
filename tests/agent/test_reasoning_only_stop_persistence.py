@@ -27,9 +27,9 @@ def loop_agent():
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
-            base_url="https://api.deepseek.com/v1",
-            model="deepseek-reasoner",
-            provider="deepseek",
+            base_url="http://127.0.0.1:8000/v1",
+            model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+            provider="vllm",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -94,14 +94,14 @@ def test_stall_guard_interim_row_carries_promoted_text_as_sidecar(loop_agent):
     ])
 
     assert result["final_response"] == "Here is the file."
-    interim = [m for m in result["messages"] if m.get("role") == "assistant"][0]
+    interim = next(m for m in result["messages"] if m.get("role") == "assistant")
     assert not interim.get("content")
     assert interim["reasoning"] == stalled
     assert interim["api_content"] == stalled
 
     # The continuation request carried the promoted text as the interim assistant turn.
     second_call = loop_agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
-    interim_wire = [m for m in second_call if m.get("role") == "assistant"][0]
+    interim_wire = next(m for m in second_call if m.get("role") == "assistant")
     assert interim_wire["content"] == stalled
     assert "api_content" not in interim_wire
 
@@ -133,7 +133,7 @@ def test_planning_tail_reasoning_only_stop_with_tools_runs_continuation_not_comp
 
     assert result["api_calls"] == 2
     assert result["final_response"] == "Ran the checks; all green."
-    interim = [m for m in result["messages"] if m.get("role") == "assistant"][0]
+    interim = next(m for m in result["messages"] if m.get("role") == "assistant")
     assert not interim.get("content")
     assert interim["api_content"] == tail  # interim row keeps the sidecar shape
 

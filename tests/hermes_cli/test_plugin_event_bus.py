@@ -422,7 +422,7 @@ def test_plugins_show_includes_emits_listens(tmp_path, monkeypatch, capsys):
 def test_plugins_show_not_found_exits(monkeypatch):
     from hermes_cli import plugins_cmd
 
-    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: [])
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", list)
     with pytest.raises(SystemExit) as exc:
         plugins_cmd.cmd_show("nope")
     assert exc.value.code not in (0, None)

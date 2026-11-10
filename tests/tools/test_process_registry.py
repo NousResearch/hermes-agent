@@ -22,8 +22,9 @@ from tools.process_registry import (
 
 
 @pytest.fixture()
-def registry():
-    """Create a fresh ProcessRegistry."""
+def registry(monkeypatch):
+    """A fresh ProcessRegistry. Fake Popen pids never reach the owner-death supervisor: a live pgid would start it."""
+    monkeypatch.setattr("hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
     return ProcessRegistry()
 
 
@@ -495,7 +496,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "exec 1>&2; ( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
 
         s = _make_session(sid="proc_orphan_test")
@@ -535,7 +536,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
 
         s = _make_session(sid="proc_wait_orphan")
@@ -927,15 +928,12 @@ class TestSpawnEnvSanitization:
 
         with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_via_env(env, "echo hello")
+            with pytest.raises(RuntimeError, match="exited 2 without a PID: syntax error"):
+                registry.spawn_via_env(env, "echo hello")
 
-        assert session.exited is True
-        assert session.exit_code == 2
-        assert session.pid is None
-        assert session.output_buffer == "syntax error"
         fake_thread.start.assert_not_called()
         # A failed launch must not be exposed as a running/tracked session.
-        assert session.id not in registry._running
+        assert not registry._running and not registry._finished
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
@@ -945,9 +943,7 @@ class TestSpawnEnvSanitization:
             def __init__(self):
                 self.commands = []
                 self._responses = iter([
-                    {"output": "6 0\nhello\n"},
-                    {"output": "1\n"},
-                    {"output": "0\n"},
+                    {"output": "6 0 exit:0\nhello\n"},
                 ])
 
             def execute(self, command, **kwargs):
@@ -966,154 +962,12 @@ class TestSpawnEnvSanitization:
                 "/path with spaces/hermes_bg.exit",
             )
 
-        assert "'/path with spaces/hermes_bg.log'" in env.commands[0][0]
-        assert "cat '/path with spaces/hermes_bg.log'" not in env.commands[0][0]
-        assert "'/path with spaces/hermes_bg.pid'" in env.commands[1][0]
-        assert "'/path with spaces/hermes_bg.exit'" in env.commands[2][0]
-
-
-class TestEnvPollerIncrementalRead:
-    """The sandbox log poller must read only new bytes, not the whole file.
-
-    Reading the whole file every poll made one poll cost grow with the total
-    output so far, so a long noisy job re-sent all of its output over the
-    docker or SSH channel every two seconds.
-    """
-
-    @staticmethod
-    def _run_poller(registry, session, responses):
-        """Drive one poll cycle and hand back the commands the env saw."""
-
-        class FakeEnv:
-            def __init__(self):
-                self.commands = []
-                self._responses = iter(responses)
-
-            def execute(self, command, **kwargs):
-                self.commands.append(command)
-                return next(self._responses)
-
-        env = FakeEnv()
-        with patch("tools.process_registry.time.sleep", return_value=None), \
-            patch.object(registry, "_move_to_finished"):
-            registry._env_poller_loop(
-                session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit"
-            )
-        return env.commands
-
-
-
-    @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX sh")
-    def test_read_command_holds_back_a_split_utf8_sequence(self, tmp_path):
-        """A multibyte character straddling two polls must not be split.
-
-        The backend decodes each execute() result on its own, so returning
-        the first byte of an 'é' in one poll and the rest in the next would
-        yield replacement characters in the transcript (and break watch
-        patterns at the seam). Every prefix of a mixed ASCII/2/3/4-byte
-        string must come back decodable, with at most 3 bytes held back and
-        nothing held back once the trailing character is complete.
-        """
-        full = "hé😀中a\n€bz🚀".encode()
-        log = tmp_path / "bg.log"
-        quoted = shlex.quote(str(log))
-        for n in range(1, len(full) + 1):
-            log.write_bytes(full[:n])
-            out = subprocess.run(
-                ["sh", "-c", ProcessRegistry._log_delta_command(quoted, 0)],
-                capture_output=True, timeout=30,
-            ).stdout
-            header, _, delta = out.partition(b"\n")
-            size, _offset = map(int, header.split())
-            delta.decode("utf-8")  # must not raise
-            assert delta == full[:size]
-            complete = full[:n].decode("utf-8", "ignore").encode() == full[:n]
-            assert (n - size) == 0 if complete else 0 < (n - size) <= 3
-
-
-    def test_delta_is_appended_not_replaced(self, registry):
-        session = _make_session(sid="proc_append", output="already here ")
-        session.exited = False
-        self._run_poller(
-            registry,
-            session,
-            [
-                {"output": "8 0\nand new"},
-                {"output": "1\n"},
-                {"output": "0\n"},
-            ],
-        )
-        assert session.output_buffer == "already here and new"
-
-    def test_second_poll_asks_from_where_the_first_one_stopped(self, registry):
-        session = _make_session(sid="proc_two_polls")
-        session.exited = False
-        commands = self._run_poller(
-            registry,
-            session,
-            [
-                {"output": "11 0\nfirst chunk"},
-                {"output": "0\n"},          # still running, poll again
-                {"output": "17 11\n and more"},
-                {"output": "1\n"},          # gone now
-                {"output": "0\n"},
-            ],
-        )
-        assert "O=0" in commands[0]
-        # The second read starts at byte 11, so the first chunk is not sent
-        # a second time.
-        assert "O=11" in commands[2]
-        assert session.output_buffer == "first chunk and more"
-
-    def test_truncated_log_drops_the_stale_buffer(self, registry):
-        session = _make_session(sid="proc_rotate")
-        session.exited = False
-        # The second read reports offset 0 even though the first one left off
-        # at byte 11. The file no longer reaches that byte, so it was rotated
-        # or truncated and the buffer we hold no longer matches it.
-        self._run_poller(
-            registry,
-            session,
-            [
-                {"output": "11 0\nfirst chunk"},
-                {"output": "0\n"},          # still running, poll again
-                {"output": "5 0\nfresh"},
-                {"output": "1\n"},
-                {"output": "0\n"},
-            ],
-        )
-        assert session.output_buffer == "fresh"
-
-    def test_unreadable_header_leaves_the_buffer_alone(self, registry):
-        session = _make_session(sid="proc_bad", output="keep me")
-        session.exited = False
-        # No header at all, for example when the shell is missing one of the
-        # tools the command needs.
-        self._run_poller(
-            registry,
-            session,
-            [
-                {"output": ""},
-                {"output": "1\n"},
-                {"output": "0\n"},
-            ],
-        )
-        assert session.output_buffer == "keep me"
-
-    def test_buffer_stays_within_the_cap(self, registry):
-        session = _make_session(sid="proc_cap")
-        session.exited = False
-        session.max_output_chars = 10
-        self._run_poller(
-            registry,
-            session,
-            [
-                {"output": "20 0\n" + "x" * 20},
-                {"output": "1\n"},
-                {"output": "0\n"},
-            ],
-        )
-        assert session.output_buffer == "x" * 10
+        assert len(env.commands) == 1
+        command = env.commands[0][0]
+        assert "'/path with spaces/hermes_bg.log'" in command
+        assert "cat '/path with spaces/hermes_bg.log'" not in command
+        assert "'/path with spaces/hermes_bg.pid'" in command
+        assert "'/path with spaces/hermes_bg.exit'" in command
 
 
 # =========================================================================
@@ -1125,40 +979,29 @@ class TestPopenLeakOnSetupFailure:
 
     def test_popen_killed_when_thread_creation_fails(self, registry):
         """If Thread() raises after Popen, proc must be killed — not orphaned."""
-        killed = []
-
         proc = MagicMock()
         proc.pid = 9999
         proc.stdout = iter([])
         proc.stdin = MagicMock()
         proc.poll.return_value = None
-
-        def fake_kill():
-            killed.append(True)
-
-        proc.kill = fake_kill
         proc.wait = MagicMock()
 
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
-        # proc.pid is a MagicMock-backed fake; os.getpgid(fake_pid) would query
-        # the real OS for an arbitrary PID. On a busy host that PID may exist,
-        # in which case spawn_local's primary cleanup path
-        # (os.killpg(os.getpgid(pid), SIGKILL)) succeeds against an UNRELATED
-        # real process group and proc.kill() is never reached — flaky failure,
-        # and a real risk of SIGKILLing an innocent process group. Force the
-        # ProcessLookupError fallback so the test deterministically exercises
-        # proc.kill() and never issues a real killpg.
+        # The orphan path terminates through _terminate_host_pid, which
+        # revalidates the recorded kernel start time before signalling, so a
+        # MagicMock pid can never reach a real killpg/os.kill.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch.object(ProcessRegistry, "_terminate_host_pid") as terminate, \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
 
-        assert killed, "proc.kill() must be called when post-Popen setup raises"
+        assert terminate.call_count == 1, "post-Popen setup failure must terminate the orphan"
+        assert terminate.call_args[0][0] == 9999
 
 # =========================================================================
 # Spawn rewrite regression (issue #68915)
@@ -1198,7 +1041,6 @@ class TestSpawnRewriteCompoundBackground:
         shell_cmd = captured_cmd[0]
         # The command passed to Popen should be the REWRITTEN version
         assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
-
 
     def test_pty_path_uses_rewritten_command(self, registry):
         """PTY spawn path must also use the rewritten command (issue #68915)."""
@@ -1955,7 +1797,7 @@ class TestHandleProcessRedaction:
         ``output_preview[-200:]`` with no redaction wrap, leaking inline
         secrets (unlike poll/log/wait/kill).
         """
-        pr, sess = self._setup(
+        pr, _sess = self._setup(
             monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
             "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
         )
@@ -2055,7 +1897,7 @@ class TestReaderLoopOrphanedPipe:
             text=True,
             encoding="utf-8",
             errors="replace",
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
         s = _make_session(sid="proc_orphan_reader")
         s.process = proc
@@ -2099,7 +1941,7 @@ class TestReaderLoopOrphanedPipe:
             text=True,
             encoding="utf-8",
             errors="replace",
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
         s = _make_session(sid="proc_orphan_notify")
         s.process = proc

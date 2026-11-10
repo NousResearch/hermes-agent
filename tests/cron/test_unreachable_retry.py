@@ -6,12 +6,13 @@ bounded ladder (5/15/30 min); a run that reaches the model resets the ladder, an
 ladder never fires past its last rung.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
 import cron.scheduler as sched
 from cron import unreachable_retry as ur
+from cron.scheduler_bookkeeping import finish_completed_run
 from cron.jobs import create_job, get_due_jobs, get_job, load_jobs, mark_job_run, save_jobs
 
 
@@ -40,7 +41,7 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     job = create_job("nightly report", "every 24h")
     job_id = job["id"]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for i, delay in enumerate(ur.RETRY_DELAYS_SECONDS):
         assert mark_job_run(job_id, False, "ConnectError: dns", model_unreachable=True)
         j = get_job(job_id)
@@ -56,7 +57,7 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     assert j.get(ur.STATE_KEY) is None
     assert datetime.fromisoformat(j["next_run_at"]) - now > timedelta(hours=1)
 
-    pinned = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
+    pinned = datetime(2026, 9, 18, 12, 1, tzinfo=UTC)
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: pinned)
     monkeypatch.setattr(ur, "_hermes_now", lambda: pinned)
     weekly = create_job("weekly digest", "0 12 * * 5")
@@ -119,11 +120,11 @@ def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home
     assert mark_job_run(job_id, False, "agent error")
     j = get_job(job_id)
     assert j.get(ur.STATE_KEY) is None
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     assert datetime.fromisoformat(j["next_run_at"]) - now > timedelta(hours=11)
 
     # One-shot: flag is ignored, no retry state, no resurrection.
-    once = create_job("one shot", _iso(datetime.now(timezone.utc) + timedelta(minutes=1)))
+    once = create_job("one shot", _iso(datetime.now(UTC) + timedelta(minutes=1)))
     assert mark_job_run(once["id"], False, "ConnectError: dns", model_unreachable=True)
     remaining = get_job(once["id"])
     assert remaining is None or remaining.get(ur.STATE_KEY) is None
@@ -136,7 +137,7 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
     model calls, where the same outage with the ladder off costs it one run (#109990 fixed only
     the final-run notice). Drives the tick's claim hand-off and bookkeeping tail: the claimed
     snapshot's ``next_run_at`` has already moved to the natural slot when the run is recorded."""
-    clock = [datetime.now(timezone.utc)]
+    clock = [datetime.now(UTC)]
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: clock[0])
     monkeypatch.setattr(ur, "_hermes_now", lambda: clock[0])
     monkeypatch.setattr(sched, "finish_execution", lambda *_a, **_kw: None)
@@ -149,10 +150,13 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
     job_id = create_job("digest", "every 24h", repeat=2)["id"]
 
     held = []
-    for _ in range(1 + len(ur.RETRY_DELAYS_SECONDS)):  # the occurrence, then every rung
+    # Every fire (the occurrence and each rung) carries its own execution id, as in production:
+    # completions are deduplicated per execution, so a reused id would make later rungs no-ops.
+    for rung in range(1 + len(ur.RETRY_DELAYS_SECONDS)):  # the occurrence, then every rung
+        execution_id = f"exec-{rung}"
         clock[0] = datetime.fromisoformat(get_job(job_id)["next_run_at"]) + timedelta(seconds=1)
         due = next(d for d in get_due_jobs() if d["id"] == job_id)
-        assert sched._process_due_job(dict(due, execution_id="exec"), None, None, False)
+        assert sched._process_due_job(dict(due, execution_id=execution_id), None, None, False)
         run = runs[-1]
         if rung_tail == "crash" and held:
             assert sched._run_one_job_body(run) is False
@@ -179,9 +183,9 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
             return
         run["_model_unreachable"] = True
         held.append(ur.will_retry(run))
-        assert sched._finish_completed_run(
+        assert finish_completed_run(
             sched._RunDelivery(job=run, success=False, error="ConnectError: dns"),
-            run["fire_claim"]["by"], "exec")
+            run["fire_claim"]["by"], execution_id)
         assert get_job(job_id)["repeat"]["completed"] == 1, "only the occurrence itself counts"
 
     j = get_job(job_id)

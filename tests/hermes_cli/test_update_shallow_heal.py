@@ -19,7 +19,7 @@ from hermes_cli.gitlock import convert_treeless_checkout, heal_shallow_history
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
 
 
 def _origin(tmp_path: Path, commits: int) -> Path:
@@ -113,12 +113,12 @@ def test_treeless_checkout_gets_its_whole_history_once_so_walks_stay_offline(tmp
     check_out(clone)
     offline = dict(os.environ, GIT_NO_LAZY_FETCH="1")
     walk = ["git", "log", "--format=%H", "--", "f.txt"]
-    assert subprocess.run(walk, cwd=clone, env=offline, capture_output=True).returncode != 0
+    assert subprocess.run(walk, cwd=clone, env=offline, capture_output=True, check=False).returncode != 0
 
     assert convert_treeless_checkout(clone) is True
 
     assert _git(clone, "config", "remote.origin.partialclonefilter").stdout.strip() == "blob:none"
-    walked = subprocess.run(walk, cwd=clone, env=offline, capture_output=True, text=True, encoding="utf-8")
+    walked = subprocess.run(walk, cwd=clone, env=offline, capture_output=True, text=True, encoding="utf-8", check=False)
     assert walked.returncode == 0 and len(walked.stdout.split()) == history
     assert convert_treeless_checkout(clone) is False
 

@@ -1,0 +1,22 @@
+name: "second-key"
+repo: "https://github.com/kamalbuilds/second-key"
+sha: "74085d2a2e1a2cab7c13abc9eac41bf83eea0f61"
+subdir: "second-key"
+description: "A two-person rule for shared Hermes bots. Dangerous commands go to named approvers by Telegram DM, the person who asked can never approve their own request, and critical commands need two approvals. No answer, an error or too few approvers always means deny. Disclosure: Network: `api.telegram.org` only, with the bot token from `SECONDKEY_TELEGRAM_BOT_TOKEN`. Redirects are refused; What approvers see: the command after Hermes' own redaction, Hermes' reason for asking, and the requester's display name, platform and platform user id; Background thread: one long-poll thread reads the bot's updates while a request is waiting for votes, and for five minutes after `/secondkey enroll`. It stops on its own once neither holds, and when the plugin unloads; Files: writes its ledger and the armed settings (`armed.json`) under `plugin-data/second-key/`. Reads Hermes' `config.yaml` (read-only) before tool calls, re-parsing it only when the file changed; Credentials: reads the bot token through `agent.secret_scope.get_secret`. It never reads `.env`, `auth.json` or any other credential store; No telemetry, no self-updater, no shell commands, no dependencies beyond the standard library."
+maintainer: "kamalbuilds"
+tier: "community"
+category: "tools"
+requires_hermes: ">=0.23.0"
+docs_url: "https://github.com/kamalbuilds/second-key"
+version: "0.1.0"
+title: "second-key"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - "pre_approval_request"
+    - "pre_gateway_dispatch"
+    - "pre_tool_call"
+  provides_middleware: []
+  requires_env:
+    - "SECONDKEY_TELEGRAM_BOT_TOKEN"

@@ -257,7 +257,7 @@ class TestRegistryResolution:
 class TestFirecrawlScrapeTimeout:
     """Verify the server-side scrape timeout matches the asyncio deadline."""
 
-    def test_extract_passes_timeout_ms_to_scrape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_extract_passes_timeout_ms_to_scrape(self, monkeypatch: pytest.MonkeyPatch, public_dns) -> None:
         """scrape() must receive timeout=60000 (ms) so the server-side
         deadline matches the 60 s asyncio.wait_for deadline.  Without this
         the API uses its 30 s default, causing SCRAPE_TIMEOUT."""
@@ -277,7 +277,7 @@ class TestFirecrawlScrapeTimeout:
 
         # Patch _get_firecrawl_client to return our fake client
         monkeypatch.setattr(
-            firecrawl_provider, "_get_firecrawl_client", lambda: fake_client
+            firecrawl_provider, "_get_firecrawl_client", lambda capability=None: fake_client
         )
         # Patch check_website_access to allow the URL
         monkeypatch.setattr(

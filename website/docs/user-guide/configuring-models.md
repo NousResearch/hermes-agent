@@ -7,7 +7,7 @@ sidebar_position: 3
 Hermes uses two kinds of model slots:
 
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
-- **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, approval scoring, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
+- **Auxiliary models** — side-jobs the agent offloads, such as context compression, vision (image analysis), approval scoring, session-title generation, `/review` reviews and voice-chat replies. Each has its own slot and can be overridden independently; the slots the dashboard exposes are listed under [Setting auxiliary models](#setting-auxiliary-models).
 
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](./local-models.md).
 
@@ -49,7 +49,7 @@ Pick a model, hit **Switch**, and Hermes writes it to `~/.hermes/config.yaml` un
 
 ### Subscription speed and extended context
 
-Speed is separate from reasoning effort. On supported subscription models, **Fast** requests Priority; **Ultrafast** requests Astra's Ultrafast tier. Selecting one clears the other. The chosen tier is remembered per model and carried into a new chat. The profile default lives under **Settings → Model → Main model → Speed** (`agent.service_tier`: `normal`, `fast` or `ultrafast`); Ultrafast is listed only for models that offer it. A legacy setting can be cleared with **Use standard speed**. An accepted request does not guarantee that OpenAI served the requested tier.
+Speed is separate from reasoning effort. On supported subscription models, **Fast** requests Priority; **Ultrafast** requests the Ultrafast tier. Selecting one clears the other. The chosen tier is remembered per model and carried into a new chat. The profile default lives under **Settings → Model → Main model → Speed** (`agent.service_tier`: `normal`, `fast` or `ultrafast`); Ultrafast is listed only for models that offer it, and on a subscription only when your account's Codex catalog lists it for that model. A legacy setting can be cleared with **Use standard speed**. An accepted request does not guarantee that OpenAI served the requested tier.
 
 Hermes creates the **GPT-6.1 Sol-900k** choice from an eligible discovered GPT-6.1 Sol model. The `-900k` suffix is a local context choice, removed from the model ID sent to OpenAI. Hermes limits its budget to the account catalog's maximum, and Codex may report a smaller usable context after its own reserve. Use **Refresh models** if a new model is absent. A failed discovery uses short-lived compatibility hints instead of caching them as a successful account catalog.
 
@@ -59,6 +59,8 @@ When you switch models **inside an active session** (Herm TUI model picker, `her
 
 :::warning Mid-session switches reset the prompt cache
 Prompt caches are keyed to the model serving the request, so any mid-conversation model change — an explicit `/model` switch, an [automatic fallback](./features/fallback-providers.md), or a [credential-pool](./features/credential-pools.md) rotation onto a different account — means the next message re-reads the entire conversation at full input-token price instead of the cached (~75–90% discounted) rate. On a long session this one-time re-read can dwarf the per-token difference between the two models. Switch when you need to, but prefer doing it early in a conversation or right after starting a fresh session.
+
+An explicit `/model` switch also rewrites the `Model:` (and `Provider:`) line inside the system prompt so the agent knows what it is running on. That is a deliberate, one-time change: the first request after the switch misses the cached prefix once, and everything after the system prompt stays byte-identical. Automatic fallbacks rewrite the same line only in memory — the stored session keeps the primary's labels, so a restored primary replays a byte-identical prompt.
 :::
 
 Because of that one-time re-read cost, Hermes asks for **explicit confirmation** before applying a mid-session switch when the live session already holds a large context (default: **100,000 tokens**, measured from the latest provider-billed prompt size). The confirmation renders through the same selection-guard prompt as the expensive-model and data-training warnings wherever a live session is switching: the CLI and TUI `/model` command and picker, and a typed gateway `/model` in a chat with an active agent. Tune or disable it in `config.yaml`:
@@ -86,7 +88,7 @@ Hermes still prints the full data-policy warning and the acknowledgement key on 
 
 ## Setting auxiliary models
 
-Click **Show auxiliary** to reveal the 11 task slots:
+Click **Show auxiliary** to reveal one row per auxiliary task (plugins can register more):
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
@@ -100,13 +102,15 @@ Every auxiliary task defaults to `auto` — meaning Hermes tries your main model
 | **Vision** | When your main model lacks vision support. Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`. |
 | **Compression** | When you're burning reasoning tokens on Opus/M2.7 just to summarize context. A fast chat model does the job at 1/50th the cost. |
 | **Approval** | For `approval_mode: smart` — a fast/cheap model (haiku, flash, gpt-5-mini) decides whether to auto-approve low-risk commands. Expensive models here are waste. |
-| **Web Extract** | When you use `web_extract` heavily. Same logic as compression — summarization doesn't need reasoning. |
-| **Skills Hub** | `hermes skills search` uses this. Usually fine at `auto`. |
+| **Review** | The `/review` reviewer subagent. `auto` uses the main model; pin a different (often stronger) model for reviews. See [Review model](./features/delegation.md#review-model). |
 | **MCP** | MCP tool routing. Usually fine at `auto`. |
+| **Voice Chat** | Spoken voice-chat replies. Point it at a faster model than your main one; reasoning is off on voice turns by default, and GPT-Live voice chat ignores this slot. See [Voice chat model](./features/voice-mode.md#voice-chat-model). |
 | **Triage Specifier** | Routes the Kanban triage specifier (`hermes kanban specify`) that expands a rough one-liner into a concrete spec. A cheap, capable model works well. |
 | **Kanban Decomposer** | Routes Kanban task decomposition — splits a triage task into a graph of child tasks for specialist profiles. |
 | **Profile Describer** | Routes profile-description generation (`hermes profile describe --auto` / the dashboard auto-generate button). Short, cheap call. |
 | **Curator** | Routes the curator skill-usage review pass. Can run for minutes on reasoning models, so a cheaper aux model is often worthwhile. |
+
+For more auxiliary-model options in `config.yaml`, including tasks the dashboard doesn't list, see [Auxiliary Models](./configuration.md#auxiliary-models).
 
 ### Per-task override
 
@@ -125,8 +129,8 @@ Every model card on the page has a **Use as** dropdown. This is the fast path �
 The dropdown has:
 
 - **Main model** — same as clicking Change on the main row.
-- **All auxiliary tasks** — assigns this model to all 11 aux slots at once. Useful when you just want every side-job on a cheap flash model.
-- **Individual task options** — Vision, Web Extract, Compression, etc. The currently-assigned model for each task is marked `current`.
+- **All auxiliary tasks** — assigns this model to every auxiliary slot on the page at once. Useful when you just want every side-job on a cheap flash model.
+- **Individual task options** — Vision, Review, Compression, etc. The currently-assigned model for each task is marked `current`.
 
 Cards are badged with `main` or `aux · <task>` when they're currently assigned to something — so you can see at a glance which of your historical models are wired in where.
 
@@ -256,6 +260,28 @@ host, or model family. The marker layout follows the configured transport:
 `anthropic_messages` uses the native inner-block layout. Set
 `prompt_caching: false` to explicitly disable cache markers for a model; when
 omitted, Hermes keeps its normal provider and model capability detection.
+
+Some OpenAI-compatible servers return the whole answer in the `reasoning`
+field with empty `content`. Hermes does not show reasoning as the reply by
+default, because most providers put private chain-of-thought there. It retries
+instead. If your server's parser really does put the final answer in
+`reasoning`, opt that model in with `answer_in_reasoning`:
+
+```yaml
+providers:
+  local-vllm:
+    api: http://127.0.0.1:8000/v1
+    models:
+      my-reasoner:
+        answer_in_reasoning: true
+```
+
+To opt in every model on a provider, put the flag in a provider-level
+`capabilities:` block (`capabilities: {answer_in_reasoning: true}`). Hermes
+re-reads the opt-in on the active route on every turn, in the CLI, TUI and
+gateway alike, so it survives a `/model` switch to another model on the same
+provider. A fallback or any other provider does not inherit it, and OpenRouter
+routes are never trusted, even with the flag set.
 
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).

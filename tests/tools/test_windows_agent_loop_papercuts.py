@@ -56,7 +56,6 @@ class TestShellHooksWindowsPaths:
 
         script = tmp_path / "hook.py"
         script.write_text("print('ok')\n", encoding="utf-8")
-        #
 
         assert script_is_executable(f'python "{script}"') or script_is_executable(
             f"python {script}"

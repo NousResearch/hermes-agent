@@ -446,7 +446,7 @@ def _read_git_alias(executable: str, target: Path, alias: str) -> str | None:
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         result = subprocess.run(
             [executable, "-C", str(target), "config", "--get", f"alias.{alias}"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1, check=False)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1, check=False)
         return (result.stdout.strip() or None) if result.returncode == 0 else None
     return None
 
@@ -554,8 +554,9 @@ def detect_self_repo_git_mutation(
 
 
 def _block_message(operation: str, root: Path) -> str:
-    hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    scratch = (Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes") / "scratch"
+    from hermes_constants import get_scratch_dir
+
+    scratch = get_scratch_dir()
     return (
         f"Blocked: `{operation}` would rewrite Hermes's live source checkout "
         f"({root}) and can mix module versions in this running process. "

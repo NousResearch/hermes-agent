@@ -72,6 +72,8 @@ function Install-HermesArm64OpenSSL {
     $required = @('include\openssl\ssl.h', 'lib\libcrypto.lib', 'lib\libssl.lib')
     $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $prefix $_) -PathType Leaf) })
     if ($missing.Count) {
+        # vcpkg refuses a binary cache directory that does not exist yet.
+        if ($env:VCPKG_DEFAULT_BINARY_CACHE) { New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null }
         Invoke-HermesBuildCommand $Vcpkg @('install', 'openssl:arm64-windows-static-md', '--classic', '--disable-metrics', "--x-install-root=$(Join-Path $Root 'installed')") 'Building static ARM64 OpenSSL via vcpkg (several minutes)'
     } else {
         Write-HermesBuildNote "ARM64 OpenSSL development libraries found: $prefix"

@@ -4,7 +4,13 @@ import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
 import { $projectScope, ALL_PROJECTS } from './project-scope'
-import { $projectTree, $worktreeDialog, $worktreeRefreshToken, projectRootCwd } from './projects'
+import {
+  $projectTree,
+  $worktreeDialog,
+  $worktreeRefreshToken,
+  projectRootCwd,
+  type WorktreeDialogState
+} from './projects'
 import {
   $busy,
   $currentCwd,
@@ -542,10 +548,12 @@ export async function resolveWorktreeRepoPath(): Promise<string> {
   return ''
 }
 
-export async function openWorktreeDialog(options?: { base?: string; repoPath?: string }): Promise<void> {
+export async function openWorktreeDialog(
+  options?: Pick<WorktreeDialogState, 'base' | 'owner'> & { repoPath?: string }
+): Promise<void> {
   const repoPath = options?.repoPath?.trim() || (await resolveWorktreeRepoPath())
 
   if (repoPath) {
-    $worktreeDialog.set({ base: options?.base, repoPath })
+    $worktreeDialog.set({ base: options?.base, owner: options?.owner, repoPath })
   }
 }

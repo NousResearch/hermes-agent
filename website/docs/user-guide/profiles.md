@@ -46,8 +46,7 @@ These terms describe different parts of Hermes:
 
 ```bash
 hermes profile create coder       # creates profile + "coder" command alias
-coder setup                       # configure API keys and model
-coder chat                        # start chatting
+coder chat                        # start chatting (keys and model come from the current profile)
 ```
 
 That's it. `coder` is now its own Hermes profile with its own config, memory, and state.
@@ -64,7 +63,10 @@ Quickest setup: run `hermes setup --portal` inside the new profile to wire up mo
 hermes profile create mybot
 ```
 
-Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
+Creates a fresh profile with bundled skills seeded. It gets the current profile's API keys (bot tokens and allowlists left out) and model, and shares the default profile's logins, the same as the Desktop bot page's "Share keys & accounts" default. Run `mybot setup` for its gateway tokens.
+
+- `--isolated-auth` copies the logins (`auth.json`) once instead of sharing them. A profile created from a named profile always gets a copy of that profile's logins; its subscription (single-use OAuth) logins can't be copied, so for those providers the new profile reads the default profile's and `profile create` says so.
+- `--no-credentials` copies no keys, logins or model; run `mybot setup` afterwards.
 
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
 
@@ -84,11 +86,11 @@ Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the 
 
 #### Keep a clone's imported agent setups synced (`--sync-imports`)
 
-If the source profile has run [`hermes import-agent`](./import-from-other-agents.md), its `import-sync.json` records which external Claude Code / Codex trees it imported. `--clone` leaves that manifest behind, so the clone gets a one-off copy of those skills and memories and stops there. Add `--sync-imports` to carry the manifest over:
+If the source profile has run [`hermes import-agent`](./import-from-other-agents.md) (the `agent-importers` plugin), its `import-sync.json` records which external Claude Code / Codex / Cursor trees it imported. `--clone` leaves that manifest behind, so the clone gets a one-off copy of those skills and memories and stops there. Add `--sync-imports` to carry the manifest over:
 
 ```bash
 hermes profile create work --clone --sync-imports
-hermes -p work import-agent --sync        # pulls changes from the same ~/.claude / ~/.codex
+hermes -p work import-agent --sync        # pulls changes from the same ~/.claude / ~/.codex / ~/.cursor
 ```
 
 This is explicit, opt-in and one-directional, and it links the clone to the **external agent trees only** — never to the source profile. Both profiles stay independent islands: editing the source's `config.yaml`, `SOUL.md` or skills afterwards never reaches the clone. `--clone-all` copies the manifest as part of the full copy.
@@ -102,7 +104,7 @@ hermes profile create backup --clone-all
 Copies **everything** — config, API keys, personality, all memories, skills, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. When cloning from the default profile, the local-model runtime trees (`models/`, `runtimes/`, `node/` — downloaded weights and managed binaries, re-fetched on demand) are skipped too, as `hermes backup` already does. **Cron jobs are not cloned** either: they are scheduled work bound to the source profile and its delivery channel, and a clone that inherited them would run every job twice (two gateways, same job ids). The new profile starts with an empty `cron/`. For a full backup including history and cron jobs, use `hermes profile export` or `hermes backup` instead.
 
 :::note OAuth logins are shared, not copied
-Anthropic (Claude Pro/Max), OpenAI Codex, and xAI OAuth logins use **single-use refresh tokens** — a copy of one is not a second credential, it is the same credential with two owners, and the first profile to refresh it revokes it for every other copy. `--clone-all` (and the dashboard's credential mirroring) therefore drops those OAuth rows from the clone. The new profile keeps reading the login from the root `~/.hermes/auth.json`, and a token refresh performed inside any profile is written back to root, so all profiles stay signed in. Static API keys are copied as usual. To give a profile its own separate OAuth login, run `hermes -p <name> auth add <provider>` inside it.
+Anthropic (Claude Pro/Max), OpenAI Codex, and xAI OAuth logins use **single-use refresh tokens** — a copy of one is not a second credential, it is the same credential with two owners, and the first profile to refresh it revokes it for every other copy. `--clone-all` (and a logins copy made by `--isolated-auth` or from a named profile) therefore drops those OAuth rows from the copy. The new profile keeps reading the login from the root `~/.hermes/auth.json`, and a token refresh performed inside any profile is written back to root, so all profiles stay signed in. Static API keys are copied as usual. To give a profile its own separate OAuth login, run `hermes -p <name> auth add <provider>` inside it. That login is saved in the profile's own `auth.json`, also when root has no login for the provider yet, and from then on the profile uses it instead of the root login; root's `auth.json` is not changed. If the login cannot be saved, the command fails with an error instead of printing `Added`.
 :::
 
 ### Clone from a specific profile
@@ -170,7 +172,7 @@ never start adapters on a half-copied tree. A symlinked source `.env`/`config.ya
 materialized as a private copy first — the clone never writes through to the source.
 
 :::tip Honcho memory + profiles
-When Honcho is enabled, clone operations automatically create a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
+Memory providers get a hook when a profile that selects them is created or renamed. Honcho (1.2.0 and later) uses it to give a cloned profile its own AI peer in the same user workspace, and keeps that peer on rename; for an imported profile, run `hermes honcho sync`. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
 :::
 
 ## Using profiles
@@ -286,7 +288,7 @@ assistant gateway install     # creates hermes-gateway-assistant service
 Each profile gets its own service name. They run independently.
 
 :::note Inside the official Docker image
-Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](./docker.md#per-profile-gateway-supervision) for details.
+Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/hermes-service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](./docker.md#per-profile-gateway-supervision) for details.
 :::
 
 ## Configuring profiles

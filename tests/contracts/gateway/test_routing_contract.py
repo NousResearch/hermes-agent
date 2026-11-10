@@ -325,6 +325,36 @@ def test_bind_moves_an_existing_topic_to_a_new_session(backend, scope_a):
     assert store_a.routing.get_topic_binding_for_session(session_id="s-old").thread_id == "t9"
 
 
+def test_an_expected_session_id_rebinds_only_a_topic_still_naming_it(backend, scope_a):
+    store_a = backend.open(scope_a)
+    _sessions(backend, scope_a, "s-old", "s-other", "s-new")
+    bind = {"chat_id": "c", "thread_id": "t", "user_id": "u", "session_key": "k"}
+    assert store_a.routing.bind_topic(**bind, session_id="s-old") is True
+    # Another session took the topic after the caller read it: the compare-and-swap refuses and writes nothing.
+    store_a.routing.bind_topic(**bind, session_id="s-other")
+    taken = store_a.routing.get_topic_binding(chat_id="c", thread_id="t")
+    assert store_a.routing.bind_topic(**bind, session_id="s-new", expected_session_id="s-old") is False
+    assert store_a.routing.get_topic_binding(chat_id="c", thread_id="t") == taken
+    assert store_a.routing.is_session_linked_to_topic(session_id="s-new") is False
+    # The stored row still names the expected id: the rebind goes through.
+    assert store_a.routing.bind_topic(**bind, session_id="s-new", expected_session_id="s-other") is True
+    assert store_a.routing.get_topic_binding(chat_id="c", thread_id="t").session_id == "s-new"
+
+
+def test_an_expected_session_id_refuses_a_topic_with_no_binding(backend, scope_a):
+    store_a = backend.open(scope_a)
+    _sessions(backend, scope_a, "s1", "s2")
+    bind = {"chat_id": "c", "thread_id": "t", "user_id": "u", "session_key": "k"}
+    # A binding cleared since the caller read it (a /topic off, a delete) is not recreated.
+    assert store_a.routing.bind_topic(**bind, session_id="s1", expected_session_id="s0") is False
+    assert store_a.routing.get_topic_binding(chat_id="c", thread_id="t") is None
+    assert store_a.routing.is_session_linked_to_topic(session_id="s1") is False
+    # The compared row is the (profile, chat, thread) being bound: another profile's row does not count.
+    store_a.routing.bind_topic(**bind, session_id="s2", profile_name="work")
+    assert store_a.routing.bind_topic(**bind, session_id="s1", expected_session_id="s2") is False
+    assert store_a.routing.get_topic_binding(chat_id="c", thread_id="t") is None
+
+
 def test_bind_needs_an_existing_session_and_a_deleted_session_drops_its_binding(backend, scope_a):
     store_a = backend.open(scope_a)
     # A missing session row refuses the bind; the tables are still prepared by the first write.

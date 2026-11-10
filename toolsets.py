@@ -12,6 +12,8 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     "terminal", "process_manage",
     "read_file", "write_file", "patch", "search_files",
+    # Reads the verification evidence ledger; self-hides unless verify_on_stop turns the ledger on.
+    "verification_status",
     "vision_analyze", "image_generate",
     "skills_list", "skill_view", "skill_manage",
     "browser_exec",  # THE browser: Python over CDP (browser-harness)

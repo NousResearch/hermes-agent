@@ -1,6 +1,6 @@
 name: pdf-shrink
 repo: https://github.com/Hazem-Samak/hermes-pdf-shrink
-sha: 8f2207c640e217ebca25abfe21a76ebedc76d5dc
+sha: 6145a74a9e9e2a0d0d03ba859d8ea59a6d448a4c
 description: >-
   Shrink a PDF to a size limit (2 MB, 500 KB, whatever the upload form says) with
   everything running locally — no upload, no API key, no third-party service. Two
@@ -40,9 +40,9 @@ requires_hermes: ">=0.22.0"
 docs_url: https://github.com/Hazem-Samak/hermes-pdf-shrink#readme
 version: "1.0.3"
 title: PDF Shrink
-image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/8f2207c640e217ebca25abfe21a76ebedc76d5dc/assets/banner.png
+image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/6145a74a9e9e2a0d0d03ba859d8ea59a6d448a4c/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/8f2207c640e217ebca25abfe21a76ebedc76d5dc/assets/screenshot.jpg
+  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/6145a74a9e9e2a0d0d03ba859d8ea59a6d448a4c/assets/screenshot.jpg
 platforms: [linux, macos, windows]
 known_issues:
   - '`hermes plugins validate` warns (catalog rule 9) about the one private core import in `engine.py`: `agent.file_safety.is_write_denied`. It is the confinement check the catalog review asked for, imported lazily and failing closed if the module is present but broken; there is no public equivalent, no core function is patched, and it exists in every Hermes >= 0.22.0.'

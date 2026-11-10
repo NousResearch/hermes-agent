@@ -85,7 +85,8 @@ class _SessionModelSettingsMixin:
     ) -> list[SessionModelPickerProvider] | None:
         """List detached picker rows using the conversation's raw endpoint internally.
 
-        Can block on catalog/network reads: async adapters should use asyncio.to_thread.
+        Uses /model's non-blocking catalog path (disk-cached remote catalogs, refreshed in the
+        background); files and a short local LM Studio probe remain, so use asyncio.to_thread.
         Returns None under the same conditions as get_session_model_settings. Never allocates
         or rehydrates a session, or changes its settings. Custom endpoint live probes are
         disabled because they can persist discovered models into config; cached/curated
@@ -93,6 +94,7 @@ class _SessionModelSettingsMixin:
         Only slug, name, models, total_models and is_current leave core. On older Hermes,
         feature-detect this method with getattr (see the platform adapter guide).
         """
+        from hermes_cli.config import get_compatible_custom_providers
         from hermes_cli.model_switch_providers import list_picker_providers
 
         with self._session_model_settings_context(source) as resolved:
@@ -103,11 +105,12 @@ class _SessionModelSettingsMixin:
             rows = list_picker_providers(
                 current_provider=settings["provider"], current_base_url=settings["base_url"],
                 current_model=settings["model"], user_providers=deepcopy(cfg.get("providers")),
-                custom_providers=deepcopy(cfg.get("custom_providers")), max_models=max_models,
+                custom_providers=get_compatible_custom_providers(cfg), max_models=max_models,
                 include_moa=include_moa,
                 excluded_providers=deepcopy(catalog_cfg.get("excluded_providers"))
                 if isinstance(catalog_cfg, dict) else None,
                 probe_custom_providers=False, probe_current_custom_provider=False,
+                non_blocking_catalogs=True,  # as /model: a prefetch pool would drop the profile scope
             )
             return [SessionModelPickerProvider(
                 slug=row["slug"], name=row["name"], models=list(row["models"]),

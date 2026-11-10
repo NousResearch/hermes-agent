@@ -18,6 +18,7 @@ import {
   noteInteraction,
   recordFeatureUse,
   recordFriction,
+  recordLongFrames,
   routeArea,
   setDesktopBotCount,
   setDesktopMetricsGate,
@@ -41,6 +42,7 @@ import {
 } from '@/store/shared-metrics'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
+import { visibleClock } from './visible-clock'
 
 const DAY_TICK_MS = 10 * 60_000
 const INTERACTION_THROTTLE_MS = 1000
@@ -55,7 +57,8 @@ function botCount(): number {
   return byConnection || $profiles.get().length
 }
 
-/** Long frames (Long Animation Frames where available, else long tasks) while the window is visible. */
+/** Long frames (Long Animation Frames where available, else long tasks) while the window is visible:
+ *  every one into the day's histogram, the 100 ms+ ones also as capped slow_frame friction. */
 function observeSlowFrames(): () => void {
   if (typeof PerformanceObserver === 'undefined') {
     return () => undefined
@@ -78,7 +81,11 @@ function observeSlowFrames(): () => void {
       return
     }
 
-    for (const entry of list.getEntries()) {
+    const entries = list.getEntries()
+
+    recordLongFrames(entries.map(entry => entry.duration))
+
+    for (const entry of entries) {
       const bucket = slowFrameBucket(entry.duration)
 
       if (bucket) {
@@ -210,7 +217,12 @@ export function useDesktopMetrics({
       }
     })()
 
+    // Ticks run every DAY_TICK_MS while awake; a longer span is a suspend.
+    const visible = visibleClock(DAY_TICK_MS + 60_000)
+
     const onVisibility = () => {
+      visible.credit()
+
       if (document.visibilityState === 'visible') {
         tickDesktopMetrics()
       }
@@ -243,7 +255,11 @@ export function useDesktopMetrics({
     window.addEventListener('keydown', onInteraction, { capture: true, passive: true })
     window.addEventListener('wheel', onInteraction, { capture: true, passive: true })
     document.addEventListener('visibilitychange', onVisibility)
-    const tick = window.setInterval(() => tickDesktopMetrics(), DAY_TICK_MS)
+
+    const tick = window.setInterval(() => {
+      visible.credit()
+      tickDesktopMetrics()
+    }, DAY_TICK_MS)
 
     return () => {
       stops.forEach(stop => stop())
@@ -253,6 +269,7 @@ export function useDesktopMetrics({
       window.removeEventListener('wheel', onInteraction, { capture: true })
       document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(tick)
+      visible.credit()
     }
   }, [enabled])
 }

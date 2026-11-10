@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
@@ -13,12 +14,14 @@ import {
   noteBackendExited,
   noteInteraction,
   noteMessageSent,
+  noteVisibleTime,
   noticeIdForToast,
   recordAction,
   recordDislike,
   recordFeatureToggle,
   recordFeatureUse,
   recordFriction,
+  recordLongFrames,
   recordOnboarding,
   recordSettingsSaved,
   resetDesktopMetricsForTests,
@@ -40,7 +43,11 @@ function requester(result: Record<string, unknown> = { ok: true }) {
   const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     calls.push([method, params ?? {}])
 
-    return (method === 'shared_metrics.desktop_daily' ? { recorded: true, ...result } : result) as never
+    return (
+      method === 'shared_metrics.desktop_daily' || method === 'shared_metrics.desktop_long_frames'
+        ? { recorded: true, ...result }
+        : result
+    ) as never
   })
 
   return { calls, request }
@@ -109,6 +116,8 @@ function exerciseEverything() {
   noteMessageSent('bots')
   setDesktopBotCount(3)
   noteBackendDrop(null)
+  recordLongFrames([60, 150])
+  noteVisibleTime(60_000)
 }
 
 describe('consent gate', () => {
@@ -344,6 +353,109 @@ describe('daily report: action use + mode use', () => {
 
     expect(calls.filter(([m]) => m === 'shared_metrics.desktop_daily')).toHaveLength(2)
     expect(JSON.parse(stored()!).pending).toHaveLength(1)
+  })
+})
+
+describe('long frames', () => {
+  it('counts every long frame per bucket, uncapped, and reports the day once with its visible time', async () => {
+    const { calls, request } = requester()
+
+    setDesktopMetricsGate('on')
+    bindDesktopMetrics(request)
+    recordLongFrames(Array.from({ length: 300 }, () => 120))
+    recordLongFrames([40, 70, 300, 6000])
+    noteVisibleTime(90 * 60_000)
+    await flush()
+    expect(methods(calls)).not.toContain('shared_metrics.desktop_daily')
+
+    vi.setSystemTime(DAY2)
+    tickDesktopMetrics()
+    await flush()
+
+    const daily = calls.filter(([m]) => m === 'shared_metrics.desktop_long_frames')
+
+    expect(daily).toHaveLength(1)
+    expect(methods(calls)).not.toContain('shared_metrics.desktop_daily') // nothing for it that day
+    expect(daily[0]![1].frames).toEqual([
+      { bucket: '50ms_to_100ms', count: 1 },
+      { bucket: '100ms_to_250ms', count: 300 },
+      { bucket: '250ms_to_1s', count: 1 },
+      { bucket: 'gte_5s', count: 1 }
+    ])
+    expect(daily[0]![1].visible_ms).toBe(90 * 60_000)
+    expect(JSON.parse(stored()!).today.frames).toEqual({})
+  })
+
+  it('an older backend without the histogram method still gets the daily report, and the day clears', async () => {
+    const calls: Call[] = []
+
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push([method, params ?? {}])
+
+      if (method === 'shared_metrics.desktop_long_frames') {
+        throw new JsonRpcGatewayError('unknown method', { code: -32601 })
+      }
+
+      return { recorded: true } as never
+    })
+
+    setDesktopMetricsGate('on')
+    bindDesktopMetrics(request)
+    recordAction('composer.send', 'click')
+    recordLongFrames([120])
+    noteVisibleTime(60_000)
+    vi.setSystemTime(DAY2)
+    tickDesktopMetrics()
+    await flush()
+
+    const daily = calls.filter(([m]) => m === 'shared_metrics.desktop_daily')
+
+    expect(daily).toHaveLength(1)
+    expect(Object.keys(daily[0]![1]).sort()).toEqual(['actions', 'bot_count', 'day', 'modes'])
+    expect(JSON.parse(stored()!).pending).toEqual([])
+  })
+
+  it('a histogram the backend does not record is retried without resending the daily report', async () => {
+    let frames = 0
+    const calls: Call[] = []
+
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push([method, params ?? {}])
+
+      return { recorded: method !== 'shared_metrics.desktop_long_frames' || ++frames > 1 } as never
+    })
+
+    setDesktopMetricsGate('on')
+    bindDesktopMetrics(request)
+    recordAction('composer.send', 'click')
+    noteVisibleTime(60_000)
+    vi.setSystemTime(DAY2)
+    tickDesktopMetrics()
+    await flush()
+    tickDesktopMetrics()
+    await flush()
+
+    expect(methods(calls).filter(m => m.startsWith('shared_metrics.desktop_'))).toEqual([
+      'shared_metrics.desktop_daily',
+      'shared_metrics.desktop_long_frames',
+      'shared_metrics.desktop_long_frames'
+    ])
+    expect(JSON.parse(stored()!).pending).toEqual([])
+  })
+
+  it('collection off: no frame is counted, persisted or sent', async () => {
+    const { calls, request } = requester()
+
+    setDesktopMetricsGate('off')
+    bindDesktopMetrics(request)
+    recordLongFrames(Array.from({ length: 300 }, () => 120))
+    noteVisibleTime(60_000)
+    vi.setSystemTime(DAY2)
+    tickDesktopMetrics()
+    await flush()
+
+    expect(calls).toEqual([])
+    expect(stored()).toBeNull()
   })
 })
 

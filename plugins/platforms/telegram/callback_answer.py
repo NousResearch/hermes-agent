@@ -12,6 +12,7 @@ after the toast), and the tap produced no feedback at all.
 the one case where the toast was the only thing the user would have seen, and "Picker expired —
 use /model again." is still a usable next step as a normal message, posted in the chat and forum
 topic the card lives in. Every other error keeps raising: a broken answer must stay visible.
+``TelegramCallbackGateMixin`` is the allowlist gate in front of a tap, answering the refusal itself.
 """
 
 import logging
@@ -62,6 +63,29 @@ async def answer_callback(query: Any, text: Optional[str] = None, *, show_alert:
         logger.debug("[Telegram] callback answer refused for an expired query", exc_info=True)
         return False
     return True
+
+
+class TelegramCallbackGateMixin:
+    """The callback allowlist gate for ``TelegramAdapter`` button taps."""
+
+    @staticmethod
+    def _callback_ctx(query) -> dict[str, Any]:
+        """Chat/thread/user context of a button tap, for the callback auth gate."""
+        query_message = getattr(query, "message", None)
+        query_chat = getattr(query_message, "chat", None)
+        return {
+            "chat_id": getattr(query_message, "chat_id", None), "chat_type": getattr(query_chat, "type", None),
+            "thread_id": getattr(query_message, "message_thread_id", None), "user_name": getattr(query.from_user, "first_name", None)}
+
+    async def _callback_authorized(self, query, cb: dict[str, Any], denial_text: str) -> bool:
+        """Gate a button tap on the callback allowlist; answers ``denial_text`` when refused."""
+        if self._is_callback_user_authorized(
+            str(getattr(query.from_user, "id", "")), chat_id=cb["chat_id"],
+            chat_type=str(cb["chat_type"]) if cb["chat_type"] is not None else None,
+            thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None, user_name=cb["user_name"]):
+            return True
+        await answer_callback(query, denial_text)
+        return False
 
 
 async def answer_or_note(adapter: Any, query: Any, text: str) -> None:

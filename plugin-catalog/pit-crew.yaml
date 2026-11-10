@@ -2,7 +2,7 @@ name: pit-crew
 repo: https://github.com/trevornk/pit-crew
 sha: "91dec4414b60f7a90b5bdd561d336604b1cc630e"
 title: Pit Crew
-description: "Proactive, safety-gated car agent: live state, a \"will I be ready?\" planner, a background watcher and approval-gated commands, with Home Assistant, Teslemetry/Tessie, TeslaMate or a built-in simulated car."
+description: "Proactive, safety-gated car agent: live state, a \"will I be ready?\" planner, a background watcher and approval-gated commands, with Home Assistant, Teslemetry/Tessie, TeslaMate or a built-in simulated car. Disclosure — once you switch it live with `/car live`, Pit Crew sends real commands to your vehicle (unlock, trunk, frunk, vent, Sentry-off, honk and flash go through Hermes's approval prompt and follow your approval setting), and its background watcher polls your configured Home Assistant / Teslemetry / Tessie / TeslaMate endpoint and posts alerts to the chats you bind."
 image: "https://raw.githubusercontent.com/trevornk/pit-crew/91dec4414b60f7a90b5bdd561d336604b1cc630e/docs/screenshots/banner.png"
 screenshots:
   - "https://raw.githubusercontent.com/trevornk/pit-crew/91dec4414b60f7a90b5bdd561d336604b1cc630e/docs/screenshots/pit-crew-page.png"

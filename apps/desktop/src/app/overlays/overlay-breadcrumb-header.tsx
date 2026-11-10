@@ -17,7 +17,7 @@ interface OverlayBreadcrumbHeaderProps {
 
 export function OverlayBreadcrumbHeader({ child, group, rootLabel, trailing }: OverlayBreadcrumbHeaderProps) {
   return (
-    <div className={cn('mb-4 flex shrink-0 items-start justify-between gap-3', PAGE_INSET_X)}>
+    <div className={cn('mb-3 flex shrink-0 items-center justify-between gap-3', PAGE_INSET_X)}>
       <nav
         aria-label={group.label}
         className="flex min-w-0 items-center gap-1.5 text-[13px] text-[#94a3b8]"

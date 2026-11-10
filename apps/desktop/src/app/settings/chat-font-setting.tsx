@@ -139,19 +139,26 @@ export function ChatFontSetting() {
               )}
               value={value}
             />
-            <Button disabled={!value || draft === null} onClick={() => update('')} size="inline" variant="text">
+            <Button
+              className="h-10 shrink-0 rounded-xl border border-[#e2e8f0] bg-white px-3.5 text-[13px] font-semibold text-[#475569] shadow-none hover:bg-[#f8fafc] dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-bg-quinary) dark:text-(--ui-text-secondary)"
+              disabled={!value || draft === null}
+              onClick={() => update('')}
+              size="inline"
+              variant="outline"
+            >
               {copy.chatFontReset}
             </Button>
           </div>
           {/* Inherits --dt-font-sans, so it IS the live result, not a simulation. */}
           <div
             aria-label={copy.chatFontPreview}
-            className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"
+            className="overflow-hidden rounded-xl border border-[#e2e8f0] bg-[#f7f9fc] px-3.5 py-3 dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-bg-quinary)"
+            data-appearance-font-preview="chat"
           >
-            <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            <div className="text-[12px] font-medium text-[#94a3b8] dark:text-(--ui-text-tertiary)">
               {copy.chatFontPreview}
-            </span>
-            <span>{copy.chatFontSample}</span>
+            </div>
+            <div className="mt-1 text-sm text-[#0f172a] dark:text-foreground">{copy.chatFontSample}</div>
           </div>
         </div>
       }

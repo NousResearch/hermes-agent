@@ -47,8 +47,10 @@ import { ListRow, SectionHeading, ToggleRow } from './primitives'
  * so the gallery is fetched once + cached and adopt/toggle/remove patch local
  * state instead of re-pulling the network gallery. The floating mascot polls
  * `pet.info`, so picking a pet here lights it up within a couple seconds.
+ *
+ * `page` enables the Figma Appearance → Pet chrome (426:17109).
  */
-export function PetSettings() {
+export function PetSettings({ page = false }: { page?: boolean } = {}) {
   const { t } = useI18n()
   const copy = t.settings.appearance.pet
   const { requestGateway } = useGatewayRequest()
@@ -114,183 +116,209 @@ export function PetSettings() {
   const RENDER_CAP = 60
   const sorted = rankedGalleryPets(gallery, query)
   const shown = sorted.slice(0, RENDER_CAP)
+  const thumbSize = page ? 72 : 40
 
-  return (
-    <div>
-      <SectionHeading icon={PawPrint} page title={copy.title} />
-      <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {copy.intro}
-      </p>
-
-      {staleBackend && (
-        <p className="mt-2 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {copy.restartHint}
-        </p>
-      )}
-
-      <div className="mt-2">
-        <ToggleRow
-          below={
-            <>
-              <SearchField
-                containerClassName="mt-3 w-full"
-                inputClassName="flex-1"
-                onChange={setQuery}
-                placeholder={copy.searchPlaceholder}
-                value={query}
-              />
-              {/* Fixed-height scroll area so filtering never grows/shrinks the
-                  page (no layout thrash); the grid scrolls inside it. */}
-              <div className="mt-3 h-72 overflow-y-auto pr-1">
-                {status === 'loading' && pets.length === 0 ? (
-                  // First load keeps the grid's shape rather than flashing the
-                  // "unreachable" copy before the gallery has even arrived.
-                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                    {Array.from({ length: 6 }, (_, i) => (
-                      <div className="flex items-center gap-2.5 px-2.5 py-2" key={i}>
-                        <Skeleton className="size-10 shrink-0 rounded-md" />
-                        <div className="min-w-0 flex-1 space-y-1.5">
-                          <Skeleton className="h-3.5 w-24 max-w-full" />
-                          <Skeleton className="h-3 w-16 max-w-full" />
-                        </div>
-                      </div>
-                    ))}
+  const galleryBody = (
+    <>
+      <SearchField
+        containerClassName={cn('mt-3 w-full', page && 'appearance-pet-search')}
+        inputClassName="flex-1"
+        onChange={setQuery}
+        placeholder={copy.searchPlaceholder}
+        value={query}
+        variant={page ? 'box' : 'underline'}
+      />
+      {/* Overview keeps a fixed scroll pane so filtering never thrash-layouts
+          the whole Appearance page. The dedicated Pet page expands instead —
+          no inset scrollbar beside the grid (Figma 426:17109). */}
+      <div className={cn('mt-3', page ? 'pb-1' : 'h-72 overflow-y-auto pr-1')}>
+        {status === 'loading' && pets.length === 0 ? (
+          // First load keeps the grid's shape rather than flashing the
+          // "unreachable" copy before the gallery has even arrived.
+          <div
+            className={cn(
+              'grid gap-3',
+              page ? 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-4' : 'sm:grid-cols-2 xl:grid-cols-3'
+            )}
+          >
+            {Array.from({ length: page ? 8 : 6 }, (_, i) =>
+              page ? (
+                <div className="flex flex-col items-center gap-2 px-3 py-3" key={i}>
+                  <Skeleton className="size-[72px] shrink-0 rounded-2xl" />
+                  <Skeleton className="h-3.5 w-20" />
+                  <Skeleton className="h-3 w-14" />
+                </div>
+              ) : (
+                <div className="flex items-center gap-2.5 px-2.5 py-2" key={i}>
+                  <Skeleton className="size-10 shrink-0 rounded-md" />
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Skeleton className="h-3.5 w-24 max-w-full" />
+                    <Skeleton className="h-3 w-16 max-w-full" />
                   </div>
-                ) : pets.length === 0 ? (
-                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    {copy.unreachable}
-                  </p>
-                ) : shown.length === 0 ? (
-                  <p className="wrap-anywhere text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    {copy.noMatch(query)}
-                  </p>
-                ) : (
-                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                    {shown.map(pet => {
-                      const isActive = enabled && active === pet.slug
-                      const isBusy = busySlug === pet.slug
+                </div>
+              )
+            )}
+          </div>
+        ) : pets.length === 0 ? (
+          <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {copy.unreachable}
+          </p>
+        ) : shown.length === 0 ? (
+          <p className="wrap-anywhere text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {copy.noMatch(query)}
+          </p>
+        ) : (
+          <div
+            className={cn(
+              'grid gap-3',
+              page ? 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-4' : 'sm:grid-cols-2 xl:grid-cols-3'
+            )}
+          >
+            {shown.map(pet => {
+              const isActive = enabled && active === pet.slug
+              const isBusy = busySlug === pet.slug
 
-                      return (
-                        <div className="group relative" key={pet.slug}>
-                          <button
-                            className={cn(
-                              'flex w-full items-center gap-2.5 px-2.5 py-2 text-left disabled:opacity-50',
-                              selectableCardClass({ active: isActive, prominent: pet.installed })
-                            )}
-                            disabled={isBusy}
-                            onClick={() => void selectPet(pet.slug)}
-                            type="button"
-                          >
-                            <PetThumb
-                              alt={pet.displayName}
-                              load={(slug, url) => loadPetThumb(requestGateway, slug, url)}
-                              slug={pet.slug}
-                              url={pet.spritesheetUrl}
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span className="flex items-center gap-1.5">
-                                <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
-                                  {pet.displayName}
-                                </span>
-                                {pet.generated && (
-                                  <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[0.625rem] font-medium text-primary">
-                                    {copy.generatedTag}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="block truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                                {pet.slug}
-                                {pet.installed ? ` · ${copy.installedTag}` : ''}
-                              </span>
-                            </span>
-                            {isBusy && <Loader2 className="size-4 shrink-0 animate-spin text-(--ui-text-tertiary)" />}
-                          </button>
-                          {!isBusy && (pet.installed || pet.generated) && (
-                            <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
-                              {pet.generated && (
-                                <PetAction
-                                  icon={<Pencil className="size-3.5" />}
-                                  label={copy.rename(pet.displayName)}
-                                  onClick={() => {
-                                    setRenameValue(pet.displayName)
-                                    setRenameTarget(pet)
-                                  }}
-                                />
-                              )}
-                              {pet.generated && (
-                                <PetAction
-                                  icon={<Download className="size-3.5" />}
-                                  label={copy.exportPet(pet.displayName)}
-                                  onClick={() => exportPet(pet.slug)}
-                                />
-                              )}
-                              {pet.installed && (
-                                // Generated pets have no remote source — deletion is
-                                // permanent, so confirm; petdex pets just uninstall.
-                                <PetAction
-                                  danger
-                                  icon={<Trash2 className="size-3.5" />}
-                                  label={pet.generated ? copy.delete(pet.displayName) : copy.uninstall(pet.displayName)}
-                                  onClick={() => (pet.generated ? setConfirmDelete(pet) : removePet(pet.slug))}
-                                />
-                              )}
-                            </div>
+              return (
+                <div className="group relative" key={pet.slug}>
+                  <button
+                    className={cn(
+                      page
+                        ? 'flex w-full flex-col items-center px-3 py-3 text-center disabled:opacity-50'
+                        : 'flex w-full items-center gap-2.5 px-2.5 py-2 text-left disabled:opacity-50',
+                      page
+                        ? undefined
+                        : selectableCardClass({ active: isActive, prominent: pet.installed })
+                    )}
+                    data-active={page && isActive ? 'true' : undefined}
+                    data-appearance-pet-item={page ? '' : undefined}
+                    disabled={isBusy}
+                    onClick={() => void selectPet(pet.slug)}
+                    type="button"
+                  >
+                    <PetThumb
+                      alt={pet.displayName}
+                      load={(slug, url) => loadPetThumb(requestGateway, slug, url)}
+                      size={thumbSize}
+                      slug={pet.slug}
+                      url={pet.spritesheetUrl}
+                    />
+                    <span className={cn('min-w-0', page ? 'mt-2 w-full' : 'flex-1')}>
+                      <span className={cn('flex items-center gap-1.5', page && 'justify-center')}>
+                        <span
+                          className={cn(
+                            'truncate font-medium',
+                            page
+                              ? 'text-[14px] font-semibold text-[#0f172a] dark:text-foreground'
+                              : 'text-[length:var(--conversation-text-font-size)]'
                           )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-              {/* Always-present status line so its appearance never shifts layout. */}
-              <p className="mt-2 min-h-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                {error ? (
-                  <span className="text-(--ui-red)">{error}</span>
-                ) : sorted.length > RENDER_CAP ? (
-                  copy.countCapped(RENDER_CAP, sorted.length)
-                ) : (
-                  copy.count(sorted.length)
-                )}
-              </p>
-            </>
-          }
-          checked={enabled}
-          description={copy.chooseDesc}
-          label={copy.chooseTitle}
-          onChange={toggle}
-          wide
-        />
-
-        {enabled && (
-          <ListRow
-            action={
-              <div className="flex items-center gap-3">
-                <Slider
-                  aria-label={copy.scaleTitle}
-                  max={PET_SCALE_MAX}
-                  min={PET_SCALE_MIN}
-                  onChange={event => {
-                    triggerHaptic('selection')
-                    setPetScale(requestGateway, Number(event.target.value))
-                  }}
-                  step={0.05}
-                  value={scale}
-                />
-                <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
-                  {`${Math.round(scale * 100)}%`}
-                </span>
-              </div>
-            }
-            description={copy.scaleDesc}
-            title={copy.scaleTitle}
-          />
-        )}
-
-        {enabled && (
-          <ToggleRow checked={roam} description={copy.roamDesc} label={copy.roamTitle} onChange={setPetRoam} />
+                        >
+                          {pet.displayName}
+                        </span>
+                        {pet.generated && (
+                          <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[0.625rem] font-medium text-primary">
+                            {copy.generatedTag}
+                          </span>
+                        )}
+                      </span>
+                      <span
+                        className={cn(
+                          'block truncate text-(--ui-text-tertiary)',
+                          page
+                            ? 'mt-0.5 text-[12px] text-[#94a3b8]'
+                            : 'text-[length:var(--conversation-caption-font-size)]'
+                        )}
+                      >
+                        {pet.slug}
+                        {!page && pet.installed ? ` · ${copy.installedTag}` : ''}
+                      </span>
+                    </span>
+                    {isBusy && <Loader2 className="size-4 shrink-0 animate-spin text-(--ui-text-tertiary)" />}
+                  </button>
+                  {!isBusy && (pet.installed || pet.generated) && (
+                    <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
+                      {pet.generated && (
+                        <PetAction
+                          icon={<Pencil className="size-3.5" />}
+                          label={copy.rename(pet.displayName)}
+                          onClick={() => {
+                            setRenameValue(pet.displayName)
+                            setRenameTarget(pet)
+                          }}
+                        />
+                      )}
+                      {pet.generated && (
+                        <PetAction
+                          icon={<Download className="size-3.5" />}
+                          label={copy.exportPet(pet.displayName)}
+                          onClick={() => exportPet(pet.slug)}
+                        />
+                      )}
+                      {pet.installed && (
+                        // Generated pets have no remote source — deletion is
+                        // permanent, so confirm; petdex pets just uninstall.
+                        <PetAction
+                          danger
+                          icon={<Trash2 className="size-3.5" />}
+                          label={pet.generated ? copy.delete(pet.displayName) : copy.uninstall(pet.displayName)}
+                          onClick={() => (pet.generated ? setConfirmDelete(pet) : removePet(pet.slug))}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         )}
       </div>
+      {/* Always-present status line so its appearance never shifts layout. */}
+      <p
+        className={cn(
+          'mt-2 min-h-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)',
+          page && 'mb-3'
+        )}
+      >
+        {error ? (
+          <span className="text-(--ui-red)">{error}</span>
+        ) : sorted.length > RENDER_CAP ? (
+          copy.countCapped(RENDER_CAP, sorted.length)
+        ) : (
+          copy.count(sorted.length)
+        )}
+      </p>
+    </>
+  )
 
+  const extras = enabled && (
+    <>
+      <ListRow
+        action={
+          <div className="flex items-center gap-3">
+            <Slider
+              aria-label={copy.scaleTitle}
+              max={PET_SCALE_MAX}
+              min={PET_SCALE_MIN}
+              onChange={event => {
+                triggerHaptic('selection')
+                setPetScale(requestGateway, Number(event.target.value))
+              }}
+              step={0.05}
+              value={scale}
+            />
+            <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+              {`${Math.round(scale * 100)}%`}
+            </span>
+          </div>
+        }
+        description={copy.scaleDesc}
+        title={copy.scaleTitle}
+      />
+      <ToggleRow checked={roam} description={copy.roamDesc} label={copy.roamTitle} onChange={setPetRoam} />
+    </>
+  )
+
+  const dialogs = (
+    <>
       <ConfirmDialog
         confirmLabel={copy.deleteConfirm}
         description={copy.deleteBody}
@@ -342,6 +370,102 @@ export function PetSettings() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
+  )
+
+  if (page) {
+    return (
+      <section className="grid gap-3.5" data-appearance-pet="">
+        <header className="space-y-1.5">
+          <h1 className="text-[32px] font-extrabold leading-none tracking-tight text-[#0f172a] dark:text-foreground">
+            {copy.title}
+          </h1>
+          <p className="max-w-3xl text-[14px] leading-snug text-[#475569] dark:text-(--ui-text-tertiary)">
+            {copy.intro}
+          </p>
+        </header>
+
+        {staleBackend && (
+          <p className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2 text-[13px] leading-snug text-(--ui-text-tertiary)">
+            {copy.restartHint}
+          </p>
+        )}
+
+        <div data-appearance-pet-card="">
+          <div className="scroll-mt-6" data-chat-settings-row="">
+            <ToggleRow
+              below={galleryBody}
+              checked={enabled}
+              description={copy.chooseDesc}
+              label={copy.chooseTitle}
+              onChange={toggle}
+              wide
+            />
+          </div>
+          {enabled && (
+            <>
+              <div className="scroll-mt-6" data-chat-settings-row="">
+                <ListRow
+                  action={
+                    <div className="flex items-center gap-3">
+                      <Slider
+                        aria-label={copy.scaleTitle}
+                        max={PET_SCALE_MAX}
+                        min={PET_SCALE_MIN}
+                        onChange={event => {
+                          triggerHaptic('selection')
+                          setPetScale(requestGateway, Number(event.target.value))
+                        }}
+                        step={0.05}
+                        value={scale}
+                      />
+                      <span className="w-9 text-right text-[13px] tabular-nums text-[#64748b]">
+                        {`${Math.round(scale * 100)}%`}
+                      </span>
+                    </div>
+                  }
+                  description={copy.scaleDesc}
+                  title={copy.scaleTitle}
+                />
+              </div>
+              <div className="scroll-mt-6" data-chat-settings-row="">
+                <ToggleRow checked={roam} description={copy.roamDesc} label={copy.roamTitle} onChange={setPetRoam} />
+              </div>
+            </>
+          )}
+        </div>
+
+        {dialogs}
+      </section>
+    )
+  }
+
+  return (
+    <div>
+      <SectionHeading icon={PawPrint} page title={copy.title} />
+      <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+        {copy.intro}
+      </p>
+
+      {staleBackend && (
+        <p className="mt-2 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {copy.restartHint}
+        </p>
+      )}
+
+      <div className="mt-2">
+        <ToggleRow
+          below={galleryBody}
+          checked={enabled}
+          description={copy.chooseDesc}
+          label={copy.chooseTitle}
+          onChange={toggle}
+          wide
+        />
+        {extras}
+      </div>
+
+      {dialogs}
     </div>
   )
 }

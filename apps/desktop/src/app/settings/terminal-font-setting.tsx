@@ -144,19 +144,24 @@ export function TerminalFontSetting() {
               renderOption={font => <span style={{ fontFamily: resolveTerminalFontFamily(font) }}>{font}</span>}
               value={value}
             />
-            <Button disabled={!value || draft === null} onClick={() => update('')} size="inline" variant="text">
+            <Button
+              className="h-10 shrink-0 rounded-xl border border-[#e2e8f0] bg-white px-3.5 text-[13px] font-semibold text-[#475569] shadow-none hover:bg-[#f8fafc] dark:border-(--ui-stroke-tertiary) dark:bg-(--ui-bg-quinary) dark:text-(--ui-text-secondary)"
+              disabled={!value || draft === null}
+              onClick={() => update('')}
+              size="inline"
+              variant="outline"
+            >
               {copy.terminalFontReset}
             </Button>
           </div>
           <div
             aria-label={copy.terminalFontPreview}
-            className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"
+            className="overflow-hidden rounded-xl bg-[#0f172a] px-3.5 py-3 text-sm text-[#e2e8f0]"
+            data-appearance-font-preview="terminal"
             style={{ fontFamily: previewFontFamily }}
           >
-            <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {copy.terminalFontPreview}
-            </span>
-            <span> ~/project git:main ❯</span>
+            <div className="text-[12px] font-medium text-[#94a3b8]">{copy.terminalFontPreview}</div>
+            <div className="mt-1">~/project git:main ›</div>
           </div>
         </div>
       }

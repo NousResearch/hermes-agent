@@ -98,11 +98,13 @@ scrapling extract fetch 'https://example.com' output.md \
 ### 提取 Cloudflare 保护页面
 
 ```bash
-scrapling extract stealthy-fetch 'https://protected-site.com' output.html \
+scrapling extract fetch 'https://protected-site.com' output.html \
   --solve-cloudflare \
   --block-webrtc \
   --hide-canvas
 ```
+
+在 Scrapling 0.5.x 中，`extract fetch` 已使用 `StealthyFetcher`，没有单独的 stealth 子命令。
 
 ### POST 请求
 

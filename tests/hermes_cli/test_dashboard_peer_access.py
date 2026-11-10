@@ -235,6 +235,14 @@ def test_a_messaging_pass_sends_only_what_hermes_peer_sends(peer, path, body):
     assert {k: v for k, v in json.loads(peer.seen[-1]["body"]).items() if k != "author"} == body
 
 
+def test_a_body_over_the_api_servers_limit_is_refused_here(peer, monkeypatch):
+    monkeypatch.setattr(peer_routes, "_MAX_BODY_BYTES", 64)
+    resp = peer.client.post("/api/peer/v1/runs", headers=_bearer("pass-control"),
+                            json={"input": "x" * 100, "session_id": "bot-1"})
+    assert resp.status_code == 413 and resp.json()["error"] == "request_too_large"
+    assert peer.seen == []
+
+
 def _raw_get(path: str, query: bytes, token: str) -> int:
     """One request whose query bytes reach the app as given, as an HTTP parser that keeps a literal
     ``#`` in the request target (h11) hands them over; HTTP clients would cut it as a fragment."""

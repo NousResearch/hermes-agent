@@ -1643,6 +1643,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `on_kanban_task_updated` | `hermes_cli/kanban_db.py` `notify_task_updated` |
 | `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py` `_fire_dispatch_tick_hook` |
 | `gateway_platform_event` | `gateway/run_adapters.py` `GatewayAdapterLifecycleMixin._handle_gateway_platform_event` (events come from the Telegram and Discord adapters) |
+| `gateway_message_delivered` | `gateway/delivery_hooks.py` `notify_message_delivered` / `notify_message_delivered_from_thread`, called from `gateway/platforms/base.py` `BasePlatformAdapter._notify_final_delivered`, `gateway/run_turn.py` `GatewayTurnMixin._notify_streamed_final_delivered` and `cron/scheduler_delivery.py` `_fire_cron_delivered` |
 | `pre_command` | `hermes_cli/plugins.py` `fire_pre_command_hook`, called from `cli.py` `HermesCLI.process_command`, `gateway/run_inbound_hooks.py` `GatewayInboundHooksMixin._hm_command_hooks` and `gateway/session_commands.py` |
 | `post_compaction` | `agent/compaction_events.py` `fire_post_compaction` |
 | `post_curator_run` | `agent/curator.py` `_notify_post_curator_run` |

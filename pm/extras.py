@@ -436,7 +436,7 @@ def _built_by_pm(venv: Path) -> bool:
     """
     import json
 
-    from pm.environment import PM_BUILT_KEY
+    from pm.environment import PM_BUILT_KEY  # noqa: TID251
 
     try:
         lines = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()

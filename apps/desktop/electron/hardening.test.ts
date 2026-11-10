@@ -4,10 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
@@ -27,6 +28,7 @@ import {
   SAFE_STORAGE_ENCODING,
   SECRET_FILE_MODE,
   sensitiveFileBlockReason,
+  statFilesForAttachIpc,
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
@@ -1106,4 +1108,79 @@ test('missingFileResult builds the structured missing-file IPC answer', () => {
   // match it back to the tab that probed it.
   const url = 'file:///tmp/gone.txt'
   assert.equal(missingFileResult(url, { code: 'ENOTDIR' }).path, url)
+})
+
+// Sparse files: the OS reports the full size without any bytes on disk, so
+// these tests exercise the caps at realistic sizes without allocating them.
+function makeSparseFile(dir: string, name: string, size: number): string {
+  const file = path.join(dir, name)
+  const fd = fs.openSync(file, 'w')
+  fs.ftruncateSync(fd, size)
+  fs.closeSync(fd)
+
+  return file
+}
+
+function readSpyFs() {
+  const readFile = vi.fn(fs.promises.readFile)
+
+  return { readFile, fsImpl: { ...fs, promises: { ...fs.promises, readFile } } as unknown as typeof fs }
+}
+
+test('attachment upload caps stay well below the size that aborted the renderer', () => {
+  assert.equal(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES, 64 * 1024 * 1024)
+  assert.equal(ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES, 128 * 1024 * 1024)
+  assert.ok(ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES <= ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES)
+})
+
+test('the attach reader refuses an oversized file from stat, before reading or base64-encoding it', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-attach-cap-'))
+
+  try {
+    const source = makeSparseFile(tempDir, 'course.mp4', 237_853_022)
+    const { readFile, fsImpl } = readSpyFs()
+
+    await assert.rejects(
+      readFileDataUrlForIpc(source, {
+        fs: fsImpl,
+        maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+        mimeType: 'video/mp4',
+        purpose: 'Attachment upload'
+      }),
+      (error: NodeJS.ErrnoException) => error.code === 'EFBIG' && /file is too large/.test(error.message)
+    )
+    assert.equal(readFile.mock.calls.length, 0)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('statFilesForAttachIpc sizes files without reading them and reports limits', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-attach-stat-'))
+
+  try {
+    const big = makeSparseFile(tempDir, 'big.mp4', 300 * 1024 * 1024)
+    const small = makeSparseFile(tempDir, 'small.txt', 1024)
+    const { readFile, fsImpl } = readSpyFs()
+
+    const report = await statFilesForAttachIpc([big, small, path.join(tempDir, 'missing.bin'), 42], { fs: fsImpl })
+
+    assert.deepEqual(report.limits, {
+      maxFileBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+      maxTotalBytes: ATTACHMENT_UPLOAD_MAX_TOTAL_BYTES
+    })
+    assert.deepEqual(report.files[0], { path: big, size: 300 * 1024 * 1024 })
+    assert.deepEqual(report.files[1], { path: small, size: 1024 })
+    assert.equal(report.files[2]?.path, path.join(tempDir, 'missing.bin'))
+    assert.ok(report.files[2]?.error)
+    assert.deepEqual(report.files[3], { path: '', error: 'EINVAL' })
+    assert.equal(readFile.mock.calls.length, 0)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('statFilesForAttachIpc ignores non-array input and bounds the batch', async () => {
+  assert.deepEqual((await statFilesForAttachIpc('nope')).files, [])
+  assert.deepEqual((await statFilesForAttachIpc(undefined)).files, [])
 })

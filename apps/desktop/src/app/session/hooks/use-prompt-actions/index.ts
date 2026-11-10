@@ -6,7 +6,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
+import { assertAttachmentUploadBudget, attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
@@ -100,6 +100,41 @@ import {
 interface HandoffResult {
   ok: boolean
   error?: string
+}
+
+/**
+ * True when `uploadComposerAttachment` will base64-load this attachment's
+ * bytes into the renderer (mirrors its `uploadBytes` / server-owned-image
+ * branches). Feeds the stat-only size preflight that runs before any read.
+ */
+export function attachmentCrossesAsBytes(
+  attachment: ComposerAttachment,
+  ctx: {
+    backendCwd?: null | string
+    liveSessionId?: null | string
+    remote: boolean
+    storedSessionId?: null | string
+    terminalBackend?: string
+  }
+): boolean {
+  if ((attachment.kind !== 'file' && attachment.kind !== 'image') || !attachment.path) {
+    return false
+  }
+
+  if (ctx.liveSessionId && attachment.attachedSessionId === ctx.liveSessionId) {
+    return false
+  }
+
+  if (attachment.kind === 'image' && serverOwnsComposerQueue(ctx.storedSessionId ?? ctx.liveSessionId)) {
+    return !attachment.previewUrl?.includes(';base64,')
+  }
+
+  const staged =
+    attachment.kind === 'file'
+      ? (attachment.stagedUpload ?? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path))
+      : undefined
+
+  return !staged && (ctx.remote || attachmentPathNeedsUpload(attachment.path, ctx.backendCwd, ctx.terminalBackend))
 }
 
 /**
@@ -429,6 +464,16 @@ export function usePromptActions({
         liveSessionId = recoveredId
       }
 
+      // Size every byte upload of this send (stat only) BEFORE the first one is
+      // read: an oversized file or batch must fail the send cleanly here, not
+      // abort the renderer mid-read — a queued send would otherwise re-drain
+      // into the same crash on every relaunch.
+      await assertAttachmentUploadBudget(
+        attachments.filter(attachment =>
+          attachmentCrossesAsBytes(attachment, { backendCwd, liveSessionId, remote, storedSessionId, terminalBackend })
+        )
+      )
+
       for (const original of attachments) {
         let attachment = original
 
@@ -516,6 +561,21 @@ export function usePromptActions({
       setComposerAttachmentUploadState(attachment.id, 'uploading')
 
       try {
+        // Drops eager-upload concurrently, so budget against every chip still
+        // waiting to cross as bytes, not just this one (stat only, no read).
+        const backendCwd = $currentCwd.get()
+        const terminalBackend = $terminalBackend.get()
+
+        await assertAttachmentUploadBudget(
+          $composerAttachments
+            .get()
+            .filter(
+              item =>
+                !item.attachedSessionId &&
+                attachmentCrossesAsBytes(item, { backendCwd, remote, storedSessionId: sessionId, terminalBackend })
+            )
+        )
+
         // Update-only: if the user removed the chip while this was uploading,
         // don't resurrect it — just drop the staged result on the floor.
         updateComposerAttachment(

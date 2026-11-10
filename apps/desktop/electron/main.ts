@@ -65,6 +65,7 @@ import {
 } from './app-version'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
+import { registerAttachIpc } from './attach-ipc'
 import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './backend-child'
 import {
   execText,
@@ -290,7 +291,6 @@ import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
 import {
   assertExistingPathForOpen,
-  ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
@@ -16055,27 +16055,7 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   }
 })
 
-// Remote attachment transfer is independent of the preview / Settings path.
-// Keep a finite cap so Electron + base64 memory stays bounded while archives
-// can exceed the default 16 MiB preview ceiling (and still fit the gateway
-// WebSocket frame limit after base64 expansion).
-ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
-  const bridgedPath = resolveIpcFileReadPath(filePath)
-
-  try {
-    return await readFileDataUrlForIpc(bridgedPath, {
-      maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
-      purpose: 'Attachment upload'
-    })
-  } catch (error) {
-    if (isMissingFileError(error)) {
-      return missingFileResult(filePath, error)
-    }
-
-    throw error
-  }
-})
+registerAttachIpc({ mimeTypeForPath })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   try {

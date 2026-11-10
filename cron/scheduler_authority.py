@@ -56,6 +56,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     from gateway.session_cron import owner_for_home, operation
     from hermes_cli.gateway_client import connect_gateway
     from hermes_constants import get_hermes_home
+    from storage_user_copy import error_type_name
     from utils import atomic_json_write
 
     request_id = execution_id or job.get('execution_id')
@@ -90,7 +91,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             if owner is not None or isinstance(exc, GatewayRPCError):
                 state = await call('recover', params)
                 if state['status'] == 'missing':
-                    error = f'{type(exc).__name__}: {exc}'
+                    error = f'{error_type_name(exc)}: {exc}'
                     result = [False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error]
                     record['refusal'] = result
                     record['job'] = dict(job)
@@ -143,7 +144,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     except Exception as exc:
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
-        error = f'{type(exc).__name__}: {exc}'
+        error = f'{error_type_name(exc)}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
 
 def reconcile_pending(*, allow_connect=True):

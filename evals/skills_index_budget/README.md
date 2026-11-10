@@ -50,3 +50,25 @@ at 3 model calls and the terminal and file-writing tools answer with a fixed ref
 the question is routing, not task completion, and a prompt like "free up disk space" must never
 reach the host. Errored cells score 0 and stay in the
 denominator; exit 3 (no model turn at all) is an infra failure and is never written.
+
+## Reference run (2026-11-09, tree 716d019dc0df)
+
+A 143-skill personal library, 66 skills names-only in the tiered arm (the 200K rule with every
+eligible skill scrubbed), 11 tasks (6 scrubbed, 3 kept, 2 none) x 3 reps x 2 arms per model. The
+library export and per-cell records are private and are not checked in.
+
+| model | kind | right, full | right, tiered | wrong loads full / tiered | prompt tokens per task full / tiered | $ per task full / tiered |
+|---|---|---|---|---|---|---|
+| anthropic/claude-fable-5.2 | scrubbed | 18/18 | 18/18 | 0 / 0 | 32,396 / 28,546 | 0.109 / 0.091 |
+| | kept | 9/9 | 9/9 | 0 / 0 | 35,065 / 32,208 | 0.138 / 0.125 |
+| | none | 6/6 | 6/6 | 0 / 0 | 12,582 / 11,027 | 0.062 / 0.046 |
+| qwen/qwen3.8-27b | scrubbed | 18/18 | 10/18 | 0 / 3 | 31,364 / 24,096 | 0.0049 / 0.0036 |
+| | kept | 8/9 | 8/9 | 1 / 0 | 30,767 / 28,170 | 0.0087 / 0.0066 |
+| | none | 6/6 | 6/6 | 0 / 0 | 14,930 / 11,587 | 0.0020 / 0.0017 |
+
+Fable is at ceiling on both arms, so the run shows no regression there and nothing more. On qwen the
+names-only arm regresses, and the misses follow the name: `maps` 0/3 (answered from memory with no
+tool call), `dogfood` 0/3 (loaded a described neighbour twice), `songsee` and `python-debugpy` 2/3
+each, `arxiv` and `xurl` 3/3. One qwen tiered `kept` cell hit the wall timeout and is counted as a
+failure. The lower tiered token and dollar figures on qwen partly reflect skipped loads, not only
+the smaller index.

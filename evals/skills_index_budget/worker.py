@@ -3,7 +3,7 @@
 
 Usage: worker.py <arm:full|tiered> <model_slug> <task_id> <rep> <out_json>
 Env: SIB_INFERENCE_URL + SIB_INFERENCE_KEY (any OpenAI-compatible endpoint), SIB_TREE (checkout under
-test), SIB_LIBRARY (library JSON, see library.py), SIB_TASKS (tasks JSON, see tasks.example.json).
+test), SIB_LIBRARY (library JSON, see library.py), SIB_TASKS (tasks JSON, see README.md).
 Exit 3 = infra/config error (never scored).
 
 Both arms run the same tree and the same rebuilt library; the only difference is

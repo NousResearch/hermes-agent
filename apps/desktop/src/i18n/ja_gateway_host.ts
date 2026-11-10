@@ -6,7 +6,14 @@ export const jaGatewayHost: GatewayHostTranslations = {
   unavailableDesc: 'デスクトップ IPC ブリッジはゲートウェイ設定を公開していません。',
   webappHostTitle: 'Hermes ホスト',
   webappHostDesc:
-    'Webapp は常に配信元の Hermes ホストを使用します。ゲートウェイの切り替え、Hermes Cloud へのサインイン、保存済み接続の管理は Hermes Desktop アプリで行ってください。',
+    'Webapp は常にそれを配信する Hermes ホスト上で動作します。下の保存済み接続はこのマシンの一覧で、Hermes Desktop アプリと共有されます。他のゲートウェイにはこのホスト経由で接続します。',
+  webappOauthPaste: {
+    title: 'サインインを完了',
+    description: 'サインインのタブが読み込めないアドレスで止まった場合（このブラウザがゲートウェイのマシン上にない場合）、そのアドレスをここに貼り付けてください。',
+    placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+    finish: '完了',
+    failed: 'サインインを完了できませんでした'
+  },
   webAccess: {
     title: 'Web アクセス',
     intro: 'スマートフォンや別のコンピューターから、Nous アカウントでサインインしてこのコンピューターの Hermes を開きます。サインインした人はこのコンピューターでコマンドを実行できます。',
@@ -30,6 +37,13 @@ export const jaGatewayHost: GatewayHostTranslations = {
     restartFailedBecause: reason => `ゲートウェイを再起動できませんでした: ${reason}`,
     startTimedOut: 'ゲートウェイが 90 秒以内に Web アプリを提供しませんでした。',
     stopTimedOut: 'ゲートウェイが 90 秒以内に Web アプリの提供を停止しませんでした。',
+    startStages: {
+      preparing: 'Web アプリを準備しています。ビルドには数分かかることがあります。',
+      building: 'Web アプリをビルドしています。数分かかることがあります。',
+      registering: 'このアドレスの Nous サインインを設定しています。',
+      restarting: 'Web アプリを提供するためにゲートウェイを再起動しています。'
+    },
+    startElapsed: time => `経過時間 ${time}`,
     start: '開始',
     stop: '停止',
     restartGateway: 'ゲートウェイを再起動',

@@ -1,0 +1,24 @@
+name: switch402
+repo: https://github.com/Duffey234/switch402-hermes
+sha: 31f21ef11f211870ec98155da52f5003a611a6a7
+description: "switch402 web data tools: public page to markdown (full and lite), site map, page metadata, screenshots and web search, plus a free price and health quote. Disclosure — tool inputs (URLs and search queries) go to api.switch402.com, run by the switch402 team that maintains this plugin; the six paid tools spend USDC on Base ($0.001–$0.012 per call, charged only on success) from the wallet in SWITCH402_WALLET_KEY, which is used only locally to sign one x402 payment per call through Hermes' secret scope and is never sent or logged; every paid call needs a fresh human answer to the Hermes approval prompt (session/always answers do not carry over), stays under a per-request cap (max_spend_usd, default $0.02), and is refused in cron, yolo, approvals-off, smart-approval and other unattended runs; screenshots are saved under HERMES_HOME/plugin-data/switch402/; no telemetry, no self-update."
+maintainer: Duffey234
+tier: community
+category: web
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools:
+    - s402_quote
+    - s402_scrape
+    - s402_lite
+    - s402_screenshot
+    - s402_search
+    - s402_map
+    - s402_metadata
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  requires_env:
+    - SWITCH402_WALLET_KEY
+requires_hermes: ">=0.21.5"

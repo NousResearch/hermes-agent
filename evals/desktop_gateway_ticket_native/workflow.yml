@@ -21,10 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         timeout-minutes: 3
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        timeout-minutes: 3
+      # The repo's PM-pinned node and pnpm (the pm/lock.json pin).
+      - uses: ./.github/actions/setup-pm
+        timeout-minutes: 10
         with:
-          node-version: '26'
+          toolchain: node
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         timeout-minutes: 3
         with:
@@ -34,7 +35,7 @@ jobs:
         run: uv sync --locked --python 3.11 --extra dev
       - name: Locked native JavaScript environment
         timeout-minutes: 10
-        run: npm ci
+        run: pnpm install --frozen-lockfile
       - name: Run actual Electron main and ordinary daemons
         timeout-minutes: 6
         run: uv run --no-sync python evals/desktop_gateway_ticket_native/run.py --output native-ticket-results

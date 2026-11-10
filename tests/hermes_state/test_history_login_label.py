@@ -10,7 +10,7 @@ claim one — and never to anything that itself reads as a subject.
 
 import pytest
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from hermes_state import SessionDB
 from hermes_state_mutation_binding import _login_label, authorize_history
 
@@ -18,7 +18,7 @@ LOGIN = 'auth:v1:["basic","","e2e"]'
 
 
 def _actor(subject, tmp_path):
-    return Principal(subject, str(tmp_path), frozenset({"session:read", "session:create"}), "native-http:x")
+    return SessionActor(subject, str(tmp_path), frozenset({"session:read", "session:create"}), "native-http:x")
 
 
 def _auth(db, subject, row_id):

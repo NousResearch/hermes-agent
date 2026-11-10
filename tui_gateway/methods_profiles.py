@@ -587,9 +587,8 @@ def _describe_toolsets(cfg):
     toolsets_out = []
     for ts_name, ts_label, ts_desc in _get_effective_configurable_toolsets():
         enabled = ts_name in (pinned_set if pinned_set is not None else platform_enabled)
-        # Default-off integrations (+ opt-in yuanbao) are noise unless already enabled.
-        if not _toolset_allowed_for_platform(ts_name, "cli") or (
-                (ts_name in default_off or ts_name == "yuanbao") and not enabled):
+        # Default-off integrations are noise unless already enabled.
+        if not _toolset_allowed_for_platform(ts_name, "cli") or (ts_name in default_off and not enabled):
             continue
         toolsets_out.append({"name": ts_name, "label": ts_label, "description": ts_desc or "",
                              "tool_count": _try(lambda: len(set(resolve_toolset(ts_name))), 0),

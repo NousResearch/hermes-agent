@@ -83,7 +83,7 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
@@ -100,7 +100,7 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
     authority = SessionAuthority(runner, profile_id="p", instance_id="owner", db=db,
                                  epoch=begin_runtime_epoch(db, instance_id="owner"))
     authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="human"), "route")
-    actor = Principal("human", "p", frozenset({"session:submit"}), "t")
+    actor = SessionActor("human", "p", frozenset({"session:submit"}), "t")
     try:
         receipt = await authority.submit(actor, Submission("r1", SessionRef("p", "s"), {"text": "next"}, "queue"),
                                          queue_while_restarting=True)
@@ -208,7 +208,7 @@ async def test_restart_wait_queues_only_interactive_input(tmp_path, monkeypatch)
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
@@ -219,7 +219,7 @@ async def test_restart_wait_queues_only_interactive_input(tmp_path, monkeypatch)
     authority = SessionAuthority(runner, profile_id="p", instance_id="owner", db=db,
                                  epoch=begin_runtime_epoch(db, instance_id="owner"))
     authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="peer"), "route")
-    peer = Principal("peer", "p", frozenset({"session:submit"}), "t")
+    peer = SessionActor("peer", "p", frozenset({"session:submit"}), "t")
     try:
         with pytest.raises(RuntimeStoreError, match="runtime_draining"):
             await authority.submit(peer, Submission("a2a:1", SessionRef("p", "s"), {"text": "hi"}, "queue"))

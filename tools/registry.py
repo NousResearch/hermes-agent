@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
@@ -259,6 +259,11 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # Grace window after a success in which a failure counts as a flake; kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+# How long a list built on a grace-served True may be reused (``check_fn_verdict_window``). Inside the
+# grace window the tool is advertised whatever the re-probe returns, so reuse changes no result and only
+# bounds how often a failing probe re-runs: at most 12 per 60 s grace per memo key instead of one per
+# catalog read or tool_call, which a probe that fails by timing out would block for its full duration.
+_CHECK_FN_GRACE_REUSE_SECONDS = 5.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: dict[tuple[Callable, Optional[str]], float] = {}
@@ -267,12 +272,42 @@ _check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: set[Callable] = set()
+# Bumped by invalidate_check_fn_cache(): anything derived from the dropped verdicts is void.
+_check_fn_epoch = 0
+# Earliest expiry of the verdicts consulted inside check_fn_verdict_window() (None outside one).
+_verdict_expiry: ContextVar[Optional[list]] = ContextVar("check_fn_verdict_expiry", default=None)
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
     return fn
+
+
+def check_fn_cache_epoch() -> int:
+    """Changes whenever ``invalidate_check_fn_cache()`` drops the cached verdicts."""
+    return _check_fn_epoch
+
+
+@contextmanager
+def check_fn_verdict_window():
+    """Yield a one-item list holding the earliest expiry (``time.monotonic``) of the cached
+    ``check_fn`` verdicts consulted inside the block, ``inf`` when none was. A result filtered on
+    those verdicts must not be reused past it: reusing it would replay a verdict this cache has
+    already expired. A grace-served True expires after ``_CHECK_FN_GRACE_REUSE_SECONDS``, never past
+    the end of its grace window. ``no_cache_check_fn`` probes are config-backed and set no expiry."""
+    sink = [float("inf")]
+    token = _verdict_expiry.set(sink)
+    try:
+        yield sink
+    finally:
+        _verdict_expiry.reset(token)
+
+
+def _note_verdict_expiry(deadline: float) -> None:
+    sink = _verdict_expiry.get()
+    if sink is not None and deadline < sink[0]:
+        sink[0] = deadline
 
 
 def _fn_label(fn: Callable) -> object:
@@ -308,11 +343,104 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
+# A probe that never answers held its caller forever: the boot warm-up never finished and the first
+# inbound turn stopped before its provider request, silently (#131145). A probe gets this budget
+# (the environment probe's) and then counts as unavailable; its thread stays parked, and later
+# calls in the same profile answer False at once instead of waiting or spawning another thread.
+# Callers that arrive while a probe is still running wait on that same worker.
+_CHECK_FN_PROBE_TIMEOUT_SECONDS = 10.0
+# Bound at import: callers that swap ``threading.Thread`` for their own worker type must not turn
+# the probe's bounded wait into an unstarted (or inline) one.
+_ProbeThread = threading.Thread
+
+
+class _Probe:
+    """One in-flight ``check_fn`` run, shared by every caller that asks for the same key meanwhile."""
+
+    __slots__ = ("before", "ctx", "done", "outcome", "timed_out")
+
+    def __init__(self) -> None:
+        self.ctx, self.done, self.outcome, self.timed_out = copy_context(), threading.Event(), {}, False
+        # What the starter's context held: only the probe's OWN writes are published, so a caller
+        # that joined this run never adopts the starter's session-bound values.
+        self.before = dict(self.ctx.items())
+
+
+_check_fn_inflight: dict[tuple[Callable, str], _Probe] = {}
+_check_fn_inflight_lock = threading.Lock()
+_UNSET = object()
+
+
+class CheckFnTimeout(Exception):
+    """A ``check_fn`` did not answer within ``_CHECK_FN_PROBE_TIMEOUT_SECONDS``."""
+
+
+def _call_check_fn(fn: Callable, *, shared: bool = True) -> bool:
+    """``bool(fn())`` on a daemon worker under the caller's contextvars, bounded. The probe's
+    contextvar writes are published back (``memory_tool`` hands its availability snapshot to the
+    schema build that follows). ``shared`` callers for one key (cached probes: profile-invariant by
+    contract) join a single worker, reserved under the lock before it starts; an unshared probe
+    (``no_cache_check_fn`` or an unresolved cache scope) answers for its own caller's context only,
+    and is recorded only once it times out. Raises what the probe raised, or ``CheckFnTimeout``."""
+    key = (fn, hermes_home_key())
+    with _check_fn_inflight_lock:
+        current = _check_fn_inflight.get(key)
+        if current is not None and current.timed_out:
+            raise CheckFnTimeout("is still not answering")
+        if shared and current is not None:
+            probe, start = current, False
+        else:
+            probe, start = _Probe(), True
+            if shared:
+                _check_fn_inflight[key] = probe
+
+    def _settle() -> None:
+        # A settled probe leaves the table (MCP refreshes register a fresh check_fn each time, so a
+        # kept record would never be replaced); callers already waiting keep their reference.
+        # ``done`` flips under the lock so a timed-out caller cannot park an already-settled probe.
+        with _check_fn_inflight_lock:
+            if _check_fn_inflight.get(key) is probe:
+                del _check_fn_inflight[key]
+            probe.done.set()
+
+    if start:
+        def _probe() -> None:
+            try:
+                probe.outcome["value"] = bool(fn())
+            except BaseException as exc:  # health: allow BLE001 -- re-raised on the calling thread
+                probe.outcome["error"] = exc
+            finally:
+                _settle()
+
+        try:
+            _ProbeThread(target=probe.ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
+        except BaseException as exc:  # health: allow BLE001 -- re-raised to every waiter, then here
+            probe.outcome["error"] = exc
+            _settle()
+            raise
+    if not probe.done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
+        with _check_fn_inflight_lock:
+            probe.timed_out = True
+            if not probe.done.is_set():
+                # Park it so later calls answer at once instead of starting another worker.
+                _check_fn_inflight.setdefault(key, probe)
+        raise CheckFnTimeout(f"did not answer within {_CHECK_FN_PROBE_TIMEOUT_SECONDS:.0f}s")
+    caller = copy_context()
+    for var, value in probe.ctx.items():
+        if probe.before.get(var, _UNSET) is not value and caller.get(var, _UNSET) is not value:
+            var.set(value)
+    if "error" in probe.outcome:
+        raise probe.outcome["error"]
+    return probe.outcome["value"]
+
+
 def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
     from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
-        return bool(fn())
+        return _call_check_fn(fn, shared=False)
+    except CheckFnTimeout as exc:
+        logger.warning("check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), exc)
     except UnscopedSecretError:
         # The verdict comes from the LIVE scope at the catch site, not from which registry branch
         # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
@@ -352,10 +480,14 @@ def _check_fn_cached(fn: Callable) -> bool:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
+            _note_verdict_expiry(cached[0] + _CHECK_FN_TTL_SECONDS)
             return cached[1]
     exc_info = None
+    timed_out = False
     try:
-        value, outcome = bool(fn()), "returned False"
+        value, outcome = _call_check_fn(fn), "returned False"
+    except CheckFnTimeout as exc:
+        value, outcome, timed_out = False, str(exc), True
     except Exception as exc:
         # Keep the exception for the verdict log below (emitted outside this block, where
         # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
@@ -363,16 +495,21 @@ def _check_fn_cached(fn: Callable) -> bool:
         value, outcome, exc_info = False, "raised", exc
     # Resolved outside the cache lock: the registry snapshot takes its own lock.
     core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
+    # Stamped at completion: a probe that fails by timing out has spent its timeout, and a window
+    # measured from its start would already be over when it returns, so every read would re-probe.
+    now = time.monotonic()
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
             _check_fn_last_good[cache_key] = now
             _check_fn_ever_good.add(cache_key)
             _check_fn_cache[cache_key] = (now, True)
+            _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
-            # Recent success → flake: serve last-good True, do NOT cache (next call re-probes).
+            # Recent success → flake: serve last-good True, do NOT cache (next direct check re-probes).
+            _note_verdict_expiry(min(now + _CHECK_FN_GRACE_REUSE_SECONDS, last_good + _CHECK_FN_FAILURE_GRACE_SECONDS))
             logger.warning(
                 "check_fn %s failed (%s) within %.0fs of last success; "
                 "treating as transient and keeping tool(s) available",
@@ -394,11 +531,13 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "so not searchable either); dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
-            log = logger.warning if exc_info else logger.info
+            # A probe that never answers is a bug in the probe, not a missing backend: WARNING.
+            log = logger.warning if exc_info or timed_out else logger.info
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
+        _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
         return False
 
 
@@ -421,7 +560,9 @@ def _memo_check(fn: Callable, memo: dict[Callable, bool]) -> bool:
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
+    global _check_fn_epoch
     with _check_fn_cache_lock:
+        _check_fn_epoch += 1
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
         _check_fn_ever_good.clear()

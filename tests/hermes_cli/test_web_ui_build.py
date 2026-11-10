@@ -41,10 +41,10 @@ def test_web_build_prepares_once_and_skips_a_current_product(source_products):
     root, acquired = source_products
     assert _build_web_ui(root / "web", fatal=True)
     assert [event["step"] for event in _events(root)] == ["deps", "web"]
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert not _web_ui_build_needed(root / "web")
     assert _build_web_ui(root / "web", fatal=True)
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert len(_events(root)) == 2
 
 
@@ -57,7 +57,7 @@ def test_web_failure_is_not_success_even_with_an_old_dist(source_products, fatal
     dist.write_text("old product")
     (root / "fail-web").touch()
     assert not _build_web_ui(root / "web", fatal=fatal)
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert [event["step"] for event in _events(root)] == ["deps", "web"]
     assert dist.read_text() == "old product"
     assert not (root / "hermes_cli/web_dist/hermes-build.json").exists()
@@ -66,9 +66,9 @@ def test_web_failure_is_not_success_even_with_an_old_dist(source_products, fatal
 @pytest.mark.platforms("posix")
 def test_failed_preparation_never_runs_web_compilation(source_products):
     root, acquired = source_products
-    (root / "package-lock.json").write_text("not json")
+    (root / "pnpm-lock.yaml").write_text("not yaml")
     assert not _build_web_ui(root / "web", fatal=True)
-    assert acquired == ["npm"]
+    assert acquired == ["pnpm"]
     assert _events(root) == []
     assert not (root / "hermes_cli/web_dist/hermes-build.json").exists()
 
@@ -83,8 +83,8 @@ def test_web_rebuild_reuses_the_existing_desktop_union(source_products):
     (root / "web/changed.ts").write_text("changed web source")
     assert _build_web_ui(root / "web", fatal=True)
     assert _events(root) == [*before, {"step": "web"}]
-    assert acquired == ["npm", "npm"]
-    assert (root / "node_modules/apps-desktop").exists()
+    assert acquired == ["pnpm", "pnpm"]
+    assert (root / "apps/desktop/node_modules").exists()
 
 
 @pytest.mark.platforms("linux")

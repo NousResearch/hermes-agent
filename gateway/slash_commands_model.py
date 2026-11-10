@@ -249,6 +249,8 @@ class GatewayModelCommandsMixin:
         self._session_model_overrides[ctx.session_key] = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
+            # Catalog alias names carry no credential authority; only a direct alias endpoint does.
+            "owns_credentials": result.alias_endpoint_applied,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
@@ -256,8 +258,8 @@ class GatewayModelCommandsMixin:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
-        elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
-            self._pending_one_turn_model_restores.pop(ctx.session_key, None)
+        elif not picker and (_otr_state := self._peek_session_state(ctx.session_key)) is not None:
+            _otr_state.conversation.one_turn_restore = None
         # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
         # the session override (memory + store) — a redundant copy would shadow every later global
         # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
@@ -305,7 +307,8 @@ class GatewayModelCommandsMixin:
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
-        from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length_async
+        from hermes_cli.model_switch import (
+            effective_context_pin, format_model_for_display, resolve_display_context_length_async)
 
         lines = [
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
@@ -321,17 +324,20 @@ class GatewayModelCommandsMixin:
                 config_ctx = int(model_cfg["context_length"])
         if not isinstance(model_cfg, dict):
             model_cfg = {}
+        base_url = result.base_url or ctx.current_base_url or ""
+        # The pin applies only while the route matches the config; the number and its label use the same answer.
+        config_ctx = effective_context_pin(
+            config_ctx, result.new_model, result.target_provider, base_url,
+            model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider"), model_cfg.get("base_url"))
         ctx_len = await resolve_display_context_length_async(
-            result.new_model, result.target_provider,
-            base_url=result.base_url or ctx.current_base_url or "",
+            result.new_model, result.target_provider, base_url=base_url,
             api_key=result.api_key or ctx.current_api_key or "", model_info=mi,
             custom_providers=ctx.custom_provs, config_context_length=config_ctx,
-            configured_model=model_cfg.get("default") or model_cfg.get("model"),
-            configured_provider=model_cfg.get("provider"),
-            configured_base_url=model_cfg.get("base_url"),
         )
         if ctx_len:
-            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}"))
+            from agent.context_pin import context_window_suffix
+            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}") + context_window_suffix(
+                ctx_len, config_ctx, model=result.new_model, provider=result.target_provider, base_url=base_url))
         if mi and mi.max_output:
             lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
         if mi:
@@ -660,7 +666,8 @@ class GatewayModelCommandsMixin:
         # says "none active" while the store resurrects it on the next message.
         await asyncio.to_thread(self._rehydrate_session_model_override, session_key)
         previous = self._session_model_overrides.pop(session_key, None)
-        self._pending_one_turn_model_restores.pop(session_key, None)
+        if (_otr_state := self._peek_session_state(session_key)) is not None:
+            _otr_state.conversation.one_turn_restore = None
         try:
             await self.async_session_store.set_model_override(session_key, None)
         except Exception:
@@ -990,7 +997,8 @@ class GatewayModelCommandsMixin:
             current_effort = rc.get("effort", "medium")
             level = effort_display_label(current_effort, *_route)
         display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
-        has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
+        _rs_state = self._peek_session_state(session_key)
+        has_session_override = _rs_state is not None and _rs_state.conversation.reasoning_override is not None
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:

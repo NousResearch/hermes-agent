@@ -316,7 +316,7 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
     from hermes_cli.config import load_config
     from hermes_cli.kanban_db_connect import connect
     from hermes_constants import get_hermes_home
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
     from gateway.session_policy import restore_policy
 
@@ -332,7 +332,7 @@ def _kanban_worker_model(monkeypatch, tmp_path) -> str:
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=home), native_owner=True,
-                                 actor=Principal("owner", home, frozenset({"session:create"}), "transport"))
+                                 actor=SessionActor("owner", home, frozenset({"session:create"}), "transport"))
     params = dict(board="trial", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     policy, _ = build_kanban_policy(connection, params, load_config())
     return restore_policy(asdict(policy)).model

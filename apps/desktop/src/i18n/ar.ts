@@ -13,6 +13,11 @@ import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
+  gatewayGroupOpen: {
+    opening: "جارٍ فتح محادثة المجموعة…",
+    lookupFailed: "تعذّر العثور على هذه المجموعة على البوابة. حاول مجددًا.",
+    missing: "لم تعد محادثة المجموعة هذه موجودة."
+  },
 
   catalog: {
     add: 'إضافة',
@@ -24,6 +29,9 @@ export const arOverrides = {
     mostStarred: 'الأكثر حصولًا على نجوم',
     newest: 'الأحدث',
     recentlyUpdated: 'المحدثة مؤخرًا',
+    mostUsed: 'الأكثر استخدامًا',
+    updateAvailable: 'تحديث',
+    updatesAvailable: (count: number) => `التحديثات · ${count}`,
     alphabetical: 'الاسم',
     sortBy: 'ترتيب حسب',
     seeAll: 'عرض الكل',

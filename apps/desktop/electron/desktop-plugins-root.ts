@@ -18,9 +18,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { INSTALL_ORIGIN, PACKAGE_MARKER } from '../../shared/src/desktop-plugin-files'
+
+export { INSTALL_ORIGIN, PACKAGE_MARKER }
+
 export const DESKTOP_PLUGINS_DIR = 'desktop-plugins'
-/** Marker inside a materialized desktop half: which agent package it came from. */
-export const PACKAGE_MARKER = '.hermes-package.json'
 
 export interface DesktopHalfMarker {
   /** Agent package folder name (the `plugins/<name>` key). */
@@ -213,6 +215,43 @@ async function sameFile(a: string, b: string): Promise<boolean> {
  *  it, so the git installer and this reconcile cannot drift. */
 export async function writeDesktopHalfMarker(dir: string, marker: DesktopHalfMarker): Promise<void> {
   await fs.promises.writeFile(path.join(dir, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+}
+
+/** The catalog entry a standalone plugin was installed from (`INSTALL_ORIGIN`). */
+export interface InstallOrigin {
+  catalogName: string
+  repo: string
+  /** The commit checked out. */
+  sha: string
+  /** The catalog pin it satisfies when that is not `sha` itself (an annotated tag's object). */
+  pin?: string
+}
+
+/** Write (or, with no catalog entry, drop) a standalone plugin's install origin. A repository may ship
+ *  a file of that name to pose as a catalog entry, so it never survives an install. A file already
+ *  there goes first, so a link of that name is never written through. */
+export async function writeInstallOrigin(dir: string, origin: InstallOrigin | null): Promise<void> {
+  const file = path.join(dir, INSTALL_ORIGIN)
+
+  await fs.promises.rm(file, { force: true })
+
+  if (origin) {
+    await fs.promises.writeFile(file, JSON.stringify(origin, null, 2) + '\n', { flag: 'wx' })
+  }
+}
+
+/** *target* is a plain standalone folder whose `plugin.js` is byte for byte the one *sourceDir* would
+ *  publish: an install of that same tree by a build that recorded no origin, which a catalog install
+ *  adopts in place instead of asking for Force (that would replace the folder and what it keeps). */
+export async function isAdoptableStandalone(target: string, sourceDir: string): Promise<boolean> {
+  return (
+    !(await isLink(target)) &&
+    !(await fs.promises.lstat(path.join(target, PACKAGE_MARKER)).then(
+      () => true,
+      () => false
+    )) &&
+    (await sameFile(path.join(target, 'plugin.js'), path.join(sourceDir, 'plugin.js')))
+  )
 }
 
 /** Where a package's desktop plugin lives, in the order every installer and

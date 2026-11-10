@@ -7,12 +7,6 @@ strings. Add a row whenever a new production body shows up in a bug report or tr
 
 OpenRouter's "can only afford N tokens" 402 (#49769) stays ``billing`` here; the main loop's
 recovery chain retries it once with the lowered cap (see that test's docstring).
-
-The last test is a body main still mishandles, as a run-time xfail keyed on the current wrong
-outcome, so it turns into a passing regression test the moment its fix lands:
-
-* #85005 — "<model> is not a multimodal model" (vLLM/text-only endpoints) is not recognised as
-  an image rejection, so the image is never stripped and every retry fails identically.
 """
 
 from __future__ import annotations
@@ -23,7 +17,6 @@ import pytest
 
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import _looks_like_image_content_rejection
-from tests.e2e.core._pending_fixes import known_failure
 
 _REQUEST = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
 
@@ -93,5 +86,4 @@ def test_affordable_402_classifies_as_billing_with_a_parseable_budget():
 
 def test_not_a_multimodal_model_is_an_image_rejection():
     body = str(_status(openai.BadRequestError, 400, NOT_MULTIMODAL_400))
-    with known_failure(r"not recognised", "#85005: text-only endpoint image rejection not recognised"):
-        assert _looks_like_image_content_rejection(body), f"image rejection not recognised: {body[:120]}"
+    assert _looks_like_image_content_rejection(body), f"image rejection not recognised: {body[:120]}"

@@ -142,7 +142,7 @@ async def test_recovered_native_reply_is_sent_only_after_its_outcome_commits(tmp
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from tests.gateway.test_prompt_attachments import _authority as _store_authority
 
     calls, sent = [], []
@@ -160,7 +160,7 @@ async def test_recovered_native_reply_is_sent_only_after_its_outcome_commits(tmp
         def unavailable(*args, **kwargs):
             raise OSError('settlement storage unavailable')
         monkeypatch.setattr(session_results, 'finish_result', unavailable)
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     receipt = await authority.submit(actor, Submission('recovered', SessionRef('p', 's'), {'text': 'hi'}, 'queue'))
     await asyncio.wait_for(authority.sessions['s'].task, 10)
     status = get_session_admission(authority.db, admission_id=receipt.admission_id)['status']

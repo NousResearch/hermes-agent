@@ -1,4 +1,5 @@
 import type { SessionListRow } from '@hermes/shared/gateway-events'
+import type { SessionActiveItem } from '@hermes/shared/gateway-types'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -19,7 +20,6 @@ import {
   sessionRowKindAt,
   sessionStatusLabel
 } from '../components/activeSessionSwitcher.js'
-import type { SessionActiveItem } from '../gatewayTypes.js'
 import { applyLocale, messages, resetLocale } from '../i18n/runtime.js'
 
 describe('session orchestrator helpers', () => {

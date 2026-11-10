@@ -436,7 +436,7 @@ The web dashboard reads and writes your `.env` file, which contains API keys and
 Hermes never installs a service for `hermes dashboard` or `hermes serve`, so any that run in the
 background were set up by hand: a systemd unit copied from this page, a launchd plist, the Nix
 `hermes-backend` unit, the Docker image's `dashboard` slot or Compose sidecar, or a Desktop SSH
-backend. To list them, with what a future migration would do to each:
+backend. To list them and their current ownership:
 
 ```bash
 hermes gateway migrate --backends --dry-run          # human-readable report
@@ -445,8 +445,8 @@ hermes gateway migrate --backends --dry-run --json   # the same report as JSON
 
 For each backend the report shows its supervisor (systemd unit name, scope and unit file; launchd
 label and plist; Nix-managed; s6 slot; container; Desktop; detached process; or unknown), the
-`HERMES_HOME` it serves, and why nothing is applied yet. The report never stops, restarts or kills
-anything, never edits or writes a service file, unit, plist or ledger, and opens no network
+`HERMES_HOME` it serves, and its ownership. Backend migration is not available yet. The report never
+stops, restarts or kills anything, never edits or writes a service file, unit, plist or ledger, and opens no network
 connection; it exits 0 even when a scan fails. Normal Hermes startup still runs first, as for any
 `hermes` command: it creates the `HERMES_HOME` layout and a default `SOUL.md` if missing, records the
 install under `HERMES_HOME/installs/`, opens `logs/agent.log` and `logs/errors.log`, and prunes

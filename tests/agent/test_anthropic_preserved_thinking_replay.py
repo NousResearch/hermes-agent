@@ -398,3 +398,19 @@ def test_rejected_thinking_is_stored_and_read_through_the_writer_handle(tmp_path
 
     assert [block.get("signature") for block in _thinking_blocks(wire)] == ["sig_kept"]
     assert db.sessions.get_model_config_value(agent.session_id, "_anthropic_rejected_thinking")
+
+
+def test_a_resumed_compressor_prices_no_stored_rejected_thinking_in_its_tail(tmp_path):
+    """A fresh process on a session whose signatures Anthropic rejected reads the stored rejection
+    through the compressor's store handle, so its tail walk charges none of that thinking."""
+    db = _session_db(tmp_path, "s1")
+    _reject_signatures(_agent(db), _signed_turn("Q1", "A1", "sig_rejected_1"))
+    assert db.sessions.get_model_config_value("s1", "_anthropic_rejected_thinking")
+    compressor = _agent(db).context_compressor
+
+    def tail_tokens(size):
+        history = _signed_turn("Q1", "A1", "sig_rejected_1", thinking="x" * size)
+        history += [{"role": "user", "content": "continue"}]
+        return compressor._walk_tail_budget(history, 0, 10**9, 0, cut_at_break=False)[1]
+
+    assert tail_tokens(8000) == tail_tokens(1)

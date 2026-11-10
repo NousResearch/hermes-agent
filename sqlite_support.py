@@ -649,6 +649,13 @@ def _apply_synchronous_pragma(conn: sqlite3.Connection, raw_value: Any, *, db_la
         conn.execute(f"PRAGMA synchronous={level}")
 
 
+def apply_database_pragmas(conn: sqlite3.Connection, *, db_label: str = "state.db") -> None:
+    """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml`` (``hermes_state_wal``'s)."""
+    from hermes_state_wal import apply_database_pragmas as apply
+
+    apply(conn, db_label=db_label)
+
+
 def _version_tuple(parts: Iterable[object]) -> tuple[int, int, int]:
     values = [int(part) for part in parts]
     values.extend([0] * (3 - len(values)))

@@ -33,27 +33,27 @@ python3 encoding_selfcheck.py mojibake /aispace/hermes/hermes-agent --json
 
 ## CI 门禁（本仓已接入）
 
-**workflow**：`.github/workflows/encoding-selfcheck.yml`（由 `ci.yaml` 的 `encoding-selfcheck` job 调用，
-并已登记进 `all-checks-pass` 的 required 清单 ⇒ **门禁红即阻塞合并**）。
+**接入形态**：`repo-guards.yml` 的**两个步骤**（上游 2026-11 已把 PR-only 守卫收敛成单一 `repo-guards`
+job 共用一次 checkout ⇒ 独立 workflow 会多一次 runner 跳转，故按上游范式走步骤）：
 
-门禁跑的三步（与本地复现命令逐条一致）：
+| 步骤 | 条件 | 命令 |
+|---|---|---|
+| `Probe the payload encoding environment` | `!cancelled()`（始终） | `python3 scripts/encoding_selfcheck/encoding_selfcheck.py probe` |
+| `Reject new unencoded read-modify-write points` | `!cancelled() && inputs.python` | `static . --baseline scripts/encoding_selfcheck/baseline.txt --fail-on high,payload` |
 
-```bash
-# 关 1 · 环境面
-python3 scripts/encoding_selfcheck/encoding_selfcheck.py probe
+⇒ `all-checks-pass` 已 `needs: repo-guards` ⇒ 门禁红即**阻塞合并**。
 
-# 关 2 · 代码面（新增命中即红；存量在 baseline 内不红 ⇒ 只减不增）
-python3 scripts/encoding_selfcheck/encoding_selfcheck.py static . \
-  --baseline scripts/encoding_selfcheck/baseline.txt --fail-on high,payload
+> **版本号同步**：本仓的聚合检查名带版本（`All required checks pass (v3)`），
+> protect-main ruleset **显式点名**该 context ⇒ 改 ci.yaml 的版本名时**必须同批**改 ruleset，
+> 否则 ruleset 等一个永远不出现的 context（PR 会一直挂在"等待检查"）。
+> 规则来源见 `.github/workflows/ci.yaml` 中该 job 上方的注释。
 
-# 关 3 · 存量面（workflow_dispatch 可选，默认关）
-python3 scripts/encoding_selfcheck/encoding_selfcheck.py mojibake . \
-  --baseline scripts/encoding_selfcheck/baseline-mojibake.txt
-```
-
-**为什么有 baseline**：本仓当前有 **18 处载荷入口 + 29 处未知 + 85 处输出面**存量命中。
+**为什么有 baseline**：本仓当前有 **17 处载荷入口 + 若干未知 + 82 处输出面**存量命中。
 若"命中即红"按全量语义执行，CI **从上线第一天起就红**，且永远无法变绿 ⇒ 门禁变成噪音 ⇒ 必被加豁免 ⇒ 失效。
 所以基线把"已知欠账"显式化：**存量不红，新增必红**（只减不增）。
+
+**基线指纹是行号无关的**（`rel:kind:call`）：上游持续演进、代码行号会漂移 ⇒ 若指纹含行号，
+存量会被误判成"新增" ⇒ 门禁恒红 ⇒ 基线迅速腐烂。
 
 **刷新 baseline**（问题真修好之后）：
 
@@ -66,7 +66,7 @@ python3 scripts/encoding_selfcheck/encoding_selfcheck.py static . \
 
 ```
   ── 🔴 新增命中 1 处 (不在 baseline 内 ⇒ 门禁红) ──
-   [payload] agent/lsp/xxx.py:42  sys.stdin.read()  (in _read_payload)
+   [payload] agent/lsp/xxx.py  sys.stdin.read()  (in _read_payload)
 ```
 
 **套件来源与漂移**：本副本 vendored 自 AgentSwarm `AUTO-20261110-001`，

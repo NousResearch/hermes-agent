@@ -115,6 +115,42 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_lazy_deps_imports.py
 
+      # Payload-encoding guard.
+      #
+      # A runtime that reads or rewrites UTF-8 files without an explicit `encoding=` binds
+      # its decoding to the launch environment's locale (cron / systemd / container / IDE
+      # panel). A payload decoded by the locale instead of UTF-8 is worse: latin-1 -> UTF-8
+      # double encoding only shows up once the string lands in a UTF-8 store, so the pipe
+      # looks fine and the damage appears later, in someone else's database.
+      #
+      # probe: the runner environment must be safe — file face (read_text() round trip),
+      #   payload face (UTF-8 bytes decoded by sys.stdin.encoding), output face (writing
+      #   non-ASCII to stdout). Cheap and environment-wide, so it always runs.
+      # static: new unencoded read-modify-write points fail. Known debt lives in
+      #   scripts/encoding_selfcheck/baseline.txt and does not fail the build: the baseline
+      #   only ever shrinks, because a permanently red gate is a gate nobody keeps. The
+      #   fingerprints are line-number independent, so unrelated upstream edits do not rot
+      #   the baseline.
+      #
+      # The suite is vendored (scripts/encoding_selfcheck/, pure stdlib) so this runs on the
+      # bare checkout with no dependency install. Canonical copy: AgentSwarm
+      # scripts/encoding_selfcheck.py (proposal AUTO-20261110-001); the two must stay
+      # byte-identical and AgentSwarm's CI guards that.
+      #
+      # Refresh the baseline when the debt is actually fixed:
+      #   python3 scripts/encoding_selfcheck/encoding_selfcheck.py static . \
+      #       --write-baseline scripts/encoding_selfcheck/baseline.txt
+      - name: Probe the payload encoding environment
+        if: ${{ !cancelled() }}
+        run: python3 scripts/encoding_selfcheck/encoding_selfcheck.py probe
+
+      - name: Reject new unencoded read-modify-write points
+        if: ${{ !cancelled() && inputs.python }}
+        run: |
+          python3 scripts/encoding_selfcheck/encoding_selfcheck.py static . \
+            --baseline scripts/encoding_selfcheck/baseline.txt \
+            --fail-on high,payload
+
       # ── Pull requests: unrelated histories ────────────────────────────────────────────────
 
       # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI

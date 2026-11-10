@@ -340,7 +340,11 @@ jobs:
   # the live comment poller can list failed jobs in the PR comment.
   # ─────────────────────────────────────────────────────────────────────
   all-checks-pass:
-    name: All required checks pass (v2)
+    # v3: the required set gained the payload-encoding guard (repo-guards step
+    # "Reject new unencoded read-modify-write points"). The protect-main ruleset must name
+    # the same context in the same rollout — otherwise this check is never reported and
+    # every PR waits forever on a context that no longer exists.
+    name: All required checks pass (v3)
     needs:
       - detect
       - tests

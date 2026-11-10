@@ -492,6 +492,18 @@ def write_baseline(path: str, fingerprints: set[str], header: str = "") -> None:
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def fingerprint(rel: str, kind: str, call: str) -> str:
+    """命中指纹 —— **行号无关**。
+
+    早期版本用 `rel:line:kind`, 但行号会随无关代码增删而漂移: 上游持续演进时
+    存量命中会被误判为"新增" ⇒ 门禁恒红 ⇒ 基线迅速腐烂。
+    改用 `rel:kind:call` (文件 + 形态 + 调用表达式): 行号漂移不影响判定,
+    而同一文件里出现**新的调用形态**仍能被识别为新增。
+    """
+    call_norm = " ".join((call or "").split())
+    return f"{rel}:{kind}:{call_norm}"
+
+
 def parse_fail_on(spec: str | None) -> set[str]:
     """解析 `--fail-on` 分级列表。"""
     if not spec:
@@ -605,7 +617,7 @@ def cmd_static(args: argparse.Namespace) -> int:
                   f"UnicodeEncodeError 响亮失败, 非静默损坏; 详见 --json) ──")
 
     # ---- baseline 门禁判定 (只减不增) ----------------------------------------
-    fingerprints = {f"{f['rel']}:{f['line']}:{f['kind']}" for f in findings}
+    fingerprints = {fingerprint(f["rel"], f["kind"], f["call"]) for f in findings}
     if args.write_baseline:
         write_baseline(
             args.write_baseline,
@@ -619,7 +631,8 @@ def cmd_static(args: argparse.Namespace) -> int:
         return 0
 
     gated = [f for f in findings if f["severity"] in fail_on]
-    new_ones = [f for f in gated if f"{f['rel']}:{f['line']}:{f['kind']}" not in baseline]
+    new_ones = [f for f in gated
+                if fingerprint(f["rel"], f["kind"], f["call"]) not in baseline]
     result["baseline_size"] = len(baseline)
     result["gated_findings"] = len(gated)
     result["new_findings"] = [

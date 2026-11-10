@@ -95,7 +95,9 @@ class SecretWriteFailed(OSError):
     """A credential write that failed part-way through the backend's own write path — a plain
     I/O failure, a validation, even an error the backend typed as one of the store's own
     refusals — re-made fresh (:func:`fresh_write_error`) with only the details the port itself
-    authored: the failing exception's class name and errno number, never its own text, never
+    authored: a fixed failure category and, for an OSError, its errno number — never the
+    failing code's own text (its message, strerror, filename, even its class name — the
+    failing code writes all of those, and one named after the value would publish it), never
     the value or record the caller asked to store, and no frame that held it survives on this
     error's chain."""
 
@@ -103,15 +105,21 @@ class SecretWriteFailed(OSError):
 def fresh_write_error(exc: BaseException) -> BaseException:
     """The fresh, value-free error a failed credential write raises in place of *exc*.
 
-    Only what this port itself wrote rides along: a message of the port's plus the failing
-    exception's class name and, for an OSError, its errno number with the ``errno`` module's
-    name for it. Never *exc*'s own message, ``strerror`` or ``filename``: the code that failed —
-    a backend, a writer, a plugin — wrote those, and nothing vouches them free of the write's
-    value; an exception typed as one of the store's own refusals is no different, since the
-    port did not raise it. The errno slot is the failing code's too — Python allows any object
-    there, so only an errno that is exactly a built-in ``int`` names the failure (a number
-    nothing the failing code controlled), and every other errno is omitted entirely, leaving
-    the class name alone. Every failure of the write becomes a :class:`SecretWriteFailed`.
+    Only what this port itself wrote rides along: a message of the port's plus a fixed
+    failure category — ``"os-error"`` for an OSError, ``"encode-error"`` for the TypeError
+    or ValueError of a failed serialization, ``"write-error"`` for anything else — and, for
+    an OSError, its errno number with the ``errno`` module's name for it. Never *exc*'s own
+    text: not its message, ``strerror`` or ``filename``, and not its class name either — the
+    code that failed — a backend, a writer, a plugin — chose that, and nothing vouches it
+    free of the write's value: a writer that raises an exception class named after the value
+    it saw puts the value in the error the caller reads as surely as one that names it in a
+    message. The fixed categories are the port's own words, so no text the failing code
+    controlled reaches the caller; an exception typed as one of the store's own refusals is
+    no different, since the port did not raise it. The errno slot is the failing code's too
+    — Python allows any object there, so only an errno that is exactly a built-in ``int``
+    names the failure (a number nothing the failing code controlled), and every other errno
+    is omitted entirely, leaving the category alone. Every failure of the write becomes a
+    :class:`SecretWriteFailed`.
 
     Raise what this returns OUTSIDE the except block, after ``del``-ing the value (or record)
     binding of the write's own frame, with both chained-exception slots cleared first: the
@@ -121,14 +129,20 @@ def fresh_write_error(exc: BaseException) -> BaseException:
     own active exception to any raise made inside its handler, which the cleared cause
     suppresses from display; that chain is the caller's, and the port never touches it.)
     """
-    detail = type(exc).__name__
-    # The errno slot is writer-controlled: Python leaves it whatever the failing code passed,
-    # string included, so only an errno that is exactly a built-in int names the failure with
-    # nothing the failing code wrote.
-    if isinstance(exc, OSError) and type(exc.errno) is int:
-        detail += f", errno {exc.errno}"
-        if exc.errno in errno.errorcode:
-            detail += f" ({errno.errorcode[exc.errno]})"
+    # The category is a fixed label of the port's, never a name the failing code chose.
+    if isinstance(exc, OSError):
+        detail = "os-error"
+        # The errno slot is writer-controlled: Python leaves it whatever the failing code
+        # passed, string included, so only an errno that is exactly a built-in int names the
+        # failure with nothing the failing code wrote.
+        if type(exc.errno) is int:
+            detail += f", errno {exc.errno}"
+            if exc.errno in errno.errorcode:
+                detail += f" ({errno.errorcode[exc.errno]})"
+    elif isinstance(exc, (TypeError, ValueError)):
+        detail = "encode-error"
+    else:
+        detail = "write-error"
     return SecretWriteFailed(f"the credential write failed: {detail}")
 
 

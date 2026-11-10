@@ -22,7 +22,7 @@ Hermes 有三种方式与 Buzz 集成。根据 Hermes 运行的位置和你的�
 
 Buzz Desktop 将 Hermes 作为预设运行时提供。按常规方式安装 Hermes 后，打开 **Settings → Runtimes**，Hermes 会自动出现——发现机制在登录 shell 的 PATH 上解析 `hermes-acp` 启动器，安装器会将其写入 `~/.local/bin`（较旧安装由 `hermes update` 自动补齐）。
 
-完整设置、故障排查和安全注意事项（Buzz 会自动批准工具权限——请保持 agent 为 owner-only）：**[ACP 宿主集成 → Buzz Desktop](/user-guide/features/acp#buzz-desktop)**
+完整设置、故障排查和安全注意事项（Buzz 会自动批准工具权限——请保持 agent 为 owner-only）：**[ACP 宿主集成 → Buzz Desktop](../user-guide/features/acp.md#buzz-desktop)**
 
 ## ② 中继桥接（buzz-acp + ACP）
 
@@ -32,7 +32,7 @@ Buzz Desktop 将 Hermes 作为预设运行时提供。按常规方式安装 Herm
 Buzz relay <-- WebSocket --> buzz-acp <-- ACP over stdio --> Hermes Agent
 ```
 
-被启动的 Hermes 使用该主机上相同的配置、凭据、记忆和技能。密钥铸造、频道发现、所有者遥测（`BUZZ_ACP_RELAY_OBSERVER`）和无头权限指南：**[ACP 宿主集成 → Buzz 频道（中继桥接）](/user-guide/features/acp)**
+被启动的 Hermes 使用该主机上相同的配置、凭据、记忆和技能。密钥铸造、频道发现、所有者遥测（`BUZZ_ACP_RELAY_OBSERVER`）和无头权限指南：**[ACP 宿主集成 → Buzz 频道（中继桥接）](../user-guide/features/acp.md)**
 
 ## ③ 原生网关平台（完整 Hermes 推荐）
 
@@ -42,7 +42,7 @@ Buzz relay <-- WebSocket --> buzz-acp <-- ACP over stdio --> Hermes Agent
 hermes gateway setup   # 选择 Buzz
 ```
 
-完整配置参考（环境变量、config.yaml、传输模式、访问控制）：**[消息平台 → Buzz](/user-guide/messaging/buzz)**
+完整配置参考（环境变量、config.yaml、传输模式、访问控制）：**[消息平台 → Buzz](../user-guide/messaging/buzz.md)**
 
 ## 该选哪一个？
 

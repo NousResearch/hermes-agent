@@ -143,6 +143,30 @@ class TestResolveAzureFoundryRuntimeEntra:
         assert runtime["auth_mode"] == "api_key"
         assert runtime["source"] == "explicit"
 
+    def test_forwarded_entra_callable_preserves_identity_and_metadata(self, fake_azure_identity):
+        """A live provider re-resolution must not stringify its token source or
+        relabel Entra authentication as a static-key override."""
+        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+
+        token_provider = lambda: "forwarded-jwt"
+        runtime = _resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg={
+                "provider": "azure-foundry",
+                "base_url": "https://r.services.ai.azure.com/openai/v1",
+                "api_mode": "chat_completions",
+                "auth_mode": "entra_id",
+                "entra": {"scope": "https://ai.azure.com/.default"},
+                "default": "gpt-4o",
+            },
+            explicit_api_key=token_provider,
+        )
+
+        assert runtime["api_key"] is token_provider
+        assert runtime["auth_mode"] == "entra_id"
+        assert runtime["source"] == "entra_id"
+        assert runtime["entra"] == {"scope": "https://ai.azure.com/.default"}
+
 
 # ---------------------------------------------------------------------------
 # _resolve_azure_foundry_runtime: legacy api_key branch (regression)
@@ -200,9 +224,9 @@ class TestResolveAzureFoundryRuntimeApiKey:
 
 
 class TestAzureFoundryAuthStatus:
-    def test_entra_status_does_not_mint_token(self, monkeypatch, tmp_path):
-        """Structural check — must return logged_in=True based on
-        importable + config, never call get_bearer_token_provider."""
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_entra_status_does_not_mint_token(self, monkeypatch, installed):
+        """Status checks availability and gives an explicit PM command for missing dependencies."""
         from hermes_cli import auth as _auth
         # Force load_config to return our entra config.
         monkeypatch.setattr(
@@ -215,18 +239,21 @@ class TestAzureFoundryAuthStatus:
                 },
             },
         )
-        # Patch has_azure_identity_installed to True; do NOT patch the
-        # token provider — if the code path tried to mint, the SDK
-        # missing would raise.
+        # Do not patch the token provider: status must not request credentials.
         monkeypatch.setattr(
             "agent.azure_identity_adapter.has_azure_identity_installed",
-            lambda: True,
+            lambda: installed,
         )
         info = _auth._get_azure_foundry_auth_status()
-        assert info["logged_in"] is True
+        assert info["logged_in"] is installed
         assert info["auth_mode"] == "entra_id"
-        assert info["azure_identity_installed"] is True
+        assert info["azure_identity_installed"] is installed
         assert info["scope"].endswith("/.default")
+        if not installed:
+            from pm.extras import install_hint
+
+            assert install_hint("azure-identity") in info["hint"]
+            assert "restart" in info["hint"].lower()
 
 
     def test_api_key_status_false_when_missing(self, monkeypatch):

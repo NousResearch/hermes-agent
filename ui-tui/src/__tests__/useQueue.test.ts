@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { removeAtInPlace } from '../hooks/useQueue.js'
+import { prependQueueItem, queueItem, removeAtInPlace, takeQueueItem } from '../hooks/useQueue.js'
 
 describe('removeAtInPlace', () => {
   it('removes the item at the given index in place', () => {
@@ -17,12 +17,32 @@ describe('removeAtInPlace', () => {
     removeAtInPlace(arr, 5)
     expect(arr).toEqual(['a', 'b'])
   })
+})
 
-  it('returns the same reference (mutates in place)', () => {
-    const arr = ['x']
-    const same = removeAtInPlace(arr, 0)
+describe('queue items', () => {
+  it('keeps execution text and collapsed display together through edit and requeue', () => {
+    const display = '[[ first.. [3 lines] .. last ]]'
+    const text = 'first\nmiddle\nlast'
+    const queue = [queueItem(text, display), queueItem('next')]
 
-    expect(same).toBe(arr)
-    expect(arr).toEqual([])
+    const edited = takeQueueItem(queue, 0, `before ${display} after`)
+
+    expect(edited).toEqual({
+      display: `before ${display} after`,
+      text: `before ${text} after`
+    })
+    expect(queue).toEqual([queueItem('next')])
+
+    prependQueueItem(queue, edited!)
+    expect(queue[0]).toEqual({
+      display: `before ${display} after`,
+      text: `before ${text} after`
+    })
+  })
+
+  it('treats a rewritten collapsed label as literal edited text', () => {
+    const queue = [queueItem('full payload', '[[ collapsed ]]')]
+
+    expect(takeQueueItem(queue, 0, 'replacement')).toEqual(queueItem('replacement'))
   })
 })

@@ -8,7 +8,7 @@ in it, and do the followup work afterwards.
 | Version | What | Status |
 |---|---|---|
 | v1 | Transcribe-only: Playwright joins Meet, scrapes captions to transcript file | ✓ ships by default |
-| v2 | Realtime duplex audio: bot speaks in-call via OpenAI Realtime + BlackHole/PulseAudio null-sink | ✓ opt in with `mode='realtime'` |
+| v2 | Realtime speech out: bot speaks in-call via OpenAI Realtime + BlackHole/PulseAudio null-sink; input stays caption-derived | ✓ opt in with `mode='realtime'` |
 | v3 | Remote node host: run the bot on a different machine than the gateway | ✓ opt in with `node='<name>'` |
 
 ## Architecture
@@ -96,13 +96,19 @@ On macOS, hermes will **not** switch your system audio input automatically — t
 user has to do it. This is deliberate: switching default input on a whim would
 be a surprising side effect.
 
+Realtime mode is **speak-only**: `speaker.pcm` is streamed into the virtual mic by a
+stdin-fed `paplay` / `ffmpeg` pump that follows the file as Realtime appends audio.
+Incoming speech is still the caption scrape (v1) — meeting audio is never sent to the
+Realtime session, so there is no barge-in on raw audio and no STT billing. After
+admission the bot unmutes itself if Meet seated it muted; `status.json` / `hermes meet
+status` report the result as `micState` (`unmuted`, `unmuted_clicked`, `unknown`).
+
 ## Remote node host
 
 On the node machine (e.g. user's Mac with a signed-in Chrome):
 ```bash
-pip install playwright websockets
-python -m playwright install chromium
 hermes plugins enable google_meet
+hermes meet install
 hermes meet node run --display-name my-mac --host 0.0.0.0 --port 18789
 # prints the bearer token on first run; copy it
 ```
@@ -129,3 +135,4 @@ hermes meet node ping my-mac
 - **Multi-tenant node sharing** — a node serves one gateway at a time.
 - **Windows** — audio bridging isn't tested; `register()` no-ops on Windows.
 - **System audio input switching on macOS** — user responsibility, not the bot's.
+- **Meeting-audio ingestion into Realtime** — input is caption-derived; true bidirectional audio is a separate feature.

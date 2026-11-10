@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# ============================================================================
+# venv-style activation of the Hermes dev environment for an interactive shell.
+#
+#   source ./activate       (bash / zsh, repo root)
+#   source ./activate.fish  (fish)
+#   .\activate.ps1          (PowerShell)
+#
+# Applies the composed pm env (PATH + tool vars) to the CURRENT shell, with
+# save/restore: `deactivate` undoes exactly what activation changed.
+#
+# `hermes` becomes a shell function for this checkout. It runs only while the
+# shell is inside this worktree and refuses outside it, so a sibling worktree
+# keeps its own command. A prompt prefix names the worktree.
+#
+# Scripts and other processes do not source this: they run under
+# `scripts/run-in-hermes-env`. Both build on scripts/_activation.sh.
+#
+# Sync through setup before selecting the environment. PM owns freshness;
+# activation does not maintain a second dependency stamp. It trusts the
+# recorded tool digest instead of re-hashing every entry. `hermes pm
+# install` and `hermes update` keep that check.
+# ============================================================================
+_HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Options: `--test-extras a,b` selects the test environment's runtime extras
+# (default: [all]); `--` ends options.
+# A bare `source ./activate` inherits the caller's positional parameters.
+# Ignore unrelated words so scripts with their own arguments can source it.
+_hermes_test_env="--test-environment"
+_hermes_expect_extras=""
+for _hermes_arg in "$@"; do
+    if [ -n "$_hermes_expect_extras" ]; then
+        _hermes_test_env="--test-environment=$_hermes_arg"
+        _hermes_expect_extras=""
+        continue
+    fi
+    case "$_hermes_arg" in
+        --) break ;;
+        --test-extras) _hermes_expect_extras=1 ;;
+        --test-extras=*) _hermes_test_env="--test-environment=${_hermes_arg#--test-extras=}" ;;
+        *) : ;;
+    esac
+done
+if [ -n "$_hermes_expect_extras" ]; then
+    printf '%s\n' 'activate: --test-extras needs a comma-separated list' >&2
+    unset _hermes_arg _hermes_test_env _hermes_expect_extras
+    return 2 2>/dev/null || exit 2
+fi
+unset _hermes_arg _hermes_expect_extras
+
+# shellcheck source=scripts/_activation.sh
+. "$_HERMES_REPO/scripts/_activation.sh"
+
+if ! hermes_sync "$_HERMES_REPO" "$_hermes_test_env"; then
+    printf '%s\n' 'activate: setup failed; shell environment unchanged' >&2
+    unset _hermes_test_env
+    return 1 2>/dev/null || exit 1
+fi
+unset _hermes_test_env
+
+# Guard against double-sourcing: venv activate precedent (re-activating is a
+# no-op re-save; we keep it idempotent by deactivating first). Key on the
+# function, not the sentinel: child shells inherit __HERMES_ACTIVATED from an
+# activated parent but never the function, and there is nothing to undo there.
+if [ "$(type -t deactivate 2>/dev/null)" = "function" ]; then
+    deactivate
+fi
+
+_hermes_script="$(hermes_compose_env "$_HERMES_REPO" sh)" || {
+    echo "activate: could not compose the environment (see above)" >&2
+    unset _hermes_script
+    return 1 2>/dev/null || exit 1
+}
+_hermes_keys="$(printf '%s\n' "$_hermes_script" | sed -n 's/^export \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | tr '\n' ' ')"
+
+# --- snapshot what we are about to change (deactivate restores this) ---
+# __HERMES_ACTIVATED is part of the composed env below (it carries the
+# installed-state path this environment was built from), so it is snapshotted
+# and exported with every other key — no separate assignment here.
+__HERMES_SAVED_PATH="$PATH"
+for _hermes_k in $_hermes_keys; do
+    eval "__HERMES_SAVED_$_hermes_k=\"\${$_hermes_k+set}\""
+    eval "__HERMES_PRIOR_$_hermes_k=\${$_hermes_k-__HERMES_UNSET__}"
+done
+hermes_apply_env "$_hermes_script"
+
+# This checkout, not whichever `hermes` PATH finds. A function beats PATH, an
+# alias, and a hashed command, including the MSIX execution alias.
+__HERMES_WORKTREE="$_HERMES_REPO"
+# The branch names the worktree. A checkout cannot share a branch with another.
+__HERMES_WORKTREE_NAME="$(git -C "$_HERMES_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || :)"
+if [ -z "$__HERMES_WORKTREE_NAME" ] || [ "$__HERMES_WORKTREE_NAME" = HEAD ]; then
+    __HERMES_WORKTREE_NAME="$(basename "$_HERMES_REPO")"
+fi
+__HERMES_SAVED_PS1="${PS1-__HERMES_UNSET__}"
+__HERMES_SAVED_PROMPT_COMMAND="${PROMPT_COMMAND-__HERMES_UNSET__}"
+
+_hermes_worktree_here() {
+    _hermes_top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [ "$(cd "$_hermes_top" && pwd -P)" = "$(cd "$__HERMES_WORKTREE" && pwd -P)" ]
+}
+
+hermes() {
+    _hermes_worktree_here || {
+        printf '%s\n' "hermes: $(pwd) is outside $__HERMES_WORKTREE; refusing (the installed command is hidden while this checkout is active)" >&2
+        return 1
+    }
+    (
+        cd "$__HERMES_WORKTREE" || exit 1
+        if [ -n "${PYTHON-}" ]; then
+            exec "$PYTHON" hermes "$@"
+        elif [ -x .venv/Scripts/python.exe ]; then
+            exec .venv/Scripts/python.exe hermes "$@"
+        elif [ -x .venv/bin/python ]; then
+            exec .venv/bin/python hermes "$@"
+        elif [ -x venv/Scripts/python.exe ]; then
+            exec venv/Scripts/python.exe hermes "$@"
+        elif [ -x venv/bin/python ]; then
+            exec venv/bin/python hermes "$@"
+        else
+            exec python hermes "$@"
+        fi
+    )
+}
+
+_hermes_prompt() {
+    if [ "$__HERMES_SAVED_PS1" = "__HERMES_UNSET__" ]; then
+        _hermes_base_ps1=""
+    else
+        _hermes_base_ps1="$__HERMES_SAVED_PS1"
+    fi
+    if _hermes_worktree_here; then
+        PS1="($__HERMES_WORKTREE_NAME) $_hermes_base_ps1"
+    else
+        PS1="$_hermes_base_ps1"
+    fi
+}
+
+if [ -n "${PROMPT_COMMAND-}" ]; then
+    PROMPT_COMMAND="_hermes_prompt; ${PROMPT_COMMAND}"
+else
+    PROMPT_COMMAND=_hermes_prompt
+fi
+_hermes_prompt
+
+deactivate() {
+    export PATH="$__HERMES_SAVED_PATH"
+    for _hermes_k in $__HERMES_KEY_LIST; do
+        eval "_hermes_was=\"\$__HERMES_SAVED_$_hermes_k\""
+        eval "_hermes_old=\"\$__HERMES_PRIOR_$_hermes_k\""
+        if [ "$_hermes_was" != "set" ]; then
+            unset "$_hermes_k"
+        else
+            export "$_hermes_k=$_hermes_old"
+        fi
+        unset "__HERMES_SAVED_$_hermes_k" "__HERMES_PRIOR_$_hermes_k"
+    done
+    if [ "$__HERMES_SAVED_PS1" = "__HERMES_UNSET__" ]; then
+        unset PS1
+    else
+        PS1="$__HERMES_SAVED_PS1"
+    fi
+    if [ "$__HERMES_SAVED_PROMPT_COMMAND" = "__HERMES_UNSET__" ]; then
+        unset PROMPT_COMMAND
+    else
+        PROMPT_COMMAND="$__HERMES_SAVED_PROMPT_COMMAND"
+    fi
+    unset __HERMES_SAVED_PATH __HERMES_KEY_LIST __HERMES_ACTIVATED \
+          __HERMES_WORKTREE __HERMES_WORKTREE_NAME \
+          __HERMES_SAVED_PS1 __HERMES_SAVED_PROMPT_COMMAND
+    unset -f deactivate hermes _hermes_worktree_here _hermes_prompt
+    unset _hermes_k _hermes_was _hermes_old _hermes_top
+}
+
+# remember the key list for deactivate (kept out of the loop vars above)
+__HERMES_KEY_LIST="$_hermes_keys"
+
+# The composition library is not part of the user's shell.
+unset -f hermes_sync hermes_bootstrap_python hermes_compose_env hermes_apply_env \
+         hermes_activation_current hermes_ensure_env
+unset _HERMES_REPO _hermes_script _hermes_keys _hermes_k _hermes_top

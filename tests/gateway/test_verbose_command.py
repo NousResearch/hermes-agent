@@ -3,11 +3,11 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -37,7 +37,6 @@ def _make_runner():
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []
     runner._session_db = None
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     return runner
 
 

@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
-
 
 def _metric(snapshot, name):
     return next(metric for metric in snapshot.metrics if metric.name == name)
-
-
-
-
-
 
 def test_execution_projection_is_opaque_bounded_and_content_free():
     from agent.monitoring.cron_health import project_execution_event
@@ -42,21 +34,36 @@ def test_execution_projection_is_opaque_bounded_and_content_free():
     assert "alice@example.com" not in str(event)
     assert "top-secret-token" not in str(event)
 
-
-
-
-
+def test_cron_store_writability_is_exported(monkeypatch, tmp_path):
+    """A degraded store exports writable=0 with its skipped runs, a cleared one writable=1."""
+    import errno
+    from agent.monitoring.cron_health import build_cron_health_snapshot
+    from cron import store_health
+    monkeypatch.setattr(store_health, "_degraded", {})
+    monkeypatch.setattr(store_health, "_listener", None)
+    monkeypatch.setattr(store_health, "_recovered", {})
+    from cron import scheduler_ownership
+    monkeypatch.setattr(scheduler_ownership, "_ticked_homes", {})
+    store_health.note_unwritable(OSError(errno.ENOSPC, "full"), "x", "advance",
+                                 [{"id": "job", "next_run_at": "2026-06-22T12:00:00+00:00"}])
+    degraded = build_cron_health_snapshot()
+    assert (_metric(degraded, "hermes.cron.store.writable").value,
+            _metric(degraded, "hermes.cron.store.skipped_runs").value) == (0, 1)
+    store_health._degraded.clear()
+    assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 1
+    # A secondary profile's store (not the exporter's scope) must not read as healthy.
+    from cron.scheduler_ownership import register_ticked_homes
+    register_ticked_homes([tmp_path / "other"])
+    store_health.note_unwritable(OSError(errno.ENOSPC, "full"), "x", "scan", cron_dir=tmp_path / "other" / "cron")
+    assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 0
+    register_ticked_homes([])  # the profile left this gateway: its store no longer counts
+    assert _metric(build_cron_health_snapshot(), "hermes.cron.store.writable").value == 1
 
 @pytest.mark.parametrize("message", ["oauth refresh failed", "tokenizer crashed", "HTTP 4015"])
 def test_error_classification_avoids_auth_substring_false_positives(message):
     from agent.monitoring.cron_health import classify_cron_error
 
     assert classify_cron_error(message) == "unknown"
-
-
-
-
-
 
 def test_terminal_execution_emission_flushes_and_failures_are_fail_open(monkeypatch):
     from agent.monitoring import cron_health, emitter
@@ -79,20 +86,14 @@ def test_terminal_execution_emission_flushes_and_failures_are_fail_open(monkeypa
 
     assert calls == [("emit", "completed"), ("flush", 1.0)]
 
-
-
-
-
-
 def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     """Every gauge emitted in the runtime snapshot must also be registered in the
     observable-gauge metric_names list, or the OTLP exporter never observes it.
 
     This asserts the vocabulary-registration invariant documented in
-    docs/observability/monitoring.md: an emitted-but-unregistered gauge is
+    website/docs/developer-guide/gateway-monitoring.md: an emitted-but-unregistered gauge is
     silently dropped. Regression guard for background_work / cron additions.
     """
-    import inspect
     from agent.monitoring import gateway_health_export
 
     # Build a representative snapshot (gateway + cron + background_work) without
@@ -115,26 +116,14 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
         _M("hermes.cron.scheduler.catch_up_occurrences"),
         _M("hermes.cron.jobs.enabled"), _M("hermes.cron.jobs.running"),
         _M("hermes.cron.jobs.overdue"),
+        _M("hermes.cron.store.writable"), _M("hermes.cron.store.skipped_runs"),
     ]})()
     monkeypatch.setattr(gateway_health_export, "_read_gateway_snapshot", lambda config: gateway_snapshot)
     monkeypatch.setattr(gateway_health_export, "_read_cron_snapshot", lambda: cron_snapshot)
 
     snapshot_names = {m.name for m in gateway_health_export._read_runtime_snapshot({}).metrics}
 
-    # Extract the registered metric_names list literal from _start_metric_provider.
-    src = inspect.getsource(gateway_health_export._start_metric_provider)
-    registered = {n for n in snapshot_names if f'"{n}"' in src}
+    registered = set(gateway_health_export._OBSERVABLE_METRIC_NAMES)
 
     missing = snapshot_names - registered
     assert not missing, f"gauges emitted but NOT registered in metric_names (will be silently dropped): {sorted(missing)}"
-
-
-def test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush():
-    from pathlib import Path
-
-    text = Path("docs/observability/monitoring.md").read_text(encoding="utf-8")
-
-    assert "Hermes Agent-owned Relay transport health" in text
-    assert "authoritative shared connector/platform state" in text
-    assert "up to one second" in text
-    assert "terminal" in text

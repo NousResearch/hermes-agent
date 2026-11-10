@@ -55,6 +55,32 @@ describe('plugin locale registry', () => {
     expect(translatePlugin('merge', 'en', 'a', [])).toBe('a')
   })
 
+  it('locale listeners ignore no-op changes and unsubscribe both explicitly and on unload', () => {
+    const disposers: Array<() => void> = []
+
+    const i18n = createPluginI18n('listener-plugin', dispose => {
+      disposers.push(dispose)
+
+      return dispose
+    })
+
+    i18n.register({ en: { greet: 'hello' }, ja: { greet: 'こんにちは' } })
+    const calls: string[] = []
+    const unsubscribe = i18n.onLocaleChange(() => calls.push(i18n.t('greet')))
+    expect(calls).toEqual([])
+    setRuntimeI18nLocale('en')
+    expect(calls).toEqual([])
+    setRuntimeI18nLocale('ja')
+    expect(calls).toEqual(['こんにちは'])
+    unsubscribe()
+    setRuntimeI18nLocale('en')
+    expect(calls).toEqual(['こんにちは'])
+    i18n.onLocaleChange(() => calls.push(i18n.t('greet')))
+    disposers.forEach(dispose => dispose())
+    setRuntimeI18nLocale('ja')
+    expect(calls).toEqual(['こんにちは'])
+  })
+
   it('ctx.i18n.t reads the app runtime locale', () => {
     const i18n = createPluginI18n('runtime-plugin', noopTrack)
     i18n.register({ en: { greet: 'hello' }, ja: { greet: 'こんにちは' } })

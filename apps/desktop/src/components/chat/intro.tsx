@@ -1,8 +1,10 @@
-import { type CSSProperties, useState } from 'react'
+import { useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
+import { Wordmark } from './wordmark'
 
 type IntroCopy = {
   headline: string
@@ -158,7 +160,15 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const { t } = useI18n()
+  const rotationSeed = mountSeed + (seed ?? 0)
+  const copy = resolveCopy(personality, rotationSeed)
+  const key = normalizeKey(personality)
+
+  const bodies =
+    t.intro.stock[key] ?? (NEUTRAL_PERSONALITIES.has(key) ? t.intro.stock.none : t.intro.custom(personality || ''))
+
+  const body = bodies?.[Math.abs(rotationSeed) % bodies.length] ?? copy.body
 
   return (
     <div
@@ -166,18 +176,9 @@ export function Intro({ personality, seed }: IntroProps) {
       data-slot="aui_intro"
     >
       <div className="w-full min-w-0">
-        <p
-          aria-label={WORDMARK}
-          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
-          style={{ '--fit-min': '2.75rem' } as CSSProperties}
-        >
-          <span>
-            <span>{WORDMARK}</span>
-          </span>
-          <span aria-hidden="true">{WORDMARK}</span>
-        </p>
+        <Wordmark className="mb-1" text={WORDMARK} />
 
-        <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>
+        <p className="m-0 text-center leading-normal tracking-tight">{body}</p>
       </div>
     </div>
   )

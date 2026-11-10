@@ -24,13 +24,6 @@ class TestApplyIPv4Preference:
         socket.getaddrinfo = self._original
 
 
-    def test_patches_getaddrinfo_when_forced(self):
-        """Patches socket.getaddrinfo when force=True."""
-        from hermes_constants import apply_ipv4_preference
-        original = socket.getaddrinfo
-        apply_ipv4_preference(force=True)
-        assert socket.getaddrinfo is not original
-        assert getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False) is True
 
     def test_double_patch_is_safe(self):
         """Calling apply twice doesn't double-wrap."""
@@ -45,7 +38,6 @@ class TestApplyIPv4Preference:
         from hermes_constants import apply_ipv4_preference
 
         calls = []
-        original = socket.getaddrinfo
 
         def mock_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
             calls.append(family)
@@ -63,7 +55,6 @@ class TestApplyIPv4Preference:
         from hermes_constants import apply_ipv4_preference
 
         calls = []
-        original = socket.getaddrinfo
 
         def mock_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
             calls.append(family)

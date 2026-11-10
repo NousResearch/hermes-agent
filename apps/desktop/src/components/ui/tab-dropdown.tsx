@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { Fragment } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
@@ -10,7 +11,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { CountSkeleton } from '@/components/ui/skeleton'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
-import { compactNumber } from '@/lib/format'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -114,7 +114,14 @@ export function ResponsiveTabs({
     <>
       <div className={cn('hidden min-w-0 flex-wrap items-center gap-x-2 gap-y-1 md:flex', wideClassName)}>
         {tabs.map(tab => (
-          <TextTab active={tab.id === value} key={tab.id} onClick={() => onChange(tab.id)}>
+          <TextTab
+            active={tab.id === value}
+            // Names each tab by its own id, so a tour can walk them one by one
+            // (`[data-tour="tab-images"]`) on every page that uses this row.
+            data-tour={`tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => onChange(tab.id)}
+          >
             {tab.label}
             {tab.meta !== undefined && <TextTabMeta>{tabMetaContent(tab.meta)}</TextTabMeta>}
           </TextTab>

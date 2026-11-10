@@ -1,0 +1,537 @@
+"""Discover and reconcile stable releases in version order.
+
+The planner is pure. Production discovery reads only remote annotated tags,
+GitHub releases/runs, and the protected R2 head; execution flips exact release
+IDs before advancing each eligible head oldest-first.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone, UTC
+from pathlib import Path
+
+from scripts.releases import lanes as lane_set
+from scripts.releases.progress import error as log_error, group, log, logged_run, notice
+from scripts.releases.versioning import (
+    marker_ref, outstanding_attempts, parse_attempt_ref, parse_marker_ref,
+    tag_record, version_from_tag,
+)
+
+MAX_ATTEMPTS = 3
+CLAIM_GRACE = timedelta(hours=1)
+
+
+def _key(version: str) -> tuple[int, int, int]:
+    major, minor, patch = version.split(".")
+    return int(major), int(minor), int(patch)
+
+
+def plan(claims: list[dict], *, head: str | None,
+         requested_version: str | None = None) -> list[dict]:
+    """Return each eligible draft flip immediately followed by its head advance."""
+    ordered = sorted(claims, key=lambda claim: _key(claim["version"]))
+    head_key = _key(head) if head is not None else None
+    steps: list[dict] = []
+    flush_green_chain = False
+
+    for index, claim in enumerate(ordered):
+        version = claim["version"]
+        version_key = _key(version)
+        state = claim["state"]
+
+        if head_key is not None and version_key <= head_key:
+            if state in {"published", "burned"}:
+                log(f"  plan {version}: {state}, at or below head {head} — nothing to do")
+                continue
+            raise ValueError(f"refusing to move the head backwards from {head}")
+
+        if state == "published":
+            log(f"  plan {version}: published, above head {head} — advance")
+            steps.append({"advance": version})
+            continue
+        if state == "burned":
+            log(f"  plan {version}: burned — skipped")
+            continue
+        if state == "running":
+            log(f"  plan {version}: still running — stop here; nothing newer can move past it")
+            break
+        if state != "green":
+            raise ValueError(f"unknown claim state {state!r}")
+
+        has_later_green_claim = False
+        for later in ordered[index + 1:]:
+            if later["state"] == "running":
+                break
+            if later["state"] == "green":
+                has_later_green_claim = True
+                break
+        eligible = (
+            claim.get("autopublish", False)
+            or version == requested_version
+            or has_later_green_claim
+            or flush_green_chain
+        )
+        if not eligible:
+            log(f"  plan {version}: green but held — not autopublish, not requested "
+                f"(requested={requested_version!r}), and no later green claim needs it; stop")
+            break
+        why = [name for name, hit in (
+            ("autopublish", claim.get("autopublish", False)),
+            ("requested", version == requested_version),
+            ("a later green claim needs it", has_later_green_claim),
+            ("flushing a green chain", flush_green_chain),
+        ) if hit]
+        log(f"  plan {version}: green — publish then advance ({', '.join(why)})")
+        steps.extend(({"flip": version}, {"advance": version}))
+        flush_green_chain = flush_green_chain or has_later_green_claim
+
+    return steps
+
+
+def output(argv: list[str]) -> str:
+    return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
+
+
+def _pages(argv: list[str], run=output) -> list:
+    pages = json.loads(run(["gh", "api", "--paginate", "--slurp", *argv]))
+    if not isinstance(pages, list):
+        raise ValueError("GitHub pagination returned an invalid response")
+    return pages
+
+
+def _release_rows(repository: str, run=output) -> list[dict]:
+    rows = []
+    for page in _pages([f"repos/{repository}/releases?per_page=100"], run):
+        if not isinstance(page, list):
+            raise ValueError("GitHub releases response is invalid")
+        rows.extend(page)
+    return rows
+
+
+def _workflow_runs(repository: str, run=output) -> list[dict]:
+    rows = []
+    endpoint = f"repos/{repository}/actions/workflows/stable-release.yml/runs?event=workflow_dispatch&per_page=100"
+    for page in _pages([endpoint], run):
+        if not isinstance(page, dict) or not isinstance(page.get("workflow_runs"), list):
+            raise ValueError("GitHub workflow runs response is invalid")
+        rows.extend(page["workflow_runs"])
+    return rows
+
+
+def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
+                  now: datetime | None = None, has_draft: bool = False) -> tuple[str, dict | None]:
+    """Keep failed claims live until two failed-job retries are exhausted.
+
+    Success with a draft on the attempt ref is green: the final tag moves to
+    publish. A missing draft after success is an error, because the tool is
+    the only thing that deletes drafts; abandonment is the marker ref.
+    """
+    if not runs:
+        if claimed_at is None:
+            raise ValueError("A claim without a workflow needs its immutable claim time")
+        now = now or datetime.now(UTC)
+        return ("running", None) if now < claimed_at + CLAIM_GRACE else ("burned", None)
+    run_ids = {row.get("id") for row in runs}
+    if len(run_ids) != 1 or None in run_ids:
+        raise ValueError("Stable claim owns multiple workflow runs")
+    latest = max(runs, key=lambda row: row.get("run_attempt", 0))
+    attempt = latest.get("run_attempt")
+    if not isinstance(attempt, int) or attempt < 1:
+        raise ValueError("Stable workflow run attempt is invalid")
+    if latest.get("status") != "completed":
+        return "running", None
+    if latest.get("conclusion") == "success":
+        if not has_draft:
+            raise ValueError("Stable workflow succeeded without a draft release")
+        return "green", None
+    if attempt >= MAX_ATTEMPTS:
+        return "burned", None
+    return "running", {"run_id": latest["id"], "attempt": attempt}
+
+
+def retry_due(records: list[dict]) -> list[dict]:
+    """Return the oldest unresolved claim's retry, if it is waiting on one.
+
+    No backoff: the failure event's own reconcile pass reruns the failed jobs,
+    because nothing else wakes the reconciler to apply a delayed retry.
+    """
+    for record in records:
+        if record.get("state") != "running":
+            continue
+        retry = record.get("retry")
+        if retry is None:
+            return []
+        return [{
+                "version": record["version"], "run_id": retry["run_id"],
+                "attempt": retry["attempt"] + 1,
+        }]
+    return []
+
+
+def classify_final_release(tag: str, claim_tag: str, release: dict | None) -> tuple[str, bool]:
+    """Derive green/published/abandoned state from the exact GitHub release."""
+    if release is None:
+        return "burned", False
+    if release.get("prerelease") is not False:
+        raise ValueError(f"{tag} has no valid GitHub release")
+    needs_retarget = release.get("tag_name") == claim_tag
+    if release.get("tag_name") not in {claim_tag, tag}:
+        raise ValueError(f"{tag} release identity changed")
+    if release.get("draft") is True:
+        return "green", needs_retarget
+    if release.get("draft") is False and release.get("published_at"):
+        if needs_retarget:
+            raise ValueError(f"{claim_tag} was published before final retargeting")
+        return "published", False
+    raise ValueError(f"{tag} release state is invalid")
+
+
+def _remote_tags(run=output) -> dict[str, dict[str, str]]:
+    """Every remote receipt tag, attempt ref, and abandon marker ref.
+
+    Three listings, because a fetch or ls-remote glob is filtered here by the
+    ref parsers, not widened.
+    """
+    refs: dict[str, dict[str, str]] = {}
+    for line in run([
+        "git", "ls-remote", "--tags", "origin",
+        "refs/tags/v*", "refs/tags/rc.*", "refs/tags/abandoned-rc.*",
+    ]).splitlines():
+        sha, ref = line.split()
+        peeled = ref.endswith("^{}")
+        tag = ref.removeprefix("refs/tags/").removesuffix("^{}")
+        if (version_from_tag(tag) or parse_attempt_ref(tag)
+                or parse_marker_ref(tag)):
+            refs.setdefault(tag, {})["commit" if peeled else "object"] = sha
+    return refs
+
+
+def _tag_message(tag: str, expected_object: str, run=output) -> dict:
+    local_object = run(["git", "rev-parse", f"refs/tags/{tag}"])
+    if local_object != expected_object or run(["git", "cat-file", "-t", local_object]) != "tag":
+        raise ValueError(f"{tag} differs from its remote annotated object")
+    try:
+        message = tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{tag} metadata is invalid") from error
+    if not isinstance(message, dict):
+        raise ValueError(f"{tag} metadata is invalid")
+    return message
+
+
+def discover(repository: str, run=output) -> list[dict]:
+    """Derive every stable claim state from remote refs and GitHub objects."""
+    from scripts.releases.stable import is_claim_run, tagger_epoch, validate_claim, validate_final
+
+    log("Fetching stable receipt tags, attempt refs and abandon markers from origin")
+    run([
+        "git", "fetch", "origin", "+refs/tags/v*:refs/tags/v*",
+        "+refs/tags/rc.*:refs/tags/rc.*",
+        "+refs/tags/abandoned-rc.*:refs/tags/abandoned-rc.*",
+    ])
+    refs = _remote_tags(run)
+    attempts = sorted(tag for tag in refs if parse_attempt_ref(tag))
+    log(f"Found {len(refs)} remote stable refs: {len(attempts)} attempt refs, "
+        f"{sum(1 for tag in refs if version_from_tag(tag))} receipt tags, "
+        f"{sum(1 for tag in refs if parse_marker_ref(tag))} abandon markers")
+    outstanding = outstanding_attempts(list(refs), lambda v: f"v{v}" in refs)
+    if outstanding:
+        log(f"Outstanding attempts (no receipt tag, not abandoned): "
+            f"{', '.join(ref for *_rest, ref in outstanding)}")
+    if len(outstanding) > 1:
+        named = ", ".join(ref for *_rest, ref in outstanding)
+        raise ValueError(f"more than one outstanding attempt ({named})")
+    releases = _release_rows(repository, run)
+    log(f"Read {len(releases)} GitHub releases")
+    workflow_runs = _workflow_runs(repository, run)
+    log(f"Read {len(workflow_runs)} dispatched Stable Release runs")
+    records = []
+
+    for claim_tag, claim_ref in refs.items():
+        parsed = parse_attempt_ref(claim_tag)
+        if parsed is None:
+            continue
+        version, attempt = parsed
+        if set(claim_ref) != {"object", "commit"}:
+            raise ValueError(f"{claim_tag} must be an annotated remote tag")
+        tag = f"v{version}"
+        commit = claim_ref["commit"]
+        claim = _tag_message(claim_tag, claim_ref["object"], run)
+        try:
+            # Normalized: a claim cut before lanes existed reads as the lane set it gated.
+            claim = validate_claim(claim, version=version, attempt=attempt, commit=commit)
+        except ValueError as error:
+            raise ValueError(f"{claim_tag} metadata is invalid") from error
+        claim_epoch = claim["claimEpoch"]
+        if tagger_epoch(claim_ref["object"], run) != claim_epoch:
+            raise ValueError(f"{claim_tag} epoch differs from its annotated tagger timestamp")
+
+        family_releases = [row for row in releases if row.get("tag_name") in {claim_tag, tag}]
+        if len(family_releases) > 1:
+            raise ValueError(f"{claim_tag} owns multiple GitHub releases")
+        release = family_releases[0] if family_releases else None
+        final_ref = refs.get(tag)
+        needs_retarget = False
+        final = None
+        retry = None
+
+        if marker_ref(version, attempt) in refs:
+            # An abandoned attempt is spent whatever its version became: a later attempt
+            # may have won and been tagged at another commit (v0.21.6: rc.4 after rc.1-3).
+            state, retry = "burned", None
+            why = f"abandon marker {marker_ref(version, attempt)} exists"
+        elif final_ref is not None:
+            if set(final_ref) != {"object", "commit"}:
+                raise ValueError(f"{tag} must be an annotated remote tag")
+            if final_ref["commit"] != commit:
+                raise ValueError(f"{tag} points at a different commit than {claim_tag}")
+            final = _tag_message(tag, final_ref["object"], run)
+            try:
+                validate_final(final, version=version, commit=commit, claim_tag=claim_tag,
+                               claim_object=claim_ref["object"], claim=claim)
+            except ValueError as error:
+                raise ValueError(f"{tag} metadata differs from {claim_tag}") from error
+            if release is None or release.get("id") != final["releaseId"]:
+                state, needs_retarget = "burned", False
+                why = (f"{tag} exists but its release {final['releaseId']} is "
+                       + ("missing" if release is None else f"not the one found ({release.get('id')})"))
+            else:
+                state, needs_retarget = classify_final_release(tag, claim_tag, release)
+                why = (f"{tag} receipt exists; release {release.get('id')} on "
+                       f"{release.get('tag_name')}, draft={release.get('draft')}"
+                       + ("; needs retarget onto the final tag" if needs_retarget else ""))
+        else:
+            if release is not None and (release.get("tag_name") != claim_tag
+                                        or release.get("draft") is not True
+                                        or release.get("prerelease") is not False):
+                raise ValueError(f"{claim_tag} draft state is invalid")
+            matching_runs = [row for row in workflow_runs if is_claim_run(
+                title=row.get("display_title"), head_branch=row.get("head_branch"),
+                head_sha=row.get("head_sha"), claim_tag=claim_tag, commit=commit)]
+            state, retry = classify_runs(
+                matching_runs,
+                claimed_at=datetime.fromtimestamp(claim_epoch, tz=UTC),
+                has_draft=release is not None,
+            )
+            latest = max(matching_runs, key=lambda row: row.get("run_attempt", 0), default=None)
+            why = ("no Stable Release run yet" if latest is None else
+                   f"run {latest.get('id')} attempt {latest.get('run_attempt')} "
+                   f"{latest.get('status')}/{latest.get('conclusion') or '-'}")
+            why += f"; draft {'on ' + claim_tag if release is not None else 'missing'}"
+            if retry:
+                why += f"; failed-job retry due (attempt {retry['attempt'] + 1} of {MAX_ATTEMPTS})"
+
+        log(f"  {claim_tag} @ {commit[:10]}: {state.upper()} — {why}"
+            + (" [autopublish]" if claim["autopublish"] else "")
+            + f" [{lane_set.describe(claim['lanes'])}]")
+        records.append({
+            "version": version,
+            "attempt": attempt,
+            "state": state,
+            "autopublish": claim["autopublish"],
+            "lanes": claim["lanes"],
+            "claim_tag": claim_tag,
+            "claim_object": claim_ref["object"],
+            "claim_epoch": claim_epoch,
+            "tag": tag,
+            "commit": commit,
+            "release_id": release.get("id") if release else None,
+            "needs_retarget": needs_retarget,
+            "candidate_manifest_sha256": final["candidateManifestSha256"] if final else None,
+            "docker_manifest_digest": final["dockerManifestDigest"] if final else None,
+            "retry": retry if final_ref is None else None,
+        })
+
+    # Attempt order inside a version: git lists refs by name (rc.10 before rc.2), and
+    # reconcile indexes by version with the last record winning, i.e. the newest attempt.
+    return sorted(records, key=lambda record: (_key(record["version"]), record["attempt"]))
+
+
+def channel_head(desktop_head: str | None, records: list[dict],
+                 stable_alias_digest: str | None) -> str | None:
+    """The newest version whose publication pass finished.
+
+    A release that advances the desktop channel finishes when the protected R2
+    head names it. One that does not finishes when the Docker ``stable`` alias
+    carries the digest its final receipt binds, or, when it moves no channel at
+    all, as soon as it is public.
+    """
+    versions = [desktop_head] if desktop_head is not None else []
+    versions += [record["version"] for record in records
+                 if record["state"] == "published"
+                 and (not lane_set.moves_channels(record["lanes"])
+                      or (stable_alias_digest is not None
+                          and record["docker_manifest_digest"] == stable_alias_digest))]
+    return max(versions, key=_key, default=None)
+
+
+def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
+    from scripts.releases import store
+
+    # Channels are already durable; Store recovery must not depend on advancing them again.
+    for record in sorted(records, key=lambda row: _key(row["version"]), reverse=True):
+        if record["state"] != "published" or "windows-store" not in record["lanes"]:
+            continue
+        log(f"Reconciling the Microsoft Store submission for {record['tag']}")
+        try:
+            raw = read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
+            if hashlib.sha256(raw).hexdigest() != record["candidate_manifest_sha256"]:
+                raise store.StoreError("the archived candidate manifest differs from the receipt")
+            result = store.release_from_env(env, json.loads(raw))
+        except (store.StoreError, ValueError, OSError) as error:
+            print(f"::warning title=Microsoft Store::{error}. The release is published; "
+                  "check its Store submission in Partner Center.")
+            return
+        # A newer public release may have failed its advisory upload, leaving an older one held.
+        if result != "superseded":
+            return
+
+
+def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
+              read_archive=None) -> list[dict]:
+    """Converge GitHub publication and protected heads oldest-first."""
+    from scripts.releases import channel_releases, docker, stable
+
+    repository = env["GITHUB_REPOSITORY"]
+    run = logged_run(run)
+    requested = env.get("REQUESTED_VERSION") or None
+    log(f"Stable sequencer: repository={repository} requested={requested or '(none)'}")
+    # The archive copy is the only authority for the candidate manifest digest;
+    # nothing records it before the publication pass hashes it.
+    read_archive = read_archive or channel_releases.read_archive_bytes
+    with group("Discover stable claims"):
+        records = discover(repository, run)
+    retries = retry_due(records)
+    if retries:
+        for retry in retries:
+            log(f"Rerunning failed jobs of {retry['version']}'s run {retry['run_id']} "
+                f"(attempt {retry['attempt']} of {MAX_ATTEMPTS}); publication waits for it")
+            endpoint = f"repos/{repository}/actions/runs/{retry['run_id']}"
+            run([
+                "gh", "api", "--method", "POST",
+                f"{endpoint}/rerun-failed-jobs",
+            ])
+            for attempt in range(6):
+                current = json.loads(run(["gh", "api", endpoint]))
+                if (current.get("id") == retry["run_id"]
+                        and current.get("run_attempt") == retry["attempt"]
+                        and current.get("status") != "completed"):
+                    break
+                if attempt < 5:
+                    log(f"  run {retry['run_id']} is at attempt {current.get('run_attempt')} "
+                        f"({current.get('status')}); waiting 5s for attempt {retry['attempt']}")
+                    time.sleep(5)
+            else:
+                raise ValueError(f"Stable retry {retry['run_id']} did not enter attempt {retry['attempt']}")
+        notice(", ".join(f"{r['version']} retry attempt {r['attempt']} queued" for r in retries),
+               title="Stable sequencer")
+        return [{"retry": retry["version"], "attempt": retry["attempt"]} for retry in retries]
+    for record in records:
+        if record["needs_retarget"]:
+            # Recovery for a publish that died after the receipt tag: the tag
+            # exists and the release is still a draft, so the retarget and the
+            # publication rerun. A public release can never be repaired.
+            with group(f"Repair {record['version']}: retarget release {record['release_id']} "
+                       f"onto {record['tag']} and publish it"):
+                stable.edit_draft_release(repository, record["release_id"], record["tag"],
+                                          record["commit"], run=run)
+                stable.publish_release_draft(repository, record["release_id"], record["tag"],
+                                             run=run)
+    if any(record["needs_retarget"] for record in records):
+        with group("Rediscover after repair"):
+            records = discover(repository, run)
+
+    read_head = read_head or (lambda: channel_head(
+        channel_releases.stable_head_version(env), discover(repository, run),
+        docker.stable_alias_digest()))
+    with group("Read the stable channel head"):
+        head = read_head()
+        log(f"Channel head: {head or '(none)'}")
+    with group("Plan"):
+        steps = plan(records, head=head, requested_version=requested)
+        log("Steps: " + (", ".join(f"{kind} {version}" for step in steps
+                                   for kind, version in step.items()) or "(none)"))
+    by_version = {record["version"]: record for record in records}
+
+    production = advance_head is None
+    if production:
+        def production_advance(record: dict) -> None:
+            if lane_set.advances_desktop(record["lanes"]):
+                log(f"Advancing the protected desktop channel to {record['version']} from "
+                    f"releases/tag/{record['claim_tag']}/ "
+                    f"(receipt manifest {record['candidate_manifest_sha256']})")
+                with tempfile.TemporaryDirectory() as directory:
+                    channel_releases.advance_stable(env, record, Path(directory))
+                log(f"Desktop channel head is now {record['version']}")
+            else:
+                log(f"{record['version']} did not build every desktop package the channel serves "
+                    "(windows, macos-arm64): the desktop channel stays on the previous release")
+            if "docker" in record["lanes"]:
+                log(f"Tagging Docker {record['tag']}/stable/latest onto {record['claim_tag']} "
+                    f"({record['docker_manifest_digest']})")
+                # The final vX.Y.Z and the stable/latest aliases move onto the attempt's image here, in
+                # the publication pass with the feed pointer, never in the green
+                # build that pushed the image under the attempt ref.
+                docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
+                log("Docker aliases moved")
+        advance_head = production_advance
+
+    for number, step in enumerate(steps, start=1):
+        if "flip" in step:
+            record = by_version[step["flip"]]
+            with group(f"[{number}/{len(steps)}] Publish {record['version']}: write {record['tag']}, "
+                       f"retarget release {record['release_id']} from {record['claim_tag']}, make it public"):
+                # discover() ran before the receipt tag existed, so the record has no
+                # receipt digests yet; the advance below must check the ones just written.
+                record.update(stable.publish_attempt(
+                    record, repository=repository, run=run, read_archive=read_archive))
+                log(f"Receipt {record['tag']}: manifest {record['candidate_manifest_sha256']}, "
+                    f"docker {record['docker_manifest_digest']}")
+            notice(f"{record['tag']} is public", title="Stable sequencer")
+        else:
+            record = by_version[step["advance"]]
+            with group(f"[{number}/{len(steps)}] Advance channels to {record['version']}"):
+                advance_head(record)
+            notice(f"Stable channels advanced to {record['version']}", title="Stable sequencer")
+
+    with group("Verify"):
+        final = {record["version"]: record for record in discover(repository, run)}
+    for step in steps:
+        if "flip" in step and final[step["flip"]]["state"] != "published":
+            raise ValueError(f"Stable release {step['flip']} did not publish")
+    if requested and (requested not in final or final[requested]["state"] != "published"):
+        raise ValueError(f"Requested stable release {requested} did not publish")
+    if any("advance" in step for step in steps):
+        expected = next(step["advance"] for step in reversed(steps) if "advance" in step)
+        reached = read_head()
+        log(f"Channel head after the pass: {reached} (planned {expected})")
+        if reached != expected:
+            raise ValueError("Stable protected head did not reach the planned version")
+    if production:
+        _reconcile_store(env, list(final.values()), read_archive)
+    log("Stable sequencer finished: " + (", ".join(
+        f"{kind} {version}" for step in steps for kind, version in step.items()) or "nothing to do"))
+    return steps
+
+
+def main(argv: list[str] | None = None, env: dict | None = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv:
+        raise ValueError("The stable sequencer takes no positional arguments")
+    try:
+        steps = reconcile(dict(os.environ if env is None else env))
+    except Exception as exc:
+        log_error(f"{type(exc).__name__}: {exc}", title="Stable sequencer failed")
+        raise
+    print(json.dumps(steps, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

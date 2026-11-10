@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from tests.docker.conftest import (
     docker_exec_sh,
-    restart_container,
     start_container,
 )
 

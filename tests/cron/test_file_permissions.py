@@ -1,11 +1,21 @@
-"""Tests for file permissions hardening on sensitive files."""
+"""Tests for file permissions hardening on sensitive files.
+
+POSIX permission bits (0700/0600) are only meaningful on POSIX filesystems;
+native Windows does not implement them, so these tests are host-gated (the
+repo's host-native rule: never fake the platform).
+"""
 
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+
+pytestmark = pytest.mark.platforms("posix")
 
 
 class TestCronFilePermissions(unittest.TestCase):
@@ -124,6 +134,22 @@ class TestSecureHelpers(unittest.TestCase):
     def test_secure_file_nonexistent_no_error(self):
         from cron.jobs import _secure_file
         _secure_file(Path("/nonexistent/path/file.json"))  # Should not raise
+
+    def test_secure_dir_preserves_operator_mode_in_container(self):
+        """A bind-mounted data dir shared with sibling containers must keep the operator's mode;
+        an explicit HERMES_HOME_MODE is still honored (#10757)."""
+        from cron.jobs import _secure_dir
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "cron"
+            d.mkdir()
+            os.chmod(d, 0o755)
+            with patch.dict(os.environ, {"HERMES_CONTAINER": "1"}, clear=False):
+                os.environ.pop("HERMES_HOME_MODE", None)
+                _secure_dir(d)
+                self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o755)
+                os.environ["HERMES_HOME_MODE"] = "0701"
+                _secure_dir(d)
+                self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o701)
 
 
 if __name__ == "__main__":

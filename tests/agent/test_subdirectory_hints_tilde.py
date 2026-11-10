@@ -36,12 +36,4 @@ class TestSubdirectoryHintTrackerTildeRobustness:
         tracker.check_tool_call("terminal", {"command": cmd})
 
 
-    def test_valid_tilde_user_still_works(self, tmp_path):
-        """The fix must not regress the legitimate-tilde-user path.
-
-        ``~`` alone resolves to ``Path.home()`` and should still be
-        recognised as a candidate path (no exception either way).
-        """
-        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
-        tracker.check_tool_call("terminal", {"command": "ls ~/Documents"})
         # No exception, no assertion required

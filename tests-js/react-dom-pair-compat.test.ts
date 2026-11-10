@@ -1,0 +1,101 @@
+/**
+ * Invariant: every workspace that renders React ships one react/react-dom pair.
+ *
+ * React validates at import time that ``react`` and ``react-dom`` come from the
+ * same installed copy. When they don't, it throws "Minified React error #527"
+ * *before* the first paint — the Electron window just stays blank white, with
+ * the only clue buried in the devtools console of a packaged build.
+ *
+ * npm never warned about this. ``apps/desktop`` pins both packages to one exact
+ * version, but a root dependency whose react peer is a loose range (e.g.
+ * ``^18.0.0 || ^19.0.0``, and with no react-dom peer to keep the two in step)
+ * made npm hoist the newest react to the monorepo root while react-dom stayed
+ * at the pinned version. react-dom's own peer range is a caret, so the newer
+ * react still "satisfies" it and the install reported success.
+ *
+ * ``apps/desktop/vite.config.ts`` used to alias both packages to a hardcoded
+ * ``../../node_modules/<pkg>`` — i.e. straight into the split — so the bundle
+ * shipped the mismatched pair. It now resolves them from the workspace itself,
+ * where the package manager guarantees the declared versions are reachable.
+ *
+ * This is a *contract* test: it asserts no specific version, only that the two
+ * halves of the pair can never drift apart again — neither through a loosened
+ * manifest spec, nor by re-pinning the bundler at the hoisted copy.
+ */
+
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+
+import { load } from 'js-yaml'
+import { test } from 'vitest'
+
+const REPO_ROOT = path.resolve(__dirname, '..')
+
+interface Manifest {
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+}
+
+function readManifest(file: string): Manifest {
+  return JSON.parse(fs.readFileSync(file, 'utf-8')) as Manifest
+}
+
+/** Every workspace manifest, resolved from the ``pnpm-workspace.yaml`` package globs. */
+function workspaceManifests(): { name: string, manifest: Manifest }[] {
+  const workspace = load(fs.readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf-8')) as { packages?: string[] }
+  const patterns = workspace.packages ?? []
+  const found: { name: string, manifest: Manifest }[] = []
+
+  for (const pattern of patterns) {
+    // The globs in use are plain paths or a single trailing ``/*``.
+    const parent = pattern.endsWith('/*') ? path.join(REPO_ROOT, pattern.slice(0, -2)) : null
+
+    const dirs = parent === null
+      ? [pattern]
+      : fs.existsSync(parent)
+        ? fs.readdirSync(parent).map((entry) => `${pattern.slice(0, -2)}/${entry}`)
+        : []
+
+    for (const dir of dirs) {
+      const file = path.join(REPO_ROOT, dir, 'package.json')
+
+      if (fs.existsSync(file)) {found.push({ name: dir, manifest: readManifest(file) })}
+    }
+  }
+
+  return found
+}
+
+test('workspaces declaring react and react-dom pin them to the same exact version', () => {
+  const offenders: string[] = []
+  let checked = 0
+
+  for (const { name, manifest } of workspaceManifests()) {
+    const deps = { ...manifest.devDependencies, ...manifest.dependencies }
+    const react = deps['react']
+    const reactDom = deps['react-dom']
+
+    if (!react || !reactDom) {continue}
+    checked++
+
+    if (react !== reactDom) {
+      offenders.push(`${name} declares react"${react}" but react-dom"${reactDom}"`)
+
+      continue
+    }
+
+    if (!/^\d/.test(react)) {
+      offenders.push(`${name} declares a floating range react/react-dom"${react}"`)
+    }
+  }
+
+  assert.ok(checked > 0, 'found no workspace declaring react and react-dom; the workspace list resolved to nothing')
+  assert.deepEqual(
+    offenders,
+    [],
+    'react and react-dom must be pinned to the same exact version per workspace, ' +
+      'otherwise a hoisted newer react can meet the older react-dom and React ' +
+      `throws error #527 (blank window): ${offenders.join('; ')}`
+  )
+})

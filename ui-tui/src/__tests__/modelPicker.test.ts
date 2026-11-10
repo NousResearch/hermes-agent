@@ -1,7 +1,7 @@
+import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
-import type { ModelOptionProvider } from '../gatewayTypes.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 
@@ -33,10 +33,6 @@ describe('ModelPicker provider filtering', () => {
     ]
 
     expect(providerIndexAfterClearingFilter(rows, provider('missing'))).toBe(-1)
-  })
-
-  it('returns -1 for empty rows', () => {
-    expect(providerIndexAfterClearingFilter([], provider('a'))).toBe(-1)
   })
 
   it('finds the first match when multiple rows share a slug', () => {

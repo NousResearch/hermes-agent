@@ -6,6 +6,9 @@ description: "将 Hermes Agent 配置为飞书或 Lark 机器人"
 
 # 飞书 / Lark 配置
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 可作为全功能机器人与飞书和 Lark 集成。连接后，你可以在私信或群聊中与 Agent 对话，在 home chat 中接收 cron job 结果，并通过标准 gateway 流程发送文本、图片、音频和文件附件。
 
 该集成支持两种连接模式：
@@ -257,19 +260,24 @@ Gateway 驱动的更新提示使用原生飞书 `Yes` / `No` 卡片，而非回�
 
 ### 飞书应用所需配置
 
-交互式卡片需要在飞书开发者控制台完成**三项**配置。缺少任何一项，用户点击卡片按钮时将出现错误 **200340**。
+交互式卡片需要在飞书开发者控制台完成以下配置。配置缺失时最常见的症状是用户点击卡片按钮出现错误 **200340**。
 
-1. **订阅卡片操作事件：**
-   在 **事件订阅** 中，将 `card.action.trigger` 添加到已订阅事件。
+1. **订阅卡片操作回调（不是事件）：**
+   在 **开发配置 > 事件与回调** 中，打开 **回调配置** 标签页——它与放置 `im.message.receive_v1` 的 **事件配置** 标签页是分开的——在「已订阅回调」下添加 `card.action.trigger`。把它当作事件添加不会投递按钮点击。
 
-2. **启用交互式卡片能力：**
-   在 **应用功能 > 机器人** 中，确保 **交互式卡片** 开关已启用。这告知飞书你的应用可以接收卡片操作回调。
+2. **设置回调的接收方式：**
+   在同一标签页中，Hermes 以 `websocket` 模式运行时选择 **长连接**（Lark SDK 通过现有连接接收回调）；webhook 模式则填写请求地址（与事件 webhook 相同的端点，例如 `https://your-server:8765/feishu/webhook`）。飞书必须能够访问并解析该地址，否则点击会返回 200342/200343。
 
-3. **配置卡片请求 URL（仅 webhook 模式）：**
-   在 **应用功能 > 机器人 > 消息卡片请求网址** 中，将 URL 设置为与事件 webhook 相同的端点（例如 `https://your-server:8765/feishu/webhook`）。WebSocket 模式下，SDK 会自动处理此项。
+3. **启用交互式卡片能力：**
+   在 **应用功能 > 机器人** 中，确保 **交互式卡片** 开关已启用。
+
+4. **发布新版本：**
+   回调配置只有在 **版本管理与发布 > 创建版本** 并发布（企业应用还需审核通过）后才会生效。飞书对 200340 的官方描述是「应用未配置卡片回调地址或配置的地址无效……请确认已创建并发布最新版本」。
 
 :::warning
-缺少以上任意一步，飞书将成功*发送*交互式卡片（发送仅需 `im:message:send` 权限），但点击任意按钮将返回错误 200340。卡片看起来正常——错误仅在用户与其交互时才会出现。
+没有已发布的卡片回调时，飞书仍会成功*发送*交互式卡片（发送仅需 `im:message:send` 权限），但点击任意按钮将返回错误 200340。卡片看起来正常——错误仅在用户与其交互时才会出现，并且点击不会到达 Hermes（`gateway.log` 中没有任何记录），因为飞书在投递回调之前就拒绝了它。
+
+错误码 200672 / 200673 表示回调*确实*到达了 Hermes 而飞书拒绝了响应；如果遇到，请附上对应的 `gateway.log` 日志提交 issue。
 :::
 
 ## 文档评论智能回复
@@ -512,9 +520,9 @@ WebSocket 和按群 ACL 设置通过 `config.yaml` 的 `platforms.feishu.extra` 
 
 | 问题 | 解决方法 |
 |---------|-----|
-| `lark-oapi not installed` | 安装 SDK：`pip install lark-oapi` |
-| `websockets not installed; websocket mode unavailable` | 安装 websockets：`pip install websockets` |
-| `aiohttp not installed; webhook mode unavailable` | 安装 aiohttp：`pip install aiohttp` |
+| `lark-oapi not installed` | 安装 SDK：`python -c "import pm; pm.sync_venv(['feishu'], explicit=True)"` |
+| `websockets not installed; websocket mode unavailable` | 安装 websockets：`hermes pm repair` |
+| `aiohttp not installed; webhook mode unavailable` | 安装 aiohttp：`python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | 设置两个环境变量，或通过 `hermes gateway setup` 配置 |
 | `Another local Hermes gateway is already using this Feishu app_id` | 同一时间只能有一个 Hermes 实例使用相同的 app_id。请先停止另一个 gateway。 |
 | 机器人在群聊中不响应 | 确保机器人被 @提及，检查 `FEISHU_GROUP_POLICY`，若策略为 `allowlist` 则验证发送者是否在 `FEISHU_ALLOWED_USERS` 中 |

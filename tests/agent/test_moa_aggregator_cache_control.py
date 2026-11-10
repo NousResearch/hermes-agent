@@ -1,20 +1,12 @@
-"""Regression test: the MoA aggregator's one-shot synthesis call
-(``aggregate_moa_context``, used by the ``/moa <prompt>`` command) must get
-the same Anthropic-style prompt-caching decoration as the acting-aggregator
-turn (``MoAChatCompletions.create``) and the advisor fan-out
-(``_run_reference``).
-
-22c5048d9 ("fix(moa): restore prompt caching for the aggregator and
-advisors") fixed the other two MoA call paths but never touched
-``aggregate_moa_context`` — a third, independent call path with its own
-``call_llm(task="moa_aggregator", ...)`` invocation. Without this fix, every
-``/moa <prompt>`` one-shot call re-bills its full input (system-less prompt
-containing all joined reference outputs) with zero cache_control breakpoints,
-even when the resolved aggregator slot is a cache-honoring route.
+"""MoA aggregator cache decoration: the acting aggregator (``MoAChatCompletions``)
+and advisor fan-out are re-read across iterations and stay decorated; the one-shot
+``/moa <prompt>`` synthesis (``aggregate_moa_context``) embeds this call's reference
+outputs, is never read back, and stays undecorated (no cache write).
 """
 
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -46,11 +38,12 @@ def _aggregator_kwargs(calls):
     return next(c for c in calls if c.get("task") == "moa_aggregator")
 
 
-def test_aggregator_synthesis_gets_cache_control_on_native_anthropic_route(
+def test_aggregator_synthesis_unmarked_on_native_anthropic_route(
     captured_calls, monkeypatch
 ):
-    """A cache-honoring aggregator slot (native Anthropic) must get
-    cache_control breakpoints on its synthesis call."""
+    """The synthesis prompt embeds this call's reference outputs, so no later call reads
+    it back: even on a cache-honoring slot it carries no cache_control (a marker would
+    only pay a cache write)."""
     from agent import moa_loop
 
     monkeypatch.setattr(
@@ -71,17 +64,9 @@ def test_aggregator_synthesis_gets_cache_control_on_native_anthropic_route(
         aggregator={"provider": "anthropic", "model": "claude-opus-4.8"},
     )
 
-    agg_kwargs = _aggregator_kwargs(captured_calls)
-    synth_message = agg_kwargs["messages"][0]
+    synth_message = _aggregator_kwargs(captured_calls)["messages"][0]
     assert synth_message["role"] == "user"
-    content = synth_message["content"]
-    # Native Anthropic layout places cache_control on inner content blocks,
-    # so a cached message's content is a list of blocks rather than a bare
-    # string once decorated.
-    assert isinstance(content, list), "expected native cache_control block layout"
-    assert any(
-        isinstance(block, dict) and "cache_control" in block for block in content
-    ), "aggregator synthesis message must carry a cache_control breakpoint"
+    assert "cache_control" not in repr(synth_message)
 
 
 def test_aggregator_synthesis_untouched_on_non_caching_route(
@@ -112,3 +97,41 @@ def test_aggregator_synthesis_untouched_on_non_caching_route(
     agg_kwargs = _aggregator_kwargs(captured_calls)
     synth_message = agg_kwargs["messages"][0]
     assert isinstance(synth_message["content"], str), "must stay undecorated (plain string content)"
+
+
+def test_prepared_aggregator_plans_tools_without_decorating_prepared_state(monkeypatch):
+    from agent import moa_loop
+
+    calls = []
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: calls.append(kwargs) or _response())
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    completions = moa_loop.MoAChatCompletions.__new__(moa_loop.MoAChatCompletions)
+    completions._pending_trace = None
+    prepared = {
+        "messages": [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "lookup"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "lookup", "function": {"name": "lookup", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "lookup", "content": "result"},
+        ],
+        "guidance": None,
+        "aggregator": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+        "aggregator_temperature": None,
+    }
+    canonical_prepared = copy.deepcopy(prepared)
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}]
+
+    completions._call_prepared_aggregator(prepared, {"tools": tools})
+
+    assert "cache_control" in calls[0]["tools"][-1]
+    assert "cache_control" not in tools[-1]
+    assert prepared == canonical_prepared

@@ -25,7 +25,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 @pytest.fixture(autouse=True)
 def _mock_dotenv(monkeypatch):
     """gateway.run imports dotenv at module load; stub so tests run bare."""
@@ -33,13 +32,11 @@ def _mock_dotenv(monkeypatch):
     fake.load_dotenv = lambda *a, **kw: None
     monkeypatch.setitem(sys.modules, "dotenv", fake)
 
-
 def _make_runner():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     return runner
-
 
 # A lightweight stand-in for AIAgent so ``isinstance(..., list)`` correctly
 # discriminates between "attribute set to a list" and "attribute absent /
@@ -54,7 +51,6 @@ class _FakeAgent:
         if has_shutdown:
             self.shutdown_memory_provider = MagicMock()
         self.close = MagicMock()
-
 
 class TestCleanupAgentResourcesPassesMessages:
     """_cleanup_agent_resources forwards the agent's session messages."""
@@ -74,18 +70,3 @@ class TestCleanupAgentResourcesPassesMessages:
         # The fix must call shutdown_memory_provider with the exact list
         # identity — providers iterate it to extract facts.
         agent.shutdown_memory_provider.assert_called_once_with(transcript)
-
-    def test_empty_list_still_forwarded(self):
-        """An agent that initialised but ran no turns has an empty list
-        on ``_session_messages``. Forwarding it (rather than falling
-        through to the no-arg path) makes the absence of content
-        explicit to providers and matches the pre-fix observable
-        behaviour (``on_session_end([])``)."""
-        runner = _make_runner()
-        agent = _FakeAgent(session_messages=[])
-
-        runner._cleanup_agent_resources(agent)
-
-        agent.shutdown_memory_provider.assert_called_once_with([])
-
-

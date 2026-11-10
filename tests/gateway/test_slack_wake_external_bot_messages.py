@@ -58,16 +58,16 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import (  # noqa: E402
+from plugins.platforms.slack.adapter import (
     SlackAdapter,
     _ThreadContextCache,
 )
 
-from gateway.config import Platform, PlatformConfig  # noqa: E402
+from gateway.config import Platform, PlatformConfig
 
 
 BOT_USER_ID = "U_BOT_OWN"
@@ -159,7 +159,7 @@ async def test_bot_authored_thread_root_fetches_on_cache_miss():
     from the Slack API."""
     adapter = _make_adapter()
 
-    async def _fake_fetch(channel_id, thread_ts, current_ts, team_id=""):
+    async def _fake_fetch(channel_id, thread_ts, current_ts, team_id="", chat_type=""):
         adapter._thread_context_cache[f"{channel_id}:{thread_ts}:{team_id}"] = (
             _ThreadContextCache(
                 content="ctx",

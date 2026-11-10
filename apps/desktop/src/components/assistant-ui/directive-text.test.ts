@@ -31,9 +31,27 @@ describe('hermesDirectiveFormatter.parse', () => {
   it('still parses unquoted paths', () => {
     const segments = hermesDirectiveFormatter.parse('@file:src/main.tsx the entry point')
 
+    // The label keeps its directory: it's the same string the `@` popover row
+    // showed, and a bare `main.tsx` can't tell two files apart.
     expect(segments).toEqual([
-      { kind: 'mention', type: 'file', label: 'main.tsx', id: 'src/main.tsx' },
+      { kind: 'mention', type: 'file', label: 'src/main.tsx', id: 'src/main.tsx' },
       { kind: 'text', text: ' the entry point' }
+    ])
+  })
+
+  it('preserves punctuation inside quoted values but trims bare sentence punctuation', () => {
+    const quoted = hermesDirectiveFormatter.parse('see @file:`report!` now')
+    const bare = hermesDirectiveFormatter.parse('see @file:report! now')
+
+    expect(quoted).toEqual([
+      { kind: 'text', text: 'see ' },
+      { kind: 'mention', type: 'file', label: 'report!', id: 'report!' },
+      { kind: 'text', text: ' now' }
+    ])
+    expect(bare).toEqual([
+      { kind: 'text', text: 'see ' },
+      { kind: 'mention', type: 'file', label: 'report', id: 'report' },
+      { kind: 'text', text: ' now' }
     ])
   })
 

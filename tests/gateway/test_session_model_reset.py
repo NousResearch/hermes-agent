@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -37,7 +37,6 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
@@ -87,8 +86,8 @@ async def test_new_command_only_clears_own_session():
         "base_url": "",
         "api_mode": "anthropic",
     }
-    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
-    runner._session_reasoning_overrides[other_key] = {"enabled": True, "effort": "low"}
+    runner._session_state(session_key).conversation.reasoning_override = {"enabled": True, "effort": "high"}
+    runner._session_state(other_key).conversation.reasoning_override = {"enabled": True, "effort": "low"}
     runner._pending_model_notes[session_key] = "[Note: switched to gpt-4o.]"
     runner._pending_model_notes[other_key] = "[Note: switched to claude-sonnet-4-6.]"
 
@@ -96,7 +95,7 @@ async def test_new_command_only_clears_own_session():
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides
-    assert session_key not in runner._session_reasoning_overrides
-    assert other_key in runner._session_reasoning_overrides
+    assert runner._session_state(session_key).conversation.reasoning_override is None
+    assert runner._session_state(other_key).conversation.reasoning_override is not None
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes

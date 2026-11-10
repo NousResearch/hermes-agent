@@ -1,0 +1,31 @@
+name: empiriolabs-media
+title: EmpirioLabs AI Media
+repo: https://github.com/EmpirioLabs-AI/hermes-empiriolabs
+sha: 20f049d5913ec850e98bef3d289f6cb43645869e
+subdir: media
+description: >-
+  EmpirioLabs AI backends for Hermes' image_generate, video_generate and text_to_speech tools
+  (backend `empiriolabs` for image_gen.provider, video_gen.provider and tts.provider): image
+  generation and editing, text-to-video and image-to-video, and text-to-speech, with models and
+  voices from the live EmpirioLabs AI catalog. Submitted by EmpirioLabs AI. Disclosure: registers
+  three backends and nothing else (no tools, hooks, commands or threads); when one is selected and
+  its tool is called, the prompt, source images or text to speak go to
+  https://api.empiriolabs.ai/v1 (or EMPIRIOLABS_BASE_URL) with EMPIRIOLABS_API_KEY, read through
+  Hermes' secret scope, and each call is billed to that EmpirioLabs AI account with no Hermes
+  approval prompt; it reads the model catalog (GET /v1/models), polls GET /v1/jobs/{id} while a
+  generation runs (videos up to 15 minutes by default), downloads the generated files from the
+  returned URLs into Hermes' cache (the key is never sent to them), and reads a local image file
+  only when the agent asks to edit one.
+maintainer: EmpirioLabs-AI
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+docs_url: https://github.com/EmpirioLabs-AI/hermes-empiriolabs/blob/20f049d5913ec850e98bef3d289f6cb43645869e/media/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - EMPIRIOLABS_API_KEY

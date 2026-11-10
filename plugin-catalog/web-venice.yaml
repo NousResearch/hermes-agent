@@ -1,0 +1,14 @@
+name: web-venice
+repo: https://github.com/MnrGreg/hermes-venice-web
+sha: dcc286fc40544f4489831ff246de8030fd0417fa
+description: Venice AI web search + extract — privacy-first, zero data retention, $0.01/request.
+maintainer: MnrGreg
+tier: community
+category: web
+docs_url: https://github.com/MnrGreg/hermes-venice-web#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - name

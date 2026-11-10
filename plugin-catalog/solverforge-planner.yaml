@@ -1,0 +1,45 @@
+name: solverforge-planner
+repo: https://github.com/blackopsrepl/hermes-solverforge-planner
+sha: c2ae4f2ad893501aa644c5f70b8fb6df65d0495d
+title: "SolverForge Planner"
+description: "Plans your tasks into your week around your meetings, deadlines, task order and focus hours with a SolverForge constraint solver, and proves every hard rule holds before anything is written. The planner keeps its own local calendar (SQLite plus a planner.ics you can subscribe to); Hermes pulls your cloud calendar and pushes the plan with the calendar tool you already use, and the planner only ever creates, moves or deletes its own events, each with a fixed ID so a repeated push adds nothing. Applying a plan and unscheduling a task ask for your approval. Desktop: a plan card in chat, a Planner page (week view and tasks) and a status-bar chip. Disclosure — `hermes solverforge-planner install` (or /planner install, or the Desktop Install engine button) downloads one engine binary for your platform from this repository's own engine-v0.1.0 GitHub release, built by its release workflow with a GitHub build attestation, and refuses it unless its SHA-256 matches the value pinned in engine_bin.py; the agent cannot start that download. Each solve runs that binary once as a subprocess (JSON on stdin and stdout, stopped at solve_timeout, no network). planner_busy_from_ics fetches an https/http/webcal iCalendar link (up to 10 MB) or reads a local .ics file, only the one you name. All data stays in <hermes home>/plugin-data/solverforge-planner/; no credentials are read or stored, no cloud calendar is touched by the plugin itself, no telemetry, no background process; an optional Morning plan automation blueprint runs only if you schedule it, and never applies."
+maintainer: blackopsrepl
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+version: "0.3.1"
+docs_url: https://github.com/blackopsrepl/hermes-solverforge-planner#readme
+image: https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-planner/c2ae4f2ad893501aa644c5f70b8fb6df65d0495d/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-planner/c2ae4f2ad893501aa644c5f70b8fb6df65d0495d/docs/screenshots/chat-plan-card.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-planner/c2ae4f2ad893501aa644c5f70b8fb6df65d0495d/docs/screenshots/planner-page.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-planner/c2ae4f2ad893501aa644c5f70b8fb6df65d0495d/docs/screenshots/tasks-tab.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-planner/c2ae4f2ad893501aa644c5f70b8fb6df65d0495d/docs/screenshots/apply-confirm.png
+  - https://raw.githubusercontent.com/blackopsrepl/hermes-solverforge-planner/c2ae4f2ad893501aa644c5f70b8fb6df65d0495d/docs/architecture.png
+readme: true
+platforms: []
+known_issues:
+  - "Run `hermes solverforge-planner install` once after installing the plugin: the engine binary is downloaded separately (about 5 MB) and checked against a pinned SHA-256"
+  - "Engine builds exist for Linux (x86_64, arm64), macOS (Apple silicon, Intel) and Windows (x86_64)"
+  - "Hermes builds a session's tool list from the plugins it saw at the previous launch, so the first session right after installing has no planner tools: start Hermes once more"
+capabilities:
+  provides_tools:
+    - planner_status
+    - planner_inbox
+    - planner_task_create
+    - planner_task_update
+    - planner_task_delete
+    - planner_task_unschedule
+    - planner_depend
+    - planner_settings
+    - planner_busy_set
+    - planner_busy_from_ics
+    - planner_week
+    - planner_optimize
+    - planner_proposal
+    - planner_apply
+    - planner_push
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

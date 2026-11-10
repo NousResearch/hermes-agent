@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+from gateway.restart import (
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
+    DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
+    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+)
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -73,14 +78,17 @@ def make_restart_runner(
     runner._detached_restart_helper_started = False
     runner._restart_command_source = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._restart_after_turn_timeout = DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
+    runner._cron_drain_timeout = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
+    runner._signal_interrupt_grace_timeout = (
+        DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    )
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
-    runner._update_prompt_pending = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
     runner._session_sources = OrderedDict()
     runner._session_sources_max = 512
-    runner._shutdown_all_gateway_honcho = lambda: None
     runner._update_runtime_status = MagicMock()
     runner._queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event.__get__(
         runner, GatewayRunner
@@ -141,6 +149,9 @@ def make_restart_runner(
     )
     runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
         runner, GatewayRunner
+    )
+    runner._await_active_work_before_restart = (
+        GatewayRunner._await_active_work_before_restart.__get__(runner, GatewayRunner)
     )
     runner.request_restart = GatewayRunner.request_restart.__get__(runner, GatewayRunner)
     runner._is_user_authorized = lambda _source: True

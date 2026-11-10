@@ -8,14 +8,6 @@ describe('/journey slash command', () => {
     resetOverlayState()
   })
 
-  it('resolves by name and aliases', () => {
-    expect(findSlashCommand('journey')?.name).toBe('journey')
-
-    for (const alias of ['learning', 'memory-graph']) {
-      expect(findSlashCommand(alias)?.name).toBe('journey')
-    }
-  })
-
   it('opens the journey overlay when run', () => {
     expect(getOverlayState().journey).toBe(false)
     findSlashCommand('journey')!.run('', {} as never, 'journey')

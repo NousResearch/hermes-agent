@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatMessageTimestamp } from './timestamp'
+import { formatMessageTimestamp, formatTimelineRange, formatTimelineTimestamp } from './timestamp'
 
 const labels = {
   today: (time: string) => `Today at ${time}`,
@@ -32,5 +32,27 @@ describe('formatMessageTimestamp', () => {
     expect(out).not.toMatch(/^Today at /)
     expect(out).not.toMatch(/^Yesterday at /)
     expect(out.length).toBeGreaterThan(0)
+  })
+})
+
+describe('precise timeline timestamps', () => {
+  it('includes seconds and milliseconds for an event', () => {
+    const local = new Date(2026, 4, 1, 13, 2, 3, 456)
+    const formatted = formatTimelineTimestamp(local.getTime() / 1000)
+
+    const expected = new Intl.DateTimeFormat(undefined, {
+      fractionalSecondDigits: 3,
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    }).format(local)
+
+    expect(formatted).toBe(expected)
+  })
+
+  it('returns an empty string for invalid timeline values', () => {
+    expect(formatTimelineTimestamp(undefined)).toBe('')
+    expect(formatTimelineTimestamp(Number.NaN)).toBe('')
+    expect(formatTimelineRange(undefined, 10)).toBe('')
   })
 })

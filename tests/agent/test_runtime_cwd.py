@@ -64,6 +64,7 @@ class TestSessionCwdOverride:
         try:
             assert resolve_agent_cwd() == other
             assert resolve_context_cwd() == other
+            assert resolve_context_cwd(include_session_override=False) == tmp_path
         finally:
             rt._SESSION_CWD.reset(token)
 

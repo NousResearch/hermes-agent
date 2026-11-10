@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from utils import atomic_yaml_write
 
@@ -25,7 +25,7 @@ class TestAtomicYamlWrite:
         original = {"preserved": True}
         target.write_text(yaml.safe_dump(original), encoding="utf-8")
 
-        with patch("utils.yaml.dump", side_effect=SimulatedAbort):
+        with patch("utils.yaml.safe_dump", side_effect=SimulatedAbort):
             with pytest.raises(SimulatedAbort):
                 atomic_yaml_write(target, {"new": True})
 

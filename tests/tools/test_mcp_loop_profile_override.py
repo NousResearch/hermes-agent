@@ -6,7 +6,7 @@ thread's. A per-request profile scope (dashboard ?profile= endpoints, e.g.
 the MCP "Test server" probe) would silently vanish for anything resolving
 get_hermes_home() inside the coroutine, most visibly OAuth token-store
 paths. _run_on_mcp_loop now wraps scheduled coroutines with the caller's
-override (mcp_tool._wrap_with_home_override).
+override (mcp_tool_loop._wrap_with_home_override).
 """
 import os
 
@@ -15,11 +15,11 @@ import pytest
 
 @pytest.fixture
 def mcp_loop():
-    import tools.mcp_tool as mcp_tool
+    from tools import mcp_tool_loop as _mcp_loop
 
-    mcp_tool._ensure_mcp_loop()
-    yield mcp_tool
-    mcp_tool._stop_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
+    yield _mcp_loop
+    _mcp_loop._stop_mcp_loop()
 
 
 def test_override_propagates_to_mcp_loop(tmp_path, monkeypatch, mcp_loop):

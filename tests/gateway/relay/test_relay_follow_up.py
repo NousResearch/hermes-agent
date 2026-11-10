@@ -4,7 +4,7 @@ Proves the gateway can act on a shared-identity capability (e.g. a Discord
 interaction follow-up token) WITHOUT ever holding the credential: it names the
 session it is in plus the capability ``kind``, and the connector resolves the
 real value from its vault and egresses. See gateway/relay/transport.py
-(send_follow_up) and docs/relay-connector-contract.md §4.
+(send_follow_up) and website/docs/developer-guide/relay-connector-contract.md §4.
 
 The gateway side is what's exercised here (against the stub connector); the
 connector's resolve + tenant-match enforcement lives in the connector repo

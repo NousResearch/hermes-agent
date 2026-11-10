@@ -1,5 +1,28 @@
+import { extractToolErrorMessage } from '@/lib/tool-result-summary'
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+/**
+ * User-friendly step label from browser_exec code's leading `# …` comment.
+ * Mirrors agent/display.py:_browser_exec_step_label (CLI/TUI) so every
+ * surface derives the same label from the same convention.
+ */
+export function browserExecStepLabel(code: string, maxChars = 80): null | string {
+  const first = code.trim().split('\n', 1)[0]?.trim() ?? ''
+
+  if (!first.startsWith('#')) {
+    return null
+  }
+
+  const label = first.replace(/^#+/, '').trim()
+
+  if (!label) {
+    return null
+  }
+
+  return label.length > maxChars ? `${label.slice(0, maxChars - 1)}…` : label
 }
 
 export function compactPreview(value: unknown, max = 72): string {
@@ -80,6 +103,37 @@ export function parseMaybeObject(value: unknown): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+/** Tools whose refused calls are the agent's own retry loop (a skill write
+ *  refused by the size cap or a stale old_string), not something the user must
+ *  act on — except a batch whose rollback failed, which left partial changes.
+ *  Mirrors agent/display.py::is_neutral_failure. */
+const NEUTRAL_FAILURE_TOOLS: ReadonlySet<string> = new Set(['skill_manage'])
+
+export function isNeutralFailure(toolName: string | undefined, result: unknown): boolean {
+  if (!NEUTRAL_FAILURE_TOOLS.has(toolName ?? '')) {
+    return false
+  }
+
+  // Only the error text: a refused patch also returns a file_preview of the
+  // skill, whose own prose may mention the marker.
+  const error = parseMaybeObject(result).error ?? (typeof result === 'string' ? result : '')
+
+  return !String(error).includes('ROLLBACK FAILED')
+}
+
+/** A call that reported failure, from the part's flag or its result body.
+ *  Explicit success beats stale envelope errors, as in individual rows. */
+export function toolCallFailed(part: { isError?: boolean; result?: unknown; toolName?: string }): boolean {
+  const result = parseMaybeObject(part.result)
+
+  return (
+    !isNeutralFailure(part.toolName, part.result) &&
+    result.success !== true &&
+    result.ok !== true &&
+    Boolean(part.isError || result.success === false || result.ok === false || extractToolErrorMessage(part.result))
+  )
 }
 
 export function unwrapToolPayload(value: unknown): unknown {

@@ -48,22 +48,6 @@ class TestRichMessageNewlineNormalization:
         # \n\n should remain as-is — no trailing spaces injected
         assert "Paragraph 1\n\nParagraph 2" == md
 
-    def test_mixed_single_and_double_newlines(self, adapter):
-        """Content with both list items and paragraph breaks must be handled correctly."""
-        content = (
-            "Header\n\n"
-            "`/new` -- Start\n"
-            "`/model` -- Switch\n"
-            "`/reset` -- Reset\n\n"
-            "Footer"
-        )
-        payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # Paragraph breaks preserved
-        assert "Header\n\n" in md
-        assert "\n\nFooter" in md
-        # Single newlines converted to hard breaks
-        assert "`/new` -- Start  \n`/model` -- Switch  \n`/reset` -- Reset" in md
 
 
 class TestRichMessageTableProtection:

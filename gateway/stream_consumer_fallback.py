@@ -161,10 +161,18 @@ class StreamFallbackMixin:
         # keeps its existing unthreaded delivery on every platform.
         anchor = self._initial_reply_to_id if continuation == final_text else None
         for chunk in chunks:
-            result = await self._send_with_flood_retry(
-                content=chunk, reply_to=None if sent_any_chunk else anchor,
-                retry_log="Flood control on fallback send, retrying in %.1fs")
-            if result and not result.success and await self._uncertain_send_fully_shown(result):
+            try:
+                result = await self._send_with_flood_retry(
+                    content=chunk, reply_to=None if sent_any_chunk else anchor,
+                    retry_log="Flood control on fallback send, retrying in %.1fs")
+            except Exception as exc:
+                # A RAISED timeout after the request left is the same unknown as a returned one.
+                if not await self._uncertain_send_fully_shown(exc):
+                    raise
+                result, shown = None, True
+            else:
+                shown = bool(result) and not result.success and await self._uncertain_send_fully_shown(result)
+            if shown:
                 # This chunk may be on screen: count it, so neither it nor the whole answer is
                 # sent again; later chunks still go out and must land on their own.
                 sent_any_chunk = True

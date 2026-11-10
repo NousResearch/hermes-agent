@@ -678,7 +678,11 @@ class GatewayTurnPersistenceMixin:
         screen or lost, the wire cannot tell. Sending it again now would be a silent second copy; the
         adapter ledgers it as a failed row instead, so the timed redelivery sends it once more WITH the
         may-be-a-duplicate marker and a lost send is not silence. That is what ``send_final_ledgered``
-        gives a timed-out final on a non-streaming platform."""
+        gives a timed-out final on a non-streaming platform. Both the completion path and the queued
+        first-response lane (whose result the follow-up replaces) ledger through here; an adapter
+        without the base contract has no ledger and keeps the old behaviour."""
+        if not callable(getattr(adapter, "ledger_attempted_final", None)):
+            return
         await adapter.ledger_attempted_final(
             event, session_key, response, error="Timed out: the streamed send may not have landed")
 

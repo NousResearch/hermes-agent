@@ -182,12 +182,21 @@ async def test_timed_out_preview_cut_mid_code_line_resends_the_whole_line(previe
 
 
 @pytest.mark.asyncio
-async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again():
-    """The preview and the tail sent after it both time out after landing: each went out once and
-    the turn counts as delivered, so the gateway's normal final send does not repeat it all."""
+@pytest.mark.parametrize("tail_raises", [False, True], ids=["returned", "raised"])
+async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again(tail_raises):
+    """The preview and the tail sent after it both time out after landing (the tail's timeout
+    returned or raised): each went out once and the turn counts as delivered, so the gateway's
+    normal final send does not repeat it all."""
     delivered: list = []
     adapter = _telegram_flagged(_landing_adapter(delivered))
-    adapter.send.side_effect = lambda **kw: delivered.append(kw["content"]) or _TIMED_OUT
+
+    def lost_ack(**kw):
+        delivered.append(kw["content"])
+        if tail_raises and len(delivered) > 1:
+            raise TimeoutError("Timed out")
+        return _TIMED_OUT
+
+    adapter.send.side_effect = lost_ack
     consumer = GatewayStreamConsumer(
         adapter, "chat", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""))
     consumer.on_delta("first part ")
@@ -200,6 +209,7 @@ async def test_timed_out_continuation_is_not_followed_by_the_whole_answer_again(
     assert delivered == ["first part ", "second part."]
     assert consumer.final_content_delivered is True
     assert consumer.delivered_final_matches("first part second part.") is not False
+    assert consumer.delivery_uncertain is True
 
 
 def _timing_out_telegram(delivered: list, *, outcomes: tuple = (), then=None) -> MagicMock:

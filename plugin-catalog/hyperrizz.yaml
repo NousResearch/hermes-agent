@@ -11,7 +11,10 @@ description: >-
   Disclosure — spawns local Node/Chromium/FFmpeg child processes with a minimal
   non-secret environment; runs background build/check/render workers and an optional
   loopback Studio sidecar (token-gated, 512 KiB capture budget, no redirects);
-  Desktop pane uses ctx.rest only; post_tool_call binds projects to the host session;
+  project write can edit the project's scripts/*.mjs and package.json, and build/check/render
+  run them with Node at the user's full privileges (no filesystem or network sandbox), the same
+  power as file writes plus the terminal; npm ci runs package lifecycle scripts; the embedded
+  HyperFrames Studio server listens on loopback without a token; Desktop pane uses ctx.rest only; post_tool_call binds projects to the host session;
   no credentials, no telemetry, no self-update.
 maintainer: mojomast
 tier: community

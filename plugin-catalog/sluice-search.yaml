@@ -17,12 +17,12 @@
 # playwright>=1.45,<2; ddgs>=9,<10.
 #
 # Pin re-check: re-verify this sha against the tip of main at submit time. The tree
-# verified here: pytest 552 passed / 10 skipped, `hermes plugins validate` 16 checks
+# verified here: pytest 555 passed / 10 skipped, `hermes plugins validate` 16 checks
 # with no warnings, `hermes plugins doctor --ci` exit 0.
 name: sluice-search
 title: Sluice
 repo: https://github.com/abhigyan-chatterjee/sluice
-sha: 913ff845524bc145e80e42e40ab82d5c0735a8e0
+sha: b40e6b97601b715175fb656513ce84195bc4de8b
 description: Tiered free-first web search and extraction router and backend manager for Hermes
 maintainer: Abhigyan Chatterjee
 version: "1.0.0"

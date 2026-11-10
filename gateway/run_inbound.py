@@ -732,9 +732,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 await authority.interrupt(actor, ref, handle.execution_generation)
 
     def _hm_busy_telegram_grace_queue(
-        self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str,
+        *, fifo_admission: bool = False,
     ) -> bool:
         """Queue a Telegram text follow-up that lands within the post-start grace window.
+
+        Durable admission checks the same grace rule without staging a second pending copy.
 
         Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0
         via ``_float_env`` — a config typo must not crash the inbound handler.
@@ -752,6 +755,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
             time.time() - _started_at, _quick_key,
         )
+        if fifo_admission:
+            return True  # this event enters the durable FIFO; no adapter pending copy
         if effective_busy_input_mode != "queue":
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
         else:
@@ -819,6 +824,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         from gateway.run import _AGENT_PENDING_SENTINEL
         superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
+        if (
+            mode == "interrupt" and not superseded and source.platform == Platform.TELEGRAM
+            and not getattr(event, "internal", False) and not event.get_command()
+            and self._hm_text_only(event)
+            and self._hm_busy_telegram_grace_queue(
+                event, source, _quick_key, mode, fifo_admission=True,
+            )
+        ):
+            return False  # leave the current turn running; caller admits this follow-up to FIFO
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
         adapter = self._delivery_adapter_for(source)

@@ -568,13 +568,20 @@ def _extract_sqlite(path: str) -> str:
     first rows. A ``.db`` that is not SQLite raises ExtractionError so read_file reports the real type."""
     import sqlite3
 
-    with open(path, "rb") as fh:
-        if fh.read(len(_SQLITE_MAGIC)) != _SQLITE_MAGIC:
-            raise ExtractionError("not a SQLite database (magic bytes do not match)")
+    from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, read_header_bytes_preopen
+
+    # A raw open()/close() of a database this process has open (the agent reading its own
+    # state.db) would cancel that connection's POSIX locks, so the magic check goes through the
+    # guarded reader. A live connection already proves the file is SQLite.
+    header = read_header_bytes_preopen(path, length=len(_SQLITE_MAGIC))
+    if header is None and not has_live_connection(path):
+        raise ExtractionError("could not read the file")
+    if header is not None and header != _SQLITE_MAGIC:
+        raise ExtractionError("not a SQLite database (magic bytes do not match)")
     # Read-only URI: never create or mutate; immutable=1 also skips WAL/journal sidecars so a live
     # database that another process has open is still readable without taking locks.
     uri = Path(path).resolve().as_uri() + "?mode=ro&immutable=1"
-    con = sqlite3.connect(uri, uri=True)
+    con = connect_tracked(uri, uri=True, tracking_path=path)
     try:
         objs = con.execute(
             "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type DESC, name"

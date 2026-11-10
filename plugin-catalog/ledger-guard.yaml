@@ -6,7 +6,7 @@ description: Deterministic double-count and arithmetic checker for stacked sales
 maintainer: tonightsthenight
 tier: community
 category: tools
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 version: "0.1.0"
 readme: true
 capabilities:

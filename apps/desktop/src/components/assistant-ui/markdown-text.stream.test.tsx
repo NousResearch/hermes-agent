@@ -35,8 +35,28 @@ vi.mock('@/lib/markdown-preprocess', async importActual => {
   return { ...actual, preprocessMarkdown: vi.fn(actual.preprocessMarkdown) }
 })
 
+// One remark transform per Block parse: the cost a re-rendered Block pays.
+const { blockParses } = vi.hoisted(() => ({ blockParses: { count: 0 } }))
+
+vi.mock('@/lib/remark-soft-breaks', async importActual => {
+  const actual = await importActual<typeof RemarkSoftBreaks>()
+
+  return {
+    ...actual,
+    remarkSoftBreaks: () => {
+      const transform = actual.remarkSoftBreaks()
+
+      return (tree: Parameters<typeof transform>[0]) => {
+        blockParses.count += 1
+        transform(tree)
+      }
+    }
+  }
+})
+
 import type * as MarkdownPreprocess from '@/lib/markdown-preprocess'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import type * as RemarkSoftBreaks from '@/lib/remark-soft-breaks'
 
 import { MarkdownTextContent } from './markdown-text'
 
@@ -168,5 +188,28 @@ describe('MarkdownTextContent streaming render path', () => {
 
     expect(container.innerHTML).toBe(await freshHtml(CORPUS, false))
     expect(container.textContent).not.toContain('private chain of thought')
+  })
+
+  it('ends a stream without re-parsing settled blocks, and highlights the code that streamed plain', async () => {
+    // The reply ends inside its last block — a code fence — so the tail is the
+    // block that streamed as plain code and must highlight at stream end.
+    const text = `${CORPUS}\nOne more fence:\n\n\`\`\`ts\nconst tail = true\n\`\`\``
+    const { container, rerender } = render(<MarkdownTextContent isRunning text={text} />)
+    await settled(container, 'tail = true')
+    await pause()
+
+    expect(container.querySelector('[data-testid="shiki-container"]')).toBeNull()
+    const cards = [...container.querySelectorAll('[data-slot="code-card"]')]
+    expect(cards).toHaveLength(3)
+    blockParses.count = 0
+
+    rerender(<MarkdownTextContent isRunning={false} text={text} />)
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="shiki-container"]').length).toBe(3))
+
+    // No Block re-parses its unchanged markdown, and every code card is the
+    // same DOM node: highlighting swapped in place instead of remounting.
+    expect(blockParses.count).toBe(0)
+    expect([...container.querySelectorAll('[data-slot="code-card"]')]).toEqual(cards)
+    expect(cards.at(-1)?.querySelector('[data-testid="shiki-container"]')?.textContent).toContain('const tail = true')
   })
 })

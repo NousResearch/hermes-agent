@@ -37,12 +37,16 @@ _PROCESS_CALLS = {"run", "Popen", "call", "check_call", "check_output", "system"
 _I18N_CALLS = {"t", "_t", "_gt", "tn", "gettext", "ngettext"}
 _PATH_CALLS = {"join", "joinpath", "Path", "PurePath", "PurePosixPath", "PureWindowsPath"}
 _TEXT_WRAPPERS = {"dedent", "cleandoc"}
+_INTERPRETER_KEYWORDS = {"argv0", "python", "interpreter", "python_executable", "executable"}
 _ROOT_EXPRESSION = re.compile(r"__file__|\.parents?\b|project_root|repo_root|checkout|install_root|source_root|"
                               r"\b_?(?:REPO|PROJECT|CHECKOUT|SOURCE)(?:_ROOT|_DIR)?\b|\bROOT\b|\bREPO_ROOT\b")
 _HELPER_SINKS = {"import_module", "__import__", "find_spec", "importorskip"}
 FREE_HELPERS: dict[str, int] = {"_tools_mod": 0, "_lazy": 0}
 """Helpers that ``tui_gateway.method_ctx.bind_module`` puts on a split module's globals at run time, so the file
 that calls them shows no binding: name -> index of the parameter that takes a module name."""
+NAMED_HELPERS: dict[str, dict[int, str]] = {"hermes_cli.web_deps.LateState": {1: "module"}}
+"""Callables (old dotted name) whose argument reaches an import through state the helper scan does not follow: the
+class keeps ``module`` on the instance and resolves it through ``_server`` at each use."""
 _MODULE_OBJECT_CALLS = {"ModuleType", "spec_from_file_location", "spec_from_loader", "ModuleSpec"}
 _NAMED_ARGUMENT_SINKS: dict[str, tuple[str, str]] = {
     "getLogger": ("name", LOGGER), "LogRecord": ("name", LOGGER), "makeLogRecord": ("name", LOGGER),
@@ -125,7 +129,7 @@ def _sink_params(node: ast.FunctionDef | ast.AsyncFunctionDef, helpers: dict[str
             for arg, default in zip(arguments[len(arguments) - len(inner.args.defaults):], inner.args.defaults):
                 if _callee_name(default) in _HELPER_SINKS:
                     sinks[arg.arg] = {0}
-    found, fed = {}, set()
+    found, fed = {}, {id(n) for n in _sys_modules_lookups(node)}
     for call in ast.walk(node):
         if not isinstance(call, ast.Call):
             continue
@@ -135,6 +139,23 @@ def _sink_params(node: ast.FunctionDef | ast.AsyncFunctionDef, helpers: dict[str
                 found[params.index(arg.id)] = arg.id
                 fed.add(id(arg))
     return {index: name for index, name in found.items() if _only_fed(node, name, fed)}
+
+
+def _sys_modules_lookups(node: ast.AST):
+    """Names looked up in ``sys.modules`` (``sys.modules.get(n)``, ``sys.modules[n]``, ``n in sys.modules``): module
+    names too, so they do not keep a parameter from being a helper's module-name parameter."""
+    def is_modules(expr: ast.AST) -> bool:
+        return isinstance(expr, ast.Attribute) and expr.attr == "modules" and getattr(expr.value, "id", "") == "sys"
+
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and inner.func.attr in ("get", "pop") \
+                and is_modules(inner.func.value) and inner.args and isinstance(inner.args[0], ast.Name):
+            yield inner.args[0]
+        elif isinstance(inner, ast.Subscript) and is_modules(inner.value) and isinstance(inner.slice, ast.Name):
+            yield inner.slice
+        elif isinstance(inner, ast.Compare) and isinstance(inner.left, ast.Name) and len(inner.ops) == 1 \
+                and isinstance(inner.ops[0], (ast.In, ast.NotIn)) and is_modules(inner.comparators[0]):
+            yield inner.left
 
 
 def _only_fed(node: ast.AST, name: str, fed: set[int]) -> bool:
@@ -588,7 +609,8 @@ class SinkFinder(cst.CSTVisitor):
         positional = [arg.value for arg in node.args if arg.keyword is None and not arg.star]
         keywords = {arg.keyword.value: arg.value for arg in node.args if arg.keyword is not None}
         first = positional[0] if positional else None
-        self._mark_argv(node.args)
+        if not _foreign_interpreter(keywords):
+            self._mark_argv(node.args)
         if isinstance(node.func, cst.Name):
             self.local_calls.append((node.func, list(node.args)))
         if name == "partial" and positional and isinstance(positional[0], cst.Name):
@@ -653,11 +675,29 @@ class SinkFinder(cst.CSTVisitor):
                 if isinstance(element, cst.DictElement):
                     self.feed(element.key, SYS_MODULES)
         elif name in ("setitem", "delitem") and len(positional) > 1:
-            self.feed(positional[1], SYS_MODULES)
+            if not (len(positional) > 2 and self._aliases_moved_module(positional[1], positional[2])):
+                self.feed(positional[1], SYS_MODULES)
             if name == "delitem":
                 self._removes_modules()
         if name == "dict" and isinstance(keywords.get("clear"), cst.Name) and keywords["clear"].value == "True":
             self._removes_modules()
+
+    def _aliases_moved_module(self, key: cst.BaseExpression, value: cst.BaseExpression) -> bool:
+        """``setitem(sys.modules, "<old name>", mod)`` where ``mod`` is already imported by the new name of that same
+        module: the old name is kept on purpose (code that still imports it, a frozen old updater, reads it)."""
+        if not (isinstance(key, cst.SimpleString) and isinstance(value, cst.Name)
+                and isinstance(old := key.evaluated_value, str) and (new := self.plan.new(old)) is not None):
+            return False
+        for referent in self._referents(value) or ():
+            node = getattr(referent, "node", None)
+            if isinstance(node, cst.ImportFrom) and node.module is not None and not node.relative \
+                    and not isinstance(node.names, cst.ImportStar):
+                package = get_full_name_for_node(node.module)
+                if any(f"{package}.{get_full_name_for_node(alias.name)}" == new
+                       and (alias.asname.name.value if alias.asname else get_full_name_for_node(alias.name)) == value.value
+                       for alias in node.names):
+                    return True
+        return False
 
     def _module_call(self, node: cst.Call, name: str, first, owner, keywords) -> None:
         kind = _MODULE_CALLS[name]
@@ -804,6 +844,13 @@ def _elements(node: cst.BaseExpression | None, method: str | None):
         for element in node.elements:
             if not isinstance(element, cst.StarredElement):
                 yield element.value
+
+
+def _foreign_interpreter(keywords: dict[str, cst.BaseExpression]) -> bool:
+    """The call names the interpreter its ``-m``/``-c`` arguments go to, and it is not this tree's own: the program
+    may run in another install (an earlier release), where the old names are the right ones."""
+    return any(get_full_name_for_node(value) not in ("sys.executable", "None") for keyword, value in keywords.items()
+               if keyword in _INTERPRETER_KEYWORDS)
 
 
 def _names_in(node: cst.CSTNode):

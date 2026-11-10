@@ -3939,6 +3939,30 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
                 completed = run_one_job(job, adapters=None, loop=None, verbose=False)
+                if not completed:
+                    # A falsy return means the run stopped without recording its own
+                    # outcome (an interrupted fire). Settle it here, while this process
+                    # still owns the attempt: otherwise the row stays non-terminal and
+                    # the parent can only log "whether side effects ran is unknown", or a
+                    # later restart files it under a sweep reason that never happened.
+                    from cron.executions import give_up_execution
+
+                    try:
+                        give_up_execution(
+                            execution_id,
+                            reason=(
+                                "Cron worker ended its run without a durable terminal "
+                                "state; whether side effects ran is unknown."
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Cron external worker could not settle abandoned execution %s",
+                            execution_id,
+                        )
+                    # Keep the stderr capture: it is the only diagnostic for why the
+                    # run stopped, and the waiter reports it.
+                    return False
                 # Successful return: the worker recorded its outcome. If it raises,
                 # retain fd 2's pathname until the waiter consumes the traceback.
                 with contextlib.suppress(OSError):

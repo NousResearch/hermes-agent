@@ -29,6 +29,11 @@ def channel_override_route(config: Any, source: Any) -> tuple[Optional[str], Opt
     except Exception:  # health: allow BLE001 -- a broken override must not break /new; logged
         logger.debug("Channel override provider %s unresolvable for display", ch.provider, exc_info=True)
         return model, None, ch.provider
-    route = {"provider": runtime.get("provider") or ch.provider, "base_url": runtime.get("base_url") or "",
+    # The configured identity (``custom:<name>`` / a ``providers:`` entry), not the bare ``custom``
+    # transport: /model disambiguates a model several named endpoints declare by this provider.
+    from hermes_cli.runtime_provider_custom import session_provider_identity
+    provider = session_provider_identity(runtime.get("provider"), runtime.get("requested_provider"),
+                                         runtime.get("base_url"), model) or ch.provider
+    route = {"provider": provider, "base_url": runtime.get("base_url") or "",
              "api_key": runtime.get("api_key"), "_runtime_resolved": True}
     return model or runtime.get("model") or None, route, None

@@ -58,7 +58,6 @@ from hermes_cli.cli_shutdown import (
     _float_env,
     _flush_logging_and_stdio,
     _flush_one_shot_session_store,
-    _interrupt_async_delegations,
     _invoke_interrupted_session_end,
     _notify_session_finalize,
     _notify_single_query_session_finalize,
@@ -66,14 +65,9 @@ from hermes_cli.cli_shutdown import (
     _should_emit_cleanup_session_finalize,
     _shutdown_agent_memory_provider,
     _shutdown_cached_aux_clients,
-    _shutdown_mcp_servers,
     _stop_cli_wake_word,
     _sync_process_session_id,
     _wait_for_oneshot_background_completions,
-)
-from hermes_cli.cli_auto_maintenance import (
-    _run_checkpoint_auto_maintenance,
-    _run_state_db_auto_maintenance,
 )
 from hermes_cli.cli_render import (
     ChatConsole,
@@ -1465,18 +1459,6 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
 
         try:
             with patch_stdout():
-                try:
-                    # run_in_terminal() may return either: • a coroutine / Future (prompt_toolkit ≥ 3.0) —
-                    # must be scheduled via ensure_future so the coroutine is actually awaited; calling it
-                    # bare would leave it unawaited and silently drop the output (fixes #23185 Bug A). •
-                    # None (some mocks / older PT builds) — just call the inner function directly since PT
-                    # already executed it synchronously. Do NOT fall back to a bare _pt_print when
-                    # ensure_future raises, because run_in_terminal already invoked the lambda in that case
-                    # (the mock path), which would double-print the line.
-                    import asyncio as _aio
-                    _aio.get_running_loop().set_exception_handler(self._tui_suppress_closed_loop_errors)
-                except Exception:
-                    pass  # no running loop -- nothing to patch
                 # Record that the app enables focus reporting + mouse tracking so _run_cleanup
                 # resets them; extended key modes are popped by the same reset.
                 # When multiline shortcuts are on, also ask supported terminals (e.g. iTerm2) to report

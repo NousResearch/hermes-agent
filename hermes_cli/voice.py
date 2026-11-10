@@ -200,10 +200,6 @@ def _deactivate(on_status: Optional[Callable[[str], None]] = None) -> None:
     _safe_call(on_status, "idle")
 
 
-# Push-to-talk state.
-_recorder = None
-_recorder_lock = threading.Lock()
-
 # Continuous (VAD) state.
 _continuous_lock = threading.Lock()
 _continuous_active = False
@@ -292,32 +288,6 @@ def _tally_silence(spoke: bool, held: bool, where: str) -> tuple[bool, int]:
         _continuous_no_speech_count = 0
         return True, count
     return False, count
-
-
-# ── Push-to-talk API ─────────────────────────────────────────────────
-
-
-def start_recording() -> None:
-    """Begin capturing from the default input device (push-to-talk)."""
-    global _recorder
-    with _recorder_lock:
-        if _recorder is not None and getattr(_recorder, "is_recording", False):
-            return
-        rec = create_audio_recorder()
-        rec.start()  # only publish a recorder that actually started
-        _recorder = rec
-
-
-def stop_and_transcribe() -> Optional[str]:
-    """Stop the active push-to-talk recording, transcribe, return text."""
-    global _recorder
-    with _recorder_lock:
-        rec = _recorder
-        _recorder = None
-    if rec is None:
-        return None
-    wav_path = rec.stop()
-    return _transcribe_wav(wav_path, "voice transcription failed: %s") if wav_path else None
 
 
 # ── Continuous (VAD) API ─────────────────────────────────────────────

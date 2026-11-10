@@ -3,12 +3,10 @@ with the ``session_admissions`` / ``worker_executions`` ledger (ON DELETE RESTRI
 
 Reported by @GodsBoy and @ahrazzle on #106742; fix shape by @dialapus.
 """
-import logging
 import time
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -140,29 +138,6 @@ def test_sweeps_skip_sessions_with_live_work_and_retire_the_rest(tmp_path):
         assert db.get_session('ghost_busy') is not None and db.get_session('old_busy') is not None
         with db._read_ctx() as c:
             assert not c.execute('PRAGMA foreign_key_check').fetchall()
-
-
-def test_startup_repair_latches_after_a_refusal_and_warns_once(monkeypatch, caplog, tmp_path):
-    import cli
-    import hermes_cli.config
-    import hermes_constants
-
-    monkeypatch.setattr(hermes_cli.config, 'load_config', lambda: {'sessions': {'auto_prune': False}})
-    monkeypatch.setattr(hermes_constants, 'get_hermes_home', lambda: tmp_path)
-    meta = {}
-    session_db = MagicMock()
-    session_db.get_meta.side_effect = meta.get
-    session_db.set_meta.side_effect = meta.__setitem__
-    session_db.prune_empty_ghost_sessions.side_effect = rt.RuntimeStoreError('session_busy')
-    session_db.finalize_orphaned_compression_sessions.return_value = 0
-
-    with caplog.at_level(logging.DEBUG, logger='cli'):
-        cli._run_state_db_auto_maintenance(session_db)
-        cli._run_state_db_auto_maintenance(session_db)
-    refusals = [r for r in caplog.records if 'Ghost session prune skipped' in r.getMessage()]
-    assert [r.levelno for r in refusals] == [logging.WARNING], 'refusal logged once, at warning'
-    assert session_db.prune_empty_ghost_sessions.call_count == 1, 'latched after the refusal'
-    assert meta.get('ghost_session_prune_v1')
 
 
 def _local_session(db, epoch):

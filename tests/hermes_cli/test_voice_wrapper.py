@@ -4,8 +4,7 @@ The module is imported *lazily* by ``tui_gateway/server.py`` so that a
 box with missing audio deps fails at call time (returning a clean RPC
 error) rather than at gateway startup. These tests therefore only
 assert the public contract the gateway depends on: the three symbols
-exist, ``stop_and_transcribe`` is a no-op when nothing is recording,
-and ``speak_text`` tolerates empty input without touching the provider
+exist and ``speak_text`` tolerates empty input without touching the provider
 stack.
 """
 
@@ -138,16 +137,6 @@ class TestFormatVoiceRecordKeyForStatus:
         assert format_voice_record_key_for_status("ctrl+alt+r") == "Ctrl+B"
         assert format_voice_record_key_for_status("") == "Ctrl+B"
         assert format_voice_record_key_for_status("  ") == "Ctrl+B"
-
-
-class TestStopWithoutStart:
-    def test_returns_none_when_no_recording_active(self, monkeypatch):
-        """Idempotent no-op: stop before start must not raise or touch state."""
-        from hermes_cli import voice
-
-        monkeypatch.setattr(voice, "_recorder", None)
-
-        assert voice.stop_and_transcribe() is None
 
 
 @pytest.mark.real_audio_playback

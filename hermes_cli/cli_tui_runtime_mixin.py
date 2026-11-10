@@ -156,7 +156,7 @@ class CLITuiRuntimeMixin:
             from hermes_cli.cli_inline_images import print_inline_images
             print_inline_images(self, submit_images)
 
-        self._agent_running = self._interactive_turn = True
+        self._agent_running = True
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
@@ -191,7 +191,6 @@ class CLITuiRuntimeMixin:
         self.__dict__.pop("_running_tool_labels", None)
         self._pet_react_turn_end()
         self._turn_summary_emit()
-        self._interactive_turn = False
         self._app.invalidate()
 
         # After an interrupt the renderer may have drifted (leaked CPR text, VT100 parser

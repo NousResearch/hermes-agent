@@ -130,16 +130,6 @@ def _stop_cli_wake_word() -> None:
         stop_listening(owner=_cli()._cli_wake_owner)
 
 
-def _interrupt_async_delegations() -> None:
-    from tools.async_delegation import interrupt_all
-    interrupt_all(reason="CLI shutdown")
-
-
-def _shutdown_mcp_servers() -> None:
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers()
-
-
 def _shutdown_cached_aux_clients() -> None:
     # Otherwise AsyncHttpxClientWrapper.__del__ fires on a closed loop ("Press ENTER to continue...").
     from agent.auxiliary_client import shutdown_cached_clients

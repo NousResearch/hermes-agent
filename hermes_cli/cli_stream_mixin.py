@@ -616,7 +616,6 @@ class CLIStreamMixin:
         manual compression is safe to draft through (queued input runs against compacted history).
         """
         from cli import _cprint
-        previous_blocks_input = getattr(self, "_command_blocks_input", False)
         self._command_running = True
         self._command_blocks_input = blocks_input
         self._command_status = status
@@ -626,7 +625,7 @@ class CLIStreamMixin:
             yield
         finally:
             self._command_running = False
-            self._command_blocks_input = previous_blocks_input
+            self._command_blocks_input = False
             self._command_status = ""
             self._invalidate(min_interval=0.0)
 

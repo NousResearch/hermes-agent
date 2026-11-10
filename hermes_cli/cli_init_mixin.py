@@ -170,7 +170,6 @@ class CLIInitMixin:
         self._turn_summary_collector = None
         self._turn_summary_start = 0.0
         self._turn_token_baseline = 0
-        self._interactive_turn = False  # only run()-loop turns; keeps the summary line off -Q
 
         _ump = display.get("user_message_preview", {})
         _ump = _ump if isinstance(_ump, dict) else {}
@@ -420,7 +419,6 @@ class CLIInitMixin:
     def _init_session_store(self):
         """Open the session store early (so /title works before the first message)."""
         self._session_db = None
-        self._session_db_unavailable = False
         try:
             # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
             # path a moment later from the REPL thread, and a second writer repeats the full
@@ -435,7 +433,6 @@ class CLIInitMixin:
             # chat looks healthy but resume later shows a truncated/empty session. A buried log line is not
             # enough; surface it prominently so the user knows persistence is off for this run and can fix
             # the store before relying on resume.
-            self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
             from agent.i18n import t

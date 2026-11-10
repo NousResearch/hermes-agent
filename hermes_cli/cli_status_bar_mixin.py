@@ -603,7 +603,7 @@ class CLIStatusBarMixin:
         # line only shows under --verbose; the glyph layout closes every interactive turn with it.
         if agent is not None and getattr(agent, "quiet_mode", False) and not getattr(self, "_modern_layout", False):
             return False
-        return bool(getattr(self, "_interactive_turn", False))
+        return True
 
     def _turn_summary_begin(self) -> None:
         """Start per-turn accounting for the turn that is about to run."""

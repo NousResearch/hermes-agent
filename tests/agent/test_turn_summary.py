@@ -143,7 +143,6 @@ def _make_cli(**overrides):
         _turn_summary_enabled = True
         _spinner_token_flow_enabled = True
         tool_progress_mode = "all"
-        _interactive_turn = True
         _agent_running = True
         agent = None
         _turn_summary_collector = None

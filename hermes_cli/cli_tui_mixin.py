@@ -5,7 +5,6 @@ LAZILY inside each method (``from cli import ...``) — never at module load (im
 
 from __future__ import annotations
 
-import errno
 import json
 import os
 import queue
@@ -1378,16 +1377,6 @@ class CLITuiMixin:
         except Exception as e:
             logger.debug("wake-word startup skipped: %s", e)
 
-    def _tui_suppress_closed_loop_errors(self, loop, context):
-        exc = context.get("exception")
-        if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
-            return
-        if isinstance(exc, KeyError) and "is not registered" in str(exc):
-            return  # selector registration failures (#6393)
-        if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
-            return  # broken stdout on interrupt (#13710)
-        loop.default_exception_handler(context)
-
     def _tui_handle_enter(self, event):
         """Enter: submit input.
 
@@ -1960,11 +1949,8 @@ class CLITuiMixin:
             kb.add('escape', 'g', filter=_editor_filter)(self._tui_handle_open_in_editor))
         # Ctrl+S prompt stash: park a draft, send something else, bring it back. Suppressed while
         # a modal prompt owns the composer so Ctrl+S can't stash a password.
-        _stash_filter = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
-            and not self._secret_state and not self._connection_state and not self._slash_confirm_state
-            and not self._model_picker_state
-        )
+        from hermes_cli.cli_subagent_monitor import modal_prompt_active
+        _stash_filter = Condition(lambda: not modal_prompt_active(self))
         _stash_panel_filter = Condition(lambda: self._prompt_stash.panel_open and bool(len(self._prompt_stash)))
         kb.add('c-s', filter=_stash_filter)(self._tui_handle_prompt_stash)
         kb.add('up', filter=_stash_panel_filter, eager=True)(self._tui_handle_stash_panel_up)

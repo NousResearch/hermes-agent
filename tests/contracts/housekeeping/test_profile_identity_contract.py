@@ -1,6 +1,6 @@
 """Contract suite for the profile_identity capability.
 
-Every case runs a real assembled backend, seeds a profile's identity through the public sessions, routing, bindings and maintenance operations, and observes through public reads. The behaviour pinned for ``rekey_profile`` / ``purge_profile``: names stripped, empty or equal names a no-op with empty counts, collisions refused before any write, one count per facet the store has, the API binding and local creation receipts moved with the name.
+Every case runs a real assembled backend, seeds a profile's identity through the public sessions, routing, bindings and maintenance operations, and observes through public reads. The behaviour pinned for ``rekey_profile`` / ``purge_profile``: names stripped, empty or equal names a no-op with empty counts, collisions refused before any write, one count per facet the store has, the API binding and local creation receipts moved with the name, a reply in the delivery ledger moved by a rename and abandoned by a purge unless it was delivered.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pytest
 
 from persistence import Conflict, ProfileScope, SessionId
 from persistence.authority.bindings import NewApiBinding, NewSessionBinding
+from persistence.authority.coordination import OwnerStamp, RecordedOwner
 from persistence.conversation.sessions import NewSession
 from persistence.housekeeping.profile_identity import ProfileIdentityCollision, ProfilePurgeCounts, ProfileRekeyCounts, profile_namespace
 from tests.contracts.authority.test_bindings_api_contract import STAMP, STARTED
@@ -245,6 +246,61 @@ def test_rekey_counts_receipts_even_when_none_are_stored(backend, scope_a):
     facts = store_a.profile_identity.rekey_profile(OLD, NEW).as_dict()
     assert (facts["api_binding_receipts"], facts["local_policy_receipts"]) == (0, 0)
     assert list(facts)[-3:] == ["gateway_routing", "api_binding_receipts", "local_policy_receipts"]
+
+
+SENDER, SWEEPER = OwnerStamp(pid=11, started_at=111), OwnerStamp(pid=22, started_at=222)
+
+
+def record_reply(store, obligation_id: str, session_key: str, profile: str | None) -> None:
+    """One reply in the delivery ledger, owned by ``SENDER``."""
+    store.coordination.record_delivery_obligation(obligation_id=obligation_id, session_key=session_key, platform=NS, chat_id="42",
+                                                  thread_id=None, content="reply", adapter_profile=profile, owner=SENDER)
+
+
+def recovered(store) -> dict[str, tuple[str, str]]:
+    """The replies a sweep after ``SENDER`` died claims, as ``{id: (session_key, profile)}``."""
+    claimed = store.coordination.sweep_recoverable_obligations(owner=SWEEPER, dead_owners=frozenset({RecordedOwner(SENDER.pid, SENDER.started_at)}))
+    return {row.obligation_id: (row.session_key, row.profile) for row in claimed}
+
+
+def test_rekey_moves_delivery_obligations_to_the_new_name(backend, scope_a):
+    store_a = backend.open(scope_a)
+    keep_key = profile_namespace(BYSTANDER) + f"{NS}:t1"
+    record_reply(store_a, "reply-old", profile_namespace(OLD) + f"{NS}:t1", OLD)
+    record_reply(store_a, "reply-keep", keep_key, BYSTANDER)
+    for obligation_id in ("reply-old", "reply-keep"):
+        store_a.coordination.mark_obligation_failed(obligation_id=obligation_id, error="send failed")
+    counts = store_a.profile_identity.rekey_profile(OLD, NEW)
+    # CONTRACT: a reply's owner tag and its session key move with the name, each counted.
+    assert (counts.delivery_obligations_adapter_profile, counts.delivery_obligations_session_key) == (1, 1)
+    # CONTRACT: the failed reply is the new name's retry now, and no longer the old name's.
+    assert [row.obligation_id for row in store_a.coordination.list_runtime_retry_candidates(NS, profile=NEW, owner=SENDER)] == ["reply-old"]
+    assert store_a.coordination.list_runtime_retry_candidates(NS, profile=OLD, owner=SENDER) == ()
+    # CONTRACT: a repeated rename counts zero replies.
+    again = store_a.profile_identity.rekey_profile(OLD, NEW)
+    assert (again.delivery_obligations_adapter_profile, again.delivery_obligations_session_key) == (0, 0)
+    # CONTRACT: a recovered reply carries the new key and name; ``alpha_x``'s reply keeps its own.
+    assert recovered(store_a) == {"reply-old": (profile_namespace(NEW) + f"{NS}:t1", NEW), "reply-keep": (keep_key, BYSTANDER)}
+
+
+def test_purge_abandons_unfinished_replies_and_leaves_delivered_history(backend, scope_a):
+    store_a = backend.open(scope_a)
+    key = profile_namespace(OLD) + f"{NS}:t1"
+    record_reply(store_a, "reply-pending", key, OLD)
+    record_reply(store_a, "reply-failed", key, OLD)
+    store_a.coordination.mark_obligation_failed(obligation_id="reply-failed", error="send failed")
+    record_reply(store_a, "reply-tagged", f"{NS}:dm:42", OLD)
+    record_reply(store_a, "reply-keyed", key, None)
+    record_reply(store_a, "reply-delivered", key, OLD)
+    store_a.coordination.mark_obligation_delivered(obligation_id="reply-delivered")
+    record_reply(store_a, "reply-keep", profile_namespace(BYSTANDER) + f"{NS}:t1", BYSTANDER)
+    # CONTRACT: every unfinished reply the profile holds by owner tag OR key namespace is abandoned; a delivered one is not touched.
+    assert store_a.profile_identity.purge_profile(OLD).delivery_obligations == 4
+    # CONTRACT: an abandoned reply is neither recovered nor retried; another profile's reply still is.
+    assert store_a.coordination.list_owned_failed_obligations(owner=SENDER) == ()
+    assert recovered(store_a) == {"reply-keep": (profile_namespace(BYSTANDER) + f"{NS}:t1", BYSTANDER)}
+    # CONTRACT: idempotent; abandoned and delivered rows count zero on a second purge.
+    assert store_a.profile_identity.purge_profile(OLD).delivery_obligations == 0
 
 
 def test_profile_identity_is_scope_isolated(backend, scope_a, scope_b):

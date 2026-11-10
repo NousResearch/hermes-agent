@@ -296,21 +296,21 @@ async def test_silent_cron_delivery_does_not_retrigger_typing(adapter, rich):
 
     adapter._bot = MagicMock()
     adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
-    adapter._bot.send_chat_action = AsyncMock()
     adapter._rich_messages_enabled = rich
     adapter._should_attempt_rich = lambda *_a, **_k: rich
     adapter._try_send_rich = AsyncMock(return_value=SimpleNamespace(success=True, message_id="1"))
+    adapter.send_typing = AsyncMock()  # the re-arm itself; per-chat typing pacing is telegram_typing_gate's job
 
     result = await adapter.send("12345", "Cron brief", metadata={"job_id": "j1", "notify": False})
     for _ in range(5):
         await asyncio.sleep(0)
     assert result.success is True
-    adapter._bot.send_chat_action.assert_not_called()
+    adapter.send_typing.assert_not_called()
 
     await adapter.send("67890", "Working on it")
     for _ in range(5):
         await asyncio.sleep(0)
-    adapter._bot.send_chat_action.assert_called_once()
+    adapter.send_typing.assert_called_once()
 
 
 # =========================================================================

@@ -9,28 +9,7 @@ repo: https://github.com/JerryLiu369/hermes-proactive-agent
 sha: 8c6630fbb09920c83199cd73275e27d13437645a
 subdir: proactive-agent
 title: Proactive Agent
-description: >-
-  Turn governance and supervision for long chat turns. After 60 s in one turn the main agent is
-  reminded to answer or delegate, and at 120 s editing and execution pause while reads,
-  delegate_task and wrap-up tools stay available; a foreground terminal command running past 30 s
-  is asked to yield to Hermes's background process registry (the same path a mid-turn user
-  message takes) so the turn is released instead of hanging. Each
-  subagent is briefed before it starts with the user's own words, memory and the task ledger; a
-  subagent that returns the same step result repeatedly is stopped, a subagent's open question is
-  carried back to the main agent, and a background subagent's result is repeated until the user has
-  seen it. Delegated tasks are recorded in a SQLite ledger that survives gateway restarts.
-  Governance is a positive allowlist: only the platforms named in governed_platforms (default
-  weixin) and the subagents they spawn are affected, and every other surface runs untouched.
-  Disclosure — registers hooks for pre_llm_call, pre_api_request, pre_auxiliary_call,
-  post_auxiliary_call, pre_tool_call, post_tool_call, transform_tool_result, subagent_start,
-  subagent_stop, on_session_end, on_session_reset and on_session_finalize, plus a tool_execution
-  middleware that wraps each tool call and, on governed terminal calls only, starts the 30 s
-  background timer, so for governed sessions it can amend tool arguments and results, LLM request messages and subagent handoffs. It
-  writes a local ledger.db under the plugin's Hermes data directory. It reads its own config keys,
-  Hermes session flags (platform, cron), and the user's USER.md and MEMORY.md, which it copies in
-  full into every governed delegate_task brief, so whatever they hold about the user reaches those
-  subagents. No network calls, no agent tools, no credentials, no environment secrets, no shell
-  commands.
+description: "Turn governance and supervision for long chat turns. After 60 s in one turn the main agent is reminded to answer or delegate, and at 120 s editing and execution pause while reads, delegate_task and wrap-up tools stay available; a foreground terminal command running past 30 s is asked to yield to Hermes's background process registry (the same path a mid-turn user message takes) so the turn is released instead of hanging. Each subagent is briefed before it starts with the user's own words, memory and the task ledger; a subagent that returns the same step result repeatedly is stopped, a subagent's open question is carried back to the main agent, and a background subagent's result is repeated until the user has seen it. Delegated tasks are recorded in a SQLite ledger that survives gateway restarts. Governance is a positive allowlist: only the platforms named in governed_platforms (default weixin) and the subagents they spawn are affected, and every other surface runs untouched. Disclosure — registers hooks for pre_llm_call, pre_api_request, pre_auxiliary_call, post_auxiliary_call, pre_tool_call, post_tool_call, transform_tool_result, subagent_start, subagent_stop, on_session_end, on_session_reset and on_session_finalize, a system-prompt section and a tool_execution middleware, so for governed sessions it can block or amend tool calls and results, LLM request context and subagent handoffs, and asks a governed foreground terminal command still running after 30 s to move to Hermes's background process registry (through core's internal yield flag, which a Hermes release may change); it copies your Hermes USER.md and MEMORY.md memory files in full into every governed delegate_task brief, can start an internal agent turn via inject_message to re-report an unseen subagent result, and writes a local ledger.db under the plugin's Hermes data directory; no network calls, no agent tools, no credentials, no shell commands."
 maintainer: JerryLiu369
 tier: community
 category: automation

@@ -17,6 +17,11 @@ platforms: [linux]
 attested_binaries:
   - bin/physis-core
   - bin/replant
+known_issues:
+  - "Replay freshness is partial: only captured files up to 1 MiB are fingerprinted, so a dependency outside that set can change and replay will still proceed. The check that matters is the tool registry and engine digest; the captured-file set is a floor, not a proof of sameness."
+  - "Operator-approved commands execute with host privileges. Approval is a boundary on what the model may ask for, not a sandbox: an approved command can read any file the user can read and can reach the network."
+  - "Python entry points need a Python interpreter (standard library only). The two bundled engines are native ELF binaries; no interpreter is needed for them."
+  - "Bundled binaries are Linux x86_64 only."
 capabilities:
   provides_tools:
     - physis_engine_status

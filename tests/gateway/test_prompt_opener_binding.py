@@ -81,7 +81,7 @@ async def _tap_discord(tapper, monkeypatch):
     applied = await _open_reasoning_picker(_Adapter())
     view = discord_mod.ChoicePickerView(choices=sent["choices"], on_choice_selected=sent["on_choice_selected"],
                                         allowed_user_ids=set(), allowed_role_ids=set())
-    view.approval_extra = EXTRA  # bound by the adapter's _send_prompt
+    view.answer_extra = EXTRA  # bound by the adapter's _send_prompt
     response = SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock(), edit_message=AsyncMock())
     await view._on_select(SimpleNamespace(user=SimpleNamespace(id=tapper, display_name=tapper), data={"values": ["xhigh"]},
                                           channel_id=1, guild=object(), channel=object(), response=response))
@@ -124,7 +124,11 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
     response = tmp_path / ".update_response"
 
     if surface == "typed":
-        reply = runner._hm_update_prompt_reply(MessageEvent(text="yes", source=_source(sender)), key)
+        typed = MessageEvent(text="yes", source=_source(sender))
+        with patch("agent.estop.paused_reply", return_value="PAUSED"):  # `hermes pause` is on
+            # Only the opener's reply is the prompt's answer; anyone else's is a new turn, still paused.
+            assert (runner._hm_estop_gate(typed, typed.source, False) is None) is (sender == "alice")
+        reply = runner._hm_update_prompt_reply(typed, key)
         assert (reply is not None) is (sender == "alice")
     else:
         from plugins.platforms.telegram.adapter import TelegramAdapter

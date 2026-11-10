@@ -93,7 +93,7 @@ def opener_refusal(view, interaction) -> Optional[str]:
     on_selected = getattr(view, "on_model_selected", None) or getattr(view, "on_choice_selected", None)
     if on_selected is not None:
         requester = picker_refusal(on_selected, actor, extra=extra)
-    elif type(view).__name__ == "UpdatePromptView":
+    elif getattr(view, "is_update_prompt", False):
         requester = update_prompt_refusal(actor, extra=extra)
     else:
         return None

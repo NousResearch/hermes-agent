@@ -918,7 +918,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"
-        "Helpers must be imported from hermes_tools too: json_parse(text) — tolerant "
+        "Helpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. "
+        "json_parse(text) — tolerant "
         "json.loads for terminal() output; shell_quote(s) — shlex.quote for "
         "dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff."
     )

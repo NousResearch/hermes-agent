@@ -53,6 +53,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EMPTY_RETRY_BUDGET = 3
 REDUCED_EMPTY_RETRY_BUDGET = 1
+# Reasoning-only replies reach the plain retries only after both completion reminders
+# failed; a plain retry re-sends the original request, so the model re-derives the same
+# reasoning. Allow one (sent with reasoning off), then fallback / terminal.
+REASONING_ONLY_RETRY_BUDGET = 1
 DEFAULT_COST_THRESHOLD_USD = Decimal("0.25")
 DEFAULT_GUARD_ENABLED = True
 

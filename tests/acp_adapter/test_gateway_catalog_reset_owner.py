@@ -27,7 +27,7 @@ def _acp_local_session(db, epoch, cwd):
 
 
 def test_reset_child_maps_to_its_owner_while_legacy_reset_histories_stay_independent(tmp_path):
-    path = tmp_path / 'state.db'
+    path = tmp_path
     with open_persistence(profile_scope(home=tmp_path)) as db:
         epoch = db.runtime.begin_epoch(instance_id='owner')
         sid = _acp_local_session(db, epoch, tmp_path)

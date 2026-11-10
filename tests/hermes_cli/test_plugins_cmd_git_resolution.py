@@ -31,6 +31,7 @@ def _pm_reports_git(monkeypatch, binary: Path | None) -> None:
     monkeypatch.setattr(pm, "installed_package", lambda name, **_kw: installed if name == "git" else None)
 
 
+@pytest.mark.platforms("any")
 @pytest.mark.parametrize("pm_has_git", [True, False], ids=["pm-git", "no-pm-git"])
 def test_plugin_git_prefers_pm_pinned_git_over_path(resolve_git, tmp_path, monkeypatch, pm_has_git):
     """Plugin git operations run the git PM pinned for this install, not one the user put on PATH;
@@ -45,6 +46,7 @@ def test_plugin_git_prefers_pm_pinned_git_over_path(resolve_git, tmp_path, monke
     assert Path(resolve_git() or "") == (pinned if pm_has_git else path_git)
 
 
+@pytest.mark.platforms("any")
 def test_plugin_git_rechecks_pm_after_pin_is_installed(resolve_git, tmp_path, monkeypatch):
     """An existing gateway must use a PM git installed after its first plugin lookup.
 

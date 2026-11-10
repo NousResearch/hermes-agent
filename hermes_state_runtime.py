@@ -561,9 +561,6 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
     return result
 
 
-_IMPORT_KEY = 'gateway.prompt_admissions_import.v1'
-
-
 def _canonical_chain(conn, session_id):
     # Same selector as SessionDB.get_compression_chain, on OUR transaction connection.
     from hermes_state_compression import _CHAIN_STEP_SQL
@@ -577,81 +574,6 @@ def _canonical_chain(conn, session_id):
             raise RuntimeStoreError('admission_conflict')
         chain.append(child['id'])
     raise RuntimeStoreError('admission_conflict')
-
-
-def _import_legacy_row(conn, row, epoch, principal_id):
-    for field in ('admission_id', 'target_session_id', 'root'):
-        _text(row[field])
-    lineage = json.loads(row['lineage'])
-    if not isinstance(lineage, list) or row['target_session_id'] not in lineage:
-        raise RuntimeStoreError('invalid_params')
-    payload = json.loads(row['payload'])
-    encoded = _json(payload)
-    intent = payload.get('intent', 'queue')
-    intent = 'redirect' if intent == 'interrupt' else intent
-    if intent not in ('queue', 'steer', 'redirect') or row['status'] not in ('queued', 'started', 'unknown', 'terminal'):
-        raise RuntimeStoreError('invalid_params')
-    chain = _canonical_chain(conn, row['target_session_id'])
-    target = chain[-1]
-    status = 'unknown' if row['status'] == 'started' else row['status']
-    generation = row['generation']
-    if generation is None and status == 'unknown':
-        generation = _session(conn, target)['runtime_generation'] + 1
-    if generation is not None and (type(generation) is not int or generation < 0):
-        raise RuntimeStoreError('invalid_params')
-    digest = admission_fingerprint(canonical_target=target, payload={'input': payload, 'intent': intent})
-    conn.execute("""INSERT INTO session_admissions(admission_id,request_id,principal_id,
-        target_session_id,lineage_json,payload_json,payload_digest,intent,status,outcome,owner_epoch,generation)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (row['admission_id'], row['admission_id'], principal_id,
-        target, json.dumps(chain), encoded, digest, intent, status, row['outcome'], epoch, generation))
-    if generation is not None:
-        conn.execute('UPDATE sessions SET runtime_generation=MAX(runtime_generation,?) WHERE id=?', (generation, target))
-
-
-def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_id: str,
-                                     writers_drained: bool) -> int:
-    """Import a frozen legacy snapshot; original file remains rollback evidence.
-
-    The caller proves the old writers are drained before invoking this function.
-    Fingerprinting uses SQL snapshot data, never a raw open/close on a live inode.
-    """
-    from contextlib import closing
-    from pathlib import Path
-    import hashlib
-    import sqlite3
-    from hermes_cli.sqlite_safe_read import connect_tracked
-    if writers_drained is not True:
-        raise RuntimeStoreError('invalid_params')
-    _text(principal_id)
-    source_path = Path(source_path).resolve(strict=True)
-    with closing(connect_tracked(source_path.as_uri() + '?mode=ro', uri=True)) as source:
-        source.row_factory = sqlite3.Row
-        source.execute('PRAGMA query_only=ON')
-        source.execute('BEGIN')
-        rows = [dict(r) for r in source.execute('SELECT * FROM admissions ORDER BY seq')]
-        executions = []
-        if source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='executions'").fetchone():
-            executions = [dict(r) for r in source.execute('SELECT * FROM executions ORDER BY root')]
-        fingerprint = hashlib.sha256(_json({'rows': rows, 'executions': executions}).encode('utf-8')).hexdigest()
-        marker = _json({'source': str(source_path), 'fingerprint': fingerprint, 'imported_id_count': len(rows), 'principal_id': principal_id})
-        def write(conn):
-            _epoch(conn, epoch)
-            old = conn.execute('SELECT value FROM state_meta WHERE key=?', (_IMPORT_KEY,)).fetchone()
-            if old is not None:
-                if old[0] != marker:
-                    raise RuntimeStoreError('admission_conflict')
-                return 0
-            for execution in executions:
-                generation = execution['generation']
-                if type(generation) is not int or generation < 0:
-                    raise RuntimeStoreError('invalid_params')
-                target = _canonical_chain(conn, _text(execution['root']))[-1]
-                conn.execute('UPDATE sessions SET runtime_generation=MAX(runtime_generation,?) WHERE id=?', (generation, target))
-            for row in rows:
-                _import_legacy_row(conn, row, epoch, principal_id)
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (_IMPORT_KEY, marker))
-            return len(rows)
-        return db._execute_write(write)
 
 
 def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int,

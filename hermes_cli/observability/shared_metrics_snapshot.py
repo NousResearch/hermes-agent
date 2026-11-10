@@ -92,6 +92,8 @@ def _first_session_started_at(home: Path | None = None) -> float | None:
 
     Raises ``sqlite3.Error`` when state.db exists but cannot be read.
     """
+    from hermes_state_holders import read_only_db_uri
+
     home = home or get_hermes_home()
     if str(home) in _first_session_at:
         return _first_session_at[str(home)]
@@ -99,7 +101,7 @@ def _first_session_started_at(home: Path | None = None) -> float | None:
     if not database.exists():
         return time.time()
     with contextlib.closing(
-        sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=1)
+        sqlite3.connect(read_only_db_uri(database), uri=True, timeout=1)
     ) as connection:
         row = connection.execute("SELECT MIN(started_at) FROM sessions").fetchone()
     if not row or row[0] is None:

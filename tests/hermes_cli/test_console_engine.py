@@ -351,3 +351,21 @@ def test_config_set_on_unparseable_yaml_reports_error_not_crash(tmp_path, monkey
     assert "formatting error" in (result.output or "")
     # The broken-but-recoverable file must survive untouched.
     assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_sessions_repair_targets_the_scoped_profile_store(_isolate_hermes_home, monkeypatch):
+    """The dashboard Console runs each command inside the selected profile's scope, so
+    `sessions repair` must check that profile's state.db, not the launch profile's."""
+    import hermes_state
+    from hermes_cli.profiles import create_profile
+    from hermes_cli.web_server_profiles import _profile_scope
+    from hermes_state import SessionDB
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    profile_home = create_profile("b", no_alias=True, no_skills=True)
+    SessionDB(profile_home / "state.db").close()
+
+    with _profile_scope("b"):
+        result = HermesConsoleEngine().execute("sessions repair --check-only", confirmed=True)
+
+    assert f"{profile_home / 'state.db'} opens cleanly" in result.output, result.output

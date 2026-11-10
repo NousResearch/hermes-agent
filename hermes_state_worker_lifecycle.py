@@ -2,7 +2,7 @@
 import json
 import time
 
-from hermes_state_common import _MERGE_DISPLAY_META
+from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM, TITLE_SOURCE_USER, _MERGE_DISPLAY_META
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -12,6 +12,7 @@ _IDENTITY_FIELDS = frozenset({
 })
 _CREATE_FIELDS = _IDENTITY_FIELDS | {'source', 'model', 'model_config', 'system_prompt'}
 _CONSTRUCTOR_CONFIG = frozenset({'max_iterations', 'max_tokens', 'reasoning_config', 'yolo_mode'})
+_TITLE_SOURCES = (TITLE_SOURCE_USER, TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM)
 
 
 def worker_create(db, conn, session_id, payload):
@@ -61,7 +62,7 @@ def worker_lifecycle(db, conn, session_id, payload):
 
 
 def worker_title(db, conn, session_id, payload):
-    if (set(payload) != {'title', 'source'} or payload['source'] not in ('user', 'derived', 'llm')
+    if (set(payload) != {'title', 'source'} or payload['source'] not in _TITLE_SOURCES
             or not (payload['title'] is None or isinstance(payload['title'], str))):
         raise RuntimeStoreError('invalid_params')
     try:
@@ -75,7 +76,7 @@ def worker_title(db, conn, session_id, payload):
 
 
 def worker_title_source(db, conn, session_id, payload):
-    if set(payload) != {'source'} or payload['source'] not in ('user', 'derived', 'llm'):
+    if set(payload) != {'source'} or payload['source'] not in _TITLE_SOURCES:
         raise RuntimeStoreError('invalid_params')
     return {'value': conn.execute(
         'UPDATE sessions SET title_source=? WHERE id=? AND title IS NOT NULL',

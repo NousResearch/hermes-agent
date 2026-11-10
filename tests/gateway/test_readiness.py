@@ -93,3 +93,14 @@ def test_readiness_uses_running_session_store_state_over_independent_probe(
     assert recovered["checks"]["session_store"] == {"status": "ok"}
 
 
+
+
+def test_state_db_probe_reads_the_store_under_a_home_whose_path_contains_a_hash(tmp_path):
+    from gateway.readiness import _probe_state_db
+
+    home = tmp_path / "team#1" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "state.db").write_bytes(b"not a sqlite database" * 64)
+
+    assert _probe_state_db(home)["status"] == "degraded"
+    assert not (tmp_path / "team").exists()

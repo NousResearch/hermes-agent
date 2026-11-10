@@ -124,8 +124,9 @@ def _write_output(output, text, summary) -> None:
 # -- handlers that must run BEFORE SessionDB() is opened ----------------------
 
 def _cmd_repair(args):
-    from hermes_state import DEFAULT_DB_PATH as db_path, SessionDB
+    from hermes_state import SessionDB, _default_db_path
     from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
+    db_path = _default_db_path()
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return

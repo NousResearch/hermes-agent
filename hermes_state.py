@@ -448,13 +448,6 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]
     return path
 
 
-# Process-wide shared SessionDB registry: long-lived in-process callers share ONE writer
-# connection per resolved path via hermes_state_registry.acquire(); one-shots use SessionDB() + close().
-def _foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
-    """Compatibility delegate to the state-holder authority."""
-    return _state_holders.foreign_state_db_holders(db_path)
-
-
 # ── Process-wide shared SessionDB registry (#90837) ── lives in hermes_state_registry.py (acquire /
 # release / close_all / release_or_close). Long-lived in-process callers (gateway, tui_gateway, cron,
 # in-process tools) share ONE writer connection per resolved path via hermes_state_registry.acquire(); CLI
@@ -1469,7 +1462,7 @@ class SessionDB(
 
     def _foreign_state_db_holders(self) -> list[tuple[int, str]]:
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
-        return _foreign_state_db_holders(self.db_path)
+        return _state_holders.foreign_state_db_holders(self.db_path)
 
     def _quarantine_reason(self) -> Optional[str]:
         """Why this handle must not checkpoint or run in-file repair, or None. A corrupted image has

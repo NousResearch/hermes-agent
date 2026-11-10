@@ -378,12 +378,6 @@ class SessionSchemaMixin:
             return
         self._run_admitted_startup_rebuild(cursor, do_align)
 
-    @staticmethod
-    def _sqlite_table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
-        return cursor.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,),
-        ).fetchone() is not None
-
     def _migrate_trigram_cron_exclusion(self, cursor: sqlite3.Cursor) -> bool:
         """Install the source-filtered trigram view and purge historical rows (v29 cron exclusion,
         v30 subagent exclusion: both only change the view/trigger predicate and rebuild from it).

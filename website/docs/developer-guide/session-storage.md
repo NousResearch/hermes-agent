@@ -309,7 +309,7 @@ live SQLite coordination files immutable.
 
 ## Schema Version and Migrations
 
-Current schema version: **31**
+Current schema version: **33**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -334,10 +334,12 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 29 | Cron sessions leave the trigram (substring/CJK) index; `messages_fts_trigram_src` view + triggers filter on `sessions.source`, one-time rebuild purges historical rows |
 | 30 | Delegate-child (subagent) sessions leave the trigram index too — `source='subagent'` or the `$._delegate_from` marker (`FTS_TRIGRAM_SESSION_SQL`). Rows stay in `messages` and the standard `messages_fts` word index, so `session_search` still finds them; only the ~2.6× trigram shadow tables shrink. Same one-time rebuild as v29 |
 | 31 | `messages.message_uid`, `absorbed_message_uids`, `tool_call_uids`, `tool_call_uid` (declarative column adds), a backfill of a fresh `message_uid` onto every row that predates the column (2,000-id chunks, each its own short write; one open spends about a second past its first chunk and resumes from the `message_uid_backfill_id` meta cursor on the next open, until the `message_uid_backfill` marker ends it, so a large store never holds the write lock for the whole table), and the `messages_message_uid_insert` trigger that mints one for any row inserted without it (an older build writing into the store), so a v31 store hands every row to consumers with an id (tool-call uids are minted when a row is next written; results are paired on restore) |
+| 32 | Version bump only: declared runtime ledger tables (no data migration) |
+| 33 | Re-tag delegate subagent rows that lost `_delegate_from` |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 
-Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
+Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version is written once, after every data migration in the chain has run.
 
 
 ## Write Contention Handling
@@ -408,7 +410,7 @@ db.create_session(
 )
 
 # End a session
-db.end_session("sess_abc123", end_reason="user_exit")
+db.end_session("sess_abc123", end_reason="cli_close")
 
 # Reopen a session (clear ended_at/end_reason)
 db.reopen_session("sess_abc123")

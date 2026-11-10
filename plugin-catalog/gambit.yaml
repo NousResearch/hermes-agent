@@ -1,7 +1,7 @@
 name: gambit
 title: Gambit for Hermes
 repo: "https://github.com/itsflownium/gambit-hackathon"
-sha: "ba2af085fae9c9baddda86aa519a4ea9109259e7"
+sha: "b4564d7708d4d7f15ca41be064740fca3274598a"
 description: Play chess in a Hermes terminal or Desktop pane, understand mistakes, and replay or practice public Chess.com and Lichess matches.
 maintainer: itsflownium
 tier: community
@@ -10,10 +10,10 @@ requires_hermes: ">=0.23.0"
 version: "0.3.0"
 readme: true
 platforms: [macos]
-docs_url: "https://github.com/itsflownium/gambit-hackathon/blob/ba2af085fae9c9baddda86aa519a4ea9109259e7/README.md"
+docs_url: "https://github.com/itsflownium/gambit-hackathon/blob/b4564d7708d4d7f15ca41be064740fca3274598a/README.md"
 screenshots:
-  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/ba2af085fae9c9baddda86aa519a4ea9109259e7/docs/terminal-preview.png"
-  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/ba2af085fae9c9baddda86aa519a4ea9109259e7/docs/import-preview.png"
+  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/b4564d7708d4d7f15ca41be064740fca3274598a/docs/terminal-preview.png"
+  - "https://raw.githubusercontent.com/itsflownium/gambit-hackathon/b4564d7708d4d7f15ca41be064740fca3274598a/docs/import-preview.png"
 known_issues:
   - Requires a separately installed local Stockfish executable; it is not bundled or downloaded automatically. Hermes Desktop is optional for the graphical pane.
   - The standalone terminal board requires an interactive terminal with Python curses support and uses a separate Gambit session in the active profile.

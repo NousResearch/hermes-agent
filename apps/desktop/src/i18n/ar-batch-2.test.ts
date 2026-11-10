@@ -5,6 +5,16 @@ import { arBatch2 } from './ar_batch_2'
 import { en } from './en'
 
 describe('Arabic batch 2 overlay', () => {
+  it('localizes same-build engine repairs without dropping the build tag', () => {
+    const tag = 'fixture-build-tag'
+    const detail = ar.settings.localModels.updateSameBuildDetail(tag)
+
+    expect(detail).not.toBe(en.settings.localModels.updateSameBuildDetail(tag))
+    expect(detail).toContain(tag)
+    expect(detail).toContain('Hermes')
+    expect(detail).toContain('llama.cpp')
+  })
+
   it('renders batch values and keeps existing Arabic siblings', () => {
     expect(ar.agents.ageDays(2)).toBe('منذ 2 يوم')
     expect(ar.zones.newTab).toBe('تبويب جديد')

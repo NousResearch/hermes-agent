@@ -689,6 +689,8 @@ export const arBatch2Settings = {
     updateAction: 'تحديث المحرك',
     updateDetail: (next, current) =>
       `إصدار أحدث من llama.cpp (${next}) جاهز للتثبيت — ولديك ${current}. تستمر النماذج بالعمل أثناء التنزيل.`,
+    updateSameBuildDetail: tag =>
+      `أصبح Hermes يضمّ llama.cpp \u2068${tag}\u2069 مع الملفات اللازمة لتشغيله. سيُعاد تنزيل المحرّك عند التحديث، وتبقى النماذج متاحة أثناء التنزيل.`,
     updateTitle: 'يتوفر تحديث للمحرك',
     updating: 'جارٍ تحديث المحرك…',
     useAction: 'استخدام',

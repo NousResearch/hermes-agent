@@ -26,11 +26,11 @@ MANAGED_KEY = "ZZ_ADMINISTRATOR_PINNED_KEY"
 OWNERS: dict[str, Owner] = {
     "a": Principal("p1"), "b": Principal("p1"), "c": Group("g2"), "d": Group("g2"),
 }
-#: How the fixture's injected mid-write failure fails at each named failure point: the write
-#: itself and the atomic replace with a plain ``OSError``, the serialization with a
+#: How the fixture's injected mid-write failure fails at each named failure point: the write's
+#: preparation and the atomic replace with a plain ``OSError``, the serialization with a
 #: ``TypeError``. The in-memory store has one write step, so every named point fails there —
 #: the nearest point it has to each.
-_INJECTED = {"write": OSError, "encode": TypeError, "replace": OSError}
+_INJECTED = {"prepare": OSError, "encode": TypeError, "replace": OSError}
 
 
 def _owner_key(owner: Owner) -> tuple[str, str]:
@@ -255,9 +255,9 @@ def reference_backend() -> Backend:
         """While active, every write fails part-way through at the failure point *kind* names
         (``hermes_conformance.secrets.suite.WRITE_FAILURES``): the in-memory store has one
         write step, so each named point fails there — the nearest point it has — with its
-        kind of error (a plain ``OSError`` for the write and the replace, a ``TypeError`` for
-        the encode), with the caller's value (or record) already bound on the store's own
-        frame."""
+        kind of error (a plain ``OSError`` for the preparation and the replace, a
+        ``TypeError`` for the encode), with the caller's value (or record) already bound on
+        the store's own frame."""
         provider.fail_writes = kind
         try:
             yield

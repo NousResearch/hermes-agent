@@ -117,3 +117,18 @@ def test_background_review_one_item_remove_of_the_last_entry_is_staged_not_appli
         reset_current_write_origin(token)
     assert result["staged"] is True
     assert store.user_entries == ["Name: Alice"]
+
+
+def test_a_disabled_store_is_never_named_in_the_advertised_schema():
+    """With one built-in store off, the model must not be told the other target exists: the enum,
+    the tool description and the target description all describe the enabled store only."""
+    from tools.memory_tool import _build_memory_schema_overrides, _memory_surface_flags
+
+    for flags, enabled, disabled in (((True, False), "memory", "user"), ((False, True), "user", "memory")):
+        _memory_surface_flags.set(flags)
+        schema = {**MEMORY_SCHEMA, **_build_memory_schema_overrides()}
+        target = schema["parameters"]["properties"]["target"]
+        assert target["enum"] == [enabled]
+        assert f"'{enabled}'" in target["description"]
+        assert f"'{disabled}'" not in json.dumps(schema)
+

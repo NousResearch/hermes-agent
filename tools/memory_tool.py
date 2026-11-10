@@ -375,22 +375,17 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes to one target in ONE call via an 'operations' array (each "
-        "item: {action, content?, old_text?}). The batch applies atomically and the char limit is "
-        "checked only on the FINAL result — so a single call can remove/patch stale entries "
-        "to free room AND add new ones, even when an add alone would overflow. The response "
-        "reports current/limit chars and confirms completion; one batch call finishes the "
-        "update, so don't repeat it.\n\n"
+        "HOW: make ALL your changes to one target in ONE call. The batch applies atomically and "
+        "the char limit is checked only on the FINAL result — so a single call can remove/patch "
+        "stale entries to free room AND add new ones, even when an add alone would overflow. If "
+        "an add is rejected as full (the current entries are shown), reissue it as ONE such "
+        "batch. The response reports current/limit chars and confirms completion; one batch "
+        "call finishes the update, so don't repeat it.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "
         "corrections for that kind of work) belongs in the task's skill via skill_manage, "
-        "where it loads only when relevant; memory is injected into every turn and must "
-        "stay small.\n\n"
-        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
-        "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "where it loads only when relevant.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."
@@ -404,14 +399,12 @@ MEMORY_SCHEMA = {
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": ("'user' = who the user is (name, role, preferences, style). 'memory' = your "
+                                "notes (environment, conventions, tool quirks, lessons)."),
             },
             "operations": {
                 "type": "array",
-                "description": (
-                    "Changes applied atomically in one call against the final char budget; "
-                    "a single change is a one-item list."
-                ),
+                "description": "A single change is a one-item list.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -438,13 +431,10 @@ MEMORY_SCHEMA = {
 }
 
 
-# Schema text when only one built-in store is enabled: (target description, TARGETS replacement).
+# The target description when only one built-in store is enabled.
 _SINGLE_TARGET_TEXT = {
-    ("memory",): ("The enabled built-in store: 'memory' for personal notes.",
-                  "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
-                  "tool quirks, lessons)."),
-    ("user",): ("The enabled built-in store: 'user' for user profile.",
-                "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).")}
+    ("memory",): "Only 'memory' is enabled: your notes (environment, conventions, tool quirks, lessons).",
+    ("user",): "Only 'user' is enabled: who the user is (name, role, preferences, style)."}
 
 
 def _build_memory_schema_overrides() -> dict[str, Any]:
@@ -453,14 +443,11 @@ def _build_memory_schema_overrides() -> dict[str, Any]:
     _memory_surface_flags.set(None)
     targets = [t for t, on in zip(("memory", "user"), flags) if on]
     parameters = copy.deepcopy(MEMORY_SCHEMA["parameters"])
-    target_schema, description = parameters["properties"]["target"], MEMORY_SCHEMA["description"]
+    target_schema = parameters["properties"]["target"]
     target_schema["enum"] = targets
     if narrowed := _SINGLE_TARGET_TEXT.get(tuple(targets)):
-        target_schema["description"], replacement = narrowed
-        description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).", replacement)
-    return {"description": description, "parameters": parameters}
+        target_schema["description"] = narrowed
+    return {"parameters": parameters}
 
 
 from tools.registry import registry, tool_error

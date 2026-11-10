@@ -62,3 +62,11 @@ def test_rich_payload_is_linear_on_unmatched_backtick_runs(adapter):
     payload = adapter._rich_message_payload(text)
     assert time.perf_counter() - started < 1.0
     assert payload["markdown"].startswith("\\$5 ")
+
+
+def test_escaped_star_check_does_not_copy_the_message_prefix(adapter):
+    text = "\\* " * 350_000  # ~1 MB of literal stars; a prefix copy per star is quadratic
+    started = time.perf_counter()
+    out = adapter.format_message(text)
+    assert time.perf_counter() - started < 8.0
+    assert out.count("\\*") == 350_000

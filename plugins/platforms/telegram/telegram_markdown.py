@@ -75,7 +75,10 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
     pos = 0
     for m in re.finditer(r"\*+", text):
         run_start = m.start()
-        if (run_start - len(text[:run_start].rstrip("\\"))) % 2:
+        slash = run_start
+        while slash > 0 and text[slash - 1] == "\\":
+            slash -= 1
+        if (run_start - slash) % 2:
             run_start += 1  # a backslash-escaped * is literal text (**Use \*args**, #151722)
             if run_start == m.end():
                 continue

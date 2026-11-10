@@ -7,7 +7,7 @@ description: >-
   Plugins v1 package (mcp.json + skills/), no plugin code. Requires a Wavegrain account
   and browser OAuth consent (add the server with auth: oauth, then hermes mcp login
   wavegrain); no API key or client secret is stored in the plugin. Disclosure: hosted-only
-  connector; your brand details, photos and slide texts go to wavegrain.com; paid tools
+  connector; your brand details, photos and slide texts go to wavegrain.com; generating tools
   spend Wavegrain credits within the limit set per connection; posting needs the separate
   post permission and Wavegrain's own approval setting.
 maintainer: wavegrain

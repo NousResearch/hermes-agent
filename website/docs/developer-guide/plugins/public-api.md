@@ -131,4 +131,6 @@ with a name allows that one name only.
 | `hermes_cli.chat_launch` | `hermes_command` | user-guide/features/plugins.md § A plugin with its own chat client |
 | `hermes_cli.chat_launch` | `print_exit_summary` | user-guide/features/plugins.md § A plugin with its own chat client |
 | `hermes_cli.gateway_chat` | `shell_client_env` | user-guide/features/plugins.md § A plugin with its own chat client |
-| `hermes_cli.session_worktree` | whole module | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `create` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `restore` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `finish` | user-guide/features/plugins.md § A plugin with its own chat client |

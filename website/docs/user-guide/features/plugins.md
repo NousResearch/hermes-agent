@@ -1238,16 +1238,16 @@ Do not make the tree yourself with `git worktree add`. Hermes regularly removes 
 ```python
 import os
 
-from hermes_cli import session_worktree
+from hermes_cli.session_worktree import create, finish, restore
 
-info = session_worktree.create() if args.worktree else None
+info = create() if args.worktree else None
 if args.worktree and info is None:
     raise SystemExit(1)
 if args.resume and not args.worktree:
-    session_worktree.restore(args.resume)
+    restore(args.resume)
 code, session_id = run_my_client(cwd=info["path"] if info else os.getcwd(), resume=args.resume)
 if info:
-    session_worktree.finish(info, session_id, ask=code == 0)
+    finish(info, session_id, ask=code == 0)
 ```
 
 ## Calling MCP servers from plugins

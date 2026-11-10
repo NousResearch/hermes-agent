@@ -461,6 +461,10 @@ def load_permanent(patterns: set):
         governing.update(patterns)
 
 
+# The only answers that run a flagged command; any other string from any surface is a deny.
+_GRANT_CHOICES = frozenset({"once", "session", "always"})
+
+
 def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
     """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
     for key in keys:
@@ -945,7 +949,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if denied is not None:
             return denied
         if choice is not None:
-            if choice == "deny":
+            if choice not in _GRANT_CHOICES:
                 _record_denial(session_key)
                 return deny(spec.transport_denied, "denied")
             return grant(choice)
@@ -987,7 +991,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
                             reason_addendum="", timeout_addendum=" Silence is not consent.",
                             deny_reason=deny_reason)
-            if choice is None or choice == "deny":
+            if choice not in _GRANT_CHOICES:
                 return deny(spec.gateway_refused, "denied", reason="denied by user",
                             reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
                             timeout_addendum="", deny_reason=deny_reason)
@@ -1026,7 +1030,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     reason="was not approved: the approval prompt could not be delivered or was not answered "
                            f"({getattr(choice, 'cause', 'no answer')})",
                     reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
-    if choice == "deny":
+    if choice not in _GRANT_CHOICES:
         # No _record_denial(): the breaker counts consecutive guardian LLM
         # DENY verdicts, not deliberate human denials.
         return deny(spec.cli_denied, "denied")

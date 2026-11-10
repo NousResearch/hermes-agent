@@ -72,3 +72,57 @@ def test_remote_provider_session_unaffected(ctx):
     local = next(r for r in rows if r["slug"] == "llamacpp")
     assert local["is_current"] is False
     assert "custom" not in [r["slug"] for r in rows if r.get("is_current")]
+
+
+# ── The slash-command picker (gateway) ───────────────────────────────────────────────────────────
+# ``list_authenticated_providers`` / ``list_picker_providers`` never knew about the managed runtime.
+# The provider resolved for ``--provider llamacpp`` and the inventory picker above listed it, but
+# ``/model`` inside a gateway session offered every other provider and silently omitted the local
+# one — so the models the Local Models pane had just installed were unreachable from chat.
+
+
+def _managed_local_patches(monkeypatch, tmp_path):
+    """Point the managed-runtime seam at a fake server with the two staged models."""
+    from pathlib import Path
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.providers import ProviderDef
+
+    monkeypatch.setattr(
+        "hermes_cli.providers._llamacpp_pdef",
+        lambda: ProviderDef(id="llamacpp", name="Local", transport="openai_chat",
+                            api_key_env_vars=(), base_url=MANAGED["base_url"], source="local-runtime"))
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap.staged_in",
+        lambda models_dir, *, require_complete=True: [
+            Path(f"{name}.gguf") for name in sorted(STAGED)])
+
+
+def test_slash_command_picker_lists_the_managed_local_row(tmp_path, monkeypatch):
+    import hermes_cli.model_switch_providers as msp
+
+    _managed_local_patches(monkeypatch, tmp_path)
+    rows = msp.list_picker_providers(current_provider="deepseek", max_models=50)
+    local = [r for r in rows if r.get("slug") == "llamacpp"]
+    assert local, "the managed local runtime is missing from the slash-command picker"
+    assert local[0]["name"] == "Local"
+    assert sorted(local[0]["models"]) == sorted(STAGED)
+
+
+def test_slash_command_picker_marks_the_local_row_current(tmp_path, monkeypatch):
+    import hermes_cli.model_switch_providers as msp
+
+    _managed_local_patches(monkeypatch, tmp_path)
+    rows = msp.list_picker_providers(current_provider="llamacpp", max_models=50)
+    local = next(r for r in rows if r.get("slug") == "llamacpp")
+    assert local["is_current"] is True
+
+
+def test_slash_command_picker_omits_local_when_no_server_resolves(tmp_path, monkeypatch):
+    import hermes_cli.model_switch_providers as msp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("hermes_cli.providers._llamacpp_pdef", lambda: None)
+    rows = msp.list_picker_providers(current_provider="deepseek", max_models=50)
+    assert not [r for r in rows if r.get("slug") == "llamacpp"], (
+        "an unreachable runtime must not claim a picker row")

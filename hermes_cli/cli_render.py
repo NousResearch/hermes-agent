@@ -418,6 +418,53 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
 
 
+_MD_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+_MD_ORDERED_ITEM_RE = re.compile(r" {0,3}(\d{1,9})[.)][ \t]+\S")
+_MD_BLANK_OR_HEADING_RE = re.compile(r"[ \t]*$| {0,3}#{1,6}(?:[ \t]|$)")
+_MD_OTHER_BLOCK_RE = re.compile(r"(?: {0,3}(?:[-*+][ \t]|\d{1,9}[.)](?:[ \t]|$)|>|\|)| {4}|\t)")
+
+
+def _separate_late_start_ordered_lists(text: str) -> str:
+    """Blank-line an ordered list that starts above 1 right after a paragraph line.
+
+    CommonMark lets only a list starting at 1 interrupt a paragraph, so
+    ``**Follow-ups**\\n4. First\\n5. Second`` renders as one run-on line.
+    Fenced code, existing lists, list continuations and quotes are untouched.
+    """
+    out: list[str] = []
+    fence: str | None = None
+    in_paragraph = False
+    block_start = True
+    for line in text.split("\n"):
+        fence_match = _MD_FENCE_RE.match(line)
+        if fence is not None:
+            marker = fence_match.group(1) if fence_match else ""
+            if marker[:1] == fence[0] and len(marker) >= len(fence) and not fence_match.group(2).strip():
+                fence, block_start = None, True
+            out.append(line)
+            continue
+        if fence_match and not (fence_match.group(1)[0] == "`" and "`" in fence_match.group(2)):
+            fence, in_paragraph = fence_match.group(1), False
+            out.append(line)
+            continue
+        if _MD_BLANK_OR_HEADING_RE.match(line):
+            in_paragraph, block_start = False, True
+            out.append(line)
+            continue
+        item = _MD_ORDERED_ITEM_RE.match(line)
+        if in_paragraph and item and int(item.group(1)) != 1:
+            out.append("")
+            in_paragraph = False
+        elif _MD_OTHER_BLOCK_RE.match(line):
+            if block_start or not line[:1].isspace():
+                in_paragraph = False
+        elif block_start:
+            in_paragraph = True
+        block_start = False
+        out.append(line)
+    return "\n".join(out)
+
+
 def _terminal_columns() -> int:
     try:
         return shutil.get_terminal_size((80, 24)).columns
@@ -450,7 +497,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     plain = _rich_text_from_ansi(text or "").plain
     plain = _preserve_windows_dot_segments_for_markdown(plain)
     plain = realign_markdown_tables(plain, panel_width)
-    return Markdown(plain)
+    return Markdown(_separate_late_start_ordered_lists(plain))
 
 
 def _post_stream_transform_output(response: str, result: dict | None) -> str:

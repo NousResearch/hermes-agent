@@ -2,6 +2,7 @@ import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
+import { separateOrderedLists } from '@/lib/markdown-ordered-lists'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
@@ -1156,7 +1157,7 @@ export function preprocessMarkdown(text: string): string {
       // reason: a fenced block renders as code and never reaches rehype-raw,
       // so escaping tags inside one would corrupt the listing for nothing.
       // Directives sit out the rewrites entirely (see liftDirectives).
-      const { text: prose, restore } = liftDirectives(part)
+      const { text: prose, restore } = liftDirectives(separateOrderedLists(part))
 
       return restore(
         clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(prose)), sourceListIds))

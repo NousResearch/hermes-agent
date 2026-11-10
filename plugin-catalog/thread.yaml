@@ -1,5 +1,5 @@
 name: thread
-repo: https://github.com/visioninspirationperformance-sketch/hermes-thread
+repo: https://github.com/VIP-DANaiL/hermes-thread
 sha: 4d9687efc10b187446fd6a8af1c37e8c5fec6bfa
 description: "Operational session continuity — captures what you were working on and what you owe at session end, then re-orients the next session. Hermes never starts cold."
 maintainer: Danny Purdy

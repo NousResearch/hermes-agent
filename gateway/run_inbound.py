@@ -451,8 +451,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return refusal_text(requester) if requester else None
 
     def _prompt_admin_ids(self, event: MessageEvent):
+        """The answer policy of the chat *event* arrived in (admins + its slash floor)."""
         from gateway.slash_access import policy_for_runner_source
-        return policy_for_runner_source(self, event.source).admin_user_ids
+        return policy_for_runner_source(self, event.source)
 
     async def _release_pending_clarify(self, pending, source) -> bool:
         """Withdraw *pending* as CANCELLED and retire its card; False if it already settled.

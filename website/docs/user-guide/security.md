@@ -310,6 +310,18 @@ When anyone else clicks a button, adds a reaction, or sends `/approve`, `/deny` 
 
 The same rule covers the other prompts a member can answer for someone else: a slash-command confirmation (`/reload-mcp`'s Approve Once / Always / Cancel) and the agent's clarify question (a choice button, "Other", or a typed answer). Another member's tap gets the same note and the prompt stays pending; another member's typed message is handled as their own message, never as the answer.
 
+**With slash admin gating (`allow_admin_from` / `group_allow_admin_from`) set for the chat's scope**, the default `approvers: ["*"]` no longer means "any admitted member": answering an approval is `/approve` or `/deny`, and answering a slash-command confirmation runs that command, so only someone allowed to run that command in the chat can answer, on every path (button, reaction, typed `/approve`, bare `yes` / `always`, typed confirm reply). That is the scope's admins, plus members whose `user_allowed_commands` lists `approve` / `deny` (or the confirmed command). Anyone else gets *⛔ /approve is admin-only here* and the prompt stays pending for an admin.
+
+When both are set, a narrowed `approvers` takes precedence: it is the explicit answer to "who approves", so the requester, the listed ids and the scope's admins answer, as described above, whatever `user_allowed_commands` says.
+
+| Config for the chat's scope | Who can answer |
+|---|---|
+| neither | any admitted member |
+| `allow_admin_from` only | admins, plus members with `approve` / `deny` (or the confirmed command) in `user_allowed_commands` |
+| `approvers` narrowed (with or without `allow_admin_from`) | the requester, the listed ids, the scope's admins |
+
+A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
+
 The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
 
 ### Permanent Allowlist

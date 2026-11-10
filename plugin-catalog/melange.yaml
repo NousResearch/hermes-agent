@@ -2,7 +2,7 @@ name: melange
 title: Melange
 repo: https://github.com/lEWFkRAD/melange
 subdir: hermes-plugin
-sha: c1e6197d26ebf82a1717aeae63fe88bbdf16b7dc
+sha: cf639d40ebf46acae953e4a0360374e401154391
 version: "0.1.0"
 description: "A video codec for computation: record terminal sessions as rewindable, hash-chained timelines, scrub to any step, ask where a character on screen came from in plain words, fork What-ifs, clamp one recorded input and watch only its dependents recompute, and ask what went wrong with forward-verified candidate answers. Ten tools (record, versions, screen, where_from, note, whatif, clamp, explain, shelf, demo) plus a bundled flagship demo. Disclosure: melange_record runs a shell command you pass inside a PTY and records its output; recordings are stored locally under ~/.hermes/plugins-data/melange/; capture-side redaction strips API keys, AWS credentials, password assignments and SSNs before storage; no network calls, stdlib-only."
 maintainer: lEWFkRAD

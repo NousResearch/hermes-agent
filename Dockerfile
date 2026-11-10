@@ -373,11 +373,11 @@ RUN mkdir -p /opt/hermes/node_modules/.bin && \
 # the manifests because package.json's postinstall runs it, which also
 # means the spectrum-ts patch is applied at build time. Layer-cached:
 # only re-runs when the sidecar manifests/patch change.
-COPY plugins/platforms/photon/sidecar/package.json \
-     plugins/platforms/photon/sidecar/package-lock.json \
-     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
-     plugins/platforms/photon/sidecar/
-RUN cd plugins/platforms/photon/sidecar && \
+COPY hermes_agent/plugins/platforms/photon/sidecar/package.json \
+     hermes_agent/plugins/platforms/photon/sidecar/package-lock.json \
+     hermes_agent/plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
+     hermes_agent/plugins/platforms/photon/sidecar/
+RUN cd hermes_agent/plugins/platforms/photon/sidecar && \
     npm ci --no-audit --fetch-retries=5 && \
     npm cache clean --force
 

@@ -104,7 +104,7 @@ If your provider is just an OpenAI-compatible endpoint that authenticates with a
 
 All you need is:
 
-1. A plugin directory under `plugins/model-providers/<your-provider>/` containing:
+1. A plugin directory under `hermes_agent/plugins/model-providers/<your-provider>/` containing:
    - `__init__.py` — calls `register_provider(profile)` at module-level
    - `plugin.yaml` — manifest (name, kind: model-provider, version, description)
 2. That's it. Provider plugins auto-load the first time anything calls `get_provider_profile()` or `list_providers()` — bundled plugins (this repo) and user plugins at `$HERMES_HOME/plugins/model-providers/` both get picked up.

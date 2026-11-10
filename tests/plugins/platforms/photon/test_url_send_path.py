@@ -21,7 +21,7 @@ from typing import Dict, Tuple
 
 import pytest
 
-_MODULE = Path("plugins/platforms/photon/sidecar/send-format.mjs").resolve()
+_MODULE = Path("hermes_agent/plugins/platforms/photon/sidecar/send-format.mjs").resolve()
 
 _CASES: dict[str, tuple[str, str, str]] = {
     # name: (format, text, expected builder)

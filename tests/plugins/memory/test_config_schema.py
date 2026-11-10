@@ -22,7 +22,7 @@ def test_cache_keys_on_schema_path_not_name(monkeypatch, tmp_path):
         plugin_dir = tmp_path / label / "custom"
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "config_schema.py").write_text(
-            "from plugins.memory.config_schema import ProviderConfigSchema\n"
+            "from hermes_agent.plugins.memory.config_schema import ProviderConfigSchema\n"
             f'CONFIG_SCHEMA = ProviderConfigSchema(name="custom", label="{label}")\n',
             encoding="utf-8",
         )
@@ -52,7 +52,7 @@ def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
     assert not config_schema._SCHEMA_CACHE
 
     schema_file.write_text(
-        "from plugins.memory.config_schema import ProviderConfigSchema\n"
+        "from hermes_agent.plugins.memory.config_schema import ProviderConfigSchema\n"
         'CONFIG_SCHEMA = ProviderConfigSchema(name="broken", label="Broken")\n',
         encoding="utf-8",
     )

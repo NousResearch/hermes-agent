@@ -655,12 +655,12 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
             _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
             return
 
-    # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
+    # Give bundled plugins a stable import path (``hermes_agent.plugins.model_providers.<name>``)
     # so relative imports within the plugin work. User plugins load via
     # ``importlib.util.spec_from_file_location`` under a per-home module name so
     # multiple HERMES_HOME profiles don't alias each other.
     if source == "bundled":
-        module_name = f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
+        module_name = f"hermes_agent.plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
     else:
         module_name = _user_module_name(plugin_dir, home_key)
     _exec_plugin_module(plugin_dir, source, module_name)
@@ -706,6 +706,11 @@ def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None
     if module_name in sys.modules:
         return  # already imported
 
+    # The name a bundled provider module had before the package move (``plugins.model_providers.<name>``).
+    # No folder or module is called ``plugins.model_providers`` (the folder is ``model-providers``), so the
+    # import hook for old names cannot find it. A second entry keeps a plugin that imports a bundled profile
+    # by that name working.
+    old_name = module_name.removeprefix("hermes_agent.")
     _current_source = source
     try:
         spec = importlib.util.spec_from_file_location(
@@ -714,7 +719,7 @@ def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None
         if spec is None or spec.loader is None:
             return
         module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
+        sys.modules[module_name] = sys.modules[old_name] = module
         spec.loader.exec_module(module)
         _note_load_result(plugin_dir, None)
     except Exception as exc:  # health: allow BLE001 -- plugin import boundary (moved from _import_plugin_dir): one broken plugin never breaks discovery
@@ -722,6 +727,7 @@ def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
         sys.modules.pop(module_name, None)
+        sys.modules.pop(old_name, None)
         _note_load_result(plugin_dir, exc)
     finally:
         _current_source = None

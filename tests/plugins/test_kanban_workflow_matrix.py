@@ -27,7 +27,7 @@ _KNOWN_REDIRECTS = {("review", "todo"): "ready"}
 
 
 def _load_plugin_router():
-    plugin_file = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    plugin_file = Path(__file__).resolve().parents[2] / "hermes_agent" / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     spec = importlib.util.spec_from_file_location("hermes_dashboard_plugin_kanban_workflow_test", plugin_file)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod

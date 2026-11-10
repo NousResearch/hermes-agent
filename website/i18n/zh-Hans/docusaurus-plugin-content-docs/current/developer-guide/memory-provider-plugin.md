@@ -14,7 +14,7 @@ Memory provider 是两种 **provider 插件**类型之一。另一种是 [Contex
 
 ## 目录结构
 
-每个 memory provider 位于 `plugins/memory/<name>/`：
+每个 memory provider 位于 `hermes_agent/plugins/memory/<name>/`：
 
 ```
 plugins/memory/my-provider/

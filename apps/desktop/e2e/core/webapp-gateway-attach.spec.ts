@@ -460,7 +460,7 @@ test('signing out of a Webapp behind sign-in signs the browser out', async () =>
 
   const hash = python(
     sandbox,
-    'import sys; from plugins.dashboard_auth.basic import hash_password; print(hash_password(sys.argv[1]))',
+    'import sys; from hermes_agent.plugins.dashboard_auth.basic import hash_password; print(hash_password(sys.argv[1]))',
     password
   )
 

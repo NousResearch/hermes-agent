@@ -119,7 +119,7 @@ def test_env_proxy_send_failure_never_carries_the_proxy_secret(monkeypatch, capl
         result = asyncio.run(asyncio.wait_for(SENDERS[sender](monkeypatch), 60))
     error = str(result.get("error") or "")
     # Hermes' own lines: httpcore's DEBUG trace prints ``socket_options=None`` (matches ``socks5``).
-    logs = "\n".join(r.getMessage() for r in caplog.records if r.name.split(".")[0] in ("plugins", "gateway", "tools"))
+    logs = "\n".join(r.getMessage() for r in caplog.records if r.name.removeprefix("hermes_agent.").split(".")[0] in ("plugins", "gateway", "tools"))
     assert error, result
     # The exception type, on the proxy-error path (Signal's result after retries names only the batch).
     assert re.search(r"\b[A-Z]\w+ via ", error + "\n" + logs), (result, logs[-2000:])
@@ -151,7 +151,7 @@ def _send_under(monkeypatch, caplog, sender, env):
         monkeypatch.setenv(name, value)
     with caplog.at_level(logging.DEBUG):
         result = asyncio.run(asyncio.wait_for(SENDERS[sender](monkeypatch), 60))
-    logs = "\n".join(r.getMessage() for r in caplog.records if r.name.split(".")[0] in ("plugins", "gateway", "tools"))
+    logs = "\n".join(r.getMessage() for r in caplog.records if r.name.removeprefix("hermes_agent.").split(".")[0] in ("plugins", "gateway", "tools"))
     return str(result.get("error") or ""), logs
 
 

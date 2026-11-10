@@ -14,7 +14,7 @@ from hermes_agent.plugins.config_backends.remote import paths as P
 from hermes_agent.plugins.config_backends.remote.diff import write_check
 from hermes_agent.plugins.config_backends.remote.values import secret_literal_path
 
-VENDOR = Path(__file__).resolve().parents[3] / "plugins" / "config_backends" / "remote" / "vendor"
+VENDOR = Path(__file__).resolve().parents[3] / "hermes_agent" / "plugins" / "config_backends" / "remote" / "vendor"
 MANIFEST = VENDOR / "conformance" / "config-fixtures.sha256"
 # contract.md §13.4: a LITERAL pin (an imported constant would make the check a tautology). This
 # is the manifest at gateway-gateway 36dff9281f: P1's v1 set (e7e92b9b…, gg 9151149d7f) plus the

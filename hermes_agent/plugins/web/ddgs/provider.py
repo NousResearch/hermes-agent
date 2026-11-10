@@ -58,10 +58,10 @@ def _plugins_path_entry() -> str:
     try:
         import hermes_agent.plugins as plugins_pkg
         if pkg_file := getattr(plugins_pkg, "__file__", None):
-            return os.path.dirname(os.path.dirname(os.path.abspath(pkg_file)))
+            return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(pkg_file))))
     except Exception:
         pass
-    return os.path.abspath(os.path.join(__file__, *([os.pardir] * 4)))
+    return os.path.abspath(os.path.join(__file__, *([os.pardir] * 5)))
 
 
 def _terminate_and_reap(proc: Optional[subprocess.Popen], *, grace: float = _TERMINATE_GRACE_SECS) -> None:

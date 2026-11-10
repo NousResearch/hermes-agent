@@ -69,6 +69,20 @@ def test_all_profiles_register():
     )
 
 
+def test_a_bundled_provider_module_keeps_the_name_it_had_before_the_package_move():
+    """A plugin written before the move imports a bundled profile from ``plugins.model_providers.<name>``.
+    No folder has that name (the folder is ``model-providers``), so only the loader can keep it importable."""
+    import importlib
+
+    _clear_provider_caches()
+    from hermes_agent.providers import list_providers
+
+    list_providers()
+    module = importlib.import_module("plugins.model_providers.custom")
+    assert module is sys.modules["hermes_agent.plugins.model_providers.custom"]
+    assert module.CustomProfile.__module__ == "hermes_agent.plugins.model_providers.custom"
+
+
 def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     """A user plugin with the same name must override the bundled profile."""
     # Point HERMES_HOME at a fresh temp dir

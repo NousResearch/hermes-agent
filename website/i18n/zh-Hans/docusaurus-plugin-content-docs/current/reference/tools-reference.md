@@ -170,7 +170,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 可选工具集（默认 `hermes-cli` 集中不加载）。通过 `--toolsets video_gen` 添加，或在 `hermes tools` → Video Generation 中启用（同时引导你选择后端）。
 
-后端以插件形式存放于 `plugins/video_gen/<name>/`：
+后端以插件形式存放于 `hermes_agent/plugins/video_gen/<name>/`：
 
 - **xAI Grok-Imagine** —— 文本生成视频和图片生成视频（SuperGrok OAuth 或 `XAI_API_KEY`）。
 - **FAL.ai** —— Veo 3.1、Pixverse v6、Kling O3（需要 `FAL_KEY`）。

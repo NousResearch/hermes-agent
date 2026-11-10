@@ -7,7 +7,7 @@ description: "随 Hermes Agent 附带并通过生命周期 hook 自动运行的�
 
 # 内置插件
 
-Hermes 随仓库附带了一小组插件。它们位于 `<repo>/plugins/<name>/`，与用户安装在 `~/.hermes/plugins/` 中的插件一同自动加载。它们使用与第三方插件相同的插件接口——hook、工具、斜杠命令——只是在仓库内维护。
+Hermes 随仓库附带了一小组插件。它们位于 `<repo>/hermes_agent/plugins/<name>/`，与用户安装在 `~/.hermes/plugins/` 中的插件一同自动加载。它们使用与第三方插件相同的插件接口——hook、工具、斜杠命令——只是在仓库内维护。
 
 请参阅 [插件](./plugins.md) 页面了解通用插件系统，以及 [构建 Hermes 插件](../../developer-guide/plugins/index.md) 了解如何编写自己的插件。
 
@@ -15,7 +15,7 @@ Hermes 随仓库附带了一小组插件。它们位于 `<repo>/plugins/<name>/`
 
 `PluginManager` 按顺序扫描四个来源：
 
-1. **内置（Bundled）** — `<repo>/plugins/<name>/`（本页所记录的内容）
+1. **内置（Bundled）** — `<repo>/hermes_agent/plugins/<name>/`（本页所记录的内容）
 2. **用户（User）** — `~/.hermes/plugins/<name>/`
 3. **项目（Project）** — `./.hermes/plugins/<name>/`（需要 `HERMES_ENABLE_PROJECT_PLUGINS=1`）
 4. **Pip 入口点（Entry points）** — `hermes_agent.plugins`
@@ -51,7 +51,7 @@ hermes plugins disable disk-cleanup
 
 ## 当前附带的插件
 
-仓库在 `plugins/` 下附带了以下内置插件。所有插件均需手动启用——通过 `hermes plugins enable <name>` 启用。
+仓库在 `hermes_agent/plugins/` 下附带了以下内置插件。所有插件均需手动启用——通过 `hermes plugins enable <name>` 启用。
 
 | 插件 | 类型 | 用途 |
 |---|---|---|
@@ -210,7 +210,7 @@ agent 会启动会议加入流程，在通话进行时将转录内容流式传�
 
 内置插件的编写方式与其他 Hermes 插件完全相同——参见 [构建 Hermes 插件](../../developer-guide/plugins/index.md)。唯一的区别是：
 
-- 目录位于 `<repo>/plugins/<name>/`，而非 `~/.hermes/plugins/<name>/`
+- 目录位于 `<repo>/hermes_agent/plugins/<name>/`，而非 `~/.hermes/plugins/<name>/`
 - 在 `hermes plugins list` 中，manifest 来源显示为 `bundled`
 - 同名用户插件会覆盖内置版本
 

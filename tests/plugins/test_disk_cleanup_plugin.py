@@ -42,7 +42,7 @@ def _isolate_env(tmp_path, monkeypatch):
 def _load_lib():
     """Import the plugin's library module directly from the repo path."""
     repo_root = Path(__file__).resolve().parents[2]
-    lib_path = repo_root / "plugins" / "disk-cleanup" / "disk_cleanup.py"
+    lib_path = repo_root / "hermes_agent" / "plugins" / "disk-cleanup" / "disk_cleanup.py"
     spec = importlib.util.spec_from_file_location(
         "disk_cleanup_under_test", lib_path
     )
@@ -67,7 +67,7 @@ def _run_tool(pi, tool_name, args, create=None, result="OK", **ids):
 def _load_plugin_init():
     """Import the plugin's __init__.py (which depends on the library)."""
     repo_root = Path(__file__).resolve().parents[2]
-    plugin_dir = repo_root / "plugins" / "disk-cleanup"
+    plugin_dir = repo_root / "hermes_agent" / "plugins" / "disk-cleanup"
     # Use the PluginManager's module naming convention so relative imports work.
     spec = importlib.util.spec_from_file_location(
         "hermes_plugins.disk_cleanup",

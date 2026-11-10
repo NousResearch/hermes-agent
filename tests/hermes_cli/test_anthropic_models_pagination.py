@@ -73,7 +73,7 @@ def _load_plugin_profile():
     root = Path(__file__).resolve().parents[2]
     spec = importlib.util.spec_from_file_location(
         "anthropic_provider_under_test",
-        root / "plugins" / "model-providers" / "anthropic" / "__init__.py",
+        root / "hermes_agent" / "plugins" / "model-providers" / "anthropic" / "__init__.py",
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

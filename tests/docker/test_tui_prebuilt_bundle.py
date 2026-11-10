@@ -43,7 +43,7 @@ def test_photon_baked_dependencies_load_without_writes_or_network(built_image: s
     """The non-root runtime uses the baked sidecar, including its npm patch."""
     py = '''
 import subprocess
-from plugins.platforms.photon.sidecar_paths import SOURCE_SIDECAR_DIR, resolve_sidecar_dir, dir_writable
+from hermes_agent.plugins.platforms.photon.sidecar_paths import SOURCE_SIDECAR_DIR, resolve_sidecar_dir, dir_writable
 sidecar = resolve_sidecar_dir()
 assert sidecar == SOURCE_SIDECAR_DIR, sidecar
 assert not dir_writable(sidecar / 'node_modules')

@@ -34,7 +34,7 @@ def get_flow_status():
 '''
 
 _CONFIG_SCHEMA = '''
-from plugins.memory.config_schema import STORAGE_PROVIDER, ProviderConfigSchema, ProviderField
+from hermes_agent.plugins.memory.config_schema import STORAGE_PROVIDER, ProviderConfigSchema, ProviderField
 
 CONFIG_SCHEMA = ProviderConfigSchema(
     name="honcho", label="Honcho (user dir)", storage=STORAGE_PROVIDER,

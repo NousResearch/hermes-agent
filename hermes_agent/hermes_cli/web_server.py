@@ -927,7 +927,7 @@ def _no_auth_provider_message(host: str) -> str:
         "  • Password: set dashboard.basic_auth.username + "
         "password_hash in config.yaml\n"
         "    (hash with: python -c \"from "
-        "plugins.dashboard_auth.basic import hash_password; "
+        "hermes_agent.plugins.dashboard_auth.basic import hash_password; "
         "print(hash_password('your-password'))\")\n"
         "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
         "install a DashboardAuthProvider plugin.\n"

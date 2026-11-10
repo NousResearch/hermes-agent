@@ -418,8 +418,8 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
             connect("optout@test.com", {"require_authenticated_sender": False})
         logs.output[:] = [line for line in logs.output if _MISSING_AUTHSERV_REASON in line]
         self.assertEqual([line.split(": ")[0] for line in logs.output],
-                         ["WARNING:plugins.platforms.email.adapter:[Email] one@test.com",
-                          "WARNING:plugins.platforms.email.adapter:[Email] two@test.com"], logs.output)
+                         ["WARNING:hermes_agent.plugins.platforms.email.adapter:[Email] one@test.com",
+                          "WARNING:hermes_agent.plugins.platforms.email.adapter:[Email] two@test.com"], logs.output)
         self.assertIn(_MISSING_AUTHSERV_REASON, logs.output[1])
         self.assertIn("EMAIL_AUTHSERV_ID", logs.output[1])
         self.assertIn("EMAIL_TRUST_FROM_HEADER=true", logs.output[1])

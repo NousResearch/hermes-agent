@@ -307,7 +307,7 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
     assert json_capture["close_calls"] == 1
 
 
-PLUGINS_DIR = Path(__file__).resolve().parents[2] / "plugins"
+PLUGINS_DIR = Path(__file__).resolve().parents[2] / "hermes_agent" / "plugins"
 
 
 def _load_video_gen_plugin(monkeypatch):

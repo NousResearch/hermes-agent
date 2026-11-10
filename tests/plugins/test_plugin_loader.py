@@ -133,7 +133,7 @@ def test_concurrent_load_waits_for_the_first_load(tmp_path, monkeypatch):
         gate.helper, gate.loader = threading.Event(), threading.Event()
         monkeypatch.syspath_prepend(str(tmp_path))
         (tmp_path / f"{helper}.py").write_text(
-            f"import sys, logging, pathlib\nfrom plugins.plugin_loader import load_plugin_module\n"
+            f"import sys, logging, pathlib\nfrom hermes_agent.plugins.plugin_loader import load_plugin_module\n"
             f"gate = sys.modules[{gate_name!r}]\ngate.helper.set()\ngate.loader.wait(10)\n"
             f"mod = load_plugin_module({cyc_name!r}, pathlib.Path({str(cyc_dir)!r}), parents=(),"
             " logger=logging.getLogger('x'))\n", encoding="utf-8")

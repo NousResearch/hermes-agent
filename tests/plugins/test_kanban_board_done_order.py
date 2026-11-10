@@ -22,7 +22,7 @@ from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 def _load_plugin_router():
     repo_root = Path(__file__).resolve().parents[2]
-    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    plugin_file = repo_root / "hermes_agent" / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     spec = importlib.util.spec_from_file_location("hermes_kanban_plugin_done_order_test", plugin_file)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod

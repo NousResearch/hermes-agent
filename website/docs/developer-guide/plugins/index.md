@@ -2363,7 +2363,7 @@ This guide covers **general plugins** (tools, hooks, slash commands, CLI command
 
 ## Specialized plugin types
 
-Hermes has five specialized plugin types beyond the general surface. Each ships as a directory under `plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.
+Hermes has five specialized plugin types beyond the general surface. Each ships as a directory under `hermes_agent/plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.
 
 ### Model provider plugins — add an LLM backend
 
@@ -2460,10 +2460,10 @@ optional_env:
 
 ### Memory provider plugins — add a cross-session knowledge backend
 
-Drop an implementation of `MemoryProvider` into `plugins/memory/<name>/`:
+Drop an implementation of `MemoryProvider` into `$HERMES_HOME/plugins/<name>/` (bundled ones live in `hermes_agent/plugins/memory/<name>/`):
 
 ```python
-# plugins/memory/my-memory/__init__.py
+# $HERMES_HOME/plugins/my-memory/__init__.py
 from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):

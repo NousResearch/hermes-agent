@@ -21,7 +21,7 @@ np = pytest.importorskip("numpy")
 # same way the adapter does.
 _DISCORD_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "plugins", "platforms", "discord",
+    "hermes_agent", "plugins", "platforms", "discord",
 )
 if _DISCORD_DIR not in sys.path:
     sys.path.insert(0, _DISCORD_DIR)

@@ -25,7 +25,7 @@ description: "如何为 Hermes Agent 构建视频生成后端插件"
 
 Hermes 在三个位置扫描视频生成后端：
 
-1. **内置** — `<repo>/plugins/video_gen/<name>/`（通过 `kind: backend` 自动加载）
+1. **内置** — `<repo>/hermes_agent/plugins/video_gen/<name>/`（通过 `kind: backend` 自动加载）
 2. **用户** — `~/.hermes/plugins/video_gen/<name>/`（通过 `plugins.enabled` 选择启用）
 3. **Pip** — 声明了 `hermes_agent.plugins` 入口点的包
 

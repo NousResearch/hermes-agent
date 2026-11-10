@@ -70,7 +70,7 @@ node_modules
 **/npm-shrinkwrap.json
 !/website/package-lock.json
 !/scripts/whatsapp-bridge/package-lock.json
-!/plugins/platforms/photon/sidecar/package-lock.json
+!/hermes_agent/plugins/platforms/photon/sidecar/package-lock.json
 browser-use/
 agent-browser/
 # Private keys

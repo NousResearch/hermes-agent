@@ -34,7 +34,7 @@ import pytest
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
 
-_MODULE = Path("plugins/platforms/photon/sidecar/stream-staleness.mjs").resolve()
+_MODULE = Path("hermes_agent/plugins/platforms/photon/sidecar/stream-staleness.mjs").resolve()
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")

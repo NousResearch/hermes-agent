@@ -34,7 +34,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-_checkout_root = _Path(__file__).resolve().parents[3]
+_checkout_root = _Path(__file__).resolve().parents[4]
 # Append, never prepend: the checkout must not shadow same-named installed packages.
 if str(_checkout_root) not in sys.path:
     sys.path.append(str(_checkout_root))

@@ -18,7 +18,7 @@ providers/
 ```
 
 The **profiles themselves** live as plugins under
-`plugins/model-providers/<name>/` (bundled in this repo) and
+`hermes_agent/plugins/model-providers/<name>/` (bundled in this repo) and
 `$HERMES_HOME/plugins/model-providers/<name>/` (per-user overrides). The
 registry in `hermes_agent/providers/__init__.py` lazily discovers them the first time any
 consumer calls `get_provider_profile()` or `list_providers()`. See

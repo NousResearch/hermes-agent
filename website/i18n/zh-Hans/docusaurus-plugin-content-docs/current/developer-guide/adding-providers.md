@@ -99,7 +99,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 
 你只需要：
 
-1. 在 `plugins/model-providers/<your-provider>/` 下创建一个插件目录，包含：
+1. 在 `hermes_agent/plugins/model-providers/<your-provider>/` 下创建一个插件目录，包含：
    - `__init__.py`——在模块级别调用 `register_provider(profile)`
    - `plugin.yaml`——清单文件（name、kind: model-provider、version、description）
 2. 就这些。Provider 插件在任何代码首次调用 `get_provider_profile()` 或 `list_providers()` 时自动加载——捆绑插件（本仓库）和位于 `$HERMES_HOME/plugins/model-providers/` 的用户插件都会被加载。

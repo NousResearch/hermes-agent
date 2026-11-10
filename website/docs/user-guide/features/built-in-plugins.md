@@ -7,7 +7,7 @@ description: "Plugins shipped with Hermes Agent that run automatically via lifec
 
 # Built-in Plugins
 
-Hermes ships a small set of plugins bundled with the repository. They live under `<repo>/plugins/<name>/` and load automatically alongside user-installed plugins in `~/.hermes/plugins/`. They use the same plugin surface as third-party plugins — hooks, tools, slash commands — just maintained in-tree.
+Hermes ships a small set of plugins bundled with the repository. They live under `<repo>/hermes_agent/plugins/<name>/` and load automatically alongside user-installed plugins in `~/.hermes/plugins/`. They use the same plugin surface as third-party plugins — hooks, tools, slash commands — just maintained in-tree.
 
 See the [Plugins](./plugins.md) page for the general plugin system, and [Build a Hermes Plugin](../../developer-guide/plugins/index.md) to write your own.
 
@@ -15,7 +15,7 @@ See the [Plugins](./plugins.md) page for the general plugin system, and [Build a
 
 The `PluginManager` scans four sources, in order:
 
-1. **Bundled** — `<repo>/plugins/<name>/` (what this page documents)
+1. **Bundled** — `<repo>/hermes_agent/plugins/<name>/` (what this page documents)
 2. **User** — `~/.hermes/plugins/<name>/`
 3. **Project** — `./.hermes/plugins/<name>/` (requires `HERMES_ENABLE_PROJECT_PLUGINS=1`)
 4. **Pip entry points** — `hermes_agent.plugins`
@@ -51,7 +51,7 @@ hermes plugins disable disk-cleanup
 
 ## Currently shipped
 
-The repo ships these bundled plugins under `plugins/`. All are opt-in — enable them via `hermes plugins enable <name>`.
+The repo ships these bundled plugins under `hermes_agent/plugins/`. All are opt-in — enable them via `hermes plugins enable <name>`.
 
 | Plugin | Kind | Purpose |
 |---|---|---|
@@ -309,7 +309,7 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 
 Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](../../developer-guide/plugins/index.md). The only differences are:
 
-- Directory lives at `<repo>/plugins/<name>/` instead of `~/.hermes/plugins/<name>/`
+- Directory lives at `<repo>/hermes_agent/plugins/<name>/` instead of `~/.hermes/plugins/<name>/`
 - Manifest source is reported as `bundled` in `hermes plugins list`
 - User plugins with the same name override the bundled version
 

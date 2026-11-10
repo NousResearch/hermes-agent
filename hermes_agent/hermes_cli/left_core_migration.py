@@ -191,7 +191,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
     from hermes_agent.hermes_cli.platforms import PLATFORMS
     try:
-        bundled = {p.name for p in (Path(project_root_str()) / "plugins" / "platforms").iterdir()
+        bundled = {p.name for p in (Path(project_root_str()) / "hermes_agent" / "plugins" / "platforms").iterdir()
                    if (p / "plugin.yaml").is_file()}
     except OSError:
         bundled = set()

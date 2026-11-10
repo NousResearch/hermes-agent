@@ -16,7 +16,7 @@ description: "如何为 Hermes Agent 构建图像生成后端插件"
 
 Hermes 在三个位置扫描图像生成后端：
 
-1. **内置** — `<repo>/plugins/image_gen/<name>/`（以 `kind: backend` 自动加载，始终可用）
+1. **内置** — `<repo>/hermes_agent/plugins/image_gen/<name>/`（以 `kind: backend` 自动加载，始终可用）
 2. **用户** — `~/.hermes/plugins/image_gen/<name>/`（通过 `plugins.enabled` 选择启用）
 3. **Pip** — 声明了 `hermes_agent.plugins` 入口点的包
 

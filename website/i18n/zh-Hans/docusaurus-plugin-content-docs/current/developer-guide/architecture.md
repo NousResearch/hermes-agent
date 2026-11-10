@@ -120,14 +120,14 @@ hermes-agent/
 │   │   └── platforms/            # 核心入站适配器：api_server、webhook、
 │   │                             #   msgraph_webhook
 │   │
+│   ├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
+│   │                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
+│   │                             #   matrix、feishu 等（元宝：`yuanbao` Hermes Labs 插件）
 │   ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
-│   └── cron/                     # 调度器（jobs.py、scheduler.py）
+│   ├── cron/                     # 调度器（jobs.py、scheduler.py）
+│   ├── plugins/memory/           # 记忆提供者插件
+│   └── plugins/context_engine/   # 上下文引擎插件
 │
-├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
-│                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
-│                             #   matrix、feishu 等（元宝：`yuanbao` Hermes Labs 插件）
-├── plugins/memory/           # 记忆提供者插件
-├── plugins/context_engine/   # 上下文引擎插件
 ├── skills/                   # 内置 skill（始终可用）
 ├── optional-skills/          # 官方可选 skill（需显式安装）
 ├── website/                  # Docusaurus 文档站点

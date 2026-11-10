@@ -491,7 +491,7 @@ class GatewayTurnPrepareMixin:
             # A binding whose sessions row is gone (deleted with foreign_keys OFF, so ON DELETE CASCADE
             # never fired) is stale, not a resume target: switching onto it lets the next peer refresh
             # re-create the row and the topic silently re-adopts an old transcript (#139283).
-            if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
+            if (store := self.persistence) is not None and not await store.aio.sessions.get(bound_session_id):
                 logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
                                "keeping the current session and rebinding", session_key, bound_session_id)
                 try:  # CAS on the stale id: a /new that rebound the topic during the await wins

@@ -40,6 +40,7 @@ sidebar_position: 1
 | **Hugging Face** | `~/.hermes/.env` 中的 `HF_TOKEN`（provider: `huggingface`，别名：`hf`） |
 | **Google / Gemini** | `~/.hermes/.env` 中的 `GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）（provider: `gemini`） |
 | **LM Studio** | `hermes model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
+| **Modal** | `~/.hermes/.env` 中的 `MODAL_PROXY_TOKEN`——`modal workspace proxy-tokens create` 生成的组合 `wk-<id>.ws-<secret>` 代理令牌（provider: `modal`；别名：`modal-labs`、`modal-direct`、`modal-endpoints`）。`MODAL_BASE_URL` 可选择其他共享网关区域或专用端点（`https://<workspace>--<app>.modal.run`） |
 | **自定义端点** | `hermes model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
 
 官方 API key 路径请参见专属的 [Google Gemini 指南](../guides/google-gemini.md)。
@@ -217,7 +218,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-基础 URL 可通过 `NOVITA_BASE_URL`、`GLM_BASE_URL`、`KIMI_BASE_URL`、`MINIMAX_BASE_URL`、`MINIMAX_CN_BASE_URL`、`DASHSCOPE_BASE_URL`、`XIAOMI_BASE_URL`、`GMI_BASE_URL` 或 `TOKENHUB_BASE_URL` 环境变量覆盖。
+基础 URL 可通过 `NOVITA_BASE_URL`、`GLM_BASE_URL`、`KIMI_BASE_URL`、`MINIMAX_BASE_URL`、`MINIMAX_CN_BASE_URL`、`DASHSCOPE_BASE_URL`、`XIAOMI_BASE_URL`、`GMI_BASE_URL`、`TOKENHUB_BASE_URL` 或 `MODAL_BASE_URL` 环境变量覆盖。
 
 :::note Z.AI 端点自动检测
 使用 Z.AI / GLM 提供商时，Hermes 会自动探测多个端点（全球版、中国版、编程版）以找到接受你 API key 的端点。无需手动设置 `GLM_BASE_URL`——可用端点会被自动检测并缓存。

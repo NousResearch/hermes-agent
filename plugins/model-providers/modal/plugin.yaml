@@ -1,0 +1,5 @@
+name: modal-provider
+kind: model-provider
+version: 1.0.0
+description: Modal — OpenAI-compatible inference on Modal Endpoints
+author: Modal

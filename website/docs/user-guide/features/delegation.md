@@ -539,6 +539,8 @@ The parent agent orchestrates its own running children with the same `delegate_t
 - **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
 - **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
 
+Use `delegate_task(action="inspect", delegation_id="deleg_...")` to recover a result you no longer have, including after context compression. It reads only your conversation's durable delegation and returns its state, bounded goal, timestamps, delivery state, and bounded, redacted task summaries without changing delivery. A running delegation returns only `state: "running"`; results still arrive as completion messages, so do not use inspect to poll for progress.
+
 Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
 
 ### From the TUI / gateway (session-facing)

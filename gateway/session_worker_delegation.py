@@ -125,8 +125,8 @@ def _read(db, conn, session_id, payload, *, execution_id):
     _shape(payload, {'delegation_id'})
     row = _owned(conn, session_id, execution_id, payload['delegation_id'])
     return {'value': {key: row[key] for key in ('delegation_id', 'origin_session', 'state', 'dispatched_at',
-        'completed_at', 'delivery_state', 'delivery_attempts', 'origin_session_id')} |
-        {'result': json.loads(row['result_json']) if row['result_json'] else None}}
+        'completed_at', 'delivery_state', 'delivery_attempts', 'origin_session_id', 'origin_ui_session_id', 'parent_session_id')} |
+        {'task': json.loads(row['task_json'] or '{}'), 'result': json.loads(row['result_json']) if row['result_json'] else None}}
 
 
 def _claim(db, conn, session_id, payload, *, execution_id):

@@ -1,7 +1,7 @@
 name: netscope
 title: netScope
 repo: https://github.com/Mxhi-04/hermes-netscope
-sha: 0b7b34a966b252cf14890b2497a75a24d23e125b
+sha: 4d3823e024ef09a75419a8f5fe22fdb7b322b747
 version: "0.1.0"
 description: >-
   Offline pcap/pcapng network capture analyzer with interactive HTML reports,
@@ -15,7 +15,7 @@ description: >-
 maintainer: Mxhi-04
 tier: community
 category: tools
-docs_url: https://github.com/Mxhi-04/hermes-netscope/blob/0b7b34a966b252cf14890b2497a75a24d23e125b/README.md
+docs_url: https://github.com/Mxhi-04/hermes-netscope/blob/4d3823e024ef09a75419a8f5fe22fdb7b322b747/README.md
 requires_hermes: ">=0.23.0"
 readme: true
 platforms: []

@@ -34,4 +34,4 @@ Plugin `python_dependencies` follow the plugin's own policy. Teknium's rulings: 
 dependencies themselves have to"; dates are checked by us, not users; pinned deps need >3 days.
 JS: `minimumReleaseAge` (14 days) in `pnpm-workspace.yaml`; an exemption is one exact
 `- name@1.2.3  # why` line in `minimumReleaseAgeExclude`, which `hermes pm update --pnpm` names
-and later drops (`website/docs/reference/package-management.md` § Release age and package mirrors).
+and later drops (`apps/docs/content/en/reference/package-management.md` § Release age and package mirrors).

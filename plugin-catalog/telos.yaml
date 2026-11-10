@@ -1,0 +1,20 @@
+# Submit as plugin-catalog/telos.yaml. Keep sha, version and requires_hermes in step with the published release.
+name: telos
+title: Telos
+repo: https://github.com/TelosPlatforms/hermes-telos-provider
+sha: 799052a87f84bf7d99cdcc3da783b3f0f991543e
+version: "0.4.0"
+description: Telos — workspace routers and canonical models through one OpenAI-compatible endpoint; browser sign-in (PKCE) or an existing Telos API key. Disclosure — sends your prompts, model discovery and your Telos key to app.telosplatforms.com (or TELOS_BASE_URL), which routes inference to the upstream providers your workspace policy allows; requests carry the Hermes conversation ID as metadata.conversation_id.
+maintainer: TelosPlatforms
+tier: community
+category: models
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/TelosPlatforms/hermes-telos-provider#readme
+known_issues:
+  - The model pickers show IDs such as route:orbit; Hermes does not yet render provider display names.
+  - Context and output limits are not published by Telos /v1/models; Hermes uses its own metadata heuristics.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

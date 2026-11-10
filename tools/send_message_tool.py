@@ -16,9 +16,9 @@ from tools.send_message_targets import (
 )
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
-    _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
-    _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
-    _send_matrix_via_adapter, _send_telegram)
+    _adapter_media_method, _error, _live_adapter, _media_caption_split, _optional_sender_kwargs,
+    _plugin_standalone_sender, _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
+    _send_matrix_via_adapter)
 from tools.registry import tool_error
 
 # A bare Slack user id (session metadata / home-channel config) is opened as a DM; same shape the
@@ -238,9 +238,10 @@ def _handle_send(args):
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
     if used_home_channel:
-        chat_id, err = _home_chat_id(config, platform, platform_name)
+        chat_id, home_thread_id, err = _home_chat_id(config, platform, platform_name)
         if err:
             return tool_error(err)
+        thread_id = thread_id if thread_id is not None else home_thread_id
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
@@ -396,17 +397,18 @@ def _secret_sources_state(user_config):
 
 
 def _home_chat_id(config, platform, platform_name):
-    """``(home chat_id, None)`` or ``(None, actionable error)``; Weixin also honours WEIXIN_HOME_CHANNEL."""
+    """``(home chat_id, home thread_id, None)`` or ``(None, None, actionable error)``; the thread is
+    where /sethome ran (a Telegram topic). Weixin also honours WEIXIN_HOME_CHANNEL."""
     home = config.get_home_channel(platform)
     if home:
-        return home.chat_id, None
+        return home.chat_id, getattr(home, "thread_id", None) or None, None
     # Home channel is a per-profile target like the token beside it: a raw environ read would post a
     # multiplexed secondary's message into the default profile's Weixin chat.
     wx_home = (get_secret("WEIXIN_HOME_CHANNEL", "") or "").strip() if platform_name == "weixin" else ""
     if wx_home:
-        return wx_home, None
+        return wx_home, None, None
     home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(platform_name, f"{platform_name.upper()}_HOME_CHANNEL")
-    return None, (f"No home channel set for {platform_name} to determine where to send the message. "
+    return None, None, (f"No home channel set for {platform_name} to determine where to send the message. "
                   f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
                   f"or set a home channel via: hermes config set {home_env} <channel_id>")
 
@@ -684,7 +686,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, feishu, what
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, notify=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -694,11 +696,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform_name == "weixin":  # plugin standalone sender only: no other plugin's import can block it
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, [message], media_files,
                                              thread_id=thread_id, max_len=None, force_document=force_document)
-    # Telegram chunks internally on the *formatted* text (escaping inflates length).
+    # Telegram's plugin sender chunks internally on the *formatted* text (escaping inflates length).
     if platform == Platform.TELEGRAM:
-        return await _send_telegram(
-            pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
-            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
+        sender, err = _plugin_standalone_sender(platform_name)
+        return err or await sender(pconfig, chat_id, message, thread_id=thread_id, media_files=media_files,
+                                   force_document=force_document, **_optional_sender_kwargs(sender, notify=notify))
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]

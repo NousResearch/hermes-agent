@@ -485,8 +485,6 @@ gateway:
     root_new: "Chcete-li zahájit nový paralelní chat s Hermes, otevřete téma Všechny zprávy v horní části tohoto rozhraní bota a pošlete tam libovolnou zprávu. Telegram pro ni vytvoří nové téma.\n\nKaždé téma je nezávislá relace Hermes. Použijte /new uvnitř existujícího tématu jen tehdy, chcete-li nahradit aktuální relaci tohoto tématu."
     new_header: "V tomto tématu byla zahájena nová relace Hermes.\n\nTip: pro paralelní práci otevřete Všechny zprávy a pošlete tam zprávu — vytvoříte tak samostatné téma, místo abyste zde používali /new. /new nahrazuje relaci přiřazenou aktuálnímu tématu."
     help: "/topic — zapne režim více relací v DM (jeden bot, mnoho paralelních chatů)\n\nPoužití:\n  /topic             Zapne režim témat, nebo zobrazí stav, pokud už je zapnutý\n  /topic help        Zobrazí tuto zprávu\n  /topic off         Vypne režim témat a vymaže přiřazení témat\n  /topic <id>        Uvnitř tématu: obnoví předchozí relaci podle ID\n\nJak to funguje:\n1. Spusťte /topic jednou v tomto DM — Hermes ověří, že jsou v BotFather\n   zapnutá nastavení Threads, a zapne režim více relací.\n2. Klepněte na Všechny zprávy v horní části rozhraní bota a odešlete libovolnou zprávu.\n   Telegram pro ni vytvoří nové téma; každé téma je\n   nezávislá relace Hermes (nová historie, nový kontext).\n3. Hlavní soukromý chat bude sloužit jako rozcestník systémových příkazů — posílejte tam /topic, /status,\n   /help, /usage. Běžné požadavky posílejte do tématu.\n4. /new uvnitř tématu resetuje pouze relaci daného tématu.\n5. /topic <id> uvnitř tématu obnoví do něj starou relaci."
-    system_topic_name: 'Systém'
-    system_topic_intro: 'Systémové téma pro příkazy a stav Hermes.'
     setup_image_caption: 'BotFather → Nastavení bota → Nastavení vláken'
     no_chat_id: 'Nepodařilo se určit ID chatu.'
     mode_not_enabled: 'Režim témat s více relacemi pro tento chat momentálně není zapnutý.'
@@ -623,6 +621,8 @@ gateway:
     action_always: 'Povolit vždy'
     action_deny: 'Zamítnout'
     deadline: 'Pokud neodpovíte do {window}, příkaz se NESPUSTÍ.'
+    not_requester: 'Na toto schválení může odpovědět jen {requester}.'
+    not_requester_admins_only: 'Na toto schválení může odpovědět jen správce nebo uvedený schvalovatel.'
     text_choice_once: 'Odpovězte `{prefix}approve` pro jednorázové spuštění'
     text_choice_session: '`{prefix}approve session` povolí tento vzor po zbytek této relace'
     text_choice_always: '`{prefix}approve always` povolí příkaz trvale'
@@ -630,6 +630,9 @@ gateway:
     text_choice_joiner: ', '
     text_choice_last: ", nebo {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: 'Náhled je zkrácen: celý příkaz ({total} znaků) je ve zprávě výše.'
+    truncated_deny_only: 'Náhled je zkrácen ({total} znaků) a celý příkaz zde nelze zobrazit, proto je k dispozici jen Zamítnout. Zkontrolujte jej v CLI nebo v Desktop aplikaci.'
+    text_prompt_deny_only: 'Celá žádost o schválení je pro tuto platformu příliš dlouhá, proto je k dispozici jen Zamítnout. Zkontrolujte ji v CLI nebo v Desktop aplikaci.'
   notify:
     media_kind:
       audio: 'zvuk'

@@ -487,8 +487,6 @@ gateway:
     root_new: "Para iniciar um novo chat paralelo do Hermes, abra o tópico All Messages no topo desta interface do bot e envie qualquer mensagem lá. O Telegram criará um novo tópico para ela.\n\nCada tópico é uma sessão independente do Hermes. Use /new dentro de um tópico existente apenas se quiser substituir a sessão atual daquele tópico."
     new_header: "Nova sessão do Hermes iniciada neste tópico.\n\nDica: para trabalho paralelo, abra All Messages e envie uma mensagem lá para criar um tópico separado, em vez de usar /new aqui. /new substitui a sessão vinculada ao tópico atual."
     help: "/topic — ativa o modo DM multissessão (um bot, vários chats paralelos)\n\nUso:\n  /topic             Ativa o modo de tópicos ou mostra o status se já estiver ativo\n  /topic help        Mostra esta mensagem\n  /topic off         Desativa o modo de tópicos e limpa os vínculos de tópicos\n  /topic <id>        Dentro de um tópico: restaura uma sessão anterior pelo ID\n\nComo funciona:\n1. Execute /topic uma vez nesta DM — o Hermes verifica se Threads\n   Settings está ativado no BotFather e liga o modo multissessão.\n2. Toque em All Messages no topo do bot e envie qualquer mensagem.\n   O Telegram cria um novo tópico para essa mensagem; cada tópico é\n   uma sessão independente do Hermes (histórico e contexto novos).\n3. A DM raiz vira um lobby do sistema — envie /topic, /status,\n   /help, /usage lá. Prompts normais vão em um tópico.\n4. /new dentro de um tópico reinicia apenas a sessão daquele tópico.\n5. /topic <id> dentro de um tópico restaura uma sessão antiga nele."
-    system_topic_name: "Sistema"
-    system_topic_intro: "Tópico do sistema para comandos e status do Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Não foi possível determinar o ID do chat."
     mode_not_enabled: "O modo de tópicos multissessão não está ativado para este chat no momento."
@@ -625,6 +623,8 @@ gateway:
     action_always: "Sempre permitir"
     action_deny: "Negar"
     deadline: "Se não responder em {window}, ele NÃO será executado."
+    not_requester: "Apenas {requester} pode responder a esta aprovação."
+    not_requester_admins_only: "Apenas um administrador ou um aprovador listado pode responder a esta aprovação."
     text_choice_once: "Responda `{prefix}approve` para executar uma vez"
     text_choice_session: "`{prefix}approve session` para permitir este padrão pelo restante desta sessão"
     text_choice_always: "`{prefix}approve always` para permitir permanentemente"
@@ -632,6 +632,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", ou {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Pré-visualização encurtada: o comando completo ({total} caracteres) está na mensagem acima."
+    truncated_deny_only: "Pré-visualização encurtada ({total} caracteres) e não foi possível mostrar o comando completo aqui, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
+    text_prompt_deny_only: "O pedido de aprovação completo é demasiado longo para esta plataforma, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
   notify:
     media_kind:
       audio: "áudio"

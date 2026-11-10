@@ -39,9 +39,7 @@ def _bootstrap(monkeypatch, tmp_path):
     runner = gateway_run.GatewayRunner(config)
     runner.adapters = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)

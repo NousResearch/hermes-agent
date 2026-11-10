@@ -1412,7 +1412,14 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         raise
 
 
-def start_server(
+def start_server(*args, **kwargs):
+    """Run the dashboard/serve backend; no lazy install may prompt on an inherited TTY (#125607)."""
+    from pm.extras import suppress_interactive_install_prompts
+    with suppress_interactive_install_prompts():
+        return _start_server_runtime(*args, **kwargs)
+
+
+def _start_server_runtime(
     host: str = "127.0.0.1",
     port: int = 9119,
     open_browser: bool = True,

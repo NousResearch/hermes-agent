@@ -7,6 +7,7 @@ import pytest
 
 from gateway.config import HomeChannel, Platform
 from gateway.session import build_session_key
+from tests.gateway.fixtures.storage_handles import close_storage_handles
 from tests.gateway.test_telegram_topic_mode import _make_event, _make_source
 from tests.gateway.test_telegram_topic_session_switch import CHAT, THREAD, _bound_session, _bound_topic, _entry
 

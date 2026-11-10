@@ -1412,3 +1412,29 @@ def test_the_fence_module_imports_only_the_stdlib():
     non_stdlib = sorted(name for name in module_names
                         if name and name not in sys.stdlib_module_names)
     assert not non_stdlib, f"the fence module imports beyond the stdlib: {non_stdlib}"
+
+
+def test_an_outside_root_that_import_hardening_inserts_refuses_the_next_import(
+        tmp_path, monkeypatch, hosted):
+    """``harden_import_path`` runs at bootstrap import time, before the source root is
+    guaranteed on ``sys.path`` (a legacy editable venv maps only the top-level packages
+    it knew at build time), so it may run nothing beyond the stdlib and cannot consult
+    the predicate itself. The enforcement for an entry it inserts that resolves outside
+    the image is the armed fence's import-time check of the live search path: the next
+    import that would search that entry is refused, and the module behind it never
+    runs."""
+    outside = tmp_path / "outsideroot"
+    outside.mkdir()
+    marker = tmp_path / "executed"
+    (outside / "outsidemod.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8")
+
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    import hermes_bootstrap
+
+    hermes_bootstrap.harden_import_path(str(outside))
+    assert str(outside) in sys.path  # the insertion itself is what the fence judges
+    with pytest.raises(HostedCodeRefused, match="outside that image"):
+        importlib.import_module("outsidemod")
+    assert not marker.exists()

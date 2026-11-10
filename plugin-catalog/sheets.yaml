@@ -1,19 +1,20 @@
 name: sheets
 title: Hermes Sheets
 repo: https://github.com/Adolanium/hermes-sheets
-sha: d2c0f4ce39a9115948ab29b265c4da66e8e2c5a0
+sha: 301677864ee473f9fe4922243942655330021b4c
 description: >-
   An agentic spreadsheet. Ask for a sheet and a Hermes agent finds the rows on
   the web, each with its source, or bring your own. Hermes suggests typed
   columns, fills only the ones you pick, explains what the answers add up to,
-  and lets any chat read your grids and propose cells, columns and rows that
-  you approve and can undo. Disclosure — Build sheet, research columns and Ask
-  start hidden Hermes sessions that use your Hermes tools and read third-party
-  web pages; approval prompts inside build and research sessions are denied;
-  import reads and export writes the one file you pick in the system dialog
-  through the desktop bridge, and the folder source reads a folder you grant;
-  grids live in Desktop plugin storage, with a copy under plugin-data/sheets/
-  while chats can read them; no telemetry, no credentials, no shell commands or
+  and, once you allow it, lets any chat read your grids and propose cells,
+  columns and rows that you approve and can undo. Disclosure — Build sheet,
+  research columns and Ask start hidden Hermes sessions that use your Hermes
+  tools and read third-party web pages; approval prompts inside build and
+  research sessions are denied; import reads and export writes the one file
+  you pick in the system dialog, through the plugin's own backend, and the
+  folder source reads a folder you grant; grids live in Desktop plugin
+  storage, with a copy under plugin-data/sheets/ only after you turn on chat
+  access, which starts off; no telemetry, no credentials, no shell commands or
   background processes of its own. Independent community project, not
   affiliated with Nous Research.
 maintainer: Adolanium
@@ -21,11 +22,11 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/Adolanium/hermes-sheets#readme
-version: "0.1.0"
-image: https://raw.githubusercontent.com/Adolanium/hermes-sheets/d2c0f4ce39a9115948ab29b265c4da66e8e2c5a0/docs/assets/catalog.png
+version: "0.1.1"
+image: https://raw.githubusercontent.com/Adolanium/hermes-sheets/301677864ee473f9fe4922243942655330021b4c/docs/assets/catalog.png
 screenshots:
-  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/d2c0f4ce39a9115948ab29b265c4da66e8e2c5a0/docs/assets/hero.jpg
-  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/d2c0f4ce39a9115948ab29b265c4da66e8e2c5a0/docs/assets/built.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/301677864ee473f9fe4922243942655330021b4c/docs/assets/hero.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/301677864ee473f9fe4922243942655330021b4c/docs/assets/built.png
 capabilities:
   provides_tools:
     - sheets_list

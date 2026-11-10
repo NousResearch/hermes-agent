@@ -108,6 +108,14 @@ def _cron_busy(homes) -> str | None:
 
 
 def _kanban_busy() -> str | None:
+    from gateway.kanban_watchers_common import _serves_hosted_tenants
+    if _serves_hosted_tenants():
+        # The same gate as the dispatcher and the notifier: the shared board
+        # refuses to open in a hosted process, and a hosted gateway never
+        # dispatches, so no board work can hold it up. Skipping the leg (rather
+        # than letting the enumeration refuse) is what lets an idle hosted
+        # gateway retire instead of failing the whole probe closed forever.
+        return None
     from hermes_cli import kanban_db
     from hermes_cli.kanban_db_connect import connect_closing
     marks = ",".join("?" * len(_KANBAN_DUE_STATUSES))

@@ -423,15 +423,15 @@ def kanban_home() -> Path:
     ``_refuse_shared_board_if_hosted``): this resolution is the one boundary every
     path to the shared board crosses."""
     _refuse_shared_board_if_hosted()
-    from hermes_cli.kanban_board_paths import unrefused_kanban_home
-    return unrefused_kanban_home()
-
-
-#: The one board predicate the generic file boundaries (the backup code's
-#: SQLite receiver) ask — moved to ``hermes_cli.kanban_board_paths`` (this
-#: module is at its file-size cap) and aliased here under its historical name.
-from hermes_cli.kanban_board_paths import refuse_board_path_if_hosted as _refuse_board_path_if_hosted
-from hermes_cli.kanban_board_paths import is_board_path
+    from hermes_cli.kanban_db_home import scoped_home_override
+    override = scoped_home_override()  # a context-scoped pin (see kanban_db_home)
+    if override:
+        return Path(override).expanduser()
+    env_override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
 
 
 def boards_root() -> Path:

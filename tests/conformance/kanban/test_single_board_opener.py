@@ -49,15 +49,6 @@ _NAMED_NON_BOARD_EXCEPTIONS = {
     ("hermes_cli/kanban_owner_recovery.py", "_admission_row"):
         "the owner's session-state admission ledger (state.db) named by an owner receipt, "
         "never a kanban board",
-    ("hermes_cli/backup_sqlite.py", "_safe_copy_db"):
-        "the generic SQLite snapshot copier behind backups and quick snapshots: opens whatever "
-        "database file it is handed (state.db, response_store.db, ...); it asks the one board "
-        "predicate (hermes_cli.kanban_board_paths.is_board_path, aliased as "
-        "hermes_cli.kanban_db.is_board_path) and refuses a hosted process before "
-        "opening or copying a kanban board",
-    ("hermes_cli/backup_sqlite.py", "preflight_state_db"):
-        "the session state database (state.db) read-only for the update preflight, never a "
-        "kanban board",
     ("hermes_cli/kanban_transfer.py", "_open_staged_export_copy"):
         "the export's staged snapshot copy under a temp dir (a private file the export just "
         "created); the live source board opens through the guarded connect in _snapshot_db, and "

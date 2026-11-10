@@ -42,17 +42,20 @@ its root resolution and every open (``hermes_cli.kanban_db``) — so a wrapper, 
 or a provider that opens the local backend under another name fails at the board, whoever calls
 it.
 
-Hosted contract. In hosted mode no Hermes kanban code path opens, copies or creates the
-profile-shared board, and the hosted gateway runs with the shared-board features (the dispatcher,
-the notifier and the board watchers) disabled, each with one log line and no exception: the refusal
-sits in the board's own lowest arms (``hermes_cli.kanban_db.kanban_home`` and the two connect arms
-of ``hermes_cli.kanban_db_connect``, plus the export's staged-copy helper and the backup code's
-SQLite receiver behind ``hermes_cli.kanban_board_paths.is_board_path`` (aliased as
-``hermes_cli.kanban_db.is_board_path``). Generic host-file access is not
-kanban's to govern: the hosted tool allowlist confines ``read_file`` and the other filesystem tools
-to the tenant's own sandbox — a lexical path policy with no host filesystem — so a board path is
-unreachable through them (the sandbox interface, hosted tool policy and their allowlist live in
-https://github.com/NousResearch/hermes-agent/pull/149924, not in this port).
+Hosted contract. In hosted mode, nothing reachable from the hosted gateway process (agent
+turns, tools, the gateway's own background work) opens, copies or creates the profile-shared
+board, and the gateway runs with the shared-board features disabled: the refusal sits in the
+board's own lowest arms (``hermes_cli.kanban_db.kanban_home`` and the two connect arms of
+``hermes_cli.kanban_db_connect``, plus the export's staged-copy helper), and every kanban
+background part the gateway starts — the notifier, the dispatcher (and the workers and the
+submitter watcher only it spawns), the idle-exit board busy leg and the per-turn recovery —
+disables itself or is never started, each with one log line and no exception. Operator commands
+that run outside that process (backup, restore, the doctor) are out of scope: they are run by an
+operator at a terminal, never inside the hosted gateway. Generic host-file access is not
+kanban's to govern: the hosted tool allowlist confines ``read_file`` and the other filesystem
+tools to the tenant's own sandbox — a lexical path policy with no host filesystem — so a board
+path is unreachable through them (the sandbox interface, hosted tool policy and their allowlist
+live in https://github.com/NousResearch/hermes-agent/pull/149924, not in this port).
 """
 
 from __future__ import annotations

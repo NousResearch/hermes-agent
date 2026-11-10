@@ -81,7 +81,9 @@ def _codex_request_failure_details(error: BaseException) -> tuple[int | None, st
     return request_body_bytes, " <- ".join(exception_classes)
 
 
-def _prune_zero_event_retry_payload(api_kwargs: dict, attempt: int, attempts: int) -> dict:
+def _prune_zero_event_retry_payload(
+    api_kwargs: dict, attempt: int, attempts: int, *, rejected: bool = False,
+) -> dict:
     """#95429 criterion 3: a reconnect after an attempt that produced no stream event must not resend
     a pathological payload unchanged. Inline ``function_call_output`` strings over the per-result
     threshold (results that escaped commit-time persistence) are spilled through the standard
@@ -97,17 +99,21 @@ def _prune_zero_event_retry_payload(api_kwargs: dict, attempt: int, attempts: in
     before = len(json.dumps(items, default=str).encode("utf-8"))
     if before <= DEFAULT_BUDGET.turn_budget:
         return api_kwargs
+    # The ordinary result limit allowed large inline outputs on the rejected turn.
+    threshold = 16_000 if rejected else DEFAULT_BUDGET.default_result_size
     pruned_items, pruned = [], 0
     for item in items:
         output = item.get("output") if isinstance(item, dict) and item.get("type") == "function_call_output" else None
         if isinstance(output, str):
             replaced = maybe_persist_tool_result(content=output, tool_name="codex_zero_event_retry",
                                                  tool_use_id=str(item.get("call_id") or "call"),
-                                                 config=DEFAULT_BUDGET, threshold=DEFAULT_BUDGET.default_result_size)
+                                                 config=DEFAULT_BUDGET, threshold=threshold)
             if replaced != output:
                 item, pruned = {**item, "output": replaced}, pruned + 1
         pruned_items.append(item)
     if not pruned:
+        if rejected:
+            return api_kwargs
         logger.warning("Codex zero-event retry (attempt %s/%s): no prunable tool output; resending payload "
                        "unchanged (serialized_input_bytes=%s, model=%s)", attempt, attempts, before, api_kwargs.get("model"))
         return api_kwargs
@@ -1192,7 +1198,7 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
-    from openai import APIConnectionError as _APIConnectionError
+    from openai import APIConnectionError as _APIConnectionError, BadRequestError
     from agent import relay_llm
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
@@ -1437,6 +1443,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 if not intercepted_events:  # zero-event attempt: never resend a pathological payload silently
                     api_kwargs = _prune_zero_event_retry_payload(api_kwargs, attempt + 1, max_stream_retries + 1)
                 continue
+            except BadRequestError as exc:
+                url = exc.request.url
+                if (attempt < max_stream_retries and not intercepted_events
+                        and writer_token["value"] is None and exc.status_code == 400
+                        and url.scheme == "https" and url.host == "chatgpt.com"
+                        and url.path == "/backend-api/codex/responses"
+                        and exc.body == {"detail": "Bad Request"}):
+                    reduced = _prune_zero_event_retry_payload(
+                        api_kwargs, attempt + 1, max_stream_retries + 1, rejected=True,
+                    )
+                    if reduced is not api_kwargs:
+                        logger.warning(
+                            "Codex pre-stream generic HTTP 400; retrying once with tool output previews (request_id=%s)",
+                            exc.request_id,
+                        )
+                        api_kwargs = reduced
+                        continue
+                raise
             except RuntimeError:
                 # "No terminal response"; Relay may still hold a finalizer-assembled response.
                 if event_stream is not None and event_stream.final_response is not None:

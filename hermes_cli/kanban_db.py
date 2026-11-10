@@ -2533,6 +2533,22 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class OpenChildrenError(ValueError):
+    """``complete_task`` refused: the completing task carries no evidence of
+    its own while >=1 child is still open with no evidence either
+    (``.open_children`` = ``[(child_id, status), ...]``). A ``ValueError`` so
+    tool error handlers treat it as recoverable."""
+
+    def __init__(self, completing_task_id: str, open_children: list[tuple[str, str]]):
+        self.completing_task_id = completing_task_id
+        self.open_children = list(open_children)
+        listed = ", ".join(f"{cid} ({status})" for cid, status in self.open_children)
+        super().__init__(
+            f"completion blocked: {completing_task_id} has open children "
+            f"with no evidence: {listed}"
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2548,11 +2564,14 @@ def complete_task(
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+    An empty-evidence completion is refused while a child is still open with
+    no evidence (:class:`OpenChildrenError`).
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    _gate_open_children(conn, task_id, result=result, summary=summary, metadata=metadata)
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     metadata = _merge_completion_prose_artifacts(
@@ -2624,6 +2643,52 @@ def complete_task(
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."
+
+
+def _open_empty_children(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    """``(child_id, status)`` for every child of ``task_id`` that is neither
+    ``done`` nor ``archived`` AND has no evidence of its own: blank task-row
+    ``result`` and blank latest ``task_runs.summary``. Ordered by child id."""
+    rows = conn.execute(
+        """
+        SELECT t.id, t.status, t.result,
+               (SELECT r.summary FROM task_runs r
+                 WHERE r.task_id = t.id ORDER BY r.id DESC LIMIT 1) AS run_summary
+          FROM task_links l JOIN tasks t ON t.id = l.child_id
+         WHERE l.parent_id = ?
+           AND t.status NOT IN ('done', 'archived')
+         ORDER BY t.id
+        """,
+        (task_id,),
+    ).fetchall()
+    return [
+        (row["id"], row["status"])
+        for row in rows
+        if not (row["result"] or "").strip() and not (row["run_summary"] or "").strip()
+    ]
+
+
+def _gate_open_children(
+    conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
+    summary: Optional[str] = None, metadata: Optional[dict] = None,
+) -> None:
+    """Empty-evidence completion guard (t_ca1c4a33): refuse when the completing
+    task has no evidence of its own while >=1 child is open with no evidence
+    either. Non-empty parent evidence never gates; ``metadata['superseded_by']``
+    (truthy) or a non-empty ``metadata['allow_open_children']`` reason overrides
+    (checked only when ``metadata`` is a dict); no children or all children
+    done/archived never gate."""
+    if (result or "").strip() or (summary or "").strip():
+        return
+    if isinstance(metadata, dict):
+        if metadata.get("superseded_by"):
+            return
+        allow = metadata.get("allow_open_children")
+        if isinstance(allow, str) and allow.strip():
+            return
+    open_children = _open_empty_children(conn, task_id)
+    if open_children:
+        raise OpenChildrenError(task_id, open_children)
 
 
 def _gate_created_cards(

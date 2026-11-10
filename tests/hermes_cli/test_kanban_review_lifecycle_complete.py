@@ -216,7 +216,7 @@ def test_review_changes_reapply_parent_gate(conn):
 
     # Move the task through review while its parent is temporarily terminal,
     # then make the parent non-terminal again before changes are requested.
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="Upstream prerequisite landed.")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
     assert kb.request_review(
@@ -244,7 +244,7 @@ def test_review_changes_reapply_parent_gate(conn):
 
 def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     parent_id = kb.create_task(conn, title="Parent", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="Parent stable.")
     task_id = kb.create_task(
         conn,
         title="Implementation with reopened parent",
@@ -264,7 +264,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     still_running = kb.get_task(conn, task_id)
     assert still_running is not None
     assert still_running.status == "running"
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="Parent stable.")
     assert kb.request_review(
         conn,
         task_id,

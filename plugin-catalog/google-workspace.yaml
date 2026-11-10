@@ -2,7 +2,7 @@
 name: google-workspace
 repo: https://github.com/francoleff/google-workspace-hermes
 sha: ae9a3e7847d7f0c02c4fccf2e6c04ed453f2e089
-description: Gmail, Calendar, Drive, Docs, Sheets and Contacts in one Hermes workspace, with cross-app briefs and approval on every write.
+description: "Gmail, Calendar, Drive, Docs, Sheets and Contacts in one Hermes workspace, with cross-app briefs and approval on every write. Disclosure — signs in with the user's own Google Cloud OAuth client through Hermes (`hermes auth add google-workspace:google`) and requests broad scopes (gmail.modify/send/compose, full Drive, Docs, Sheets, Calendar events, Contacts); tools and the Desktop page read and change mail, calendar, files, documents, sheets and contacts on that account, and sending, sharing, inviting, trashing and other writes ask for Hermes approval first; a Changes tab keeps a local list (title and link) of the writes Hermes made, pushed to every connected Desktop window."
 maintainer: francoleff
 tier: community
 category: desktop

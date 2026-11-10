@@ -1,0 +1,12 @@
+name: dreamer
+tier: community
+category: memory
+repo: https://github.com/Cosmonautic1/hermes-dreamer
+sha: 6d638c0e94d41da2ffb9729c2c143178c4533b5c
+title: Dreamer
+version: "1.2.0"
+maintainer: Cosmonautic1
+description: "Sleep cycle for Hermes: it replays your day's work into a narrative dream with insights, then whispers that residue into your next session."
+capabilities:
+  tools: [dream_now, dream_journal, dream_status]
+  hooks: [pre_llm_call]

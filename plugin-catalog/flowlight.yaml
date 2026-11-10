@@ -1,0 +1,35 @@
+name: flowlight
+repo: https://github.com/ayinmodeolarewaju-bot/hermes-flowlight
+sha: ec35217e7e8aab684cb2d6140d5eca1e3f570c7b
+description: >
+  Watch public wallets and draw live on-chain money flows as glowing arcs.
+  Read-only. Uses public NEAR, Blockscout, and RPC endpoints. Never signs
+  or sends transactions and never handles keys.
+maintainer: ayinmodeolarewaju-bot
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+title: Flowlight
+docs_url: https://github.com/ayinmodeolarewaju-bot/hermes-flowlight
+image: https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/ec35217e7e8aab684cb2d6140d5eca1e3f570c7b/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/ec35217e7e8aab684cb2d6140d5eca1e3f570c7b/docs/screenshots/live-flows.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/ec35217e7e8aab684cb2d6140d5eca1e3f570c7b/docs/screenshots/arc-detail.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/ec35217e7e8aab684cb2d6140d5eca1e3f570c7b/docs/screenshots/demo-fixture.png
+readme: true
+platforms: []
+known_issues:
+  - "Base and Arbitrum Blockscout often answer HTTP 403 from datacenter networks. Flowlight falls back to public JSON-RPC logs for major tokens and says so."
+  - "A busy address is summarized over the largest recent slice that fits the time budget, not every transfer in the requested 24h."
+  - "purefile1686.near had no fungible or native transfers in the public recent history during the 10 Nov 2026 live run. The node still draws."
+capabilities:
+  provides_tools:
+    - flowlight_watch
+    - flowlight_unwatch
+    - flowlight_flows
+    - flowlight_summary
+    - flowlight_list
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

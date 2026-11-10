@@ -41,6 +41,7 @@ from agent.auxiliary_profile_gates import (
     PROFILE_REASONING_KEYS, contains_profile_reasoning_fields, profile_forwards_max_tokens,
 )
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.chat_completion_plain_json import acompleted_response_or_stream, completed_response_or_stream
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -6986,8 +6987,9 @@ def _create_with_progress_once(
         _notify_aux_provider_response()
         return response
     # Some shims (MoA quiet mode, defensive adapters) return a complete response despite
-    # stream=True; it counts as provider response + forward progress.
-    if hasattr(chunks, "choices"):
+    # stream=True; it counts as provider response + forward progress. The converter
+    # first surfaces endpoints that ignore stream=True (plain JSON body) in this shape.
+    if hasattr(chunks := completed_response_or_stream(chunks), "choices"):
         _notify_aux_provider_response()
         return chunks
     from agent.auxiliary_stream_watchdog import chat_stream_windows
@@ -7176,7 +7178,7 @@ async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Option
     """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     chunks = await client.chat.completions.create(**stream_kwargs)
-    if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
+    if hasattr(chunks := await acompleted_response_or_stream(chunks), "choices"):
         return chunks
     return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
 
@@ -7219,7 +7221,7 @@ async def _acreate_with_progress(
         response = await client.chat.completions.create(**kwargs)
         _notify_aux_provider_response()
         return response
-    if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
+    if hasattr(chunks := await acompleted_response_or_stream(chunks), "choices"):
         _notify_aux_provider_response()
         return chunks
     return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)

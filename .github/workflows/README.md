@@ -265,6 +265,21 @@ ones. OSV runs on a weekly schedule.
   the lane-bound consumers `tests`, `tests-os`, `e2e-desktop-update`,
   `remote-backends` and `catalog-tests`: when `detect` selected their lane,
   they must succeed.
+- **Cancelled duplicate (PR runs, `--allow-superseded`):** GitHub can deliver
+  one push as two `pull_request` runs (seen when the push also dismisses a
+  stale review). The per-PR concurrency group cancels the older copy, and
+  branch protection requires the gate of every check suite on the SHA. A gate
+  whose only non-successes are `cancelled` jobs passes when the Actions API
+  shows a later-started (`run_started_at`, then higher run id) live or
+  successful run of the same workflow, event, head SHA, head branch and head
+  repository; that run's gate is the real verdict. (Fork runs carry no
+  `pull_requests`, so the PR itself can't be matched; the same branch opened
+  against two bases is not told apart.) Delegation only points forward, so the
+  last run to start never passes by delegation, and a rerun never delegates
+  (attempt 2 of a fork run approved after `action_required` counts as its
+  first). A run cancelled while still waiting in the concurrency group never
+  runs its gate at all, so it leaves no gate behind. Otherwise it fails as
+  before.
 - **Release mode:** every required job must be `success`. Only the deferred
   `e2e-desktop` may skip. The PR-only checks are steps of `repo-guards`, which
   runs on every event, so they never reach the gate as a skip.

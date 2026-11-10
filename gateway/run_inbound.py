@@ -373,8 +373,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
         except Exception:
             return None
-        if _pending_clarify is None:
-            return None
+        if _pending_clarify is None or self._refused_clarify(event, _pending_clarify.clarify_id):
+            return None  # another member's message is their own message, not this clarify's answer
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 
@@ -391,7 +391,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # they can retry; on timeout the agent unblocks with an empty response.
         if not _raw_clarify_reply or _raw_clarify_reply.startswith("/"):
             return None
-        _text_outcome = _clarify_mod.attempt_text_response_for_session(_quick_key, _raw_clarify_reply)
+        # Settle only the clarify the sender was checked against: transcription awaits, and the
+        # session may hold another member's question by now. If ours is gone, this is a message.
+        _text_outcome = _clarify_mod.attempt_text_response(_pending_clarify.clarify_id, _raw_clarify_reply)
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(
                 "Gateway intercepted clarify text response (session=%s, id=%s)",
@@ -433,6 +435,25 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # Bound to this turn's run generation: once it ends, the normal policy applies.
                 event._clarify_superseded = _generation
         return None
+
+    def _refused_clarify(self, event: MessageEvent, clarify_id: str) -> Optional[str]:
+        """The localized refusal when *event*'s sender may not answer clarify *clarify_id* (not its
+        requester, an approver, or this bot's admin), else None."""
+        from gateway.approval_actor import clarify_refusal, refusal_text
+        requester = clarify_refusal(clarify_id, event.sender_id() or "", admin_ids=self._prompt_admin_ids(event))
+        return refusal_text(requester) if requester else None
+
+    def _refused_slash_confirm(self, event: MessageEvent, session_key: str, confirm_id: str) -> Optional[str]:
+        """The localized refusal when *event*'s sender may not answer slash confirm *confirm_id*, else None."""
+        from gateway.approval_actor import refusal_text, slash_confirm_refusal
+        requester = slash_confirm_refusal(session_key, confirm_id, event.sender_id() or "",
+                                          admin_ids=self._prompt_admin_ids(event))
+        return refusal_text(requester) if requester else None
+
+    def _prompt_admin_ids(self, event: MessageEvent):
+        """The answer policy of the chat *event* arrived in (admins + its slash floor)."""
+        from gateway.slash_access import policy_for_runner_source
+        return policy_for_runner_source(self, event.source)
 
     async def _release_pending_clarify(self, pending, source) -> bool:
         """Withdraw *pending* as CANCELLED and retire its card; False if it already settled.
@@ -512,6 +533,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             or self._slash_confirm_text_choices().get(_norm_reply)
         )
         if _confirm_choice is not None:
+            if _refusal := self._refused_slash_confirm(event, _quick_key, _pending_confirm.get("confirm_id") or ""):
+                return _refusal  # left pending for its requester
             _resolved = await _slash_confirm_mod.resolve(
                 _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
             )
@@ -1459,6 +1482,17 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             snapshot = _otr_state.conversation.one_turn_restore
             _otr_state.conversation.one_turn_restore = None
             self._restore_session_model_override(session_key, snapshot)
+            # The one-turn switch note was persisted with the temporary turn. Add a
+            # one-shot counterpart so the next model does not treat that historical
+            # note as its current identity. The restored model may come from config,
+            # so avoid guessing its display name here.
+            pending_notes = getattr(self, "_pending_model_notes", None)
+            if not isinstance(pending_notes, dict):
+                pending_notes = self._pending_model_notes = {}
+            pending_notes[session_key] = (
+                "[Note: the one-turn model override has ended. The temporary model "
+                "no longer applies; use the current model and provider in your instructions.]"
+            )
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 
@@ -1643,9 +1677,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # must still tell the agent the file exists.
             display_name, agent_path = cls._inbound_attachment_display_name(
                 path, names[i] if i < len(names) else "")
+            # Only an adapter that injected the text says so; an unflagged file (LINE, Signal, ...) is not inlined.
             inline_flag = inline_flags[i] if i < len(inline_flags) else None
             context_note = _build_document_context_note(
-                display_name, agent_path, mtype, content_inlined=inline_flag is not False,
+                display_name, agent_path, mtype, content_inlined=inline_flag is True,
             )
             message_text = f"{context_note}\n\n{message_text}"
         return message_text

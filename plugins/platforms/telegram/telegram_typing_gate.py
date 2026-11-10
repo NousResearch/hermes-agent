@@ -2,8 +2,9 @@
 
 ``_keep_typing`` runs once per session, but Telegram meters per chat: every DM topic shares one
 chat id, so N active topics sent N ``sendChatAction`` calls per tick into one chat. A typing call
-also spends the same per-chat budget as sends and edits: it stays quiet while that chat is in a
-flood window or its shared outbound slot is taken, and takes that slot when it fires.
+stays quiet while that chat is in a flood window or its shared send+edit slot is taken, but never
+takes the slot itself: a held slot makes the stream skip its interim edits, so a typing tick that
+claimed it froze a group's streamed preview on its first chunk.
 """
 
 from __future__ import annotations
@@ -44,5 +45,4 @@ def typing_may_fire(adapter: Any, chat_id: Any) -> bool:
     for stale in [k for k, t in last.items() if now - t >= TYPING_CHAT_MIN_INTERVAL_SECS]:
         del last[stale]  # bounded dict
     last[key] = now
-    adapter._hold_chat_outbound_slot(chat_id)  # typing spends the same per-chat budget as sends/edits
     return True

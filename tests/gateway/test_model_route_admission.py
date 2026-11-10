@@ -198,8 +198,9 @@ async def test_reset_remains_route_scoped_with_global_default_policy(tmp_path, m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persist_by_default", [False, True])
-async def test_model_picker_delivery_does_not_block_turn_admission(tmp_path, monkeypatch, persist_by_default):
-    from gateway.config import Platform
+@pytest.mark.parametrize("route_scope", ["config", "channel", "session"])
+async def test_model_picker_delivery_does_not_block_turn_admission(tmp_path, monkeypatch, persist_by_default, route_scope):
+    from gateway.config import ChannelOverride, Platform, PlatformConfig
     from gateway.platforms.event import MessageEvent
     from gateway.session import SessionSource
     from gateway.session_authorities import active_authority
@@ -212,6 +213,16 @@ async def test_model_picker_delivery_does_not_block_turn_admission(tmp_path, mon
         "model:\n  default: old\n  provider: openrouter\n"
         f"  persist_switch_by_default: {str(persist_by_default).lower()}\n")
     runner, source, route, viewer, root, _ = await _compressed_chat(tmp_path)
+    expected_model = "old"
+    if route_scope in {"channel", "session"}:
+        runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(
+            enabled=True,
+            channel_overrides={source.chat_id: ChannelOverride(model="channel-model")},
+        )
+        expected_model = "channel-model"
+    if route_scope == "session":
+        runner._session_model_overrides[route] = {"model": "session-model", "provider": "openrouter"}
+        expected_model = "session-model"
     entered, release = asyncio.Event(), asyncio.Event()
     tasks = []
     try:
@@ -223,6 +234,7 @@ async def test_model_picker_delivery_does_not_block_turn_admission(tmp_path, mon
 
         class PickerAdapter:
             async def send_model_picker(self, **kwargs):
+                assert kwargs["current_model"] == expected_model
                 entered.set()
                 await release.wait()
                 return SimpleNamespace(success=True)

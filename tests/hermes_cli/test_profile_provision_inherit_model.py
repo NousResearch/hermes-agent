@@ -1,11 +1,3 @@
-"""profiles.create inherits the launch profile's model together with the custom gateway backing it.
-
-``_inherit_launch_model`` pins the launch ``model`` into the new profile through the same
-validated path as ``/api/model/set``, and that validation runs inside the new profile's home. A
-launch model on a custom ``providers:`` gateway is therefore only valid once the gateway
-definition is already in the profile — writing it after the pin never ran (#101885 / #94071).
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,7 +6,7 @@ import hermes_yaml as yaml
 import pytest
 
 from hermes_cli.config import DEFAULT_CONFIG, atomic_config_write, read_user_config_raw
-import tui_gateway.server as srv
+from hermes_cli.profile_provision import inherit_launch_model
 
 
 @pytest.mark.parametrize(
@@ -74,7 +66,7 @@ def test_inherit_launch_model_carries_a_custom_provider_gateway(
         },
     )
 
-    assert srv._inherit_launch_model(profile) is True
+    assert inherit_launch_model(profile) is True
 
     cfg = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))
     assert (cfg["model"]["provider"], cfg["model"]["default"]) == (
@@ -122,7 +114,7 @@ def test_inherit_launch_model_pins_a_bare_custom_endpoint(monkeypatch, tmp_path,
         {"tts": {"provider": "edge"}, "_config_version": DEFAULT_CONFIG["_config_version"]},
     )
 
-    assert srv._inherit_launch_model(profile) is True
+    assert inherit_launch_model(profile) is True
 
     model = read_user_config_raw(profile / "config.yaml")["model"]
     # The launch file's spelling travels: a ${VAR} URL stays a ref, never the launch value.
@@ -145,5 +137,5 @@ def test_inherit_launch_model_preserves_explicit_profile_selection(
     atomic_config_write(profile / "config.yaml", selected)
     before = read_user_config_raw(profile / "config.yaml")
 
-    assert srv._inherit_launch_model(profile) is False
+    assert inherit_launch_model(profile) is False
     assert read_user_config_raw(profile / "config.yaml") == before

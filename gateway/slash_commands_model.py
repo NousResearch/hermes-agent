@@ -627,14 +627,14 @@ class GatewayModelCommandsMixin:
         # Opening a picker publishes nothing; its selection callback takes the gate.
         if not request.is_reset and not request.target and not request.explicit_provider:
             ctx.read_config()
-            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+            await self._apply_effective_model_route(ctx, source)
             return await self._model_listing_reply(event, ctx, profile_home)
         # Reset only clears this route, even when ordinary picks persist by default.
         async with publication_lock(self, None if ctx.persist_global and not request.is_reset else session_key):
             ctx.read_config()
             if request.is_reset:
                 return await self._handle_model_reset(event, ctx)
-            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+            await self._apply_effective_model_route(ctx, source)
             result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
             if error is not None:
                 return error
@@ -642,6 +642,20 @@ class GatewayModelCommandsMixin:
             if guard_fired:
                 return guard_reply
             return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+
+    async def _apply_effective_model_route(self, ctx: _ModelSwitchContext, source) -> None:
+        """Apply the turn's route precedence after config: channel, then session."""
+        from gateway.session_info_route import channel_override_route
+
+        model, route, forced_provider = await asyncio.to_thread(
+            channel_override_route, getattr(self, "config", None), source,
+        )
+        if model:
+            ctx.apply_override({
+                "model": model,
+                **(route or ({"provider": forced_provider} if forced_provider else {})),
+            })
+        ctx.apply_override(self._session_model_overrides.get(ctx.session_key, {}))
 
     def _channel_default_route(self, source, config_path) -> tuple[str, str]:
         """``(model, provider)`` this chat runs with no session override: channel_overrides, else the

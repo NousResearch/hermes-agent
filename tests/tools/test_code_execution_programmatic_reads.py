@@ -6,8 +6,11 @@ because it was answered with the conversation's "unchanged since last read" stub
 
 import json
 
+import pytest
+
 from model_tools import handle_function_call
 from tools.code_execution_rpc import _default_dispatch
+from tools.code_kernel import CellAuthority
 from tools.file_tools_read_tracking import reset_file_dedup
 
 
@@ -15,13 +18,16 @@ def _call(dispatch, name, **args):
     return json.loads(dispatch(name, args))
 
 
-def test_cell_reads_always_carry_content_and_do_not_count_as_shown_to_the_model(tmp_path):
+# Local cells dispatch through the kernel's CellAuthority; remote backends through the RPC loop.
+@pytest.mark.parametrize("cell_dispatch", [lambda task: CellAuthority(task).dispatch, _default_dispatch],
+                         ids=["session-kernel", "rpc"])
+def test_cell_reads_always_carry_content_and_do_not_count_as_shown_to_the_model(tmp_path, cell_dispatch):
     task = "cell-reads"
     reset_file_dedup(task)
     seen, unseen = tmp_path / "seen.txt", tmp_path / "unseen.txt"
     seen.write_text("alpha\n", encoding="utf-8")
     unseen.write_text("beta\n", encoding="utf-8")
-    cell = _default_dispatch(task)
+    cell = cell_dispatch(task)
 
     def model(name, **args):
         return json.loads(handle_function_call(name, args, task_id=task))

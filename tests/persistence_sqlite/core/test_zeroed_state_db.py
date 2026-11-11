@@ -23,6 +23,14 @@ def test_is_zeroed_state_db_and_quarantine(tmp_path):
     assert q.read_bytes() == bytes(1024)
 
 
+def test_the_backend_and_the_backup_share_one_zeroed_file_detector():
+    import hermes_cli.backup
+    import sqlite_support
+
+    assert dbfile_module.is_zeroed_sqlite_file is hermes_cli.backup.is_zeroed_sqlite_file
+    assert hermes_cli.backup.is_zeroed_sqlite_file is sqlite_support.is_zeroed_sqlite_file
+
+
 @pytest.mark.skipif(not hasattr(__import__("os"), "mkfifo"), reason="POSIX only")
 def test_is_zeroed_never_probes_special_files(tmp_path):
     """A FIFO at the state.db path must be rejected without any blocking read.

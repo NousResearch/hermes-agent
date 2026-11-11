@@ -81,6 +81,19 @@ jobs:
             type=sha,prefix=sha-,format=short
             type=raw,value=main
 
+      - name: Write install stamp
+        # Upstream's docker.yml does this before `docker build`; without it the
+        # image's /opt/hermes/install-stamp.json falls back to the all-zero
+        # placeholder, so `hermes --version` and the provenance marker report
+        # 0.0.0 / revision null. The Dockerfile copies the stamp into the bulk
+        # `COPY . .` layer, so it has to exist first.
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci \
+            --commit "$GITHUB_SHA" --branch main
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -90,8 +103,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=fork-ghcr-amd64
           cache-to: type=gha,mode=max,scope=fork-ghcr-amd64
 

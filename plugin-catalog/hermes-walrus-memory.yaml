@@ -1,7 +1,7 @@
 name: hermes-walrus-memory
 title: Walrus Memory
 repo: https://github.com/takaolovely/hermes-walrus-memory
-sha: d28053f1000141d6e6dc46821d8895097d90de55
+sha: 324b0a150b74165402fdea52639062c9dd28a4a5
 subdir: plugin
 version: "0.3.0"
 requires_hermes: ">=0.16"

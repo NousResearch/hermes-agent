@@ -1036,7 +1036,8 @@ class GatewayModelCommandsMixin:
                 *({"value": lv, "label": effort_display_label(lv, *_route), "is_current": lv == current_effort}
                   for lv in VALID_REASONING_EFFORTS),
                 *({"value": v, "label": t(f"gateway.reasoning.choice_{v}"), "is_current": False}
-                  for v in ("reset", "show", "hide")),
+                  # `reset` clears the session override, which --global refuses as unsupported.
+                  for v in (("show", "hide") if persist_global else ("reset", "show", "hide"))),
             ],
             on_choice_selected=_on_reasoning_choice,
         )

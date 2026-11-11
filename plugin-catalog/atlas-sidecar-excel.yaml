@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Atlas Omnia
+name: atlas-sidecar-excel
+title: "Sidecar for Excel"
+repo: https://github.com/AtlasOmnia/sidecar
+subdir: excel/plugins/atlas-sidecar-excel
+docs_url: https://github.com/AtlasOmnia/sidecar/tree/cae879e0cddead4717ba381bc759e91552c9ee39/excel#readme
+sha: cae879e0cddead4717ba381bc759e91552c9ee39
+version: "1.0.0"
+description: "Sidecar by Atlas Omnia \u2014 your Hermes agent in desktop Excel for Mac. The plugin runs an HTTPS localhost bridge on ports 47640-47644, exposing 28 sidecar_excel_* tools and opt-in workbook plans. Manual CA trust and one sidebar Allow are required. Allowing lets the configured site use your Hermes agent and all its tools until revoke; use a site you control or trust and open only documents you trust. API_SERVER_KEY is read through Hermes, never sent to the sidebar or stored by the plugin; TLS private keys are owner-only. For TLS it can only vouch for localhost. The trust command does not limit the certificate to TLS, so protect the key file and remove the trust when you stop using Sidecar. Latest live run: 2026-11-11 about 00:26 in desktop Excel for Mac, plugin and sidebar built from a7b3fd7. Connect, Allow, a 3-row table with header in A1:B4 and =SUM(B2:B4) in B5 read back from the workbook; revoke dropped the sidebar to needs your OK. The bridge answered 200 to the configured origin and 403 to another origin. The sidebar used a private test site via addin_base, with CA trust in the login keychain; this Mac also has it in the System keychain. Earlier the same night at 35ef09e (behaviour unchanged since): reversal on request by clearing the range (no real undo), plugin reload with the sidebar open (it reconnected by itself and edited again), approval remembered after restarting Excel, next Connect after revoke asked for approval again. Not tested: Windows desktop Excel, dark theme, keyboard-only use, public Pages origin, TLS-only trust or all workbook tools/plans. Reopen the sidebar if it does not reconnect. The Excel test Mac also has System-keychain trust; that was not required in our Word and PowerPoint runs, which used login-keychain trust only. The default sidebar site is https://atlasomnia.github.io/sidecar-excel/ (publication pending); it is outside the catalog pin, and its origin is shared with other account Pages sites. Office.js loads from Microsoft. Hermes may send chat/workbook data to the configured provider. CLI approval/status never starts a listener. Remove matching CA trust manually before deleting the plugin tls directory; uninstall/revoke does not remove OS trust. No telemetry or self-updater. Apache-2.0; LICENSE and NOTICE included. No Microsoft or Nous Research endorsement."
+maintainer: AtlasOmnia
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: [macos]  # Windows desktop Excel untested
+known_issues:
+  - "Live-tested only for the limited desktop Excel for Mac flow in the README; reload with an open sidebar reconnected and edited again. Windows desktop Excel is untested."
+  - "The sidebar must reach https://localhost with the per-install local CA manually trusted; network restrictions or missing trust leave the sidebar on 'Hermes is not reachable'."
+  - "Public GitHub Pages origin live testing is pending publication. TLS-only trust (-p ssl) and a server-auth EKU on the CA are planned hardening."
+capabilities:
+  provides_tools:
+    - sidecar_excel_get_workbook_overview
+    - sidecar_excel_read_range
+    - sidecar_excel_summarize_range_stats
+    - sidecar_excel_write_range
+    - sidecar_excel_format_range
+    - sidecar_excel_conditional_format_range
+    - sidecar_excel_freeze_panes
+    - sidecar_excel_set_data_validation
+    - sidecar_excel_create_sheet
+    - sidecar_excel_delete_sheet
+    - sidecar_excel_activate_sheet
+    - sidecar_excel_insert_table
+    - sidecar_excel_sort_table
+    - sidecar_excel_filter_table
+    - sidecar_excel_create_chart
+    - sidecar_excel_find_replace
+    - sidecar_excel_clear_range
+    - sidecar_excel_autofill_formula
+    - sidecar_excel_rename_sheet
+    - sidecar_excel_copy_sheet
+    - sidecar_excel_protect_sheet
+    - sidecar_excel_unprotect_sheet
+    - sidecar_excel_create_pivot_table
+    - sidecar_excel_run_calculation
+    - sidecar_excel_add_comment
+    - sidecar_excel_clear_comments
+    - sidecar_excel_import_csv_to_sheet
+    - sidecar_excel_execute_plan
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env:
+    - API_SERVER_KEY

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 import time
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
@@ -99,7 +98,9 @@ def _connect_readonly(db_path: Path, settings):
         with SessionDB(db_path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
             yield conn
     else:
-        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+        from hermes_cli.sqlite_safe_read import connect_tracked
+        from hermes_state_holders import read_only_db_uri
+        with closing(connect_tracked(read_only_db_uri(db_path), uri=True, tracking_path=db_path)) as conn:
             yield conn
 
 

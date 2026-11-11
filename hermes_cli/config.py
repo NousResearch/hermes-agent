@@ -2212,6 +2212,63 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
     return None
 
 
+#: Keys read from the top-level ``model:`` block. Collected from every reader of that block; a
+#: key that is read somewhere but missing here would make a working config warn, so add new
+#: readers here (``tests/hermes_cli/test_config_unknown_model_keys.py`` cross-checks the set).
+_KNOWN_MODEL_KEYS = frozenset({
+    # Model identity, normalized by ``_normalize_root_model_keys`` (``api_base`` aliases
+    # ``base_url``; ``model``/``name`` alias ``default``).
+    "default", "model", "name", "provider", "base_url", "api_base", "context_length",
+    # Credentials and transport (runtime_provider, auth, codex_runtime_switch, model_setup_flows_azure).
+    "api_key", "api", "key_env", "api_key_env", "api_mode", "auth_mode", "entra",
+    "openai_runtime", "codex_bin",
+    # Request shaping (agent_init, auxiliary_client, reasoning_params, image_routing).
+    "default_headers", "extra_headers", "reasoning_echo", "streaming", "supports_vision",
+    "lmstudio_load_mode", "ollama_num_ctx",
+    # Model switching (model_switch, model_selection_guards).
+    "aliases", "persist_switch_by_default", "switch_context_confirm_tokens",
+})
+
+#: Dedup set for the model-block warning (per config path + key set), mirroring
+#: ``_PROVIDER_NORMALIZE_WARNED``: config loads repeat, the warning should not.
+_MODEL_NORMALIZE_WARNED: set = set()
+
+
+def _warn_unknown_model_keys(user_config: Any, config_path: Any = None) -> None:
+    """Warn about unrecognized keys in the user's ``model:`` block.
+
+    ``providers.*`` already validates its keys and logs the ones it drops; the ``model:`` block
+    did not, so a misspelled or unsupported key there (``seed``, say) was ignored in silence.
+
+    Reads the USER's config, not the merged result, which also carries ``DEFAULT_CONFIG`` keys.
+    Not placed in :func:`_normalize_root_model_keys`, which returns early for already-canonical
+    configs -- exactly the ones this check must cover. camelCase spellings are not remapped (the
+    ``model:`` readers never accepted them); the warning names the snake_case key instead.
+    """
+    if not isinstance(user_config, dict):
+        return
+    model_block = user_config.get("model")
+    if not isinstance(model_block, dict):
+        # ``model: "some/model-id"`` is a valid shorthand, not a block.
+        return
+    unknown = sorted(str(k) for k in model_block if k not in _KNOWN_MODEL_KEYS)
+    if not unknown:
+        return
+    source = str(config_path) if config_path else "config"
+    signature = (source, ",".join(unknown))
+    if signature in _MODEL_NORMALIZE_WARNED:
+        return
+    _MODEL_NORMALIZE_WARNED.add(signature)
+    described = []
+    for key in unknown:
+        alias = _CAMEL_ALIASES.get(key)
+        if alias in _KNOWN_MODEL_KEYS:
+            described.append(f"{key} (did you mean '{alias}'?)")
+        else:
+            described.append(key)
+    logger.warning("%s: model: unknown config keys ignored: %s", source, ", ".join(described))
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     snapshot = _worker_config_snapshot()
     if snapshot is not None:
@@ -2258,6 +2315,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                         agent_user_config["max_turns"] = user_config["max_turns"]
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
+
+                _warn_unknown_model_keys(user_config, config_path)
 
                 config = _deep_merge(config, user_config)
                 from hermes_cli.moa_config import apply_user_moa_presets

@@ -142,7 +142,7 @@ def test_standalone_send_marks_timeouts_in_flight(monkeypatch):
     import tools.send_message_tool as smt
 
     async def _hang(platform, pconfig, chat_id, message, **kwargs):
-        await asyncio.sleep(30)
+        await asyncio.Event().wait()  # never set: only the send timeout's cancel ends it
 
     monkeypatch.setattr(smt, "_send_to_platform", _hang)
     monkeypatch.setattr(sd, "_get_standalone_send_timeout", lambda: 0.05)

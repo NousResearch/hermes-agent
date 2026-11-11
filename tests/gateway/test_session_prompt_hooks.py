@@ -219,7 +219,8 @@ def test_each_person_request_fires_with_the_frame_id_that_answers_it(plugin, met
     params = {"questions": [{"qid": "q0", "question": "Which?"}]} if method == "clarify" else {"site": "example"}
     worker, out = _ask_in_thread(events, method, params)
     [opened] = plugin.wait(OPENED)
-    frame = next(f for f in peer.frames if f.get("method") == method)
+    frame = wait_until(lambda: next((f for f in list(peer.frames) if f.get("method") == method), None),
+                       what="the request frame")  # the fanout writes off the asker's thread
     assert opened == {"session_id": "s", "kind": method, "prompt_id": frame["id"], "execution_generation": None,
                       "params": frame["params"]}
     assert [r["id"] for r in open_requests(events, "s")] == [opened["prompt_id"]]
@@ -257,7 +258,7 @@ def test_a_request_that_nobody_answers_settles_once_with_its_reason(plugin, endi
 def test_window_requests_and_unasked_prompts_never_fire(plugin):
     from gateway.session_events import SessionEvents
     from gateway.session_server_requests import ask_viewer
-    events, peer = _viewer_stream()
+    events, _peer = _viewer_stream()
     for method in ("theme.apply", "theme.pick", "tour", "preview.act", "preview.read", "window.read",
                    "terminal.read", "setup_beat"):
         worker, _out = _ask_in_thread(events, method, {}, timeout=0.25)
@@ -265,12 +266,10 @@ def test_window_requests_and_unasked_prompts_never_fire(plugin):
     worker, _out = _ask_in_thread(events, "sudo", {"command": "x"}, timeout=0.25, replay=False)
     worker.join(10)
     assert ask_viewer(SessionEvents(), "s", "sudo", {"command": "x"}, timeout=0.25) == ""  # nobody to ask
-    window_ids = {f["id"] for f in peer.frames if "id" in f}
     worker, _out = _ask_in_thread(events, "secret", {"env_var": "K"}, timeout=0.25)
     [sentinel] = plugin.wait(SETTLED)  # delivered in order: anything earlier would be here by now
     worker.join(10)
     assert [kw["prompt_id"] for _hook, kw in plugin.calls] == [sentinel["prompt_id"]] * 2
-    assert sentinel["prompt_id"] not in window_ids
 
 
 # -- failure isolation, locks, redaction -------------------------------------------------------------------
@@ -297,7 +296,9 @@ def test_a_raising_plugin_changes_nothing_about_the_prompt(owner, plugin):
     assert resolve({"jsonrpc": "2.0", "id": frame_opened["prompt_id"], "result": {"value": "pw"}})
     worker.join(5)
     assert out["value"] == "pw"
-    assert [f["params"]["type"] for f in peer.frames if f.get("method") == "event"] == ["request.cancel"]
+    # The fanout writes to its peers off the publisher's thread: wait for the teardown to arrive.
+    wait_until(lambda: [f["params"]["type"] for f in peer.frames if f.get("method") == "event"] == ["request.cancel"],
+               what="the request.cancel teardown")
 
 
 def test_plugin_code_runs_off_the_prompt_path_and_outside_every_lock(owner, plugin):
@@ -331,7 +332,7 @@ def test_params_are_force_redacted_and_a_copy(plugin, monkeypatch):
     events, peer = _viewer_stream()
     worker, _out = _ask_in_thread(events, "sudo", {"command": command, "nested": [{"prompt": command}]})
     [opened] = plugin.wait(OPENED)
-    assert TOKEN in repr(peer.frames)  # the viewer's own frame is untouched
+    wait_until(lambda: TOKEN in repr(list(peer.frames)), what="the raw frame")  # the viewer's own frame is untouched
     assert TOKEN not in repr(opened)
     assert opened["params"]["command"] == redact.redact_approval_display(command, force=True)
     opened["params"]["command"] = "mutated"

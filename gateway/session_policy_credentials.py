@@ -193,7 +193,7 @@ def _binding(config, path):
 
 
 def config_reference(authority, session_id, policy, secrets):
-    home = Path(authority.db.db_path).resolve().parent
+    home = Path(str(authority.profile_id))
     config = json.loads(policy.config_json)
     return PREFIX + json.dumps({'home': str(home), 'profile': authority.profile_id,
         # ``policy`` (the whole-policy hash) is still written for an older gateway reading this reference;
@@ -256,7 +256,7 @@ def recover_config_secrets(authority, policy, skip=None):
         return {path: value for path, value in values.items() if path[0] not in skip}
     try:
         source = json.loads(ref[len(PREFIX):])
-        home = Path(authority.db.db_path).resolve().parent
+        home = Path(str(authority.profile_id))
         _check_scope(authority, source, policy, home, skip)
         cached = getattr(authority, '_local_config_secrets', {}).get(ref)
         if cached is not None:

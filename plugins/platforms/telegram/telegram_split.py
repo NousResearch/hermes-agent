@@ -1,4 +1,4 @@
-"""Telegram split-delivery cap.
+"""Telegram split-delivery cap, and the MarkdownV2 strip a split chunk's plain-text fallback uses.
 
 The cap (#152012): a degenerate 415,742-char final once went out as 402 back-to-back
 ``sendMessage`` calls and held the chat in multi-minute flood control. Like Discord (#86581),
@@ -41,3 +41,14 @@ def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool) -> lis
     if formatted:
         return [marker.sub(lambda m: f"\\({m.group(1)}/{total}\\)", chunk) for chunk in kept] + tail
     return [marker.sub(lambda m: f" ({m.group(1)}/{total})", chunk) for chunk in kept] + tail
+
+
+def _strip_mdv2(text: str) -> str:
+    """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
+    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes
+    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)  # **bold** BEFORE MarkdownV2 *bold*
+    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+    cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)  # italic; word-bounded so snake_case survives
+    cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)  # strikethrough
+    cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)  # spoiler
+    return cleaned

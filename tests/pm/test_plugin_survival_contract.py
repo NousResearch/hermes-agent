@@ -534,6 +534,26 @@ def test_update_sync_disables_later_plugin_of_unresolvable_union(admission_env):
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+@pytest.mark.require_symlinks
+def test_update_sync_eviction_keeps_a_symlinked_config(admission_env):
+    """Eviction edits the config.yaml a home links into a dotfiles tree: the link survives
+    and the plugin is disabled in the file it points at."""
+    from pm.install import sync_venv
+
+    tmp_path, home = admission_env
+    _local_conflict_members(home)
+    tracked = tmp_path / "dotfiles" / "config.yaml"
+    _write_enabled(tracked.parent, ["plug-a", "plug-b"])
+    (home / "config.yaml").unlink()
+    (home / "config.yaml").symlink_to(tracked)
+
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    assert (home / "config.yaml").is_symlink()
+    assert yaml.safe_load(tracked.read_text(encoding="utf-8"))["plugins"]["disabled"] == ["plug-b"]
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_update_sync_survives_unreadable_secondary_profile(admission_env):
     """A secondary profile's broken config.yaml cannot fail an update: its plugins sit out
     (reported), the rest build, and the next boot sees a current venv."""

@@ -3058,8 +3058,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         text = normalized.text_content
         media_text_inlined: list[bool] = []
         inlined_parts: list[str] = []
+        is_command = caption_is_command(_strip_edge_self_mentions(text, normalized.mentions))  # "@Hermes /goal x"
         for media_url, media_type in zip(media_urls, media_types):
-            extracted = "" if caption_is_command(text) else await self._maybe_extract_text_document(media_url, media_type)
+            extracted = "" if is_command else await self._maybe_extract_text_document(media_url, media_type)
             media_text_inlined.append(bool(extracted))
             if extracted:
                 inlined_parts.append(extracted)

@@ -218,9 +218,9 @@ def prompt_id_counter() -> Iterator[int]:
 def caption_is_command(caption: Optional[str]) -> bool:
     """A file's caption that is a slash command (``/goal summarize this``). Adapters skip inlining
     such a file's text: prepended, it hides the command; appended, it becomes the command's
-    arguments. The agent still gets the cached path with a note to read it."""
-    head = (caption or "").lstrip().split(maxsplit=1)
-    return bool(head) and head[0].startswith("/") and "/" not in head[0][1:]
+    arguments. The agent still gets the cached path with a note to read it. Parsed by
+    :meth:`MessageEvent.get_command`, so attachment-ref prefixes and paths follow the one rule."""
+    return MessageEvent(text=caption or "").get_command() is not None
 
 
 def inline_document_text(caption: str, injection: Optional[str], inlined: list) -> tuple[str, list]:

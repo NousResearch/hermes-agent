@@ -20,6 +20,7 @@ from gateway.platforms.helpers import inline_document_text
     ("/goal summarize the report", "[Content of a.txt]:\nx", ("/goal summarize the report", [False])),
     ("/home/me/notes.txt is attached", "[Content of a.txt]:\nx",  # a path, not a command
      ("[Content of a.txt]:\nx\n\n/home/me/notes.txt is attached", [True])),
+    ("@file:/tmp/a.txt\n/goal go", "[Content of a.txt]:\nx", ("@file:/tmp/a.txt\n/goal go", [False])),
 ])
 def test_inline_document_text_keeps_a_command_caption_first(caption, injection, expected):
     assert inline_document_text(caption, injection, [True]) == expected
@@ -50,3 +51,42 @@ async def test_whatsapp_cloud_command_caption_on_a_text_file_stays_a_command(tmp
     assert event.get_command() == "goal"
     assert event.get_command_args() == "summarize the report"
     assert len(event.media_urls) == 1 and event.media_text_inlined in ([], [False])
+
+
+@pytest.mark.asyncio
+async def test_feishu_self_mentioned_command_caption_on_a_text_file_stays_a_command():
+    """``@Hermes /goal ...`` in a post with a text file: the mention is stripped before the command
+    check, so the file body does not become the goal's arguments."""
+    import json
+    from types import SimpleNamespace
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter.__new__(FeishuAdapter)
+    adapter._bot_open_id, adapter._bot_user_id, adapter._bot_name = "ou_bot", "", "Hermes"
+    adapter._download_feishu_message_resources = AsyncMock(return_value=(["/cache/report.txt"], ["text/plain"]))
+    adapter._maybe_extract_text_document = AsyncMock(return_value="[Content of report.txt]:\nquarterly numbers: 42")
+    adapter._fetch_message_text = AsyncMock(return_value=None)
+    adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
+    adapter._resolve_sender_profile = AsyncMock(return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None})
+    adapter._resolve_source_chat_type = MagicMock(return_value="group")
+    adapter.build_source = MagicMock(return_value=SimpleNamespace(thread_id=None))
+    adapter._dispatch_inbound_event = AsyncMock()
+    message = SimpleNamespace(
+        content=json.dumps({"title": "", "content": [[
+            {"tag": "at", "user_id": "@_user_1", "user_name": "Hermes"},
+            {"tag": "text", "text": " /goal summarize the report"},
+        ]], "files": [{"file_key": "file_1", "file_name": "report.txt", "is_folder": False}]}),
+        message_type="post", message_id="m-goal-file", chat_id="oc_chat", thread_id=None, root_id=None,
+        parent_id=None, upper_message_id=None,
+        mentions=[SimpleNamespace(key="@_user_1", id=SimpleNamespace(open_id="ou_bot", user_id=""), name="Hermes")],
+    )
+
+    await adapter._process_inbound_message(
+        data={}, message=message, sender_id=SimpleNamespace(open_id="ou_alice", user_id=None, union_id=None),
+        chat_type="group", message_id="m-goal-file",
+    )
+
+    event = adapter._dispatch_inbound_event.await_args.args[0]
+    assert event.get_command() == "goal"
+    assert "quarterly numbers" not in event.get_command_args()
+    assert event.media_urls == ["/cache/report.txt"] and event.media_text_inlined == [False]

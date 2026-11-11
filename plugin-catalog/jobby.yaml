@@ -1,0 +1,33 @@
+name: jobby
+repo: https://github.com/desaianm/jobby-hermes
+sha: c94ed481d19e46982739d973f9d19a1c72aae586
+description: Source-backed job discovery and PDF/DOCX application drafts inside Hermes; no autonomous submission.
+maintainer: desaianm
+tier: community
+category: desktop
+title: Jobby
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/desaianm/jobby-hermes/blob/c94ed481d19e46982739d973f9d19a1c72aae586/README.md
+screenshots:
+  - https://raw.githubusercontent.com/desaianm/jobby-hermes/c94ed481d19e46982739d973f9d19a1c72aae586/docs/images/jobby-desk.png
+readme: true
+platforms:
+  - linux
+known_issues:
+  - Canada-only bounded discovery; independent LinkedIn success is unverified.
+  - Documents require human review; native desk does not submit applications.
+  - Packaged Desktop installer and full native race matrix remain unverified.
+  - Full-source validation warns about an opt-in development qualifier's private PluginManager import; runtime entrypoints use public APIs.
+capabilities:
+  provides_tools:
+    - jobby_initialize
+    - jobby_intake
+    - jobby_overview
+    - jobby_prepare
+    - jobby_review
+    - jobby_attempt
+    - jobby_discover
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

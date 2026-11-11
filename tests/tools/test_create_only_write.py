@@ -78,3 +78,10 @@ def test_remote_create_only_with_and_without_python3(remote_ops, tmp_path, monke
         assert refused.status == "already_exists", refused
     assert target.read_bytes() == payload.encode() and not (tmp_path / "absent").exists()
     assert not list(tmp_path.rglob(".hermes-create-*"))
+
+
+def test_write_file_description_scopes_overwrite_to_the_default():
+    desc = ft.WRITE_FILE_SCHEMA["description"]
+    overwrite = desc.index("OVERWRITES the entire file by default")
+    assert desc.index("create_only=true instead refuses any existing path") > overwrite
+    assert desc.count("create_only") == 1

@@ -560,13 +560,16 @@ def generate_title(
             reasoning_config={"enabled": False},
         )
         message = response.choices[0].message
-        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
+        raw_title = _extract_title_text(message.content or "") or _title_from_reasoning(message)
+        title = _clean_title(raw_title)
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
         # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and _is_answer_shaped(title):
+        # Measured on the text before _clean_title's 80-char cut, so a long URL prefix cannot push
+        # most of an answer past the cut and hide it from the guard.
+        if title is not None and _is_answer_shaped(" ".join(raw_title.split())):
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
             logger.debug("Rejecting answer-shaped title output (%r)", title)
             return None

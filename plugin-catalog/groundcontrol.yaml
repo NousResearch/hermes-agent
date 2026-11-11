@@ -1,0 +1,13 @@
+name: groundcontrol
+repo: https://github.com/teckedd-code2save/hermes-groundcontrol
+sha: 4c919b1f5e800d999074552e10f0db04c8183c2a
+version: "0.1.0"
+requires_hermes: ">=0.17.0"
+description: "Scoped GroundControl operations guidance and conservative evidence receipts for Hermes native MCP."
+maintainer: teckedd-code2save
+tier: community
+capabilities:
+  tools: []
+  hooks: []
+  middleware: []
+  env_vars: []

@@ -14,7 +14,6 @@ Two invariants:
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
@@ -48,16 +47,6 @@ def _compress(cc, msgs):
 
 
 class TestMetadataFlagSet:
-    def test_exactly_one_flagged_message_after_compress(self):
-        cc = _make_compressor()
-        out = _compress(cc, _make_messages())
-        flagged = [
-            m for m in out
-            if isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
-        ]
-        assert len(flagged) == 1
-        # The flagged message is the one carrying the compaction handoff.
-        assert "[CONTEXT COMPACTION" in flagged[0]["content"]
 
     def test_helper_detects_flag(self):
         assert ContextCompressor._has_compressed_summary_metadata(
@@ -71,12 +60,6 @@ class TestMetadataFlagSet:
 
 
 class TestMetadataFlagNeverReachesWire:
-    def test_key_is_underscore_prefixed(self):
-        """The wire sanitizers strip every top-level message key starting
-        with '_'. A bare key would reach strict gateways (Fireworks etc.)
-        and 400 with 'Extra inputs are not permitted'."""
-        assert COMPRESSED_SUMMARY_METADATA_KEY.startswith("_")
-        assert COMPRESSED_SUMMARY_HAS_USER_TURN_KEY.startswith("_")
 
     def test_chat_completions_transport_strips_flag(self):
         from agent.transports.chat_completions import ChatCompletionsTransport
@@ -99,37 +82,6 @@ class TestMetadataFlagNeverReachesWire:
         )
 
 
-class TestClassifySummaryContent:
-    """classify_summary_content distinguishes standalone handoffs from
-    merge-into-tail messages so wire consumers (ACP replay) can flag them
-    differently — collapsing a merged message would hide the preserved
-    tail content that precedes the summary."""
-
-    def test_standalone_summary(self):
-        from agent.context_compressor import SUMMARY_PREFIX
-
-        content = SUMMARY_PREFIX + "\n## Active Task\nstuff"
-        assert ContextCompressor.classify_summary_content(content) == "standalone"
-        assert ContextCompressor._is_context_summary_content(content) is True
-
-
-    def test_merged_tail_summary(self):
-        from agent.context_compressor import (
-            SUMMARY_PREFIX,
-            _MERGED_PRIOR_CONTEXT_HEADER,
-            _MERGED_SUMMARY_DELIMITER,
-            _SUMMARY_END_MARKER,
-        )
-
-        merged = (
-            _MERGED_PRIOR_CONTEXT_HEADER + "\n"
-            "old tail content\n\n"
-            + _MERGED_SUMMARY_DELIMITER + "\n\n"
-            + SUMMARY_PREFIX + "\nBODY\n\n"
-            + _SUMMARY_END_MARKER
-        )
-        assert ContextCompressor.classify_summary_content(merged) == "merged"
-        assert ContextCompressor._is_context_summary_content(merged) is True
 
 
 

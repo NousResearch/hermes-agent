@@ -20,7 +20,7 @@ Pure unit tests: no socket, no websockets dependency.
 
 from __future__ import annotations
 
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from gateway.relay.ws_transport import _event_from_wire
 
 
@@ -329,7 +329,7 @@ class TestParallelArrayLengthInvariant:
         with the short list passed through."""
         import asyncio
 
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from gateway.relay.adapter import RelayAdapter
 
         ev = MessageEvent(text="", message_type=MessageType.PHOTO)

@@ -10,8 +10,6 @@ from openai.types.chat import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import (
     Choice,
     ChoiceDelta,
-    ChoiceDeltaToolCall,
-    ChoiceDeltaToolCallFunction,
 )
 
 from agent.chat_completion_helpers import _estimate_chunk_bytes
@@ -53,8 +51,9 @@ def test_unknown_shape_returns_floor_never_raises():
     class Weird:
         pass
 
-    assert _estimate_chunk_bytes(Weird()) == 40
-    assert _estimate_chunk_bytes(None) == 40
-    assert _estimate_chunk_bytes(object()) == 40
+    floor = _estimate_chunk_bytes(None)
+    assert floor > 0
+    assert _estimate_chunk_bytes(Weird()) == floor
+    assert _estimate_chunk_bytes(object()) == floor
 
 

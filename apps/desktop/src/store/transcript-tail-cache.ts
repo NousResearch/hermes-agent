@@ -23,8 +23,10 @@ import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 //     profile switches in the same window: an unscoped key let profile A's
 //     tail be painted against profile B's backend, which then retried a
 //     session id that does not exist there ("session not found") on every
-//     wake. The scope mirrors the in-memory twin's transcriptTailKey
-//     (transcript-tail.ts). Entries persisted before scoping shipped (v1,
+//     wake. The scope is the REQUEST scope the resume path passes (always a
+//     named profile); the in-memory twin (transcript-tail.ts) keys by the
+//     resolved owner instead and the two are never cross-read. Entries
+//     persisted before scoping shipped (v1,
 //     bare-id keys) carry no owner and are unreachable by construction —
 //     they are swept once per window so a stale tail can never paint again.
 
@@ -334,6 +336,61 @@ export function dropTranscriptTailEverywhere(storedSessionId: string): void {
   } catch {
     // best effort
   }
+}
+
+/** Re-key every cached tail owned by `oldProfile` under `newProfile` (profile
+ *  rename; the sessions still exist, only their owner's name changed). Entries
+ *  stay unreachable under the old name by construction, so without this a
+ *  rename costs a cold paint for every open chat. Local connection only. Best effort. */
+export function migrateTranscriptTailsForProfile(oldProfile: string, newProfile: string): void {
+  const store = storage()
+  const from = oldProfile.trim() || 'default'
+  const to = newProfile.trim() || 'default'
+
+  if (!store || from === to) {
+    return
+  }
+
+  const ids = readIndex(store)
+
+  for (const [position, suffix] of ids.entries()) {
+    let parsed: unknown
+
+    try {
+      parsed = JSON.parse(suffix)
+    } catch {
+      continue // bare-id legacy suffix: carries no owner
+    }
+
+    if (!Array.isArray(parsed) || parsed.length !== 3 || parsed[1] !== from) {
+      continue
+    }
+
+    const [connectionId, , storedId] = parsed as [string, string, string]
+
+    // Local-connection state only (same rule as migrateTilesForProfile): a same-named
+    // profile on a remote connection was not renamed.
+    if ((String(connectionId ?? '').trim() || 'local') !== 'local') {
+      continue
+    }
+
+    const next = JSON.stringify([connectionId, to, storedId])
+
+    try {
+      const raw = store.getItem(PREFIX + suffix)
+
+      if (raw !== null) {
+        store.setItem(PREFIX + next, raw)
+      }
+
+      store.removeItem(PREFIX + suffix)
+      ids[position] = next
+    } catch {
+      // best effort
+    }
+  }
+
+  writeIndex(store, ids)
 }
 
 /** Wipe the whole cache (connection/mode re-home, quota recovery). */

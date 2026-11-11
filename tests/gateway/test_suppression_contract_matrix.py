@@ -52,11 +52,11 @@ FULL = PREFIX + TAIL
 # the platform accepts and then drops.  The consumer advances its bookkeeping
 # from the ACK, so it has no way to know.
 
-ALWAYS = lambda rendered: True                                   # noqa: E731
-NEVER = lambda rendered: False                                   # noqa: E731
-DIES_AFTER_2 = lambda rendered: rendered < 2                     # noqa: E731
-LIES_AFTER_2 = lambda rendered: True if rendered < 2 else "lie"  # noqa: E731
-LIES_ALWAYS = lambda rendered: "lie"                             # noqa: E731
+ALWAYS = lambda rendered: True
+NEVER = lambda rendered: False
+DIES_AFTER_2 = lambda rendered: rendered < 2
+LIES_AFTER_2 = lambda rendered: True if rendered < 2 else "lie"
+LIES_ALWAYS = lambda rendered: "lie"
 
 EDIT_BEHAVIOURS = {
     "edit_always": ALWAYS,
@@ -157,7 +157,7 @@ async def _drive(adapter, *, interrupt: bool):
         consumer.finish()
         try:
             await asyncio.wait_for(task, timeout=2.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
     return consumer
 

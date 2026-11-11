@@ -1,0 +1,21 @@
+name: snippet
+title: Snippet
+repo: https://github.com/Snippet-Core/snippet-cursor-plugin
+sha: 291d17d7436aaa7d542e4d08a61ad1f5a6ec65a6
+subdir: hermes
+description: "Connect a Snippet account to manage creator brand deals, sponsorship rates, brand emails, decisions and contract reviews through Snippet's hosted MCP server (Streamable HTTP at https://usesnippet.app/api/mcp, OAuth). Portable Agent Plugins v1 package (plugin.json + mcp.json), configuration only. After sign-in the hosted server currently exposes 13 tools: get_manager_briefing, list_deals, get_deal, search_inbox, get_inbox_thread, draft_reply, send_reply, get_rate_card, estimate_sponsorship_rate, find_brand_matches, review_brand_contract, get_work_log, and answer_decision. Disclosure — every tool call goes to Snippet's hosted MCP server (https://usesnippet.app/api/mcp), which receives tool arguments and returns account data (deals, brand email threads, contract text); the tool set is served by that server at runtime and is not covered by the pinned sha; some tools write (send_reply sends brand email, answer_decision and draft_reply change account state) and the package declares trust: untrusted so Hermes asks before them and blocks them in unattended runs; a Snippet account is required and some actions need a paid plan; sign-in currently needs `hermes mcp add snippet --url https://usesnippet.app/api/mcp --auth oauth`, and that same-name native entry replaces the package's server entry including its trust setting, so add `trust: untrusted` under mcp_servers.snippet afterwards; Hermes stores and refreshes the OAuth tokens; the package ships no credentials, executables, dependencies, self-updater or telemetry."
+maintainer: aaupadhy
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://usesnippet.app/agents
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "Portable hermes mcp login against this package does not start OAuth today (https://github.com/NousResearch/hermes-agent/issues/87253). Sign in with hermes mcp add and keep trust: untrusted."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

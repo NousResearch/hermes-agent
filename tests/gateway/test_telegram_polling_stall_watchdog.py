@@ -10,10 +10,10 @@ only a full restart recovers it.
 ``_check_polling_stall`` closes that hole: Telegram answers a long-poll
 within ~50s, so a poller with no successful getUpdates round-trip for
 ``_POLLING_STALL_TIMEOUT`` seconds is unambiguously wedged, and the check
-escalates loudly through the existing reconnect ladder
-(``_handle_polling_network_error``). ``_polling_heartbeat_loop`` runs the
-check every probe, so steady-state wedges are caught without any Bot API
-call.
+raises a ``_PollingStallError`` through the recovery path, which skips the
+reconnect ladder and hands the adapter to the supervisor for a rebuild
+(#113618). ``_polling_heartbeat_loop`` runs the check every probe, so
+steady-state wedges are caught without any Bot API call.
 """
 import asyncio
 import time as _time
@@ -58,9 +58,9 @@ async def test_recent_progress_does_not_escalate():
 
 
 @pytest.mark.asyncio
-async def test_stalled_long_poll_escalates_to_reconnect_ladder():
+async def test_stalled_long_poll_hands_off_to_supervisor():
     """#92991: with an empty queue and healthy get_me(), only the stall
-    timestamp can detect the wedged consumer — and it must."""
+    timestamp can detect the wedged consumer — and it must hand off."""
     adapter = _make_adapter(stalled_seconds=400)
     recovery = AsyncMock()
     with patch.object(adapter, "_handle_polling_network_error", new=recovery):
@@ -69,6 +69,82 @@ async def test_stalled_long_poll_escalates_to_reconnect_ladder():
     assert task is not None
     await task
     recovery.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_verifier", [False, True], ids=["watchdog", "verifier"])
+async def test_confirmed_stall_hands_off_before_reusing_updater(monkeypatch, via_verifier):
+    """#113618: a confirmed stall (watchdog or post-reconnect verifier) must escalate to the
+    retryable fatal and mark the adapter degraded instead of restarting the same Updater."""
+    from plugins.platforms.telegram import adapter as tg_adapter
+
+    adapter = _make_adapter(stalled_seconds=0 if via_verifier else 400)
+    adapter._running = True
+    adapter._mark_degraded = MagicMock()
+    updater = adapter._app.updater
+    updater.stop = AsyncMock(return_value=None)
+    updater.start_polling = AsyncMock()
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._notify_fatal_error = AsyncMock()
+    error_count_before = adapter._polling_network_error_count
+
+    try:
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
+            if via_verifier:
+                generation, progress = adapter._begin_polling_generation()
+                monkeypatch.setattr(tg_adapter, "_POLLING_PROGRESS_TIMEOUT", 0)
+                await adapter._verify_polling_after_reconnect(generation, progress)
+            else:
+                await adapter._check_polling_stall()
+            task = adapter._polling_error_task
+            assert task is not None
+            await task
+
+        assert adapter.has_fatal_error
+        assert adapter.fatal_error_retryable is True
+        adapter._notify_fatal_error.assert_awaited_once()
+        adapter._mark_degraded.assert_called_once()
+        updater.start_polling.assert_not_awaited()
+        # A confirmed stall is a handoff, not a retry: no backoff, no retry-counter bump,
+        # and no in-place stop/drain (the supervisor's disconnect() does the bounded stop).
+        sleep.assert_not_awaited()
+        assert adapter._polling_network_error_count == error_count_before
+        updater.stop.assert_not_awaited()
+        adapter._drain_polling_connections.assert_not_awaited()
+    finally:
+        background_tasks = tuple(adapter._background_tasks)
+        for background_task in background_tasks:
+            background_task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_generic_network_error_reconnects_without_fatal():
+    """A generic network error (e.g. Bad Gateway / timeout) must reconnect in-place, not fatal."""
+    adapter = _make_adapter(stalled_seconds=0)
+    adapter._running = True
+    updater = adapter._app.updater
+    updater.stop = AsyncMock(return_value=None)
+    updater.start_polling = AsyncMock()
+    adapter._drain_polling_connections = AsyncMock()
+    adapter._notify_fatal_error = AsyncMock()
+
+    try:
+        with patch("asyncio.sleep", new=AsyncMock()):
+            task = asyncio.create_task(
+                adapter._handle_polling_network_error(Exception("Bad Gateway 502"))
+            )
+            adapter._polling_error_task = task
+            await task
+
+        assert not adapter.has_fatal_error
+        adapter._notify_fatal_error.assert_not_called()
+        updater.start_polling.assert_awaited_once()
+    finally:
+        background_tasks = tuple(adapter._background_tasks)
+        for background_task in background_tasks:
+            background_task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

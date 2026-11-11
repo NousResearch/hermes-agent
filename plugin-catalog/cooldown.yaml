@@ -1,0 +1,17 @@
+name: cooldown
+repo: https://github.com/Savage27z/cooldown
+sha: d3d489c5e0106beeef2a8b3bed31f54a6779d3b0
+description: "Checks every package Hermes is about to install with pip, uv, poetry, pipx, npm, pnpm, yarn, bun or npx. Blocks versions OSV lists as malicious, and holds the install in Hermes's own approval prompt when a release is younger than 3 days (the rule Hermes uses for its own dependencies), the package is brand new, or the name is not on the registry. Disclosure — for each package named in an install command the agent runs in the terminal, it sends the package name and version (never your code, files or prompts) to api.deps.dev, registry.npmjs.org, pypi.org and api.osv.dev (keyless, no account, no telemetry); it keeps the last 50 checked install commands (first 300 characters each, as typed) and their verdicts in its own plugin state; a lookup can add up to about 20 seconds before an install command runs; it never runs the install itself and only ever blocks or asks through Hermes' approval prompt."
+maintainer: Savage27z
+tier: community
+category: tools
+docs_url: https://github.com/Savage27z/cooldown#readme
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { ChatEmptySlot } from '@/components/assistant-ui/chat-empty-slot'
@@ -6,6 +7,7 @@ import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
 import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
 import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
+import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserEditComposer } from '@/components/assistant-ui/thread/user-edit-composer'
 import { UserMessage } from '@/components/assistant-ui/thread/user-message'
@@ -13,6 +15,7 @@ import { Intro, type IntroProps } from '@/components/chat/intro'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { $webappSignedOut } from '@/store/boot'
 import { notifyError } from '@/store/notifications'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -45,6 +48,7 @@ interface ThreadProps {
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
+  scrollProfile?: string
 }
 
 // memo'd on purpose, and load-bearing for session-switch cost. ChatView
@@ -65,10 +69,22 @@ export const Thread = memo(function Thread({
   onDismissError,
   onRestoreToMessage,
   sessionId = null,
+  scrollProfile,
   sessionKey
 }: ThreadProps) {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const { isHistorical } = useTranscriptWindow()
+  // A signed-out Webapp tab keeps no conversation on the page under its sign-in view; the
+  // messages mount again from the session once the tab signs back in.
+  const signedOut = useStore($webappSignedOut)
+
+  if (isHistorical) {
+    onBranchInNewChat = undefined
+    onCancel = undefined
+    onDismissError = undefined
+    onRestoreToMessage = undefined
+  }
 
   const [restoreConfirmTarget, setRestoreConfirmTarget] = useState<
     (RestoreMessageTarget & { messageId: string }) | null
@@ -169,17 +185,26 @@ export const Thread = memo(function Thread({
 
   return (
     <ThreadEditContext.Provider value={editContext}>
-      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
-        <ThreadMessageList
-          clampToComposer={clampToComposer}
-          components={messageComponents}
-          emptyPlaceholder={emptyPlaceholder}
-          loadingIndicator={loadingIndicator}
-          sessionId={sessionId}
-          sessionKey={sessionKey}
-        />
-        {loading === 'session' && <CenteredThreadSpinner />}
-        <ThreadTimeline />
+      <div
+        className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]"
+        data-slot="thread"
+      >
+        {!signedOut && (
+          <>
+            <ThreadMessageList
+              clampToComposer={clampToComposer}
+              components={messageComponents}
+              emptyPlaceholder={emptyPlaceholder}
+              loadingIndicator={loadingIndicator}
+              scrollProfile={scrollProfile}
+              sessionId={sessionId}
+              sessionKey={sessionKey}
+              sessionLoading={loading === 'session'}
+            />
+            {loading === 'session' && <CenteredThreadSpinner />}
+            <ThreadTimeline />
+          </>
+        )}
         <ConfirmDialog
           confirmLabel={copy.restoreConfirm}
           description={copy.restoreBody}

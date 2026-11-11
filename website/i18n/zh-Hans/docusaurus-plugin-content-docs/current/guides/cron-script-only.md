@@ -158,9 +158,40 @@ hermes cron run <job_id>    # 触发一次以测试
 | 扩展名 | 解释器 |
 |-----------|-------------|
 | `.sh`、`.bash` | `/bin/bash` |
-| 其他任意扩展名 | `sys.executable`（当前 Python） |
+| 其他任意扩展名 | `sys.executable`（当前 Python），或一个[自定义解释器](#使用你自己的-python-环境) |
 
 我们有意**不**遵循 `#!/...` shebang——保持解释器集合明确且精简，可减少调度器信任的攻击面。
+
+### 使用你自己的 Python 环境
+
+默认情况下，Python cron 脚本运行在 Hermes 自身的 Python 环境中，该环境只包含 Hermes 自身的依赖——因此如果你的脚本 `import openpyxl`、数据库驱动或任何其他你安装的包，会因 `ModuleNotFoundError` 而失败。
+
+你可以通过 `--interpreter` 让任务指向一个**用户自管的 venv**：
+
+```bash
+# 1. 创建一个属于你自己的 venv——它在 Hermes 重装/重建后依然保留。
+uv venv ~/venvs/hermes-reporting --python 3.11
+uv pip install --python ~/venvs/hermes-reporting/bin/python openpyxl
+
+# 2. 用该解释器调度任务。
+hermes cron create "0 8 * * *" \
+  --no-agent \
+  --script daily-report.py \
+  --interpreter ~/venvs/hermes-reporting/bin/python \
+  --deliver telegram
+```
+
+与 `--model` 一样，这是用户自有的设置：通过 `hermes cron create/edit` 设置；agent 的 `cronjob` 工具无法设置它。
+
+规则：
+
+- 该 venv 是**用户自管**的。Hermes 不会创建、冻结、恢复或向其中安装包——它只是调用你指定的路径。
+- 路径必须是**绝对路径或以 `~` 开头**（例如 `~/venvs/reporting/bin/python3`）。像 `python3` 这样的裸名会被拒绝，因为它们在 `PATH` 变化时并不稳定。
+- 必须是 **Python 可执行文件**（`python`、`python3`、`python3.12` 等），符号链接的目标同样要求如此——`/bin/bash` 或其他解释器会被拒绝。
+- 仅对 **Python 脚本**生效。`.sh` / `.bash` 始终用 bash 运行，不受影响。
+- 这是任务级设置；当 `script` 或 `monitor_script` 是 Python 文件时都会使用它。
+- 解释器在**运行时**校验，而非创建时——cron 任务是长期存在的，venv 可能在你创建任务和它真正触发之间被重建或移动。缺失或不可执行的解释器会产生一个清晰的脚本失败，像其他错误一样被投递。
+- 之后想清除它：`hermes cron edit <job_id> --interpreter ""`。
 
 ## 计划语法
 
@@ -173,7 +204,7 @@ hermes cron create "0 9 * * *"       # 标准 cron：每天上午 9 点
 hermes cron create "30m"             # 单次：30 分钟后运行一次
 ```
 
-完整语法请参阅 [cron 功能参考](/user-guide/features/cron)。
+完整语法请参阅 [cron 功能参考](../user-guide/features/cron.md)。
 
 ## 投递目标
 
@@ -235,13 +266,13 @@ hermes cron create "*/15 * * * *" \
 |----------|-----------|-------------|
 | `cronjob --no-agent`（本页） | 你的脚本，由 Hermes 调度 | 不需要推理的周期性看门狗 / 告警 / 指标 |
 | `cronjob`（默认，LLM） | 带可选预检脚本的 agent | 消息内容需要对数据进行推理时 |
-| OS cron + `curl` 到 [webhook 订阅](/user-guide/messaging/webhooks) | 你的脚本，由 OS 调度 | 当 Hermes 本身可能不健康时（即被监控对象） |
+| OS cron + `curl` 到 [webhook 订阅](../user-guide/messaging/webhooks.md) | 你的脚本，由 OS 调度 | 当 Hermes 本身可能不健康时（即被监控对象） |
 
 对于必须在 **gateway 宕机时也能触发**的关键系统健康看门狗，请使用 OS 级 cron 配合 `curl` 调用 Hermes webhook 订阅（或任何外部告警端点）——这些作为独立 OS 进程运行，不依赖 Hermes 是否在线。当被监控对象是外部系统时，in-gateway 调度器才是正确选择。
 
 ## 相关文档
 
-- [用 Cron 自动化一切](/guides/automate-with-cron) — LLM 驱动的 cron 模式。
-- [定时任务（Cron）参考](/user-guide/features/cron) — 完整计划语法、生命周期、投递路由。
-- [Webhook 订阅](/user-guide/messaging/webhooks) — 供外部调度器使用的即发即忘 HTTP 入口。
-- [Gateway 内部机制](/developer-guide/gateway-internals) — 投递路由器内部实现。
+- [用 Cron 自动化一切](./automate-with-cron.md) — LLM 驱动的 cron 模式。
+- [定时任务（Cron）参考](../user-guide/features/cron.md) — 完整计划语法、生命周期、投递路由。
+- [Webhook 订阅](../user-guide/messaging/webhooks.md) — 供外部调度器使用的即发即忘 HTTP 入口。
+- [Gateway 内部机制](../developer-guide/gateway-internals.md) — 投递路由器内部实现。

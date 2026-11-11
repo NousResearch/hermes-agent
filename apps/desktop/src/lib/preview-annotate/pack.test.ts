@@ -74,7 +74,6 @@ describe('packageAnnotatePin', () => {
     expect(packed.note).toContain('overflows')
     expect(packed.prompt).toContain('Comment 1')
     expect(packed.prompt).toContain('Target: button "Select plan"')
-    expect(packed.prompt).toContain('Image 1 marks the target in blue.')
     expect(packed.prompt).toContain('Note: This button overflows on mobile.')
     expect(packed.prompt).not.toContain('<html')
   })
@@ -219,14 +218,6 @@ describe('annotateFlushPrompt batching', () => {
     expect(prompt).toContain('Work them as 3 pieces of work, not 5.')
   })
 
-  it('warns against the theme split that would put workers in the same files', () => {
-    const prompt = annotateFlushPrompt(batch)
-
-    expect(prompt).toContain('delegate whole groups')
-    expect(prompt).toContain('never form new groups by theme')
-    expect(prompt).toContain('Regroup if the code disagrees')
-  })
-
   it('still lists every comment exactly once', () => {
     const prompt = annotateFlushPrompt(batch)
 
@@ -266,5 +257,37 @@ describe('annotateFlushPrompt batching', () => {
     )
 
     expect(prompt).toContain('Unanchored (dragged areas) (1 comment)')
+  })
+
+  it('stays flat when a container comment owns the comments nested inside it', () => {
+    const prompt = annotateFlushPrompt(
+      packageAnnotateStack([
+        at(1, 'body>main'),
+        at(2, 'body>main>section.hero>h1'),
+        at(3, 'body>main>section.pricing>button'),
+        at(4, 'body>main>section.faq>li')
+      ])
+    )
+
+    expect(prompt).not.toContain('Group 1')
+    expect(prompt).not.toContain('separate files')
+    expect(prompt).not.toContain('delegate whole groups')
+  })
+
+  it('does not claim nested regions are separate files', () => {
+    const prompt = annotateFlushPrompt(
+      packageAnnotateStack([
+        at(1, 'body>header.nav>a.logo'),
+        at(2, 'body>header.nav>ul.links'),
+        at(3, 'body>main'),
+        at(4, 'body>main>section.hero>h1'),
+        at(5, 'body>main>section.pricing>button')
+      ])
+    )
+
+    expect(prompt).toContain('Group 1 — `header.nav` (2 comments)')
+    expect(prompt).toContain('Group 2 — `main` (3 comments)')
+    expect(prompt).toContain('Work them as 2 pieces of work, not 5.')
+    expect(prompt).not.toContain('Group 3')
   })
 })

@@ -1,0 +1,27 @@
+name: gemini-live-bridge
+repo: https://github.com/cruzlxyz/gemini-live-bridge
+sha: a0016e33244ff2f74fd33bae1869e4a8c06f5034
+description: >-
+  Realtime duplex voice chat with the Gemini Live API — a status-bar minibar for the Hermes
+  desktop app (transcript, model catalog, thinking level, session token meter, auto-redial via
+  session resumption). Full-proxy architecture: the plugin backend owns the upstream Live
+  WebSocket and the user's key (requires_env GOOGLE_API_KEY); the desktop UI only talks to
+  localhost and receives single-use ephemeral tokens. No agent tools; desktop-focused, dashboard
+  tab hidden. Disclosure — pressing Start captures microphone audio and streams it through the
+  local backend to generativelanguage.googleapis.com using GOOGLE_API_KEY (or GEMINI_API_KEY) from
+  the environment; input/output transcripts are held in backend memory for the session, and a
+  Gemini session-resumption handle is written to .resume.json inside the plugin's install
+  directory.
+maintainer: cruzlxyz
+tier: community
+version: "1.0.6"
+category: voice
+docs_url: https://github.com/cruzlxyz/gemini-live-bridge#readme
+image: https://raw.githubusercontent.com/cruzlxyz/gemini-live-bridge/a0016e33244ff2f74fd33bae1869e4a8c06f5034/docs/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - GOOGLE_API_KEY

@@ -33,20 +33,82 @@ export interface StopBackendChildDeps {
   killGroup?: (pgid: number, signal: string) => void
 }
 
-export interface StopBackendTreesForUpdateDeps {
-  /** Synchronous Windows taskkill /T /F implementation. */
-  forceKillProcessTree: (pid: number) => void
-  /** Clears and stops the desktop's pooled backends. */
-  stopAllPoolBackends: () => void
-}
-
 export interface BackendProcessRoot {
   pid?: number | null
 }
 
 export interface KillableChild extends BackendProcessRoot {
   killed?: boolean
-  kill: (signal: string) => void
+  kill: (signal: NodeJS.Signals) => void
+}
+
+export interface WaitableChild extends KillableChild {
+  exitCode: number | null
+  signalCode: string | null
+  once: (event: 'exit' | 'error', listener: () => void) => unknown
+  removeListener: (event: 'exit' | 'error', listener: () => void) => unknown
+}
+
+/** Graceful exit, SIGKILL escalation, then a bounded wait for the escalation. */
+export async function waitForBackendExit(
+  child: WaitableChild | null | undefined,
+  deps: StopBackendChildDeps,
+  timeoutMs: number = 5000
+): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return
+  }
+
+  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
+
+  const wait = (delay: number): Promise<void> =>
+    new Promise<void>((resolve: () => void): void => {
+      if (exited()) {
+        resolve()
+
+        return
+      }
+
+      const finish = (): void => {
+        clearTimeout(timer)
+        child.removeListener('exit', finish)
+        resolve()
+      }
+
+      const timer = setTimeout(finish, delay)
+      child.once('exit', finish)
+    })
+
+  await wait(timeoutMs)
+
+  if (exited()) {
+    return
+  }
+
+  try {
+    if ((deps.isWindows ?? process.platform === 'win32') && Number.isInteger(child.pid)) {
+      deps.forceKillProcessTree(child.pid as number)
+    } else if (Number.isInteger(child.pid)) {
+      try {
+        const killGroup = deps.killGroup ?? ((pid: number, signal: string): boolean => process.kill(pid, signal))
+        killGroup(-(child.pid as number), 'SIGKILL')
+      } catch {
+        child.kill('SIGKILL')
+      }
+    } else {
+      child.kill('SIGKILL')
+    }
+  } catch {
+    // A failed signal may mean the child is gone, but only exit proves it.
+  }
+
+  await wait(1000)
+
+  if (!exited()) {
+    throw new Error(
+      `Backend child${child.pid ? ` (PID ${child.pid})` : ''} did not exit after SIGKILL; retaining ownership.`
+    )
+  }
 }
 
 /**
@@ -55,13 +117,13 @@ export interface KillableChild extends BackendProcessRoot {
  * throws (the process may already be gone) -- mirrors the original inline
  * best-effort semantics in main.ts.
  */
-export function stopBackendChild(child: KillableChild | null | undefined, deps: StopBackendChildDeps) {
+export function stopBackendChild(child: KillableChild | null | undefined, deps: StopBackendChildDeps): void {
   if (!child || child.killed) {
     return
   }
 
   const isWindows = deps.isWindows ?? process.platform === 'win32'
-  const killGroup = deps.killGroup ?? ((pgid: number, signal: string) => process.kill(pgid, signal))
+  const killGroup = deps.killGroup ?? ((pgid: number, signal: string): boolean => process.kill(pgid, signal))
 
   try {
     if (isWindows && Number.isInteger(child.pid)) {
@@ -80,24 +142,4 @@ export function stopBackendChild(child: KillableChild | null | undefined, deps: 
   } catch {
     // Already gone.
   }
-}
-
-/**
- * Stop every backend tree owned by a Windows Desktop update hand-off.
- *
- * Tree-kill the primary root while its PID is still live, then delegate pool
- * teardown to the existing routine that tree-kills each pooled root exactly
- * once before mutating its registry. In particular, do not signal the primary
- * first: if that root exits before taskkill /T runs, Windows can no longer
- * enumerate its MCP grandchildren and they survive with the venv locked.
- */
-export function stopBackendTreesForUpdate(
-  primary: BackendProcessRoot | null | undefined,
-  deps: StopBackendTreesForUpdateDeps
-): void {
-  if (primary && Number.isInteger(primary.pid)) {
-    deps.forceKillProcessTree(primary.pid as number)
-  }
-
-  deps.stopAllPoolBackends()
 }

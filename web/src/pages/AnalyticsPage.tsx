@@ -24,6 +24,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/c
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
+import { errorMessage } from "@/lib/api-error";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -433,7 +434,7 @@ export default function AnalyticsPage() {
     api
       .getAnalytics(days)
       .then(setData)
-      .catch((err) => setError(String(err)))
+      .catch((err) => setError(errorMessage(err)))
       .finally(() => setLoading(false));
   }, [days, showTokens]);
 

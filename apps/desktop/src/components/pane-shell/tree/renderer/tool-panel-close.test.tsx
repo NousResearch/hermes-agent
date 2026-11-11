@@ -119,6 +119,33 @@ describe('right-clicking a tool panel tab', () => {
   })
 })
 
+describe('zone menu shortcut', () => {
+  it('keeps the spelled-out tab-strip chord inside the menu', async () => {
+    declareDefaultTree(
+      split('column', [
+        group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        group(['terminal', 'logs'], { active: 'logs', id: 'grp-tools' })
+      ])
+    )
+    render(<TreeGroup node={zoneAt(1)} parentAxis="column" />)
+
+    openContextMenu(tabEl('logs')!)
+
+    // jsdom is not a Mac, so the default `mod+alt+t` renders as Ctrl+Alt+T.
+    // A fixed menu width plus overflow-x-hidden clips that last glyph.
+    const item = await screen.findByRole('menuitem', { name: /(?:show|hide) tabs/i })
+
+    expect(item.textContent).toContain('Ctrl+Alt+T')
+
+    const menu = item.closest('[data-slot="context-menu-content"]')
+    const hint = [...item.querySelectorAll('span')].find(span => span.textContent === 'Ctrl+Alt+T')
+
+    expect(menu?.className.split(/\s+/)).toContain('w-max')
+    expect(menu?.className.split(/\s+/)).not.toContain('w-40')
+    expect(hint?.className.split(/\s+/)).toContain('shrink-0')
+  })
+})
+
 describe('⌘W over a focused tool panel', () => {
   it('closes the logs tab and the toggle brings it back', async () => {
     const { closeActiveTab } = await import('@/app/chat/close-tab')

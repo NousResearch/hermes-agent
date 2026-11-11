@@ -1,0 +1,30 @@
+name: rhythm-reaper
+repo: https://github.com/D0xedDevi0/hermes-rhythm-reaper
+sha: a772a54118d45142e47566ee1d853a2837afb551
+description: "A hip-hop producer desk — 41 lanes across seven families (foundational, trap, drill, melodic, alt, hard, conscious), each with the full production spec (tempo family, key centres, drum programme, low end, harmony and sample source, vocal delivery, metatag vocabulary, exclude list, generation notes) and, for any of them, a complete pasteable Suno deliverable: the style field written out with the dynamic ARC, the Exclude Styles line, a tagged lyric frame with bar targets, an energy map and a pronunciation lexicon. It validates a finished draft against the real platform limits (style <= 1000 chars, lyrics <= 3000, every section carrying a recognised structural tag, no contradictory dynamic tags in one section, a real chorus/hook, known-to-slur proper nouns left un-respelled) and enforces the two character limits in code rather than by eye. It deliberately does not generate lyrics — template bars are slop and the desk says so — it hands the writer a frame that is already correct. Disclosure — no network calls, no credentials, no shell, no subprocesses and no files written outside the plugin: the 41-lane catalog is a Python module in the repo and every tool is pure local computation, so no tool is credential-gated (a missing secret can never hide one). 55 offline tests, including a sweep asserting all 41 lanes build a deliverable that passes its own gates."
+maintainer: D0xedDevi0
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/D0xedDevi0/hermes-rhythm-reaper/a772a54118d45142e47566ee1d853a2837afb551/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-rhythm-reaper/a772a54118d45142e47566ee1d853a2837afb551/docs/screenshots/lane-spec.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-rhythm-reaper/a772a54118d45142e47566ee1d853a2837afb551/docs/screenshots/deliverable.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-rhythm-reaper/a772a54118d45142e47566ee1d853a2837afb551/docs/screenshots/lane-sweep-41of41.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-rhythm-reaper/a772a54118d45142e47566ee1d853a2837afb551/docs/screenshots/validator-verdict.png
+readme: true
+title: "The Rhythm Reaper"
+known_issues:
+  - "It refuses to write your bars on purpose — it returns a frame with bar slots and the hook placed, and the lyric is yours. Template lyrics were left out by design, not as a missing feature."
+  - "Templates are not evaluations: the desk knows production specs, not how a specific model will render them. Unusual pronunciations still want a 30-second test clip before a full render."
+capabilities:
+  provides_tools:
+    - reaper_lanes
+    - reaper_lane
+    - reaper_block
+    - reaper_check
+    - reaper_respell
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

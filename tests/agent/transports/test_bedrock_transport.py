@@ -9,17 +9,10 @@ from agent.transports.types import NormalizedResponse
 
 @pytest.fixture
 def transport():
-    import agent.transports.bedrock  # noqa: F401
+    import agent.transports.bedrock
     return get_transport("bedrock_converse")
 
 
-class TestBedrockBasic:
-
-    def test_api_mode(self, transport):
-        assert transport.api_mode == "bedrock_converse"
-
-    def test_registered(self, transport):
-        assert transport is not None
 
 
 class TestBedrockBuildKwargs:

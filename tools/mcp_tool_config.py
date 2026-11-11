@@ -185,7 +185,14 @@ def _resolve_latest_pattern(pattern: str) -> Optional[str]:
     tie-break within one version); otherwise — non-versioned cache names — the newest
     mtime wins outright."""
     expanded = os.path.expanduser(pattern.strip())
-    matches = [(m, os.stat(m).st_mtime) for m in glob.glob(expanded) if os.path.exists(m)]
+    matches: list[tuple[str, float]] = []
+    for m in glob.glob(expanded):
+        try:
+            matches.append((m, os.stat(m).st_mtime))
+        except OSError:
+            # Deleted between glob and stat — exactly the race this resolver runs in
+            # (plugin upgrade mid-render). Skip it; a sibling match still resolves.
+            continue
     if not matches:
         return None
     # Digit runs decide first, so an installer touching an OLD directory cannot outrank a

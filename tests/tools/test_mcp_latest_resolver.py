@@ -9,6 +9,7 @@ Semantics under test (from the issue):
 """
 
 import os
+import re
 import sys
 import time
 
@@ -135,8 +136,8 @@ class TestRealLoadAndLaunchChain:
         config.yaml) writes it must survive _load_mcp_config() rendering and reach
         _stdio_launch()'s (command, env, cwd) tuple with the newest match resolved.
 
-        Harness shape after tespio's poc3 (private hermes-repro-pocs, shared with the
-        PR author); the spawn step is deliberately omitted — asserting on the launch
+        Harness shape after @tespio's poc3 repro script (shared privately
+        with the PR author); the spawn step is deliberately omitted — asserting on the launch
         tuple proves the composition without executing the config's command.
         """
         cache = _plugin_cache(tmp_path, "15.13.0", "15.15.2")
@@ -158,7 +159,7 @@ class TestRealLoadAndLaunchChain:
         assert "claude-mem" in loaded, loaded  # real loader keeps the entry
         assert loaded["claude-mem"]["args"] == [expected]  # newest version rendered in
 
-        command, env, cwd = _stdio_launch(loaded["claude-mem"])
+        command, _env, cwd = _stdio_launch(loaded["claude-mem"])
         assert command == sys.executable  # command passes through untouched
         assert cwd is None or os.path.isdir(str(cwd))  # a host-valid cwd for the spawn
 
@@ -184,6 +185,34 @@ class TestRealLoadAndLaunchChain:
         assert validate_mcp_server_entry("claude-mem", raw_entry) == []  # clean: no shape hit
         loaded = _load_mcp_config()
         assert loaded["claude-mem"]["args"] == [str(cache / "15.15.2" / "scripts" / "mcp-server.cjs")]
+
+
+    def test_gate_runs_pre_interpolation_discriminating(self, tmp_path, monkeypatch):
+        """Discriminating twin of the raw-entry test: the RAW arg is a clean glob, the
+        RESOLVED path contains an IOC substring. If the security gate ran AFTER
+        interpolation the entry would be dropped and this test fails — so passing
+        proves the gate runs on raw entry text (mcp_tool_config.py: _load_mcp_config
+        filters suspicious entries before _interpolate_env_vars renders them)."""
+        from hermes_cli.mcp_security import _IOC_SUBSTRINGS
+        ioc = next((s for s in _IOC_SUBSTRINGS if re.fullmatch(r"[A-Za-z0-9._\-]+", s)), None)
+        if ioc is None:
+            pytest.skip("no filename-safe IOC string in the blocklist")
+        cache = _plugin_cache(tmp_path, "15.13.0", f"15.15.2-{ioc}")
+        expected = str(cache / f"15.15.2-{ioc}" / "scripts" / "mcp-server.cjs")
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  claude-mem:\n"
+            f"    command: '{sys.executable}'\n"
+            f"    args: ['${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}']\n"
+        )
+        from tools.mcp_tool_config import _load_mcp_config
+
+        loaded = _load_mcp_config()
+        assert "claude-mem" in loaded, "entry dropped — gate would be running post-interpolation"
+        assert loaded["claude-mem"]["args"] == [expected]  # IOC-bearing path resolved in
 
 
 class TestNonGlobExactPath:

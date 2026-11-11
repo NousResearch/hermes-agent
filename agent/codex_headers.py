@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 
 CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_CODEX_ZSTD_MAX_BODY_BYTES = 256 * 1024
 
 
 def is_official_codex_base_url(base_url: str) -> bool:
@@ -87,6 +88,8 @@ def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) 
     Parity with the official Codex client (zstd on ``/responses`` with ChatGPT auth, default since
     openai/codex#10102). Lossless transport encoding: tokens and prompt caching are unchanged. Uses the
     stdlib codec (Python 3.14+); without it, or for any other endpoint/proxy, bodies stay raw JSON.
+    Bodies above 256 KiB also stay raw: the Codex route can reject their zstd encoding with HTTP 400
+    while accepting the identical uncompressed JSON. This is an encoding limit, not a request-size cap.
     """
     if not is_official_codex_base_url(base_url):
         return None
@@ -100,7 +103,10 @@ def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) 
         if (request.method != "POST" or not request.url.path.endswith("/responses")
                 or "content-encoding" in request.headers):
             return
-        body = zstd.compress(request.read())
+        raw_body = request.read()
+        if len(raw_body) > _CODEX_ZSTD_MAX_BODY_BYTES:
+            return
+        body = zstd.compress(raw_body)
         request.stream = httpx.ByteStream(body)
         request._content = body
         request.headers["Content-Encoding"] = "zstd"

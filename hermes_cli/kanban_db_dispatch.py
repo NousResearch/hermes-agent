@@ -252,6 +252,9 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
         return ("rate_limited", code)
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
+    refusal = kbt.refusal_kind(code)
+    if refusal is not None:
+        return (refusal, code)
     return ("nonzero_exit", code)
 
 
@@ -957,7 +960,8 @@ _PROTOCOL_VIOLATION_ERROR = (
     # retry worker via the prior-attempt error in ``build_worker_context`` (guidance approach from #61817).
     # Keep this short: ``_record_task_failure`` caps the stored error at 500 chars and the worker's own
     # last output (``kanban_db_transport.worker_final_output``, up to 400 chars) is appended — a longer preamble
-    # truncates away the worker's explanation, which is the part the board and the retry worker need.
+    # after it — a longer preamble truncates away the worker's explanation, which is the part the
+    # board and the retry worker need.
     "worker exited cleanly (rc=0) without kanban_complete, kanban_block "
     "or kanban_request_review — protocol violation. "
     "If the prior run already did the work, verify it and "
@@ -969,16 +973,18 @@ _PROTOCOL_VIOLATION_ERROR = (
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], exit_code=None, *, task_id: Optional[str] = None,
-    board: Optional[str] = None,
+    board: Optional[str] = None, conn=None,
 ) -> kbt.DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
     A clean exit or a crash carries the worker's own last output (``worker_output``
     in the event payload, appended to the error text) so the board and the retry
-    worker see WHY instead of a bare label; a rate-limited requeue does not need it.
+    worker see WHY instead of a bare label; a rate-limited requeue does not need it,
+    and neither does a host refusal — its own sentence already names the session to
+    resume, and keeping it short is what guarantees that survives truncation.
     """
-    dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board)
-    if task_id and not dead.rate_limited:
+    dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board, conn=conn)
+    if task_id and not (dead.rate_limited or dead.transport_refusal):
         worker_output = kbt.worker_final_output(task_id, board=board)
         if worker_output:
             dead.error_text += f"{WORKER_OUTPUT_SEP}{worker_output!r}"
@@ -993,6 +999,7 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
+    conn=None,
 ) -> kbt.DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
@@ -1010,6 +1017,19 @@ def _classify_dead_worker_exit(
         logged = kbt.worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
+    if kbt.refusal_kind(code) is None and kind in ("nonzero_exit", "signaled", "unknown") and task_id:
+        # A submitter refusal outranks whatever rc the bound interpreter reported: only the
+        # submitter can produce these codes and no card's own work can. Under host pressure the
+        # interpreter dies with rc 1 while the refusal survives only in the trailer — which is
+        # how a whole board of admitted-then-lost turns booked as card crashes.
+        logged = kbt.worker_log_exit_code(task_id, board=board)
+        if logged is not None and kbt.refusal_kind(logged) is not None:
+            kind, code = _exit_code_kind(logged)
+    if code is not None and kbt.refusal_kind(code) == kind:
+        # The host refused the attempt, not the card: infrastructure lane, never counted.
+        return kbt.classify_refusal(
+            kind, code, pid, claimer, task_id=task_id, board=board, conn=conn,
+        )
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
@@ -1057,9 +1077,19 @@ def _classify_dead_worker_exit(
     return kbt.DeadWorker(kind, code, error_text, "crashed", event_payload)
 
 
+def _host_pressure_sample() -> dict:
+    """The host's own numbers, sampled once per sweep that refused workers (tests patch this seam).
+
+    Recorded on each refused run so the next operator reads a cause instead of "Gateway
+    disconnected" - the misreading that cost this fleet three separate investigations in a day.
+    """
+    return kbt.host_pressure_sample()
+
+
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> kbt.CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = kbt.CrashSweep()
+    pressure: Optional[dict] = None  # sampled on the first refusal of this sweep, reused for the rest
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
@@ -1087,7 +1117,15 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             pid = int(row["worker_pid"])
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
+            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"],
+                                         board=board, conn=conn)
+            if dead.transport_refusal:
+                # The sweep cannot tell capacity from cards on its own, so every refused run carries
+                # the host's numbers - sampled once, however many the tick refused. Stamped here,
+                # before ``_end_run`` snapshots the payload into the run's metadata.
+                if pressure is None:
+                    pressure = _host_pressure_sample()
+                dead.event_payload["host_pressure"] = pressure
             apply_attempt_note(conn, row["id"], pid, dead)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
@@ -1127,7 +1165,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
-            if dead.rate_limited:
+            if dead.transport_refusal:
+                sweep.transport_refused.append((row["id"], pid, row["claim_lock"], dead))
+            elif dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
@@ -1215,6 +1255,37 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
+def _account_transport_refusals(conn: sqlite3.Connection, refused: list) -> None:
+    """Book host refusals on the infrastructure lane: recorded, retryable, never counted.
+
+    Shares :func:`_record_task_failure`'s ``infrastructure=True`` lane with the spawn refusal
+    (#114720), so ``consecutive_failures`` does not move and the breaker cannot trip. Counting
+    them was the amplification: identical refusal texts make the sweep see a *systemic* error, the
+    systemic path trips at ``failure_limit=1``, and one stalled tick therefore auto-blocked 20
+    cards across three boards while the fleet respawned and re-derived work already pushed.
+
+    Several workers refusing inside one tick is the signature of capacity, not of cards, so the
+    tick logs the host's own numbers once, at WARNING, with the count. That single line is what
+    this class was missing: without it every operator re-derives the cause from scratch.
+    """
+    for tid, _pid, _claimer, dead in refused:
+        _record_task_failure(
+            conn, tid,
+            error=dead.error_text,
+            outcome=kbt.TRANSPORT_REFUSED,
+            infrastructure=True,
+            release_claim=False,
+            end_run=False,
+        )
+    if len(refused) >= 2:
+        pressure = refused[0][3].event_payload.get("host_pressure") or {}
+        _kb._log.warning(
+            "kanban dispatcher: %d worker(s) host-refused in one tick - memory/IO pressure, not "
+            "card failures (recorded, never counted; reconcile-required ones spaced): %s",
+            len(refused), pressure or "no procfs readings on this host",
+        )
+
+
 def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
@@ -1223,11 +1294,17 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
-    ``_last_rate_limited`` attribute (the return stays crashed-only).
+    ``_last_rate_limited`` attribute (the return stays crashed-only). A host
+    refusal (70/71) is likewise released and not counted, and is not returned
+    here at all: the crash rate a reviewer reads must not carry the host's
+    transport failures.
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
+    # Host refusals never reach that counter: same sweep, opposite bookkeeping.
+    if sweep.transport_refused:
+        _account_transport_refusals(conn, sweep.transport_refused)
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
     # requeues did NOT count a failure and are NOT crashes.
@@ -1449,6 +1526,11 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+# Run outcomes that are the HOST's refusal, booked with ``infrastructure: true``: recorded and
+# retried, spaced, never counted. A claim the owner never saw is retried at once instead.
+_INFRA_COOLDOWN_OUTCOMES = ("spawn_failed", kbt.TRANSPORT_REFUSED)
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1491,8 +1573,14 @@ def check_respawn_guard(
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
-        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
+    if latest_run is not None and latest_run["outcome"] in _INFRA_COOLDOWN_OUTCOMES:
+        refusal_meta = _kb._json_dict(latest_run["metadata"])
+        # Only an attempt whose outcome is ambiguous is spaced: ``reconcile_required`` says the
+        # owner admitted it, so resending could run the claim twice. A never-submitted claim
+        # duplicates nothing and must retry on the next tick (``spawn_failed`` carries no such
+        # flag and keeps its historical spacing).
+        if (rl_cooldown > 0 and refusal_meta.get("infrastructure")
+                and refusal_meta.get("reconcile_required", True)):
             ended_at = _kb._to_epoch(latest_run["ended_at"])
             if ended_at is not None and (now - ended_at) < rl_cooldown:
                 return "infrastructure_cooldown"

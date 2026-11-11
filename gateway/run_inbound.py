@@ -735,13 +735,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str,
         *, fifo_admission: bool = False,
     ) -> bool:
-        """Queue a Telegram text follow-up that lands within the post-start grace window.
-
-        Durable admission checks the same grace rule without staging a second pending copy.
-
-        Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0
-        via ``_float_env`` — a config typo must not crash the inbound handler.
-        """
+        """Queue a Telegram text follow-up that lands within the post-start grace window; durable
+        admission (``fifo_admission``) checks the same rule without staging a second pending copy.
+        Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0 via ``_float_env``."""
         from gateway.run import _float_env
         _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
         _grace_state = self._peek_session_state(_quick_key)
@@ -824,15 +820,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         from gateway.run import _AGENT_PENDING_SENTINEL
         superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
-        if (
-            mode == "interrupt" and not superseded and source.platform == Platform.TELEGRAM
-            and not getattr(event, "internal", False) and not event.get_command()
-            and self._hm_text_only(event)
-            and self._hm_busy_telegram_grace_queue(
-                event, source, _quick_key, mode, fifo_admission=True,
-            )
-        ):
-            return False  # leave the current turn running; caller admits this follow-up to FIFO
+        if (mode == "interrupt" and not superseded and not getattr(event, "internal", False)
+                and not event.get_command() and self._hm_text_only(event)
+                and self._hm_busy_telegram_grace_queue(event, source, _quick_key, mode, fifo_admission=True)):
+            return False  # leave the just-started turn running; the caller admits this follow-up
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
         adapter = self._delivery_adapter_for(source)

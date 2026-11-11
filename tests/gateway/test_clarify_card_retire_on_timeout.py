@@ -68,20 +68,23 @@ def _run_clarify(adapter, questions=_ONE_QUESTION, answers=(), via_tool=False):
 
     def _schedule(coro, label):
         labels.append(label)
-        return _Fut(asyncio.run(coro))
+        response = asyncio.run(coro)
+        if label == "Clarify send failed to schedule":
+            index = seen["n"] - 1
+            target = answers[index] if index < len(answers) else None
+            if target is not None:
+                cm.resolve_gateway_clarify(seen["id"], target)
+        return _Fut(response)
 
     runner._schedule = _schedule
     runner._close_native_stream_boundary = lambda *a, **k: None
     real_register = cm.register
-    seen = {"n": 0}
+    seen: dict = {"n": 0}
 
     def _register(**kwargs):
         entry = real_register(**kwargs)
-        index = seen["n"]
         seen["n"] += 1
-        target = answers[index] if index < len(answers) else None
-        if target is not None:
-            cm.resolve_gateway_clarify(kwargs["clarify_id"], target)
+        seen["id"] = kwargs["clarify_id"]
         return entry
 
     with patch.object(cm, "register", _register), \
@@ -190,13 +193,20 @@ def test_skip_hint_only_on_messaging_platforms(platform, hinted):
     class _Fut:
         def __init__(self, r): self._r = r
         def result(self, timeout=None): return self._r
-    runner._schedule = lambda coro, label: _Fut(asyncio.run(coro))
+    seen: dict = {}
+
+    def _schedule(coro, label):
+        response = asyncio.run(coro)
+        if label == "Clarify send failed to schedule":
+            cm.resolve_gateway_clarify(seen["id"], "a")  # answered once the card is sent
+        return _Fut(response)
+    runner._schedule = _schedule
     runner._close_native_stream_boundary = lambda *a, **k: None
     real_register = cm.register
 
     def _register(**kwargs):
         entry = real_register(**kwargs)
-        cm.resolve_gateway_clarify(kwargs["clarify_id"], "a")
+        seen["id"] = kwargs["clarify_id"]
         return entry
     with patch.object(cm, "register", _register), \
             patch("tools.clarify_gateway.get_clarify_timeout", return_value=0.05):

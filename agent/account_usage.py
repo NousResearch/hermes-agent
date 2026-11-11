@@ -107,7 +107,7 @@ def _profile_scope() -> Optional[str]:
 
         key = hermes_home_key(get_hermes_home())
         return "home:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-    except Exception:
+    except (ImportError, OSError, TypeError, ValueError):
         return None
 
 
@@ -183,7 +183,7 @@ def _credential_identity(provider: str, entry: Any) -> Optional[str]:
         from agent.account_usage_cache import _identity_id_for
 
         value = str(_identity_id_for(provider, entry) or "").strip()
-    except Exception:
+    except (AttributeError, ImportError, KeyError, TypeError, ValueError):
         entry_id = str(getattr(entry, "id", "") or "").strip()
         return f"entry:{entry_id}" if entry_id else None
     if not value or value == "entry:":
@@ -207,7 +207,7 @@ def _credential_account_id(provider: str, entry: Any) -> Optional[str]:
         token = str(getattr(entry, "runtime_api_key", "") or "").strip()
         principal = _codex_principal_identity(token)
         return f"codex:{principal[0]}:{principal[1]}" if principal else None
-    except Exception:
+    except (AttributeError, ImportError, KeyError, TypeError, ValueError):
         return None
 
 
@@ -1095,9 +1095,7 @@ def _json_object(response: Any) -> dict:
 
 def _deepseek_root(base_url: str) -> str:
     value = (base_url or "https://api.deepseek.com/v1").strip().rstrip("/")
-    if value.endswith("/v1"):
-        value = value[:-3]
-    return value.rstrip("/")
+    return value.removesuffix("/v1").rstrip("/")
 
 
 def _fetch_deepseek_account_usage(
@@ -1225,9 +1223,7 @@ def _fetch_ollama_cloud_account_usage(
     token, resolved_base = _usage_credentials("ollama-cloud", base_url, api_key)
     if not token:
         return None
-    base = (resolved_base or "https://ollama.com/v1").rstrip("/")
-    if base.endswith("/v1"):
-        base = base[:-3]
+    base = (resolved_base or "https://ollama.com/v1").rstrip("/").removesuffix("/v1")
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     with httpx.Client(timeout=15.0) as client:
         response = client.get(f"{base}/api/usage", headers=headers)
@@ -1448,7 +1444,7 @@ def list_account_usage_identities(provider: str, *, base_url: Optional[str] = No
         from agent.credential_pool import load_pool
 
         entries = load_pool(slug).entries()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- a broken credential store renders an empty inventory, never breaks /usage
         return []
 
     accounts: list[dict[str, Any]] = []
@@ -1517,7 +1513,7 @@ def provider_credential_summary(provider: str) -> dict[str, Any]:
 
         value = get_auth_status(slug)
         status = value if isinstance(value, dict) else {}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- presence is advisory; an unknown provider has no status to report
         status = {}
     key_source = str(status.get("key_source") or "").strip()
     upstream = str(status.get("source") or "").strip().lower()
@@ -1569,7 +1565,7 @@ def _account_usage_entry(provider: str, identity_id: str):
         try:
             if _entry_identity_matches(provider, entry, wanted):
                 return entry
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             continue
     return None
 
@@ -1588,7 +1584,7 @@ def fetch_account_usage(
     if identity_id and not api_key:
         try:
             resolved_entry = _account_usage_entry(slug, identity_id)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- a broken pool read returns no account, never a different one
             resolved_entry = None
         if resolved_entry is None:
             return None
@@ -1615,12 +1611,12 @@ def fetch_account_usage(
             if profile:
                 try:
                     snapshot = _call_plugin_usage_hook(profile, base_url, api_key)
-                except Exception:
+                except Exception:  # health: allow BLE001 -- re-raised unless the provider has a core fallback
                     if slug not in _USAGE_FALLBACK_FETCHERS:
                         raise
             if snapshot is None and slug in _USAGE_FALLBACK_FETCHERS:
                 snapshot = _USAGE_FALLBACK_FETCHERS[slug](base_url, api_key)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- a usage read is fail-open; it never fails the caller's turn
         logger.debug("account usage fetch failed for %s (fail-open)", slug, exc_info=True)
         return None
     # A per-identity read knows exactly which credential it used; stamp that

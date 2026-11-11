@@ -444,7 +444,7 @@ def _child_provider_account_id(child: Any, provider: Optional[str]) -> Optional[
             return False
         try:
             return str(getattr(candidate, "runtime_api_key", "") or "").strip() == child_key
-        except Exception:
+        except (AttributeError, TypeError):
             return False
 
     entry = None
@@ -460,11 +460,12 @@ def _child_provider_account_id(child: Any, provider: Optional[str]) -> Optional[
                 explicit = next((e for e in pool.entries() if getattr(e, "id", None) == entry_id), None)
                 if explicit is not None:
                     candidates.append(explicit)
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug("subagent explicit pool entry lookup failed", exc_info=True)
         try:
             current = pool.current()
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError):
+            logger.debug("subagent current pool entry lookup failed", exc_info=True)
             current = None
         if current is not None and all(current is not candidate for candidate in candidates):
             candidates.append(current)

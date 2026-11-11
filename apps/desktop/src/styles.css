@@ -4269,9 +4269,10 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
 }
 
 /* Explicit stored-transcript match selection; cleared on query/scope change. */
-/* Message rows use content-visibility:auto, which clips paint to the row box, and the user
-   message root bleeds 1rem past it on each side (-mx-4): inset the outline past that bleed. */
-[data-message-id][data-conversation-match] {
+/* On the bubble, not the message root: the root bleeds 1rem past its content-visibility row
+   box (which clips paint there), and the positioned bubble paints over an ancestor's outline. */
+[data-message-id][data-conversation-match] .composer-human-message,
+[data-message-id][data-conversation-match]:not(:has(.composer-human-message)) {
   outline: 2px solid var(--ui-accent);
-  outline-offset: calc(-1rem - 2px);
+  outline-offset: -2px;
 }

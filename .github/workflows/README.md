@@ -146,7 +146,7 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 `32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
 `windows-latest-32-core` and `windows-latest-32-arm-core` are GitHub-hosted.
 No workflow runs on Intel macOS. Some publish jobs run on `ubuntu-latest` on purpose:
-`docker buildx imagetools` cannot commit manifest lists to Docker Hub from
+`docker buildx imagetools` cannot reliably commit manifest lists from
 Blacksmith.
 
 ---
@@ -330,7 +330,7 @@ branch protection.
 | `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on darwin-arm64, win32-x64, win32-arm64. Linux targets are commented out; there is no Intel macOS leg. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
 | `termux-verify.yml`, **Termux verification** | `push: main` / `pull_request` on `scripts/termux/**`, `pm/**` (not `*.md`), `tests/scripts/test_termux*`, itself; `workflow_dispatch`; `workflow_call` (stable) | `contracts` and `tui` always run. `r2-provisioned` is skipped on PRs. `native-runtime` (arm64) runs only when R2 secrets exist or `release: true`. A release run fails loudly without R2. | `gh workflow run termux-verify.yml` |
 | `plugin-catalog-ci.yml`, **Plugin Catalog CI** | `pull_request` on `plugin-catalog/**` | `structural` (schema) and `pinned-source-validate` (the pinned SHA is reachable and the plugin passes `hermes plugins validate`; inner steps skip when no entry file changed). | none |
-| `sandbox-image.yml`, **Sandbox desktop image** | `pull_request` on its Dockerfile and smoke script; `workflow_run` of a successful Stable Release; weekly `schedule`; `workflow_dispatch` (`publish`) | `build`+smoke on the upstream repo only. `publish`/`merge` (push `nousresearch/hermes-sandbox:desktop`, plus `:v<version>-desktop` after a stable release) on those three, a dispatch only with `publish=true`; publishing builds skip the layer cache to pick up base and apt fixes. The weekly run rolls `:desktop` from main's Dockerfile, so a Dockerfile change reaches users within a week. Never on `main` pushes. | `gh workflow run sandbox-image.yml -f publish=true` |
+| `sandbox-image.yml`, **Sandbox desktop image** | `pull_request` on its Dockerfile and smoke script; `workflow_run` of a successful Stable Release; weekly `schedule`; `workflow_dispatch` (`publish`) | `build`+smoke on the upstream repo only. `publish`/`merge` (push the configured `SANDBOX_IMAGE:desktop`, plus `:v<version>-desktop` after a stable release) on those three, a dispatch only with `publish=true`; publishing builds skip the layer cache to pick up base and apt fixes. The weekly run rolls `:desktop` from main's Dockerfile, so a Dockerfile change reaches users within a week. Never on `main` pushes. | `gh workflow run sandbox-image.yml -f publish=true` |
 | `windows-bundle-sdk.yml`, **Windows bundle SDK** | `pull_request` on the Windows bundle and signing scripts plus their tests; `workflow_dispatch` | Runs the real Windows SDK downloader on cold Windows runners. | `gh workflow run windows-bundle-sdk.yml --ref <branch>` |
 
 ---
@@ -364,7 +364,7 @@ branch protection.
 | `skills-index-freshness.yml` | every 4 h | dispatch | Upstream only. Opens an issue if `/docs/api/skills-index.json` is more than 26 h stale, missing, or a source collapsed. Also checks CORS on `/docs/api/plugins.json`. |
 | `docs-search-monitor.yml` | every 6 h at :17 | `workflow_run` after every **Deploy Site**; dispatch | Upstream only. Live Algolia and headless-browser probe of docs search. A red run is the alert. |
 | `osv-scanner.yml` | Mondays 09:00 | dispatch | OSV scan of `uv.lock`, `pnpm-lock.yaml` and the nested `package-lock.json` files. Results go to the Security tab. Advisory (does not fail on vulnerabilities). Intentionally not per-PR. |
-| `sandbox-image.yml` | Mondays 04:23 | PR (paths), `workflow_run` after Stable Release, dispatch | Upstream only. Rebuilds `nousresearch/hermes-sandbox:desktop` without layer cache so base-image and apt security fixes land between releases. See [standalone](#standalone-pr--main-checks). |
+| `sandbox-image.yml` | Mondays 04:23 | PR (paths), `workflow_run` after Stable Release, dispatch | Upstream only. Rebuilds the configured `SANDBOX_IMAGE:desktop` without layer cache so base-image and apt security fixes land between releases. See [standalone](#standalone-pr--main-checks). |
 
 ---
 

@@ -50,7 +50,7 @@ export const pt: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
+    brand: "Unitalk",
     brandShort: "HA",
     closeNavigation: "Fechar navegação",
     closeModelTools: "Fechar modelo e ferramentas",
@@ -629,7 +629,7 @@ export const pt: Translations = {
         "Partilhar no X abre uma publicação pré-preenchida num novo separador. Clique primeiro em Copiar imagem se quiser anexar o distintivo 1200×630 — o X permite colá-lo diretamente no compositor da publicação. Transferir PNG guarda o ficheiro para utilização em qualquer lado.",
       clipboard_unsupported:
         "A cópia de imagens para a área de transferência não é suportada neste navegador — utilize Transferir.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: "Just unlocked {tier_part}\"{name}\" in Unitalk ☤",
     },
   },
   kanban: {

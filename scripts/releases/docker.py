@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -15,7 +16,7 @@ GIT_SHA = re.compile(r"[a-f0-9]{40}")
 from hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases.versioning import parse_attempt_ref
 ARCHES = ("amd64", "arm64")
-IMAGE = "nousresearch/hermes-agent"
+IMAGE = os.environ.get("HERMES_DOCKER_IMAGE", "nousresearch/hermes-agent")
 
 class DockerReleaseError(ValueError):
     """Raised when a phase/manifest violates the staged-release contract."""

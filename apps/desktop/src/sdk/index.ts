@@ -1685,7 +1685,7 @@ export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 export { composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
- *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
+ *  "Unitalk" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
 /** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
  *  excluded from the layout tree and rendered as a fixed, draggable card above

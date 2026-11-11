@@ -50,7 +50,7 @@ export const ru: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
+    brand: "Unitalk",
     brandShort: "HA",
     closeNavigation: "Закрыть навигацию",
     closeModelTools: "Закрыть модель и инструменты",
@@ -628,7 +628,7 @@ export const ru: Translations = {
         "«Поделиться в X» открывает пост с заранее заполненным текстом в новой вкладке. Сначала нажмите «Скопировать изображение», если хотите прикрепить значок 1200×630 — X позволяет вставить его прямо в редактор твита. «Скачать PNG» сохраняет файл для использования где угодно.",
       clipboard_unsupported:
         "Копирование изображений в буфер обмена не поддерживается в этом браузере — используйте «Скачать».",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: "Just unlocked {tier_part}\"{name}\" in Unitalk ☤",
     },
   },
   kanban: {

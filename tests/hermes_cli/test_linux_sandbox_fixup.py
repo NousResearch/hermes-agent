@@ -11,6 +11,7 @@ probes for that capability first and skips the sudo path entirely.
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import io
 import stat
@@ -34,12 +35,20 @@ class TestDesktopLinuxUsernsSandboxAvailable:
 
     def test_true_when_probe_succeeds(self, monkeypatch):
         with patch.object(main_desktop.shutil, "which", return_value="/usr/bin/unshare"), \
-             patch.object(main_desktop.subprocess, "run") as run:
+             patch.object(main_desktop.subprocess, "run") as run, \
+             patch.object(builtins, "open", side_effect=OSError):
             run.return_value.returncode = 0
             assert main_desktop._desktop_linux_userns_sandbox_available() is True
         probe = run.call_args.args[0]
         assert probe[0] == "/usr/bin/unshare"
         assert "--user" in probe
+
+    def test_false_when_apparmor_restricts_unprivileged_userns(self, monkeypatch):
+        with patch.object(main_desktop.os, "geteuid", return_value=1000), \
+             patch.object(builtins, "open", return_value=io.StringIO("1\n")), \
+             patch.object(main_desktop.shutil, "which") as which:
+            assert main_desktop._desktop_linux_userns_sandbox_available() is False
+        which.assert_not_called()
 
     def test_false_when_probe_fails(self, monkeypatch):
         """EPERM from the kernel (userns disabled or AppArmor-restricted)."""

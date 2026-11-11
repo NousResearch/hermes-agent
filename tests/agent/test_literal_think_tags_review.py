@@ -45,6 +45,20 @@ def test_named_provider_without_opt_in_does_not_inherit_sibling_provider_flag(re
     assert literal_think_tags_capability(agent) is False
 
 
+def test_unnamed_route_requires_all_endpoint_entries_to_opt_in():
+    """An unnamed shared endpoint must not inherit an unrelated entry's opt-in.
+
+    Otherwise an inline-reasoning provider sharing a router URL can expose its private
+    <think> block simply because a sibling uses out-of-band reasoning.
+    """
+    agent = route([
+        {"name": "a", "base_url": ROUTE, "models": {MODEL: {FLAG: True}}},
+        {"name": "b", "base_url": ROUTE},
+    ], requested="")
+    assert literal_think_tags_capability(agent) is False
+    assert strip_think_blocks(agent, "<think>PRIVATE_FIXTURE</think>Answer") == "Answer"
+
+
 def build_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")

@@ -1,6 +1,6 @@
 name: worktree-sandbox
 repo: https://github.com/mahammadbakr/hermes-worktree-sandbox
-sha: ac2ed2c0561bc61a94cb2853fc0274e97544e111
+sha: c4517138b5fc7f8082e3aee1149ce2c7e7e962ba
 subdir: plugin
 version: "0.1.3"
 title: Worktree Sandbox

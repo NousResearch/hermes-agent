@@ -563,15 +563,18 @@ class InProcessCronScheduler(CronScheduler):
         )
 
         def tick_adapters_for(profile_name):
-            # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
-            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
-            # an exact enabled route maps here; else fail closed (delivery skipped this tick).
+            # Keep the profile's own adapters, and borrow PRIMARY adapters only for exact
+            # routes on platforms it does not own. Ownership is per platform: a satellite's
+            # Discord/Buzz bot must not prevent its routed Telegram cron delivery.
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
             owned = (profile_bot_platforms or {}).get(profile_name)
-            if not has_credential_platform(tick_adapters, owned) and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+            if adapters:
+                routes = _primary_profile_routes_for_current_home()
+                if routes or not has_credential_platform(tick_adapters, owned):
+                    return SharedRouteAdapters(
+                        adapters, routes, own_adapters=tick_adapters, owned_platforms=owned)
             return tick_adapters
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.

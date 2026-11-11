@@ -1164,9 +1164,13 @@ def _resolve_target_transport(
     from gateway.delivery import DeliveryTransport, resolve_delivery_transport
     target_adapters = adapters
     transport = None
-    if isinstance(adapters, _preflight.SharedRouteAdapters):
-        # Credentialless satellite: the primary adapter serves THIS target only when an exact
-        # primary route maps it to this profile; a miss fails closed below.
+    if isinstance(adapters, _preflight.SharedRouteAdapters) and adapters.owns(platform):
+        # An owned bot takes precedence, even when its adapter has dropped. Never borrow
+        # the primary's bot for the same platform while the owner's bot reconnects.
+        own = adapters.own_adapter(platform)
+        target_adapters = {platform: own} if own is not None else {}
+    elif isinstance(adapters, _preflight.SharedRouteAdapters):
+        # The primary adapter serves THIS target only when an exact route maps it here.
         # See #101113.
         shared = adapters.get(platform, target)
         target_adapters = {platform: shared} if shared is not None else {}

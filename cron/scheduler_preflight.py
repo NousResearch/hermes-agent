@@ -197,23 +197,32 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
 
 
 class SharedRouteAdapters:
-    """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
-    resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
-    the target; anything else (unmatched target, disabled route, other profile, or target-less
-    ``get(platform)``) is a miss — fail closed, never the default bot.
+    """Route-restricted primary adapters for a satellite, alongside any bots it owns.
+
+    ``get(platform, target)`` resolves the PRIMARY adapter only for a platform the satellite
+    does not own and a target matching an enabled primary route. A disconnected owned bot still
+    owns its platform: it must never silently borrow the primary's bot instead.
 
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, *, own_adapters=None, owned_platforms=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        self._own = dict(own_adapters or {})
+        self._owned = set(owned_platforms or ())
+
+    def owns(self, platform) -> bool:
+        return platform in self._owned or platform in self._own
+
+    def own_adapter(self, platform):
+        return self._own.get(platform)
 
     def __bool__(self) -> bool:
         return bool(self._primary) and bool(self._routes)
 
     def get(self, platform, target=None, default=None):
-        if not target:
+        if not target or self.owns(platform):
             return default
         adapter = self._primary.get(platform)
         if adapter is None:

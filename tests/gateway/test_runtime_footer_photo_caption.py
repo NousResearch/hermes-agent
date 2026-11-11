@@ -108,6 +108,24 @@ async def test_streamed_photo_reply_sends_no_trailing_footer_message(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_streamed_footer_falls_back_when_the_captioned_photo_failed(tmp_path, monkeypatch):
+    """The album reports success when ANY photo landed: if the last one (with the footer) is in
+    ``failed``, the footer still goes out as its trailing message."""
+    first, last = _photo(tmp_path, monkeypatch, "a.png"), _photo(tmp_path, monkeypatch, "b.png")
+    adapter = _Adapter()
+
+    async def partly(chat_id, images, metadata=None, human_delay=0.0):
+        adapter.batches.append(list(images))
+        return SendResult(success=True, raw_response={"failed": [(str(last), "refused")]})
+
+    adapter.send_multiple_images = partly
+    await _streamed_turn(adapter, f"Here\nMEDIA:{first}\nMEDIA:{last}", FOOTER)
+
+    assert adapter.batches[-1][-1][1] == FOOTER
+    assert adapter.sent == [FOOTER]
+
+
+@pytest.mark.asyncio
 async def test_streamed_reply_without_a_photo_keeps_the_trailing_footer(tmp_path, monkeypatch):
     adapter = _Adapter()
     await _streamed_turn(adapter, "just text", FOOTER)

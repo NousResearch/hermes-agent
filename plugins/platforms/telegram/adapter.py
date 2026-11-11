@@ -710,6 +710,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return "forum" if is_forum else "group"
         return normalized
 
+    @classmethod
+    def _gateway_chat_type(cls, chat: Any, *, is_forum: bool) -> str:
+        """``_normalize_chat_type`` of a chat object; a type not a known group/channel is a DM."""
+        chat_type = cls._normalize_chat_type(cls._chat_type_str(chat), is_forum=is_forum)
+        return chat_type if chat_type in {"group", "forum", "channel"} else "dm"
+
     def _legacy_runner_auth_fn(self):
         """``runner._is_user_authorized`` resolved off the bound handler (bare-adapter tests, direct
         embedding); None under multiplex where the handler is a profile closure."""
@@ -5252,16 +5258,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return {"name": "Unknown", "type": "dm"}
         try:
             chat = await self._bot.get_chat(normalize_telegram_chat_id(chat_id))
-            chat_type = "dm"
-            if chat.type == ChatType.GROUP:
-                chat_type = "group"
-            elif chat.type == ChatType.SUPERGROUP:
-                chat_type = "forum" if chat.is_forum else "group"
-            elif chat.type == ChatType.CHANNEL:
-                chat_type = "channel"
-            return {
-                "name": chat.title or chat.full_name or str(chat_id), "type": chat_type, "username": chat.username,
-                "is_forum": getattr(chat, "is_forum", False)}
+            is_forum = getattr(chat, "is_forum", False)
+            return {"name": chat.title or chat.full_name or str(chat_id), "username": chat.username, "is_forum": is_forum,
+                    "type": self._gateway_chat_type(chat, is_forum=is_forum is True)}
         except Exception as e:
             logger.error("[%s] Failed to get Telegram chat info for %s: %s", self.name, chat_id, _redact_telegram_error_text(
                 e), exc_info=True)
@@ -6508,8 +6507,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         triggering offset so the new gateway process advances past it."""
         chat = message.chat
         user = message.from_user
-        telegram_chat_type = self._chat_type_str(chat)  # str() so PTB enums and plain-string mocks both work
-        chat_type = "group" if telegram_chat_type in {"group", "supergroup"} else ("channel" if telegram_chat_type == "channel" else "dm")
+        # Session keys carry a forum topic as thread_id, so an inbound supergroup is "group", never "forum".
+        chat_type = self._gateway_chat_type(chat, is_forum=False)
         # Shared normalizer so gating and session routing agree (reply-UI anchors dropped, General → "1").
         # Resolve routable thread id for DM topics and forum group topics via the shared normalizer, so
         # gating and session routing agree on one value. Only real topic/forum messages keep a thread id;

@@ -403,3 +403,60 @@ async def test_a_streamed_reply_whose_first_preview_failed_shows_rich_part_one_o
     wanted = re.findall(r"row \d+-\d+:", content)
     assert seen["rich"] >= 2, "rich part 2 was never attempted"
     assert [row for row in wanted if rows[row] != 1] == []
+
+
+@pytest.mark.asyncio
+async def test_a_first_part_that_never_left_keeps_the_normal_retry(monkeypatch):
+    """Part 1 refused by a connect error (nothing reached Telegram): the retry sends the whole
+    reply instead of stopping at a partial result with no part delivered."""
+    import telegram.error as tg_error
+
+    adapter = _make_adapter()
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    attempts = {"rich": 0}
+
+    async def do_api_request(method, api_kwargs=None):
+        attempts["rich"] += method == "sendRichMessage"
+        if attempts["rich"] == 1:
+            raise tg_error.NetworkError("Cannot connect to host api.telegram.org")
+        return SimpleNamespace(message_id=600 + attempts["rich"])
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=do_api_request)
+    content = _details_content()
+
+    result = await adapter._send_with_retry("12345", content)
+
+    assert result.success is True
+    shown = "".join(_rich_markdown(call) for call in _rich_calls(adapter)[1:])
+    assert "row 0-0:" in shown and "row 7-519:" in shown
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_part_names_the_parts_that_never_left():
+    """Part 2 times out (it may show): the parts after it never left, so they are reported as
+    ``unattempted_chunks`` and the stream consumer sends them before counting the reply shown."""
+    import telegram.error as tg_error
+
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    adapter = _make_adapter()
+    _refuse_rich_part(adapter, 0)
+    rich = adapter._bot.do_api_request.side_effect
+
+    async def do_api_request(method, api_kwargs=None):
+        if method == "sendRichMessage" and len(_rich_calls(adapter)) == 2:
+            raise tg_error.TimedOut("Timed out")
+        return await rich(method, api_kwargs)
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=do_api_request)
+    result = await adapter.send("12345", _details_content())
+
+    consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
+    assert await consumer._uncertain_send_fully_shown(result) is True
+    assert "row 7-519: the build stayed green on main" in _legacy_texts(adapter).replace("\\", "")
+
+
+def test_a_table_without_outer_pipes_repeats_its_header_in_every_part():
+    rows = "\n".join(f"name{index} | value {index} with some padding text" for index in range(3000))
+    parts = split_rich_parts("name | value\n---|---\n" + rows, 32000)
+    assert len(parts) > 1 and all(part.startswith("name | value\n---|---\n") for part in parts)

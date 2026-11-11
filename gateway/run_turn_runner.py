@@ -866,8 +866,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is None:
-                raise RuntimeError("Approval notification loop unavailable")
             if fut is not None:
                 res = fut.result(timeout=15)
                 # Text-lane receipt (#138133): a card failure lands here, and a failed fallback was silent too.
@@ -878,9 +876,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            if background and (fut is None or not getattr(res, "success", False)):
+                # Nobody else can still show a background child's prompt: undelivered fails it closed.
+                raise RuntimeError("Approval notification was not delivered")
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
-            raise
+            if background:
+                raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

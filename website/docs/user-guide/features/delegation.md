@@ -31,6 +31,12 @@ Background terminal processes belong to the agent that starts them. Closing a ch
 
 A child should wait for its builds, tests, and other bounded background commands before returning its final summary. Start a CI watcher or server in the parent session if it must continue after the child finishes; returning a process ID does not transfer ownership to the parent.
 
+## Approvals from background children
+
+A background child that needs approval for a command after the parent's turn has ended still asks in the chat the parent was started from. On messaging platforms the approval card (or the plain-text `/approve` prompt) appears there, and `/approve`, `/deny` or a tap on the card answers that child's command. A card the child raised while the parent was still replying stays answerable after the parent finishes. Stopping the child (`/stop`), resetting the session (`/new`) or the child finishing withdraws its open prompts.
+
+Where no chat can show the prompt once the parent's turn is over (API-server runs, webhooks, local viewers), the child's command is refused with an explicit "no approval channel" result. It is never reported as pending.
+
 ## Single Task
 
 ```python

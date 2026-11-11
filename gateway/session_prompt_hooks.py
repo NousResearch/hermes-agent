@@ -73,6 +73,14 @@ class PromptTable(dict):
             _settle(self.observed.pop(prompt_id, None), "settled")
         return value
 
+    # A copy is a plain-dict snapshot (as ``dict.copy`` already returns): removing from it never
+    # settles anything and never touches this table's ``observed``.
+    def __copy__(self):
+        return dict(self)
+
+    def __deepcopy__(self, memo):
+        return deepcopy(dict(self), memo)
+
 
 def control_opened(authority, session_id, controls, prompt_id) -> None:
     """The authority published *prompt_id*'s ``approval.request`` / ``clarify.request`` (it is in

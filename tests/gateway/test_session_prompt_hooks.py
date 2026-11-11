@@ -210,6 +210,34 @@ def test_a_managed_worker_prompt_settles_when_the_worker_says_so(owner, plugin):
     assert [hook for hook, _ in plugin.of("w-1")] == [OPENED, SETTLED]
 
 
+@pytest.mark.parametrize("copier", ["copy.copy", "copy.deepcopy", "dict.copy"])
+def test_a_copy_of_the_pending_table_is_an_inert_snapshot(owner, plugin, copier):
+    """Removing a prompt from a copy of ``PendingControls.pending`` settles nothing and leaves the
+    original's bookkeeping alone; the original still settles its prompt exactly once."""
+    import copy
+    make = {"copy.copy": copy.copy, "copy.deepcopy": copy.deepcopy, "dict.copy": lambda t: t.copy()}[copier]
+    entry = _approval(owner)
+    [opened] = plugin.wait(OPENED)
+    prompt_id, table = opened["prompt_id"], owner.live.controls.pending
+    clone = make(table)
+    assert clone[prompt_id] == table[prompt_id]
+    clone.pop(prompt_id)
+    clone[prompt_id] = table[prompt_id]
+    del clone[prompt_id]
+    clone.clear()
+    _clarify(owner, "fence")  # delivered in order: a stray settled would be here by now
+    plugin.wait(OPENED, prompt_id="fence")
+    assert [hook for hook, _ in plugin.of(prompt_id)] == [OPENED]
+    assert prompt_id in table
+    owner.live.controls.respond("s", owner.generation, prompt_id, {"choice": "once"})
+    assert entry.event.is_set() and entry.result == "once"
+    plugin.wait(SETTLED, prompt_id=prompt_id)
+    owner.live.controls.snapshot("s", None)
+    _clarify(owner, "after")
+    plugin.wait(OPENED, prompt_id="after")
+    assert [hook for hook, _ in plugin.of(prompt_id)] == [OPENED, SETTLED]
+
+
 # -- request frames ------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("method", PERSON)

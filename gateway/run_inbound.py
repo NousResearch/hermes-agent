@@ -1530,11 +1530,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     @staticmethod
     def _classify_inbound_media(
-        event: MessageEvent, pending_stt_prepared: bool
+        event: MessageEvent, pending_stt_prepared: bool, transcribe_audio_files: bool = False
     ) -> tuple[list, list, list, list]:
         """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
         MIME wins over the message-level type (a document sent alongside an image must not be routed
-        as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
+        as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment; it is also STT
+        input when ``transcribe_audio_files`` is on, and keeps its path note so skills get the file."""
         from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
         image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
         for i, path in enumerate(event.media_urls or []):
@@ -1544,7 +1545,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             if _event_media_is_audio(event, i):
                 if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
                     audio_file_paths.append(path)
-                elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
+                if not pending_stt_prepared and _event_media_is_stt_input(event, i, transcribe_audio_files):
                     audio_paths.append(path)
             if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                 video_paths.append(path)
@@ -1639,24 +1640,30 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     @classmethod
     def _prepend_inbound_media_file_notes(
         cls, message_text: str, audio_file_paths: list[str], video_paths: list[str],
-        original_names: Optional[dict[str, str]] = None,
+        original_names: Optional[dict[str, str]] = None, audio_transcribed: bool = False,
     ) -> str:
-        """Prepend a path-pointing note per audio-file / video attachment (content is not inlined)."""
+        """Prepend a path-pointing note per audio-file / video attachment (content is not inlined,
+        except the transcript of an opted-in audio file, which the STT step already prepended)."""
         names = original_names or {}
-        for kind, noun, verb, tool, paths in (
-            ("an audio file attachment", "audio", "transcribe or process", "a transcription or media tool", audio_file_paths),
-            ("a video attachment", "video", "inspect or process", "a video analysis or media tool", video_paths),
+        for kind, noun, verb, tool, paths, transcribed in (
+            ("an audio file attachment", "audio", "transcribe or process", "a transcription or media tool",
+             audio_file_paths, audio_transcribed),
+            ("a video attachment", "video", "inspect or process", "a video analysis or media tool", video_paths, False),
         ):
             for _path in paths:
                 _display, _agent_path = cls._inbound_attachment_display_name(_path, names.get(_path, ""))
-                message_text = (
-                    f"[The user sent {kind}: '{_display}'. "
-                    f"It is saved at: {_agent_path}. "
+                guidance = (
+                    "A transcript follows below when transcription succeeded. Otherwise, or when "
+                    f"the request needs more than the words, process the file yourself with {tool}."
+                    if transcribed else
                     f"Its content is not inlined here. If the user's request involves "
                     f"what the {noun} contains, {verb} it yourself — for "
                     f"example by passing the path to {tool} — "
                     f"instead of asking the user to describe it. Only ask what to do "
-                    f"with it if their intent is genuinely unclear.]"
+                    f"with it if their intent is genuinely unclear."
+                )
+                message_text = (
+                    f"[The user sent {kind}: '{_display}'. It is saved at: {_agent_path}. {guidance}]"
                     f"\n\n{message_text}"
                 )
         return message_text
@@ -1813,13 +1820,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self._consume_pending_native_image_paths(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
-        image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+        audio_files_stt = self._stt_transcribes_audio_files(source)
+        image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(
+            event, _pending_stt_prepared, audio_files_stt)
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(
-            message_text, audio_file_paths, video_paths, self._inbound_original_names(event))
+            message_text, audio_file_paths, video_paths, self._inbound_original_names(event), audio_files_stt)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         from gateway.session_context_refs import turn_references
         message_text = await turn_references(self, event, source, session_key, message_text)

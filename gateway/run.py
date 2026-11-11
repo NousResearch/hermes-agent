@@ -2485,11 +2485,11 @@ def _event_media_is_audio(event, index: int) -> bool:
     return _event_media_kind_is(event, index, "audio/", frozenset({MessageType.VOICE, MessageType.AUDIO}))
 
 
-def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
+def _event_media_is_stt_input(event, index: int, transcribe_audio_files: bool = False) -> bool:
+    """True when an audio attachment should enter the automatic STT pipeline (files: opt-in only)."""
     message_type = getattr(event, "message_type", None)
     if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-        return False
+        return transcribe_audio_files and _event_media_is_audio(event, index)
     return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
 
 

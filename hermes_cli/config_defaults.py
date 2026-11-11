@@ -1138,8 +1138,8 @@ DEFAULT_CONFIG = {
 
     "stt": {
         "enabled": True,
-        # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
-        "echo_transcripts": True,
+        "transcribe_audio_files": False,  # Also STT audio file attachments (forwarded voice notes).
+        "echo_transcripts": True,  # Echo the raw transcript of gateway voice messages as a 🎙️ message.
         # No seeded "provider" (a stored value is an explicit pick; unset = autodetect): local | groq |
         # openai | mistral | elevenlabs | deepinfra | xai. Global language hint unless a per-provider one
         # overrides it; "en" because Whisper auto-detect misreads short clips; "" = auto; "es", ...

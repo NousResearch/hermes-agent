@@ -45,6 +45,18 @@ def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
 class GatewayInboundTranscriptionMixin:
     """STT enrichment and the once-only echo of pending voice transcripts."""
 
+    def _stt_transcribes_audio_files(self, source) -> bool:
+        """``stt.transcribe_audio_files`` of the profile that received *source*. The primary
+        ``stt.enabled`` still gates all gateway STT; a secondary profile not loaded fails closed."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        profile = identity.runtime_profile if identity is not None else source.profile
+        config = self.config
+        if profile and profile != self._primary_profile_name:
+            config = (getattr(self, "_profile_configs", None) or {}).get(profile)
+        return bool(getattr(self.config, "stt_enabled", True) and config is not None
+                    and getattr(config, "stt_enabled", True) and getattr(config, "stt_transcribe_audio_files", False))
+
     async def _enrich_message_with_transcription(
         self, user_text: str, audio_paths: list[str], clip_memo: Optional[dict] = None
     ) -> tuple[str, list[str]]:

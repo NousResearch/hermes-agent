@@ -1,0 +1,44 @@
+name: coinfello
+title: CoinFello
+repo: https://github.com/CoinFello/hermes-wallet
+sha: 064bbb66ce281aa950bf5c7922949b53dd537c1e
+version: "0.3.3"
+description: "CoinFello for Hermes: the agent reads your CoinFello automation wallet (balances, positions, LP ranges, open orders, activity, prices, yields, swap and bridge quotes), prepares sends and swaps you approve in Hermes, and talks to Fello, CoinFello's DeFi agent. A desktop pane shows the wallet and portfolio with send, swap, earn and a daily trading allowance, and draws CoinFello's MCP App cards. Sign-in is the plugin's oauth: entry (hermes auth add coinfello:coinfello, OAuth 2.1 + PKCE against app.coinfello.com); Hermes stores and refreshes the grant and the plugin never holds a token. Disclosure: talks to app.coinfello.com (which records daily usage per session, see the README); token icons from static.cx.metamask.io; cards load Google Fonts; can move funds from the automation wallet within the daily limit the human approves on CoinFello, and coinfello_execute / coinfello_chat always go through Hermes's approval prompt; stores only non-secret pane state in plugin-data; the open pane polls status and balances; no telemetry."
+maintainer: CoinFello
+tier: community
+category: tools
+docs_url: https://github.com/CoinFello/hermes-wallet#readme
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/pane-home.png
+  - https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/pane-activity.png
+  - https://raw.githubusercontent.com/CoinFello/hermes-wallet/064bbb66ce281aa950bf5c7922949b53dd537c1e/docs/pane-settings.png
+capabilities:
+  provides_tools:
+    - coinfello_status
+    - coinfello_connect
+    - coinfello_set_daily_limit
+    - coinfello_limit_status
+    - coinfello_disconnect
+    - coinfello_chat
+    - coinfello_job_status
+    - coinfello_balances
+    - coinfello_positions
+    - coinfello_lp_positions
+    - coinfello_open_orders
+    - coinfello_activity
+    - coinfello_quote
+    - coinfello_prepare_swap
+    - coinfello_prepare_send
+    - coinfello_execute
+    - coinfello_transfer_status
+    - coinfello_yields
+    - coinfello_prices
+    - coinfello_show_card
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

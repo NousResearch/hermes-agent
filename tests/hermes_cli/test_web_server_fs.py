@@ -164,12 +164,14 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
     assert calls == [
         ("list", "/srv/repos"),
         ("branch", "/srv/repos"),
+        ("inspect", "/srv/repos/project/README.md"),
         (
             "read",
             "/srv/repos/project/README.md",
             file_routes._FS_TEXT_SOURCE_MAX_BYTES,
             file_routes._FS_TEXT_PREVIEW_MAX_BYTES,
         ),
+        ("inspect", "/srv/repos/project/logo.png"),
         ("read", "/srv/repos/project/logo.png", web_server._FS_DATA_URL_MAX_BYTES, None),
         ("write", "/srv/repos/project/README.md", "updated", file_routes._FS_TEXT_WRITE_MAX_BYTES),
         ("git-root", "/srv/repos/project/src"),
@@ -232,6 +234,27 @@ def test_fs_download_rejects_sensitive_resolved_ssh_path_before_streaming(client
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+@pytest.mark.parametrize("resolved", ["/srv/repos/.env", "/home/dev/.hermes/auth.json",
+                                      "/home/dev/.hermes/mcp-tokens/github.json"])
+def test_fs_readers_reject_sensitive_resolved_ssh_path_before_reading(client, monkeypatch, endpoint, resolved):
+    """An SSH profile's previews refuse what download refuses, judged on the path the SSH machine
+    resolves (a harmless-looking link to a credential file included), before any byte is read."""
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return resolved, 8
+
+        def read_bytes(self, _path, *, max_bytes, read_limit=None):
+            pytest.fail("sensitive SSH files must not be read")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Access to sensitive files is not allowed"
 
 
 def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):

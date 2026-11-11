@@ -99,6 +99,18 @@ def lookup(chat_id, message_id) -> Optional[str]:
     return _entry(chat_id, message_id).get("t") or None
 
 
+def record_marker(chat_id, message_ids, key: str, value: str) -> None:
+    """Tag each of ``message_ids`` (one logical send split into several messages) with ``key=value``."""
+    for message_id in dict.fromkeys(str(m) for m in message_ids if m is not None):
+        _update(chat_id, message_id, {key: value})
+
+
+def lookup_marker(chat_id, message_id, key: str) -> Optional[str]:
+    """The ``key`` tag :func:`record_marker` stored for ``(chat_id, message_id)``, or ``None``."""
+    value = _entry(chat_id, message_id).get(key)
+    return value if isinstance(value, str) and value else None
+
+
 def lookup_media(chat_id, message_id) -> list[tuple[str, str]]:
     """Return stored ``(path, mime)`` pairs whose file still exists (attachments may be temp files)."""
     pairs = _entry(chat_id, message_id).get("m") or []

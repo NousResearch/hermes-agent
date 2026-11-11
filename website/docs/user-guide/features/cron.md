@@ -746,7 +746,8 @@ To stop or manage this job, send me a new message (e.g. "stop reminder Morning f
 
 When you reply to a wrapped delivery, the agent receives the quoted report marked as a past
 scheduled delivery for reference, so its action items are not treated as a new request unless
-your reply asks for them. Unwrapped deliveries (`wrap_response: false`) carry no marker and are
+your reply asks for them. A long delivery split into several messages is marked on every part,
+not only the first. Unwrapped deliveries (`wrap_response: false`) carry no marker and are
 quoted like any other message.
 
 To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:

@@ -227,6 +227,46 @@ def take_housekeeping_reply_line(agent: Any) -> Optional[str]:
     return final_response
 
 
+def _partial_stream_reply(agent: Any) -> Optional[str]:
+    """The visible text streamed before the connection died, as the turn's reply; None if none."""
+    partial = getattr(agent, "_current_streamed_assistant_text", "") or ""
+    if not agent._has_content_after_think_block(partial):
+        return None
+    recovered = agent._strip_think_blocks(partial).strip()
+    logger.info("Partial stream content delivered (%d chars) — using as final response", len(recovered))
+    agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content " "as final response")
+    # A streamed fragment isn't a confirmed preview: gateway fallback delivery
+    # sends the text plus the abnormal-turn explanation.
+    agent._response_was_previewed = False
+    return recovered
+
+
+def _machinery_quiet_exit(agent: Any, assistant_message: Any, finish_reason: str, messages: Any) -> bool:
+    """End a machinery turn's empty reply quietly; True when it did.
+
+    A machinery turn (a self-injected internal_notification or a background-process /
+    delegation completion the gateway staged as its own user row) answered empty means
+    "nothing to add": no nudge, no paid retries, no provider switch, no sentinel row. Only
+    when no tool ran this turn; a model that acted on the notice is mid-task and keeps the
+    ladder below unchanged.
+    """
+    if not _notification_turn_without_tool_round(messages):
+        return False
+    logger.info(
+        "Empty response on a machinery turn (%s): ending the turn without a reply",
+        _latest_user_display_kind(messages),
+    )
+    # Close the turn in the transcript. The finalizer appends an assistant row only for a
+    # non-empty final, and a user row left unanswered makes the next pre-call repair merge
+    # the following human prompt into the notice (text and display_kind both lost). The
+    # row carries the marker a deliberate no-reply already persists on human turns, so the
+    # gateway keeps treating it as silence and the wire keeps alternating.
+    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    assistant_msg["content"] = MACHINERY_NO_REPLY_ROW
+    append_message(messages, assistant_msg)
+    return True
+
+
 def recover_empty_response(
     agent: Any, assistant_message: Any, response: Any, finish_reason: str, *, final_response: Any,
     messages: list[dict[str, Any]], api_messages: Any, conversation_history: Any,
@@ -251,40 +291,13 @@ def recover_empty_response(
 
     # Partial stream recovery: content streamed before the connection died becomes the
     # final response instead of fallback or retries.
-    _partial_streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
-    if agent._has_content_after_think_block(_partial_streamed):
+    if (_recovered := _partial_stream_reply(agent)) is not None:
         _turn_exit_reason = "partial_stream_recovery"
-        _recovered = agent._strip_think_blocks(_partial_streamed).strip()
-        logger.info(
-            "Partial stream content delivered (%d chars) — using as final response",
-            len(_recovered),
-        )
-        agent._emit_diagnostic_status("↻ Stream interrupted — using delivered content " "as final response")
         final_response = _recovered
-        # A streamed fragment isn't a confirmed preview: gateway fallback delivery
-        # sends the text plus the abnormal-turn explanation.
-        agent._response_was_previewed = False
         return _verdict("break")
 
-    # Machinery turn (a self-injected internal_notification or a background-process /
-    # delegation completion the gateway staged as its own user row): an empty reply means
-    # "nothing to add", so end the turn quietly (no nudge, no paid retries, no provider
-    # switch, no sentinel row). Only when no tool ran this turn; a model that acted on the
-    # notice is mid-task and keeps the ladder below unchanged.
-    if _notification_turn_without_tool_round(messages):
+    if _machinery_quiet_exit(agent, assistant_message, finish_reason, messages):
         _turn_exit_reason = NOTIFICATION_NO_REPLY_EXIT
-        logger.info(
-            "Empty response on a machinery turn (%s): ending the turn without a reply",
-            _latest_user_display_kind(messages),
-        )
-        # Close the turn in the transcript. The finalizer appends an assistant row only for a
-        # non-empty final, and a user row left unanswered makes the next pre-call repair merge
-        # the following human prompt into the notice (text and display_kind both lost). The
-        # row carries the marker a deliberate no-reply already persists on human turns, so the
-        # gateway keeps treating it as silence and the wire keeps alternating.
-        assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
-        assistant_msg["content"] = MACHINERY_NO_REPLY_ROW
-        append_message(messages, assistant_msg)
         final_response = ""
         return _verdict("break")
 

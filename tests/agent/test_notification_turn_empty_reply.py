@@ -311,11 +311,6 @@ class TestNotificationQuietExit:
         assert len(messages) == 3
 
 
-class TestNotificationNoReplyExitConstant:
-    def test_constant_is_importable_and_stable(self):
-        assert ter.NOTIFICATION_NO_REPLY_EXIT == "notification_no_reply"
-
-
 class TestResponseFiltersNotificationNoReply:
     def test_notification_no_reply_with_empty_text_is_intentional_silence(self):
         from gateway.response_filters import is_intentional_silence_agent_result

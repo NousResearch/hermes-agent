@@ -578,7 +578,14 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
         if isinstance(result, dict):
             return result
         if result.success:
-            return {"success": True, "message_id": result.message_id}
+            sent = {"success": True, "message_id": result.message_id}
+            # An adapter may split the chunk again on its own limit. Its ids are the only
+            # record of those extra bubbles, so keep them: dropping them left the receipt
+            # naming one message for several that are visible in the chat.
+            ids = _adapter_message_ids(result)
+            if len(ids) > 1:
+                sent["message_ids"] = ids
+            return sent
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
     try:
         # Discover first: a fresh process (cron/CLI) has not registered plugin platforms yet.
@@ -603,9 +610,62 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
                       f"expected a dict with 'success' or 'error' keys, got {type(result).__name__}")}
 
 
+def _ordered_message_ids(*groups):
+    """The given ids in send order, de-duplicated. Adapters disagree on whether
+    ``message_id`` is also the last entry of ``continuation_message_ids`` (the Telegram and
+    Discord overflow splits repeat it, WhatsApp does not), so the groups cannot just be
+    concatenated: first-seen order keeps both shapes honest."""
+    seen, ordered = set(), []
+    for group in groups:
+        for message_id in group or ():
+            if not message_id:
+                continue
+            message_id = str(message_id)
+            if message_id not in seen:
+                seen.add(message_id)
+                ordered.append(message_id)
+    return ordered
+
+
+def _adapter_message_ids(result):
+    """Every id a ``SendResult`` accounts for, in send order."""
+    raw = getattr(result, "raw_response", None)
+    raw = raw if isinstance(raw, dict) else {}
+    return _ordered_message_ids(raw.get("message_ids"),
+                                getattr(result, "continuation_message_ids", ()),
+                                [result.message_id])
+
+
+def _chunk_message_ids(result):
+    """Every id one chunk's send delivered, in send order (its sender may have split again)."""
+    if not isinstance(result, dict):
+        return []
+    return _ordered_message_ids(result.get("message_ids"),
+                                result.get("continuation_message_ids"),
+                                [result.get("message_id")])
+
+
 async def _send_chunks(chunks, send_one):
-    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
-    result = None
+    """``send_one(chunk, is_last)`` in order; stop at the first error dict.
+
+    A split send reports every part, not only the last one. On success the result carries
+    ``total_chunks``, ``message_ids`` (send order) and ``accounted_chunks``; on a chunk
+    failure after earlier chunks landed it carries ``partial_success``,
+    ``delivered_chunks``, ``delivered_message_ids`` and ``accounted_chunks``. Returning
+    the last chunk's result alone made a half delivered split unreadable: the error dict
+    dropped the ids of the bubbles already in the chat, so a retry re-sent the head, and a
+    success dict named one id for N visible messages. This is the rule the media path
+    already applies to dropped attachments (#115908): a script reading ``success`` /
+    exit 0 must not book a delivery that never happened, and it must be able to name what
+    did land.
+
+    ``accounted_chunks`` is the completeness test, not ``len(message_ids)``: a sender that
+    reports success without an id contributes no id, and one that splits the chunk again
+    contributes several, so the id count runs both below and above the part count. A
+    receipt whose ``accounted_chunks`` is short of its part count delivered those parts but
+    cannot name them -- do not read that as a failed send, and do not re-send.
+    """
+    result, delivered, accounted = None, [], 0
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
     # adapter reuses the live gateway's E2EE session when available (#46310) and falls back to an
@@ -613,7 +673,18 @@ async def _send_chunks(chunks, send_one):
     for i, chunk in enumerate(chunks):
         result = await send_one(chunk, i == len(chunks) - 1)
         if isinstance(result, dict) and result.get("error"):
+            if i:  # chunks 1..i are already visible in the chat; only the tail is missing
+                result.update({"success": False, "partial_success": True,
+                               "delivered_chunks": i, "total_chunks": len(chunks),
+                               "delivered_message_ids": delivered,
+                               "accounted_chunks": accounted})
             break
+        chunk_ids = _chunk_message_ids(result)
+        delivered.extend(chunk_ids)
+        accounted += 1 if chunk_ids else 0
+    if len(chunks) > 1 and isinstance(result, dict) and result.get("success"):
+        result.update({"total_chunks": len(chunks), "message_ids": delivered,
+                       "accounted_chunks": accounted})
     return result
 
 

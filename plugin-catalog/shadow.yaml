@@ -1,0 +1,24 @@
+name: shadow
+title: Shadow
+repo: https://github.com/salch-cred/shadow
+sha: 5820ff2a01a715a47f6f1aebeb1d1c2dbc352e63
+description: >-
+  Find out which model is better at your work, from your real prompts. After a
+  plain chat turn, the same conversation goes in the background to a second
+  model you choose, through ctx.llm. /shadow vote shows both answers blind in
+  random order; models are revealed after you vote, and your leaderboard shows
+  wins with a 95% range. Off until you set compare_model and allow the override;
+  tool turns are skipped and answers are deleted after each vote.
+
+maintainer: salch-cred
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/salch-cred/shadow
+version: "0.1.0"
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [post_llm_call]
+  provides_middleware: []
+  requires_env: []

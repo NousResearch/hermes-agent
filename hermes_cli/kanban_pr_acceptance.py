@@ -44,6 +44,10 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
+        if denied and denied[1] == "403" and _PLAN_LIMIT.search(exc.stderr or ""):
+            # Local 2026-11-07: GitHub Free cannot read rulesets/branch protection on a private
+            # repo. That is a plan limit with nothing configured to read, not an identity failure.
+            raise _GatePlanRestricted(f"HTTP 403 (plan limit) on {endpoint.split('?')[0]}") from None
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
@@ -55,10 +59,19 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     return value
 
 
+_PLAN_LIMIT = re.compile(r"Upgrade to GitHub Pro or make this repository public", re.I)
+
+
 class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _GatePlanRestricted(_GateAuthError):
+    """HTTP 403 "Upgrade to GitHub Pro or make this repository public": the plan cannot
+    configure branch rules for this private repo, so there are none to read. Tolerated only
+    on the branch-rules read; on any other read it stays an auth failure (its base class)."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -133,15 +146,20 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+            plan_limited = False
+        except _GatePlanRestricted:
+            # Only this read may be plan-limited; every other 403 stays an auth failure.
+            rules, plan_limited = [], True
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
-        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
+        if not required and not plan_limited:
+            receipt["required"] = []
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
@@ -151,6 +169,18 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
+        if plan_limited and not required:
+            # The plan cannot declare required checks, so every non-skipped check on the exact head is
+            # required: all must be complete and green, and at least one must exist.
+            required = ({(r["name"], r["app"]["id"]) for r in runs if r.get("conclusion") != "skipped"}
+                        | {(st["context"], None) for st in statuses})
+            receipt["required_source"] = "all exact-head checks (branch rules unreadable on this GitHub plan)"
+            if not required:
+                receipt["required"] = []
+                receipt["detail"] = ("Branch rules are unreadable on this GitHub plan and the PR head has no checks; "
+                                     "add CI or use a local-only contract.")
+                return receipt
+        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and

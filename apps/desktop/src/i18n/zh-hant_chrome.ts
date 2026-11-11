@@ -229,7 +229,9 @@ export const zhHantChrome = {
       ageNow: '剛才',
       ageDay: '天',
       ageHour: '時',
-      ageMin: '分'
+      ageMin: '分',
+      summaryUpdated: '更新於',
+      summaryMessageCount: count => `${count} 則訊息`
     },
     dateDivider: {
       today: '今天稍早',

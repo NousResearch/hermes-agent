@@ -2535,7 +2535,9 @@ export const ruOverrides = {
       ageNow: 'сейчас',
       ageDay: 'д',
       ageHour: 'ч',
-      ageMin: 'м'
+      ageMin: 'м',
+      summaryUpdated: 'Обновлено',
+      summaryMessageCount: count => `${count} ${count === 1 ? 'сообщение' : 'сообщений'}`
     },
     dateDivider: {
       today: 'Ранее сегодня',

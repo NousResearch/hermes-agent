@@ -2906,6 +2906,10 @@ export interface Translations extends NoticeTranslations {
       ageDay: string
       ageHour: string
       ageMin: string
+      /** The hover card's "Updated <relative time>" label. */
+      summaryUpdated: string
+      /** The hover card's message count line. */
+      summaryMessageCount: (count: number) => string
     }
     dateDivider: {
       today: string

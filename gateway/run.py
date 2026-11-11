@@ -4408,6 +4408,43 @@ def _housekeeping_deferred_fts_retry() -> None:
                     getattr(_sdb, "db_path", "state.db"))
 
 
+def _housekeeping_session_summary() -> None:
+    """One background pass of the session-summary scheduler (issue #45103).
+
+    The scheduler itself is a passive runtime: it owns a bounded worker
+    pool but no thread and no timer. The gateway's housekeeping loop IS
+    the lifecycle owner, so the scheduler is created lazily here and
+    ticked on this chore's cadence. A process without a gateway (a bare
+    ``hermes`` CLI run) simply never summarizes — that is the same
+    trade-off every other gateway-only housekeeping chore makes.
+
+    Summary generation costs one LLM call per candidate, so this chore
+    is gated on config: ``sessions.auto_summary`` (default off). The
+    scheduler's own knobs come from ``sessions.summary_*``.
+
+    The scheduler instance is cached per process so its in-flight set
+    survives across ticks — that is what bounds the work when a slow
+    session would otherwise be re-queued on every pass.
+    """
+    from hermes_cli.config import load_config as _load_full_config
+    _sess_cfg = (_load_full_config().get("sessions") or {})
+    if not _sess_cfg.get("auto_summary", False):
+        return
+
+    from agent.session_summary_scheduler import get_default_scheduler
+    try:
+        _scheduler = get_default_scheduler()
+        _queued = _scheduler.tick()
+    except Exception:
+        # A summary failure must never take the gateway's housekeeping
+        # loop down; the chore wrapper also swallows, but log it here
+        # so an operator can see WHY no summaries are being produced.
+        logger.debug("Session summary tick error", exc_info=True)
+        return
+    if _queued:
+        logger.info("Session summary: queued %d session(s) for summarization", _queued)
+
+
 def _housekeeping_memory_trim() -> None:
     """Messaging-gateway counterpart to the TUI idle reaper; timer lane: full GC only once idle (#139763)."""
     from hermes_cli.mem_trim import trim_memory_when_idle
@@ -4492,6 +4529,10 @@ def _start_gateway_housekeeping(
         # Per served profile: plugins dir, last-run marker and plugins.auto_apply are all the
         # profile's own (get_hermes_home()/load_config_readonly() bind to the scope).
         (1, "Plugin update check", profile_scoped_chore(runner, _housekeeping_plugin_update_check)),
+        # Background session summaries for the sidebar hover card (issue #45103). Every 60s so a
+        # closed session's summary lands within a minute of the close; the scheduler bounds its own
+        # work (in-flight set + bounded pool) so a slow session cannot pile up LLM calls.
+        (60, "Session summary tick", profile_scoped_chore(runner, _housekeeping_session_summary)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

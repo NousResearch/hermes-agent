@@ -9,6 +9,7 @@ import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { openSession } from '@/app/open-session'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
+import { SessionHoverCard } from '@/components/session-hover-card'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
@@ -540,17 +541,19 @@ function SidebarSessionRowImpl({
                         exactly as they did on the old full-row button. The
                         OverflowTip stays on the truncating label so its
                         scrollWidth measurement is unchanged. */}
-                    <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
-                      <OverflowTip label={title} placement="row">
-                        <SidebarRowLabel
-                          className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
-                          onPointerEnter={armMarquee}
-                          onPointerLeave={disarmMarquee}
-                        >
-                          <span className="hover-marquee-inner">{title}</span>
-                        </SidebarRowLabel>
-                      </OverflowTip>
-                    </RowButton>
+                    <SessionHoverCard session={session}>
+                      <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
+                        <OverflowTip label={title} placement="row">
+                          <SidebarRowLabel
+                            className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                            onPointerEnter={armMarquee}
+                            onPointerLeave={disarmMarquee}
+                          >
+                            <span className="hover-marquee-inner">{title}</span>
+                          </SidebarRowLabel>
+                        </OverflowTip>
+                      </RowButton>
+                    </SessionHoverCard>
                     {/* Session-list density (#68119): comfortable adds one
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
@@ -608,20 +611,22 @@ function SidebarSessionRowImpl({
                   {/* #38072 finding 3: the card's title line is the row's real
                       button (same contract as the flat row: no onClick of its
                       own — the click bubbles to the body div's resolver). */}
-                  <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
-                    <OverflowTip label={title} placement="row">
-                      <SidebarRowLabel
-                        className={cn(
-                          'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
-                          SIDEBAR_TRUNCATED_LEADING
-                        )}
-                        onPointerEnter={armMarquee}
-                        onPointerLeave={disarmMarquee}
-                      >
-                        <span className="hover-marquee-inner">{title}</span>
-                      </SidebarRowLabel>
-                    </OverflowTip>
-                  </RowButton>
+                  <SessionHoverCard session={session}>
+                    <RowButton className={cn('block w-full rounded-sm text-left', SIDEBAR_FOCUS_VISIBLE)}>
+                      <OverflowTip label={title} placement="row">
+                        <SidebarRowLabel
+                          className={cn(
+                            'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
+                            SIDEBAR_TRUNCATED_LEADING
+                          )}
+                          onPointerEnter={armMarquee}
+                          onPointerLeave={disarmMarquee}
+                        >
+                          <span className="hover-marquee-inner">{title}</span>
+                        </SidebarRowLabel>
+                      </OverflowTip>
+                    </RowButton>
+                  </SessionHoverCard>
                   {session.preview && rowMeta.includes('preview') ? (
                     <span
                       className={cn(

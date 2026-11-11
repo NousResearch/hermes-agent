@@ -215,6 +215,13 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         )),
         # GW-18 (package 10, #140968): write-side revision a transcript-derived cache keys on.
         ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
+        # Session hover summary (issue #45103): the cached summary the Desktop
+        # sidebar's hover card reads, with the model that produced it.
+        ('33 2026-11-09T00:00Z #45103', (
+            ('+', 'summary', 'transcript_revision'),
+            ('+', 'summary_updated_at', 'summary'),
+            ('+', 'summary_model', 'summary_updated_at'),
+        )),
         ),
     ),
     "messages": _TableHistory(

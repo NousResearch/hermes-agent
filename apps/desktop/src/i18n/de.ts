@@ -3742,7 +3742,9 @@ export const deOverrides = {
       ageNow: 'jetzt',
       ageDay: 'T',
       ageHour: 'h',
-      ageMin: 'Min'
+      ageMin: 'Min',
+      summaryUpdated: 'Aktualisiert',
+      summaryMessageCount: count => `${count} ${count === 1 ? 'Nachricht' : 'Nachrichten'}`
     },
     dateDivider: {
       today: 'Heute früher',

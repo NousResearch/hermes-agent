@@ -52,6 +52,20 @@ class TestCacheRoundTrip:
         msc.write_cache_entry("srv", "fp1", tools=[], utility_tools=[])
         assert msc.get_cached_entry("srv", "OTHER") is None
 
+    def test_zero_ttl_does_not_expire_cache_entry(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(msc.time, "time", lambda: 100.0)
+        msc.write_cache_entry("srv", "fp", tools=[], utility_tools=[], ttl_ms=0)
+        monkeypatch.setattr(msc.time, "time", lambda: 10_000.0)
+        assert msc.get_cached_entry("srv", "fp") is not None
+
+    def test_positive_ttl_expires_cache_entry(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(msc.time, "time", lambda: 100.0)
+        msc.write_cache_entry("srv", "fp", tools=[], utility_tools=[], ttl_ms=100)
+        monkeypatch.setattr(msc.time, "time", lambda: 100.2)
+        assert msc.get_cached_entry("srv", "fp") is None
+
     def test_missing_server_returns_none(self, monkeypatch, tmp_path):
         self._isolate(monkeypatch, tmp_path)
         assert msc.get_cached_entry("nope", "fp") is None

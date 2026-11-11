@@ -1,0 +1,27 @@
+name: openrouter-balance
+repo: https://github.com/maeinomatic/hermes-plugin-openrouter-balance
+sha: 91f15203deb273a42d8c90b9790082d6a37e1f27
+description: >-
+  Live OpenRouter credit balance in the Hermes desktop status bar — "OR $12.34 left", with
+  total/used/remaining on hover, amber below 15% remaining, click to refetch. Polls every 5
+  minutes idle and refetches ~8 s after each chat turn. The plugin's Python half resolves the
+  profile's OPENROUTER_API_KEY through agent.secret_scope (profile-scope aware, safe under
+  multiplexing; the key never leaves the backend) and proxies the free openrouter.ai
+  /api/v1/credits endpoint, mounted at /api/plugins/openrouter-balance/* behind the dashboard
+  auth gate. The desktop half registers a statusBar.right chip via @hermes/plugin-sdk. The
+  Python register() is a no-op — no tools, hooks or middleware. Disclosure — the only network
+  egress is the openrouter.ai credits call authenticated with the user's own key; no telemetry;
+  no file reads outside Hermes's own env resolution; no shell commands or background processes.
+  Honest error chips (no key / bad key / offline / error) instead of silent failures; offline
+  retries every 2 minutes.
+maintainer: maeinomatic
+tier: community
+category: desktop
+version: "1.0.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OPENROUTER_API_KEY

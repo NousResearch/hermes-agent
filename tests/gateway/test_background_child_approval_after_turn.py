@@ -165,6 +165,35 @@ def test_child_approval_after_the_parent_turn_reaches_the_chat_and_resolves(gate
         thread.join(5)
 
 
+def test_child_protected_file_write_after_the_parent_turn_is_asked_not_refused(gate):
+    """The AGENTS.md/SOUL.md write gate asks through the same lease as the command gates: a child
+    writing one after the parent replied gets a card, and the tap decides the write."""
+    from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+    loop, thread = _loop_thread()
+    adapter = _Adapter("live")
+    ask, done, results = threading.Event(), threading.Event(), []
+
+    def child():
+        assert ask.wait(5)
+        results.append(_request_protected_instruction_approval(["AGENTS.md: agent instructions"]))
+        done.set()
+        return {"status": "completed"}
+
+    try:
+        _parent_dispatches_child_then_ends(_turn(Platform.TELEGRAM, adapter, loop), child)
+        ask.set()
+        _wait(lambda: approval.has_blocking_approval(SESSION) and adapter.calls, "the write's card was sent")
+        assert [c[0] for c in adapter.calls] == ["card"]
+        assert approval.resolve_gateway_approval(SESSION, "once") == 1
+        assert done.wait(5)
+        assert results == [None], "an approved protected write proceeds"
+    finally:
+        ask.set()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+
+
 def test_child_without_a_chat_fails_closed_instead_of_pending(gate):
     """An API-server parent leaves its child no chat once the run is over: fail closed, nothing queued."""
     loop, thread = _loop_thread()

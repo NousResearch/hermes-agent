@@ -59,6 +59,10 @@ vi.mock('./i18n', () => ({
       handBack: 'Hand back',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
+      enterFullscreen: 'Enter fullscreen',
+      exitFullscreen: 'Exit fullscreen',
+      fullscreenFailed: 'Fullscreen unavailable. Try again or use the normal Screen view.',
+      fullscreenHint: 'F6: Screen controls · Escape: exit fullscreen',
       streamLost: 'Stream lost'
     }
   })
@@ -166,6 +170,90 @@ beforeEach(() => {
 })
 
 afterEach(() => vi.unstubAllGlobals())
+
+it('fullscreens only the viewport and preserves its live viewer and lease', async () => {
+  let fullscreenElement: Element | null = null
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => fullscreenElement })
+
+  const request = vi.fn(function (this: HTMLElement) {
+    fullscreenElement = this
+    document.dispatchEvent(new Event('fullscreenchange'))
+
+    return Promise.resolve()
+  })
+
+  Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: request })
+  Object.defineProperty(document, 'exitFullscreen', {
+    configurable: true,
+    value: vi.fn(async () => {
+      fullscreenElement = null
+      document.dispatchEvent(new Event('fullscreenchange'))
+    })
+  })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await act(async () => {})
+  const calls = vi.mocked(displayRequest).mock.calls.length
+  const enter = view.getByLabelText('Enter fullscreen')
+  enter.focus()
+  fireEvent.click(enter)
+  await waitFor(() => expect(view.getByLabelText('Exit fullscreen')).toBeTruthy())
+  expect(fullscreenElement).toBe(view.container.querySelector('[data-terminal]')?.parentElement)
+  expect(document.fullscreenElement?.contains(view.getByText('Hand back'))).toBe(true)
+  fireEvent.click(view.getByLabelText('Exit fullscreen'))
+  await waitFor(() => expect(fullscreenElement).toBeNull())
+  expect(document.activeElement).toBe(view.getByLabelText('Enter fullscreen'))
+  expect(rfbs).toHaveLength(1)
+  expect(sockets).toHaveLength(1)
+  expect(sockets[0].closed).toBe(false)
+  expect(rfbs[0].viewOnly).toBe(false)
+  expect(vi.mocked(displayRequest).mock.calls).toHaveLength(calls)
+  view.unmount()
+  delete (HTMLElement.prototype as Partial<HTMLElement>).requestFullscreen
+  delete (document as Partial<Document>).exitFullscreen
+  Reflect.deleteProperty(document, 'fullscreenElement')
+})
+
+it('keeps watch-only mode and takeover/hand-back usable in fullscreen', async () => {
+  let element: Element | null = null
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => element })
+  Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', {
+    configurable: true,
+    value: vi.fn(async function (this: HTMLElement) {
+      element = this
+      document.dispatchEvent(new Event('fullscreenchange'))
+    })
+  })
+  const watching = { ...status, lease: { ...status.lease!, holder: 'agent' as const, viewer_hash: null } }
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) => {
+    if (method === 'display.lease.acquire') {
+      return { lease: status.lease }
+    }
+
+    if (method === 'display.lease.release') {
+      return { lease: watching.lease }
+    }
+
+    return { ...watching, ticket: 'ticket', viewer_id: 'this-viewer' }
+  })
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await act(async () => {})
+  fireEvent.click(view.getByLabelText('Enter fullscreen'))
+  await act(async () => {})
+  expect(rfbs[0].viewOnly).toBe(true)
+  expect(vi.mocked(displayRequest).mock.calls.some(([, method]) => method.startsWith('display.lease.'))).toBe(false)
+  fireEvent.click(view.getByText('Take over'))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+  fireEvent.click(view.getByText('Hand back'))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(true))
+  act(() => rfbs[0].emit('disconnect', { clean: false, reason: 'Connection failed' }))
+  expect(document.fullscreenElement?.contains(view.getByText('Connection failed'))).toBe(true)
+  element = null
+  view.unmount()
+  delete (HTMLElement.prototype as Partial<HTMLElement>).requestFullscreen
+  Reflect.deleteProperty(document, 'fullscreenElement')
+})
 
 it('sends an intentional close before noVNC can send its statusless close on pane unmount', async () => {
   const view = render(<BotScreenPane bot={bot} />)

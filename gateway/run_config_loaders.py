@@ -128,13 +128,15 @@ class GatewayConfigLoadersMixin:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
-    def _serving_channel_config(self, source: Optional[SessionSource] = None, *, platform: Optional[Platform] = None):
+    def _serving_channel_config(self, source: Optional[SessionSource] = None, *, platform: Optional[Platform] = None,
+                                unbound_reads_home: bool = False):
         """The config whose ``channel_overrides`` serve *source* (else the bound profile scope).
 
         ``self.config`` (a ``gateway --config`` file included) belongs to the primary profile only.
         A turn another multiplexed profile serves reads that profile's own config.yaml: chat ids
         repeat across profiles' bots (a Telegram DM's id is the user's id), so the launch
         profile's override would otherwise steer every routed bot in the same chat (#136198).
+        ``unbound_reads_home``: with no config bound, read the source's home too (the room policy).
         """
         from gateway.session_identity import identity_of
         config = getattr(self, "config", None)
@@ -143,7 +145,7 @@ class GatewayConfigLoadersMixin:
         if source is not None:
             identity = identity_of(source)
             runtime = identity.runtime_profile if identity is not None else (source.profile or None)
-            if config is None or (runtime and runtime != primary):
+            if (config is None and unbound_reads_home) or (runtime and runtime != primary):
                 home = self._resolve_profile_home_for_source(source)
         else:
             from hermes_constants import get_hermes_home_override
@@ -167,7 +169,7 @@ class GatewayConfigLoadersMixin:
         from gateway.run import _get_channel_override
         try:
             override = _get_channel_override(
-                self._serving_channel_config(source), source.platform, source.chat_id,
+                self._serving_channel_config(source, unbound_reads_home=True), source.platform, source.chat_id,
                 thread_id=source.thread_id, parent_id=source.parent_chat_id)
         except Exception:
             # No permission means the default reply rule; a lookup failure must not become an error reply.

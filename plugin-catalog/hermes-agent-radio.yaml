@@ -1,6 +1,6 @@
 name: hermes-agent-radio
 repo: https://github.com/Sahil-SS9/hermes-agent-radio-plugin
-sha: "088a67e1e0bc2f233a1939ab73a80658298be5cd"
+sha: "155e4ee96900b64621486f9e6025ae59fca33fe3"
 title: Hermes Agent Radio
 version: "1.0.0"
 maintainer: Sahil-SS9
@@ -22,8 +22,6 @@ description: >-
   the public Desktop SDK. The one file written is an anonymous listener id in the plugin's data folder,
   used to count one chart vote per listener. No hooks, context injection, shell commands, background
   work, credentials, telemetry or self-updater; Python standard library only.
-known_issues:
-  - "The station is on air 24/7, but its public address, hermesagentradio.com, opens after this review. Until then the tools and the Desktop player report the station as unreachable rather than guessing; a self-hosted station can be set with station_url."
 capabilities:
   provides_tools: [radio_now_playing, radio_guide, radio_show_notes, radio_stations, radio_songs, radio_request, radio_song_request, radio_vote]
   provides_hooks: []

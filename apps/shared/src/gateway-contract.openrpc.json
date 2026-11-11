@@ -30419,24 +30419,21 @@
       },
       "ProfileCreateReceipt": {
         "additionalProperties": false,
-        "description": "``hermes_cli.profile_provision_gateway.receipt``: read where the profile was made.",
+        "description": "``hermes_cli.profile_provision.CreateReceipt``, read where the profile was made. A gateway always\nsends every field; a client treats a receipt missing one as an unknown outcome.",
         "properties": {
           "path": {
             "title": "Path",
             "type": "string"
           },
           "display_path": {
-            "default": "",
             "title": "Display Path",
             "type": "string"
           },
           "launch_label": {
-            "default": "",
             "title": "Launch Label",
             "type": "string"
           },
           "source_label": {
-            "default": "",
             "title": "Source Label",
             "type": "string"
           },
@@ -30450,7 +30447,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Skills Seeded"
           },
           "alias_path": {
@@ -30462,7 +30458,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Alias Path"
           },
           "alias_collision": {
@@ -30474,14 +30469,12 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Alias Collision"
           },
           "mirrored": {
             "$ref": "#/components/schemas/ProfileMirrored"
           },
           "warnings": {
-            "default": [],
             "items": {
               "type": "string"
             },
@@ -30489,7 +30482,6 @@
             "type": "array"
           },
           "cloned_plugins": {
-            "default": [],
             "items": {
               "type": "string"
             },
@@ -30505,11 +30497,9 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Memory Provider"
           },
           "channels_left_behind": {
-            "default": [],
             "items": {
               "type": "string"
             },
@@ -30517,7 +30507,6 @@
             "type": "array"
           },
           "shared_channels": {
-            "default": [],
             "items": {
               "type": "string"
             },
@@ -30533,13 +30522,24 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Served Now"
           }
         },
         "required": [
           "path",
-          "mirrored"
+          "display_path",
+          "launch_label",
+          "source_label",
+          "skills_seeded",
+          "alias_path",
+          "alias_collision",
+          "mirrored",
+          "warnings",
+          "cloned_plugins",
+          "memory_provider",
+          "channels_left_behind",
+          "shared_channels",
+          "served_now"
         ],
         "title": "ProfileCreateReceipt",
         "type": "object"

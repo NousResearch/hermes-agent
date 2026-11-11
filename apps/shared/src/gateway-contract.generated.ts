@@ -2177,22 +2177,22 @@ export interface ProfileMirrored {
   model_inherited?: boolean
   voice?: boolean
 }
-/** ``hermes_cli.profile_provision_gateway.receipt``: read where the profile was made. */
+/** ``hermes_cli.profile_provision.CreateReceipt``, read where the profile was made. A gateway always sends every field; a client treats a receipt missing one as an unknown outcome. */
 export interface ProfileCreateReceipt {
   path: string
-  display_path?: string
-  launch_label?: string
-  source_label?: string
-  skills_seeded?: Record<string, unknown> | null
-  alias_path?: string | null
-  alias_collision?: string | null
+  display_path: string
+  launch_label: string
+  source_label: string
+  skills_seeded: Record<string, unknown> | null
+  alias_path: string | null
+  alias_collision: string | null
   mirrored: ProfileMirrored
-  warnings?: string[]
-  cloned_plugins?: string[]
-  memory_provider?: string | null
-  channels_left_behind?: string[]
-  shared_channels?: string[]
-  served_now?: boolean | null
+  warnings: string[]
+  cloned_plugins: string[]
+  memory_provider: string | null
+  channels_left_behind: string[]
+  shared_channels: string[]
+  served_now: boolean | null
 }
 export interface ProfileNameParams {
   profile?: string | null

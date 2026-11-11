@@ -13,10 +13,12 @@ from types import SimpleNamespace
 
 from agent.runtime_scope import bind_state
 from tests.tools.test_sandbox_scope_conformance import A
+from tests.tools.test_sandbox_scope_conformance import host_dir as _conformance_host_dir
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
 from tools.environments import sandbox_conformance as c
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
+host_dir = _conformance_host_dir
 
 
 # --------------------------------------------------------------------------------------------------
@@ -114,6 +116,31 @@ def test_local_skills_still_preload(monkeypatch):
     _plant_skill(monkeypatch)
     prompt, loaded, missing = build_preloaded_skills_prompt(["private_probe"], task_id="t")
     assert "HOST-SKILL-PRIVATE" in prompt and loaded == ["private_probe"] and not missing
+
+
+def test_a_hosted_write_is_not_judged_by_this_hosts_skill_locks(provider, host_dir):
+    """A skill locked on this host's profile changes nothing for a hosted path that names it, through a
+    host symlink or literally: the path is the sandbox's, so it is neither resolved on this host nor
+    refused by the host skill's name, and the write reaches the sandbox."""
+    from hermes_constants import get_hermes_home
+    from tools import skill_usage
+    from tools.skill_lock import skill_refusal
+    skill = get_hermes_home() / "skills" / "locked_probe"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: locked_probe\ndescription: x\n---\nbody\n", encoding="utf-8")
+    assert skill_usage.set_locked("locked_probe", True)
+    (host_dir / "workspace-link").symlink_to(skill, target_is_directory=True)
+    paths = [str(host_dir / "workspace-link" / "notes.txt"), str(skill / "notes.txt")]
+    with c._watch_host(host_dir) as touched:
+        outputs = [out for path in paths for out in c._drive_file_tools(A, host_dir, path)]
+        touched = list(touched)
+    assert not touched, f"a hosted tool touched the host filesystem: {touched}"
+    assert not [o for o in outputs if skill_refusal("locked_probe") in str(o.get("error", ""))], outputs
+    writes = [call.command for call in provider.calls if call.op == "execute" and call.sandbox == c._identity(A)
+              and ("sandbox copy" in call.stdin or "c2FuZGJveCBjb3B5" in call.stdin)]
+    for path in paths:
+        assert any(path in command for command in writes), f"write_file never reached the sandbox at {path}"
+    assert not (skill / "notes.txt").exists()
 
 
 # --------------------------------------------------------------------------------------------------

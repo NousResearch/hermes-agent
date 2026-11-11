@@ -62,6 +62,8 @@ FALSE_POSITIVES = [
     "grep -q vite package.json 2>/dev/null && npm run build",
     "pip list | column -t | grep uvicorn",
     "grep -n uvicorn requirements.txt && tail -n 20 logs/app.log",
+    "git -P grep uvicorn",
+    "grep -c vite package.json" + " && true" * 250,
 ]
 
 TRUE_POSITIVES = [
@@ -158,6 +160,8 @@ TRUE_POSITIVES = [
     "echo npm run dev | tee run.sh | zsh",
     "echo npm run dev > run.sh; sh run.sh",
     "echo npm run dev &> run.sh; sh run.sh",
+    "echo npm run dev >/dev/null.sh; sh /dev/null.sh",
+    "grep -n uvicorn requirements.txt && tail -f logs/app.log",
     "git --git-dir .git bisect run npm run dev",
     "docker compose up -d && npm test",
     "git -c core.pager=nodemon log",
@@ -179,14 +183,6 @@ def test_command_that_only_names_a_server_runs(command):
 
 @pytest.mark.parametrize("command", TRUE_POSITIVES)
 def test_command_that_starts_a_server_is_flagged(command):
-    msg = guidance(command)
-    assert msg is not None, f"{command!r} should have been flagged"
-    assert "long-lived server/watch process" in msg
-
-
-def test_server_name_inspection_does_not_excuse_following_log_watch():
-    """A bounded read followed by a log follower must not be sent in the foreground."""
-    command = "grep -n uvicorn requirements.txt && tail -f logs/app.log"
     msg = guidance(command)
     assert msg is not None, f"{command!r} should have been flagged"
     assert "long-lived server/watch process" in msg

@@ -19,7 +19,7 @@ For this turn, you are in PLAN MODE — planning only.
   when needed.
 - Your deliverable is a markdown plan saved inside the active workspace under
   `.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md` (create the directory if
-  needed; Hermes file tools are backend-aware, so this relative path keeps
+  needed; Unitalk file tools are backend-aware, so this relative path keeps
   the plan with the workspace on local, docker, ssh, modal, and daytona
   backends). If the runtime provides a specific target path, use that exact
   path instead.

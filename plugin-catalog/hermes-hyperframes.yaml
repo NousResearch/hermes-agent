@@ -1,6 +1,6 @@
 name: hermes-hyperframes
 repo: https://github.com/wesleymatosdev/hermes-hyperframes-plugin
-sha: 8b42d33519b8d220feff139578e42763cd0253ab
+sha: d49838bc34d347e30b8e205fc8259f67a38a8fca
 title: "Hyperframes"
 description: >-
   Drive Hyperframes (Apache-2.0 HTML video compositions) from Hermes: six
@@ -15,9 +15,9 @@ tier: community
 category: automation
 version: "0.3.1"
 screenshots:
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/8b42d33519b8d220feff139578e42763cd0253ab/docs/screenshots/before-nebula.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/8b42d33519b8d220feff139578e42763cd0253ab/docs/screenshots/after-minimal.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/8b42d33519b8d220feff139578e42763cd0253ab/docs/screenshots/after-chat-native.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/d49838bc34d347e30b8e205fc8259f67a38a8fca/docs/screenshots/before-nebula.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/d49838bc34d347e30b8e205fc8259f67a38a8fca/docs/screenshots/after-minimal.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/d49838bc34d347e30b8e205fc8259f67a38a8fca/docs/screenshots/after-chat-native.png
 platforms: []
 capabilities:
   provides_tools:

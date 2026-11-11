@@ -1,0 +1,19 @@
+name: vividsites
+repo: https://github.com/krumjahn/vividsites-connectors
+sha: 4e2e8a9ab1f40836554d6eb9994875fbea0ccf8e
+subdir: hermes
+description: Free VividSites components only. Returns a public component when meta.free is boolean true.
+maintainer: VividSites
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "1.0.0"
+title: VividSites free components
+readme: true
+capabilities:
+  provides_tools:
+    - list_free_components
+    - get_free_component
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

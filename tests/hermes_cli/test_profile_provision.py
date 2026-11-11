@@ -249,3 +249,21 @@ def test_the_cli_does_not_say_no_keys_when_it_copied_them(launch, capsys):
     assert "cannot be combined" in capsys.readouterr().err
     assert not (launch / "profiles" / "cn").exists()
 
+
+
+def test_validating_in_another_home_runs_under_multiplex_semantics(launch, monkeypatch):
+    from agent.secret_scope import is_multiplex_active
+    from hermes_cli.model_switch import ModelSwitchResult
+    other = launch / "profiles" / "other"
+    other.mkdir(parents=True)
+    (other / "config.yaml").write_text("{}\n", encoding="utf-8")
+    seen: list[bool] = []
+
+    def switch(**_kw):
+        seen.append(is_multiplex_active())
+        return ModelSwitchResult(success=False, error_message="no")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", switch)
+    provision_profile(ProfileCreateRequest(name="a", provider="p", model="m", model_validate_in=launch))
+    provision_profile(ProfileCreateRequest(name="b", provider="p", model="m", model_validate_in=other))
+    assert (seen, is_multiplex_active()) == ([False, True], False)

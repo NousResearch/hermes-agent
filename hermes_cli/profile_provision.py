@@ -183,15 +183,19 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
     from hermes_cli.model_assignment import (
         apply_main_model_assignment, normalize_main_model_assignment, validated_main_model_selection,
     )
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_process_hermes_home
     from tui_gateway.launch_profile_policy import profile_config_scope
-    validate_home = Path(validate_in or profile_dir)
-    if validate_home.resolve() != get_process_hermes_home().resolve():
-        # The key probe may need the home's external secret sources (``op run`` / ``bws``); the launch
-        # home's are already in its launch scope. The write span only rewrites config.yaml.
-        hydrate_profile_secret_sources(validate_home)
-    with profile_config_scope(validate_home):
+    validate_home = validate_in or profile_dir
+    with contextlib.ExitStack() as stack:
+        if validate_home.resolve() != get_process_hermes_home().resolve():
+            # The key probe may need the home's external secret sources (``op run`` / ``bws``), and
+            # the provider adapters' ambient-credential refusals (Bedrock, Vertex, Entra) apply to a
+            # foreign home under multiplex semantics: bound for this task, not process-wide.
+            hydrate_profile_secret_sources(validate_home)
+            stack.callback(reset_multiplex_context, set_multiplex_context(True))
+        stack.enter_context(profile_config_scope(validate_home))
         provider, model = normalize_main_model_assignment(provider, model)
         result = validated_main_model_selection(load_config(), provider, model, base_url)
     with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:
@@ -210,7 +214,7 @@ def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
     from hermes_cli.config import load_config, save_config
     from hermes_cli.mcp_config import _save_bearer_auth_token
     from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-    from hermes_cli.web_server_mcp import _normalize_mcp_server_create
+    from hermes_cli.web_server_mcp import normalize_mcp_server_create
     from tui_gateway.launch_profile_policy import profile_config_scope
     written = 0
     with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:
@@ -218,7 +222,7 @@ def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
         mcp = cfg.setdefault("mcp_servers", {})
         for server in servers:
             try:
-                name, entry, bearer_token = _normalize_mcp_server_create(server)
+                name, entry, bearer_token = normalize_mcp_server_create(server)
             except ValueError as exc:
                 display_name = (server.name or "").strip() or "<unnamed>"
                 # The dashboard's logger: hermes_logging routes it to gui.log / `hermes logs --component gui`.

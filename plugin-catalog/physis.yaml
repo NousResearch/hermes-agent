@@ -1,14 +1,14 @@
 name: physis
 repo: https://github.com/ilPez00/hermes-physis
-sha: 71477bc3e550393b379c1fe704ddf737037d76fe
-version: "1.7.0"
+sha: 330e795b92544ff8d7ca9ab3d099d943dbc2185c
+version: "1.7.1"
 description: "Offline evidence-backed execution memory: per-repo graph context, a deterministic verify hook, and verified tool recipes that replay with zero provider calls and refuse when their tools, registry or captured files changed. Two bundled Linux engines and no API key or model download; approved host commands still run with host privileges and Python entry points need an interpreter, and untracked dependencies are not replay-checked. Operator-only approval and replay; the model cannot set executable paths or trigger raw commands."
 maintainer: ilPez00
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ilPez00/hermes-physis#readme
-image: https://raw.githubusercontent.com/ilPez00/hermes-physis/71477bc3e550393b379c1fe704ddf737037d76fe/assets/banner.png
+image: https://raw.githubusercontent.com/ilPez00/hermes-physis/330e795b92544ff8d7ca9ab3d099d943dbc2185c/assets/banner.png
 readme: true
 platforms: [linux]
 # Compiled engines shipped at the pin. Each carries a GitHub build-provenance

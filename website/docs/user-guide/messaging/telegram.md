@@ -666,6 +666,18 @@ telegram.error.InvalidToken: Not Found
 
 If you see that, the cap-lift is working but the file-share isn't. Verify `ls -la /var/lib/telegram-bot-api/<TOKEN>/voice/` from the Hermes host as the user the gateway runs as, and confirm a single file is `cat`-able without a permission error.
 
+**Storage mounted at a different path.** When Hermes runs in another container or on another host and the server's data directory is mounted somewhere else (for example the compose file's `./tg-bot-api-data`), tell Hermes where it is:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      local_mode: true
+      local_bot_api_root: "/home/me/tg-bot-api-data"   # the host path of the server's /var/lib/telegram-bot-api
+```
+
+The server reports its own path (`/var/lib/telegram-bot-api/<TOKEN>/videos/file_7.MOV`, sometimes behind `base_file_url`). Hermes takes the part after the token directory and reads `<local_bot_api_root>/<TOKEN>/videos/file_7.MOV`, or `<local_bot_api_root>/videos/file_7.MOV` when you mounted the token directory itself. That is two file checks with no directory scan, and a path containing `..` is never followed. If neither file exists, the normal download runs as before.
+
 ### Step 6: Test it
 
 Send the bot a voice note or audio file that's bigger than 20 MB. Tail the gateway log:

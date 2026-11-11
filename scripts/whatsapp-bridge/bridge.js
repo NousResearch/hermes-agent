@@ -35,6 +35,7 @@ import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { appendPassiveRecord, buildPassiveRecord, isOwnSelfChat, isPassiveTerminal } from './passive_capture.js';
 import {
   addMentions,
   buildPollPayload,
@@ -138,6 +139,12 @@ const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); 
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// Passive capture is deliberately ingress-only: every received message is
+// archived locally and is never enqueued for the Python agent.  This keeps a
+// linked personal account available to reporting jobs without typing bubbles,
+// read receipts, automated replies, or self-chat feedback loops.
+const PASSIVE_CAPTURE_FILE = String(process.env.WHATSAPP_PASSIVE_CAPTURE_FILE || '').trim();
+const PASSIVE_CAPTURE_ENABLED = Boolean(PASSIVE_CAPTURE_FILE);
 // Group authorization is by group JID, not by every participant's JID.  The
 // Python adapter still applies group policy and mention rules after intake.
 const GROUP_ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_GROUP_ALLOWED_USERS || '');
@@ -152,6 +159,16 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+
+function capturePassiveEvent(event) {
+  if (!PASSIVE_CAPTURE_ENABLED) return;
+  try {
+    const record = buildPassiveRecord(event);
+    if (record) appendPassiveRecord(PASSIVE_CAPTURE_FILE, record);
+  } catch (err) {
+    console.warn('[bridge] passive capture failed:', err.message);
+  }
+}
 
 // --- Send queue: serialise all sock.sendMessage() calls across concurrent
 //     HTTP handlers so a single Baileys socket never has overlapping sends.
@@ -327,6 +344,8 @@ function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates
 }
 
 function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
+  // Passive capture: poll votes must not reach the agent either.
+  if (PASSIVE_CAPTURE_ENABLED) return;
   const chatId = normalizeWhatsAppId(key?.remoteJid || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.remoteJid || '');
   const senderId = normalizeWhatsAppId(
     key?.participant
@@ -641,28 +660,36 @@ async function startSocket() {
           // customer chatId allowlist — without that gate, any contact
           // the owner replied to would leak into Hermes and trigger
           // implicit handover. See `owner_message_gate.js`.
-          const decision = classifyOwnerMessageGate({
-            fromMe: true,
-            fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
-            recentlySent: recentlySentIds,
-            allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
-            messageId: msg.key.id,
-            chatId,
-          });
-          if (decision.action === 'drop_echo') continue;
-          if (decision.action === 'drop_disabled') continue;
-          if (decision.action === 'drop_allowlist') {
-            try {
-              writeJsonLine({
-                event: 'ignored',
-                reason: 'allowlist_mismatch_owner_chat',
-                chatId,
-                senderId,
-              });
-            } catch {}
-            continue;
+          if (PASSIVE_CAPTURE_ENABLED && isOwnSelfChat(chatId, sock.user)) {
+            // Passive mode: the owner's own "Message yourself" chat is the one
+            // command channel and reaches the agent as a normal message (not an
+            // [owner reply] handover).  Echoes of Hermes' own sends are still
+            // dropped by the recentlySentIds check below; owner messages in any
+            // other chat keep going through the owner gate (dropped by default).
+          } else {
+            const decision = classifyOwnerMessageGate({
+              fromMe: true,
+              fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
+              recentlySent: recentlySentIds,
+              allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
+              messageId: msg.key.id,
+              chatId,
+            });
+            if (decision.action === 'drop_echo') continue;
+            if (decision.action === 'drop_disabled') continue;
+            if (decision.action === 'drop_allowlist') {
+              try {
+                writeJsonLine({
+                  event: 'ignored',
+                  reason: 'allowlist_mismatch_owner_chat',
+                  chatId,
+                  senderId,
+                });
+              } catch {}
+              continue;
+            }
+            fromOwner = true;
           }
-          fromOwner = true;
         } else {
           // Self-chat mode: only allow messages in the user's own self-chat.
           // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
@@ -717,7 +744,7 @@ async function startSocket() {
             })
           : WHATSAPP_DM_POLICY === 'pairing'
             || matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR);
-        if (!intakeAllowed) {
+        if (!intakeAllowed && !PASSIVE_CAPTURE_ENABLED) {
           try {
             writeJsonLine({
               event: 'ignored',
@@ -807,6 +834,38 @@ async function startSocket() {
         lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
       });
       event.fromOwner = fromOwner;
+
+      // Capture before admission. In passive mode this is the terminal
+      // ingress path: the event must never reach the agent adapter, because
+      // even a rejected event can otherwise trigger a typing indicator.
+      if (isPassiveTerminal({ enabled: PASSIVE_CAPTURE_ENABLED, fromMe: msg.key.fromMe })) {
+        capturePassiveEvent(event);
+        continue;
+      }
+
+      if (!msg.key.fromMe) {
+        const intakeAllowed = isGroup
+          ? matchesInboundWhatsAppGroup({
+              chatId,
+              groupPolicy: WHATSAPP_GROUP_POLICY,
+              groupAllowedUsers: GROUP_ALLOWED_USERS,
+              sessionDir: SESSION_DIR,
+            })
+          : WHATSAPP_DM_POLICY === 'pairing'
+            || matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR);
+        if (!intakeAllowed) {
+          try {
+            writeJsonLine({
+              event: 'ignored',
+              reason: isGroup ? 'group_policy_rejected' : 'allowlist_mismatch',
+              chatId,
+              senderId,
+              senderAltId,
+            });
+          } catch {}
+          continue;
+        }
+      }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
@@ -1197,6 +1256,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    passiveCapture: PASSIVE_CAPTURE_ENABLED,
     // path.resolve, not realpath: the adapter compares against os.path.abspath, which keeps symlinks.
     session: path.resolve(SESSION_DIR),
     capabilities: { outboundMentions: true },

@@ -584,6 +584,64 @@ def test_pythonpath_descendants_are_not_owned():
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
+def _generation_site_packages(state: Path, name: str, version: str) -> Path:
+    """Publish one dependency generation exactly as PM lays it out, and return its site tree."""
+    venv = state / "environments" / name / "venv"
+    site = venv / ("Lib/site-packages" if os.name == "nt" else f"lib/python{version}/site-packages")
+    site.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"home = /usr/bin\nversion = {version}\n", encoding="utf-8")
+    return site
+
+
+def test_installed_generations_are_owned_without_a_record(child_env, monkeypatch):  # health: allow F811 -- pytest injects the imported fixture by parameter name
+    """Every generation THIS install published is Hermes-owned, not only the selected one.
+
+    A long-lived parent keeps exporting the generation it booted with after PM commits a newer
+    one, and a child on another Python dies importing that tree's C extensions
+    (``No module named 'greenlet._greenlet'``) instead of reading it as a leak. Ownership stays
+    exact: a generation directory is stripped whatever the running version is, while user
+    entries and descendants of a generation tree survive byte-for-byte.
+    """
+    state = child_env / "install-state"
+    selected = _generation_site_packages(state, "committed", "3.14")
+    stale = _generation_site_packages(state, "retired", "3.13")
+    # A generation whose site tree is not there yet -- publication is atomic, so this is not
+    # loadable state and must not make the helper raise or own a path that does not exist.
+    (state / "environments" / "publishing" / "venv").mkdir(parents=True)
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    monkeypatch.setattr(local, "_hermes_repo_root_aliases", ())
+    user_site = child_env / ("user-venv/Lib/site-packages" if os.name == "nt"
+                             else "user-venv/lib/python3.9/site-packages")
+    entries = [str(selected), str(stale), str(user_site), str(stale / "vendor")]
+    env = {"PYTHONPATH": os.pathsep.join(entries)}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(user_site), str(stale / "vendor")]
+    # The child-env boundary is where a lane meets this: the same input through the real
+    # sanitizer, with no record in the state dir to select any generation at all.
+    sanitized = local._sanitize_subprocess_env(
+        {"PYTHONPATH": os.pathsep.join([str(stale), str(user_site)])})
+    assert sanitized["PYTHONPATH"] == str(user_site)
+    assert pp._published_generation_site_packages() == [selected, stale]
+
+
+def test_absent_install_state_owns_no_generations(child_env, monkeypatch):  # health: allow F811 -- pytest injects the imported fixture by parameter name
+    """Fail-closed: no PM state for this checkout means nothing extra is claimed as Hermes'."""
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: child_env / "absent")
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    monkeypatch.setattr(local, "_hermes_repo_root_aliases", ())
+    assert pp._published_generation_site_packages() == []
+    # A generation-shaped path is not loadable state when the state dir is not there, so it
+    # stays in the child env exactly like any other operator path.
+    entries = [str(child_env / "absent/environments/retired/venv/lib/python3.13/site-packages"),
+               str(child_env / "user-venv/lib/python3.9/site-packages")]
+    env = {"PYTHONPATH": os.pathsep.join(entries)}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == entries
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])
@@ -650,7 +708,11 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     (user_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
     base = {"VIRTUAL_ENV": str(user_venv), "PYTHONPATH": os.pathsep.join(map(str, [site, alias, user_site]))}
     result = local._sanitize_subprocess_env(base)
-    expected = [str(user_site)] if has_facts else [str(site), str(user_site)]
+    # ``site`` sits in this install's generation namespace (`<state>/environments/<gen>/venv`),
+    # which is Hermes-owned by provenance whether or not a record selects it: the older
+    # generation a long-lived parent still exports is exactly this shape. VIRTUAL_ENV alone
+    # still confers no ownership, so the unrelated ``user_venv`` tree survives either way.
+    expected = [str(user_site)]
     assert result["PYTHONPATH"].split(os.pathsep) == expected
     assert "VIRTUAL_ENV" not in result
     assert base["VIRTUAL_ENV"] == str(user_venv)

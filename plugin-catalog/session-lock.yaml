@@ -1,0 +1,27 @@
+name: session-lock
+repo: https://github.com/TightXu/hermes-session-lock
+sha: abdac79e14e97040a9198d8fbf8b523f460097dc
+title: Session Lock
+description: >-
+  Inspect and release Hermes active-session leases (the "This chat is open somewhere
+  else" lock) from a Desktop status-bar chip: session names, owner liveness, age,
+  per-session release, clear-dead-only, and audit/backup records. Disclosure - it
+  reads and writes runtime/active_sessions.json through Hermes' private
+  hermes_cli.active_sessions helpers (catalog rule 9 warning), copies the registry
+  before a write and appends an audit line. Releasing a live lease is explicit and
+  lets two clients write one session at once. No network calls, no credentials, no
+  background process. Desktop installer is Windows; the backend route itself is
+  cross-platform.
+maintainer: TightXu
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "1.1.0"
+docs_url: https://github.com/TightXu/hermes-session-lock#readme
+platforms: [windows]
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,14 +1,15 @@
 name: youtube-video-studio
 title: "YouTube Video Studio"
 repo: https://github.com/flabanabba8/youtube-video-studio
-sha: d436c9651001e6cadf435071bc19171dc6e1b2d9
+sha: 98b193b31fbccf659ab6205c8649776c62e2726b
 version: "0.4.6"
 description: "Research a topic, create illustrations, charts, tables, flowcharts and slides, and assemble a narrated video using selected resources. Disclosure: Renders video locally with FFmpeg and Pillow and stores projects in plugin storage. Research uses your Hermes web tools and a page reader; Gemini narration, if selected, sends narration text to Google using your own Google Cloud login. Nothing is uploaded or published. No background processes beyond a render you start."
 maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/youtube-video-studio/blob/d436c9651001e6cadf435071bc19171dc6e1b2d9/README.md
+docs_url: https://github.com/flabanabba8/youtube-video-studio/blob/98b193b31fbccf659ab6205c8649776c62e2726b/README.md
+image: https://raw.githubusercontent.com/flabanabba8/youtube-video-studio/98b193b31fbccf659ab6205c8649776c62e2726b/assets/thumbnail.jpg
 platforms: [linux]
 capabilities:
   provides_tools:

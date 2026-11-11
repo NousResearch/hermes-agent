@@ -249,14 +249,23 @@ class StreamDeliveryMixin:
             if key and key not in pending and not self._interim_text_was_delivered(part):
                 pending[key] = part
         undelivered_parts = list(pending.values())
-        visible = "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
+        asks_clarify = any(isinstance(tc, dict) and (tc.get("function") or {}).get("name") == "clarify"
+                           for tc in assistant_msg.get("tool_calls") or ())
+        # With interim off, the text beside a clarify call is decision context, not Codex progress.
+        # Prefer the draft in content over an unrelated phase=commentary item.
+        clarify_fallback = (asks_clarify and getattr(self, "interim_assistant_callback", None) is None
+                            and getattr(self, "clarify_context_callback", None) is not None)
+        clarify_content = (self._strip_think_blocks(flatten_message_text(assistant_msg.get("content"))).strip()
+                           if clarify_fallback else "")
+        visible = clarify_content or (
+            "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
+        )
         if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
             return
         already_streamed = self._interim_content_fully_streamed(visible)
         self._enqueue_stream_hook("on_interim_message", text=visible, already_streamed=already_streamed)
-        asks_clarify = any(isinstance(tc, dict) and (tc.get("function") or {}).get("name") == "clarify"
-                           for tc in assistant_msg.get("tool_calls") or ())
-        self._deliver_interim(visible, already_streamed=already_streamed, record=undelivered_parts or [visible],
+        self._deliver_interim(visible, already_streamed=already_streamed,
+                              record=[visible] if clarify_content else undelivered_parts or [visible],
                               asks_clarify=asks_clarify)
 
     def _ensure_stream_writer_state(self) -> None:

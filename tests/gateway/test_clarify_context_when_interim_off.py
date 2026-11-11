@@ -87,3 +87,22 @@ async def test_clarify_card_waits_for_an_explanation_still_sending():
     explanation.set_result(True)
     await asyncio.wait_for(card, 5)
     assert order == ["explanation", "card"]
+
+
+@pytest.mark.asyncio
+async def test_codex_clarify_sends_draft_not_commentary_when_interim_messages_are_off(monkeypatch, tmp_path):
+    draft = "Draft: Hello Bob, lunch at noon?"
+    msg = _assistant(draft, "clarify")
+    # Codex Responses may include both a draft and a phase=commentary item.
+    msg["codex_message_items"] = [
+        {"type": "message", "role": "assistant", "phase": "commentary",
+         "content": [{"type": "output_text", "text": "Checking what to send."}]},
+        {"type": "message", "role": "assistant", "phase": "final_answer",
+         "content": [{"type": "output_text", "text": draft}]},
+    ]
+    monkeypatch.setattr(_EmittingAgent, "message", msg)
+    adapter, result = await _run_with_agent(
+        monkeypatch, tmp_path, _EmittingAgent, session_id="sess-codex-clarify-ctx", config_data=QUIET)
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == [draft]

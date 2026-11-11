@@ -376,6 +376,46 @@ class TestRoutingIntents:
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 
+    def test_wrapper_is_a_footer_so_the_payload_opens_the_message(self):
+        """Content-first wrapper: the payload leads, the cron identifier trails it.
+
+        The header form pushed the useful line below the fold on chat platforms, so a
+        notification job opened with "which cron ran" instead of "what happened".
+        """
+        from gateway.config import Platform
+
+        sent: list[str] = []
+
+        async def _capture(platform, pconfig, chat_id, text, **kwargs):
+            sent.append(text)
+            return {"success": True}
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=_capture):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        assert sent, "delivery never reached the platform"
+        text = sent[0]
+        assert text.startswith("Here is today's summary.")
+        assert (
+            text.index("Here is today's summary.")
+            < text.index("-------------")
+            < text.index("Cronjob Response: daily-report")
+        )
+        assert text.rstrip().endswith("(job_id: test-job)")
+        assert "To stop or manage this job" not in text
+
     def _safe_media_path(self, tmp_path, monkeypatch, name, data=b"media"):
         root = tmp_path / "media-cache"
         media_file = root / name

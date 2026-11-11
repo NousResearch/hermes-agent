@@ -1874,13 +1874,15 @@ def _deliver_result(
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])
+        # Content first. The header used to push the payload below the fold on chat platforms, so a
+        # notification job opened with "which cron ran" instead of "what happened". The identifier
+        # now trails the payload after the separator, and the help line is gone (bot help covers
+        # it). `cron.wrap_response: false` still drops the wrapper entirely.
         delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job.get('id', '')})\n"
-            f"-------------\n\n"
             f"{content}\n\n"
-            "To stop or manage this job, send me a new message "
-            f"(e.g. \"stop reminder {task_name}\")."
+            "-------------\n"
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job.get('id', '')})"
         )
     else:
         delivery_content = content

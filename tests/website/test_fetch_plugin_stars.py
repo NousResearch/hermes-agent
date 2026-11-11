@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import urllib.error
 from pathlib import Path
 
@@ -114,3 +115,24 @@ def test_probe_batches_large_catalogs_and_every_repo_gets_a_count(mod, monkeypat
     assert probed and len(stars) == len(slugs)
     assert seen == [mod._BATCH, mod._BATCH, 5]
     assert stars[f"o/r{mod._BATCH}"] == 0 and stars[f"o/r{mod._BATCH + 1}"] == 1
+
+
+def test_script_imports_hermes_yaml_under_the_ci_invocation(tmp_path):
+    """skills-index.yml runs ``python website/scripts/fetch-plugin-stars.py --probe`` with no
+    PYTHONPATH (unlike deploy-site, whose setup-pm exports PYTHONPATH=<repo>). b4a294f9 added
+    ``import hermes_yaml`` without the sys.path.insert the sibling scripts have, so every
+    scheduled run died with ModuleNotFoundError and the stale-index watchdog reopened (#122609).
+    Regression: the script must import cleanly as a plain file, the way CI invokes it.
+    Hermetic on purpose: ``--no-live`` cuts the live-site GET and ``--output`` keeps the write
+    inside tmp_path, so the suite never mutates the checkout nor touches the network — the
+    subprocess still proves the plain-file import, which is all this regression needs."""
+    import subprocess
+    import sys
+
+    out = tmp_path / "plugin-stars.json"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--no-live", "--output", str(out)],
+                          env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "Reused plugin stars" in proc.stdout
+    assert json.loads(out.read_text())["stars"] == {}

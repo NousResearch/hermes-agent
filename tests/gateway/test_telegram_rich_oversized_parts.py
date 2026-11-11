@@ -66,6 +66,41 @@ async def test_oversized_details_message_is_delivered_in_rich_parts():
 
 
 @pytest.mark.asyncio
+async def test_oversized_rich_final_edit_updates_preview_and_sends_rich_continuations():
+    """A streamed final (edit_message) must not downgrade details to MarkdownV2 chunks."""
+    adapter = _make_adapter()
+    adapter._bot.edit_message_text = AsyncMock(return_value=SimpleNamespace(message_id=100))
+    next_id = iter(range(201, 250))
+
+    async def rich_request(method, api_kwargs):
+        if method == "editMessageText":
+            return True
+        assert method == "sendRichMessage"
+        return SimpleNamespace(message_id=next(next_id))
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=rich_request)
+    content = _details_content()
+    assert len(content) > adapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.edit_message("12345", "100", content, finalize=True)
+
+    calls = adapter._bot.do_api_request.await_args_list
+    assert result.success is True and len(calls) >= 2
+    assert calls[0].args[0] == "editMessageText"
+    assert calls[0].kwargs["api_kwargs"]["message_id"] == 100
+    assert all(c.args[0] == "sendRichMessage" for c in calls[1:])
+    for call in calls:
+        rendered = _rich_markdown(call)
+        assert len(rendered) <= adapter.RICH_MESSAGE_MAX_CHARS
+        assert rendered.count("<details") == rendered.count("</details>")
+    continuation_ids = tuple(str(201 + i) for i in range(len(calls) - 1))
+    assert result.continuation_message_ids == continuation_ids
+    assert result.message_id == continuation_ids[-1]
+    adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_oversized_rich_parts_keep_every_details_block_whole():
     adapter = _make_adapter()
     content = _details_content()

@@ -630,3 +630,68 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
     assert not offenders, offenders
+
+
+def test_freeform_object_param_stays_open_for_the_model():
+    """#153097 / #96734: a free-form object parameter keeps ``properties: {}`` for llama.cpp
+    and gains ``additionalProperties: true``, so models don't read it as "no fields" and
+    send ``{}``. An explicit ``additionalProperties`` (closed or typed) is left alone."""
+    params = sanitize_tool_schemas([_tool("t", {"type": "object", "properties": {
+        "findings": {"type": "object", "description": "keys: title, tags"},
+        "maybe": {"type": ["object", "null"]},
+        "sealed": {"type": "object", "additionalProperties": False},
+        "typed": {"type": "object", "additionalProperties": {"type": "string"}},
+    }})])[0]["function"]["parameters"]["properties"]
+    for name in ("findings", "maybe"):
+        assert params[name]["properties"] == {}
+        assert params[name]["additionalProperties"] is True, name
+    assert params["sealed"]["additionalProperties"] is False
+    assert params["typed"]["additionalProperties"] == {"type": "string"}
+
+
+def test_declared_properties_are_not_reopened():
+    """Only objects the author left free-form are opened; a declared (even empty)
+    property map keeps its shape, renamed keys included."""
+    params = sanitize_tool_schemas([_tool("t", {"type": "object", "properties": {
+        "none": {"type": "object", "properties": {}},
+        "some": {"type": "object", "properties": {"a": {"type": "string"}}},
+        "bad~key": {"type": "object"},
+    }})])[0]["function"]["parameters"]["properties"]
+    assert "additionalProperties" not in params["none"]
+    assert "additionalProperties" not in params["some"]
+    assert params["bad_key"]["additionalProperties"] is True
+
+
+def test_mcp_freeform_param_stays_open_through_both_stages():
+    """MCP schemas are normalized (which adds ``properties: {}``) before this sanitizer runs;
+    the free-form marker must survive that first stage too, nullable unions included."""
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    normalized = _normalize_mcp_input_schema({"type": "object", "properties": {
+        "filters": {"type": "object", "description": "free-form filter dict"},
+        "maybe": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+        "sealed": {"type": "object", "additionalProperties": False},
+        "shaped": {"type": "object", "properties": {}},
+    }})
+    params = sanitize_tool_schemas([_tool("mcp_srv_t", normalized)])[0]["function"]["parameters"]
+    props = params["properties"]
+    assert props["filters"]["additionalProperties"] is True
+    assert props["maybe"]["additionalProperties"] is True
+    assert props["sealed"]["additionalProperties"] is False
+    assert "additionalProperties" not in props["shaped"]
+
+
+def test_object_shaped_by_other_keywords_is_not_reopened():
+    """An object closed or shaped without a direct ``properties`` map (``allOf`` +
+    ``unevaluatedProperties: false``, ``$ref``, ``patternProperties``) is not free-form:
+    adding ``additionalProperties: true`` would let extra keys through. Both stages."""
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    source = {"type": "object", "properties": {
+        "closed": {"type": "object", "allOf": [{"properties": {"a": {"type": "string"}}}],
+                   "unevaluatedProperties": False},
+        "patterned": {"type": "object", "patternProperties": {"^x_": {"type": "string"}}},
+        "ref": {"type": "object", "$ref": "#/$defs/Shape"},
+    }, "$defs": {"Shape": {"type": "object", "properties": {"b": {"type": "integer"}}}}}
+    for params in (copy.deepcopy(source), _normalize_mcp_input_schema(copy.deepcopy(source))):
+        props = sanitize_tool_schemas([_tool("t", params)])[0]["function"]["parameters"]["properties"]
+        for name in ("closed", "patterned", "ref"):
+            assert "additionalProperties" not in props[name], (name, props[name])

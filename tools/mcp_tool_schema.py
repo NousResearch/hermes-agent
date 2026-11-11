@@ -97,6 +97,11 @@ def _repair_object_shape(node, *, _object_root=False):
             # the whole map would inject a bogus ``"type": "object"`` *entry* when one of its
             # keys is literally named ``properties``/``required`` (#110530).
             repaired[key] = {name: _repair_object_shape(schema) for name, schema in value.items()}
+            if key == "properties":
+                # Mark free-form params here, before the empty map hides that they were (#153097).
+                from tools.schema_sanitizer import _keep_freeform_open
+                for name, schema in value.items():
+                    _keep_freeform_open(schema, repaired[key][name])
         else:
             repaired[key] = _repair_object_shape(value)
     # Constraint fragments are returned untouched: repairing them is what destroys them.

@@ -1,12 +1,13 @@
 name: stock-runway
 repo: https://github.com/usegreymatter/hermes-stock-runway
-sha: 34b148604c92648137a7506daba6ce47c8e5fe1b
+sha: c38ffceb0ae7ca4e8501346e89316dffc4306a7c
 subdir: ""
 description: >-
   See when each product will run out and when to reorder. Forecasts seasonal monthly demand,
   shows past demand, deliveries and stock on one chart, grades forecast accuracy, and
   lists what to order now (quantity and order-by date, with lead time, MOQ and pack size).
-  Works from the bundled sample, a local CSV, or an optional read-only Odoo connection
+  Works from the bundled sample, a local CSV (reads SAP Business One, NetSuite, Zoho,
+  QuickBooks and Dynamics export column names as is), or an optional read-only Odoo connection
   configured through Hermes secrets. Adds a /stock command, a stock_runway tool and a
   Desktop page. Disclosure — with the Odoo source it makes read-only XML-RPC calls to the
   Odoo server you configure; the sample and CSV sources make no network calls.
@@ -17,10 +18,10 @@ requires_hermes: ">=0.22.2"
 docs_url: https://github.com/usegreymatter/hermes-stock-runway#readme
 version: "0.1.0"
 screenshots:
-  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/harness-1440-dark.png
-  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/popup-1440-dark.png
-  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/card-1440-dark.png
-  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/harness-360-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/c38ffceb0ae7ca4e8501346e89316dffc4306a7c/docs/screens/harness-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/c38ffceb0ae7ca4e8501346e89316dffc4306a7c/docs/screens/popup-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/c38ffceb0ae7ca4e8501346e89316dffc4306a7c/docs/screens/card-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/c38ffceb0ae7ca4e8501346e89316dffc4306a7c/docs/screens/harness-360-dark.png
 readme: true
 platforms: []
 title: Stock Runway

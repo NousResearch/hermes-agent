@@ -398,9 +398,17 @@ def _stored_conversation(agent):
 
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
-    skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
-    if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+    skills, _loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
+    if missing:
+        # A skill that does not resolve is a SMALLER failure than a dead reviewer: the card body, the
+        # handoff and the kanban lifecycle prompt are already in the turn, so warn and run it. Raising
+        # here (previously ``kanban_skills_unavailable``) exits 1 before any model call, which the board
+        # books as a crash with no verdict — the exact shape behind 6 of 26 qa runs, where a
+        # force-loaded ``sdlc-review`` was the only requested skill and its absence killed the process.
+        import logging
+        logging.getLogger(__name__).warning(
+            'kanban worker %s: skill(s) unavailable, continuing without: %s',
+            context['task_id'], ', '.join(str(name) for name in missing))
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 

@@ -199,3 +199,37 @@ async def test_a_refused_busy_echo_is_sent_by_the_turn(tmp_path, monkeypatch):
         assert [m for m in shown if '"hi"' in m] == ['🎙️ "hi"']
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_partly_refused_busy_echo_repeats_no_shown_clip(tmp_path, monkeypatch):
+    """Two clips, the second clip's busy echo refused: the turn echoes only the second, never the first again."""
+    monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
+                        lambda path, model=None, source=None: {
+                            'success': True, 'transcript': 'one' if path.endswith('a.ogg') else 'two', 'provider': 'f'})
+    runner, authority, source, _agent, _sent = await _busy_rig(tmp_path, monkeypatch)
+    shown, refuse = [], [True]
+
+    async def send(chat_id, content, **_):
+        if refuse[0] and '"two"' in content:
+            return SendResult(success=False, error='Flood control exceeded')
+        shown.append(content)
+        return SendResult(success=True, message_id='s')
+
+    monkeypatch.setattr(runner.adapters[Platform.WHATSAPP], 'send', send)
+    first, second = tmp_path / 'a.ogg', tmp_path / 'b.ogg'
+    first.write_bytes(b'OggS first clip')
+    second.write_bytes(b'OggS second clip')
+    try:
+        task = asyncio.ensure_future(runner._handle_message(MessageEvent(
+            text='', message_type=MessageType.VOICE, source=source, message_id='v2',
+            media_urls=[str(first), str(second)], media_types=['audio/ogg', 'audio/ogg'])))
+        await async_wait_until(lambda: _rows(authority), timeout=10, what='the voice note admitted')
+        task.cancel()
+        refuse[0] = False
+        restored = restore_native(_rows(authority)[0]['payload'], runner)
+        await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
+
+        assert [m for m in shown if '"one"' in m or '"two"' in m] == ['🎙️ "one"', '🎙️ "two"']
+    finally:
+        authority.db.close()

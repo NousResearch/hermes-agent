@@ -111,10 +111,11 @@ def hand_prepared_voice_to_turn(event) -> None:
     native admission restores from the same clip bytes, noting whether the chat was shown them."""
     clip_memo = getattr(event, "_gateway_pending_stt_clips", None) or {}
     done = [(path, transcript) for path, (transcript, _note) in clip_memo.items() if transcript is not None]
-    echoed = 0 < len(done) <= int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-    for path, transcript in done:
+    # The echo count is a prefix of the transcripts, which follow ``done``'s order: only those clips were shown.
+    echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
+    for index, (path, transcript) in enumerate(done):
         remember_gate_transcript(path, transcript)
-        if echoed and (key := _echo_key(event, path)) is not None:
+        if index < echoed and (key := _echo_key(event, path)) is not None:
             with _GATE_TRANSCRIPTS_LOCK:
                 _ECHOED_CLIPS[key] = None
                 while len(_ECHOED_CLIPS) > _GATE_TRANSCRIPTS_MAX:
@@ -272,12 +273,16 @@ class GatewayInboundTranscriptionMixin:
         already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
         tail = transcripts[already_echoed:]
         event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))  # claimed before the await
-        accepted = await self._echo_stt_transcripts(
-            adapter, source, tail, metadata=metadata, log_context=log_context,
-        )
+        accepted = 0
+        for transcript in tail:
+            if not await self._echo_stt_transcripts(
+                adapter, source, [transcript], metadata=metadata, log_context=log_context,
+            ):
+                break
+            accepted += 1
         if accepted < len(tail):
-            # A refused echo (flood control, dead transport) was never shown: count only what landed,
-            # so the turn native admission restores still echoes the clip.
+            # A refused echo (flood control, dead transport) was never shown. Stop at it and count the
+            # shown prefix, so the turn native admission restores echoes exactly the clips still owed.
             event._gateway_pending_stt_echoed = already_echoed + accepted
 
     async def _transcribe_and_echo_pending_voice(

@@ -1,21 +1,22 @@
 name: hermes-plugin-dev
 title: Hermes Plugin Dev
 repo: https://github.com/mojomast/hermes-plugin-dev
-sha: "1bc5bf5142db3bfc3c0cdf032a7adb4883426825"
+sha: "796a35e4d893b985f1b61d8e11b5ae7e4118bf6f"
 subdir: ""
 description: >-
   Build Hermes plugins with Hermes: bundles the hermes-plugin-development skill plus two
   offline tools to scaffold a plugin from a validated template and lint manifests, catalog
   entries, security preflight and schema token cost. No network, subprocesses or credentials;
-  writes only into the target folder you name; the lint imports the target plugin's
-  register() with a fake host. The security preflight is a heuristic, not a proof.
+  writes only into the target folder you name; hpd_check measures schema tokens statically
+  and never imports the target plugin; import-based measure is the user-run CLI
+  `hermes hpd check <dir> --execute`. The security preflight is a heuristic, not a proof.
 maintainer: mojomast
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/mojomast/hermes-plugin-dev#readme
-version: "0.3.0"
-image: https://raw.githubusercontent.com/mojomast/hermes-plugin-dev/1bc5bf5142db3bfc3c0cdf032a7adb4883426825/assets/banner-v3.jpg
+version: "0.3.1"
+image: https://raw.githubusercontent.com/mojomast/hermes-plugin-dev/796a35e4d893b985f1b61d8e11b5ae7e4118bf6f/assets/banner-v3.jpg
 readme: true
 platforms: []
 known_issues: []

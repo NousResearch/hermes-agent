@@ -1,19 +1,20 @@
 name: sightline
 repo: https://github.com/OutstandingVick/sightline
-sha: 1414dc523f06b0d09e5d63f45735798272ac4fbe
+sha: 86633505f8a5c4c21e102f78a848b06d5e6f18db
 title: Sightline
-description: "Give your Hermes agent a Solana wallet without giving it your wallet. Intent-level SOL and SPL tools, including Solana Pay payment links; every send is simulated, explained in plain English and checked by a firewall against human-issued, time-boxed, revocable grants before the plugin signs it. The model never sees the key, has no raw-transaction tool and cannot create or widen grants. ALLOW / APPROVE / BLOCK with a hash-chained audit log and a Desktop pane. Devnet by default. Disclosure: stores a Solana secret key in the profile .env (never shown to the model or in output); sends simulation and transaction requests to the configured Solana RPC (default api.devnet.solana.com); mainnet only with SIGHTLINE_ALLOW_MAINNET=1; no telemetry."
+description: "Give your Hermes agent a Solana wallet without giving it your wallet. Intent-level SOL and SPL tools, including Solana Pay payment links; every send is simulated, explained in plain English and checked by a firewall against human-issued, time-boxed, revocable grants (caps per day, week or month) before the plugin signs it. Cron jobs and bots can pay inside a grant unattended. The model never sees the key, has no raw-transaction tool and cannot create or widen grants. ALLOW / APPROVE / BLOCK with a hash-chained audit log and a Desktop pane. Devnet by default. Disclosure: stores a Solana secret key in the profile .env (never shown to the model or in output); sends simulation and transaction requests to the configured Solana RPC (default api.devnet.solana.com); mainnet only with SIGHTLINE_ALLOW_MAINNET=1; no telemetry."
 maintainer: OutstandingVick
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/OutstandingVick/sightline#readme
-version: "0.6.4"
+version: "0.6.5"
 screenshots:
-  - https://raw.githubusercontent.com/OutstandingVick/sightline/1414dc523f06b0d09e5d63f45735798272ac4fbe/docs/screenshots/demo.gif
-  - https://raw.githubusercontent.com/OutstandingVick/sightline/1414dc523f06b0d09e5d63f45735798272ac4fbe/docs/screenshots/pane-04-block-light.png
-  - https://raw.githubusercontent.com/OutstandingVick/sightline/1414dc523f06b0d09e5d63f45735798272ac4fbe/docs/screenshots/pane-03-allow-sent-light.png
-  - https://raw.githubusercontent.com/OutstandingVick/sightline/1414dc523f06b0d09e5d63f45735798272ac4fbe/docs/screenshots/pane-06-approve-after-revoke-dark.png
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86633505f8a5c4c21e102f78a848b06d5e6f18db/docs/screenshots/demo.gif
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86633505f8a5c4c21e102f78a848b06d5e6f18db/docs/screenshots/pane-04-block-light.png
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86633505f8a5c4c21e102f78a848b06d5e6f18db/docs/screenshots/unattended-cron.png
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86633505f8a5c4c21e102f78a848b06d5e6f18db/docs/screenshots/weekly-budget.png
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86633505f8a5c4c21e102f78a848b06d5e6f18db/docs/screenshots/pane-03-allow-sent-light.png
 capabilities:
   provides_tools:
     - sightline_status

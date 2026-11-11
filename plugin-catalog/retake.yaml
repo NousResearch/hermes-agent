@@ -1,0 +1,29 @@
+name: retake
+title: Retake
+repo: "https://github.com/wevial/retake"
+sha: "b5146c8cf7c7f75326f7980eff75004596014e83"
+maintainer: "wevial"
+description: Image-generation workspace for Hermes Desktop. Generate or upload an image, mark regions, request a reference-guided revision, compare versions and download.
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.3.0"
+platforms:
+  - macos
+  - linux
+readme: true
+screenshots:
+  - "https://raw.githubusercontent.com/wevial/retake/b5146c8cf7c7f75326f7980eff75004596014e83/docs/images/empty-project.png"
+  - "https://raw.githubusercontent.com/wevial/retake/b5146c8cf7c7f75326f7980eff75004596014e83/docs/images/annotate-brief.png"
+known_issues:
+  - "Still images only. Video generation is not included."
+  - "Region notes are guidance, not masks: other parts of an image can change and pixel preservation is not guaranteed."
+  - "Generation uses your Hermes image provider and may consume credits or allowance; cost and exact model can be unknown. A failed or lost call is shown as possibly billed and is never retried."
+  - "Needs Hermes's mcp extra and image_generate not deferred by tool search: run 'hermes -p <profile> config set tools.tool_search.enabled off' for that profile."
+  - "Optional model picker is hidden on stock Hermes v0.23.1; it appears only if Hermes exposes the image-selection listing."
+  - "The exact release UI has had only a limited native Desktop check; a full native pass of this build is not claimed. Screenshots are synthetic browser previews."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

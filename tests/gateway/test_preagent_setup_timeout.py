@@ -136,3 +136,19 @@ async def test_fresh_pending_followup_stays_silent(monkeypatch):
     )
     assert result is None
     assert merged == [True]
+
+
+@pytest.mark.asyncio
+async def test_setup_timeout_sends_no_notice_to_a_bot_peer(monkeypatch):
+    """A known bot would read the notice as a new request and restart the exchange."""
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0.05")
+    runner = _bare_runner()
+
+    async def _hang(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    runner._hmwa_resolve_session = _hang
+    bot = SessionSource(platform=Platform.TELEGRAM, chat_id="138358", chat_type="dm",
+                        user_id="bot-1", user_name="peer", is_bot=True)
+    result = await GatewayRunner._handle_message_with_agent(runner, _event(), bot, KEY, 1)
+    assert result is None

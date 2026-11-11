@@ -117,7 +117,8 @@ def cancel_preagent_setup(runner, session_key: str) -> bool:
 
 async def run_preagent_setup(runner, event, source, quick_key: str, run_generation: int) -> tuple[Optional[tuple], Any]:
     """Session resolve, turn prepare and ``agent:start`` under the guard. ``(setup, None)`` to run
-    the agent, setup = ``(source, session_entry, session_key, prepared, env_tokens, hook_ctx)``;
+    the agent, setup = ``(source, session_entry, session_key, prepared, env_tokens, hook_ctx,
+    (channel_prompt, turn_source))``, hook_ctx None for a heartbeat whose owner moved meanwhile;
     ``(None, reply)`` when the turn ends here. A deadline ends it with a visible resend notice, so
     a person's message is never dropped silently; a /stop or /new answers for itself."""
     try:
@@ -141,6 +142,16 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
                 "message": prepared.message_text[:500],
             }
             await runner.hooks.emit("agent:start", hook_ctx)
+            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
+            if not heartbeat_owner_is_current(runner, event, session_key):
+                return (source, session_entry, session_key, prepared, env_tokens, None, None), None
+            channel = runner._pinned_channel_inputs(  # internal/synthetic reuse pins
+                session_key, event.channel_prompt, source,
+                internal=event.internal or getattr(event, "inherit_channel_pin", False))
+            if not event.internal:
+                # Persist the coherent context+channel pair before execution: a crash during the
+                # human turn may be followed by an internal startup-resume on the next process.
+                await runner._persist_prompt_pins(session_key, session_entry.session_id)
     except (PreagentSetupTimeout, PreagentSetupStopped) as ended:
         runner._clear_session_env([])  # prepare may have bound them before the hang
         if isinstance(ended, PreagentSetupStopped):
@@ -148,23 +159,28 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
             captured = execution_result.get()
             if captured is not None:  # a claimed admission settles interrupted, as the Stop would have
                 captured['result'] = {'final_response': '', 'messages': [], 'interrupted': True}
-        return None, (t("gateway.busy.setup_timeout") if isinstance(ended, PreagentSetupTimeout) else None)
-    return (source, session_entry, session_key, prepared, env_tokens, hook_ctx), None
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        timed_out = isinstance(ended, PreagentSetupTimeout) and automatic_notices_allowed(source)
+        return None, (t("gateway.busy.setup_timeout") if timed_out else None)
+    return (source, session_entry, session_key, prepared, env_tokens, hook_ctx, channel), None
 
 
-def pending_setup_busy_notice(runner, session_key: str) -> Optional[str]:
-    """Visible busy ack for a follow-up queued behind a turn still in setup. Fresh setup stays
-    silent (the historical race-avoidance); past ``session_stall_timeout`` (0 disables) the user
-    gets the same class of notice as a stalled running turn, debounced to one per 30 s."""
+def pending_setup_busy_notice(runner, session_key: str, source) -> Optional[str]:
+    """Visible busy ack for a follow-up queued behind a turn still in setup (the in-process busy
+    path and the durable FIFO's admission alike). Fresh setup stays silent (the historical
+    race-avoidance); past ``session_stall_timeout`` (0 disables) the user gets the same class of
+    notice as a stalled running turn, debounced to one per 30 s. Never to a known bot peer."""
     import os
     import time
-    from gateway.run import _float_env
-    if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
+    from gateway.bot_peer_notices import automatic_notices_allowed
+    from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
+    if (os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true"
+            or not automatic_notices_allowed(source)):
         return None
     timeout = _float_env("HERMES_SESSION_STALL_TIMEOUT", 300)
     state = runner._peek_session_state(session_key)
     started = float(getattr(getattr(state, "turn", None), "started_ts", 0.0) or 0.0)
-    if timeout <= 0 or state is None or not started:
+    if timeout <= 0 or state is None or not started or state.turn.agent is not _AGENT_PENDING_SENTINEL:
         return None
     now = time.time()
     age = now - started

@@ -202,27 +202,21 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         setup, reply = await run_preagent_setup(self, event, source, _quick_key, run_generation)
         if setup is None:
             return reply
-        source, session_entry, session_key, prepared, _session_env_tokens, hook_ctx = setup
+        source, session_entry, session_key, prepared, _session_env_tokens, hook_ctx, channel = setup
+        if hook_ctx is None:  # a heartbeat whose owner moved during setup: nothing to run
+            self._clear_session_env(_session_env_tokens)
+            return None
         history, message_text = prepared.history, prepared.message_text
 
         try:
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
-            from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
-            if not heartbeat_owner_is_current(self, event, session_key):
-                return
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
-            _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(  # internal/synthetic reuse pins
-                session_key, event.channel_prompt, source,
-                internal=event.internal or getattr(event, "inherit_channel_pin", False))
-            if not event.internal:
-                # Persist the coherent context+channel pair before execution: a crash during the
-                # human turn may be followed by an internal startup-resume on the next process.
-                await self._persist_prompt_pins(session_key, _run_start_session_id)
+            _turn_channel_prompt, _turn_source = channel
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,

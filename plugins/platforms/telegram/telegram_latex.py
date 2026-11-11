@@ -43,7 +43,10 @@ _MACROS = {
     "aleph": "ℵ", "dagger": "†", "checkmark": "✓", "degree": "°",
 }
 # A macro is a backslash word that no letter extends, never part of a path or an escaped backslash.
-_MACRO_RE = re.compile(r"(?<![\w:/\\])\\(" + "|".join(sorted(_MACROS, key=len, reverse=True)) + r")(?![A-Za-z])")
+_MACRO_NAMES = "|".join(sorted(_MACROS, key=len, reverse=True))
+_MACRO_RE = re.compile(r"(?<![\w:/\\])\\(" + _MACRO_NAMES + r")(?![A-Za-z])")
+# Inside a confirmed ``$...$`` span a macro may follow a letter (``$x\leq y$``): no path guard there.
+_MATH_MACRO_RE = re.compile(r"(?<!\\)\\(" + _MACRO_NAMES + r")(?![A-Za-z])")
 _INLINE_MATH_RE = re.compile(r"(?<![\\$\w])\$([^$\n]{1,120}?)\$(?![\w$])")
 
 
@@ -53,9 +56,9 @@ def _replace_macros(text: str) -> str:
 
 def _inline_math(m: re.Match) -> str:
     body = m.group(1)
-    if not _MACRO_RE.search(body):
+    if not _MATH_MACRO_RE.search(body):
         return m.group(0)  # no known macro: an amount pair or real math we can't render; leave it
-    converted = _replace_macros(body)
+    converted = _MATH_MACRO_RE.sub(lambda mm: _MACROS[mm.group(1)], body)
     return converted.strip() if "\\" not in converted and "{" not in converted else f"${converted}$"
 
 
@@ -66,19 +69,15 @@ def normalize_latex_macros(prose: str) -> str:
     return _replace_macros(_INLINE_MATH_RE.sub(_inline_math, prose))
 
 
-# Rich-message math the client typesets itself: $$...$$, \[...\], \(...\) and inline $...$.
-_RICH_MATH_RE = re.compile(r"\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|" + _INLINE_MATH_RE.pattern)
-
-
-def normalize_rich_latex_macros(prose: str) -> str:
-    """Rich-message variant: map known macros in *prose* outside every math span, which the
-    client renders natively (code already excluded by the caller)."""
-    if "\\" not in prose:
-        return prose
+def replace_macros_outside(prose: str, kept_spans) -> str:
+    """Rich-message variant: map known macros in *prose* outside *kept_spans* (the math spans the
+    rich client typesets itself, sorted ``(start, end)``; code is already excluded by the caller)."""
     out, pos = [], 0
-    for m in _RICH_MATH_RE.finditer(prose):
-        out.append(_replace_macros(prose[pos:m.start()]))
-        out.append(m.group(0))
-        pos = m.end()
+    for start, end in kept_spans:
+        if start < pos:
+            continue
+        out.append(_replace_macros(prose[pos:start]))
+        out.append(prose[start:end])
+        pos = end
     out.append(_replace_macros(prose[pos:]))
     return "".join(out)

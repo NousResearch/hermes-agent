@@ -79,21 +79,28 @@ def open_mdv2_entities(text: str) -> list[str]:
     return stack
 
 
-def _carry(chunks: list[str], open_marks: Callable[[str], list[str]], indicator: str) -> list[str]:
+def _carry(chunks: list[str], open_marks: Callable[[str], list[str]], indicator: str,
+           closes_reopened: Optional[Callable[[str, str], str]] = None) -> list[str]:
     """Close each chunk's still-open entities before its ``(N/M)`` marker and reopen them at the
-    start of the next chunk; *indicator* is the marker template (``" \\(%s/%s\\)"`` when escaped)."""
+    start of the next chunk; *indicator* is the marker template (``" \\(%s/%s\\)"`` when escaped).
+    ``closes_reopened(marks, rest)`` (raw markdown only) keeps just the marks the rest of the
+    message really closes, so a literal marker with no partner is never turned into styling. Formatted
+    MarkdownV2 (no ``closes_reopened``) also moves a backslash cut from the char it escapes."""
     out, reopen, carry_text = [], "", ""
-    for chunk in chunks:
+    for index, chunk in enumerate(chunks):
         m = _INDICATOR_RE.search(chunk)
-        body = chunk[:m.start()] if m else chunk
-        body = reopen + carry_text + body
-        carry_text = ""
+        body = reopen + carry_text + (chunk[:m.start()] if m else chunk)
+        carry_text = reopen = ""
+        last = index == len(chunks) - 1
         trailing = len(body) - len(body.rstrip("\\"))
-        if trailing % 2 and m:  # a hard cut between a backslash and the char it escapes
+        if trailing % 2 and not last and closes_reopened is None:  # a cut between "\\" and its char
             body, carry_text = body[:-1], "\\"
-        marks = open_marks(body)
-        reopen = "".join(marks)
-        body += "".join(reversed(marks))
+        if not last:
+            marks = open_marks(body)
+            if closes_reopened is not None:
+                marks = closes_reopened(marks, "".join(_INDICATOR_RE.sub("", rest) for rest in chunks[index + 1:]))
+            reopen = "".join(marks)
+            body += "".join(reversed(marks))
         out.append(body + (indicator % m.groups() if m else ""))
     return out
 
@@ -113,27 +120,47 @@ def split_formatted_mdv2(formatted: str, max_length: int, truncate, len_fn) -> l
     return [separate_chunk_indicator_from_fence(c) for c in carried]
 
 
-def _open_raw_emphasis(text: str) -> list[str]:
-    """Raw-markdown emphasis still open at the end of *text*. A single ``*``/``_`` counts only when
-    it can delimit (CommonMark flanking): never before a space (so not a ``* `` bullet), and an
-    intraword ``_`` (snake_case) is literal."""
-    stack: list[str] = []
+def _raw_emphasis_tokens(text: str):
+    """``(mark, opens, closes)`` for each raw-markdown emphasis delimiter outside code, skipping
+    backslash-escaped characters (``\\*args`` is literal). A single ``*``/``_`` delimits only per
+    CommonMark flanking: never before a space (so not a ``* `` bullet); an intraword ``_`` is literal."""
     masked = _RAW_CODE_RE.sub(lambda c: " " * len(c.group()), text)
     for m in _RAW_MARK_RE.finditer(masked):
+        slashes = len(masked[:m.start()]) - len(masked[:m.start()].rstrip("\\"))
+        if slashes % 2:
+            continue
         mark, before, after = m.group(), masked[m.start() - 1:m.start()], masked[m.end():m.end() + 1]
         if len(mark) == 1:
-            opens = bool(after) and not after.isspace() and (mark == "*" or not before.isalnum())
-            closes = bool(before) and not before.isspace() and (mark == "*" or not after.isalnum())
-            if stack and stack[-1] == mark and closes:
-                stack.pop()
-            elif opens:
-                stack.append(mark)
-            continue
-        if stack and stack[-1] == mark:
-            stack.pop()
+            yield (mark, bool(after) and not after.isspace() and (mark == "*" or not before.isalnum()),
+                   bool(before) and not before.isspace() and (mark == "*" or not after.isalnum()))
         else:
+            yield mark, True, True
+
+
+def _open_raw_emphasis(text: str) -> list[str]:
+    """Raw-markdown emphasis still open at the end of *text*, outermost first."""
+    stack: list[str] = []
+    for mark, opens, closes in _raw_emphasis_tokens(text):
+        if stack and stack[-1] == mark and closes:
+            stack.pop()
+        elif opens:
             stack.append(mark)
     return stack
+
+
+def _raw_marks_closed_in(marks: list[str], body: str) -> list[str]:
+    """The *marks* that *body* (the rest of the message) closes once they are reopened before it,
+    outermost first; a mark nothing closes was a literal character, not an entity cut by the split."""
+    stack = [(mark, True) for mark in marks]
+    closed: set[int] = set()
+    for mark, opens, closes in _raw_emphasis_tokens(body):
+        if stack and stack[-1][0] == mark and closes:
+            if stack[-1][1]:
+                closed.add(len(stack) - 1)
+            stack.pop()
+        elif opens:
+            stack.append((mark, False))
+    return [mark for i, mark in enumerate(marks) if i in closed]
 
 
 def split_raw_carrying_emphasis(content: str, max_length: int, truncate, len_fn) -> tuple[list[str], list[str]]:
@@ -144,8 +171,8 @@ def split_raw_carrying_emphasis(content: str, max_length: int, truncate, len_fn)
     raw = truncate(content, max_length, len_fn=len_fn)
     if len(raw) <= 1:
         return raw, raw
-    carried = _carry(raw, _open_raw_emphasis, " (%s/%s)")
+    carried = _carry(raw, _open_raw_emphasis, " (%s/%s)", _raw_marks_closed_in)
     if carried != raw:
         raw = truncate(content, max_length - ENTITY_CARRY_RESERVE, len_fn=len_fn)
-        carried = _carry(raw, _open_raw_emphasis, " (%s/%s)")
+        carried = _carry(raw, _open_raw_emphasis, " (%s/%s)", _raw_marks_closed_in)
     return raw, carried

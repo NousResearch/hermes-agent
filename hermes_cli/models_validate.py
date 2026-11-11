@@ -789,20 +789,27 @@ def validate_requested_model(
     """Validate a ``/model`` value for the active provider → dict with ``accepted`` (switch now),
     ``persist`` (safe to save to config), ``recognized`` (matched a known provider catalog),
     ``message`` (optional warning / guidance). The requested id is never rewritten: what the user
-    selected is what the wire sees."""
+    selected is what the wire sees.
+
+    ``api_key`` is the credential as the caller holds it, which for a ``key_cmd`` provider is the
+    UNMINTED callable token source (``model_switch_providers._entry_credentials``): every probe
+    below formats it into an auth header, so mint it once here instead of sending its repr
+    (``materialize_probe_api_key``, #154004)."""
+    from agent.command_token_source import materialize_probe_api_key
     from hermes_cli import models as _m
 
+    probe_api_key = None if api_key is None else materialize_probe_api_key(api_key)
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)
     if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
         normalized = "custom"
     from providers import get_provider_profile
     profile = get_provider_profile(normalized) if normalized else None
-    lookup = (profile.normalize_model_id(requested, api_key=api_key or "") if profile is not None else None) or requested
+    lookup = (profile.normalize_model_id(requested, api_key=probe_api_key or "") if profile is not None else None) or requested
 
     if not requested:
         return _reject("Model name cannot be empty.")
-    req = _Request(requested, lookup, provider, normalized, api_key, base_url, api_mode, headers)
+    req = _Request(requested, lookup, provider, normalized, probe_api_key, base_url, api_mode, headers)
     for gate, branch in _LADDER:
         if gate(req):
             verdict = branch(req)

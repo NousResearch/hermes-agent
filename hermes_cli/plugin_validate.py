@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -219,6 +220,9 @@ options = json.loads(sys.argv[3])
 # Public method names of the real PluginContext, computed by the parent so the
 # stub's attribute surface cannot drift from the class plugins run against.
 context_methods = set(options["context_methods"])
+# Service properties (``ctx.llm``, ``ctx.state``, ...): plugins capture them in register() and
+# use them later, so the probe hands back an inert service whose methods are no-ops.
+context_properties = set(options.get("context_properties", ()))
 provider_kind = options["kind"] == "model-provider"
 
 recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": [], "trusted_inbound": []}
@@ -265,7 +269,41 @@ class RecordingContext:
                 return None
 
             return _noop
+        if name == "state":
+            return _ProbeState()
+        if name in context_properties:
+            return _InertService()
         raise AttributeError(name)
+
+
+class _ProbeState:
+    # Same shape as PluginState (real Path values, get() returns the default) over an empty store
+    # in the probe's scratch HERMES_HOME, which the parent deletes after the run.
+    def __init__(self):
+        import os
+        from pathlib import Path
+        self.data_dir = Path(os.environ["HERMES_HOME"]) / "plugin-data" / "probe"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.data_dir / "state.json"
+        self.quota_bytes = 1024 * 1024
+        self._data = {}
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def set(self, key, value):
+        self._data[key] = value
+
+
+class _InertService:
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def _noop(*args, **kwargs):
+            return None
+
+        return _noop
 
 
 def emit(payload):
@@ -330,11 +368,12 @@ emit(recorded)
 def _probe_options(manifest: dict) -> dict:
     from hermes_cli.plugins import PluginContext
 
+    public = [n for n in dir(PluginContext) if not n.startswith("_")]
     return {
         "kind": str(manifest.get("kind") or ""),
-        "context_methods": sorted(
-            n for n in dir(PluginContext)
-            if not n.startswith("_") and callable(getattr(PluginContext, n))
+        "context_methods": sorted(n for n in public if callable(getattr(PluginContext, n))),
+        "context_properties": sorted(
+            n for n in public if isinstance(getattr(PluginContext, n), (property, cached_property))
         ),
     }
 

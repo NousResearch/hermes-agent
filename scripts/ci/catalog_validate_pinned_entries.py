@@ -36,7 +36,35 @@ from pathlib import Path
 
 _FIELDS_SCRIPT = Path(__file__).resolve().with_name("catalog_entry_fields.py")
 _MANIFESTS = ("plugin.yaml", "plugin.yml", "plugin.json")
+# A GitHub fetch. The pattern itself is plain (grep -E): the ajv exemption is applied in Python
+# afterward, in _file_fetches_github, so it cannot be gamed by quoting/spacing of the ajv
+# declaration (grep lookbehinds were brittle across minifiers) and cannot hide a real fetch that
+# merely shares a line with the inert ajv id.
 _SELF_UPDATE_FETCH = r"releases/latest|releases/download|raw\.githubusercontent\.com|codeload\.github\.com"
+# ajv's bundled meta-schema declares its own identifier as `$id`/`$ref` = this URL. The string is
+# matched by value against a schema ajv already holds in memory; it never drives a request. It is
+# inert ONLY as a JSON-schema declaration -- `[$ or "]id/ref : "<url>"` -- so the same literal
+# reused as an executable fetch base (new URL('/evil', ajvUrl)) is not exempt. The match is
+# lexical: a declared id read back as a fetch base (new URL(p, s.$id)) is not caught, and
+# escaped-JSON or backtick spellings stay flagged. "#" is the only terminator, so a traversal like
+# .../data.json#/../../evil (or out of lib/refs) is a different, non-exempt URL and still counts.
+_AJV_ID = "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#"
+_AJV_DECLARATION = re.compile(
+    r"""["$](?:id|ref)["']?\s*:\s*["']""" + re.escape(_AJV_ID) + r"""["']""")
+_GITHUB_FETCH = re.compile(_SELF_UPDATE_FETCH)
+
+
+def _file_fetches_github(path: str) -> bool:
+    # True when the file fetches from GitHub for real. ajv's inert meta-schema DECLARATION is
+    # removed first (any quoting/spacing); whatever raw.githubusercontent / release URL remains is
+    # a real fetch. Reading the file as text mirrors what grep -l would have matched.
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return True  # unreadable here means the grep already flagged it; keep it flagged
+    return bool(_GITHUB_FETCH.search(_AJV_DECLARATION.sub("", text)))
+
+
 _SELF_UPDATE_WRITE = (r"writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync"
                       r"|cpSync|createWriteStream")
 _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*.cts")
@@ -178,10 +206,17 @@ def _check_self_updater(plugin_dir: str) -> None:
     # both ways: committed filenames with spaces or newlines must not split into grep options
     # or forged log lines.
     includes = [f"--include={glob}" for glob in _SCRIPT_GLOBS]
-    fetchers = _run(["grep", "-rlZE", _SELF_UPDATE_FETCH, *includes, plugin_dir],
-                    stdout=subprocess.PIPE).stdout
+    # grep -E gives a cheap first cut of files mentioning any GitHub-fetch URL; _file_fetches_github
+    # then drops those whose only match is ajv's inert meta-schema DECLARATION. NUL-delimited so
+    # committed filenames with spaces or newlines cannot split into grep options or forge log lines.
+    candidates = _run(["grep", "-rlZE", _SELF_UPDATE_FETCH, *includes, plugin_dir],
+                      stdout=subprocess.PIPE).stdout
+    real = b"\0".join(p for p in candidates.split(b"\0")
+                      if p and _file_fetches_github(os.fsdecode(p)))
+    if not real:
+        return
     writers = subprocess.run(["xargs", "-r0", "grep", "-lZE", _SELF_UPDATE_WRITE],
-                             input=fetchers, stdout=subprocess.PIPE, check=False,
+                             input=real, stdout=subprocess.PIPE, check=False,
                              timeout=_VALIDATE_SECONDS).stdout
     found = _substituted(writers).replace("\n", " ")
     if found:

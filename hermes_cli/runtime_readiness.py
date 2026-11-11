@@ -44,6 +44,18 @@ def readiness_failure(exc) -> dict:
     return {'ok': False, 'error': str(exc), **code}
 
 
+def runtime_has_credentials(runtime) -> bool:
+    """Whether a resolved runtime carries a credential a request can use: a usable secret, a key
+    callable, an SDK/keyless placeholder (``aws-sdk``, ``no-key-required``) or an external-process
+    ``command``. The one predicate session readiness and ``hermes fallback check`` share."""
+    from hermes_cli.auth import has_usable_secret
+    api_key = runtime.get('api_key')
+    if callable(api_key) or runtime.get('command'):
+        return True
+    text = str(api_key or '').strip()
+    return text in {'aws-sdk', 'no-key-required'} or has_usable_secret(text)
+
+
 def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resolve=None):
     """ok/error verdict for the runtime a session would be built with.
 
@@ -54,7 +66,6 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
     stays a strict single-provider check so onboarding can verify the provider just connected
     without another provider's fallback masking a failed connection. Both branches report the model.
     """
-    from hermes_cli.auth import has_usable_secret
     from hermes_cli.config import load_config
     from hermes_cli.main import _has_any_provider_configured
     from hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback
@@ -86,10 +97,7 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
 
     if not configured and provider == 'bedrock' and source in {'iam-role', 'aws-sdk-default-chain'}:
         return fail('No Hermes provider is configured.', source)
-    api_key = runtime.get('api_key')
-    api_key_text = '' if callable(api_key) else str(api_key or '').strip()
-    if not (callable(api_key) or api_key_text in {'aws-sdk', 'no-key-required'}
-            or has_usable_secret(api_key_text) or bool(runtime.get('command'))):
+    if not runtime_has_credentials(runtime):
         return fail(f'No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}', runtime.get('source'))
     from hermes_cli.anon_auth import route_is_welcome_host
     # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not

@@ -19,6 +19,26 @@ from pm.environment import BuildFailure, ResolutionConflict
 BUILD_VERDICTS = (ResolutionConflict, BuildFailure)
 
 
+def with_pre_pm_baseline(package, extras, *, carried, automatic, plugins):
+    """``(extras, carried, automatic)`` with a pre-PM tree's old-venv selection unioned in.
+
+    PM unions a request into the recorded selection. Before one is recorded, a tree that still runs
+    its main-era venv has that venv's extras as its selection (``pm.extras.pre_pm_baseline``): a
+    narrow request (``hermes setup`` installing ``telegram``) extends them, or this sync's facts
+    end the re-scan of the old venv and the rest is gone. The added entries are automatic, never a
+    request, so they never opt a declined extra back in; with no plugin input they are carried,
+    so one that no longer builds is left out instead of failing the request.
+    """
+    from pm.extras import pre_pm_baseline
+
+    added = [extra for extra in pre_pm_baseline(package.project_root()) if extra not in (extras or ())]
+    if not added:
+        return extras, carried, automatic
+    if plugins is None:
+        carried = [*(carried or ()), *(extra for extra in added if extra != "all")]
+    return sorted({*(extras or ()), *added}), carried, [*(automatic or ()), *added]
+
+
 def failing_carried(package, failure: BaseException, *, extras: list[str], carried: list[str], fact: dict,
                     shipped, frozen, explicit: bool) -> dict[str, tuple[str, bool]]:
     """``{extra: (reason, is_build_verdict)}`` for the carried extras that keep the environment

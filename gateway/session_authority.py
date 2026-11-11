@@ -53,6 +53,8 @@ class LiveSession:
     # The messaging ingress tells the platform user once per pause episode (unknown head,
     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
     pause_notified: bool = False
+    # Failed-delegation wakes run in a row with no viewer (session_completion_notes.UNATTENDED_WAKE_LIMIT).
+    unattended_wakes: int = 0
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Held by the FIFO claim and by compress across its summarization (which runs outside
     # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed
@@ -1032,7 +1034,11 @@ class SessionAuthority:
 
     def publish_execution(self, session_id, generation, event_type, payload):
         """Worker callbacks never outlive their exact running claim."""
-        live = self.sessions[session_id]
+        live = self.sessions.get(session_id)
+        if live is None:
+            # The owner was retired/evicted: a sink that outlived it (a background delegate child's
+            # progress print) has no viewer left, and raising here kills that child's whole run (#148644).
+            return False
         with live.event_stream.lock:
             # The executing generation (set with the claim's stamp, cleared the moment its execution
             # returns, before settlement): no per-token SQLite read under this lock, and a late

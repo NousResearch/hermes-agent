@@ -440,10 +440,11 @@ class GatewayVoiceMixin:
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))
                       if m.get("role") == "user"), 0)
         results = _turn_tool_results(agent_messages, start)
-        if any((tc.get("function") or {}).get("name") == "text_to_speech"
-               and _tts_call_produced_audio(tc, results)
-               for msg in agent_messages[start:] if msg.get("role") == "assistant"
-               for tc in (msg.get("tool_calls") or [])):
+        # Resolved through the tool_call bridge: a deferred text_to_speech is recorded under it.
+        from gateway.media_repair import tool_name_by_call_id
+        if any(_tts_call_produced_audio({"id": call_id}, results)
+               for call_id, name in tool_name_by_call_id(agent_messages[start:]).items()
+               if name == "text_to_speech"):
             return False
         # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
         # connected) — unless streaming consumed the text (already_sent): then the runner must.

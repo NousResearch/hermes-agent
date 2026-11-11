@@ -179,6 +179,9 @@ script or tool in this repository, so the commands below also work without
 | `just docs-install`, `just docs-build` | the website's `npm ci` and `build:fast` |
 | `just docs-generate`, `just docs-check` | regenerate the skill docs pages; then every docs check CI runs (committed pages match, links, diagrams) |
 | `just lock` | `scripts/relock.sh`: refreshes `uv.lock` after a `pyproject.toml` change, then re-syncs |
+| `just check-repo-guards`, `just check-uv-lock` | the repo-guards history, contributor and supply-chain steps, and the `uv.lock` check, through `scripts/ci/local_step.sh` against the merge base with `origin/main` |
+| `just check-icons`, `just lint-docker`, `just check-plugin-catalog`, `just check-nix` | the committed-icons check, hadolint and shellcheck on the container inputs, the catalog validator, `nix flake check` |
+| `just test-catalog`, `just test-whatsapp-bridge`, `just test-rust` | the plugin-catalog tests, the WhatsApp bridge's node tests (after `just js-install-whatsapp-bridge`), the bootstrap installer's `cargo test --lib` |
 
 Recipes that run Python go through `scripts/run-in-hermes-env`, so they work in
 a shell that was never activated. A new developer command is a script under
@@ -271,11 +274,11 @@ they are stale; rerun the generator and commit after changing any source SVG.
 Use the canonical runner on every host:
 
 ```bash
-scripts/run_tests.sh
-scripts/run_tests.sh tests/agent/ -v
+just test-all
+just test tests/agent/ -v
 ```
 
-`just test tests/agent/ -v` is the same run; `just test` refuses to start
+Both recipes call `scripts/run_tests.sh`; `just test` refuses to start
 without a path, and `just test-all` runs the full suite.
 
 On Windows, run the script through Bash. When no local `.venv` or `venv`
@@ -1024,8 +1027,8 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: use `scripts/run_tests.sh` for the same environment and per-file isolation as CI.
-2. **Run the lint checks**: `python scripts/check` (the blocking lint lane, locally).
+1. **Run tests**: `just test <paths>` (scripts/run_tests.sh) for the same environment and per-file isolation as CI.
+2. **Run the lint checks**: `just check` (the blocking lint lane, locally).
 3. **Test manually**: Run `hermes` and exercise the code path you changed
 4. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 5. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.

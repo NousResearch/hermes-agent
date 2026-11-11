@@ -1997,19 +1997,18 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             )
             return True
         pending = self._pending_prompts.get(str(prompt_id)) or {}
-        from gateway.approval_actor import approval_refusal, refusal_text, runner_admin_ids
+        from gateway.relay.prompt_resolvers import prompt_refusal
         actor = None
-        if pending.get("kind") == "exec_approval":
+        if pending.get("kind") in ("exec_approval", "slash_confirm", "clarify"):
+            from gateway.approval_actor import runner_answer_policy
             # Identity first: this answer is consumed before handle_message, and without the transport
             # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
             self._canonicalize(event.source)
-            actor = {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_admin_ids(event.source)}
-        if actor and (requester := approval_refusal(
-                str(pending.get("session_key") or ""), actor["actor_id"], admin_ids=actor["admin_ids"],
-                request_id=pending.get("request_id"))):
+            actor = {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_answer_policy(event.source)}
+        if actor and (refusal := prompt_refusal(pending, actor, option_id)):
             # Left pending: only the requester (or an approver) can consume it.
             self._send_lifecycle_ack(str(pending.get("chat_id") or getattr(event.source, "chat_id", "")),
-                                     refusal_text(requester), self._prompt_reply_metadata(event))
+                                     refusal, self._prompt_reply_metadata(event))
             return True
         state = self._pop_prompt(prompt_id)
         if state is None:

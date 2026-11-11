@@ -356,7 +356,6 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 
 def _install_sidecar() -> int:
     import pm
-    from pm.user_facing import npm_command
 
     try:
         npm = find_node_executable("npm")
@@ -365,7 +364,7 @@ def _install_sidecar() -> int:
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-        npm, env = npm_command(explicit=True)
+        npm, env = pm.npm_command(explicit=True)
     except (pm.InstallError, OSError) as exc:
         print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1

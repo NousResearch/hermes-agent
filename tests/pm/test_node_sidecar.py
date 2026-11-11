@@ -69,7 +69,7 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
         calls.append((name, kwargs))
         return context
     monkeypatch.setattr(pm, "ensure", acquire)
-    monkeypatch.setattr("pm.user_facing.npm_command", lambda env=None, **kwargs: (str(wrapper), context.env))
+    monkeypatch.setattr("pm.npm_command", lambda env=None, **kwargs: (str(wrapper), context.env))
     dependency, plugin = tmp_path / "side-dep", tmp_path / "plugin"
     dependency.mkdir()
     plugin.mkdir()

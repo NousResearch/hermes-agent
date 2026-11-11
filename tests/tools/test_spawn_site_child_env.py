@@ -83,7 +83,7 @@ def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatc
         from agent.lsp import install
 
         with patch.object(install, "find_node_executable", return_value=str(probe)), \
-             patch("pm.user_facing.npm_command", side_effect=lambda env: (str(probe), env)):
+             patch("pm.npm_command", side_effect=lambda env: (str(probe), env)):
             install._install_npm("probe-language-server", "probe")
     elif site == "buzz_cli":
         from plugins.platforms.buzz.adapter import _exec_buzz

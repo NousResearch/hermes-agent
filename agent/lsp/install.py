@@ -262,9 +262,7 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
 
     try:
         if pm == "npm":
-            from pm.user_facing import npm_command
-
-            pm_bin, env = npm_command(hermes_subprocess_env())
+            pm_bin, env = pm_store.npm_command(hermes_subprocess_env())
         else:
             env = with_hermes_node_path(hermes_subprocess_env())
     except (pm_store.InstallError, OSError) as exc:

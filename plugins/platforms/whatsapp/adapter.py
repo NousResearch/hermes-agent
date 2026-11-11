@@ -501,7 +501,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
             import pm
-            from pm.user_facing import npm_command
 
             _npm_bin = find_node_executable("npm")
             if _npm_bin is None:
@@ -509,7 +508,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 installed = pm.installed_package("npm")
                 if installed is None or installed.binary is None:
                     raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            _npm_bin, env = npm_command()
+            _npm_bin, env = pm.npm_command()
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
                                             env=env, **_RUN_TEXT, check=False)
             if install_result.returncode == 0:

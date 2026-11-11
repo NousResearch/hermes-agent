@@ -693,9 +693,7 @@ def install_node_sidecar(
     install_cmd = ["ci"] if (plugin_dir / "package-lock.json").is_file() else ["install"]
     try:
         runner = pm.ensure("npm", explicit=explicit)
-        from pm.user_facing import npm_command
-
-        npm, env = npm_command(runner.env, explicit=explicit)
+        npm, env = pm.npm_command(runner.env, explicit=explicit)
         proc = runner.run(
             [npm, *install_cmd, "--no-audit", "--no-fund"],
             cwd=str(plugin_dir),

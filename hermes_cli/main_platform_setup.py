@@ -118,7 +118,6 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
     from hermes_constants import find_node_executable
-    from pm.user_facing import npm_command
     from utils import env_int
     if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
@@ -133,7 +132,7 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "npm binary is missing after preparation")
-        npm, env = npm_command(explicit=True)
+        npm, env = pm.npm_command(explicit=True)
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,

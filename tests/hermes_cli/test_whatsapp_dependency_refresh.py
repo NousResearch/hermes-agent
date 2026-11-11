@@ -50,7 +50,7 @@ def test_setup_refreshes_stale_dependencies_but_keeps_matching_install(
 
     monkeypatch.setenv("WHATSAPP_NPM_INSTALL_TIMEOUT", "450")
     monkeypatch.setattr(hermes_constants, "find_node_executable", lambda name: str(npm))
-    monkeypatch.setattr("pm.user_facing.npm_command", lambda env=None, **kwargs: (str(npm), dict(env or {}, PATH=str(npm_dir))))
+    monkeypatch.setattr("pm.npm_command", lambda env=None, **kwargs: (str(npm), dict(env or {}, PATH=str(npm_dir))))
     monkeypatch.setattr(setup.subprocess, "run", install)
     assert setup._whatsapp_install_bridge(tmp_path)
     assert bool(calls) is refresh

@@ -33,6 +33,13 @@ def test_shipped_catalog_entries_are_all_valid_and_pinned():
     assert all(e.install_identifier.startswith(e.repo) for e in entries)
 
 
+
+def test_verified_tier_survives_load_and_unknown_tier_is_rejected(tmp_path):
+    """``tier`` is official/verified/community (Nous-granted badges); anything else skips the entry."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("vendor", tier="verified")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("bogus", tier="platinum")))
+    assert {e.name: e.tier for e in pc.load_catalog(tmp_path)} == {"vendor": "verified"}
+
 def test_category_defaults_to_other_and_unknown_category_is_rejected(tmp_path):
     """``category`` is the browse shelf: absent → ``desktop``; a value outside CATALOG_CATEGORIES is an
     invalid entry (skipped with a warning) so a typo cannot create a phantom shelf on the site."""
@@ -185,6 +192,41 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either
 
 
+def _serve(monkeypatch, doc: dict):
+    class _Resp:
+        content = json.dumps(doc).encode()
+        def raise_for_status(self): pass
+        def json(self): return json.loads(self.content)
+
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
+
+
+def test_a_catalog_doc_past_two_mib_is_still_accepted(tmp_path, monkeypatch):
+    """The published doc crossed 2 MiB on 2026-11-09 (1,268 entries). A 2 MiB cap made every client drop
+    the live doc and install its in-tree pin instead, so catalog bumps merged after the client's own copy
+    never reached `hermes plugins install <name>`. A doc of today's size and shape must be taken and cached."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    entries = [_entry(f"plugin-{i}", description="x" * 1600, version="1.0.0") for i in range(1400)]
+    _serve(monkeypatch, {"generated_at": "2026-11-09T10:18:17Z", "entries": entries, "removed": []})
+    doc = pc.fetch_live_catalog(force=True)
+    assert doc is not None and len(doc["entries"]) == 1400
+    assert len(json.dumps(doc).encode()) > 2 * 1024 * 1024
+    assert json.loads(cache.read_text())["generated_at"] == "2026-11-09T10:18:17Z"
+
+
+def test_a_catalog_doc_over_the_cap_is_refused(tmp_path, monkeypatch):
+    """The cap still bounds a broken or hostile response: an oversized doc reads as a failed fetch."""
+    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [], "removed": []})
+    cache.unlink()
+    _serve(monkeypatch, {"entries": [_entry("big", description="x" * 4096)], "removed": []})
+    monkeypatch.setattr(pc, "_MAX_LIVE_BYTES", 1024)
+    assert pc.fetch_live_catalog(force=True) is None
+    assert not cache.exists()
+
+
 def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path, monkeypatch):
     """The docs build stamps generated_at at build time, so a doc rebuilt from an older catalog is "newer"
     than a checkout that just added `onboarding`. At the same pin, a curated field the doc does not carry
@@ -198,3 +240,103 @@ def test_curated_fields_the_published_doc_lacks_come_from_the_checkout(tmp_path,
     assert (by_name["same"].onboarding, by_name["same"].title) == (True, "T")
     assert by_name["says-no"].onboarding is False and by_name["says-no"].title == "T"
     assert by_name["repinned"].onboarding is False and by_name["repinned"].sha == "b" * 40
+
+
+def test_in_tree_catalog_time_does_not_lazy_fetch_on_treeless_clones(tmp_path, monkeypatch):
+    """``in_tree_catalog_time`` dates the checkout with a pathspec'd ``git log``; the pathspec makes git
+    open every commit's tree. On a treeless (``tree:0``) partial clone — the layout ``hermes update``
+    produces — none of those trees exist locally, so an unrestricted probe lazy-fetches each one against
+    the remote: measured 40-80 s per inventory request, past the desktop's 30s RPC limit (#125683).
+    The probe must scope ``GIT_NO_LAZY_FETCH`` to itself so missing objects fail fast into the
+    worktree-mtime fallback — never into network work — while a full checkout keeps resolving its time.
+    This clone is never checked out, so there is no mtime to fall back to either: ``None`` all the way."""
+    import shutil
+    import subprocess as sp
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    src = tmp_path / "src"
+    (src / "plugin-catalog").mkdir(parents=True)
+    (src / "plugin-catalog" / "a.yaml").write_text("name: a\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    sp.run(["git", "init", "-q"], cwd=src, check=True, env=env)
+    sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+    sp.run(["git", "commit", "-qm", "seed"], cwd=src, check=True, env=env)
+    sp.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=src, check=True, env=env)
+
+    def local_object_types(repo):
+        out = sp.run(["git", "cat-file", "--batch-all-objects", "--batch-check"], cwd=repo,
+                     capture_output=True, text=True, env=env, check=False)
+        return {line.split()[1] for line in out.stdout.splitlines() if line}
+
+    dst = tmp_path / "treeless"
+    # file:// (not a plain path) so the clone goes through upload-pack and honors the filter.
+    sp.run(["git", "clone", "-q", "--filter=tree:0", "--no-checkout", src.as_uri(), str(dst)],
+           check=True, env=env)
+    if "tree" in local_object_types(dst):  # transport ignored the filter: no missing objects to protect
+        pytest.skip("file:// transport did not honor --filter=tree:0")
+
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: dst / "plugin-catalog")
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)  # resolve afresh in this test
+    assert pc.in_tree_catalog_time() is None
+    assert "tree" not in local_object_types(dst)  # the probe lazy-fetched nothing
+
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: src / "plugin-catalog")
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)
+    assert pc.in_tree_catalog_time() is not None  # a full checkout still resolves its commit time
+
+
+def test_treeless_checkout_still_outranks_a_doc_fetched_before_the_bump(tmp_path, monkeypatch):
+    """On the treeless layout the history probe fails fast, and ``None`` would feed the frozen-copy
+    rule that lets the live doc win — re-pinning the old sha on exactly the checkouts ``hermes
+    update`` just bumped. The checked-out files' mtime must stand in for the unreadable commit time
+    (fresh checkout ⇒ in-tree pin wins; catalog files older than the doc ⇒ live pin wins), with no
+    tree lazy-fetch anywhere (#125716 review)."""
+    import shutil
+    import subprocess as sp
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    src = tmp_path / "src"
+    (src / "plugin-catalog").mkdir(parents=True)
+    (src / "plugin-catalog" / "a.yaml").write_text("name: a\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    sp.run(["git", "init", "-q"], cwd=src, check=True, env=env)
+    sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+    sp.run(["git", "commit", "-qm", "seed"], cwd=src, check=True, env=env)
+    (src / "plugin-catalog" / "a.yaml").write_text("name: a2\n")
+    sp.run(["git", "add", "-A"], cwd=src, check=True, env=env)
+    sp.run(["git", "commit", "-qm", "bump"], cwd=src, check=True, env=env)
+    sp.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=src, check=True, env=env)
+
+    def local_object_types(repo):
+        out = sp.run(["git", "cat-file", "--batch-all-objects", "--batch-check"], cwd=repo,
+                     capture_output=True, text=True, env=env, check=False)
+        return {line.split()[1] for line in out.stdout.splitlines() if line}
+
+    dst = tmp_path / "treeless"
+    # file:// (not a plain path) so the clone goes through upload-pack and honors the filter.
+    sp.run(["git", "clone", "-q", "--filter=tree:0", "--no-checkout", src.as_uri(), str(dst)],
+           check=True, env=env)
+    if "tree" in local_object_types(dst):  # transport ignored the filter: no missing objects to protect
+        pytest.skip("file:// transport did not honor --filter=tree:0")
+    # Checking out only fetches HEAD's trees; the seed commit's tree stays missing, so the
+    # pathspec'd probe keeps failing — while the worktree files (and their mtimes) land.
+    sp.run(["git", "-C", str(dst), "checkout", "-q"], check=True, env=env)
+    probe = sp.run(["git", "-C", str(dst), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
+                   capture_output=True, env={**env, "GIT_NO_LAZY_FETCH": "1"}, check=False)
+    assert probe.returncode != 0  # the probe really is blind on this layout, like a real update
+
+    old, new = SHA, "a" * 40
+    _fresh_cache(tmp_path, monkeypatch, {"generated_at": "2026-09-22T10:00:00Z",
+                                         "entries": [_entry("shared", sha=old)], "removed": []})
+    monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: [pc.entry_from_mapping(_entry("shared", sha=new), "t")])
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: dst / "plugin-catalog")
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)  # resolve afresh: probe fails, mtime stands in
+    assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == new
+
+    # Control: catalog files older than the doc mean the checkout is the stale side — live pin wins.
+    for p in (dst / "plugin-catalog").rglob("*"):
+        os.utime(p, (0, 0))
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)
+    assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == old

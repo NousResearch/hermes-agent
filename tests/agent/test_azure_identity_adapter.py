@@ -190,7 +190,7 @@ class _FakeAzureIdentity:
         self.credential_count = 0
         self.scoped_calls = []
 
-    def DefaultAzureCredential(self, **kwargs):  # noqa: N802 — match SDK
+    def DefaultAzureCredential(self, **kwargs):
         self.last_credential_kwargs = kwargs
         self.credential_count += 1
         return SimpleNamespace(
@@ -198,15 +198,15 @@ class _FakeAzureIdentity:
             kwargs=kwargs,
         )
 
-    def ClientSecretCredential(self, tenant_id, client_id, client_secret):  # noqa: N802
+    def ClientSecretCredential(self, tenant_id, client_id, client_secret):
         self.scoped_calls.append(("client_secret", tenant_id, client_id, client_secret))
         return SimpleNamespace(kind="client_secret", tenant_id=tenant_id, client_id=client_id)
 
-    def WorkloadIdentityCredential(self, **kwargs):  # noqa: N802
+    def WorkloadIdentityCredential(self, **kwargs):
         self.scoped_calls.append(("workload_identity", kwargs))
         return SimpleNamespace(kind="workload_identity", kwargs=kwargs)
 
-    def ManagedIdentityCredential(self, **kwargs):  # noqa: N802
+    def ManagedIdentityCredential(self, **kwargs):
         self.scoped_calls.append(("managed_identity", kwargs))
         return SimpleNamespace(kind="managed_identity", kwargs=kwargs)
 

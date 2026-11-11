@@ -16,14 +16,14 @@ ACTIONS_CONTRACT_VERSION = 1
 CAPABILITY_ID = "gateway.platform_actions"
 
 
-def _err(code: str, detail: str = "") -> Dict[str, Any]:
-    result: Dict[str, Any] = {"ok": False, "error": code}
+def _err(code: str, detail: str = "") -> dict[str, Any]:
+    result: dict[str, Any] = {"ok": False, "error": code}
     if detail:
         result["detail"] = detail
     return result
 
 
-def _ok(**fields: Any) -> Dict[str, Any]:
+def _ok(**fields: Any) -> dict[str, Any]:
     return {"ok": True, **fields}
 
 
@@ -36,7 +36,7 @@ async def _telegram_add_reaction(adapter, chat_id, message_id, emoji):
     return _err("action_failed", "telegram set_message_reaction failed")
 
 
-async def _discord_add_reaction(adapter: Any, chat_id: str, message_id: str, emoji: str) -> Dict[str, Any]:
+async def _discord_add_reaction(adapter: Any, chat_id: str, message_id: str, emoji: str) -> dict[str, Any]:
     client = getattr(adapter, "_client", None)
     if client is None:
         return _err("adapter_disconnected", "discord client unavailable")
@@ -158,7 +158,7 @@ class PlatformActions:
                 return None, _err("invalid_argument", f"{name} must be a non-empty string")
         return self._resolve_adapter(platform)
 
-    async def _run(self, verb: str, platform: str, *args: str, **required: Any) -> Dict[str, Any]:
+    async def _run(self, verb: str, platform: str, *args: str, **required: Any) -> dict[str, Any]:
         """Gate, dispatch *verb* to the adapter's platform implementation, audit, return."""
         adapter, error = self._gate(platform, **required)
         if error is None and adapter is not None:
@@ -177,21 +177,21 @@ class PlatformActions:
 
     # -- v1 verbs -----------------------------------------------------------
 
-    async def add_reaction(self, platform: str, chat_id: str, message_id: str, emoji: str) -> Dict[str, Any]:
+    async def add_reaction(self, platform: str, chat_id: str, message_id: str, emoji: str) -> dict[str, Any]:
         """Add/set an emoji reaction on a platform message."""
         return await self._run(
             "add_reaction", platform, chat_id, message_id, emoji,
             chat_id=chat_id, message_id=message_id, emoji=emoji,
         )
 
-    async def set_thread_title(self, platform: str, chat_id: str, thread_id: str, title: str) -> Dict[str, Any]:
+    async def set_thread_title(self, platform: str, chat_id: str, thread_id: str, title: str) -> dict[str, Any]:
         """Rename a thread / forum topic."""
         return await self._run(
             "set_thread_title", platform, chat_id, thread_id, title,
             chat_id=chat_id, thread_id=thread_id, title=title,
         )
 
-    def _audit(self, verb: str, platform: str, result: Dict[str, Any]) -> None:
+    def _audit(self, verb: str, platform: str, result: dict[str, Any]) -> None:
         """Every platform action is logged (the #64176 'all actions logged' rule)."""
         logger.info(
             "platform_action plugin=%s verb=%s platform=%s ok=%s%s",

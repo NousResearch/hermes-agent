@@ -186,10 +186,18 @@ def test_xai_oauth_without_api_key_relays(voice_home):
 def test_xai_env_key_goes_direct(voice_home, monkeypatch):
     voice_home({"stt": {"provider": "xai"}})
     monkeypatch.setenv("XAI_API_KEY", "xai_key1")
+    monkeypatch.delenv("STT_XAI_MODEL", raising=False)
     stt = _resolve()["stt"]
     assert stt["mode"] == "direct"
     assert stt["wire"] == "xai-stt"
     assert stt["api_key"] == "xai_key1"
+    assert stt["model"] == "grok-voice-transcribe-2.0"
+
+
+def test_xai_config_model_reaches_client(voice_home, monkeypatch):
+    voice_home({"stt": {"provider": "xai", "xai": {"model": "grok-voice-transcribe-1.0"}}})
+    monkeypatch.setenv("XAI_API_KEY", "xai_key1")
+    assert _resolve()["stt"]["model"] == "grok-voice-transcribe-1.0"
 
 
 def test_direct_stt_carries_the_gateway_transcription_timeout(voice_home, monkeypatch):

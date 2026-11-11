@@ -123,7 +123,8 @@ def _git_or_raise(
     """Run git in *repo*; on a non-zero exit raise PluginOperationError(prefix + scrubbed error)."""
     result = _pc()._run_plugin_git(git_exe, repo, *args, timeout=timeout, auth_url=auth_url)
     if result.returncode != 0:
-        raise _pc().PluginOperationError(failure_prefix + _safe_git_error(result, source_url))
+        raise _pc().PluginOperationError(failure_prefix + _safe_git_error(result, source_url),
+                                         failure_class="clone_failed")
     return result
 
 
@@ -169,11 +170,13 @@ def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url
                           auth_url=source_url, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             raise _pc().PluginOperationError(
-                f"Git {verb} of commit '{revision}' timed out after {timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}") from exc
+                f"Git {verb} of commit '{revision}' timed out after {timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}",
+                failure_class="clone_failed") from exc
     actual = _pc()._git_head_revision(repo, git_exe)
     if actual != _git_resolve_commit(repo, git_exe, revision):
         raise _pc().PluginOperationError(
-            f"Checked-out revision '{actual}' does not match requested commit '{revision}'.")
+            f"Checked-out revision '{actual}' does not match requested commit '{revision}'.",
+            failure_class="clone_failed")
 
 
 def _scrub_git_url(git_url: str) -> str:
@@ -222,7 +225,7 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
     downloads every file in the repository, which times out on slow connections."""
     git_exe = _pc()._resolve_git_executable()
     if not git_exe:
-        raise _pc().PluginOperationError("git is not installed or not in PATH.")
+        raise _pc().PluginOperationError("git is not installed or not in PATH.", failure_class="git_missing")
     clone_timeout = _pc()._clone_timeout_seconds()
     partial = ["--filter=blob:none"] if subdir else []
     no_checkout = ["--no-checkout"] if revision or subdir else []
@@ -231,11 +234,13 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
         result = _pc()._run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url,
                                  timeout=clone_timeout)
     except FileNotFoundError as e:
-        raise _pc().PluginOperationError("git is not installed or not in PATH.") from e
+        raise _pc().PluginOperationError("git is not installed or not in PATH.", failure_class="git_missing") from e
     except subprocess.TimeoutExpired as e:
-        raise _pc().PluginOperationError(f"Git clone timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}") from e
+        raise _pc().PluginOperationError(f"Git clone timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}",
+                                         failure_class="clone_failed") from e
     if result.returncode != 0:
-        raise _pc().PluginOperationError(_pc()._clone_failure_message(git_url, _safe_git_error(result, git_url)))
+        raise _pc().PluginOperationError(_pc()._clone_failure_message(git_url, _safe_git_error(result, git_url)),
+                                         failure_class="clone_failed")
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
     if subdir:
         _restrict_checkout_to_subdir(tmp_clone, git_exe, subdir)
@@ -247,7 +252,8 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
                           auth_url=git_url, failure_prefix="Git checkout of the plugin subdirectory failed:\n")
         except subprocess.TimeoutExpired as e:
             raise _pc().PluginOperationError(
-                f"Git checkout timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}") from e
+                f"Git checkout timed out after {clone_timeout} seconds. {_pc()._CLONE_TIMEOUT_HINT}",
+                failure_class="clone_failed") from e
     return _pc()._git_head_revision(tmp_clone, git_exe)
 
 

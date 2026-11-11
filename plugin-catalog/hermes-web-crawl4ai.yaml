@@ -1,0 +1,18 @@
+name: hermes-web-crawl4ai
+repo: https://github.com/axAilotl/hermes-web-crawl4ai
+sha: 38797565744b13cb950931cf83c4744dbf32d099
+description: Self-hosted Crawl4AI extraction and bounded, policy-checked website crawling.
+maintainer: axAilotl
+tier: community
+category: web
+version: "0.2.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/axAilotl/hermes-web-crawl4ai#readme
+platforms: [linux, macos, windows]
+known_issues:
+  - Uses Hermes URL-policy helpers outside the documented plugin API; tested against 0.23.0 and main.
+capabilities:
+  provides_tools: [crawl4ai_crawl]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

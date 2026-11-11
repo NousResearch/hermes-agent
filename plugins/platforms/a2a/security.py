@@ -16,6 +16,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
+from agent.proxy_bypass import is_loopback_host
 from gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ def _configured_trusted_peers() -> frozenset[str]:
     return frozenset()
 
 
+def _unbracket(host: str) -> str:
+    """``[::1]`` is the URL spelling of ``::1``; sockets and the loopback check need the bare literal."""
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
 @dataclass(frozen=True)
 class A2ASecurityContext:
     """Immutable, profile-scoped security settings captured at adapter startup. HTTP request
@@ -63,12 +69,12 @@ class A2ASecurityContext:
     push_secret: str
 
     @classmethod
-    def capture(cls) -> "A2ASecurityContext":
+    def capture(cls) -> A2ASecurityContext:
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
         return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
-                   requested_host=_startup_env("A2A_HOST") or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
+                   requested_host=_unbracket(_startup_env("A2A_HOST")) or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
 
     def localhost_only(self) -> bool:
         return not (self.bearer_token or self.peer_tokens)
@@ -99,11 +105,19 @@ class A2ASecurityContext:
             return f"ip:{client_ip or 'unknown'}"
         return None
 
+    def is_loopback_bind(self) -> bool:
+        return is_loopback_host(self.resolve_bind_host())
+
+    def dispatch_fails_closed(self) -> bool:
+        """Network-exposed token bind with no allow-list and no allow-all: refuse every peer."""
+        return not (self.allow_all_users or self.localhost_only() or self.trusted_peers or self.is_loopback_bind())
+
     def is_trusted_peer(self, identity: str) -> bool:
-        """Open when allow-all or localhost-only; else the allow-list (if any) must contain identity."""
-        if self.allow_all_users or self.localhost_only() or not self.trusted_peers:
-            return True
-        return identity in self.trusted_peers
+        """Fail closed on network-exposed binds with no allow-list; loopback
+        binds without an allow-list stay open for backward compatibility."""
+        if self.dispatch_fails_closed():
+            return False  # the misconfiguration is logged once in A2AAdapter.connect()
+        return self.allow_all_users or self.localhost_only() or not self.trusted_peers or identity in self.trusted_peers
 
     def sign_push_payload(self, payload: dict) -> str:
         """HMAC-SHA256 hex over the sorted-key JSON body; "" when no secret."""
@@ -111,6 +125,24 @@ class A2ASecurityContext:
             return ""
         body = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         return hmac.new(self.push_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+def browser_post_refusal(headers) -> Optional[str]:
+    """Why a no-token POST must be refused as browser-originated, or None.
+
+    No-token mode trusts anything that reaches 127.0.0.1, and a web page open in the operator's
+    browser reaches it too. Refuse what only a browser sends: an ``Origin`` header, a
+    ``Sec-Fetch-Site`` other than ``none``/``same-origin``, or a body type a page can POST without a
+    CORS preflight (A2A is JSON, so anything but a JSON media type). Local agents and SDKs send JSON
+    and none of these headers."""
+    if headers.get("Origin") is not None:
+        return "browser-originated request refused (no A2A token configured)"
+    if (headers.get("Sec-Fetch-Site") or "none").strip().lower() not in {"none", "same-origin"}:
+        return "cross-site request refused (no A2A token configured)"
+    media_type = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not media_type.endswith("+json"):
+        return "Content-Type must be application/json"
+    return None
 
 
 def localhost_only() -> bool:
@@ -170,6 +202,23 @@ def redact_outbound(text: str) -> str:
 # (link-local/AWS metadata, RFC1918, unspecified, IPv6 link-local/ULA). Loopback only in localhost mode.
 _BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16, 32)), "192.168.",
                      "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
+
+
+def is_loopback_host_header(host_header: Optional[str], public_url: str = "") -> bool:
+    """True when an HTTP ``Host`` value names a loopback address or the ``A2A_PUBLIC_URL`` host
+    (any port); malformed fails closed."""
+    value = (host_header or "").strip()
+    if not value or any(c in value for c in "@/\\?# \t"):
+        return False
+    try:
+        parts = urllib.parse.urlsplit("//" + value)
+        parts.port  # raises ValueError on a malformed port
+        public_host = (urllib.parse.urlsplit(public_url or "").hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    # ``localhost.`` is the absolute form of ``localhost``; a rebound name stays foreign either way.
+    host = (parts.hostname or "").lower().rstrip(".")
+    return is_loopback_host(host) or (bool(public_host) and host == public_host)
 
 
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:

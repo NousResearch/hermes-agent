@@ -265,7 +265,7 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # recorded over the shipped bytes, so a post-publish deletion (as the
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
-            (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+            retry_held(lambda: (staged / "vcruntime140_1.dll").unlink(missing_ok=True))
         # python-build-standalone's Windows build ships python.exe only, so `python3` (npm and
         # vitest helpers, POSIX-minded scripts) resolves past the activated PATH to the Microsoft
         # Store's App Execution Alias stub, which installs nothing and fails. python.exe is a

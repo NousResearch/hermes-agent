@@ -79,3 +79,17 @@ async def test_old_update_card_tapped_after_restart_does_not_answer_the_new_prom
         response.unlink()
         await after._handle_callback_query(_tap(new_yes), MagicMock())
         assert not response.exists(), "an answered /update card answered again"
+
+
+@pytest.mark.asyncio
+async def test_update_card_stays_answerable_when_the_answer_could_not_be_written(tmp_path):
+    adapter = _adapter()
+    await adapter.send_update_prompt(chat_id="12345", prompt="Restore stash?", session_key=_SESSION)
+    card = _update_card_data(adapter, "y")
+    missing = tmp_path / "gone"  # the response write fails: its directory does not exist
+    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+        with patch("hermes_constants.get_hermes_home", return_value=missing):
+            await adapter._handle_callback_query(_tap(card), MagicMock())
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            await adapter._handle_callback_query(_tap(card), MagicMock())  # the retry still answers
+    assert (tmp_path / ".update_response").read_text() == "y"

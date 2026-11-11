@@ -181,7 +181,8 @@ const en: BotsMessages = {
       count === 0
         ? `Deleted “${name}”`
         : `Deleted “${name}” — ${count} ${count === 1 ? 'bot' : 'bots'} moved to Unassigned`,
-    undo: 'Undo'
+    undo: 'Undo',
+    resetOrder: 'Reset custom order'
   },
   bot: {
     newTitle: 'New bot',
@@ -621,7 +622,8 @@ const ja: BotsMessages = {
       count === 0
         ? `「${name}」を削除しました`
         : `「${name}」を削除しました — ${count} 件のボットを未分類に移動しました`,
-    undo: '元に戻す'
+    undo: '元に戻す',
+    resetOrder: 'カスタム順序をリセット'
   },
   bot: {
     newTitle: '新しいボット',
@@ -1054,7 +1056,8 @@ const zh: BotsMessages = {
     newSectionEllipsis: '新建分区…',
     removeFromSection: '移出分区',
     deleted: (name, count) => (count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 个机器人已移至未分类`),
-    undo: '撤销'
+    undo: '撤销',
+    resetOrder: '重置自定义排序'
   },
   bot: {
     newTitle: '新建机器人',
@@ -1480,7 +1483,8 @@ const zhHant: BotsMessages = {
     newSectionEllipsis: '新增分區…',
     removeFromSection: '移出分區',
     deleted: (name, count) => (count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 個機器人已移至未分類`),
-    undo: '復原'
+    undo: '復原',
+    resetOrder: '重設自訂排序'
   },
   bot: {
     newTitle: '新增機器人',

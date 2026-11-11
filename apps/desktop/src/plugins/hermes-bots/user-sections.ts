@@ -25,6 +25,12 @@ import { atom } from 'nanostores'
 
 import { $botMeta, saveBotMeta } from './data'
 import { $groupChats, updateGroupChat } from './group-chat'
+import {
+  clearSectionRosterOrder,
+  removeBotFromSectionOrder,
+  restoreSectionRosterOrder,
+  snapshotSectionRosterOrder
+} from './roster-order'
 import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, GroupChat, RosterRow } from './types'
@@ -231,12 +237,14 @@ export function deleteBotSection(id: string, roster: RosterRow[] = []): { member
   const index = list.findIndex(s => s.id === id)
   const section = list[index]
   const members = (roster || []).filter(bot => botSectionId(bot, $botMeta.get()) === id)
+  const savedSectionOrder = snapshotSectionRosterOrder(id)
+  clearSectionRosterOrder(id)
 
   const token = Symbol(id)
 
   pendingSectionDeletes.set(id, token)
   persistBotSections(list.filter(s => s.id !== id))
-  void moveBotsToSection(members, null).finally(() => {
+  void moveBotsToSection(members, null, () => pendingSectionDeletes.get(id) === token).finally(() => {
     if (pendingSectionDeletes.get(id) === token) {
       pendingSectionDeletes.delete(id)
     }
@@ -254,6 +262,7 @@ export function deleteBotSection(id: string, roster: RosterRow[] = []): { member
 
       current.splice(Math.min(index, current.length), 0, section)
       persistBotSections(current)
+      restoreSectionRosterOrder(savedSectionOrder)
       void moveBotsToSection(members, id)
     }
   }
@@ -283,25 +292,41 @@ export function moveBotSection(id: string, delta: number): void {
  * NAME rides along: the record itself is local to the desktop that made it,
  * and the name is what lets another desktop rebuild it (adoptBotSectionsFromMeta).
  */
-export async function moveBotsToSection(bots: RosterRow[], sectionId: null | string): Promise<void> {
-  const sectionName = (sectionId && $botSections.get().find(s => s.id === sectionId)?.name) || null
+export async function moveBotsToSection(
+  bots: RosterRow[],
+  sectionId: null | string,
+  shouldContinue?: () => boolean
+): Promise<void> {
+  const nextSectionId = sectionId || null
+  const sectionName = (nextSectionId && $botSections.get().find(s => s.id === nextSectionId)?.name) || null
 
   for (const bot of bots || []) {
     if (!bot) {
       continue
     }
 
-    // Deleted while this loop was still walking its members (a rename's
-    // re-stamp stuck behind a slow write): filing the rest would put them back
-    // into a section that no longer exists.
-    if (sectionId && !$botSections.get().some(s => s.id === sectionId)) {
+    if (shouldContinue && !shouldContinue()) {
       return
     }
 
-    const current = botRosterMeta(bot, $botMeta.get())
+    // Deleted while this loop was still walking its members (a rename's
+    // re-stamp stuck behind a slow write): filing the rest would put them back
+    // into a section that no longer exists.
+    if (nextSectionId && !$botSections.get().some(s => s.id === nextSectionId)) {
+      return
+    }
 
-    if (botSectionId(bot, $botMeta.get()) !== (sectionId || null) || (current?.sectionName || null) !== sectionName) {
-      await saveBotMeta(bot, { sectionId: sectionId || null, sectionName })
+    const metaSnapshot = $botMeta.get()
+    const current = botRosterMeta(bot, metaSnapshot)
+    const previousSectionId = botSectionId(bot, metaSnapshot)
+    const sectionChanged = previousSectionId !== nextSectionId
+
+    if (sectionChanged || (current?.sectionName || null) !== sectionName) {
+      if (sectionChanged) {
+        removeBotFromSectionOrder(bot, previousSectionId)
+      }
+
+      await saveBotMeta(bot, { sectionId: nextSectionId, sectionName })
     }
   }
 }

@@ -97,12 +97,56 @@ interface BotRowProps {
   onDelete: (bot: RosterRow) => void
   onEdit: (bot: RosterRow) => void
   onGroup: (bot: RosterRow) => void
+  onMoveDown?: () => void
+  onMoveUp?: () => void
   /** Opens the New section dialog; the bot is filed into it on create. */
   onNewSection: (bot: RosterRow) => void
   showHandle?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
+function BotRowMoveActions({
+  moveDownLabel,
+  moveUpLabel,
+  onMoveDown,
+  onMoveUp
+}: {
+  moveDownLabel: string
+  moveUpLabel: string
+  onMoveDown?: () => void
+  onMoveUp?: () => void
+}) {
+  if (!onMoveUp && !onMoveDown) {
+    return null
+  }
+
+  return (
+    <>
+      <ContextMenuItem disabled={!onMoveUp} onSelect={() => onMoveUp?.()}>
+        <Codicon className="mr-1.5" name="arrow-up" />
+        {moveUpLabel}
+      </ContextMenuItem>
+      <ContextMenuItem disabled={!onMoveDown} onSelect={() => onMoveDown?.()}>
+        <Codicon className="mr-1.5" name="arrow-down" />
+        {moveDownLabel}
+      </ContextMenuItem>
+    </>
+  )
+}
+
+function resolveRowAge(activitySession: ReturnType<typeof botActivitySession>, bot: RosterRow): number {
+  return Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
+}
+
+export function BotRow({
+  bot,
+  onDelete,
+  onEdit,
+  onGroup,
+  onMoveDown,
+  onMoveUp,
+  onNewSection,
+  showHandle
+}: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
@@ -149,7 +193,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // the moment the 150 s liveness window lapses (#105874). An absent
   // worker_session (past the gateway's 20-row window) degrades to chat age.
   const workerActive = workerActiveAt(bot)
-  const rowAgeTs = Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
+  const rowAgeTs = resolveRowAge(activitySession, bot)
 
   const groupKeys = useValue($activeGroupMemberKeys)
   const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId, Date.now(), groupKeys)
@@ -450,6 +494,12 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         {/* Filing. Membership is one field on the bot's meta (`sectionId`), so
             this is a one-field write and no list anywhere has to be kept in
             sync with it. */}
+        <BotRowMoveActions
+          moveDownLabel={b.sections.moveDown}
+          moveUpLabel={b.sections.moveUp}
+          onMoveDown={onMoveDown}
+          onMoveUp={onMoveUp}
+        />
         <ContextMenuSub>
           <ContextMenuSubTrigger>{b.sections.moveTo}</ContextMenuSubTrigger>
           <ContextMenuSubContent>

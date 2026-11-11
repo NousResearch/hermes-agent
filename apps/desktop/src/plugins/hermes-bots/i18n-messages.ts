@@ -138,6 +138,7 @@ export type BotsMessages = {
     removeFromSection: string
     deleted: (name: string, count: number) => string
     undo: string
+    resetOrder: string
   }
   /** Creating, editing and removing a bot. */
   bot: {

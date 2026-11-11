@@ -15,6 +15,7 @@ import { connectionName, groupSelectionElsewhere, seatableGroupBots, useGroupCap
 import { botSourceStatus } from './data'
 import type { useBots } from './i18n'
 import { setActivityToasts } from './roster-actions'
+import { clearRosterOrder, hasAnyCustomRosterOrder, type RosterOrderMap } from './roster-order'
 import { GatewayKindGlyph } from './roster-sections'
 import type { rosterGatewayOptions } from './roster-sections'
 import type { RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
@@ -57,7 +58,7 @@ function NewGroupChatItem({ elsewhereNote, label, onSelect, roster }: NewGroupCh
 interface renderRosterToolbarProps {
   b: ReturnType<typeof useBots>
   activityToasts: boolean
-  activeSourceRoster: RosterRow[]
+  activeSourceRoster?: RosterRow[]
   /** Full roster; New Group Chat seats only `seatableGroupBots` of it. */
   roster: RosterRow[]
   setCreateOpen: (value: boolean) => void
@@ -78,12 +79,12 @@ interface renderRosterToolbarProps {
   setActivityFilter: (value: RosterActivityFilter) => void
   gatewayFilter: string
   setGatewayFilter: (value: string) => void
+  rosterOrder?: RosterOrderMap
 }
 
 export function renderRosterToolbar({
   b,
   activityToasts,
-  activeSourceRoster,
   roster,
   setCreateOpen,
   setGroupCreateOpen,
@@ -100,7 +101,8 @@ export function renderRosterToolbar({
   activityFilter,
   setActivityFilter,
   gatewayFilter,
-  setGatewayFilter
+  setGatewayFilter,
+  rosterOrder
 }: renderRosterToolbarProps) {
   return (
     <>
@@ -257,6 +259,15 @@ export function renderRosterToolbar({
                   >
                     {b.roster.clearFilters}
                   </DropdownMenuItem>
+                ) : null}
+                {rosterOrder && hasAnyCustomRosterOrder(rosterOrder) ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => clearRosterOrder()}>
+                      <Codicon className="mr-1.5" name="clear-all" />
+                      {b.sections.resetOrder}
+                    </DropdownMenuItem>
+                  </>
                 ) : null}
               </DropdownMenuContent>
             </DropdownMenu>

@@ -45,6 +45,7 @@ vi.mock('./roster-actions', () => ({ trackInboundActivity }))
 vi.mock('./soul', () => ({ backfillMessagingProtocol: vi.fn() }))
 
 import { $lastRoster, useRoster } from './data'
+import { $rosterOrder, persistRosterOrder, rosterSectionScope } from './roster-order'
 import { usePublishRosterSnapshot } from './roster-pane-lifecycle'
 
 const rows: RosterRow[] = [{ name: 'default' }, { name: 'coder', last_session: { preview: 'hi' } }]
@@ -76,6 +77,7 @@ function renderPane() {
 beforeEach(() => {
   vi.clearAllMocks()
   $lastRoster.set([])
+  $rosterOrder.set({})
   hostMock.agents.mockRejectedValue(new Error('no union roster'))
 })
 
@@ -118,5 +120,47 @@ describe('usePublishRosterSnapshot', () => {
     await waitFor(() => expect($lastRoster.get()).not.toBe(published))
     expect($lastRoster.get()[1]?.last_session?.preview).toBe('later')
     expect(trackInboundActivity).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips pruning custom order when host.agents transiently fails, then prunes once sources arrive', async () => {
+    const localScope = rosterSectionScope('sec-a', 'local')
+    const sshScope = rosterSectionScope('sec-a', 'ssh-box')
+
+    persistRosterOrder({
+      [localScope]: ['local::default', 'local::deleted'],
+      [sshScope]: ['ssh-box::remote-bot']
+    })
+
+    // First poll: host.agents() rejects -> degraded snapshot has no data.sources;
+    // custom order must stay untouched rather than wiping local::* and ssh-box::*.
+    hostMock.request.mockResolvedValue({ profiles: rows })
+    const { result } = renderPane()
+
+    await waitFor(() => expect(result.current.data?.profiles).toHaveLength(2))
+    expect($rosterOrder.get()).toEqual({
+      [localScope]: ['local::default', 'local::deleted'],
+      [sshScope]: ['ssh-box::remote-bot']
+    })
+
+    // Second poll: host.agents() succeeds with authoritative sources -> local::deleted
+    // is pruned while ssh-box (connect-on-demand) is preserved.
+    hostMock.agents.mockResolvedValueOnce({
+      agents: [
+        { connectionId: 'local', profile: 'default' },
+        { connectionId: 'local', profile: 'coder' }
+      ],
+      sources: [
+        { connectionId: 'local', reachable: true },
+        { connectionId: 'ssh-box', error: 'connect-on-demand', reachable: false }
+      ]
+    })
+
+    await result.current.refetch()
+    await waitFor(() => expect(result.current.data?.sources).toHaveLength(2))
+
+    expect($rosterOrder.get()).toEqual({
+      [localScope]: ['local::default'],
+      [sshScope]: ['ssh-box::remote-bot']
+    })
   })
 })

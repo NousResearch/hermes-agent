@@ -33,6 +33,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
+import { removeBotFromRosterOrder } from './roster-order'
 import { botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, RosterRow } from './types'
@@ -491,6 +492,7 @@ export async function deleteBot(bot: RosterRow) {
   }
 
   clearSelectedRosterBot(bot)
+  removeBotFromRosterOrder(botRosterKey(bot))
 
   if ($openBotChat.get()?.key === botRosterKey(bot)) {
     $openBotChat.set(null)

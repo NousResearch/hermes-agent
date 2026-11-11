@@ -39,6 +39,7 @@ vi.mock('./shared', () => ({
 }))
 
 import { $botMeta } from './data'
+import { $rosterOrder, persistRosterOrder, rosterSectionScope } from './roster-order'
 import type { RosterRow } from './types'
 import {
   $botSections,
@@ -78,6 +79,7 @@ beforeEach(() => {
   storage.clear()
   $botMeta.set({})
   $botSections.set([])
+  $rosterOrder.set({})
   resetBotSectionDeletes()
   saveBotMeta.mockClear()
 })
@@ -272,5 +274,55 @@ describe('user sections', () => {
     await vi.waitFor(() => expect(saveBotMeta).toHaveBeenCalledTimes(1))
     expect(saveBotMeta).toHaveBeenCalledWith(bot('nanox'), { sectionId: section.id, sectionName: 'Customers' })
     expect($botSections.get()).toEqual([{ id: section.id, name: 'Customers' }])
+  })
+
+  it('prunes custom order only when a bot changes section, never on section rename re-stamping', async () => {
+    const clients = createBotSection('Clients', [bot('nanox'), bot('scout')])!
+    const ops = createBotSection('Ops', [bot('triage')])!
+    await vi.waitFor(() => expect(saveBotMeta).toHaveBeenCalledTimes(3))
+
+    const clientsScope = rosterSectionScope(clients.id, 'local')
+    const opsScope = rosterSectionScope(ops.id, 'local')
+
+    persistRosterOrder({
+      [clientsScope]: ['legacy::scout', 'legacy::nanox'],
+      [opsScope]: ['legacy::triage']
+    })
+
+    // Renaming Clients re-stamps sectionName through moveBotsToSection with the SAME sectionId;
+    // custom order in Clients must survive untouched.
+    renameBotSection(clients.id, 'Enterprise', [bot('nanox'), bot('scout')])
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionName).toBe('Enterprise'))
+    expect($rosterOrder.get()[clientsScope]).toEqual(['legacy::scout', 'legacy::nanox'])
+
+    // Moving scout into Ops removes scout from Clients' custom order and leaves Ops' order intact.
+    await moveBotsToSection([bot('scout')], ops.id)
+    expect($rosterOrder.get()[clientsScope]).toEqual(['legacy::nanox'])
+    expect($rosterOrder.get()[opsScope]).toEqual(['legacy::triage'])
+  })
+
+  it('cancels an in-flight deleteBotSection loop on Undo so remaining members and restored order survive', async () => {
+    const members = [bot('nanox'), bot('scout'), bot('triage')]
+    const section = createBotSection('Clients', members)!
+    await vi.waitFor(() => expect($botMeta.get().triage?.sectionId).toBe(section.id))
+
+    const scope = rosterSectionScope(section.id, 'local')
+    persistRosterOrder({
+      [scope]: ['legacy::triage', 'legacy::scout', 'legacy::nanox']
+    })
+
+    // Hold member 0's delete RPC in flight while Undo runs synchronously.
+    // deleteBotSection itself owns snapshotting, clearing, and Undo-restoring custom order.
+    const releaseFirstClear = holdNextSave()
+    const { undo } = deleteBotSection(section.id, members)
+    expect($rosterOrder.get()[scope]).toBeUndefined()
+
+    undo()
+    releaseFirstClear()
+
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBe(section.id))
+    expect($botMeta.get().scout?.sectionId).toBe(section.id)
+    expect($botMeta.get().triage?.sectionId).toBe(section.id)
+    expect($rosterOrder.get()[scope]).toEqual(['legacy::triage', 'legacy::scout', 'legacy::nanox'])
   })
 })

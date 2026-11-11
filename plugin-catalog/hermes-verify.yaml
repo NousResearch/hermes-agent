@@ -1,7 +1,7 @@
 # Exact qualified source pin; catalog admission requires maintainer review.
 name: hermes-verify
 repo: https://github.com/BrandonDucar/hermes-verify
-sha: d80cfa66345de89dd99289af8680e9b9b010be16
+sha: 22cd13c6ae7e07296a333b31c828db44455098ef
 description: Configurable tool-risk flags, bounded local receipt metadata and held unverified-prose labels.
 maintainer: BrandonDucar
 tier: community

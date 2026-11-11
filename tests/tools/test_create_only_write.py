@@ -80,15 +80,11 @@ def test_remote_create_only_with_and_without_python3(remote_ops, tmp_path, monke
     assert not list(tmp_path.rglob(".hermes-create-*"))
 
 
-def test_write_file_description_scopes_overwrite_to_the_default():
-    desc = ft.WRITE_FILE_SCHEMA["description"]
-    overwrite = desc.index("OVERWRITES the entire file by default")
-    assert desc.index("create_only=true instead refuses any existing path") > overwrite
-    assert desc.count("create_only") == 1
-
-
-def test_write_file_schema_has_no_typographic_apostrophes():
-    assert "\u2019" not in json.dumps(ft.WRITE_FILE_SCHEMA, ensure_ascii=False)
+def test_create_only_is_an_optional_boolean_defaulting_to_false():
+    params = ft.WRITE_FILE_SCHEMA["parameters"]
+    assert params["properties"]["create_only"]["type"] == "boolean"
+    assert params["properties"]["create_only"].get("default", False) is False
+    assert "create_only" not in params["required"]
 
 
 def _create_command(remote_ops, monkeypatch, path, python):

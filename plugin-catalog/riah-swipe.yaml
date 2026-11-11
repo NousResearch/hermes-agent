@@ -1,0 +1,19 @@
+name: riah-swipe
+title: Riah Swipe
+repo: https://github.com/RiahStudio/riah-swipe
+sha: 2a80073c84293a62159f933918f12fb869463063
+subdir: hermes-plugin
+description: "Swipe through what your agent made. Hermes puts a batch of options (images, video, audio, names, taglines) into a swipe deck; you keep, cut, or send one back with a note, and Hermes remakes the ones you sent back. On Telegram the deck appears in the chat with Keep, Cut, Redo and Undo buttons, and you type a note on any card to say why; elsewhere you get a sign-in board link for desktop or phone. Runs a small local HTTP server inside Hermes and writes only to its plugin-data folder; no extra dependencies, telemetry or accounts. Full disclosure in the README."
+maintainer: Riah Studio
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/RiahStudio/riah-swipe/tree/2a80073c84293a62159f933918f12fb869463063/hermes-plugin#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [swipe_publish, swipe_status, swipe_results, swipe_wait]
+  provides_hooks: [pre_llm_call, pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

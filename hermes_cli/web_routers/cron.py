@@ -824,7 +824,9 @@ async def cron_fire_webhook(request: Request):
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
     cfg = await asyncio.to_thread(load_config)
-    claims = get_fire_verifier()(
+    # The verifier may fetch JWKS over the network.
+    claims = await asyncio.to_thread(
+        get_fire_verifier(),
         token=token,
         expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
         jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,

@@ -844,7 +844,7 @@ def evaluate_all(force: bool = False) -> dict[str, Any]:
 # ---- Routes ----
 
 @router.get("/achievements")
-async def achievements():
+def achievements():
     data = evaluate_all()
     payload = {k: data[k] for k in ["achievements", "unlocked_count", "discovered_count", "secret_count", "total_count", "error", "generated_at"] if k in data}
     payload["is_stale"] = _is_snapshot_stale(data)
@@ -853,18 +853,18 @@ async def achievements():
 
 
 @router.get("/scan-status")
-async def scan_status():
+def scan_status():
     return _scan_status_payload()
 
 
 @router.get("/recent-unlocks")
-async def recent_unlocks():
+def recent_unlocks():
     data = evaluate_all()
     return sorted([a for a in data["achievements"] if a["unlocked"]], key=lambda a: a.get("unlocked_at") or 0, reverse=True)[:20]
 
 
 @router.get("/sessions/{session_id}/badges")
-async def session_badges(session_id: str):
+def session_badges(session_id: str):
     data = evaluate_all()
     session = next((s for s in data["sessions"] if s["session_id"] == session_id), None)
     if not session:
@@ -875,12 +875,12 @@ async def session_badges(session_id: str):
 
 
 @router.post("/rescan")
-async def rescan():
+def rescan():
     return {"ok": True, **evaluate_all(force=True)}
 
 
 @router.post("/reset-state")
-async def reset_state():
+def reset_state():
     global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
     save_state({"unlocks": {}})
     _SNAPSHOT_CACHE = None

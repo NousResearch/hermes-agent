@@ -54,7 +54,6 @@ x-hermes-common: &hermes-common
     # UID remapping — must match your host user to avoid permission issues
     - HERMES_UID=1000
     - HERMES_GID=1000
-    - HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
     # /opt/data is the image default (Dockerfile:396). /workspace MUST be
     # added or agent/file_safety.py denies every write under it — the mount
     # would look correct and fail silently with an "outside
@@ -89,8 +88,11 @@ services:
     # Host-side binding is 127.0.0.1 (see ports below) so it's not LAN-exposed.
     # Upstream 0.17+ requires auth for non-loopback binds — basic_auth is
     # configured in data/config.yaml (username=admin, password=hermes).
-    # Voice package availability is currently reinforced at container startup. This does not change the supported runtime lane: the containers still run from the published GHCR image.
-    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open"]
+    # Voice packages are baked into the image (Dockerfile uv pip install); the old startup
+    # `pip show …|| pip install …` prefix was dead weight (the venv ships without `pip`).
+    # Pass the subcommand directly so the s6 boot reconciler reads this container's role from
+    # argv exactly as the image expects (a shell wrapper hides it — see docker-compose.upstream.yml).
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]
     environment:
       - GATEWAY_HEALTH_URL=http://hermes-gateway:8642
     volumes:
@@ -117,8 +119,11 @@ services:
     # Runs the gateway with the weixin (WeChat personal / iLink) platform enabled
     # per docker/hermes-config.yaml. weixin uses outbound long-poll to
     # ilinkai.weixin.qq.com — no inbound host port needed.
-    # Voice package availability is currently reinforced at container startup. This does not change the supported runtime lane: the containers still run from the published GHCR image.
-    command: ["sh", "-lc", "(/opt/hermes/.venv/bin/python3 -m pip show edge-tts >/dev/null 2>&1 && /opt/hermes/.venv/bin/python3 -m pip show piper-tts >/dev/null 2>&1) || /opt/hermes/.venv/bin/python3 -m pip install -q edge-tts==7.2.7 piper-tts==1.6.0; exec /opt/hermes/.venv/bin/hermes gateway run"]
+    # Voice packages are baked into the image (Dockerfile uv pip install); the old startup
+    # `pip show …|| pip install …` prefix was dead weight (the venv ships without `pip`).
+    # Pass the subcommand directly so the s6 boot reconciler reads this container's role from
+    # argv exactly as the image expects (a shell wrapper hides it — see hermes-web above).
+    command: ["gateway", "run"]
     environment:
       - API_SERVER_KEY=${API_SERVER_KEY:-3f0d6858ecbec71417f5907d78d2f6c2618e7f57d89c4ebc6e6a71efeb5bc5cb}
       - API_SERVER_HOST=0.0.0.0

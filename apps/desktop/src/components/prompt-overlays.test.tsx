@@ -47,6 +47,7 @@ describe('PromptOverlays', () => {
     const deps: ServerRequestContext['deps'] = {
       activeSessionIdRef: { current: 's1' },
       sessionInterrupted: () => false,
+      sessionStateByRuntimeIdRef: { current: new Map() },
       updateSessionState: (_sid, update) => update(createClientSessionState('s1')),
       upsertToolCall: () => undefined
     }

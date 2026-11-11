@@ -115,20 +115,6 @@ def test_run_agent_azure_url_predicate():
     assert probe._is_azure_openai_url("https://openai.azure.com.evil.io/v1") is False
 
 
-def test_run_agent_copilot_url_predicate():
-    from run_agent import AIAgent
-
-    probe = object.__new__(AIAgent)
-    probe._base_url_lower = "https://api.githubcopilot.com/v1"
-    assert probe._is_copilot_url() is True
-    probe._base_url_lower = "https://proxy.test/api.githubcopilot.com/v1"
-    assert probe._is_copilot_url() is False
-    probe._base_url_lower = "https://models.github.ai/inference"
-    assert probe._is_copilot_url() is True
-    probe._base_url_lower = "https://models.github.ai.evil.com/v1"
-    assert probe._is_copilot_url() is False
-
-
 def test_dotted_model_name_provider_allowlist_host_anchored():
     from run_agent import AIAgent
 

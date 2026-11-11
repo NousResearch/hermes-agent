@@ -42,4 +42,4 @@ def redact_bounded(raw: Any, *, limit: int = 500, empty: str = "[redacted]", una
         return unavailable
 
 
-__all__ = ["redact_for_export", "redact_bounded"]
+__all__ = ["redact_bounded", "redact_for_export"]

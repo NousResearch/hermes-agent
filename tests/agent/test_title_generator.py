@@ -11,6 +11,7 @@ from agent.title_generator import (
     derive_title,
     generate_title,
     auto_title_session,
+    is_titleable_user_message,
     maybe_auto_title,
     wait_for_title_upgrades,
     _title_language,
@@ -54,6 +55,36 @@ class TestGenerateTitle:
             assert title_input.startswith(preview)
             assert "---" not in title_input and "@file:" not in title_input
             assert derive_title(ref + footer, preview).startswith("Quarterly incident analysis")
+
+    def test_manual_attachment_only_opener_yields_no_path_title(self):
+        """#92068: the manual-attach path (composer attach chip / hand-typed
+        ``@file:``) sends NO Desktop paste preview, so the build_title_input
+        ref-only shortcut cannot rescue it. The titler must still refuse to
+        name the session after the truncated file path."""
+        msg = "@file:AppData/Local/hermes/profiles/local/attachments/report.pdf"
+
+        assert is_titleable_user_message(msg) is False
+        assert derive_title(msg) is None
+        assert derive_title(msg + "\n\n--- Attached Context ---\n(file content)") is None
+        # Backtick-quoted (space-bearing) paths and @folder: refs too.
+        assert is_titleable_user_message("@file:`my file.txt`") is False
+        assert is_titleable_user_message("@folder:/some/dir") is False
+        # A quoted path with a line range is one reference token for the
+        # canonical parser (context_references.REFERENCE_PATTERN), so the
+        # guard must strip the range too, not leave ":3" behind as "prose".
+        assert is_titleable_user_message("@file:`my file.txt`:3") is False
+        assert is_titleable_user_message('@file:"spaced name.md":12-14') is False
+        assert is_titleable_user_message("@file:'single quoted.md':1") is False
+        # The background model-title path refuses the same opener.
+        assert generate_title(msg) is None
+
+    def test_attachment_plus_instruction_titles_from_the_instruction(self):
+        """Prose around a manual attachment keeps driving the title — an
+        attachment WITH a typed request is a real question, not a file drop."""
+        msg = "Review @file:notes.txt and fix the off-by-one"
+
+        assert is_titleable_user_message(msg) is True
+        assert derive_title(msg) == "Review @file:notes.txt and fix the off-by-one"
 
     def test_title_input_budget_and_manual_attachments_stay_unread(self):
         title_input = build_title_input("Describe the release plan", "p" * MAX_TITLE_INPUT_CHARS)
@@ -391,13 +422,15 @@ class TestMaybeAutoTitle:
         "main_runtime, title_cfg, deferred",
         [
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {}, True),
+            ({"provider": "custom:gptoss-local", "base_url": "http://127.0.0.1:8080/v1"}, {}, True),
+            ({"provider": "lmstudio", "base_url": "http://127.0.0.1:1234/v1"}, {}, True),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://127.0.0.1:8080/v1/"}, True),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"provider": "openrouter"}, False),
             ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://10.0.0.2:8080/v1"}, False),
             ({"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"}, {}, False),
         ],
     )
-    def test_title_call_waits_for_the_turn_when_it_shares_a_custom_endpoint(self, main_runtime, title_cfg, deferred):
+    def test_title_call_waits_for_the_turn_when_it_shares_a_self_hosted_endpoint(self, main_runtime, title_cfg, deferred):
         """#117296: a self-hosted server serving the main turn and the concurrent json_schema title request
         can decode the title into the main reply. The upgrade must not go on the wire until the caller starts
         it after the turn; every other route keeps the turn-start timing."""
@@ -416,6 +449,39 @@ class TestMaybeAutoTitle:
                 tg.start_title_upgrade(upgrade)
             assert started.wait(timeout=10), "auto_title thread never ran"
             assert upgrade in tg._UPGRADE_THREADS
+
+    @pytest.mark.parametrize(
+        "main_provider, title_cfg, deferred",
+        [
+            ("Custom:GPTOSS-Local", {}, True),  # /model stores the id as typed; the gate lowercases
+            ("custom:gptoss-local", {"provider": "custom:gptoss-local"}, True),
+            ("custom:gptoss-local", {"provider": "gptoss-local"}, True),  # bare config name
+            ("custom:gptoss-local", {"provider": "GPTOSS Local"}, True),  # display name
+            ("custom:gptoss", {"provider": "GPTOSS Local"}, True),  # display name of a keyed `providers:` entry
+            ("custom:gptoss-local", {"provider": "custom"}, True),
+            ("custom:gptoss-local", {"provider": "custom:gptoss-local", "base_url": "http://127.0.0.1:8080/v1/"}, True),
+            ("custom:gptoss-local", {"provider": "custom:other", "base_url": "http://10.0.0.2:8080/v1"}, False),
+            ("custom:gptoss-local", {"provider": "gptoss-local", "base_url": "http://10.0.0.2:8080/v1"}, False),
+            ("custom:gptoss-local", {"provider": "openrouter"}, False),
+            ("custom:gptoss-local", {"provider": "nous"}, False),
+            ("custom", {"provider": "ollama"}, True),  # alias of custom
+            ("custom", {"provider": "vllm"}, True),  # normalises to `local`: the same local server
+            ("lmstudio", {"provider": "lm-studio"}, True),
+            ("lmstudio", {"provider": "lmstudio", "base_url": "http://10.0.0.2:1234/v1"}, False),
+            ("lmstudio", {"provider": "openrouter"}, False),
+        ],
+    )
+    def test_title_pin_naming_the_same_self_hosted_route_still_waits_for_the_turn(self, main_provider, title_cfg, deferred):
+        """#120558: a ``/model`` switch to a named custom provider runs the turn as ``custom:<name>``. A title pin
+        spelled as that route (``custom:<name>``, the bare config name or its display name) is the same single-slot
+        server, so the gate must still defer; only a differing pinned base_url or a hosted pin fires at turn start."""
+        from agent import title_generator as tg
+
+        main_runtime = {"provider": main_provider, "base_url": "http://127.0.0.1:8080/v1"}
+        keyed = {"providers": {"gptoss": {"name": "GPTOSS Local", "base_url": "http://127.0.0.1:8080/v1"}}}
+        with patch.object(tg, "_title_config", return_value=title_cfg), \
+                patch("hermes_cli.config.load_config_readonly", return_value=keyed):
+            assert tg.title_upgrade_must_wait_for_turn(main_runtime) is deferred
 
     def test_kanban_worker_is_named_after_its_card_without_the_llm_thread(self, tmp_path, monkeypatch):
         """A worker's session takes the board card's title synchronously; no auxiliary model call (#111166)."""

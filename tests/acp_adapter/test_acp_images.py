@@ -1,4 +1,3 @@
-
 import pytest
 from acp.schema import (
     ImageContentBlock,
@@ -7,7 +6,6 @@ from acp.schema import (
 )
 
 from acp_adapter.server import HermesACPAgent, _content_blocks_to_openai_user_content
-
 
 def test_acp_image_blocks_convert_to_openai_multimodal_content():
     content = _content_blocks_to_openai_user_content([
@@ -23,7 +21,6 @@ def test_acp_image_blocks_convert_to_openai_multimodal_content():
         },
     ]
 
-
 def test_text_only_acp_blocks_stay_string_for_legacy_prompt_path():
     content = _content_blocks_to_openai_user_content([
         TextContentBlock(type="text", text="/help"),
@@ -31,10 +28,9 @@ def test_text_only_acp_blocks_stay_string_for_legacy_prompt_path():
 
     assert content == "/help"
 
-
 def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
     attached = tmp_path / "notes.md"
-    attached.write_text("# Notes\n\nAttached file body", encoding="utf-8")
+    attached.write_text("# Notes\n\nAttached file body", encoding="utf-8", newline="\n")
 
     content = _content_blocks_to_openai_user_content([
         TextContentBlock(type="text", text="Please read this file"),
@@ -54,8 +50,12 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
         "# Notes\n\nAttached file body"
     )
 
-
-
+@pytest.mark.platforms("windows")
+def test_native_drive_path_and_file_uri_refer_to_same_attachment(tmp_path):
+    from acp_adapter.content import _path_from_file_uri
+    path = tmp_path / "notes with spaces.md"
+    path.write_text("body", encoding="utf-8")
+    assert _path_from_file_uri(str(path)) == _path_from_file_uri(path.as_uri()) == path
 
 @pytest.mark.asyncio
 async def test_initialize_advertises_image_prompt_capability():
@@ -64,10 +64,3 @@ async def test_initialize_advertises_image_prompt_capability():
     assert response.agent_capabilities is not None
     assert response.agent_capabilities.prompt_capabilities is not None
     assert response.agent_capabilities.prompt_capabilities.image is True
-
-
-
-
-
-
-

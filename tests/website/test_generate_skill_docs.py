@@ -20,7 +20,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "website" / "scripts" / "generate-skill-docs.py"
 
-
 @pytest.fixture(scope="module")
 def gen_module():
     """Load generate-skill-docs.py as a module (hyphenated filename, not importable via normal import)."""
@@ -30,14 +29,12 @@ def gen_module():
     spec.loader.exec_module(module)
     return module
 
-
 def test_code_block_without_box_chars_is_not_wrapped(gen_module):
     """Plain bash/python code blocks should stay uncluttered."""
     body = "Intro.\n\n```bash\npip install foo\nfoo --run\n```\n\nOutro."
     result = gen_module.mdx_escape_body(body)
     assert "ascii-guard-ignore" not in result
     assert "pip install foo" in result
-
 
 def test_code_block_with_box_chars_gets_wrapped(gen_module):
     """A code fence containing Unicode box-drawing chars must be wrapped in
@@ -60,7 +57,6 @@ def test_code_block_with_box_chars_gets_wrapped(gen_module):
     fence_open = result.index("```\n┌")
     assert wrap_open < fence_open
 
-
 def test_multiple_code_blocks_only_box_ones_wrapped(gen_module):
     """Mixed body: plain code stays plain, box code gets wrapped."""
     body = (
@@ -76,13 +72,11 @@ def test_multiple_code_blocks_only_box_ones_wrapped(gen_module):
     assert "echo hi" in result
     assert "print('ok')" in result
 
-
 def test_tilde_fenced_box_is_wrapped(gen_module):
     """The generator supports both ``` and ~~~ fences — both must be covered."""
     body = "~~~\n│ box │\n~~~"
     result = gen_module.mdx_escape_body(body)
     assert "<!-- ascii-guard-ignore -->" in result
-
 
 def test_already_wrapped_source_double_wraps_harmlessly(gen_module):
     """If the SKILL.md already has ascii-guard-ignore markers, the generator's
@@ -98,7 +92,3 @@ def test_already_wrapped_source_double_wraps_harmlessly(gen_module):
     # At least one marker pair survives
     assert "<!-- ascii-guard-ignore -->" in result
     assert "<!-- ascii-guard-ignore-end -->" in result
-
-
-
-

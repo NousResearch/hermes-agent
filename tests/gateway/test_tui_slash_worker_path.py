@@ -16,7 +16,6 @@ from pathlib import Path
 
 from tui_gateway import server as tui_server
 
-
 class TestPrependToolPaths:
     def test_prepends_managed_venv_and_user_bin(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
@@ -41,3 +40,14 @@ class TestPrependToolPaths:
         assert str(Path(sys.executable).parent) in parts
         assert str(Path.home() / ".local" / "bin") in parts
 
+    def test_pm_store_dirs_go_ahead_of_user_local_bin(self, monkeypatch, tmp_path):
+        """A user's node/uv in ~/.local/bin must never shadow Hermes's PM toolchain."""
+        store_dir = str(tmp_path / "store" / "node" / "bin")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+        monkeypatch.setattr("pm.install._store_path_dirs", lambda: [store_dir])
+        result = tui_server._prepend_tool_paths({"PATH": os.pathsep.join(["/usr/bin", store_dir])})
+
+        parts = result["PATH"].split(os.pathsep)
+        assert parts[0] == store_dir
+        assert parts.count(store_dir) == 1
+        assert parts.index(str(Path.home() / ".local" / "bin")) > 0

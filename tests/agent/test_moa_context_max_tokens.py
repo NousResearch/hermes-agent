@@ -21,12 +21,10 @@ from types import SimpleNamespace
 
 import pytest
 
-
 def _response(content: str = "ok"):
     message = SimpleNamespace(content=content, tool_calls=[])
     choice = SimpleNamespace(message=message, finish_reason="stop")
     return SimpleNamespace(choices=[choice], usage=None, model="fake")
-
 
 @pytest.fixture
 def hermes_home(tmp_path, monkeypatch):
@@ -34,7 +32,6 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     return home
-
 
 def test_aggregator_call_never_receives_reference_max_tokens(hermes_home, monkeypatch):
     """reference_max_tokens must cap only the reference fan-out — the
@@ -68,5 +65,3 @@ def test_aggregator_call_never_receives_reference_max_tokens(hermes_home, monkey
     # The aggregator's synthesis call must be uncapped — not even max_tokens=None,
     # the kwarg must be absent entirely (matches call_llm's omit-when-None contract).
     assert "max_tokens" not in aggregator_calls[0]
-
-

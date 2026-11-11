@@ -53,6 +53,32 @@ let os: null | PluginOs = null
 /** Selected board slug ('' = the server's current board). Persisted. */
 export const $boardSlug = atom<string>('')
 
+/** Pinned board slugs, in tab order, for the active connection. Persisted. */
+export const $pinnedBoards = atom<string[]>([])
+
+export function setBoardPinned(slug: string, pinned: boolean): void {
+  const current = $pinnedBoards.get()
+
+  if (current.includes(slug) !== pinned) {
+    $pinnedBoards.set(pinned ? [...current, slug] : current.filter(item => item !== slug))
+  }
+}
+
+/** Move `slug` into `target`'s position. */
+export function movePinnedBoard(slug: string, target: string): void {
+  const next = [...$pinnedBoards.get()]
+  const from = next.indexOf(slug)
+  const to = next.indexOf(target)
+
+  if (from < 0 || to < 0 || from === to) {
+    return
+  }
+
+  next.splice(from, 1)
+  next.splice(to, 0, slug)
+  $pinnedBoards.set(next)
+}
+
 /** Whether the "how this board works" intro was dismissed. Persisted. */
 export const $introDismissed = atom<boolean>(false)
 
@@ -70,9 +96,66 @@ const LOCAL_SCOPE = 'local'
 const KANBAN_KEY_ROOT = ['kanban'] as const
 
 const BOARD_SLUG_KEY = 'boardSlug'
+const PINNED_BOARDS_KEY = 'pinnedBoards'
 const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
+
+// Last frame cursor per (connection, board) this plugin bind. The socket
+// reopens on every board switch and connection change; resuming from the last
+// frame replays only what was missed. Keyed by connection so one gateway's
+// cursor cannot resume another's stream. Cleared on bind/unbind — events that
+// land while the plugin is unloaded are not replayed.
+const eventCursorByBoard = new Map<string, number>()
+
+function cursorKey(scope: string, slug: string): string {
+  return `${scope}\0${slug}`
+}
+
+function snapshotCursor(scope: string, slug: string): number | undefined {
+  for (const archived of [false, true]) {
+    const board = queryClient.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
+
+    if (typeof board?.latest_event_id === 'number') {
+      return board.latest_event_id
+    }
+  }
+
+  return undefined
+}
+
+/** Cursor a fresh socket starts from: the last frame this connection saw, else
+ *  the cached board snapshot's tail. Undefined means nothing is known yet —
+ *  fetch the snapshot before opening, never open at since=0. */
+function eventsSince(scope: string, slug: string): number | undefined {
+  const seen = eventCursorByBoard.get(cursorKey(scope, slug))
+
+  if (typeof seen === 'number') {
+    return seen
+  }
+
+  return snapshotCursor(scope, slug)
+}
+
+function eventsUrl(slug: string, since: number | undefined): string {
+  const params = new URLSearchParams()
+
+  if (slug) {
+    params.set('board', slug)
+  }
+
+  if (since !== undefined) {
+    params.set('since', String(since))
+  }
+
+  const query = params.toString()
+
+  return query ? `/events?${query}` : '/events'
+}
+
+function boardSnapshotPath(slug: string): string {
+  return slug ? `/board?board=${encodeURIComponent(slug)}` : '/board'
+}
 
 /** Cache-scope id for the active connection — the segment every query key
  *  embeds. `'local'` covers the pre-descriptor null; the SDK atom already
@@ -104,20 +187,29 @@ export const routedToScope = (query: { queryKey: readonly unknown[] }): boolean 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
-function onEventsFrame(slug: string, data: unknown): void {
-  const events = (data as { events?: CompletionEvent[] })?.events
+function onEventsFrame(scope: string, slug: string, data: unknown, selectedSlug = slug): void {
+  const frame = data as { cursor?: unknown; events?: CompletionEvent[] }
+
+  if (typeof frame?.cursor === 'number') {
+    eventCursorByBoard.set(cursorKey(scope, slug), frame.cursor)
+  }
+
+  const events = frame?.events
 
   if (!events?.length) {
     return
   }
 
-  const scope = kanbanConnectionScope()
   void queryClient.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   // Any event can change a board's card count — keep the switcher badge honest.
   void queryClient.invalidateQueries({ queryKey: boardsKey(scope) })
 
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(scope, slug, taskId!) })
+
+    if (selectedSlug !== slug) {
+      void queryClient.invalidateQueries({ queryKey: taskKey(scope, selectedSlug, taskId!) })
+    }
   }
 
   // Completion notification (after invalidation so notify failure
@@ -161,23 +253,105 @@ export function bindApi(
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
-  let close: (() => void) | null = null
+  eventCursorByBoard.clear()
 
-  const open = (slug: string) => {
+  let close: (() => void) | null = null
+  let socketGeneration = 0
+
+  const dial = (scope: string, slug: string, since: number | undefined) => {
+    const generation = socketGeneration
+    const selectedSlug = $boardSlug.get()
+
+    return socket(eventsUrl(slug, since), data => {
+      if (generation === socketGeneration) {
+        onEventsFrame(scope, slug, data, selectedSlug)
+      }
+    })
+  }
+
+  const open = (selectedSlug: string) => {
+    const generation = ++socketGeneration
+    const scope = kanbanConnectionScope()
+
     close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
+    close = null
+
+    const openResolved = (slug: string) => {
+      if (generation !== socketGeneration) {
+        return
+      }
+
+      const since = eventsSince(scope, slug)
+
+      if (since !== undefined) {
+        close = dial(scope, slug, since)
+
+        return
+      }
+
+      // No cached tail yet. Wait for the snapshot and open at its
+      // latest_event_id. A board switch or unload bumps the generation so a
+      // late snapshot cannot open a stale socket. A failed fetch still opens
+      // with no since — the server starts at the tail rather than replaying.
+      void queryClient
+        .fetchQuery({
+          queryFn: () => r<KanbanBoard>(boardSnapshotPath(slug)),
+          queryKey: boardKey(scope, slug, false)
+        })
+        .then(board => {
+          if (generation !== socketGeneration) {
+            return
+          }
+
+          const tail = typeof board?.latest_event_id === 'number' ? board.latest_event_id : undefined
+
+          close = dial(scope, slug, tail)
+        })
+        .catch(() => {
+          if (generation !== socketGeneration) {
+            return
+          }
+
+          close = dial(scope, slug, undefined)
+        })
+    }
+
+    if (selectedSlug) {
+      openResolved(selectedSlug)
+
+      return
+    }
+
+    // Resolve the alias BEFORE the handshake: /events is pinned to its board
+    // when opened. Resolving on each frame could classify an old socket's
+    // events against a different server-current board's cursor.
+    void r<BoardsResponse>('/boards')
+      .then(boards => openResolved(typeof boards.current === 'string' ? boards.current : ''))
+      .catch(() => openResolved('')) // Keep live cache invalidation; notifications fail closed.
   }
 
   // The local connection keeps the BARE key (the bare-local rule of
   // lib/connection-scoped: byte-identical storage for single-backend users, and
   // the slug picked before per-connection keys existed survives the upgrade).
-  // Remotes are suffixed by registry id.
-  const slugStorageKey = () => {
+  // Remotes are suffixed by registry id. Pins follow the same rule: boards
+  // belong to a gateway, so each connection keeps its own tabs.
+  const scopedKey = (key: string) => {
     const scope = kanbanConnectionScope()
 
-    return scope === LOCAL_SCOPE ? BOARD_SLUG_KEY : `${BOARD_SLUG_KEY}.${scope}`
+    return scope === LOCAL_SCOPE ? key : `${key}.${scope}`
   }
 
+  const slugStorageKey = () => scopedKey(BOARD_SLUG_KEY)
+
+  const restorePins = () => {
+    const stored = storage.get<unknown>(scopedKey(PINNED_BOARDS_KEY), [])
+    const slugs = Array.isArray(stored) ? stored.filter((s): s is string => typeof s === 'string' && !!s) : []
+
+    $pinnedBoards.set([...new Set(slugs)])
+  }
+
+  restorePins()
+  unsubs.push($pinnedBoards.listen(pins => storage.set(scopedKey(PINNED_BOARDS_KEY), pins)))
   $boardSlug.set(storage.get(slugStorageKey(), ''))
   unsubs.push($boardSlug.listen(slug => storage.set(slugStorageKey(), slug)))
   open($boardSlug.get())
@@ -193,6 +367,7 @@ export function bindApi(
         return
       }
 
+      restorePins()
       const previous = $boardSlug.get()
       $boardSlug.set(storage.get(slugStorageKey(), ''))
 
@@ -203,6 +378,8 @@ export function bindApi(
   )
 
   return () => {
+    socketGeneration += 1
+    eventCursorByBoard.clear()
     unsubs.forEach(unsub => unsub())
     close?.()
     rest = null

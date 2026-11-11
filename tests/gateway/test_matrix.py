@@ -174,7 +174,7 @@ def _make_fake_mautrix():
     mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
 
     class MemoryCryptoStore:
-        def __init__(self, account_id="", pickle_key=""):  # noqa: S301
+        def __init__(self, account_id="", pickle_key=""):
             self.account_id = account_id
             self.pickle_key = pickle_key
 
@@ -199,7 +199,7 @@ def _make_fake_mautrix():
     class PgCryptoStore:
         upgrade_table = MagicMock()
 
-        def __init__(self, account_id="", pickle_key="", db=None):  # noqa: S301
+        def __init__(self, account_id="", pickle_key="", db=None):
             self.account_id = account_id
             self.pickle_key = pickle_key
             self.db = db
@@ -672,7 +672,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is False
 
     def test_check_requirements_e2ee_optional_no_deps_ok(self, monkeypatch):
@@ -684,8 +684,8 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()), \
-             patch("tools.lazy_deps.ensure_and_bind", return_value=True):
+             patch("pm.extras.missing", return_value=()), \
+             patch("pm.extras.ensure_and_bind", return_value=True):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_encryption_false_no_e2ee_deps_ok(self, monkeypatch):
@@ -696,7 +696,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_encryption_true_with_e2ee_deps(self, monkeypatch):
@@ -707,7 +707,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_e2ee_deps_requires_asyncpg(self, monkeypatch):
@@ -764,17 +764,17 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
 
-        # Simulate "mautrix installed, asyncpg missing" → feature_missing
+        # Simulate "mautrix installed, asyncpg missing" → extras.missing
         # returns a non-empty tuple → ensure_and_bind MUST be called.
         called = {"ensure_and_bind": False}
 
-        def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+        def _fake_ensure_and_bind(extra, importer, target_globals):
             called["ensure_and_bind"] = True
-            assert feature == "platform.matrix"
+            assert extra == "matrix"
             return True  # Pretend install succeeded.
 
-        with patch("tools.lazy_deps.feature_missing", return_value=("asyncpg==0.31.0",)), \
-             patch("tools.lazy_deps.ensure_and_bind", side_effect=_fake_ensure_and_bind):
+        with patch("pm.extras.missing", return_value=("asyncpg",)), \
+             patch("pm.extras.ensure_and_bind", side_effect=_fake_ensure_and_bind):
             matrix_mod.check_matrix_requirements()
 
         assert called["ensure_and_bind"], (
@@ -1260,7 +1260,7 @@ class TestMatrixSyncLoop:
             ),
             # Plain timeout echoing the pagination token, which embeds "401".
             (
-                asyncio.TimeoutError(
+                TimeoutError(
                     "Connection timeout to host https://matrix.example.org/_matrix/"
                     "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
                 ),
@@ -1572,7 +1572,7 @@ class TestMatrixEncryptedSendFallback:
 class TestJoinedRoomsReference:
     def test_joined_rooms_reference_preserved_after_reassignment(self):
         """_CryptoStateStore must see updates after initial sync populates rooms."""
-        from plugins.platforms.matrix.adapter import _CryptoStateStore
+        from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
 
         joined = set()
         store = _CryptoStateStore(MagicMock(), joined)
@@ -1965,7 +1965,7 @@ class TestMatrixImageOnlyMediaNormalization:
     async def test_external_media_download_follows_safe_redirect(self, monkeypatch):
         """A redirect to another allowed URL is followed and its body returned."""
         import aiohttp
-        import tools.url_safety as url_safety
+        from tools import url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
@@ -2033,7 +2033,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_send_image_failure_log_redacts_signed_url(self, caplog, monkeypatch):
         from gateway.platforms.base import SendResult
-        import tools.url_safety as url_safety
+        from tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#frag"
         self.adapter._download_external_media_with_cap = AsyncMock(
@@ -2052,7 +2052,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_send_image_failure_response_preserves_caption(self, monkeypatch):
         from gateway.platforms.base import SendResult
-        import tools.url_safety as url_safety
+        from tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#fragment"
         self.adapter._download_external_media_with_cap = AsyncMock(

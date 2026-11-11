@@ -31,9 +31,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 POSIX_SH = REPO_ROOT / "scripts" / "desktop-update" / "posix.sh"
 
-GOOD_STUB = "#!/bin/bash\n# bootable interpreter stub\nexit 0\n"
+GOOD_STUB = "#!/usr/bin/env bash\n# bootable interpreter stub\nexit 0\n"
 BAD_STUB = (
-    "#!/bin/bash\n"
+    "#!/usr/bin/env bash\n"
     "echo \"Fatal Python error: init_fs_encoding: failed to get the Python "
     "codec of the filesystem encoding\" >&2\n"
     "echo \"ModuleNotFoundError: No module named 'encodings'\" >&2\n"
@@ -42,7 +42,7 @@ BAD_STUB = (
 # Boots only when invoked via a path whose basename is exactly `python`:
 # used to force the post-heal verification probe to fail (rollback path).
 PICKY_STUB = (
-    "#!/bin/bash\n"
+    "#!/usr/bin/env bash\n"
     "[ \"$(basename \"$0\")\" = \"python\" ] && exit 0\n"
     "exit 1\n"
 )
@@ -96,6 +96,7 @@ def run_selftest(root: Path) -> str:
          "--install-root", str(root)],
         capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip().splitlines()[-1]
@@ -225,7 +226,7 @@ class TestHandoffSurvivesBrickAB:
         hermes = root / "venv/bin/hermes"
         _write_exe(
             hermes,
-            "#!/bin/bash\n"
+            "#!/usr/bin/env bash\n"
             'exec "$(cd "$(dirname "$0")" && pwd)/python3" -c "import encodings"\n',
         )
         return hermes
@@ -236,11 +237,11 @@ class TestHandoffSurvivesBrickAB:
         hermes = self._make_hermes(root)
         # BEFORE the heal: the entrypoint dies exactly like the field logs.
         before = subprocess.run([str(hermes)], capture_output=True,
-                                text=True, encoding="utf-8", errors="replace")
+                                text=True, encoding="utf-8", errors="replace", check=False)
         assert before.returncode == 1
         assert "No module named 'encodings'" in before.stderr
         # Heal (real posix.sh function), then the same entrypoint boots.
         assert "state=healed-aliases" in run_selftest(root)
         after = subprocess.run([str(hermes)], capture_output=True,
-                               text=True, encoding="utf-8", errors="replace")
+                               text=True, encoding="utf-8", errors="replace", check=False)
         assert after.returncode == 0

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugin_capabilities import (
     CAPABILITY_REGISTRY,
@@ -43,8 +43,9 @@ def _read_cfg(home):
 
 class TestRegistry:
     def test_every_capability_has_legacy_gate(self):
+        # llm.side_question postdates the consent flow: declare + consent is its only gate.
         for spec in CAPABILITY_REGISTRY.values():
-            assert spec.legacy_path, spec.id
+            assert bool(spec.legacy_path) is (spec.id != "llm.side_question"), spec.id
             assert spec.description
 
 
@@ -295,6 +296,21 @@ class TestLegacyGateCompat:
             encoding="utf-8",
         )
         assert plugin_capability_granted("oldplug", "llm.model_override") is True
+
+    def test_consent_only_capability_ignores_allow_keys(self, hermes_home):
+        """``llm.side_question`` has no legacy key: an ``allow_*`` lookalike (or any other
+        entry content) never opens it; only a recorded grant does."""
+        (hermes_home / "config.yaml").write_text(
+            "plugins:\n  entries:\n    newplug:\n"
+            "      llm:\n        allow_side_question: true\n",
+            encoding="utf-8",
+        )
+        assert plugin_capability_granted("newplug", "llm.side_question") is False
+        record_consent("freshplug", ["llm.side_question"], ["llm.side_question"])
+        entry = _read_cfg(hermes_home)["plugins"]["entries"]["freshplug"]
+        assert entry["granted_capabilities"] == ["llm.side_question"]
+        assert "llm" not in entry  # no legacy key to mirror the grant into
+        assert plugin_capability_granted("freshplug", "llm.side_question") is True
 
     def test_legacy_false_stays_denied(self, hermes_home):
         (hermes_home / "config.yaml").write_text(

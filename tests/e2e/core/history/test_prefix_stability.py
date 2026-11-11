@@ -78,12 +78,10 @@ JOURNEYS: dict[str, list[Hop]] = {
     ],
 }
 
-KNOWN_BROKEN: dict[str, str] = {}
-
-
 class ToolsArrayDrift(Exception):
-    """The tools array changed between requests of one session. Not an AssertionError: the
-    known-bug xfail matches only this, so every other invariant still fails the test."""
+    """The tools array changed between requests of one session. Its own type, so a future tools-drift
+    bug can be gated with ``known_failure(..., raises=ToolsArrayDrift)`` without excusing any other
+    invariant."""
 
 
 @pytest.fixture
@@ -166,11 +164,7 @@ def run_journey(world: dict, hops: list[Hop]) -> tuple[str, list[tuple[int, str]
     return sid, openings, compaction_idx
 
 
-@pytest.mark.parametrize("journey", [
-    pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=ToolsArrayDrift, reason=KNOWN_BROKEN[name]))
-    if name in KNOWN_BROKEN else name
-    for name in JOURNEYS
-])
+@pytest.mark.parametrize("journey", list(JOURNEYS))
 def test_request_prefix_is_byte_stable_across_processes(world, journey):
     sid, openings, compaction_idx = run_journey(world, JOURNEYS[journey])
     srv, home = world["srv"], world["hermes_home"]
@@ -180,8 +174,8 @@ def test_request_prefix_is_byte_stable_across_processes(world, journey):
     def where(i: int) -> str:
         return f"request {i} (in {max((o for o in openings if o[0] <= i), default=(0, '?'))[1]})"
 
-    # System prompt + messages first; the tools array is checked last, on its own, so a known
-    # tools-drift xfail cannot mask a message-prefix, usage or integrity regression.
+    # System prompt + messages first; the tools array is checked last, on its own, so a gated
+    # tools-drift bug cannot mask a message-prefix, usage or integrity regression.
     breaks = prefix_breaks(main, tools=False)
     unexpected = [(i, why) for i, why in breaks if i != compaction_idx]
     assert not unexpected, "prompt-cache prefix broke outside the compaction boundary:\n" + "\n".join(

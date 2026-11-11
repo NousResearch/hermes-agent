@@ -110,11 +110,11 @@ class TestWeixinQRSessionManagerBackgroundTask:
             )
 
         with patch(
-            "gateway.platforms.weixin._api_get", new_callable=AsyncMock
+            "plugins.platforms.weixin.adapter._api_get", new_callable=AsyncMock
         ) as api_get_mock, \
-             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
-             patch("gateway.platforms.weixin.save_weixin_account", side_effect=fake_save), \
+             patch("plugins.platforms.weixin.adapter.AIOHTTP_AVAILABLE", True), \
+             patch("plugins.platforms.weixin.adapter.aiohttp.ClientSession", create=True) as session_cls, \
+             patch("plugins.platforms.weixin.adapter.save_weixin_account", side_effect=fake_save), \
              patch("gateway.platforms.weixin_qr_session._POLL_INTERVAL_SECONDS", 0.01):
             api_get_mock.side_effect = [qr_response, confirmed_response]
             session = AsyncMock()
@@ -146,10 +146,10 @@ class TestWeixinQRSessionManagerBackgroundTask:
         manager.set_event_loop(asyncio.get_event_loop())
 
         with patch(
-            "gateway.platforms.weixin._api_get", new_callable=AsyncMock
+            "plugins.platforms.weixin.adapter._api_get", new_callable=AsyncMock
         ) as api_get_mock, \
-             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls:
+             patch("plugins.platforms.weixin.adapter.AIOHTTP_AVAILABLE", True), \
+             patch("plugins.platforms.weixin.adapter.aiohttp.ClientSession", create=True) as session_cls:
             api_get_mock.side_effect = RuntimeError("iLink HTTP 500")
             session = AsyncMock()
             session.__aenter__.return_value = session
@@ -178,11 +178,11 @@ class TestWeixinQRSessionManagerBackgroundTask:
         confirmed = _make_confirmed_response()
 
         with patch(
-            "gateway.platforms.weixin._api_get", new_callable=AsyncMock
+            "plugins.platforms.weixin.adapter._api_get", new_callable=AsyncMock
         ) as api_get_mock, \
-             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
-             patch("gateway.platforms.weixin.save_weixin_account"), \
+             patch("plugins.platforms.weixin.adapter.AIOHTTP_AVAILABLE", True), \
+             patch("plugins.platforms.weixin.adapter.aiohttp.ClientSession", create=True) as session_cls, \
+             patch("plugins.platforms.weixin.adapter.save_weixin_account"), \
              patch("gateway.platforms.weixin_qr_session._POLL_INTERVAL_SECONDS", 0.01):
             # QR fetch, then expired, then refresh QR fetch, then confirmed.
             api_get_mock.side_effect = [first_qr, expired, refreshed_qr, confirmed]
@@ -210,10 +210,10 @@ class TestWeixinQRSessionManagerBackgroundTask:
         expired = {"status": "expired"}
 
         with patch(
-            "gateway.platforms.weixin._api_get", new_callable=AsyncMock
+            "plugins.platforms.weixin.adapter._api_get", new_callable=AsyncMock
         ) as api_get_mock, \
-             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
+             patch("plugins.platforms.weixin.adapter.AIOHTTP_AVAILABLE", True), \
+             patch("plugins.platforms.weixin.adapter.aiohttp.ClientSession", create=True) as session_cls, \
              patch("gateway.platforms.weixin_qr_session._POLL_INTERVAL_SECONDS", 0.01), \
              patch("gateway.platforms.weixin_qr_session._MAX_QR_REFRESHES", 2):
             # Initial fetch, then expired×2 (refreshes), then expired again (gives up).

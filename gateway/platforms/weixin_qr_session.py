@@ -236,7 +236,7 @@ class WeixinQRSessionManager:
     async def _run_session(self, session: WeixinQRSession) -> None:
         """Background coroutine: fetch QR, poll for scan, save credentials."""
         try:
-            from gateway.platforms.weixin import (
+            from plugins.platforms.weixin.adapter import (
                 AIOHTTP_AVAILABLE,
                 ILINK_BASE_URL,
                 EP_GET_BOT_QR,
@@ -353,7 +353,7 @@ class WeixinQRSessionManager:
         Returns True on success, False on failure (session.state set to failed).
         """
         try:
-            from gateway.platforms.weixin import (
+            from plugins.platforms.weixin.adapter import (
                 ILINK_BASE_URL,
                 EP_GET_BOT_QR,
                 QR_TIMEOUT_MS,
@@ -399,7 +399,7 @@ class WeixinQRSessionManager:
     ) -> None:
         """Extract credentials from confirmed status and save to disk."""
         try:
-            from gateway.platforms.weixin import (
+            from plugins.platforms.weixin.adapter import (
                 ILINK_BASE_URL,
                 save_weixin_account,
             )
@@ -508,7 +508,7 @@ def _normalise_ilink_base_url(raw_url: str) -> str:
     # Try to use the canonical URL from the weixin adapter; fall back to
     # the hardcoded constant if the adapter module isn't imported yet.
     try:
-        from gateway.platforms.weixin import ILINK_BASE_URL
+        from plugins.platforms.weixin.adapter import ILINK_BASE_URL
         return ILINK_BASE_URL
     except ImportError:
         return _CANONICAL_ILINK_BASE_URL

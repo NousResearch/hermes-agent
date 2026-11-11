@@ -41,7 +41,7 @@ def test_windows_resolution_picks_cmd_wrapper_from_npm_bin_over_posix_shim(tmp_p
     assert spec is not None and spec.command[0] == str(langserver_cmd)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_existing_binary_resolves_runnable_cmd_over_posix_shim(tmp_path: Path, monkeypatch):
     """Live: staging dir holds npm's shim AND its .cmd; the resolved path must actually run."""
     monkeypatch.setattr(install, "hermes_lsp_bin_dir", lambda: tmp_path)

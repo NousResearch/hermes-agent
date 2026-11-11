@@ -5,7 +5,7 @@ desktop chat composer.
 
 > **Note (Jul 2026):** the standalone `measure-*` / `profile-*` scripts this
 > doc references have been consolidated into the systematized perf harness at
-> `scripts/perf/` (`npm run perf`, `npm run perf:serve`). CPU profiling is now a
+> `scripts/perf/` (`pnpm run perf`, `pnpm run perf:serve`). CPU profiling is now a
 > `--cpuprofile` flag on any scenario. This doc is kept as an investigation log;
 > for the current tooling and the scenario→old-script mapping see
 > `scripts/perf/README.md`.
@@ -25,7 +25,7 @@ node scripts/dev-no-hmr.mjs
 # Terminal B — start Electron with CDP exposed
 cd apps/desktop
 XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 \
-  ../../node_modules/.bin/electron --remote-debugging-port=9222 .
+  node_modules/.bin/electron --remote-debugging-port=9222 .
 ```
 
 Terminal C is yours to run the harnesses.

@@ -146,8 +146,8 @@ class TestGmiDoctor:
         try:
             from hermes_cli import auth as _auth_mod
 
-            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         except Exception:
             pass
 
@@ -273,7 +273,7 @@ class TestGmiMainFlow:
 
             _model_flow_api_key_provider(load_config(), "gmi", "old-model")
 
-        import yaml
+        import hermes_yaml as yaml
         from hermes_constants import get_hermes_home
 
         config = yaml.safe_load((get_hermes_home() / "config.yaml").read_text()) or {}

@@ -7,7 +7,9 @@ slots) lazily at call time so monkeypatching the source module keeps working.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
@@ -34,24 +36,24 @@ def _interrupted() -> bool:
 
 
 # --- Result shapes (key order is part of the contract — it reaches the model as JSON) ---
-def search_ok(web_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+def search_ok(web_results: list[dict[str, Any]]) -> dict[str, Any]:
     return {"success": True, "data": {"web": web_results}}
 
 
-def search_fail(error: str) -> Dict[str, Any]:
+def search_fail(error: str) -> dict[str, Any]:
     return {"success": False, "error": error}
 
 
-def web_hit(url: str, title: str, description: str, position: int) -> Dict[str, Any]:
+def web_hit(url: str, title: str, description: str, position: int) -> dict[str, Any]:
     return {"url": url, "title": title, "description": description, "position": position}
 
 
-def title_hit(title: str, url: str, description: str, position: int) -> Dict[str, Any]:
+def title_hit(title: str, url: str, description: str, position: int) -> dict[str, Any]:
     """Title-first row — the historical wire shape of brave/searxng/ddgs/tavily/xai."""
     return {"title": title, "url": url, "description": description, "position": position}
 
 
-def document(url: str, title: str, content: str, *, source_url: Optional[str] = None) -> Dict[str, Any]:
+def document(url: str, title: str, content: str, *, source_url: Optional[str] = None) -> dict[str, Any]:
     """Successful extract entry; ``raw_content`` mirrors ``content`` for the legacy pipeline."""
     return {
         "url": url, "title": title, "content": content, "raw_content": content,
@@ -59,22 +61,96 @@ def document(url: str, title: str, content: str, *, source_url: Optional[str] = 
     }
 
 
-def page_error(url: str, error: str) -> Dict[str, Any]:
+def page_error(url: str, error: str) -> dict[str, Any]:
     return {"url": url, "title": "", "content": "", "error": error}
 
 
-def extract_fail(urls: List[str], error: str) -> List[Dict[str, Any]]:
+def extract_fail(urls: list[str], error: str) -> list[dict[str, Any]]:
     return [page_error(u, error) for u in urls]
 
 
+# --- Origin HTTP status (the target page's answer, not the vendor API's) ---
+# Scraping vendors report the target's own status inside a successful API reply (Firecrawl
+# ``metadata.statusCode``, Parallel ``errors[].http_status_code``, Exa ``statuses[].error``).
+# Unchecked, a 403/404 page reads as a successful (often empty) extraction: the agent can't tell
+# "blocked" from "blank" and the error page is cached as content. The backend did its job, so an
+# origin error never triggers the keyless rescue (``is_origin_http_error``).
+_ORIGIN_HTTP_ERROR_RE = re.compile(r"HTTP \d{3} from origin(?::|$)")
+
+
+def is_origin_http_error(error: Any) -> bool:
+    """True for an ``error`` string built by ``origin_http_error`` (the target page's own answer)."""
+    return isinstance(error, str) and _ORIGIN_HTTP_ERROR_RE.match(error) is not None
+
+
+def origin_http_error(status: Any, reason: Any = None) -> Optional[str]:
+    """``HTTP <status> from origin[: reason]`` when the target answered >= 400, else None."""
+    if isinstance(status, bool):
+        return None
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return None
+    if code < 400:
+        return None
+    detail = str(reason or "").strip()
+    return f"HTTP {code} from origin: {detail}" if detail else f"HTTP {code} from origin"
+
+
+# Vendors that fetch the page themselves also report its status in their own words: Exa
+# ``CRAWL_HTTP_<code>`` / ``CRAWL_NOT_FOUND``; Keenable mirrors the target's code as its own HTTP
+# status with a message about the target. Read as vendor errors, an origin 429 looked like the
+# vendor throttling us and walked the keyless ring.
+_EXA_CRAWL_STATUS_RE = re.compile(r"\bCRAWL_(?:HTTP_(\d{3})|(NOT_FOUND))\s*$")
+_KEENABLE_ORIGIN_MESSAGE_RE = re.compile(r"the (?:target server|page does not exist)\b", re.IGNORECASE)
+
+
+def exa_crawl_status(text: Any) -> Optional[int]:
+    """The origin status an Exa crawl error tag ends with (``CRAWL_HTTP_429`` → 429, ``CRAWL_NOT_FOUND`` → 404)."""
+    match = _EXA_CRAWL_STATUS_RE.search(str(text or ""))
+    if match is None:
+        return None
+    return int(match.group(1)) if match.group(1) else 404
+
+
+def keenable_origin_error(status: Any, body: str) -> Optional[str]:
+    """``HTTP <status> from origin: <message>`` when a Keenable fetch error describes the target's
+    answer; None for Keenable's own refusals (its rate limit for this client, auth, 5xx)."""
+    try:
+        data = json.loads(body or "")
+    except ValueError:
+        return None
+    message = str(data.get("message") or "").strip() if isinstance(data, dict) else ""
+    return origin_http_error(status, message) if _KEENABLE_ORIGIN_MESSAGE_RE.match(message) else None
+
+
+def with_origin_status(entry: dict[str, Any], status: Any, reason: Any = None) -> dict[str, Any]:
+    """Set ``error`` on an extract entry whose target answered >= 400; the error page body
+    stays in ``content`` (it can still explain the refusal)."""
+    if error := origin_http_error(status, reason):
+        entry["error"] = error
+    return entry
+
+
+def vendor_error_entry(url: str, *, status: Any = None, reason: Any = None, body: Any = None) -> dict[str, Any]:
+    """Per-URL failure from a vendor's own error list. Names the origin status when the vendor
+    reports one (body kept as content; ``reason`` is a vendor tag like ``http_error`` that adds
+    nothing to the code); otherwise the vendor's body/reason is the error text."""
+    if origin := origin_http_error(status):
+        entry = {**page_error(url, origin), "content": str(body or "")}
+    else:
+        entry = page_error(url, str(body or reason or "extraction failed"))
+    return {**entry, "metadata": {"sourceURL": url}}
+
+
 # --- Keyless ring hand-off (shared by exa / parallel / keenable) ---------------
-def keyless_search(display: str, name: str, query: str, limit: int, logger: logging.Logger) -> Dict[str, Any]:
+def keyless_search(display: str, name: str, query: str, limit: int, logger: logging.Logger) -> dict[str, Any]:
     from plugins.web.keyless_mcp import search_with_failover
     logger.info("%s keyless search: '%s' (limit=%d)", display, query, limit)
     return search_with_failover(name, query, limit)
 
 
-def keyless_extract(display: str, name: str, urls: List[str], logger: logging.Logger) -> List[Dict[str, Any]]:
+def keyless_extract(display: str, name: str, urls: list[str], logger: logging.Logger) -> list[dict[str, Any]]:
     from plugins.web.keyless_mcp import extract_with_failover
     logger.info("%s keyless extract: %d URL(s)", display, len(urls))
     return extract_with_failover(name, list(urls))
@@ -98,36 +174,36 @@ def _guarded(vendor: str, kind: str, logger: logging.Logger, body: Callable[[], 
         if _interrupted():
             return interrupted
         return body()
-    except Exception as exc:  # noqa: BLE001 — surface as failure shape
+    except Exception as exc:
         return fail(_failure_message(vendor, kind, exc, logger, sdk=sdk, verbatim_value_error=vve))
 
 
-def run_search(vendor: str, logger: logging.Logger, body: Callable[[], Dict[str, Any]], *, sdk: bool = False, verbatim_value_error: bool = True) -> Dict[str, Any]:
+def run_search(vendor: str, logger: logging.Logger, body: Callable[[], dict[str, Any]], *, sdk: bool = False, verbatim_value_error: bool = True) -> dict[str, Any]:
     return _guarded(vendor, "search", logger, body, search_fail("Interrupted"), search_fail, sdk, verbatim_value_error)
 
 
-def _extract_interrupted(urls: List[str]) -> List[Dict[str, Any]]:
+def _extract_interrupted(urls: list[str]) -> list[dict[str, Any]]:
     return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
 
 def run_extract(
-    vendor: str, logger: logging.Logger, urls: List[str], body: Callable[[], List[Dict[str, Any]]],
+    vendor: str, logger: logging.Logger, urls: list[str], body: Callable[[], list[dict[str, Any]]],
     *, sdk: bool = False, verbatim_value_error: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Per-URL failures are returned as entries with ``error`` — never raised."""
     return _guarded(vendor, "extract", logger, body, _extract_interrupted(urls), lambda m: extract_fail(urls, m), sdk, verbatim_value_error)
 
 
 async def run_extract_async(
-    vendor: str, logger: logging.Logger, urls: List[str], body: Callable[[], Awaitable[List[Dict[str, Any]]]],
+    vendor: str, logger: logging.Logger, urls: list[str], body: Callable[[], Awaitable[list[dict[str, Any]]]],
     *, sdk: bool = False, verbatim_value_error: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Async twin of :func:`run_extract` (``body`` is awaited inside the guard)."""
     try:
         if _interrupted():
             return _extract_interrupted(urls)
         return await body()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return extract_fail(urls, _failure_message(vendor, "extract", exc, logger, sdk=sdk, verbatim_value_error=verbatim_value_error))
 
 
@@ -138,9 +214,9 @@ def http_status_detail(response: Any) -> str:
 
 
 def http_get_json(
-    label: str, url: str, *, params: Dict[str, Any], headers: Dict[str, str], timeout: int,
+    label: str, url: str, *, params: dict[str, Any], headers: dict[str, str], timeout: int,
     logger: logging.Logger, reach_target: Optional[str] = None,
-) -> tuple[Any, Optional[Dict[str, Any]]]:
+) -> tuple[Any, Optional[dict[str, Any]]]:
     """GET ``url`` and parse JSON → ``(data, None)`` or ``(None, failure_dict)``.
     ``reach_target`` overrides the "Could not reach ..." subject (SearXNG includes its URL)."""
     try:
@@ -154,12 +230,12 @@ def http_get_json(
         return None, search_fail(f"Could not reach {reach_target or label}: {exc}")
     try:
         return resp.json(), None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("%s response parse error: %s", label, exc)
         return None, search_fail(f"Could not parse {label} response as JSON")
 
 
-def titled_rows(raw_results: List[Dict[str, Any]], description_key: str) -> List[Dict[str, Any]]:
+def titled_rows(raw_results: list[dict[str, Any]], description_key: str) -> list[dict[str, Any]]:
     """Brave/SearXNG row normalizer: ``str()`` every field, 1-based positions."""
     return [
         title_hit(str(r.get("title", "")), str(r.get("url", "")), str(r.get(description_key, "")), i + 1)
@@ -167,15 +243,14 @@ def titled_rows(raw_results: List[Dict[str, Any]], description_key: str) -> List
     ]
 
 
-def lazy_ensure(feature: str) -> None:
-    """Best-effort ``tools.lazy_deps.ensure``: its own ImportError is benign and swallowed;
-    an install hint (any other error) is re-raised as ImportError."""
+def lazy_ensure(extra: str) -> None:
+    """Best-effort ``pm.ensure_import``: a missing-but-unavailable extra raises
+    ``pm.InstallError``, re-raised as ImportError for the caller's own handling."""
+    import pm
+
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure(feature, prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:  # noqa: BLE001
+        pm.ensure_import(extra)
+    except Exception as exc:
         raise ImportError(str(exc))
 
 
@@ -230,13 +305,13 @@ class BaseWebSearchProvider(WebSearchProvider):
         return self.EXTRACT
 
 
-def setup_schema(name: str, badge: str, tag: str, key_env: str = "", prompt: str = "", url: str = "", **extra: Any) -> Dict[str, Any]:
+def setup_schema(name: str, badge: str, tag: str, key_env: str = "", prompt: str = "", url: str = "", **extra: Any) -> dict[str, Any]:
     """``hermes tools`` picker entry; ``env_vars`` is empty when ``key_env`` is blank."""
     env_vars = [{"key": key_env, "prompt": prompt, "url": url}] if key_env else []
     return {"name": name, "badge": badge, "tag": tag, "env_vars": env_vars, **extra}
 
 
-def keyless_variant_schema(display: str, key_env: str, key_url: str, *, free_tag: str, paid_tag: str) -> Dict[str, Any]:
+def keyless_variant_schema(display: str, key_env: str, key_url: str, *, free_tag: str, paid_tag: str) -> dict[str, Any]:
     """Picker entry for a keyless-ring vendor with a paid variant."""
     paid = setup_schema(f"{display} · Paid (API key)", "paid", paid_tag, key_env, f"{display} API key", key_url, web_tier="paid")
     return setup_schema(f"{display} · Free (keyless)", "free · no key", free_tag, web_tier="free", variants=[paid])

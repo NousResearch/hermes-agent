@@ -1,6 +1,7 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import json
+import os
 
 import pytest
 
@@ -14,7 +15,6 @@ from hermes_cli.auth import (
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     _resolve_kimi_base_url,
 )
-from hermes_cli.copilot_auth import _try_gh_cli_token
 
 
 # =============================================================================
@@ -54,7 +54,7 @@ PROVIDER_ENV_VARS = tuple(
 def _clear_provider_env(monkeypatch):
     for key in PROVIDER_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", dict)
 
 
 class TestResolveProvider:
@@ -108,15 +108,6 @@ class TestResolveProvider:
         assert parse_model_input("chatgpt-codex:gpt-5.5", "openrouter") == ("openai-codex", "gpt-5.5")
         assert _normalize_provider("chatgpt") == "openai-codex"
 
-    def test_alias_github_copilot(self):
-        assert resolve_provider("github-copilot") == "copilot"
-
-
-    def test_alias_github_copilot_acp(self):
-        assert resolve_provider("github-copilot-acp") == "copilot-acp"
-        assert resolve_provider("copilot-acp-agent") == "copilot-acp"
-
-
     def test_alias_hf(self):
         assert resolve_provider("hf") == "huggingface"
 
@@ -155,7 +146,7 @@ class TestResolveProvider:
         # behavior, not the Bedrock fallback.
         monkeypatch.setattr(
             "agent.bedrock_adapter.has_aws_credentials",
-            lambda env=None: False,
+            lambda env=None, **_kw: False,
         )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
         with pytest.raises(AuthError, match="not connected to any AI provider"):
@@ -187,36 +178,6 @@ class TestApiKeyProviderStatus:
 # =============================================================================
 
 class TestResolveApiKeyProviderCredentials:
-
-
-    def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch, tmp_path):
-        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
-        from hermes_platform.resolver import known_dirs
-
-        _invalidate_gh_cli_token_cache()
-        brew = tmp_path / "homebrew" / "bin"
-        brew.mkdir(parents=True)
-        gh = brew / "gh"
-        gh.write_text("#!/bin/sh\n", encoding="utf-8")
-        gh.chmod(0o755)
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr(known_dirs, "homebrew_dirs", lambda: (str(brew),))
-        monkeypatch.setattr(known_dirs, "user_local_bin", lambda: ())
-
-        calls = []
-
-        class _Result:
-            returncode = 0
-            stdout = "gh-cli-secret\n"
-
-        def _fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return _Result()
-
-        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
-
-        assert _try_gh_cli_token() == "gh-cli-secret"
-        assert calls == [[str(gh), "auth", "token"]]
 
 
     def test_resolve_stepfun_with_key(self, monkeypatch):
@@ -258,51 +219,34 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_key"] == "auto-kimi-key"
 
-    def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+    def test_runtime_external_process_provider_uses_process_runtime(self, monkeypatch, tmp_path):
+        import providers
+        from hermes_cli import auth
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="acme-acp", auth_type="external_process", base_url="acp://acme",
+                                  process_command="acme", process_args=("--acp", "--stdio"),
+                                  process_args_env_var="HERMES_ACME_ACP_ARGS")
+        monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+        monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+        monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
+        auth.PROVIDER_REGISTRY[profile.name] = auth.ProviderConfig(
+            profile.name, profile.name, profile.auth_type, inference_base_url=profile.base_url)
+        cli = tmp_path / ("acme.exe" if os.name == "nt" else "acme")
+        cli.write_text("", encoding="utf-8")
+        cli.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("HERMES_ACME_ACP_ARGS", "--acp --stdio --debug")
+
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="copilot")
-        assert result["provider"] == "copilot"
+
+        result = resolve_runtime_provider(requested="acme-acp")
+
+        assert result["provider"] == "acme-acp"
         assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "gho_cli_secret"
-        assert result["base_url"] == "https://api.githubcopilot.com"
-
-    def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
-        monkeypatch.setattr(
-            "hermes_cli.runtime_provider._get_model_config",
-            lambda: {"provider": "copilot", "default": "gpt-5.4"},
-        )
-        monkeypatch.setattr(
-            "hermes_cli.models.fetch_github_model_catalog",
-            lambda api_key=None, timeout=5.0: [
-                {
-                    "id": "gpt-5.4",
-                    "supported_endpoints": ["/responses"],
-                    "capabilities": {"type": "chat"},
-                }
-            ],
-        )
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        result = resolve_runtime_provider(requested="copilot")
-
-        assert result["provider"] == "copilot"
-        assert result["api_mode"] == "codex_responses"
-
-    def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
-        monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
-
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        result = resolve_runtime_provider(requested="copilot-acp")
-
-        assert result["provider"] == "copilot-acp"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "copilot-acp"
-        assert result["base_url"] == "acp://copilot"
-        assert result["command"] == "/usr/local/bin/copilot"
+        assert result["api_key"] == "acme-acp"
+        assert result["base_url"] == "acp://acme"
+        assert os.path.samefile(result["command"], cli)
         assert result["args"] == ["--acp", "--stdio", "--debug"]
 
 
@@ -320,7 +264,6 @@ class TestHasAnyProviderConfigured:
         hermes_home.mkdir()
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
-        monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("", ""))
         # Clear all provider env vars so earlier checks don't short-circuit
         _all_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                       "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
@@ -345,12 +288,12 @@ class TestHasAnyProviderConfigured:
 
     def test_config_provider_counts(self, monkeypatch, tmp_path):
         """config.yaml with model.provider set should count as configured."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli import config as config_module
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_file = hermes_home / "config.yaml"
-        config_file.write_text(yaml.dump({
+        config_file.write_text(yaml.safe_dump({
             "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"},
         }))
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
@@ -393,9 +336,9 @@ class TestHasAnyProviderConfigured:
         loop in ``except Exception``, so we also record every call — any
         recorded call proves the sweep ran even if the raise was swallowed.
         """
-        import yaml
+        import hermes_yaml as yaml
         hermes_home = self._setup_home(monkeypatch, tmp_path)
-        (hermes_home / "config.yaml").write_text(yaml.dump({
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"},
         }))
         sweep_calls = []
@@ -414,9 +357,9 @@ class TestHasAnyProviderConfigured:
     def test_config_base_url_api_key_skips_registry_sweep(self, monkeypatch, tmp_path):
         """Custom endpoint (base_url/api_key in config, no provider) must also
         short-circuit before the registry sweep."""
-        import yaml
+        import hermes_yaml as yaml
         hermes_home = self._setup_home(monkeypatch, tmp_path)
-        (hermes_home / "config.yaml").write_text(yaml.dump({
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "model": {
                 "default": "local/custom-model",
                 "base_url": "http://localhost:8000/v1",
@@ -525,7 +468,6 @@ class TestZaiEndpointAutoDetect:
         def _never_called(*a, **kw):
             nonlocal probe_called
             probe_called = True
-            return None
 
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
         creds = resolve_api_key_provider_credentials("zai")
@@ -754,7 +696,7 @@ class TestMinimaxOAuthProvider:
         # agent/auxiliary_client.py. The profile layer is the source
         # of truth; _get_aux_model_for_provider() reads from it first
         # and only falls back to the dict when no profile is registered.
-        import model_tools  # noqa: F401  -- triggers plugin discovery
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax-oauth")
@@ -811,7 +753,7 @@ class TestFetchDeepInfraModels:
                     {"id": "stabilityai/stable-diffusion-xl-base-1.0", "metadata": {}},
                 ]}).encode()
 
-        import hermes_cli.models as models
+        from hermes_cli import models
         monkeypatch.setattr(
             models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
         )
@@ -827,7 +769,7 @@ class TestFetchDeepInfraModels:
 
 
     def test_catalog_uses_credential_safe_opener(self, monkeypatch):
-        import hermes_cli.models as models
+        from hermes_cli import models
 
         seen = {}
 
@@ -949,7 +891,7 @@ class TestDeepInfraPricingFetcher:
             # non-chat — must not appear
             {"id": "vendor/model-image", "metadata": {"tags": ["image-gen"], "pricing": {"per_image_unit": 0.05}}},
         ]}
-        import hermes_cli.models as models
+        from hermes_cli import models
         monkeypatch.setattr(
             models,
             "_urlopen_model_catalog_request",
@@ -965,6 +907,103 @@ class TestDeepInfraPricingFetcher:
         assert float(result["vendor/model-a"]["completion"]) == pytest.approx(0.3 / 1_000_000)
         assert "input_cache_read" in result["vendor/model-a"]
         assert "input_cache_read" not in result["vendor/model-b"]
+
+
+@pytest.fixture
+def _kilo_pricing_isolation(monkeypatch):
+    """Reset the shared pricing caches around each Kilo pricing test.
+
+    The Kilo fetcher keys the shared pricing cache by its catalog URL; without
+    a reset, one test's payload (or its negative cache entry) would answer
+    the next test's read.
+    """
+    import hermes_cli.models_pricing as _mp
+    monkeypatch.setattr(_mp, "_pricing_cache", {})
+    monkeypatch.setattr(_mp, "_pricing_cache_retry_after", {})
+    monkeypatch.setattr(_mp, "_pricing_provider_cache_keys", {})
+
+
+@pytest.mark.usefixtures("_kilo_pricing_isolation")
+class TestKilocodePricingFetcher:
+    """_fetch_kilocode_pricing maps the Kilo Gateway's OpenRouter-shaped catalog
+    (per-token pricing + explicit isFree + ``-1`` rate sentinels) into picker
+    pricing, and is wired into the get_pricing_for_provider dispatch."""
+
+    def test_pricing_shape_and_dispatch(self, monkeypatch):
+        payload = {"data": [
+            {
+                "id": "vendor/paid",
+                "pricing": {
+                    "prompt": "0.000004",
+                    "completion": "0.00002",
+                    "input_cache_read": "0.0000004",
+                },
+            },
+            # Free router with non-zero underlying rates — the explicit isFree
+            # flag is authoritative and must win (the kilo-auto/free case).
+            {"id": "kilo-auto/free", "isFree": True,
+             "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+            # Sentinel pricing ("rate varies per request") — no price is better
+            # than a fabricated one, so the row is skipped.
+            {"id": "kilo-auto/efficient",
+             "pricing": {"prompt": "-1", "completion": "-1"}},
+            # Malformed records must be skipped, not crash the parser.
+            {"id": "vendor/no-pricing"},
+            {"id": ""},
+            "not-a-dict",
+        ]}
+        from hermes_cli import models
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            _make_urlopen_returning(payload),
+        )
+        from hermes_cli.models_pricing import get_pricing_for_provider
+
+        # get_pricing_for_provider → _fetch_kilocode_pricing dispatch path
+        result = get_pricing_for_provider("kilocode")
+        assert set(result) == {"vendor/paid", "kilo-auto/free"}
+        # Paid: per-token strings pass through, cache-read when the source had it.
+        assert result["vendor/paid"] == {
+            "prompt": "0.000004", "completion": "0.00002",
+            "input_cache_read": "0.0000004",
+        }
+        # Free: explicit zero mapping, ignoring the non-zero underlying rates.
+        assert result["kilo-auto/free"] == {"prompt": "0", "completion": "0"}
+
+    def test_endpoint_comes_from_profile_base_url_and_is_public(self, monkeypatch):
+        """Default endpoint is the kilocode provider profile's base_url + /models
+        (no second hardcode); KILOCODE_BASE_URL overrides it; the catalog is
+        fetched without a key; a failing endpoint yields {} without raising."""
+        from hermes_cli import models
+        from hermes_cli.models_pricing import get_pricing_for_provider
+
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append((req.full_url, req.get_header("Authorization")))
+            return _make_urlopen_returning(
+                {"data": [{"id": "a/b", "pricing": {"prompt": "0.1", "completion": "0.2"}}]}
+            )(req, timeout=timeout)
+
+        monkeypatch.delenv("KILOCODE_API_KEY", raising=False)
+        monkeypatch.delenv("KILOCODE_BASE_URL", raising=False)
+        monkeypatch.setattr(models, "_urlopen_model_catalog_request", fake_urlopen)
+
+        expected = {"a/b": {"prompt": "0.1", "completion": "0.2"}}
+        assert get_pricing_for_provider("kilocode", force_refresh=True) == expected
+        assert seen == [("https://api.kilo.ai/api/gateway/models", None)]
+
+        monkeypatch.setenv("KILOCODE_BASE_URL", "https://proxy.example.com/kilo")
+        assert get_pricing_for_provider("kilocode", force_refresh=True) == expected
+        assert seen[-1][0] == "https://proxy.example.com/kilo/models"
+
+        monkeypatch.setattr(
+            models,
+            "_urlopen_model_catalog_request",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("endpoint down")),
+        )
+        assert get_pricing_for_provider("kilocode", force_refresh=True) == {}
 
 
 class TestDeepInfraProviderProfile:

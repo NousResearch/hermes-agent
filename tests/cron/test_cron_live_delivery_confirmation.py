@@ -140,7 +140,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
         future = Future()
         try:
             future.set_result(asyncio.run(coro))
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             future.set_exception(e)
         return future
 
@@ -386,6 +386,30 @@ class TestStandaloneSendIsBounded:
         assert "in flight" in error  # an un-cancelled shielded send may still land
         assert "via live adapter" not in caplog.text and "delivered to" not in caplog.text
 
+    def test_a_slow_media_upload_that_lands_is_reported_delivered(self, tmp_path, caplog):
+        """The bound grows with the attachment the way the gateway's upload deadline does: a platform
+        answers only once the file arrived, so a fixed cap reported a delivered file as failed."""
+        media = tmp_path / "export.pdf"
+        with open(media, "wb") as f:
+            f.truncate(1024 * 1024)  # 8 s at the 128 KiB/s floor rate: the bound becomes 1 + 12 s
+
+        async def _slow_upload(*_args, **_kwargs):
+            await asyncio.sleep(2)  # health: allow HX013 -- an upload outlasting the configured bound IS the case
+            return {"success": True, "message_id": 7}
+
+        with patch("gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+                   side_effect=lambda files, **_kw: files), \
+             patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+             patch("cron.scheduler.load_config", return_value={
+                 "cron": {"wrap_response": False, "standalone_send_timeout_seconds": 1}}), \
+             patch("cron.scheduler_delivery._record_delivery_verification"), \
+             patch("tools.send_message_tool._send_to_platform", _slow_upload), \
+             caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error = _deliver_result(_job(), f"Nightly report.\nMEDIA:{media}")
+
+        assert error is None
+        assert f"delivered to telegram:{CHAT_ID}" in caplog.text
+
     def test_a_timely_send_is_unaffected(self, caplog):
         async def _ok(*_args, **_kwargs):
             return {"success": True, "message_id": 7}
@@ -395,3 +419,13 @@ class TestStandaloneSendIsBounded:
 
         assert error is None
         assert f"delivered to telegram:{CHAT_ID}" in caplog.text
+
+
+@pytest.mark.parametrize("cron_cfg,expected", [(None, True), ({"delivery": {"notify": False}}, False)])
+def test_standalone_fallback_carries_the_cron_notify_choice(cron_cfg, expected):
+    """The live lane sends ``metadata["notify"] = cron.delivery.notify``; the standalone fallback
+    must pass the same choice, or a brief that buzzes in-process lands silently out of process."""
+    _, _, standalone_calls = _run(_job(), "Nightly report.", {"success": True, "filtered": "x", "delivered": False},
+                                  cron_cfg=cron_cfg)
+
+    assert [call["kwargs"]["notify"] for call in standalone_calls] == [expected]

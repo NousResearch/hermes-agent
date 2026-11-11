@@ -297,8 +297,7 @@ gateway at runtime, preserving prompt caching (the system prompt doesn't change 
 
 Inactivity and wall-clock time never rotate a conversation. `/new` and `/reset`
 create an explicit boundary; context compression continues to manage long histories.
-Legacy timer configuration is ignored. The existing `SessionResetPolicy` datatype
-is inert compatibility data, not a runtime policy.
+Legacy timer configuration is ignored.
 
 Explicit suspension still creates a boundary on the next inbound turn. Recovery
 respects explicit and historical finalized boundaries rather than reopening them.
@@ -441,7 +440,7 @@ adapter._pending_messages: Dict[session_key, MessageEvent]
     └── Single "next-up" slot per session. Overwritten on repeat sends
         (burst collapse). Shared with photo-burst follow-ups.
 
-self._queued_events: Dict[session_key, List[MessageEvent]]
+SessionState.conversation.queued_events: List[MessageEvent]  (one per session_key)
     └── Overflow buffer. Each /queue invocation appends here when the
         slot is occupied. Promoted one-at-a-time after each drain.
 ```
@@ -458,7 +457,7 @@ _enqueue_fifo(session_key, event, adapter)
 └───────────────────────────────────────┘
        │ No
        ▼
-Append to _queued_events[session_key] (overflow tail)
+Append to the session's queued_events (overflow tail)
 ```
 
 ### Dequeue / Promotion (`_promote_queued_event`)
@@ -467,7 +466,7 @@ Called at the drain site after the slot was consumed. If there's an overflow ite
 
 - When `pending_event is None` (slot was empty), return overflow head as the new event.
 - When `pending_event` exists, stage overflow head in the slot for the next recursion.
-- If no adapter available, push back to `_queued_events` (don't silently drop).
+- If no adapter available, push back to the session's `queued_events` (don't silently drop).
 
 ### Queue Depth
 
@@ -498,7 +497,7 @@ requested twice is one stop).
 ### FIFO Invariant
 
 Each `/queue` invocation produces exactly one full agent turn, in FIFO order, with no
-merging. The single-slot `_pending_messages` + overflow `_queued_events` design ensures
+merging. The single-slot `_pending_messages` + overflow `queued_events` design ensures
 that repeated sends during an active turn don't cause out-of-order processing.
 
 ---

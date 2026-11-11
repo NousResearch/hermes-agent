@@ -26,16 +26,36 @@ def test_agent_context_follows_the_platform(platform, expected):
     assert _memory_provider_init_kwargs(_fake_agent(), platform)["agent_context"] == expected
 
 
-def test_cron_session_disables_supermemory_writes(tmp_path, monkeypatch):
-    """Through the real bundled provider: the scheduler's kwargs must switch writes off,
-    an interactive session's must leave them on (empty hermes_home → config defaults)."""
-    from plugins.memory.supermemory import SupermemoryMemoryProvider
+class _Store:
+    def __init__(self, rows, answered=()):
+        self.rows, self.answered = rows, set(answered)
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
-    by_platform = {}
-    for platform in ("cron", "cli"):
-        provider = SupermemoryMemoryProvider()
-        provider.initialize(**_memory_provider_init_kwargs(_fake_agent(), platform))
-        by_platform[platform] = provider._write_enabled
-    assert by_platform == {"cron": False, "cli": True}
+    def get_session_list_row(self, session_id):
+        return self.rows.get(session_id)
+
+    def latest_message_row_id(self, session_id, *, role="user", require_text=True):
+        return 7 if role == "assistant" and session_id in self.answered else None
+
+    def get_session_title(self, session_id):
+        return None
+
+
+@pytest.mark.parametrize(
+    ("rows", "answered", "expected"),
+    [
+        ({"sess-80646": {"message_count": 12}}, {"sess-80646"}, (True, 12)),  # continuing a stored transcript
+        ({"sess-80646": {"message_count": 1}}, (), (False, 1)),   # TUI stored the prompt being submitted
+        ({"sess-80646": {"message_count": 0}}, (), (False, 0)),   # row created, nothing said yet
+        ({}, (), (False, 0)),                                     # new session id (subagent, cron run)
+    ],
+)
+def test_initialize_is_told_whether_it_continues_a_stored_session(rows, answered, expected):
+    agent = _fake_agent()
+    agent._session_db = _Store(rows, answered)
+    kwargs = _memory_provider_init_kwargs(agent, "telegram")
+    assert (kwargs["resumed"], kwargs["message_count"]) == expected
+
+
+def test_no_session_store_reads_as_a_new_session():
+    kwargs = _memory_provider_init_kwargs(_fake_agent(), "cli")
+    assert (kwargs["resumed"], kwargs["message_count"]) == (False, 0)

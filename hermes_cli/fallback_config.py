@@ -12,6 +12,29 @@ def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
 
 
+def _normalize_provider_id(value: str) -> str:
+    """Collapse provider aliases to the canonical id (lazy to avoid import cycles).
+
+    ``opencode-zen`` is the legacy pre-rename id of ``opencode``; ``zen`` is a
+    short alias. Without normalization, two fallback entries naming the same
+    backend under different ids are kept as separate slots, shifting the chain
+    and letting an alias slip past the same-backend skip (#85235).
+    """
+    try:
+        from hermes_cli.providers import normalize_provider
+    except Exception:  # pragma: no cover - import resilience
+        # Silent degradation: alias collapse is disabled and we fall back to a
+        # bare lowercase. Log so a future import cycle/refactor can't regress
+        # the dedup invisibly.
+        logger.warning(
+            "fallback provider alias collapse degraded to lowercase: "
+            "could not import hermes_cli.providers.normalize_provider",
+            exc_info=True,
+        )
+        return value.lower()
+    return normalize_provider(value)
+
+
 def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     """API key for one fallback entry: inline ``api_key``, else ``key_env``.
 
@@ -29,6 +52,19 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
         from agent.secret_scope import get_secret
         return (get_secret(key_env) or "").strip() or None
     return None
+
+
+def fallback_entry_runtime_kwargs(entry: dict[str, Any]) -> dict[str, Any]:
+    """``resolve_runtime_provider`` kwargs for one fallback entry: its provider pin, model, ``base_url``
+    and :func:`resolve_entry_api_key`. The one shape every resolution-time walker (CLI, gateway, TUI,
+    cron) and ``hermes fallback check`` resolve an entry with, so a readiness verdict is the switch's."""
+    kwargs: dict[str, Any] = {
+        "requested": str(entry.get("provider") or "").strip(), "target_model": str(entry.get("model") or "").strip()}
+    if entry.get("base_url"):
+        kwargs["explicit_base_url"] = entry["base_url"]
+    if entry_key := resolve_entry_api_key(entry):
+        kwargs["explicit_api_key"] = entry_key
+    return kwargs
 
 
 def effective_runtime_provider(
@@ -94,7 +130,7 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
 
 def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     return (
-        str(entry.get("provider") or "").strip().lower(),
+        _normalize_provider_id(str(entry.get("provider") or "").strip()),
         str(entry.get("model") or "").strip().lower(),
         _normalized_base_url(entry.get("base_url")).lower(),
     )

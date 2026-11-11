@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as telegram_mod  # noqa: E402
-from plugins.platforms.telegram.adapter import (  # noqa: E402
+from plugins.platforms.telegram import adapter as telegram_mod
+from plugins.platforms.telegram.adapter import (
     TelegramAdapter,
     _coerce_duration_seconds,
     _probe_voice_duration_seconds,

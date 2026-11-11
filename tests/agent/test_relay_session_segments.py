@@ -43,6 +43,7 @@ def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
         cwd=str(repo_root),
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         timeout=30,
+        check=False,
     )
 
 
@@ -132,7 +133,7 @@ def _teardown_runtimes():
 
 @pytest.fixture(autouse=True)
 def _fast_scope_timeout(monkeypatch):
-    monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 1.0)
+    monkeypatch.setattr(relay_runtime, "SCOPE_OP_TIMEOUT", 1.0)
 
 
 @pytest.fixture(autouse=True)

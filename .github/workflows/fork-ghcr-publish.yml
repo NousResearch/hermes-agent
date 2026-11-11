@@ -76,12 +76,30 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          # Three pins, because a deployment needs to pick one and only one is
+          # reproducible: `latest`/`main` float (that is how the stack drifted a
+          # month behind), `sha-<short>` is immutable and is what a rollback
+          # should name. The digest printed at the end pins even harder.
           tags: |
             type=raw,value=latest
             type=sha,prefix=sha-,format=short
             type=raw,value=main
 
+      - name: Write install stamp
+        # Upstream's docker.yml does this before `docker build`; without it the
+        # image's /opt/hermes/install-stamp.json falls back to the all-zero
+        # placeholder, so `hermes --version` and the provenance marker report
+        # 0.0.0 / revision null. The Dockerfile copies the stamp into the bulk
+        # `COPY . .` layer, so it has to exist first.
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci \
+            --commit "$GITHUB_SHA" --branch main
+
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -90,10 +108,29 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=fork-ghcr-amd64
           cache-to: type=gha,mode=max,scope=fork-ghcr-amd64
 
-      - name: Image digest
-        run: echo "Published ${{ env.IMAGE_NAME }}@${{ steps.meta.outputs.labels['org.opencontainers.image.revision'] }}"
+      - name: Publish pin summary
+        # The compose lanes resolve the image from HERMES_FORK_IMAGE, so the
+        # reproducible pin is the digest (or the sha- tag). Print both, plus the
+        # exact command to deploy this build, instead of echoing a git revision.
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          sha_tag="sha-$(git rev-parse --short=8 HEAD)"
+          {
+            echo "### Fork image published"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| immutable tag | \`${{ env.IMAGE_NAME }}:${sha_tag}\` |"
+            echo "| digest pin | \`${{ env.IMAGE_NAME }}@${digest}\` |"
+            echo "| floating tags | \`latest\`, \`main\` |"
+            echo ""
+            echo "Deploy this exact build:"
+            echo ""
+            echo '```bash'
+            echo "HERMES_FORK_IMAGE=${{ env.IMAGE_NAME }}@${digest} \\"
+            echo "  docker compose -f docker-compose.upstream.yml up -d --force-recreate --remove-orphans"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

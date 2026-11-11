@@ -143,7 +143,9 @@ export function arcState(task: KanbanTask, fallbackAssignee: string): ArcState |
 /** Ticking "working · 34s" line for running cards (elapsed since claim). */
 export function RunClock({ task }: { task: KanbanTask }) {
   const k = useKanban()
-  const elapsed = useTicking(task.started_at)
+  // Current run's start; a retried task's started_at is its first-ever start,
+  // so tick from the fresh run. Older backends omit the field — fall back.
+  const elapsed = useTicking(task.current_run_started_at ?? task.started_at)
 
   if (!elapsed) {
     return null

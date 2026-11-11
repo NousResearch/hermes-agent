@@ -3,9 +3,9 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
-from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
+from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -41,6 +41,29 @@ class TestCommandRegistry:
                     assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
+    def test_skills_desktop_meta_limits_exec_to_review_subcommands(self):
+        # #98330: /skills mixes desktop-relevant write-approval review verbs with CLI-hub
+        # mutations; desktop_subcommands exposes only the review slice to the desktop
+        # surface (completion + exec) without widening the whole family.
+        skills = resolve_command("skills")
+        assert skills is not None
+        assert skills.desktop is None
+        assert command_desktop_meta(skills) == {
+            "argument_mode": "options",
+            "desktop": None,
+            "desktop_subcommands": ["pending", "approve", "reject", "diff", "approval"],
+        }
+        assert set(skills.desktop_subcommands or ()) <= set(skills.subcommands)
+
+    def test_empty_desktop_subcommand_scope_serializes_as_deny_all(self):
+        assert command_desktop_meta(
+            CommandDef("demo", "Demo", "Session", desktop_subcommands=())
+        ) == {
+            "argument_mode": None,
+            "desktop": None,
+            "desktop_subcommands": [],
+        }
+
 
     def test_argument_mode_infers_text_from_any_args_hint(self):
         assert infer_argument_mode(CommandDef("demo", "Demo", "Session", args_hint="<prompt>")) == "text"
@@ -51,6 +74,24 @@ class TestCommandRegistry:
 # ---------------------------------------------------------------------------
 # resolve_command tests
 # ---------------------------------------------------------------------------
+
+class TestResolveCommandAliases:
+    """One-letter aliases resolve to their command, never a longer canonical
+    (exact lookup treats the alias as a full name — /s is not a /sessions prefix)."""
+
+    def test_q_resolves_to_queue(self):
+        cmd = resolve_command("q")
+        assert cmd is not None and cmd.name == "queue"
+
+    def test_s_resolves_to_steer(self):
+        cmd = resolve_command("s")
+        assert cmd is not None and cmd.name == "steer"
+
+    def test_exact_names_still_win_over_the_alias(self):
+        cmd = resolve_command("sessions")
+        assert cmd is not None and cmd.name == "sessions"
+        cmd = resolve_command("steer")
+        assert cmd is not None and cmd.name == "steer"
 
 
 
@@ -131,6 +172,40 @@ class TestTelegramBotCommands:
         assert "btw" in names
         assert "queue" in names
         assert "steer" in names
+
+
+
+class TestSkillBundleGatewayCatalogs:
+    def test_bundle_is_advertised_on_telegram_and_discord_with_precedence(self, tmp_path, monkeypatch):
+        bundle_dir = tmp_path / "skill-bundles"
+        bundle_dir.mkdir()
+        (bundle_dir / "research.yaml").write_text(
+            "name: Research\ndescription: Combined research skills\nskills: [one, two]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundle_dir))
+        monkeypatch.setattr(
+            "hermes_cli.commands_platforms._gateway_available_commands", list
+        )
+        monkeypatch.setattr(
+            "hermes_cli.commands_platforms._iter_plugin_command_entries", lambda: iter([])
+        )
+        monkeypatch.setattr(
+            "hermes_cli.commands_platforms._iter_gateway_skills",
+            lambda _platform: iter([
+                ("/research", {"description": "A plain skill"}, ()),
+            ]),
+        )
+
+        menu, hidden = telegram_menu_commands()
+        assert ("research", "Combined research skills") in menu
+        assert hidden == 0
+        assert [name for name, _ in menu].count("research") == 1
+
+        categories, uncategorized, hidden = discord_skill_commands_by_category(set())
+        assert ("research", "Combined research skills", "/research") in uncategorized
+        assert hidden == 1
+        assert not categories
 
 
 
@@ -329,15 +404,15 @@ class TestSubcommandCompletion:
             "hermes_cli.tools_config._get_platform_tools",
             lambda *_a, **_k: set(),
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config", dict)
         monkeypatch.setattr(
             "hermes_cli.tools_config._get_plugin_toolset_keys",
             lambda: set(),
         )
 
-        completions = _completions(SlashCommandCompleter(), "/tools enable spotify ")
+        completions = _completions(SlashCommandCompleter(), "/tools enable discord ")
         texts = {c.text for c in completions}
-        assert "spotify" not in texts
+        assert "discord" not in texts
 
 
     def _fake_gateway(self, monkeypatch, platforms):
@@ -479,7 +554,7 @@ class TestClampCommandNamesTriples:
         cmd_key = f"/{long}"
         result = _clamp_command_names([(long, "desc", cmd_key)], set())
         assert len(result) == 1
-        name, desc, key = result[0]
+        name, _desc, key = result[0]
         assert len(name) == _CMD_NAME_LIMIT
         assert key == cmd_key, "cmd_key must survive name clamping"
 
@@ -891,8 +966,6 @@ class TestTelegramMenuCommands:
 # Discord skill commands grouped by category
 # ---------------------------------------------------------------------------
 
-from hermes_cli.commands_platforms import discord_skill_commands_by_category
-
 
 class TestDiscordSkillCommandsByCategory:
     """Tests for discord_skill_commands_by_category() — /skill group registration."""
@@ -934,7 +1007,7 @@ class TestDiscordSkillCommandsByCategory:
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
+            categories, _uncategorized, hidden = discord_skill_commands_by_category(
                 reserved_names=set(),
             )
 

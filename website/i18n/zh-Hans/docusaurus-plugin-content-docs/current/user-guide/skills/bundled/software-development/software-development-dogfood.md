@@ -30,11 +30,11 @@ description: "网页应用探索性 QA：发现缺陷、收集证据、生成报
 
 ## 概述
 
-本 skill 指导你使用浏览器工具集对网页应用进行系统化探索性 QA 测试。你将浏览应用、与元素交互、收集问题证据，并生成结构化缺陷报告。
+本 skill 指导你使用 `browser_exec` 对网页应用进行系统化探索性 QA 测试。你将浏览应用、与元素交互、收集问题证据，并生成结构化缺陷报告。
 
 ## 前提条件
 
-- 浏览器工具集必须可用（`browser_navigate`、`browser_snapshot`、`browser_click`、`browser_type`、`browser_vision`、`browser_console`、`browser_scroll`、`browser_back`、`browser_press`）
+- 必须启用 `browser` 工具集（`browser_exec`）。`browser_exec` 运行 Python，并预先导入了辅助函数（`new_tab`、`goto_url`、`wait_for_load`、`page_info`、`js`、`fill_input`、`click_at_xy`、`capture_screenshot`、`cdp`）；浏览器状态在多次调用之间保留，Python 变量则不保留。
 - 用户提供目标 URL 和测试范围
 
 ## 输入
@@ -68,52 +68,55 @@ description: "网页应用探索性 QA：发现缺陷、收集证据、生成报
 
 ### 阶段 2：探索
 
-针对计划中的每个页面或功能：
+将每一步的操作合并到一次 `browser_exec` 调用中。针对计划中的每个页面或功能：
 
-1. **导航**至该页面：
+1. **安装控制台钩子后再导航。** 在导航前先在标签页上注册钩子，这样页面加载期间抛出的错误也能被捕获：
+   ```python
+   # Open page with console-error capture
+   HOOK = """window.__qa_errors = [];
+   const _e = console.error;
+   console.error = (...a) => { window.__qa_errors.push(a.map(String).join(' ')); _e(...a); };
+   addEventListener('error', e => window.__qa_errors.push('uncaught: ' + e.message));
+   addEventListener('unhandledrejection', e => window.__qa_errors.push('rejection: ' + String(e.reason)));"""
+   new_tab('about:blank')  # first call only: the hook binds to the current tab
+   cdp('Page.addScriptToEvaluateOnNewDocument', source=HOOK)
+   goto_url("https://example.com/page")
+   wait_for_load()
+   print(page_info())
+   print(js('window.__qa_errors || []'))
    ```
-   browser_navigate(url="https://example.com/page")
+   之后任何会导航的调用，都要在开头重新注册钩子。静默 JS 错误是高价值发现。
+
+2. **读取页面结构** — 列出可见的交互元素及其视口中心坐标（需要角色/名称时，使用 `cdp('Accessibility.getFullAXTree')` 并在 Python 中过滤）：
+   ```python
+   # List interactive elements
+   print(js("""(() => [...document.querySelectorAll('a,button,input,select,textarea,[role=button]')]
+     .filter(e => e.offsetParent).slice(0, 80).map((e, i) => { const r = e.getBoundingClientRect();
+       return {i, tag: e.tagName, text: (e.innerText || e.value || e.getAttribute('aria-label') || '').trim().slice(0, 60),
+               id: e.id, name: e.name, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)}; }))()"""))
    ```
 
-2. **获取快照**以了解 DOM 结构：
-   ```
-   browser_snapshot()
-   ```
+3. **直观评估页面**：调用 `capture_screenshot()`，查看附带的图片，检查布局问题、损坏的元素或无障碍问题。如果你的模型无法查看图片，请将打印出的路径传给 `vision_analyze`。
 
-3. **检查控制台**中的 JavaScript 错误：
-   ```
-   browser_console(clear=true)
-   ```
-   每次导航后及每次重要交互后都应执行此操作。静默 JS 错误是高价值发现。
-
-4. **获取带标注的截图**，以直观评估页面并识别交互元素：
-   ```
-   browser_vision(question="Describe the page layout, identify any visual issues, broken elements, or accessibility concerns", annotate=true)
-   ```
-   `annotate=true` 标志会在交互元素上叠加编号标签 `[N]`。每个 `[N]` 对应后续浏览器命令中的引用 `@eN`。
-
-5. **系统化测试交互元素**：
-   - 点击按钮和链接：`browser_click(ref="@eN")`
-   - 填写表单：`browser_type(ref="@eN", text="test input")`
-   - 测试键盘导航：`browser_press(key="Tab")`、`browser_press(key="Enter")`
-   - 滚动内容：`browser_scroll(direction="down")`
+4. **系统化测试交互元素**：
+   - 点击按钮和链接：`js("document.querySelector('#submit').click()")`，或使用第 2 步得到的中心坐标调用 `click_at_xy(x, y)`
+   - 填写表单：`fill_input('input[name=email]', 'test input')`
+   - 测试键盘导航：`cdp('Input.dispatchKeyEvent', type='keyDown', key='Tab', code='Tab', windowsVirtualKeyCode=9)`，随后发送对应的 `keyUp`，再用 `js('document.activeElement.outerHTML.slice(0, 200)')` 查看焦点落在何处；`key='Enter'`、`code='Enter'`、`windowsVirtualKeyCode=13` 同理
+   - 滚动内容：`js('window.scrollBy(0, 800)')`
+   - 后退：`js('history.back()')`，然后 `wait_for_load()`
    - 使用无效输入测试表单验证
    - 测试空提交
 
-6. **每次交互后**，检查：
-   - 控制台错误：`browser_console()`
-   - 视觉变化：`browser_vision(question="What changed after the interaction?")`
-   - 预期行为与实际行为
+5. **每次交互后**，在同一次调用中检查：
+   - 控制台错误：`print(js('window.__qa_errors || []'))`
+   - 视觉变化：`capture_screenshot()` 并与上一张截图对比
+   - 预期行为与实际行为（`page_info()`，或用 `js()` 读取相关元素）
 
 ### 阶段 3：收集证据
 
 对于发现的每个问题：
 
-1. **截图**以记录问题：
-   ```
-   browser_vision(question="Capture and describe the issue visible on this page", annotate=false)
-   ```
-   保存响应中的 `screenshot_path` — 将在报告中引用它。
+1. **截图**以记录问题：`capture_screenshot()` 会打印保存路径。将其复制到 `{output_dir}/screenshots/` 并使用描述性文件名（例如 `issue-03-broken-login.png`）— 将在报告中引用它。
 
 2. **记录详情**：
    - 问题发生的 URL
@@ -157,22 +160,26 @@ description: "网页应用探索性 QA：发现缺陷、收集证据、生成报
 
 ## 工具参考
 
-| 工具 | 用途 |
+以上所有浏览器操作都是 `browser_exec` 调用；下表列出上文用到的辅助函数和惯用写法。
+
+| 操作 | `browser_exec` 惯用写法 |
 |------|---------|
-| `browser_navigate` | 跳转至指定 URL |
-| `browser_snapshot` | 获取 DOM 文本快照（无障碍树） |
-| `browser_click` | 通过引用（`@eN`）或文本点击元素 |
-| `browser_type` | 在输入框中输入文字 |
-| `browser_scroll` | 在页面上向上/向下滚动 |
-| `browser_back` | 在浏览器历史中后退 |
-| `browser_press` | 按下键盘按键 |
-| `browser_vision` | 截图 + AI 分析；使用 `annotate=true` 显示元素标签 |
-| `browser_console` | 获取 JS 控制台输出和错误 |
+| 跳转至指定 URL | 先调用一次 `new_tab(url)`（或在注册钩子前调用 `new_tab('about:blank')`），之后用 `goto_url(url)`；随后调用 `wait_for_load()` |
+| 页面状态 | `page_info()` |
+| DOM / 无障碍树 | 用 `js(...)` 提取，或 `cdp('Accessibility.getFullAXTree')` 并在 Python 中过滤 |
+| 点击 | `js("document.querySelector(sel).click()")` 或 `click_at_xy(x, y)` |
+| 在输入框中输入文字 | `fill_input(selector, text)` |
+| 滚动 | `js('window.scrollBy(0, 800)')` |
+| 后退 | `js('history.back()')` |
+| 按下按键 | `cdp('Input.dispatchKeyEvent', type='keyDown', key=..., code=..., windowsVirtualKeyCode=...)` + `keyUp` |
+| 截图 | `capture_screenshot()`（图片附在结果中；纯文本模型对该路径使用 `vision_analyze`） |
+| JS 控制台错误 | 通过 `cdp('Page.addScriptToEvaluateOnNewDocument', source=HOOK)` 挂钩，用 `js('window.__qa_errors || []')` 读取 |
 
 ## 使用技巧
 
-- **每次导航后及重要交互后，务必执行 `browser_console()`。** 静默 JS 错误是最有价值的发现之一。
-- **在需要推断交互元素位置或快照引用不清晰时，对 `browser_vision` 使用 `annotate=true`。**
+- **每次导航后及重要交互后，务必读取 `window.__qa_errors`。** 静默 JS 错误是最有价值的发现之一。
+- **将每个子流程合并到一次 `browser_exec` 调用中**（导航、等待、提取、操作、检查错误）— 减少往返次数，且钩子保持有效。
+- **需要推断元素位置或 DOM 提取结果不明确时，执行 `capture_screenshot()`**；`click_at_xy` 使用元素列表中的中心坐标。
 - **使用有效和无效输入分别测试** — 表单验证缺陷十分常见。
 - **滚动浏览长页面** — 折叠线以下的内容可能存在渲染问题。
 - **测试导航流程** — 端到端点击多步骤流程。

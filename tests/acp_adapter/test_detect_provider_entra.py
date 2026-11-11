@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-
 class TestDetectProviderEntra:
     def test_callable_api_key_is_a_valid_credential(self):
         """A runtime returning a callable ``api_key`` (Entra bearer token
@@ -34,7 +33,3 @@ class TestDetectProviderEntra:
             side_effect=_fake_runtime,
         ):
             assert _acp_auth.detect_provider() == "azure-foundry"
-
-
-
-

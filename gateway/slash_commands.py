@@ -573,9 +573,15 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            # Platform + update_id of the triggering /restart, for redelivery detection. Telegram
+            # numbers update_id per bot, not across the profiles one multiplexed gateway serves,
+            # so the marker also records which profile ran the command; the boot guard compares
+            # profiles before it compares ids.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
+            profile = (str(getattr(event.source, "profile", None) or "")).strip()
+            if profile:
+                data["profile"] = profile
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
             return data

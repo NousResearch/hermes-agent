@@ -1519,6 +1519,17 @@ class GatewayBusySessionMixin:
         except Exception:
             return False
 
+        # A multiplexed gateway writes this marker from whichever profile ran /restart, and
+        # Telegram numbers ``update_id`` per bot — two bots of one process have unrelated id
+        # streams, so comparing ids across profiles could swallow a different bot's restart.
+        # The owning profile is compared first; a marker written before profiles were persisted
+        # belongs to the primary (the only writer before multiplexing).
+        primary_profile = getattr(self, "_primary_profile_name", None) or "default"
+        marker_profile = self._marker_profile(data) or primary_profile
+        event_profile = (str(getattr(event.source, "profile", None) or "")).strip() or primary_profile
+        if marker_profile != event_profile:
+            return False
+
         recorded_uid = data.get("update_id")
         if (
             data.get("platform") != "telegram"

@@ -871,8 +871,7 @@ _TOOL_DOC_LINES = [
     ("write_file", "  write_file(path: str, content: str)\n    Always overwrites the entire file; an existing file must be read_file'd first or the write is refused."),
     ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\")\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"total_count\", "
-     "\"matches\" or dense \"matches_text\"+\"matches_format\", \"files\" (target=\"files\"), \"counts\" (output_mode=\"count\")}; "
-     "absent keys are omitted, use .get()."),
+     "\"matches\" or \"matches_text\"+\"matches_format\", \"files\", \"counts\"}; absent keys are omitted, use .get()."),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False)"),
     ("terminal", "  terminal(command: str, timeout=None, workdir=None)\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),

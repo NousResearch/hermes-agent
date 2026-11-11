@@ -1,0 +1,34 @@
+name: orphic-eyes
+title: Orphic Eyes
+repo: https://github.com/Ilham-Musyafa/Orphic-Eyes
+sha: "a0411b982b43141cd5b11ba2bb19c204cc9d76b5"
+description: >-
+  Pixel-only screenshot review for Hermes: capture URL pairs, inspect changed
+  zones, prepare coding-agent requests and run bounded follow-up review rounds.
+  Disclosure: launches an installed headless browser; captured pages can load
+  network resources and redirects. Stores screenshots/reports locally, reads
+  explicit input pages/images and browser/runtime files, and optionally serves
+  reports read-only on loopback until stopped. No telemetry or credential-store
+  access; prompts are returned, never sent or executed by the plugin.
+maintainer: Ilham-Musyafa
+tier: community
+category: tools
+version: "0.3.0"
+docs_url: https://github.com/Ilham-Musyafa/Orphic-Eyes#readme
+readme: true
+platforms: [linux]
+known_issues:
+  - Requires Python 3.12 or newer, Pillow and an installed Edge/Chrome/Chromium browser.
+  - Windows/Edge, macOS and a live Hermes host are not covered by automated tests.
+  - Public DNS and proxy rules can block capture; login walls and dynamic pages can affect pixels.
+capabilities:
+  provides_tools:
+    - orphic_baseline
+    - orphic_compare
+    - orphic_loop_step
+    - orphic_approve
+    - orphic_accept
+    - orphic_ignore
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

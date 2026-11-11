@@ -1,16 +1,7 @@
 name: psychopomp
 repo: https://github.com/ponzgpt/psychopomp
 sha: fa86a14ee3f0924c6071b8c4887f6116963f649e
-description: >-
-  Every week, Hermes helps you write a page of your life (your Book) from what it already knows of your week:
-  proposed as a card in the chat, added only when you approve; once a year, a year in review. Seal letters for
-  the people you love. If you ever go silent for good, Hermes checks in, then asks your witness for a one-time
-  code they can send on any channel, and only then carries your Book (one designed HTML file) and letters.
-  Rehearse the whole passage in 20 seconds on a virtual clock, on the Desktop page or in any chat.
-  Disclosure: sends weekly nudges, check-ins, a code request and (after the code) your Book and letters to the
-  chats you set; reads inbound gateway messages at ingress to catch PSY- codes (those are consumed); stores the
-  Book and letters in plain text under $HERMES_HOME/plugin-data/psychopomp; delivers each message by
-  running Hermes' own `hermes send` CLI (text over stdin), its only subprocess.
+description: "Every week, Hermes helps you write a page of your life (your Book) from what it already knows of your week: proposed as a card in the chat, added only when you approve; once a year, a year in review. Seal letters for the people you love. If you ever go silent for good, Hermes checks in, then asks your witness for a one-time code they can send on any channel, and only then carries your Book (one designed HTML file) and letters. Rehearse the whole passage in 20 seconds on a virtual clock, on the Desktop page or in any chat. Disclosure — sends weekly nudges, check-ins, a code request and (after the witness's code) the user's Book and letters to the chats the user sets, each through Hermes' own `hermes send` CLI with the text over stdin; reads every inbound gateway message before Hermes' sender check to catch PSY- codes, and consumes those messages; stores the Book and letters in plain text under $HERMES_HOME/plugin-data/psychopomp; runs a 30-second background ticker; no telemetry."
 maintainer: ponzgpt
 tier: community
 category: general

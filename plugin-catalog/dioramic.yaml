@@ -1,7 +1,7 @@
 name: dioramic
 title: dioramic
 repo: https://github.com/faze39/dioramic
-sha: 0bb5cf8d93fbd7279d3330d8911f451b58fc80bd
+sha: 7265dd14e9cac8ea03abc122e6215cc603c44853
 description: >-
   A Blender scene director. The agent describes a scene as a structured JSON
   spec (toy-style shapes and 3D text, finishes, colours, three lighting rigs,

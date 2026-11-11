@@ -1778,8 +1778,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            # A single JSON line followed by a newline must never become an empty reply.
-            if 0 <= _nl < len(_tail) - 1:
+            if 0 <= _nl < len(_tail) - 1 and _tail[_nl + 1:].strip():
                 _tail = _tail[_nl + 1:]
             _cut = len(_raw) - len(_tail)
             _out = _tail

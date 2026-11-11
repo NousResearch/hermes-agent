@@ -30,3 +30,12 @@ def test_truncated_single_line_never_disappears_at_terminal_newline(limit):
     assert evt["output"].strip()
     assert evt["output"].endswith("x\n")
     assert evt["output_cut"] > 0
+
+
+@pytest.mark.parametrize("limit", [0, 18000])
+def test_truncated_json_with_trailing_whitespace_keeps_reply(limit):
+    raw = json.dumps({"reply": "x" * 20000}) + "\n \t\n"
+    evt = completion(raw, limit)
+    assert evt["output"] == raw[-(limit or 2000):]
+    assert evt["output_cut"] == len(raw) - (limit or 2000)
+    assert "x" * 128 in format_process_notification(evt)

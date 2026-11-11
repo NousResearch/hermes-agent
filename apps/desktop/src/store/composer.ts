@@ -280,8 +280,30 @@ export const $freshDraftKey = atom<string>(storedString(FRESH_DRAFT_STORAGE_KEY)
 
 export const freshDraftScope = (): string => $freshDraftKey.get()
 
+/**
+ * Text for the NEXT fresh chat's composer (`hermes://chat/new?prompt=…`).
+ *
+ * Consumed by the next `rotateFreshDraftKey`, which stashes it under the new
+ * key before publishing it, so the composer's scope swap loads it like any
+ * restored draft. An insert on the composer bus cannot do this reliably: it
+ * fires on a macrotask that races the render that swaps the scope, and when it
+ * wins it paints into the outgoing composer and is stashed under the old key.
+ */
+let pendingFreshDraftSeed: string | null = null
+
+export function seedNextFreshDraft(text: string): void {
+  pendingFreshDraftSeed = text.trim() || null
+}
+
 export const rotateFreshDraftKey = (): string => {
   const key = createFreshDraftKey()
+  const seed = pendingFreshDraftSeed
+  pendingFreshDraftSeed = null
+
+  if (seed) {
+    stashSessionDraft(key, seed, [])
+  }
+
   $freshDraftKey.set(key)
   persistString(FRESH_DRAFT_STORAGE_KEY, key)
 

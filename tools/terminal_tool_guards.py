@@ -9,6 +9,7 @@ module re-imports every public helper so ``tools.terminal_tool.<name>``
 keeps resolving.
 """
 
+import functools
 import json
 import logging
 import re
@@ -89,10 +90,6 @@ def _strip_quotes(command: str) -> str:
 _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b",
     r"\bdocker\s+compose\s+up\b",
-    # Following logs or attaching never exits, and is what usually comes after a detached `up`.
-    # The gaps are bounded so a long line cannot make this quadratic.
-    r"\bdocker\s+(?:compose\s+(?:\S+\s+){0,6}?)?logs\b[^;&|\n]{0,200}?\s(?:--follow\b|-[a-z]*f[a-z]*(?:\s|$))",
-    r"\bdocker\s+(?:compose\s+(?:\S+\s+){0,6}?)?attach\b",
     r"\bnext\s+dev\b",
     r"\bvite(?:\s|$)",
     r"\bnodemon\b",
@@ -106,24 +103,25 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
 # command segment is excused when the word it executes is known to treat its arguments as
 # data, or when it is a bounded form of a server command. Everything else keeps the anywhere
 # match: an unrecognised wrapper (`direnv exec . uvicorn`) must still be refused, so the closed
-# set is the excuse list, never a launcher list.
-_SEGMENT_SPLIT_RE = re.compile(r"[;&|\n]+")
+# set is the excuse list, never a launcher list. An excuse can only turn a refusal into a run;
+# nothing here refuses a command the patterns do not match.
+_SEGMENT_SPLIT_RE = re.compile(r"([;&|\n]+)")
+# fd redirects (`2>&1`, `&>log`) are not separators.
+_FD_REDIRECT_RE = re.compile(r"\d*[<>]&(?:\d+|-)?|&>>?")
 # Windows launchers name the same command: `npm.cmd run dev`, `uvicorn.exe app:app`.
 _WIN_LAUNCHER_SUFFIX_RE = re.compile(r"\b(\w+)\.(?:exe|cmd|bat|ps1)\b", re.IGNORECASE)
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*=")
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
-# A segment run by one of these executes text handed to it (`echo npm run dev | sh`), so no
-# segment of that command is excused.
-_TEXT_RUNNERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "xargs", "eval", "source", "."})
-_SYSTEM_BIN_PREFIXES = ("/bin/", "/sbin/", "/usr/", "/opt/")
-_COMPOSE_VALUE_FLAGS = frozenset({"-f", "--file", "-p", "--project-name", "--project-directory", "--profile", "--env-file"})
+_PYTHON_RE = re.compile(r"(?:python[\d.]*|py)$")
+_SYSTEM_BIN_DIRS = ("/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/")
 _TRANSPARENT_PREFIXES = frozenset({"time", "then", "do", "else", "!", "env"})
-_SUDO_FLAGS = frozenset({"-E", "-H", "-n", "-k", "-S", "-b", "-i", "-s"})
+_SUDO_FLAGS = frozenset({"-E", "-H", "-n", "-k", "-S", "-b"})
+_COMPOSE_VALUE_FLAGS = frozenset({"-f", "--file", "-p", "--project-name", "--project-directory", "--profile", "--env-file"})
 _DATA_COMMANDS = frozenset((
     "echo printf cat ls ll dir type grep egrep fgrep rg ag ack head wc stat du df file which whereis "
     "whence rm rmdir mkdir cp mv ln touch chmod chown cd pushd test [ sed awk sort uniq cut tr jq yq "
-    "tree basename dirname realpath readlink diff cmp tar zip unzip fd find tail locate pgrep ps lsof "
-    "curl wget git export unset"
+    "tree basename dirname realpath readlink diff cmp tar zip unzip fd find tail tee locate pgrep ps "
+    "lsof curl wget git export unset"
 ).split())
 _PACKAGE_TOOLS = frozenset("npm pnpm yarn bun pip pip3 uv poetry pdm pipx brew apt apt-get apk dnf conda cargo gem".split())
 _PACKAGE_DATA_SUBCOMMANDS = frozenset((
@@ -135,19 +133,28 @@ _VITE_LAUNCHERS = frozenset({"npx", "bunx", "pnpx", "npm", "pnpm", "yarn", "bun"
 
 def _has_flag(args: list, short: str = "", long: tuple = ()) -> bool:
     """True when *args* carry one of the *short* letters (alone or in a cluster such as `-fn`,
-    `-100f`) or an option starting with one of the *long* names (`--follow=name`)."""
-    return any(
-        arg.startswith(long) if arg.startswith("--") else arg.startswith("-") and any(c in arg for c in short)
-        for arg in args)
+    `-100f`) or one of the *long* options, abbreviated or with a value (`--fol`, `--follow=name`)."""
+    for arg in args:
+        if arg.startswith("--"):
+            option = arg.split("=", 1)[0]
+            if len(option) > 2 and any(name.startswith(option) for name in long):
+                return True
+        elif arg.startswith("-") and any(letter in arg for letter in short):
+            return True
+    return False
 
 
 # Data commands stop being data when an argument makes them run a command or never exit.
 _DATA_COMMAND_EXCEPTIONS = {
     "find": lambda args: any(a in ("-exec", "-execdir", "-ok", "-okdir") for a in args),
     "tail": lambda args: _has_flag(args, "fF", ("--follow",)),
-    "git": lambda args: any(a in ("bisect", "foreach", "-x") or a.startswith("--exec") for a in args),
-    "fd": lambda args: _has_flag(args, "xX", ("--exec",)),
-    "rg": lambda args: _has_flag(args, long=("--pre",)),
+    "git": lambda args: ("rebase" in args and _has_flag(args, "x")) or any(
+        a in ("bisect", "foreach", "difftool", "mergetool", "-x", "-c", "-O") or a.startswith(("--exec", "--open-files-in-pager"))
+        for a in args),
+    "fd": lambda args: _has_flag(args, "xX", ("--exec", "--exec-batch")),
+    "rg": lambda args: _has_flag(args, long=("--pre", "--hostname-bin")),
+    "ag": lambda args: _has_flag(args, long=("--pager",)),
+    "sort": lambda args: _has_flag(args, long=("--compress-program",)),
     "tar": lambda args: "-I" in args or _has_flag(args, long=("--to-command", "--checkpoint-action", "--use-compress-program")),
 }
 
@@ -160,7 +167,8 @@ def _command_word(tokens: list) -> tuple[str, list]:
     i = 0
     while i < len(tokens):
         word = tokens[i].lstrip("({").lower()
-        if word.startswith(_SYSTEM_BIN_PREFIXES):  # `./echo` is a local script, `/usr/bin/echo` is echo
+        # `./echo` is a local script; only a system directory makes `/usr/bin/echo` echo.
+        if word.startswith(_SYSTEM_BIN_DIRS) and ".." not in word:
             word = word.rsplit("/", 1)[-1]
         if word == "sudo":
             i += 1
@@ -191,40 +199,47 @@ def _vite_one_shot(words: list) -> bool:
 
 
 def _is_bounded_server_form(word: str, args: list, tokens: list) -> bool:
-    """A server command that exits by itself: a one-shot build, a config check, a detached start."""
-    if word == "gunicorn":
+    """A server command that exits by itself: a one-shot build or a config check."""
+    if word.rsplit("/", 1)[-1] == "gunicorn":
         return "--check-config" in args
-    if word == "docker" and args[:1] == ["compose"]:
-        # What follows a bare `--` belongs to another program, so a `-d` there does not count.
-        own = args[1:args.index("--")] if "--" in args else args[1:]
-        i = 0
-        while i < len(own) and own[i].startswith("-"):
-            i += 2 if own[i] in _COMPOSE_VALUE_FLAGS else 1
-        return own[i:i + 1] == ["up"] and any(a in ("-d", "--detach") for a in own[i:])
     return _vite_one_shot([t.lower() for t in tokens])
 
 
-def _only_names_a_server(segment: str) -> bool:
-    """True when *segment* cannot start a server whatever names it mentions."""
-    # A substitution runs its contents whatever the outer command is (`echo $(npm run dev)`), and
-    # an unbalanced `)` before the end is a case arm (`dev ) npm run dev ;;`) whose first word is
-    # a pattern. A closing `)` / `}` at the very end only ends a subshell or group.
-    body = segment.rstrip(")} \t\r")
-    if (any(marker in segment for marker in _EXECUTABLE_SUBSTITUTION_MARKERS)
-            or body.count(")") > body.count("(")):
+def _is_detached_compose_up(word: str, args: list) -> bool:
+    """`docker compose [options] up -d`: returns once the containers have started."""
+    if word != "docker" or args[:1] != ["compose"]:
         return False
-    tokens = body.split()
-    word, args = _command_word(tokens)
-    if _is_bounded_server_form(word, args, tokens):
-        return True
+    # What follows a bare `--` belongs to another program, so a `-d` there does not count.
+    own = args[1:args.index("--")] if "--" in args else args[1:]
+    i = 0
+    while i < len(own) and own[i].startswith("-"):
+        i += 2 if own[i] in _COMPOSE_VALUE_FLAGS else 1
+    return own[i:i + 1] == ["up"] and any(a in ("-d", "--detach") for a in own[i:])
+
+
+def _is_data_command(word: str, args: list) -> bool:
+    """True when *word* only reads, writes or lists what its arguments name."""
     if word == "command":
         return args[:1] in (["-v"], ["-V"])
-    if (word in ("uv", "python", "python3") and args[:1] == ["pip"]) or args[:2] == ["-m", "pip"]:
+    if (word == "uv" and args[:1] == ["pip"]) or (_PYTHON_RE.match(word) and args[:2] == ["-m", "pip"]):
         args = args[args.index("pip") + 1:]
     elif word not in _PACKAGE_TOOLS:
         runs_or_follows = _DATA_COMMAND_EXCEPTIONS.get(word)
         return word in _DATA_COMMANDS and not (runs_or_follows and runs_or_follows(args))
     return next((arg for arg in args if not arg.startswith("-")), "") in _PACKAGE_DATA_SUBCOMMANDS
+
+
+def _parse_segment(segment: str) -> tuple[str, list, list] | None:
+    """``(word, args, tokens)`` for an excusable segment, or None when it must keep the anywhere
+    match: a substitution runs its contents whatever the outer command is
+    (`echo $(npm run dev)`), and an unbalanced `)` before the end is a case arm
+    (`dev ) npm run dev ;;`) whose first word is a pattern. A closing `)` / `}` at the very end
+    only ends a subshell or group."""
+    body = segment.rstrip(")} \t\r")
+    if any(marker in segment for marker in _EXECUTABLE_SUBSTITUTION_MARKERS) or body.count(")") > body.count("("):
+        return None
+    tokens = body.split()
+    return (*_command_word(tokens), tokens)
 
 
 def _names_a_server(text: str) -> bool:
@@ -236,9 +251,36 @@ def _starts_long_lived_server(unquoted: str) -> bool:
     # Whole-string check first: nearly every command names no server at all.
     if not _names_a_server(unquoted):
         return False
-    segments = _SEGMENT_SPLIT_RE.split(unquoted)
-    return (any(_command_word(segment.split())[0] in _TEXT_RUNNERS for segment in segments)
-            or any(_names_a_server(segment) and not _only_names_a_server(segment) for segment in segments))
+    parts = _SEGMENT_SPLIT_RE.split(_FD_REDIRECT_RE.sub(" ", unquoted))
+    segments, separators = parts[::2], parts[1::2]
+    parse = functools.lru_cache(maxsize=None)(lambda index: _parse_segment(segments[index]))
+
+    def is_data(index: int) -> bool:
+        seg = parse(index)
+        return seg is not None and _is_data_command(seg[0], seg[1])
+
+    def piped_to_runner(index: int) -> bool:
+        # Text piped into anything but data commands may be executed (`echo … | tee x | sh`).
+        while index < len(separators) and "|" in separators[index] and "||" not in separators[index]:
+            index += 1
+            if not is_data(index):
+                return True
+        return False
+
+    def excused(index: int) -> bool:
+        seg = parse(index)
+        if seg is None:
+            return False
+        word, args, tokens = seg
+        if _is_bounded_server_form(word, args, tokens):
+            return True
+        if _is_detached_compose_up(word, args):
+            # It returns at once, which helps only if nothing after it holds the call open
+            # (`up -d && docker compose logs -f`): every later segment must be a data command.
+            return all(not segments[i].strip() or is_data(i) for i in range(index + 1, len(segments)))
+        return _is_data_command(word, args) and not piped_to_runner(index)
+
+    return any(_names_a_server(segment) and not excused(index) for index, segment in enumerate(segments))
 
 
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.

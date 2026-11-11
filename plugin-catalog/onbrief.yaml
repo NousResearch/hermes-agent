@@ -1,0 +1,30 @@
+name: onbrief
+title: onbrief
+repo: https://github.com/faze39/onbrief
+sha: 08c39614f0ff05a1bb3148fd616bac26fa4b774e
+description: >-
+  Keeps outbound posts on the campaign brief. A pre_tool_call hook reads the
+  text of posting and messaging tool calls (name globs, MCP tools included) and
+  checks it against your YAML or JSON rules file: required hashtags, mentions
+  and phrases, banned words and regex patterns, X-weighted length, hashtag
+  limits, required or allowed links, and near-duplicates of posts already sent.
+  A failing call is blocked (or sent to the approval prompt) with every broken
+  rule, a fix, and a passing rewrite when the fix is mechanical. Adds an
+  onbrief_check tool and /onbrief and `hermes onbrief` commands. Disclosure:
+  no network calls, model calls, shell commands or background processes; reads
+  only the rules file you configure; keeps the active campaign, the last 200
+  decisions and the last 500 sent posts (hash, normalised text, 80-char
+  preview) in its profile-scoped plugin state; `onbrief forget` clears the
+  sent-post history.
+maintainer: faze39
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/faze39/onbrief
+version: "0.1.0"
+
+capabilities:
+  provides_tools: [onbrief_check]
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []

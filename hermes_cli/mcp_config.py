@@ -430,6 +430,7 @@ def _probe_single_server(
     from tools.mcp_tool_discovery import _connect_server
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
     from tools.mcp_tool_common import _parse_boolish
+    from tools.mcp_tool import _paginate_full_list
 
     config = _resolve_mcp_server_config(config)
     if connect_timeout is None:
@@ -498,15 +499,20 @@ def _probe_single_server(
                         return False
                     return advertised_caps is None or getattr(advertised_caps, cap, None) is not None
 
-                # Best-effort: servers without the capability raise, which just means "0".
+                # Best-effort: servers without the capability raise, which just means "0". Drain
+                # nextCursor like discovery does: the tool count above is already paginated.
                 if _wanted("prompts"):
                     try:
-                        details["prompts"] = len((await server.session.list_prompts()).prompts)
+                        async with server._rpc_lock:
+                            details["prompts"] = len(await _paginate_full_list(
+                                server.session.list_prompts, "prompts", name))
                     except Exception:
                         pass
                 if _wanted("resources"):
                     try:
-                        details["resources"] = len((await server.session.list_resources()).resources)
+                        async with server._rpc_lock:
+                            details["resources"] = len(await _paginate_full_list(
+                                server.session.list_resources, "resources", name))
                     except Exception:
                         pass
         finally:

@@ -7,6 +7,7 @@ the Telegram adapter already keeps, and the inbound pointer looks the replied-to
 """
 
 import asyncio
+import threading
 from concurrent.futures import Future
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +20,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from tests.waiting import wait_until
 
 CHAT_ID = "-1001234567890"
 LATER_CHUNK = "status line ok\nTODO: deploy prod now (2/2)"
@@ -48,18 +50,29 @@ def _reply_to(message_id, text):
     return GatewayRunner._prepend_inbound_reply_context(event, source, "help me debug login")
 
 
-def _deliver(live_result=None, standalone_result=None):
+def _deliver(live_result=None, standalone_result=None, release=None):
     loop = MagicMock()
     loop.is_running.return_value = True
 
     def fake_run_coro(coro, _loop):
+        # The gateway loop runs the send on its own thread; the scheduler only waits on the future.
         future = Future()
-        future.set_result(asyncio.run(coro))
+
+        def _drive():
+            try:
+                future.set_result(asyncio.run(coro))
+            except BaseException as exc:
+                future.set_exception(exc)
+        threading.Thread(target=_drive, daemon=True).start()
         return future
 
     router = MagicMock()
 
     async def _deliver_to_platform(target, text, metadata, transport=None):
+        if release is not None:  # still sending after the scheduler stops waiting
+            await asyncio.to_thread(release.wait, 10)
+        if isinstance(live_result, Exception):
+            raise live_result
         return live_result
 
     router._deliver_to_platform = _deliver_to_platform
@@ -93,6 +106,35 @@ def test_reply_to_a_later_chunk_of_a_cron_delivery_is_framed(lane):
     assert 'Cronjob Response: nightly-ops\n…\nstatus line ok' in framed
     # An ordinary message in the same chat is untouched.
     assert _reply_to("103", "Japan is great.").startswith('[Replying to: "Japan is great."]')
+
+
+def test_chunks_of_a_partial_send_and_a_send_past_the_confirm_wait_are_tagged(monkeypatch):
+    """Ids are tagged when the send itself finishes: a partial split send raises with the landed
+    chunks, and a slow one is still running when the scheduler stops waiting (60 s)."""
+    from cron import scheduler_delivery as sd
+    from gateway.delivery import PartialDeliveryError
+
+    partial = SimpleNamespace(success=False, message_id=None, error="flood", raw_response={
+        "partial_overflow": True, "last_message_id": "202", "continuation_message_ids": ("202",),
+        "delivered_message_ids": ("201", "202")})
+    _deliver(live_result=PartialDeliveryError("flood", partial))
+    assert _reply_to("202", LATER_CHUNK).startswith("[Replying to an earlier scheduled cron delivery")
+
+    monkeypatch.setattr(sd, "_LIVE_SEND_CONFIRM_TIMEOUT_SECS", 0.05)
+    release = threading.Event()
+    _deliver(live_result=SimpleNamespace(success=True, message_id="301",
+                                         raw_response={"message_ids": ["301", "302"]}), release=release)
+    assert _reply_to("302", LATER_CHUNK).startswith('[Replying to: "')  # scheduler returned first
+    release.set()
+    wait_until(lambda: _reply_to("302", LATER_CHUNK).startswith("[Replying to an earlier scheduled"),
+               timeout=5, what="the slow send's chunk ids to be tagged")
+
+
+def test_an_unreadable_sent_index_leaves_ordinary_replies_working(tmp_path, monkeypatch):
+    unreadable = tmp_path / "index-is-a-directory"
+    unreadable.mkdir()
+    monkeypatch.setattr(rich_sent_store, "_store_path", lambda: str(unreadable))
+    assert _reply_to("42", "Japan is great.") == '[Replying to: "Japan is great."]\n\nhelp me debug login'
 
 
 def test_telegram_standalone_sender_reports_every_chunk_id(monkeypatch):

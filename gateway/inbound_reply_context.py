@@ -8,7 +8,8 @@ about the report, and is framed as reference material the new message has to sel
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import asyncio
+from typing import Any, Awaitable, Callable, Optional
 
 # The ``cron.wrap_response`` header (cron/scheduler_delivery.py); unwrapped deliveries carry no marker.
 CRON_DELIVERY_PREFIX = "Cronjob Response: "
@@ -30,10 +31,28 @@ def record_cron_delivery(platform: Any, chat_id: Any, text: str, send_result: An
     if not text.startswith(CRON_DELIVERY_PREFIX):
         return
     raw = _field(send_result, "raw_response")
+    raw = raw if isinstance(raw, dict) else {}
+    # A partial split send (PartialDeliveryError.result) lists the chunks that DID land.
     ids = [_field(send_result, "message_id"), *(_field(send_result, "continuation_message_ids") or ()),
-           *((raw.get("message_ids") if isinstance(raw, dict) else None) or ())]
+           *(raw.get("message_ids") or ()), raw.get("last_message_id"), *(raw.get("continuation_message_ids") or ()),
+           *(raw.get("delivered_message_ids") or ())]
     from gateway import rich_sent_store
     rich_sent_store.record_marker(_chat_key(platform, chat_id), ids, _CRON_MARKER, text.splitlines()[0])
+
+
+async def recording_cron_delivery(send: Awaitable, record: Callable[..., Any]) -> Any:
+    """Await *send* and pass its result to *record* when IT finishes, not when a caller stops
+    waiting: a split send can outlast the caller's confirmation timeout, and a partial one raises
+    with the landed chunks on ``exc.result``. *record* runs off the loop; the caller binds it to its
+    own profile context (the loop task does not carry it)."""
+    try:
+        result = await send
+    except Exception as exc:
+        if getattr(exc, "result", None) is not None:
+            await asyncio.to_thread(record, exc.result)
+        raise
+    await asyncio.to_thread(record, result)
+    return result
 
 
 def reply_pointer(reply_text: str, *, own_message: bool = False, replied_to: Optional[tuple] = None) -> str:

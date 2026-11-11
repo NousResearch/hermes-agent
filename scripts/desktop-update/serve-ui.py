@@ -1,7 +1,7 @@
 """Loopback shim server for the desktop update hand-off.
 
 Two GET routes: / serves ui.html, /progress serves the status file the
-orchestrator script writes ({"status": "running"|"done"|"error", ...}).
+orchestrator script writes ({"status": "running"|"done"|"manual"|"error", ...}).
 Exists because a file:// page cannot receive events from a detached
 process. Prints the chosen ephemeral port on stdout, serves until killed.
 

@@ -48,7 +48,7 @@ def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
     argparse surface — the drift that made ``hermes --reasoning high chat …`` misread ``high`` as
     the subcommand and forced eager plugin discovery.
 
-    Mirrors the ``update_cmd._holder_value_flags`` precedent, including the handwritten-snapshot fallback
+    Mirrors the ``update_cmd_windows._holder_value_flags`` precedent, including the handwritten-snapshot fallback
     for a broken parser import. Cached per process. See #93530.
     """
     try:

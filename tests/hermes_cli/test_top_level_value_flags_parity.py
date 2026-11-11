@@ -9,7 +9,7 @@ plugin CLI discovery (~500-650ms startup tax).
 
 Both sites now share ``hermes_cli._parser.top_level_value_flag_sets()``,
 derived from ``build_top_level_parser()`` (mirroring the
-``update_cmd._holder_value_flags`` precedent). These tests pin:
+``update_cmd_windows._holder_value_flags`` precedent). These tests pin:
 
   1. parity — the helper covers every value-taking option the live parser
      declares, so future drift fails CI instead of silently degrading

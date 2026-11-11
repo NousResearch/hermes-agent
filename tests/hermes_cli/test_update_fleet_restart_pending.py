@@ -99,14 +99,10 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(update_custody, "run",
                         lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
-    monkeypatch.setattr(
-        update_cmd, "_restart_macos_launchd_gateways", lambda *a, **k: None
-    )
     monkeypatch.setattr(
         update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None
     )

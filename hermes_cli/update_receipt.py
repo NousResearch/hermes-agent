@@ -40,7 +40,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -148,7 +148,7 @@ class UpdateReceipt:
         self.data: dict[str, Any] = {
             "schema": 1, "started_at": _utc_now_iso(), "finished_at": None,
             "argv": list(sys.argv), "pid": os.getpid(),
-            "outcome": "running",  # running | success | partial | failed
+            "outcome": "running",  # running | success | partial | failed | refused | interrupted
             "pre_update": _code_identity(), "post_update": {},
             "steps": [], "skips": [], "gateway_restart": {}, "fleet": [],
         }
@@ -622,7 +622,7 @@ def record_stop_without_receipt(reason: str, outcome: str) -> None:
 
 
 def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:
-    """Finalize + persist the receipt (``success``/``partial``/``failed``/``refused``); path or None.
+    """Finalize + persist the receipt (``success``/``partial``/``failed``/``refused``/``interrupted``); path or None.
 
     Exactly-once by construction: the context's receipt is popped first, so a second call (e.g. the
     command-boundary safety net after an inner path already finalized) is a no-op returning None.

@@ -19,7 +19,6 @@ import subprocess
 import psutil
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.windows._helpers import Run, wait_until
 from tests.e2e.core.windows_update._machine import (
     REQUIRES_OPT_IN,
@@ -112,13 +111,9 @@ def test_list_venv_holders_reports_live_holders(journey: Journey) -> None:
     m, pids, run = journey.machine, journey["holders"], journey["list_live"]
     reported = _reported(run)
     assert reported is not None, fail_with(m, "--list-venv-holders printed no JSON list", run)
-    with known_failure(r"^`hermes update --list-venv-holders` did not report the live venv holders "
-                       r".*\(rc=0, reported pids \[\]\)",
-                       "gated on #123050: --list-venv-holders reads the retired hermes_cli.main stub "
-                       "and always prints []"):
-        assert run.returncode == VENV_HOLDERS_EXIT and set(pids) <= set(reported), fail_with(
-            m, f"`hermes update --list-venv-holders` did not report the live venv holders {pids} "
-               f"(rc={run.returncode}, reported pids {reported})", run)
+    assert run.returncode == VENV_HOLDERS_EXIT and set(pids) <= set(reported), fail_with(
+        m, f"`hermes update --list-venv-holders` did not report the live venv holders {pids} "
+           f"(rc={run.returncode}, reported pids {reported})", run)
 
 
 def test_list_venv_holders_empty_once_they_exit(journey: Journey) -> None:

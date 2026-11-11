@@ -136,14 +136,6 @@ def systemd_unit_hermes_home(scope_cmd: list, svc_name: str) -> str | None:
     return None
 
 
-def systemd_unit_in_update_scope(scope_cmd: list, svc_name: str, scope: set[Path] | None = None) -> bool | None:
-    """Does unit *svc_name* belong to this update? ``None`` = ownership unreadable (leave it alone)."""
-    home = systemd_unit_hermes_home(scope_cmd, svc_name)
-    if home is None:
-        return None
-    return home_in_update_scope(home, scope)
-
-
 def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> str | None:
     """The HERMES_HOME a derived launchd label's installed plist pins when that home is NOT one of
     this update's — labels are account-global, so root B's default profile derives the same bare

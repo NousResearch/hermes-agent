@@ -39,8 +39,8 @@ prepares it once, then invokes the shared recipes. An update builds TUI and
 web, plus the local desktop app when one was present before the update.
 Desktop packaging still belongs to the local desktop adapter.
 
-The current-checkout retry, pulled-checkout, and ZIP update paths all use
-`update_cmd_maint._prepare_updated_checkout`: one PM dependency sync, then a
+The current-checkout retry, pulled-checkout, and ZIP update paths all hand off to
+`update_completion.run_completion`, whose `_prepare` step runs one PM dependency sync, then a
 fresh process on the selected interpreter for the frontend builds. Build
 failure aborts completion; an existing stale product is not a successful
 update. There is no updater-specific pnpm store, fallback install, extra

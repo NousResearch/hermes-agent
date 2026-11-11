@@ -315,38 +315,6 @@ class TestStrictBranchStatusRead:
         assert calls == [pid]
 
 
-# ---------------------------------------------------------------------------
-# Updater rung: _ledger_reapable_backend_pids
-# ---------------------------------------------------------------------------
-
-def _holders(*pids):
-    return [(p, "python.exe", f"python.exe -m hermes_cli.main --profile p{p} serve") for p in pids]
-
-
-def test_updater_reaps_ledger_proven_orphans():
-    from hermes_cli import update_cmd_windows
-
-    entries = [
-        _entry(200, 2.0, spawner_pid=700, spawner_create=7.0),   # spawner dead → reap
-        _entry(201, 2.1, spawner_pid=500, spawner_create=5.0),   # spawner alive → keep
-        _entry(202, 2.2, purpose="chat", spawner_pid=700, spawner_create=7.0),  # not reapable purpose
-    ]
-    fake = _fake_psutil({500: 5.0})
-    with patch.dict(sys.modules, {"psutil": fake}), \
-         patch.object(pi, "ledger_entries", return_value=entries), \
-         patch.object(pi, "spawner_is_dead", wraps=pi.spawner_is_dead):
-        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200, 201, 202, 203)) == [200]
-
-
-
-
-def test_updater_ledger_rung_never_raises():
-    from hermes_cli import update_cmd_windows
-
-    with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
-        assert update_cmd_windows._ledger_reapable_backend_pids(_holders(200)) == []
-
-
 def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
     """Desktop's SSH spawn is ``env HERMES_DESKTOP=1 hermes serve --isolated ... --ssh-session-token-file F``
     with NO token env var (its tests assert the var name never appears on the wire). Missing that

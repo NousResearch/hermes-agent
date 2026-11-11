@@ -63,7 +63,6 @@ def test_every_route_hands_off_once(route, tmp_path, monkeypatch):
     monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
         PROJECT_ROOT=tmp_path, _resolve_update_branch=lambda args: "main"))
     monkeypatch.setattr(update_cmd, "_verify_head_after_pull", lambda *a, **kw: "new-sha")
-    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **kw: pytest.fail("old-process preparation"))
     monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", lambda **kw: None)
     monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda *a: None)
     monkeypatch.setattr(update_cmd_zip, "_abort_zip_update_if_dirty_tree", lambda: None)

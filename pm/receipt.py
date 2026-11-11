@@ -179,10 +179,6 @@ def record_feature_list(extras: Optional[list[str]]) -> None:
     _record(lambda r: r.__setitem__("feature_list", extras))
 
 
-def record_platform(platform_id: str) -> None:
-    _record(lambda r: r.__setitem__("platform", platform_id))
-
-
 def record_plugin_checks(results: list) -> None:
     """Plugin update-check results (the cadence's receipt section).
     Each item is a plugins_updates.CheckResult.to_json() dict."""
@@ -207,7 +203,7 @@ def record_warning(message: str) -> None:
 def record_refusal(code: str, detail: str = "") -> None:
     """Record WHY this sync refused to act (e.g. the lazy-install policy).
     ``outcome`` stays whatever ``finalize`` is given (refusals finalize as
-    ``failed``/``refused``) — this names the refusal class."""
+    ``failed``) — this names the refusal class."""
     _record(
         lambda r: r.__setitem__(
             "refusal", {"code": str(code), "detail": str(detail), "at": _utc_now_iso()}
@@ -227,7 +223,7 @@ def snapshot() -> Optional[dict[str, Any]]:
 def finalize(
     outcome: str, exit_code: int = 0, token: Optional[contextvars.Token] = None
 ) -> Optional[Path]:
-    """Write the receipt (``outcome``: ok | refused | failed | bisected)
+    """Write the receipt (``outcome``: ok | failed | updates-available)
     and rotate. Returns its path; None when nothing was begun.
 
     With ``token`` (from the matching ``begin``): pops only this begin's

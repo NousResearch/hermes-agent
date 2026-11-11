@@ -1,4 +1,4 @@
-"""Windows gateway lifecycle for ``hermes update``: pause/resume/cold-start the service, sweep venv holders, reap orphaned backends.
+"""Windows gateway lifecycle for ``hermes update``: pause/resume/cold-start the service, list venv holders.
 
 Split out of ``update_cmd.py``; names are re-imported there so ``hermes_cli.update_cmd.<name>`` still resolves/monkeypatches.
 Origin helpers are imported lazily per function (no cycle; test patches on the origin stay effective).
@@ -338,10 +338,9 @@ def list_venv_holders() -> list[dict]:
 
     Off Windows (or without psutil) the guard never fires, so the list is empty. ``exe``/``argv`` are the
     live psutil values when readable (the scan may carry only a cmdline prefix)."""
-    from hermes_cli.update_cmd import _m
     psutil = _psutil()
     holders: list[dict] = []
-    for pid, name, cmdline in _m()._detect_venv_python_processes():
+    for pid, name, cmdline in _detect_venv_python_processes():
         exe, argv = name, cmdline
         if psutil is not None:
             with suppress(Exception):
@@ -350,26 +349,6 @@ def list_venv_holders() -> list[dict]:
                 argv = " ".join(proc.cmdline()) or cmdline
         holders.append({"pid": int(pid), "exe": exe, "argv": argv, "kind": _venv_holder_kind(argv)})
     return holders
-
-
-def _leftover_pausable_gateway_pids(matches: list[tuple[int, str, str]]) -> list[int] | None:
-    """PIDs from *matches* when EVERY remaining venv holder is a pausable gateway, else ``None`` (keep refusing).
-
-    A gateway respawned inside the pause->guard window (or via an unmapped spawn path) still holds ``.pyd`` files.
-    Uses the Desktop preflight's ``_is_pausable_gateway`` so exemption and tolerance cannot drift; live argv is
-    re-read via psutil when possible since the scan may hold only a cmdline prefix."""
-    from hermes_cli._scan_venv_blockers import _is_pausable_gateway
-    psutil = _psutil()
-    pids: list[int] = []
-    for pid, _name, cmdline in matches:
-        argv = cmdline
-        if psutil is not None:
-            with suppress(Exception):
-                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
-        if not _is_pausable_gateway(argv):
-            return None
-        pids.append(int(pid))
-    return pids
 
 
 def _refuse_gateway_ancestor_tree_kill(pids: list[int], *, gateway_mode: bool) -> bool:
@@ -396,233 +375,6 @@ def _refuse_gateway_ancestor_tree_kill(pids: list[int], *, gateway_mode: bool) -
         "  From a chat platform, use `/update` instead.\n  Otherwise, run `hermes update` from a separate terminal."
     )
     return True
-
-
-def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[dict]:
-    """Full ledger entries for venv holders that are MANUAL serve/dashboard backends.
-
-    Positive identity only: self-registered purpose serve/dashboard, live (pid, create_time), recorded spawner
-    NOT alive (a Desktop-owned backend keeps its live Electron spawner and must keep the refusal — the app would
-    respawn what we kill). Full entries let the relauncher rebuild from host/port/profile, not argv."""
-    try:
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
-    except Exception:
-        return []
-    holder_pids = {int(pid) for pid, _name, _cmd in matches}
-    return [
-        entry for entry in ledger_entries()
-        if entry.get("purpose") in _BACKEND_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
-        and spawner_is_dead(entry) is not False  # False = live Desktop supervisor owns it; keep refusing
-    ]
-
-
-def _serve_relaunch_commands(entries: list[dict]) -> list[list[str]]:
-    """Rebuild launch commands for stopped serves from ledger host/port/profile — never argv parsing
-    (joined argv cannot round-trip Windows paths with spaces). Entries without a port are skipped."""
-    from hermes_cli.update_cmd import _m
-    hermes = "hermes"
-    with suppress(Exception):
-        scripts_dir = _m()._venv_scripts_dir()
-        if scripts_dir is not None:
-            hermes = next((str(scripts_dir / n) for n in ("hermes.exe", "hermes") if (scripts_dir / n).is_file()), hermes)
-    commands: list[list[str]] = []
-    for entry in entries:
-        port = entry.get("port")
-        if not isinstance(port, int) or port <= 0:
-            continue
-        profile, host = str(entry.get("profile") or ""), str(entry.get("host") or "")
-        commands.append(
-            [hermes] + (["--profile", profile] if profile and profile != "default" else [])
-            + [str(entry.get("purpose"))] + (["--host", host] if host else []) + ["--port", str(port)]
-        )
-    return commands
-
-
-def _relaunch_stopped_serves(token: dict) -> None:
-    """Idempotent atexit relaunch of manual serves stopped by the venv guard.
-
-    `pending` flips False on first invocation so explicit call + atexit registration cannot double-spawn."""
-    from hermes_cli.update_cmd import _m, _record_update_step
-    if not token.get("pending"):
-        return
-    token["pending"] = False
-    entries = token.get("entries") or []
-    if not entries:
-        return
-    commands = _serve_relaunch_commands(entries)
-    skipped = len(entries) - len(commands)
-    failed: list = []
-    if commands:
-        print("  ⟲ Relaunching stopped serve/dashboard backend(s)")
-        failed = _m()._respawn_dashboard_processes(commands)
-    if skipped or failed:
-        print("  ⚠ Some stopped backends could not be relaunched automatically; restart them manually (hermes serve --host <ip> --port <port>).")
-    _record_update_step(
-        "serve_relaunch", not failed and not skipped,
-        f"relaunched={len(commands) - len(failed)} failed={len(failed)} skipped={skipped}",
-    )
-
-
-def _is_backend_argv(argv_low: str) -> bool:
-    """Whether an argv is a DESKTOP backend — feeds ``taskkill /T`` via ``_orphaned_desktop_backend_pids``.
-
-    Same predicate as ``_looks_like_desktop_control_plane``: ``-m hermes_cli.main`` entry shape (the
-    Desktop's only spawn shape, ``apps/desktop/electron/main.ts``) AND the canonical holder classifier says
-    ``serve``/``dashboard``. A user-launched ``hermes.exe serve`` / ``hermes dashboard`` is NOT the
-    Desktop's: the guard refuses on it, never reaps it.
-    """
-    return _looks_like_desktop_control_plane(argv_low)
-
-
-def _live_argv_low(psutil, pid, cmdline: str) -> str | None:
-    """Current lower-cased argv of *pid* (falls back to the scanned *cmdline*); ``None`` if it exited."""
-    argv = cmdline
-    try:
-        argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
-    except psutil.NoSuchProcess:
-        return None
-    except Exception:
-        pass
-    return argv.lower()
-
-
-def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[tuple[int, int]] | None:
-    """``(pid, start_time)`` roots from *matches* when every remaining holder is an ORPHANED backend, else ``None``.
-
-    Killing a Desktop-owned ``serve`` is futile (the app respawns it), but a straggler whose Desktop is gone
-    would dead-end the update with "Hermes is still running" and zero open windows. Qualifies only if cmdline
-    is a Hermes backend AND the parent is demonstrably gone (PID missing or reused). Tree-aware: holders inside
-    an accepted root's tree fold into it; only roots are returned (``taskkill /T`` reaps descendants). Any
-    live-parent backend, unjustified non-backend, unprovable case, or no psutil -> ``None``. Never raises.
-
-    The venv-holder guard refuses on the Desktop app's ``serve`` backend by design: while the Desktop is
-    open, killing its backend is futile (the app supervises and respawns it within seconds), so the user
-    must close the app. But in the GUI-updater handoff path the Desktop has *already exited* — by contract
-    it tree-kills its backends and waits for the venv shim before spawning hermes-setup, and the
-    update-in-progress marker parks any relaunched Desktop from spawning a fresh backend (#50238). A
-    ``serve`` backend still holding the venv at that point is a straggler whose supervisor is gone: SIGTERM
-    raced its spawn, or it belongs to a crashed window. Nothing will respawn it, and refusing on it
-    dead-ends the update with "Hermes is still running" while the user stares at zero open windows (ryanc's
-    2026-08-09 01:59/02:17 failures).
-    """
-    psutil = _psutil()
-    if psutil is None:
-        return None
-    # Pass 1: find orphaned backend ROOTS among the holders.
-    roots: list[tuple[int, int]] = []
-    remaining: list[int] = []  # holders still to justify
-    for pid, _name, cmdline in matches:
-        low = _live_argv_low(psutil, pid, cmdline)
-        if low is None:
-            continue  # exited between scan and classification — nothing to reap
-        if not _is_backend_argv(low):
-            remaining.append(int(pid))
-            continue
-        try:
-            proc = psutil.Process(int(pid))
-            # Fingerprint from the SAME psutil handle, centisecond-quantized like
-            # gateway.status.get_process_start_time so pid_is_hermes round-trips at kill time.
-            process_start_time = round(proc.create_time() * 100)
-        except psutil.NoSuchProcess:
-            continue  # exited during classification — nothing to reap
-        except Exception:
-            return None
-        try:
-            ppid = proc.ppid()
-            parent = psutil.Process(ppid) if ppid else None
-            # PID-reuse check: a "parent" created after its child is a recycled PID. A live parent is
-            # not a root but may be an orphan root's descendant (the venv trampoline re-execs uv
-            # python with the SAME argv) — defer to pass 2.
-            if parent is not None and parent.is_running() and parent.create_time() <= proc.create_time():
-                remaining.append(int(pid))
-                continue
-        except psutil.NoSuchProcess:
-            pass  # parent gone → orphan
-        except Exception:
-            return None
-        roots.append((int(pid), process_start_time))
-    # Pass 2: every non-backend holder must descend from an accepted orphan root
-    # (dies with the tree reap); anything else keeps the refusal.
-    root_set = {pid for pid, _start_time in roots}
-    for pid in remaining:
-        try:
-            if not root_set or not root_set & {int(a.pid) for a in psutil.Process(pid).parents()}:
-                return None
-        except psutil.NoSuchProcess:
-            continue  # exited already
-        except Exception:
-            return None
-    return roots
-
-
-def _ledger_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[int]:
-    """PIDs the spawn ledger positively identifies as orphaned backends; never raises.
-
-    Strongest rung (no PPID/cmdline inference): qualifies when ``(pid, create_time)`` matches a live ledger entry
-    (PID reuse can't forge it), purpose is a REAPABLE kind (never interactive), and the recorded SPAWNER is
-    provably dead. Safe in ANY context. Unlisted holders fall to later rungs and never disqualify identified ones."""
-    try:
-        from hermes_cli.process_identity import REAPABLE_PURPOSES, ledger_entries, spawner_is_dead
-        entries = ledger_entries()
-    except Exception:
-        return []
-    by_pid = {e.get("pid"): e for e in entries if isinstance(e.get("pid"), int)}
-    return [
-        int(pid) for pid, _name, _cmdline in matches
-        if (entry := by_pid.get(int(pid))) and entry.get("purpose") in REAPABLE_PURPOSES and spawner_is_dead(entry) is True
-    ]
-
-
-def _handoff_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[int] | None:
-    """Backend PIDs safe to tree-reap during a GUI-updater hand-off, INCLUDING ones with a live parent; never raises.
-
-    The orphan-only rung bails on ANY live parent (mid-teardown Electron, launcher->worker chain) and hung a
-    hand-off. Inside the hand-off gate (marker + ``--gateway`` + no live ``hermes.exe`` shim) nothing legitimate
-    supervises a ``serve`` from this venv, so survivors are leaks. Any non-backend holder or no psutil ->
-    ``None``. The CALLER must have confirmed the gate; outside it the stricter orphan-only path stands.
-
-    Any ``serve`` backend still holding the venv here is therefore a leak, live parent or not, and reaping
-    its tree is correct rather than a race. See #50238.
-    """
-    psutil = _psutil()
-    if psutil is None:
-        return None
-    roots: list[int] = []
-    for pid, _name, cmdline in matches:
-        low = _live_argv_low(psutil, pid, cmdline)
-        if low is None:
-            continue  # exited — nothing to reap
-        if not _is_backend_argv(low):
-            return None  # unexpected non-backend holder: refuse the whole set
-        roots.append(int(pid))
-    return roots or None
-
-
-def _stop_process_trees(pids: list[int] | list[tuple[int, int]]) -> None:
-    """Force-stop each PID with its full child tree (Windows); best effort, never raises.
-
-    ``taskkill /T /F``: stopping only the parent can leave a ``.hermes-runtime`` child holding the install open.
-
-    See #70026.
-    """
-    from gateway.status import get_process_start_time
-    from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
-    for entry in pids:
-        pid, expected_start_time = entry if isinstance(entry, tuple) else (int(entry), get_process_start_time(int(entry)))
-        try:
-            if expected_start_time is None:
-                logger.debug("Skipping taskkill of PID %s: process identity unavailable", pid)
-                continue
-            if not pid_is_hermes(pid, expected_start_time=expected_start_time):
-                logger.debug("Skipping taskkill of non-Hermes or changed PID %s", pid)
-                continue
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"], check=False,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags(),
-            )
-        except Exception as exc:
-            logger.debug("Could not stop process tree %s: %s", pid, exc)
 
 
 def _looks_like_desktop_control_plane(cmdline: str) -> bool:

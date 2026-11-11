@@ -1,0 +1,21 @@
+name: agenda
+title: Agenda
+repo: https://github.com/zzzubair/hermes-agenda
+sha: "d5a34a747d5d6e98cd2e398514544db6fa9d41a1"
+version: "1.0.0"
+description: "Your agent's own todo list, brought up in conversation when items are due. Disclosure: adds due items to each turn (pre_llm_call, capped by max_tokens); stores items in plaintext under $HERMES_HOME/agenda/; runs the wake CLI or hermes cron only for deadline reminders; no network calls, telemetry or credentials."
+maintainer: zzzubair
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/zzzubair/hermes-agenda/blob/d5a34a747d5d6e98cd2e398514544db6fa9d41a1/README.md
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [agenda]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "The agenda tool appears in new sessions after enabling; existing chats only get the per-turn list."
+  - "Hard-deadline reminders need either the wake plugin (reminders: wake) or a cron delivery target (reminders: cron, cron_deliver). With neither, items still come up the next time you talk to the agent."

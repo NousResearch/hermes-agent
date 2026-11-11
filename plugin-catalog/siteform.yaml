@@ -1,0 +1,47 @@
+name: siteform
+title: SiteForm
+repo: https://github.com/duclucky/siteform
+sha: "6758262c198949e136c73d40f6005c891f87b395"
+description: Review planning PDFs, compare evidence-linked 3D options in Hermes chat, and edit the same revision in Studio.
+maintainer: duclucky
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.14.1"
+docs_url: https://github.com/duclucky/siteform#readme
+image: https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/chat-3d.jpg
+  - https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/limits.jpg
+  - https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/studio.jpg
+readme: true
+platforms: [windows]
+known_issues:
+  - "Concept massing on flat ground; not BIM or a regulatory compliance determination."
+  - "A new library starts empty. Supply a PDF and confirm its scale, outlines and heights."
+capabilities:
+  provides_tools:
+    - siteform_position_studies
+    - siteform_position_study
+    - siteform_save_position_option
+    - siteform_project_review
+    - siteform_confirm_facts
+    - siteform_height_study
+    - siteform_save_study_option
+    - siteform_check
+    - siteform_revise_option
+    - siteform_view_options
+    - siteform_roof_study
+    - siteform_import_pdf
+    - siteform_documents
+    - siteform_review_pdf
+    - siteform_intake
+    - siteform_detect
+    - siteform_scene
+    - siteform_options
+    - siteform_create
+    - siteform_propose
+    - siteform_compare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

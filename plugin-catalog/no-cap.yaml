@@ -105,9 +105,7 @@ known_issues:
   - "Only the final reply is checked. If another enabled plugin also rewrites replies (transform_llm_output), Hermes keeps one rewrite per turn; `/nocap doctor` warns about it."
   - "Tested on macOS with a Hermes 0.22.5 dev build (0.22.5+2362.g8acb7f6) and v0.23.0, plus a GitHub install run on Hermes Agent and Desktop 0.23.0; not on the 0.22.5 release itself. Linux is covered by CI (unit and integration suite, not a live Hermes session). Desktop is tested end to end with a scripted model only; Discord with Hermes's real adapter and discord.py over a fake connection, not on a live server; Windows and Telegram are not tested end to end."
   - "Secret masking has one known gap: a tool output over 40 KB is parsed in windows (first 8 KB, last 32 KB, fragments around summary lines), so a secret that sits across a window edge may be seen only in part and not masked (docs/GUIDE.md, Known limits)."
-  - "Obsidian lessons: tested on macOS with a local vault (unit, integration and an end-to-end run); not on Windows or
-    network drives. A folder moved in the microseconds between the inode re-check and the write is not caught
-    (docs/OBSIDIAN.md). Whether the lesson line changes a model's behaviour has not been measured."
+  - "Obsidian lessons: tested on macOS with a local vault (unit, integration and an end-to-end run); not on Windows or network drives. A folder moved in the microseconds between the inode re-check and the write is not caught (docs/OBSIDIAN.md). Whether the lesson line changes a model's behaviour has not been measured."
   - "register_platform_handler and register_cli_command run in-process only (`hermes plugins validate` notes this under plugins.isolation: host)."
 capabilities:
   provides_tools: []

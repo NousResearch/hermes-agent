@@ -9,12 +9,12 @@ maintainer: KyaniteLabs
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
-docs_url: https://github.com/KyaniteLabs/ag4te/tree/77746e20d7180d1640d3c9e669248be0f0bb33a3/plugins/ag4te-hermes#readme
-image: https://raw.githubusercontent.com/KyaniteLabs/ag4te/77746e20d7180d1640d3c9e669248be0f0bb33a3/plugins/ag4te-hermes/docs/banner.png
+docs_url: https://github.com/KyaniteLabs/ag4te/tree/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes#readme
+image: https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/77746e20d7180d1640d3c9e669248be0f0bb33a3/plugins/ag4te-hermes/docs/strata-dark.png
-  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/77746e20d7180d1640d3c9e669248be0f0bb33a3/plugins/ag4te-hermes/docs/rhythm-and-health.png
-  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/77746e20d7180d1640d3c9e669248be0f0bb33a3/plugins/ag4te-hermes/docs/strata-light.png
+  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/strata-dark.png
+  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/rhythm-and-health.png
+  - https://raw.githubusercontent.com/KyaniteLabs/ag4te/d884f9a5cdd3b6d03e95114e860cc134d5067b84/plugins/ag4te-hermes/docs/strata-light.png
 readme: true
 platforms: []
 known_issues:

@@ -17,6 +17,7 @@ the entire value of these tests is exercising actual git verdicts):
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -398,6 +399,38 @@ class TestExternalTrees:
             "vanished-tree" not in r.path
             for r in worktree_gc.audit_external_trees(str(repo))
         )
+
+
+class TestStartedInsideLinkedTree:
+    """Run from `.worktrees/<x>`: inspect the MAIN checkout's trees, never reap the current one."""
+
+    def test_list_from_linked_tree_sees_siblings_and_keeps_itself(self, repo, monkeypatch):
+        from hermes_cli import worktree_ops
+        here, _ = _add_worktree(repo, "hermes-here")
+        _add_worktree(repo, "hermes-sibling")
+        monkeypatch.chdir(here)
+        root = worktree_ops._git_repo_root()
+        assert root and os.path.realpath(root) == os.path.realpath(repo)
+        records = worktree_gc.audit_worktrees(root, with_sizes=False)
+        assert _verdict(records, "hermes-sibling").verdict == "reap"
+        assert (_verdict(records, "hermes-here").verdict, _verdict(records, "hermes-here").reason) == (
+            "keep", "in use as the current working tree")
+
+    def test_classic_startup_sweep_spares_the_tree_it_runs_in(self, repo, monkeypatch):
+        from hermes_cli import worktree_ops
+        (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+            "worktrees:\n  archive_dirty: false\n  max_total_gb: 0\n")
+        here, _ = _add_worktree(repo, "hermes-here")
+        sibling, _ = _add_worktree(repo, "hermes-sibling")
+        old = time.time() - 5 * 86400
+        for tree in (here, sibling):
+            os.utime(tree, (old, old))
+        monkeypatch.chdir(here)
+        root = worktree_ops._git_repo_root()
+        assert root
+        worktree_ops._prune_stale_worktrees(root)
+        assert here.is_dir()
+        assert not sibling.exists()
 
 
 class TestCmdWorktreeJson:

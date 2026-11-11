@@ -101,3 +101,36 @@ def test_unparseable_tts_result_keeps_the_dedup(tmp_path):
     turn = _turn(_tts_call(), _tool_result("call_1", "ok"),
                  {"role": "assistant", "content": "It passed."})
     assert runner._should_send_voice_reply(_make_event(), "It passed.", turn) is False
+
+
+def _bridged_tts_call(call_id="call_1"):
+    """A ``text_to_speech`` call made through the ``tool_call`` bridge (deferred tools).
+
+    The assistant message records the bridge name, so a lookup keyed on the producer's own
+    name never matches its result — ``gateway.media_repair.tool_name_by_call_id`` resolves it.
+    """
+    return {"role": "assistant", "content": "", "tool_calls": [
+        {"id": call_id, "type": "function",
+         "function": {"name": "tool_call",
+                      "arguments": json.dumps({"name": "text_to_speech",
+                                               "arguments": {"text": "It passed."}})}}]}
+
+
+def test_bridged_tts_call_with_a_failed_result_still_sends_the_runner_voice_reply(tmp_path):
+    runner = _make_runner(tmp_path)
+    turn = _turn(
+        _bridged_tts_call(),
+        _tool_result("call_1", {"success": False, "error": "text length 12000 exceeds 10000"}),
+        {"role": "assistant", "content": "It passed."},
+    )
+    assert runner._should_send_voice_reply(_make_event(), "It passed.", turn) is True
+
+
+def test_bridged_tts_call_with_audio_keeps_the_dedup(tmp_path):
+    runner = _make_runner(tmp_path)
+    turn = _turn(
+        _bridged_tts_call(),
+        _tool_result("call_1", {"success": True, "file_path": "/tmp/a.ogg"}),
+        {"role": "assistant", "content": "It passed."},
+    )
+    assert runner._should_send_voice_reply(_make_event(), "It passed.", turn) is False

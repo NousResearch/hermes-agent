@@ -1,0 +1,48 @@
+name: pagecast-director
+title: "PageCast Director"
+repo: https://github.com/flabanabba8/pagecast-director
+sha: 0d197f3403117bc309f24b9583e3c31c57a5ec4e
+version: "0.3.4"
+description: "Editable cast narration with locked voices, source passage IDs, resumable synthesis and selective regeneration. Disclosure: Stores books and generated audio privately. Voices are local (Flite, or a Higgs server already running on your computer) unless you choose hosted Inworld, ElevenLabs or Google Gemini, which send passage text and voice choices to that provider with your own key or Google login and use your credits. Runs local Flite and FFmpeg; mpv only plays a preview aloud when you approve it. The optional Android tools check GitHub for the PageCast app and can download it; installing it on a phone with adb, replacing a locked voice and playing a preview aloud each ask for your approval (one pre_tool_call hook). No background processes beyond a render or preview you start."
+maintainer: flabanabba8
+tier: community
+category: voice
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/pagecast-director/blob/0d197f3403117bc309f24b9583e3c31c57a5ec4e/README.md
+image: https://raw.githubusercontent.com/flabanabba8/pagecast-director/0d197f3403117bc309f24b9583e3c31c57a5ec4e/assets/thumbnail.jpg
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - pagecast_knowledge
+    - pagecast_setup
+    - pagecast_series_list
+    - pagecast_series_create
+    - pagecast_series_link
+    - pagecast_series_voice
+    - pagecast_overview
+    - pagecast_cast_note
+    - pagecast_reading_position
+    - pagecast_direction_context
+    - pagecast_direct
+    - pagecast_import
+    - pagecast_books
+    - pagecast_book
+    - pagecast_assign
+    - pagecast_voice
+    - pagecast_voice_audition
+    - pagecast_speech_options
+    - pagecast_edit
+    - pagecast_render
+    - pagecast_cancel
+    - pagecast_preview
+    - pagecast_retry
+    - pagecast_export
+    - pagecast_android_app
+    - pagecast_android_install
+    - pagecast_timeline
+    - pagecast_usage
+    - pagecast_inworld_voices
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

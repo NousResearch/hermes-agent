@@ -613,6 +613,23 @@ def test_a_hosted_turn_still_refuses_a_bind_that_changes_who_it_acts_for(change)
         assert current_scope() == turn
 
 
+def test_a_newer_turn_bound_inside_a_hosted_turn_is_bound_as_given():
+    with bind_state(_hosted_turn()):
+        newer = _hosted_turn().for_turn("s1", "t2", Fence(2, 4))
+        with bind_state(newer):
+            assert current_scope() == newer
+        assert current_scope().fence == Fence(2, 3)
+
+
+def test_a_local_turn_still_binds_another_profile(two_profiles):
+    a, b = two_profiles
+    with bind_profile_scope(a), bind_turn("s1", "t1", F1):
+        with bind_profile_scope(b) as other:
+            assert current_scope() == other == Scope("local", str(b), LOCAL_OWNER)
+            assert _state() == _expect(b, "b", "docker")
+        assert current_scope().fence == F1
+
+
 def test_claim_fence_reads_the_claimed_admission(tmp_path):
     """The fence a turn binds is the one the claim stamped on its admission row."""
     from contextlib import closing

@@ -5,7 +5,8 @@ Invariants (each red on base):
   (what is live now vs deferred), through the real discovery path.
 * ``rewire_plugin_handlers()`` is idempotent: a factory runs once per native client, however often
   the loaded event fires (a force re-discovery hands back NEW factory objects for the same plugin).
-* Telegram: a late plugin handler is hoisted ahead of core's catch-all ``filters.COMMAND`` handler.
+* Telegram: a late plugin handler is hoisted ahead of core's catch-all ``filters.COMMAND`` handler, and
+  ahead of the group-99 observer in its own group, as at connect.
 * Slack: a late ``register_slack_action_handler`` registers one Bolt listener, never two.
 * The runner subscribes at boot and re-wires every live adapter on the loop.
 """
@@ -85,14 +86,18 @@ def test_rewire_is_idempotent_per_native_client():
 
 
 class _PtbApp:
-    """``Application.add_handler`` semantics that matter: append to ``handlers[group]``; PTB dispatches
-    the first matching handler per group in that list order (tests/gateway mocks the real SDK)."""
+    """PTB 22.8 ``Application.add_handler`` table semantics (tests/gateway mocks the real SDK): a new group
+    is keyed on the current dict, then ``handlers`` is replaced by a new sorted one; PTB dispatches the
+    first matching handler per group in list order."""
 
     def __init__(self):
         self.handlers: dict = {}
 
     def add_handler(self, handler, group: int = 0):
-        self.handlers.setdefault(group, []).append(handler)
+        if group not in self.handlers:
+            self.handlers[group] = []
+            self.handlers = dict(sorted(self.handlers.items()))
+        self.handlers[group].append(handler)
 
 
 def test_telegram_late_plugin_handler_precedes_core_catch_all():
@@ -111,6 +116,46 @@ def test_telegram_late_plugin_handler_precedes_core_catch_all():
     group0 = app.handlers[0]
     assert group0 == [plugin_handler] + core  # ahead of every core catch-all, core order untouched
     assert app.handlers[99] and plugin_handler not in app.handlers[99]  # the group-99 observer stays alone
+
+
+@pytest.mark.parametrize("loaded", ["before_connect", "after_connect"])
+def test_telegram_plugin_group_99_handler_precedes_the_observer(loaded):
+    """Core's group-99 observer is a catch-all ``TypeHandler(Update)``: a handler behind it never runs. A
+    late plugin's group-99 handler sits where connect would have put it, ahead of the observer."""
+    app = _PtbApp()
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={}))
+    plugin_handler = object()
+    mgr = PluginManager()
+    ctx = PluginContext(manifest=PluginManifest(name="p", version="0", description=""), manager=mgr)
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        if loaded == "before_connect":
+            ctx.register_platform_handler("telegram", lambda a, _adapter: a.add_handler(plugin_handler, group=99))
+        adapter._wire_plugin_handlers(app)
+        adapter._register_handlers(app)
+        core = [h for h in app.handlers[99] if h is not plugin_handler]
+        if loaded == "after_connect":
+            ctx.register_platform_handler("telegram", lambda a, _adapter: a.add_handler(plugin_handler, group=99))
+            adapter.rewire_plugin_handlers()
+    assert core and app.handlers[99] == [plugin_handler] + core
+
+
+def test_telegram_late_plugin_handler_follows_plugin_handlers_wired_at_connect():
+    app = _PtbApp()
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={}))
+    early, late = object(), object()
+    mgr = PluginManager()
+
+    def load(name, handler):
+        ctx = PluginContext(manifest=PluginManifest(name=name, version="0", description=""), manager=mgr)
+        ctx.register_platform_handler("telegram", lambda a, _adapter: a.add_handler(handler, group=99))
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        load("early", early)
+        adapter._wire_plugin_handlers(app)
+        adapter._register_handlers(app)
+        core = [h for h in app.handlers[99] if h is not early]
+        load("late", late)
+        adapter.rewire_plugin_handlers()
+    assert core and app.handlers[99] == [early, late] + core
 
 
 def test_slack_late_action_handler_registers_one_listener():

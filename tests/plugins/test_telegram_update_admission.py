@@ -1147,3 +1147,43 @@ async def test_root_message_after_threaded_follow_up_stays_root_while_creation_w
         assert await flushed(3)
         assert delivered[-1].text == "back at the root"
         assert delivered[-1].source.thread_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loaded", ["before_connect", "after_connect"])
+async def test_plugin_group_99_handler_runs_whenever_its_plugin_loaded(monkeypatch, loaded):
+    """#87770 re-wire through real PTB, whose ``add_handler`` replaces ``app.handlers`` with a new dict for
+    every new group: a late plugin's group-99 handler runs like one wired at connect, ahead of the
+    catch-all observer. Group 0 still serves the update, and the observer still gets what the plugin
+    handler does not match."""
+    import hermes_cli.lifecycle
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    seen = []
+
+    async def plugin_handler(incoming, context):
+        seen.append(incoming.update_id)
+
+    mgr = PluginManager()
+    ctx = PluginContext(manifest=PluginManifest(name="late-observer", version="0", description=""), manager=mgr)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: mgr)
+    monkeypatch.setattr(hermes_cli.lifecycle, "has_hook", lambda name: True)
+
+    def load_plugin():
+        ctx.register_platform_handler(
+            "telegram", lambda native, _adapter: native.add_handler(MessageHandler(filters.TEXT, plugin_handler), group=99))
+
+    if loaded == "before_connect":
+        load_plugin()
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        if loaded == "after_connect":
+            load_plugin()
+            adapter.rewire_plugin_handlers()
+        platform_events = adapter._platform_event_handler = AsyncMock()
+        await app.process_update(update(app.bot, 10))
+        await app.process_update(update(app.bot, 11, kind="reaction"))
+        await async_wait_until(lambda: delivered or adapter._pending_text_batch_tasks, what="the text to reach batching")
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert seen == [10]
+        assert [e.text for e in delivered] == ["hello"]
+        assert [call.args[0]["event_type"] for call in platform_events.await_args_list] == ["reaction"]

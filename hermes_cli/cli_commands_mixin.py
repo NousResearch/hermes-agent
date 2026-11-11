@@ -923,10 +923,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return target_id, session_meta
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
-        an explicit target delegates to /resume so both spellings behave identically."""
+        """Handle /sessions [list|<id_or_title>] — ``list`` prints the recent-sessions table; bare or an
+        explicit target delegates to /resume so both spellings behave identically."""
         arg = _command_arg(cmd_original)
-        if arg and arg.lower() not in {"list", "ls", "browse"}:
+        if arg.lower() not in {"list", "ls", "browse"}:
             self._handle_resume_command(f"/resume {arg}")
         elif not self._session_db:
             _cp(_db_unavailable_line())

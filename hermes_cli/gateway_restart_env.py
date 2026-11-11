@@ -8,6 +8,7 @@ none of its own (an API-only profile) polls the root bot and steals its token lo
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -34,22 +35,49 @@ def _argv_profile_home(run_argv: list[str]) -> Optional[str]:
     return None
 
 
+def _launch_bot_token_names() -> set[str]:
+    """Messaging-adapter secrets (bot tokens, app secrets) the LAUNCH profile supplied: its ``.env``,
+    any dotenv this process loaded, its secret sources. Those are the root bot's identity and must not
+    follow a sibling (#135792). A provider key, a proxy, or a token the user's SHELL exported is not
+    the launch profile's: a manual ``hermes -p X gateway run`` from that shell has it too, so it stays."""
+    from agent.secret_scope import load_env_file
+    from hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
+    from hermes_constants import get_routing_process_hermes_home
+    from tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
+    from gateway.restart import is_supervised_gateway_launch
+    adapter_secrets = _ADAPTER_SECRET_ENV | _home_adapter_secret_env()
+    if is_supervised_gateway_launch():
+        # Under systemd/launchd (``/update`` sent to a service gateway) there is no user shell: an
+        # ``Environment=`` token is the unit's own profile's, never recorded in any .env.
+        return set(adapter_secrets)
+    supplied = (set(load_env_file(get_routing_process_hermes_home() / ".env")) | set(launch_dotenv_keys())
+                | set(source_supplied_names()))
+    return {name.upper() for name in supplied if name.upper() in adapter_secrets}
+
+
 def _profile_gateway_watcher_env(home: Optional[str]) -> Optional[dict[str, str]]:
-    """The respawned profile gateway's env, by the rule ``update_cmd_posix_pause._replay_env`` uses.
+    """The respawned profile gateway's env: the updater's, minus the launch profile's bot tokens and
+    authorization gates, plus the target profile's own secrets on top.
 
     A gateway respawned on the launcher's OWN named profile keeps the launcher's environment (an
-    exported bot token may be its only credential): None. Any other home gets that home's own
-    secrets and none of the launcher's (``served_profile_child_env``).
+    exported bot token may be its only credential): None. A blanket credential scrub here also dropped
+    keys that live only in the user's shell, and the sibling came back from ``hermes update`` unable to
+    call its model (#153478 review), so only the names :func:`_launch_bot_token_names` lists go.
     """
     if not home:
         return None
-    from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
-    from tools.environments.local import served_profile_child_env
+    from agent.secret_scope import build_profile_secret_scope
+    from hermes_constants import apply_scratch_tmp_env, get_default_hermes_root, get_routing_process_hermes_home
+    from tools.environments.local_env_policy import strip_profile_gate_env
     target = Path(home).resolve()
     if target != get_default_hermes_root().resolve() and target == get_routing_process_hermes_home().resolve():
         return None
-    env = served_profile_child_env(target_home=str(target), inherit_credentials=True)
-    env.pop("_HERMES_GATEWAY", None)
+    strip = _launch_bot_token_names()
+    env = {k: v for k, v in os.environ.items() if k.upper() not in strip and k != "_HERMES_GATEWAY"}
+    strip_profile_gate_env(env)  # the launch profile's allowlists are not the sibling's (#113270)
+    env["HERMES_HOME"] = str(target)
+    apply_scratch_tmp_env(env)
+    env.update((k, v) for k, v in build_profile_secret_scope(target).items() if v is not None)
     return env
 
 

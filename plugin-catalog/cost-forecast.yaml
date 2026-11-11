@@ -1,0 +1,24 @@
+name: cost-forecast
+repo: https://github.com/mr-jude-justin/hermes-plugin
+sha: "dce09d9bf4fca14467246cb90ee87b6ef34c792b"
+subdir: plugin
+version: "0.1.0"
+title: Cost Forecast
+description: "Quotes a task's cost before it runs and stops for your OK when it would go over budget. Before a task starts it estimates the number of model calls and tokens (P50 and P90), prices them at your model's rates, and shows a quote when the task is large or could exceed your per-task cap. While the task runs it costs every call (subagents included), re-forecasts after each call, and pauses or stops at the soft cap, hard limit or daily cap. Estimates learn from your own finished tasks. API-key users only. Disclosure: fetches public prices from https://models.dev/api.json at most once a day on a short background thread; if the optional cheap-model estimate (l3_mode, off by default) is on, one extra short call per quote goes through Hermes to your own provider; stores spend, task history (message text removed) and learned coefficients in a SQLite database under $HERMES_HOME/plugin-data/cost-forecast/; reads agent.reasoning_effort from your config and whether the working directory is a git repo; no credentials, no shell commands, no telemetry."
+maintainer: mr-jude-justin
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mr-jude-justin/hermes-plugin/blob/dce09d9bf4fca14467246cb90ee87b6ef34c792b/plugin/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, post_api_request, api_request_error, pre_tool_call, post_tool_call, subagent_start, subagent_stop, post_llm_call, on_session_end]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "API-key billing only. Subscription logins are not priced, and local models show token counts only."
+  - "Cron, webhook and API-server runs get no quote because nobody can reply. The hard limit and daily cap still stop them."
+  - "Image generation and provider-side tool fees (such as per-search web search charges) are counted but not priced yet."
+  - "The first few quotes use defaults and are the least accurate. Calibration starts after 3 finished tasks."

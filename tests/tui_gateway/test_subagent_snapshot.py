@@ -87,6 +87,92 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
         assert finished.wait(10)
 
 
+def test_snapshot_reports_the_childs_resolved_provider_and_nonsecret_account(runtime):
+    """The public row carries the route the child actually resolved, not a configured default or a
+    requested alias, plus the same stable account id the account inventory publishes. A credential
+    never reaches the wire, and ending the child removes the whole row (a late sync cannot revive it)."""
+    from types import SimpleNamespace
+
+    from agent.account_usage_cache import _identity_id_for
+    from tools.delegate_tool_child_run import _register_child, _sync_subagent_provider_metadata
+    from tools.delegate_tool_registry import _unregister_subagent, _update_subagent_metadata
+
+    _server, _owner, transport, call = runtime
+    entry = SimpleNamespace(id="cred-1", runtime_api_key="credential-value-do-not-expose")
+    pool = SimpleNamespace(entries=lambda: [entry], current=lambda: entry)
+    child = SimpleNamespace(
+        _subagent_id="child", _delegate_depth=1, model="deepseek-chat",
+        provider="deepseek", requested_provider="openrouter",
+        api_key="credential-value-do-not-expose", _credential_pool=pool, _credential_pool_entry_id="cred-1",
+    )
+    expected_account = _identity_id_for("deepseek", entry)
+    assert expected_account.startswith("fp:")
+    _register_child(
+        child, None, "owned task", owner_session_id="ui-owner",
+        owner_transport=transport, owner_session_record=_owner,
+    )
+    try:
+        row = call("subagent.list")["result"]["subagents"][0]
+        assert row["provider"] == "deepseek"  # child.provider, never requested_provider/config default
+        assert row["provider_account_id"] == expected_account
+        wire = json.dumps(call("subagent.list")["result"])
+        assert "credential-value-do-not-expose" not in wire
+        assert row["provider_account_id"] != "credential-value-do-not-expose"
+
+        # A provider fallback changes the route while the child keeps running.
+        fallback_entry = SimpleNamespace(id="cred-2", runtime_api_key="fallback-credential-value")
+        child.provider = "xai-oauth"
+        child._credential_pool = SimpleNamespace(entries=lambda: [fallback_entry], current=lambda: fallback_entry)
+        child._credential_pool_entry_id = "cred-2"
+        _sync_subagent_provider_metadata("child", child)
+        updated = call("subagent.list")["result"]["subagents"][0]
+        assert updated["provider"] == "xai-oauth"
+        assert updated["provider_account_id"] == _identity_id_for("xai-oauth", fallback_entry)
+
+        # Completion drops the live record; the bounded attribution stub and a late sync expose nothing.
+        _unregister_subagent("child", agent=child)
+        assert call("subagent.list")["result"]["subagents"] == []
+        _update_subagent_metadata("child", provider="deepseek", provider_account_id="fp:resurrected")
+        _sync_subagent_provider_metadata("child", child)
+        assert call("subagent.list")["result"]["subagents"] == []
+    finally:
+        _unregister_subagent("child")
+
+
+def test_provider_metadata_is_session_scoped_and_clears_on_switch(runtime):
+    """Real handlers only publish route metadata to the owning live session; a foreign session and
+    a completed child see none, and switching sessions never carries the previous roster over."""
+    from types import SimpleNamespace
+
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _unregister_subagent
+
+    server, owner, transport, call = runtime
+    other_owner = {"session_key": "other", "history": [], "transport": transport}
+    server._sessions["ui-other"] = other_owner
+    child = SimpleNamespace(
+        _subagent_id="child", _delegate_depth=1, model="deepseek-chat",
+        provider="deepseek", api_key="sk-one", _credential_pool=None,
+    )
+    _register_child(
+        child, None, "only for owner", owner_session_id="ui-owner",
+        owner_transport=transport, owner_session_record=owner,
+    )
+    try:
+        mine = call("subagent.list")["result"]["subagents"]
+        assert [(r["subagent_id"], r["provider"]) for r in mine] == [("child", "deepseek")]
+        assert mine[0]["provider_account_id"].startswith("fp:")
+        assert call("subagent.list", session_id="ui-other")["result"]["subagents"] == []
+        assert "secret" not in json.dumps(call("subagent.list", session_id="ui-other")["result"])
+        # Switching back sees the still-running child; completing it makes that session empty.
+        assert [r["subagent_id"] for r in call("subagent.list")["result"]["subagents"]] == ["child"]
+        _unregister_subagent("child", agent=child)
+        assert call("subagent.list")["result"]["subagents"] == []
+    finally:
+        _unregister_subagent("child")
+        server._sessions.pop("ui-other", None)
+
+
 def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
     from run_agent import AIAgent
     from tools.delegate_tool_child_run import _register_child

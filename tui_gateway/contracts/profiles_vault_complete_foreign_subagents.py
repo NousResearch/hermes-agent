@@ -669,6 +669,11 @@ class SubagentSnapshot(Result):
     goal: str | None = None
     delegation_id: str | None = None
     model: str | None = None
+    #: Provider slug the child's runtime actually resolved to (never a configured default).
+    provider: str | None = None
+    #: Stable non-secret account identity of the credential serving that provider. Same namespace as
+    #: the account inventory (``identity_id`` / ``ProviderUsageAccount.id``); never a token or key.
+    provider_account_id: str | None = None
     started_at: float | None = None
     status: SubagentStatus | None = None
     tool_count: int | None = None

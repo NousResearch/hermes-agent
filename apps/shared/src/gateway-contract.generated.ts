@@ -2455,6 +2455,8 @@ export interface SubagentSnapshot {
   goal?: string | null
   delegation_id?: string | null
   model?: string | null
+  provider?: string | null
+  provider_account_id?: string | null
   started_at?: number | null
   status?: SubagentStatus | null
   tool_count?: number | null

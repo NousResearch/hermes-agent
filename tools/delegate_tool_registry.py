@@ -69,6 +69,22 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
 
+def _update_subagent_metadata(subagent_id: str, **fields: Any) -> None:
+    """Update only the public route metadata of a live record (no owner/authority fields).
+
+    Called after a runtime fallback or credential rotation changes what a running child is actually
+    using. A completed child has already been removed from the registry, so a late heartbeat is a
+    no-op and can never resurrect it.
+    """
+    allowed = {"provider", "provider_account_id"}
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None:
+            return
+        for key, value in fields.items():
+            if key in allowed:
+                record[key] = value
+
 def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
     """Atomically close steer acceptance and drain its final durable artifact. ``steer_subagent`` holds the same
     registry lock through ``agent.steer``, so either acceptance wins and this drain sees its exact text, or closure

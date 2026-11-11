@@ -44428,6 +44428,30 @@
             "default": null,
             "title": "Model"
           },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "provider_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider Account Id"
+          },
           "started_at": {
             "anyOf": [
               {

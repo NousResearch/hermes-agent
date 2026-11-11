@@ -362,6 +362,9 @@ class _Heartbeat:
         """Returning False stops the periodic callback."""
         from tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
         child, parent_agent, task_index, last_seen = self.child, self.parent_agent, self.task_index, self.last_seen
+        # A provider fallback can replace child.provider after registration. Refresh the public
+        # roster before any early return so a running footer never reports the pre-fallback route.
+        _sync_subagent_provider_metadata(getattr(child, "_subagent_id", None), child)
         touch = getattr(parent_agent, "_touch_activity", None) if parent_agent is not None else None
         if not touch:
             return None
@@ -408,6 +411,79 @@ def _start_heartbeat(child: Any, parent_agent: Any, task_index: int) -> _Heartbe
     """Build (not start) one child's heartbeat; see ``_Heartbeat``."""
     return _Heartbeat(child, parent_agent, task_index)
 
+def _child_provider(child: Any) -> Optional[str]:
+    """The provider slug the child actually resolved to, never a configured default.
+
+    ``child.provider`` is written by ``AIAgent`` after ``_resolve_child_runtime`` (and again by an
+    init-time fallback), so a child object that was built at all carries the route it will execute.
+    ``requested_provider`` is deliberately not used: a request alias can name a route the runtime
+    did not select.
+    """
+    provider = getattr(child, "provider", None)
+    if not isinstance(provider, str) or not provider.strip():
+        return None
+    return provider.strip().lower()
+
+
+def _child_provider_account_id(child: Any, provider: Optional[str]) -> Optional[str]:
+    """Stable, non-secret identity of the credential this child is actually using for *provider*.
+
+    The id is the same namespace the account inventory publishes (``_identity_id_for``): a trusted
+    decoded principal when the provider supports one, else a token fingerprint. The credential
+    itself never leaves this function. ``None`` when the child has no resolvable credential (for
+    example an ACP or test double), so the footer can only say "usage unavailable" rather than
+    attributing the parent's account.
+    """
+    if not provider:
+        return None
+    entry = None
+    pool = getattr(child, "_credential_pool", None)
+    pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
+    # A provider fallback can leave the previous provider's pool attached while the live
+    # credential is already the fallback key. Never label that key with the old pool's account.
+    if pool is not None and (not pool_provider or pool_provider == provider):
+        try:
+            entry_id = getattr(child, "_credential_pool_entry_id", None)
+            if isinstance(entry_id, str) and entry_id:
+                entry = next((e for e in pool.entries() if getattr(e, "id", None) == entry_id), None)
+            if entry is None:
+                entry = pool.current()
+        except Exception:
+            entry = None
+    try:
+        from agent.account_usage_cache import _identity_id_for
+        if entry is not None:
+            return _str_or_none(_identity_id_for(provider, entry))
+        # A fixed credential (no shared pool) is still a real account; fingerprint it with the
+        # same helper the inventory uses so an identical key resolves to the identical id.
+        api_key = str(getattr(child, "api_key", "") or "").strip()
+        if api_key:
+            from types import SimpleNamespace
+            return _str_or_none(_identity_id_for(provider, SimpleNamespace(runtime_api_key=api_key, id="")))
+    except Exception:
+        logger.debug("subagent provider account identity unavailable", exc_info=True)
+    return None
+
+
+def _sync_subagent_provider_metadata(subagent_id: Optional[str], child: Any) -> None:
+    """Refresh the live registry record after a fallback/credential rotation changed the route.
+
+    Registration captures the resolved route once; a provider fallback can replace ``child.provider``
+    while the child keeps running. The heartbeat calls this before its own early returns, so a
+    running footer observes the provider that is actually serving the child, not the configured one.
+    """
+    if not subagent_id:
+        return
+    provider = _child_provider(child)
+    with _quiet("subagent provider metadata sync failed: %s"):
+        from tools.delegate_tool_registry import _update_subagent_metadata
+        _update_subagent_metadata(
+            subagent_id,
+            provider=provider,
+            provider_account_id=_child_provider_account_id(child, provider),
+        )
+
+
 def _register_child(
     child: Any, parent_agent: Any, goal: str, *, owner_session_id: Optional[str], owner_transport: Any,
     owner_session_record: Any,
@@ -424,6 +500,7 @@ def _register_child(
     if owner_session_id and (owner_transport is None or owner_session_record is None):
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
     _raw_depth = getattr(child, "_delegate_depth", 1)
+    _provider = _child_provider(child)
     _register_subagent({
         "subagent_id": _subagent_id,
         "parent_id": _str_or_none(getattr(child, "_parent_subagent_id", None)),
@@ -431,6 +508,8 @@ def _register_child(
         "goal": goal,
         "delegation_id": _str_or_none(getattr(child, "_delegation_id", None)),
         "model": _str_or_none(getattr(child, "model", None)),
+        "provider": _provider,
+        "provider_account_id": _child_provider_account_id(child, _provider),
         "started_at": time.time(), "status": "running", "tool_count": 0, "agent": child,
         # Owning conversation's durable session id (same lineage completion delivery routes by), sourced from the
         # child's stamp so it survives a parent_agent rebuild between dispatch and run; used for list/steer/stop

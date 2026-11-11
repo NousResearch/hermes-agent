@@ -95,6 +95,15 @@ let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
 
+function streamMessageIndex(messages: readonly ChatMessage[], streamId: string): number {
+  // Live output almost always owns the tail; late tool events may own a sealed row.
+  const tailIndex = messages.length - 1
+
+  return tailIndex >= 0 && messages[tailIndex].id === streamId
+    ? tailIndex
+    : messages.findIndex(message => message.id === streamId)
+}
+
 /**
  * A sealed stream can lose a few characters while the authoritative final
  * remains the same reply. Limit the tolerated edit distance so a separate
@@ -208,14 +217,8 @@ export function useMessageStream({
             const prev = state.messages
             let nextMessages: ChatMessage[]
 
-            // The live stream is almost always the tail row, so probe there first.
-            // This used to scan the transcript twice (`.some` + `.map`) and rebuild
-            // every row object wrapper on each 40 ms delta; now it copies the array
-            // once and patches the one slot.
-            const streamIndex =
-              prev.length > 0 && prev[prev.length - 1].id === streamId
-                ? prev.length - 1
-                : prev.findIndex(m => m.id === streamId)
+            // Copy the transcript once and patch only the owning row.
+            const streamIndex = streamMessageIndex(prev, streamId)
 
             if (streamIndex === -1) {
               nextMessages = [

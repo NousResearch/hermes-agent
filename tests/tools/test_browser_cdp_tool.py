@@ -18,9 +18,9 @@ from websockets.asyncio.server import serve
 
 from tools import browser_cdp_tool
 import requests
-from tools import browser_tool_eval_policy as bt_eval_policy
-from tools import browser_tool_install as bt_install
-from tools import browser_tool_cdp as bt_cdp
+from tools import browser_session_cdp
+from tools import browser_url_policy
+from tools import browser_use_cli
 
 
 # ---------------------------------------------------------------------------
@@ -37,8 +37,8 @@ class _CDPServer:
     """
 
     def __init__(self) -> None:
-        self._handlers: Dict[str, Any] = {}
-        self._responses: List[Dict[str, Any]] = []
+        self._handlers: dict[str, Any] = {}
+        self._responses: list[dict[str, Any]] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -123,7 +123,7 @@ class _CDPServer:
         if self._thread:
             self._thread.join(timeout=3.0)
 
-    def received(self) -> List[Dict[str, Any]]:
+    def received(self) -> list[dict[str, Any]]:
         return list(self._responses)
 
 
@@ -455,8 +455,8 @@ def test_runtime_evaluate_blocked_when_current_page_is_private(monkeypatch):
     )
 
 
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+    monkeypatch.setattr(browser_cdp_tool, "_current_page_private_url", lambda endpoint, target_id: PRIVATE_URL)
 
     async def fake_call(*args, **kwargs):
         calls.append((args, kwargs))
@@ -484,8 +484,8 @@ def test_frame_id_route_blocked_when_current_page_is_private(monkeypatch):
     supervisor_calls = []
 
 
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+    monkeypatch.setattr(browser_cdp_tool, "_current_page_private_url", lambda endpoint, target_id: PRIVATE_URL)
 
     def fake_supervisor_route(**kwargs):
         supervisor_calls.append(kwargs)
@@ -516,8 +516,8 @@ def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
     supervisor_calls = []
 
 
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: None)
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+    monkeypatch.setattr(browser_cdp_tool, "_current_page_private_url", lambda endpoint, target_id: None)
 
     def fake_supervisor_route(**kwargs):
         supervisor_calls.append(kwargs)
@@ -550,7 +550,7 @@ def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     )
 
 
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
 
     async def fake_call(*args, **kwargs):
         calls.append((args, kwargs))
@@ -571,16 +571,142 @@ def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize(("page_url", "blocked"), [(PRIVATE_URL, True), ("https://93.184.216.34/", False)])
+def test_page_url_probe_reads_the_target_over_the_same_endpoint(monkeypatch, cdp_server, page_url, blocked):
+    """The private-page probe reads the acted-on page's URL from Target.getTargets on the same CDP
+    endpoint: a private page refuses page-reading methods before they are sent; a public one runs."""
+    cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
+        {"targetId": "other", "type": "page", "url": "https://example.org/"},
+        {"targetId": "tab-1", "type": "page", "url": page_url},
+    ]})
+    cdp_server.on("Target.attachToTarget", lambda params, sid: {"sessionId": "s-1"})
+    cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "page text"}})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "document.body.innerText"}, target_id="tab-1"))
+
+    evaluated = [m for m in cdp_server.received() if m.get("method") == "Runtime.evaluate"]
+    if blocked:
+        assert PRIVATE_URL in result["error"] and "private or internal address" in result["error"]
+        assert evaluated == []
+    else:
+        assert result["success"] is True
+        assert len(evaluated) == 1
+
+
+PUBLIC_PAGE = "https://93.184.216.34/"
+
+
+@pytest.mark.parametrize(("target_id", "page_url", "blocked"), [
+    ("worker-1", PRIVATE_URL, True),      # SharedWorker of a private page: fetch('/') reads that page
+    ("bogus-id", PRIVATE_URL, True),      # unknown target: cannot prove it is not the private page
+    (None, PRIVATE_URL, True),            # browser-level call spans every page
+    ("worker-1", PUBLIC_PAGE, False),     # every page public: the worker runs
+])
+def test_non_page_target_fails_closed_while_any_page_is_private(monkeypatch, cdp_server, target_id, page_url,
+                                                                 blocked):
+    """A non-page / unknown target carries some page's origin, so page-reading CDP refuses it while any page
+    target is private, and runs it when every page is public."""
+    cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
+        {"targetId": "tab-public", "type": "page", "url": PUBLIC_PAGE},
+        {"targetId": "tab-2", "type": "page", "url": page_url},
+        {"targetId": "newtab", "type": "page", "url": "chrome://newtab/"},
+        {"targetId": "worker-1", "type": "shared_worker", "url": ""},
+    ]})
+    cdp_server.on("Target.attachToTarget", lambda params, sid: {"sessionId": "s-1"})
+    cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "page body"}})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "fetch('/').then(r => r.text())"}, target_id=target_id))
+
+    evaluated = [m for m in cdp_server.received() if m.get("method") == "Runtime.evaluate"]
+    if blocked:
+        assert PRIVATE_URL in result["error"] and evaluated == []
+    else:
+        assert result["success"] is True and len(evaluated) == 1
+
+
+def test_frame_id_is_judged_by_its_own_target_not_the_first_page(monkeypatch, cdp_server):
+    """frame_id routing checks the OOPIF's own target (frame id == iframe target id) and fails closed on a
+    private page, even when the first page target is public."""
+    supervisor_calls = []
+    cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
+        {"targetId": "tab-public", "type": "page", "url": PUBLIC_PAGE},
+        {"targetId": "tab-private", "type": "page", "url": PRIVATE_URL},
+        {"targetId": "frame-1", "type": "iframe", "url": "https://93.184.216.35/embed"},
+    ]})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_via_supervisor",
+                        lambda **kw: supervisor_calls.append(kw) or json.dumps({"success": True}))
+
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "document.title"}, frame_id="frame-1"))
+
+    assert PRIVATE_URL in result["error"] and supervisor_calls == []
+
+
+def test_unreadable_target_list_fails_closed(monkeypatch, cdp_server):
+    """When the page URLs cannot be read the guard refuses instead of assuming the page is public."""
+    cdp_server.on("Target.getTargets", lambda params, sid: RuntimeError("Target domain unavailable"))
+    cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "page body"}})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        method="Runtime.evaluate", params={"expression": "document.title"}))
+
+    assert "could not read the browser's targets" in result["error"]
+    assert not [m for m in cdp_server.received() if m.get("method") == "Runtime.evaluate"]
+
+
+LOCAL_TAB = "http://127.0.0.1:3000/"
+
+
+@pytest.mark.parametrize(("method", "params", "allowed"), [
+    ("Target.createTarget", {"url": PUBLIC_PAGE}, True),
+    ("Target.createTarget", {"url": "http://127.0.0.1:3000/admin"}, False),  # checked like Page.navigate
+    ("Target.createTarget", {"url": PRIVATE_URL}, False),
+    ("Target.createTarget", {"url": "about:blank"}, True),  # a blank tab, as Hermes's own helpers open
+    ("Target.createTarget", {"url": ""}, True),
+    ("Target.createTarget", {}, True),
+    ("Target.createTarget", {"url": "file:///etc/passwd"}, False),  # every other non-http scheme stays refused
+    ("Target.createTarget", {"url": "about:blank@127.0.0.1"}, False),
+    ("Target.createTarget", {"url": "data:text/html,<script>fetch('http://127.0.0.1:3000/')</script>"}, False),
+    ("Target.activateTarget", {"targetId": "tab-public"}, True),
+    ("Target.closeTarget", {"targetId": "tab-public"}, True),
+    ("Network.getAllCookies", {}, False),  # every other target-less call stays fail-closed
+    ("Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": "/srv"}, False),
+])
+def test_tab_management_stays_usable_while_a_tab_is_private(monkeypatch, cdp_server, method, params, allowed):
+    """One private tab (a local dev server) must not stop the model opening, switching or closing tabs; a
+    new tab is blank or its url is held to Page.navigate's rule, and every other browser-level call is refused."""
+    cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
+        {"targetId": "tab-public", "type": "page", "url": PUBLIC_PAGE},
+        {"targetId": "tab-local", "type": "page", "url": LOCAL_TAB},
+    ]})
+    cdp_server.on(method, lambda params, sid: {"targetId": "new-tab"} if method == "Target.createTarget" else {})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method=method, params=params))
+
+    sent = [m for m in cdp_server.received() if m.get("method") == method]
+    if allowed:
+        assert result["success"] is True and len(sent) == 1
+    else:
+        assert "private or internal address" in result["error"] and sent == []
+
+
 def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
 
 
-    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: False)
 
-    def fail_probe(task_id):
+    def fail_probe(endpoint, target_id):
         raise AssertionError("_current_page_private_url must not be probed")
 
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", fail_probe)
+    monkeypatch.setattr(browser_cdp_tool, "_current_page_private_url", fail_probe)
 
     result = json.loads(
         browser_cdp_tool.browser_cdp(
@@ -607,18 +733,18 @@ def test_check_fn_does_not_probe_network(monkeypatch):
     def _boom(*a, **k):  # pragma: no cover — the assertion is that it's unused
         raise AssertionError("check_fn must not perform network I/O")
 
-    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: True)
+    monkeypatch.setattr(browser_use_cli, "browser_exec_available", lambda: True)
     monkeypatch.setattr(requests, "get", _boom)
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     assert browser_cdp_tool._browser_cdp_check() is True
 
 
 def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
-    """Even with a CDP URL, gate closes if the overall browser toolset is
-    unavailable (e.g. agent-browser not installed)."""
+    """Even with a CDP URL, gate closes if the overall browser surface is
+    unavailable (browser-harness not importable)."""
 
-    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(browser_use_cli, "browser_exec_available", lambda: False)
     monkeypatch.setattr(
-        bt_cdp, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
+        browser_session_cdp, "get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is False

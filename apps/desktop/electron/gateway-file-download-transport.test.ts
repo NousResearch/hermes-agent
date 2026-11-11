@@ -292,6 +292,61 @@ test('cookie transport streams bytes after approval and preserves HTTP status on
   }
 })
 
+test('a token or cookie body that stalls mid-read is destroyed after the idle deadline, never the dialog', async (): Promise<void> => {
+  // R4 for the non-native transports: headers drop the connect timeout, so without a body
+  // deadline a stalled stream hung the save forever. The open dialog (150 ms > 50 ms) is the
+  // user's time and is not counted.
+  const slowDialog = (destination: string): GatewayFileSaveDeps => ({
+    showSaveDialog: async (): Promise<GatewaySaveDialogResult> => {
+      await new Promise(resolve => setTimeout(resolve, 150))
+
+      return { canceled: false, filePath: destination }
+    }
+  })
+
+  const baseUrl: string = await serve((request: http.IncomingMessage, response: http.ServerResponse): void => {
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+
+    if (request.url === '/whole') {
+      response.end('bytes')
+
+      return
+    }
+
+    response.write('head-')
+  })
+
+  const whole: string = path.join(directory, 'whole.bin')
+  await expect(
+    downloadViaTokenToFile(`${baseUrl}/whole`, 'tok', context, slowDialog(whole), { bodyIdleTimeoutMs: 50 })
+  ).resolves.toEqual({ saved: true, path: whole })
+  await expect(
+    downloadViaTokenToFile(`${baseUrl}/stall`, 'tok', context, slowDialog(path.join(directory, 'stall.bin')), {
+      bodyIdleTimeoutMs: 50
+    })
+  ).rejects.toThrow('stalled')
+
+  const request: CookieRequest = new CookieRequest()
+  const response = Object.assign(new PassThrough(), { statusCode: 200, headers: {} })
+
+  const pending: Promise<GatewayFileSaveResult> = downloadViaOauthSessionToFile(
+    'https://gateway.example/file',
+    context,
+    {
+      ...slowDialog(path.join(directory, 'cookie.bin')),
+      getSession: (): FixtureSession => ({ partition: 'persist:gateway-test' }),
+      request: (): GatewayOauthDownloadRequest => request
+    },
+    { bodyIdleTimeoutMs: 50 }
+  )
+
+  request.emit('response', response)
+  response.write('head-')
+  await expect(pending).rejects.toThrow('stalled')
+  expect(request.aborted).toBe(true)
+  expect((await fs.promises.readdir(directory)).sort()).toEqual(['whole.bin'])
+}, 5_000)
+
 test.each([404, 401, 403, 500])(
   'HTTP %i preserves status and permits only the scoped 404 fallback',
   async (statusCode: number): Promise<void> => {

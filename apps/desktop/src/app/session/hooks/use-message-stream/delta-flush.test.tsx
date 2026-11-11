@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import {
+  readInFlightTurnJournal,
+  recoverInFlightTurnJournal,
+  resetInFlightTurnJournalStateForTests
+} from '@/lib/inflight-turn-journal'
 
 import { useSessionStateCache } from '../use-session-state-cache'
 
@@ -182,6 +187,8 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
+    resetInFlightTurnJournalStateForTests()
+    window.localStorage.clear()
     appendAssistantDelta = null
     cache = null
     published = []
@@ -193,6 +200,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
 
   afterEach(() => {
     cleanup()
+    resetInFlightTurnJournalStateForTests()
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -283,5 +291,53 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
     })
 
     expect(cachedText()).toBe('firstsecond')
+  })
+
+  it('recovers delivered deltas with parked timers and frames, including after switching sessions', () => {
+    let now = 0
+    vi.mocked(performance.now).mockImplementation(() => now)
+    const prompt: ChatMessage = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'continue' }] }
+    const storedId = 'parked-recovery'
+    render(<ComposedHarness />)
+    act(() => {
+      cache!.updateSessionState(SID, state => ({
+        ...state,
+        storedSessionId: storedId,
+        busy: true,
+        messages: [prompt]
+      }))
+      appendAssistantDelta!(SID, 'first')
+    })
+
+    now = 34
+    act(() => appendAssistantDelta!(SID, ' second'))
+    expect(cachedText()).toBe('first second')
+    expect(readInFlightTurnJournal(storedId)).toBeNull()
+
+    // Neither timer nor rAF callbacks run. Data delivery must carry progress
+    // through both production buffers, not just journal an empty cached tail.
+    now = 401
+    act(() => appendAssistantDelta!(SID, ' third'))
+    now = 402
+    act(() => appendAssistantDelta!(SID, ' fourth'))
+    const recovered = recoverInFlightTurnJournal(storedId, [prompt])
+    expect(recovered.applied).toBe(true)
+    expect(recovered.messages.at(-1)?.parts).toEqual([
+      expect.objectContaining({ type: 'text', text: 'first second third fourth' })
+    ])
+    expect(publishedText()).toBe('')
+
+    // A session switch must not strand the old session's final quiet chunk.
+    now = 410
+    act(() => appendAssistantDelta!(SID, ' quiet'))
+    cache!.activeSessionIdRef.current = 'another-session'
+    now = 450
+    act(() => appendAssistantDelta!(SID, ' tail'))
+    expect(cachedText()).toBe('first second third fourth quiet tail')
+    act(() => vi.advanceTimersByTime(400))
+    expect(readInFlightTurnJournal(storedId)?.messages.at(-1)?.parts).toEqual([
+      expect.objectContaining({ type: 'text', text: 'first second third fourth quiet tail' })
+    ])
+    expect(publishedText()).toBe('')
   })
 })

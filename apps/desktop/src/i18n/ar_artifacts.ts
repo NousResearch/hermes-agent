@@ -88,6 +88,7 @@ export const arArtifacts = {
     editing: 'جار التحرير',
     unsavedChanges: 'تغييرات غير محفوظة',
     saveFailed: message => `تعذّر الحفظ: ${message}`,
+    saveScopeChanged: 'عُد إلى الاتصال والملف الشخصي الأصليين لحفظ هذه المسودة.',
     diskChangedTitle: 'تغيّر الملف على القرص',
     diskChangedBody: 'تغيّر هذا الملف منذ أن فتحته. هل تريد الكتابة فوقه بنسختك، أم تجاهل تعديلاتك وإعادة التحميل؟',
     overwrite: 'الكتابة فوقه',
@@ -113,6 +114,7 @@ export const arArtifacts = {
       sentMessage: count => `أُضيف ${count} ${count === 1 ? 'إدخال سجل' : 'إدخالات سجل'} إلى المُنشئ`
     },
     web: {
+      embeddedPreviewHint: 'تمنع بعض المواقع المعاينات المضمّنة. افتح الصفحة الأصلية في علامة تبويب بالمتصفح.',
       appFailedToBoot: 'فشل إقلاع تطبيق المعاينة',
       serverNotFound: 'الخادم غير موجود',
       remoteLoopback:
@@ -154,7 +156,17 @@ export const arArtifacts = {
       loadFailedConsole: (code, message) => `فشل التحميل${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: 'تعذّر الوصول إلى صفحة المعاينة.',
       openTarget: url => `فتح ${url}`,
-      fallbackTitle: 'معاينة'
+      fallbackTitle: 'معاينة',
+      vaultFill: 'ملء بيانات دخول محفوظة',
+      vaultTitle: site => `بيانات الدخول المحفوظة لـ ${site}`,
+      vaultLoading: 'جارٍ تحميل بيانات الدخول المحفوظة…',
+      vaultEmpty: 'لا توجد بيانات دخول محفوظة لهذا الموقع',
+      vaultUnlock: name => `فتح قفل ${name}`,
+      vaultOpenSettings: 'فتح إعدادات خزنة بيانات الاعتماد',
+      vaultFilled: label => `تم ملء ${label}. راجع النموذج ثم سجّل الدخول.`,
+      vaultFillFailed: 'تعذّر ملء بيانات الدخول',
+      vaultLoadFailed: 'تعذّر تحميل بيانات الدخول المحفوظة',
+      vaultPageNotReady: 'لا تزال الصفحة قيد التحميل. أعد المحاولة عند اكتمالها.'
     }
   }
 } satisfies Pick<TranslationOverrides, 'artifacts' | 'artifactCard' | 'artifactPreview' | 'preview'>

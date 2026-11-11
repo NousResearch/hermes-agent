@@ -19,8 +19,8 @@ if "slack_bolt" not in sys.modules:
 if "aiohttp" not in sys.modules:
     sys.modules.setdefault("aiohttp", MagicMock())
 
-from gateway.config import PlatformConfig  # noqa: E402
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from gateway.config import PlatformConfig
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 START = "https://files.slack.com/files-pri/TSECOND-F123/image.png"

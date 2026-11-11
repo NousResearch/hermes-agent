@@ -36,7 +36,7 @@ class _FakeEnv:
         self.cwd = start_cwd
         self.calls: list[dict] = []
 
-    def execute(self, command: str, cwd: str = None, **kwargs) -> dict:
+    def execute(self, command: str, cwd: str | None = None, **kwargs) -> dict:
         import subprocess
         self.calls.append({"command": command, "cwd": cwd})
         # Simulate cd by updating self.cwd (the real env does the same
@@ -53,6 +53,7 @@ class _FakeEnv:
             input=stdin_data,
             capture_output=True,
             text=True,
+            check=False,
         )
         return {
             "output": proc.stdout + proc.stderr,
@@ -74,7 +75,7 @@ class _WrapperEnv:
         import subprocess
         script = f"builtin cd -- {shlex.quote(cwd)} || exit 126\n{command}"
         proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, encoding="utf-8",
-                              input=kwargs.get("stdin_data"))
+                              input=kwargs.get("stdin_data"), check=False)
         return {"output": proc.stdout + proc.stderr, "returncode": proc.returncode}
 
 
@@ -117,7 +118,7 @@ class TestShellFileOpsCwdTracking:
             def execute(self, command, cwd=None, **kwargs):
                 import subprocess
                 proc = subprocess.run(["bash", "-c", command], cwd=cwd,
-                                      capture_output=True, text=True)
+                                      capture_output=True, text=True, check=False)
                 return {"output": proc.stdout, "returncode": proc.returncode}
 
         env = _NoCwdEnv()

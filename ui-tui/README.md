@@ -44,29 +44,31 @@ From the repo root, the normal path is:
 hermes --tui
 ```
 
-The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `npm install` and `npm run dev`.
+The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `pnpm install` and `pnpm run dev`.
 
 ```bash
 cd ui-tui
-npm install
+pnpm install
 ```
+
+`just tui` runs `pnpm run dev` here from the repository root.
 
 Local package commands:
 
 ```bash
-npm run dev
-npm start
-npm run build
-npm run lint
-npm run fmt
-npm run fix
+pnpm run dev
+pnpm start
+pnpm run build
+pnpm run lint
+pnpm run fmt
+pnpm run fix
 ```
 
 Tests use vitest:
 
 ```bash
-npm test         # single run
-npm run test:watch
+pnpm test         # single run
+pnpm run test:watch
 ```
 
 ## Live agents
@@ -357,8 +359,9 @@ ui-tui/
   src/
     entry.tsx            TTY gate + render()
     app.tsx              top-level Ink tree, composes src/app/*
-    gatewayClient.ts     child process + JSON-RPC bridge
-    gatewayTypes.ts      gateway event and RPC response type definitions
+    gatewayClient.ts     Ink's wiring of @hermes/shared/gateway-client (bootstrap, env, i18n)
+    launchOptions.ts     `hermes --tui` launch env as session.create options
+    localGatewayBootstrap.ts  runs scripts/gateway_bootstrap.py for the URL + ticket
     theme.ts             theme colors and skin merge
     banner.ts            ASCII art renderer (parses Rich color tags)
     types.ts             shared client-side types (ActiveTool, Msg, etc.)
@@ -443,9 +446,7 @@ ui-tui/
       details.ts                 details visibility mode resolution (hidden/collapsed/expanded)
       messages.ts                message formatting and transcript helpers
       paths.ts                   cwd shortening and path display helpers
-      providers.ts               provider display name helpers
       roles.ts                   message role color and label helpers
-      slash.ts                   slash command parsing and TUI session model flag
       usage.ts                   token usage zero value and helpers
       viewport.ts                viewport height estimation helpers
 
@@ -457,7 +458,6 @@ ui-tui/
       useVirtualHistory.ts       virtual list scroll and height tracking
 
     lib/
-      circularBuffer.ts          fixed-size generic ring buffer
       clipboard.ts               clipboard read / write via child_process
       editor.ts                  $EDITOR launch, PATH resolution, and Ink suspend
       emoji.ts                   emoji and variation selector width helpers
@@ -467,7 +467,6 @@ ui-tui/
       fpsStore.ts                Ink frame FPS tracker nanostore
       fuzzy.ts                   lightweight fuzzy subsequence scorer
       gracefulExit.ts            clean shutdown with failsafe timeout
-      history.ts                 persistent input history (read/append to disk)
       inputMetrics.ts            input width and wrap metrics
       liveProgress.ts            todo helpers and tool-shelf message assembly
       mathUnicode.ts             best-effort LaTeX → Unicode for inline math
@@ -495,7 +494,6 @@ ui-tui/
       wheelAccel.ts              scroll wheel acceleration state machine
 
     protocol/
-      interpolation.ts           {!cmd} inline shell interpolation regex and helpers
       paste.ts                   bracketed paste snippet token regex
 
     types/

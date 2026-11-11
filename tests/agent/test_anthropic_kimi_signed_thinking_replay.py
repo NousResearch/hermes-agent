@@ -35,7 +35,7 @@ def _thinking_on_replay(base_url, signature=SIG, model="k3"):
         {"role": "user", "content": "q2"},
     ]
     _sys, out = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     return [b for b in assistant["content"] if isinstance(b, dict) and b.get("type") == "thinking"]
 
 
@@ -96,7 +96,7 @@ def test_orphan_tool_turn_demotes_and_leaks_no_internal_marker():
         {"role": "user", "content": "continue"},
     ]
     _sys, out = convert_messages_to_anthropic(messages, base_url=KIMI, model="k3")
-    assistant = [m for m in out if m.get("role") == "assistant"][0]
+    assistant = next(m for m in out if m.get("role") == "assistant")
     assert "_thinking_signature_invalidated" not in assistant, (
         f"internal marker leaked into Kimi payload: {assistant.keys()}"
     )

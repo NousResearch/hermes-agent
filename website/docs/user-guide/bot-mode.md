@@ -67,7 +67,7 @@ An **Advanced** disclosure opens the full capabilities surface:
 - **Model & provider pin** — give the Bot its own model. Any provider/model pair Hermes knows about works, and different Bots can run on different models side by side. Leave it unset to inherit from the launch profile. Picking a model from the Bot Chat's composer sticks to that chat (it survives reopening the app) until you change the Bot's profile model, which takes over again.
 - **Custom SOUL.md** — the Bot's persona and standing instructions.
 - **Per-skill, per-toolset, and per-MCP-server enablement** — tick exactly the capabilities this specialist needs.
-- **Copy API keys from the main profile** — on by default. Each Bot gets its own credential store: static API keys are copied in, while single-use OAuth logins (Anthropic, OpenAI Codex, xAI) are not copied — sign the Bot in itself with `hermes -p <name> auth add <provider>`. See [Every profile owns its credentials](./profiles.md#every-profile-owns-its-credentials).
+- **Copy API keys from the main profile** — on by default. Each Bot gets its own credential store: static API keys are copied in, while single-use OAuth logins (Anthropic, OpenAI Codex, xAI) are not copied — sign the Bot in itself with `hermes -p <name> auth add <provider>`. See [OAuth logins are shared, not copied](./profiles.md#clone-everything---clone-all).
 
 ### Choosing which machine it lives on ("Create on")
 
@@ -132,12 +132,11 @@ Unresolved member failures remain visible in the collapsed Activity summary afte
 the room settles — including a turn the member's backend itself failed (bad
 credentials, provider errors), which is reported the moment the gateway
 reports it instead of looking like twenty minutes of thinking. A failure row names its cause: `builder hit an error — <first line of
-the error>` (secret-shaped tokens redacted, long lines truncated), or `builder couldn't start — too many bots running` when the local
-backend pool had no free slot. Expand Activity for the turn sequence; re-address the member to
+the error>` (secret-shaped tokens redacted, long lines truncated). Expand Activity for the turn sequence; re-address the member to
 try again. An ambiguous submit failure is not automatically resubmitted.
 
 
-Right-click a local Bot → **Manage groups** to add or remove it from any number of group chats. Pick existing groups independently or create one inline. Local membership is stored in the Bot's backend-synced profile metadata, so it follows that profile across desktops; older profiles with one legacy group continue to work. Connections Bots join through the New Group Chat picker and remain source-qualified in the room's shared state.
+Right-click a local Bot → **Manage groups** to add or remove it from any number of group chats. Pick existing groups independently or create one inline. Local membership is stored in the Bot's backend-synced profile metadata, so it follows that profile across desktops; older profiles with one legacy group continue to work. Connections Bots join through the New Group Chat picker and remain source-qualified in the room's shared state. Groups managed by one gateway offer only Bots on the active connection, while older Desktop rooms can retain mixed-connection members.
 
 To edit an existing room as a unit, use **Manage members** — from the room header's people icon or the **Manage members…** button in **Group settings**. The checklist pre-selects the current members and lists every local and Connections Bot; add or remove several at once and **Save members** applies the new roster (still 2–6 Bots) while the room, its history and each member's room session stay in place. A removed Bot takes no further turns; an added Bot reads the recent room history on its first turn. **Cancel** changes nothing.
 
@@ -165,13 +164,14 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.
 - Teammates can hand off to the primary Bot with `@hermes`, including in older saved rooms; Bots on other gateways keep their device-qualified tags (for example, `@default-vera`).
 - Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group row shows a **needs you** badge when that happens. Pending questions and command approvals also light that badge; resolving the last prompt clears only prompt attention, not an independent mention. A command approval in the room answers on the click itself — `once`, `session`, `always` or `deny` sends at once, with no second button to find. Prompts follow a renamed room, while disbanding retires them even if a member's in-flight poll arrives later.
-- Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
+- Hard caps (10 messages per send, 3 rounds) keep rooms from spinning. On a gateway-owned room the cap pauses the discussion instead of ending it: the room shows **Paused after N messages** with **Continue** (one more budget of rounds and messages for the same discussion, up to 5 times, still available after a gateway restart) and **Stop**. Sending a new message in that thread also moves on.
+- **Who answers a message that names nobody** is a Room settings choice on gateway-owned rooms: **Everyone** (the default), a **lead** that hands the message on, or **Pick who answers automatically**. The automatic choice makes one short tool-less model call over the room purpose and notes, each member's role (its profile description) and the last few messages, and the room shows **Assigned to X** above the replies. @mentions, `@all`/`@everyone`, scheduled posts and replies inside an existing thread never reach that call, and a failed or unreadable answer falls back to everyone. Route the call to a cheap model with `auxiliary.group_router` (`hermes model` → auxiliary → Group router).
 - Each member keeps its own persistent room session, so room context survives like any other conversation.
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
-- **Rooms keep running when you close the Desktop.** When every member of a room lives on the same gateway, that gateway owns turn scheduling through a durable driver: closing Hermes Desktop (or losing its connection) does not stop a room mid-discussion, and the Desktop simply catches up from the room's log when it reconnects. `groups.capabilities` on the gateway reports `driver: true` when this applies. More than one room worker may share a home — the messaging gateway (`hermes gateway run`) and the Desktop's own backend (`hermes serve`) both run one — and whichever holds the room's driver lease runs the next turn; a member's room session is held only for the duration of its turn, so the lease can move between workers without a turn being refused. Room state lives in the install's root `shared-state.db`; installs that created rooms before that file existed (when rooms were still kept in the root `state.db`) get those rooms copied across once, on the first open after updating, so pre-existing Group Chats stay reachable. Rooms whose members span several machines are different: each member's turns run on its own gateway, and the cross-connection courier described under *Bot-to-bot messaging* still applies to them.
+- **Group chats run by a gateway keep working when you close Desktop.** On a connection whose gateway runs group chats (Desktop's own gateway, or a `hermes serve` / `hermes dashboard` backend reached over SSH, URL or Cloud), every new group chat is a *group chat run by that gateway*, whether its bots are on this computer or on others: the gateway owns its log and schedules its turns through a durable driver, so closing Hermes Desktop (or losing its connection) does not stop a discussion, and the group chat catches up from the log when you reopen it. Its header shows who is working and what the group chat waits on (approvals, replies that need attention), the group chat says when Hermes cannot run its turns, and the header offers **Stop** while work is active, and **Rename** and **Disband**, only where the gateway lists those methods; an approval shows the command it would allow (or, for a plugin approval rule, the plugin's description) before you choose **Allow once**. A message the gateway refuses before posting it comes back for editing; one that may already have been sent offers **Retry**, which never posts it twice; **Stop** also stops a message still sending. A standalone `hermes serve` / `hermes dashboard` backend forwards group chat requests when a gateway serves the profile. The root gateway fences and imports existing standalone group chats from `shared-state.db` into its `state.db` once, so those group chats have one owner and remain reachable. Without an owning gateway, standalone group chats stay with their standalone backend. Both routes support attachments; **Discard** appears only when the owning gateway advertises it. Older servers that do not advertise file methods hide upload and disable download. A *classic group chat* is one an older version saved: Desktop runs its rounds, so it pauses while Desktop is closed. Desktop no longer creates them. An existing one keeps its history and composer; one whose bots span machines keeps using the cross-connection courier described under *bot-to-bot messaging*, keeps that engine after membership edits, and an older group chat whose bots span connections opens in that workspace too. For a classic group chat that reaches the migration gate on a gateway connection, Desktop first opens that gateway's group chat of the same name when there is one; otherwise it does not run there. Instead it says what to do: when its bots are on this connection it offers **Start new group**, a fresh group chat on that gateway with the same bots that does not copy the earlier messages; when they are on other computers it names those connections, so you can switch to the one where they run and start a group there, or start a new group with bots from this connection. Its earlier messages stay readable below, read only. A connection whose Hermes is too old for group chats, or that can't be reached, says so and offers **Retry**.
 
 - **Mentions read as identities.** In the transcript a routed `@bot` mention, the human handoff `@user`, and the broadcasts `@everyone` / `@all` render as inline references (accent text, not pills); unknown `@words` and e-mail addresses stay plain. Hover a Bot's message and use **Reply to @handle** to seed `@handle ` into the composer, so your next send goes to that Bot only (when a same-named Bot from a Connection shares the room, the tag is device-qualified, e.g. `@reviewer-mini` / `@reviewer-local`) — **Reply in thread** still continues the whole thread. If a reply box for a *different* thread is open, **Reply to** seeds the main composer instead and so starts a fresh thread; use **Reply in thread** to continue that thread.
-- **Rooms can span machines.** **New Group Chat** is available as soon as two Bots are selectable across all your registered connections — one Bot on this device plus one on another gateway is enough. The picker seats Bots from any registered connection; each member's turns run on its own machine, in its own room session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together. A member's turn that outlives this Desktop — you quit or it crashed mid-turn — finishes on the member's own machine: the room posts that reply the next time it is driven, and does not re-drive the member while it is still working.
+- **Group chats can span machines.** New group chat offers bots from every registered connection, each with a device badge. Every new group chat is owned by the active connection’s gateway and keeps running when you close Desktop; bots on other computers, including named profiles there, join through their own gateways. The dialog says “Runs on 〈owner〉, including when this Desktop is closed. Only text is sent to bots on other computers.” When a computer is not ready, it says what to change there and offers **Retry**; it never creates a group chat that only runs while Desktop is open. Members carry a device badge (`dixie · Mac Mini`) in the group chat. On a gateway that owns group chats, a selection made entirely of bots on one other connection is not created from here: add a bot from the active connection, or switch to that connection first. A gateway too old to run group chats can't create one: update Hermes there. For the endpoint and setup requirements, see [bots from another gateway in a group chat](#bots-from-another-gateway-in-a-gateway-owned-group-chat). In a classic group chat an older version saved, a member’s turn that outlives its Desktop finishes on its own machine: the group chat posts that reply the next time it is driven and does not start the member again while it is still working.
 - **Rooms show the same identity as the roster.** Transcript rows, the “X is thinking…” line and Activity rows resolve each member's title and avatar by its owning connection and profile — re-titling a Bot or changing its picture updates every room it sits in, remote members keep their own titles, and two same-named Bots on different connections never borrow each other's avatar. When two members would still read identically, Activity appends the connection label (`Reviewer · Mac Mini`).
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 - **What a member says outside the room still reaches it.** Each member's room session is an ordinary Hermes session (titled `Group: <room> · <thread>`), so you can resume it from the CLI, a routine can post into it, or the Bot's own tools can write to it. When you open the room, and again each time the room drives that member, whatever those writers added since the room last looked — your questions and the member's answers — is posted into the room log under that member's name, once, in the thread the session belongs to; a window restart does not repeat it. The room's own turn prompts and their replies are never duplicated this way, and neither are the agent's housekeeping rows (context compaction notes, routine deliveries, delegation results) or the member's reactions to them. The room starts watching a session the first time it sees it: what was already in that session by then is not replayed, so a room restored on a second Desktop does not re-post its members' history.
@@ -183,11 +183,20 @@ Bots message each other with attribution, and you can hand work off from any cha
 - **@mentions** — type `@researcher have a look at this` in any chat and the composer's `@` autocomplete helps you pick the right Bot; on send, the mention is resolved against the live roster and the active Bot is told exactly who you mean (profile, friendly name, and device for cross-connection Bots). The Bot then composes its own message and sends it with `message_agent` — your text is never forwarded verbatim, and the reply comes back attributed to that agent. An email address or an unknown `@` passes through untouched. Bots on other connected machines are reachable the same way: the Desktop relays the message over that connection's own socket (see *Bots across machines* below).
 - **Renamed Bots keep their tags in sync** — give a Bot a friendly name (the pencil in its chat header, or `hermes profile rename`) and it becomes taggable by that name: a Bot titled *Research Buddy* answers to `@research-buddy` (and `@researchbuddy`), in regular chats and in group rooms alike. The composer's `@` autocomplete offers the renamed tag and also matches when you type the old profile name, which keeps resolving too. This includes the primary Bot: rename it *Maia* and group-turn prompts introduce it as `@maia`, its inter-agent messages sign as `Message from 🤖 Maia (@hermes)`, and teammates can `message_agent(target="maia")` it — `@hermes` stays a working alias.
 - **Remote Bots complete under their titles, from any chat.** The `@` autocomplete lists Bots on your other connected machines as soon as the Desktop is connected — you do not have to open the Bots pane first — and a remote `default` appears under its Bot Mode title (`@cos-bot` for a remote default titled *CoS Bot*, not a second `@hermes`). When two Bots would tag alike, the picker inserts the connection-qualified form (`@cos-bot@<connection>`), which resolves to exactly that machine's Bot. A relayed message signed `Message from 🤖 hermes (@hermes@<connection>)` still renders as an agent notice, not as your own text.
-- **Direct messages** — every Bot Chat carries the `message_agent` tool: a Bot messages a teammate by calling `message_agent(target="researcher", message="…")`. The target is the teammate's profile name, its friendly name (`hermes profile rename` or the Bot Mode title — `Scribe`, `Dr. Foo`) or the `@`-tag the Desktop inserts for it (`@scribe`, `@dr-foo`, `@drfoo`); `@hermes` always means the primary Bot. A profile name is matched first, so it can never be hijacked by another Bot's friendly name, and a friendly name shared by two Bots is refused with the roster instead of guessing. The tool validates the target against the live roster, prefixes the sender's `Message from 🤖 <friendly name> (@<handle>):` attribution automatically, and delivers into the teammate's canonical Bot Chat. Delivery is **fire-and-forget**: the sender gets a *dispatch* acknowledgement (`status: queued` plus a `delivery_id` — and a `process_id` for the background delivery process — means the message was handed to that process, not that it was delivered), finishes its turn, and that process's completion notification carries the outcome — the reply, or the delivery failure. On surfaces that cannot receive completion notifications (an `api_server` session, one-shot runners) the acknowledgement instead carries `reply_delivery: poll`: the sender retrieves the outcome with `process(action="wait", session_id=…)` before ending its turn, and the outcome is also saved into the sender's session transcript as a delivery row when the process exits, so the reply is never silently lost. The notification carries the reply whole up to the message size limit (16,000 characters); a longer one arrives as its tail and says how much was cut (`process(action="log", session_id=…)` has the rest). The message travels as a real parameter (nothing shell-interpreted — quotes, `$(...)`, and backticks arrive verbatim), and the Bot composes its own message rather than forwarding your words. The teammate roster — names **and roles** from each profile's title/description — is part of every Bot Chat's system prompt, so Bots know who does what before choosing a recipient. The tool exists **only** in canonical Bot Chat sessions on Bot-Mode-managed installs; regular chats, group-room member sessions, and CLI sessions never see it.
+- **Direct messages** — every Bot Chat carries the `message_agent` tool: a Bot messages a teammate by calling `message_agent(target="researcher", message="…")`. The target is the teammate's profile name, its friendly name (`hermes profile rename` or the Bot Mode title — `Scribe`, `Dr. Foo`) or the `@`-tag the Desktop inserts for it (`@scribe`, `@dr-foo`, `@drfoo`); `@hermes` always means the primary Bot. A profile name is matched first, so it can never be hijacked by another Bot's friendly name, and a friendly name shared by two Bots is refused with the roster instead of guessing. The tool validates the target against the live roster, prefixes the sender's `Message from 🤖 <friendly name> (@<handle>):` attribution automatically, and delivers into the teammate's canonical Bot Chat. Delivery is **fire-and-forget**: the sender gets a *dispatch* acknowledgement (`status: queued` plus a `delivery_id` — and a `process_id` for the background delivery process — means the message was handed to that process, not that it was delivered), finishes its turn, and that process's completion notification carries the outcome — the reply, or the delivery failure. The recipient returns its substantive answer as that same turn’s final response; it does not call `message_agent` merely to bounce the reply back, because the transport already captures that final response and carries it to the sender — or, when the recipient ends with an intentional silence token, delivers nothing at all. A recipient that ends silent or empty on a request that expects an answer, after writing its answer elsewhere in that turn (beside a tool call, or in a refused `message_agent` back), has those last words relayed once, marked `[no final reply; their last message this turn:]`; a notify-only message (`expects_reply: false`) never is. The sender can type the request: `constraints` (limits on the answer) and `expecting` (what it needs back) reach the teammate as labelled `Constraints:` / `Reply needed:` lines. Every completion leads with one `outcome` sentence: `@beta answered.`, or `@gamma never answered: <why>` plus whether resending is safe (not sent, outcome unknown, still running or waiting on its own user, cancelled, or interrupted by its gateway's restart). Several targets in one call wake the sender once, with every teammate's sentence. On surfaces that cannot receive completion notifications (an `api_server` session, one-shot runners) the acknowledgement instead carries `reply_delivery: poll`: the sender retrieves the outcome with `process(action="wait", session_id=…)` before ending its turn, and the outcome is also saved into the sender's session transcript as a delivery row when the process exits, so the reply is never silently lost. The notification carries the reply whole up to the message size limit (16,000 characters); a longer one arrives as its tail and says how much was cut (`process(action="log", session_id=…)` has the rest). The message travels as a real parameter (nothing shell-interpreted — quotes, `$(...)`, and backticks arrive verbatim), and the Bot composes its own message rather than forwarding your words. The teammate roster — names **and roles** from each profile's title/description — is part of every Bot Chat's system prompt, so Bots know who does what before choosing a recipient. The tool exists **only** in canonical Bot Chat sessions on Bot-Mode-managed installs; regular chats, group-room member sessions, and CLI sessions never see it.
 
 Local messages also reach a Bot Chat that stays open in Desktop or the TUI, and so do messages relayed from another machine. The receiving backend keeps ownership: it reads durable ingress on its existing notification poller, admits immediately when idle, or waits until the running turn and already queued human prompts finish. A `queued` acknowledgement confirms durable admission, **not** a completed reply. The target profile retains the delivery ID and receipt under `runtime/bot_live_delivery/`; `settled` confirms completion. A crashed or cancelled imported turn is not automatically replayed, and pending work pinned to a departed owner remains inspectable rather than being silently rerun. Do not resend a delivery whose outcome is unknown. Older backends without live-delivery capability retain the existing ownership refusal; restart that backend after upgrading.
 
 - **Staying silent** — a Bot that has nothing to add may end a turn with one of the [intentional silence tokens](./messaging/index.md#intentional-silence-tokens) (`[SILENT]`, `NO_REPLY`, …). The Bot Chat keeps that turn in its transcript but renders nothing, and a teammate that messaged it gets an empty reply instead of the token. Failed turns and prose that merely mentions a token are shown as-is.
+
+- **Exchanges end on their own** — two Bots cannot keep each other busy forever. A message a Bot sends back to the Bot that messaged it goes notify-only automatically (as with `expects_reply: false`: marked `[no reply needed]`, no wake-up for the sender), on every route: local, another Desktop connection, or a registered peer. The Bot that receives it cannot message that sender back in the same turn. The runtime also counts every bot-to-bot exchange since your last message: inside a Bot's turn each `message_agent` call is one more message, and past `gateway.bot_loop_guard.max_hops` (default 4) a further call is refused and nothing is sent. Sending the same message to the same teammate twice in one exchange is refused as a repeat; a send that never left (the teammate's machine was offline) does not count, so retrying it later works. The count lives in the delivery itself, not in anything the model writes, and survives context compression and background reviews; your next message starts a fresh exchange. Set `bot_replies_expect_reply: true` to let Bots answer each other's replies (still capped by `max_hops`), or `enabled: false` to turn every rule off.
+
+```yaml
+gateway:
+  bot_loop_guard:
+    max_hops: 4                       # bot-to-bot messages per exchange, Bot Mode and messaging platforms
+    bot_replies_expect_reply: false   # true: a bot's reply to a bot may be answered
+```
 
 The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
 
@@ -296,6 +305,152 @@ a NAT boundary, put the room's authority on the host every participant can
 reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 :::
 
+### Bots from another gateway in a gateway-owned group chat
+
+A group chat your gateway owns (its *home*) can seat a bot that lives on another
+gateway (its *member gateway*). The member's turns run on its own machine; the
+home keeps the group chat, its log and its schedule, even with Desktop closed. The home and member gateways must stay running. **New group chat** always does this for bots on other computers: every new group chat is run by a gateway. Any profile a member gateway serves can join, not only its default one. The dialog checks every computer before creating and again right before. If something is missing (Hermes too old on the owner, a member gateway without its API server, address or approvals, a computer that can't be reached), it says what to change on which computer, keeps your draft, and Create stays disabled until Retry finds everything ready. It never falls back to a group chat that only runs while Desktop is open. SSH and URL connections are eligible according to the capabilities they expose.
+
+If setup stops after the group chat is created, it stays a gateway-owned group chat: the unjoined bot has **Retry** and **Start new group chat without X** in the header. Starting without a bot creates a separate group chat, then asks to Disband the original only after every remaining bot joins. After a lost registration reply, Desktop checks the new group chat’s state: a bot it reports as ready has joined. If the check fails, both group chats stay and Desktop says joining could not be confirmed. If a bot cannot join, use Retry in the new group chat if offered, then Disband the original when you’re ready. While a create reply is lost, pressing the action again in the same Desktop window reuses the same request, including after reconnecting. After an acknowledgement or refusal, another use of the action creates another group chat. If a member gateway cannot confirm Stop or access revocation, the original is kept and Desktop says so; both group chats remain available. A bot with a saved connection that cannot currently be reached shows **offline**, not **not joined**. Its next message tries that connection again. Retry appears for that bot only when this Desktop is connected to its computer; **Start new group chat without X** stays available if at least two bots remain. A Desktop-driven group chat saved by an older version keeps its history and composer; it is not converted.
+
+While a gateway-owned group chat is open, Desktop renews peer access before its one-day dispatch grant expires (after 20 hours, or on first open after restart). Send saves its intent before waiting up to 45 seconds; Stop still works during that wait. There is no renewal loop while Desktop is closed. After more than a day idle, open the group chat with the member gateway reachable, or use Retry. The owner's dispatch renewal can extend an unexpired grant up to the advertised 30-day horizon; it cannot revive expired dispatch access. Earlier grants remain until expiry or scope revocation.
+
+The equivalent JSON-RPC setup is below.
+
+Limits: text only (a message with files fails that member's turn, visibly).
+The member can be any profile the member gateway serves: a named profile runs
+with its own config, secrets and sessions, and unless it sets its own
+`gateway.room_link_url` it is reached at `<room_link_url>/p/<profile>`. Its
+access works only for that profile.
+
+These owner/lender rules apply to the canonical gateway (`hermes gateway run`),
+including when `hermes serve` forwards Desktop's group calls to it.
+
+**On the home gateway**, `groups.capabilities` must report `driver: true`,
+`persistent_process: true` and list `groups.peer.register` in `methods`; it does
+not need `room_link.enabled` itself.
+
+**On the member gateway**, `groups.capabilities` must report `room_link.enabled: true`
+and list `groups.peer.invite` in `methods`.
+That needs the `api_server` platform with durable run storage, an advertised
+endpoint (`gateway.room_link_url`, reachable from the home), and approvals not
+turned off (`approvals.mode: off` is refused; `manual` asks a person, `smart` may
+approve on its own). Otherwise `room_link.reason` names the first missing piece.
+Keep its `room_link.catalog`; the home pins it, endpoint included.
+
+When a bot on the member gateway needs command approval, the home gateway now
+exposes its prompt in the group chat and accepts `once` to allow that operation
+or `deny` to refuse it. An outdated prompt cannot approve
+a later operation; it reports that the room approval is no longer pending.
+
+Standalone `hermes serve` answering for its own group chats derives `persistent_process`
+from its lending catalog and skips API-server and endpoint checks for `room_link`;
+clients should not use it as a home for gateway-owned group chats.
+
+1. **Create the group chat on the home** with the member pinned to that catalog:
+
+   ```json
+   {"jsonrpc":"2.0","id":1,"method":"groups.create","params":{"room_id":"ROOM_ID","name":"Review","members":[
+     {"member_id":"host","profile":"default","handle":"host"},
+     {"member_id":"reviewer","profile":"default","handle":"reviewer","target":{
+       "kind":"peer","peer_id":"spark","installation_id":"CATALOG_INSTALLATION_ID",
+       "profile":"default","capability_digest":"CATALOG_DIGEST"}}]}}
+   ```
+
+   Until step 3, that member's turns fail with `peer room route is unavailable`.
+2. **Invite from the member gateway.** On an operator connection there (its local
+   gateway socket or a dashboard connection), mint a grant scoped to that one group chat
+   and member, using the `authority_gateway_id` and `authority_epoch` the group chat was
+   created with:
+
+   ```json
+   {"jsonrpc":"2.0","id":2,"method":"groups.peer.invite","params":{"room_id":"ROOM_ID","member_id":"reviewer",
+     "home_install_id":"HOME_GATEWAY_ID","authority_gateway_id":"HOME_GATEWAY_ID","authority_epoch":1}}
+   ```
+
+   `ttl_seconds` (60 to 86,400, default 3,600) is optional, and so is
+   `status_ttl_seconds`, the renewal horizon (from `ttl_seconds` up to 30 days, default
+   `ttl_seconds`; offered when `groups.capabilities` lists the `peer_renewal_horizon`
+   feature). The home renews the grant when it sends that member a turn near the end of
+   its `ttl_seconds`, never past the horizon. The grant id is the member gateway's to choose.
+3. **Register on the home** with the grant, the catalog and the catalog's own
+   endpoint URL as `target_url`. The home sends the grant to no other URL. It probes
+   the member gateway first and refuses a grant for another group chat, member, profile,
+   catalog or URL (`peer_target_mismatch`), a member it cannot reach
+   (`peer_unreachable`) or a revoked grant (`room_reauthorization_required`):
+
+   ```json
+   {"jsonrpc":"2.0","id":3,"method":"groups.peer.register","params":{"room_id":"ROOM_ID","member_id":"reviewer",
+     "target_url":"CATALOG_ENDPOINT_URL","target_profile":"default",
+     "grant":"GRANT","catalog":{"...":"the catalog from the member gateway"}}}
+   ```
+
+A member the home sends no turn within `ttl_seconds`, or one past its horizon, needs
+access again: its next turn fails, and `groups.state` reports its route as
+`needs_reauthorization` under `driver_status.peer_routes`. To renew access, invite
+again and register the new grant: the route keeps its identity, so work already accepted stays the same run on the member gateway. The
+earlier grant stays valid until it expires. `groups.peer.revoke` with a grant, on
+the member gateway, revokes that group chat member's access. Disband also revokes
+retained grants, including a longer-lived grant whose replacement has expired.
+A scoped grant handed in during Disband is held durably and revoked before
+deletion commits. A late grant triggers another revoke pass; after three passes,
+Disband asks you to retry. An unreachable member keeps the group chat and its
+unrevoked holds. A grant arriving after deletion remains owed through a restart.
+The home retries that revoke with backoff until the member confirms it or the grant
+expires. If there is no space to hold another grant during Disband, registration
+reports the failure and keeps earlier holds. A grant that was invited but never
+registered is the member gateway's to revoke.
+When starting a new group chat without a member, Desktop waits until every remaining bot has joined before asking to disband the original. After a lost registration reply, Desktop reads the new group chat’s state once before deciding whether the bot joined. If it cannot confirm joining, both group chats stay and the notice says so. If a bot cannot join, use Retry for it in the new group chat if offered, then Disband the original when you’re ready. If Disband is refused, both stay and the notice explains why; you can Disband the original later. A lost create reply keeps the same request in memory while that attempt is uncertain. Once creation is acknowledged or refused, using Start new group chat without that bot again creates another group chat. Reconnecting or closing and reopening the original’s view in the same window keeps that uncertain request; restarting Desktop loses it. The new group chat offers Retry for bots that need it, with no saved link to the original. New group chat’s open dialog also keeps its draft through reconnects. Closing and reopening that dialog starts a fresh attempt, so check the group chat list first if its earlier create may have succeeded.
+
+Desktop explains a refused Disband and keeps the original group chat available.
+If a bot profile is no longer configured, add it back to `hosted_rooms.profiles`
+so its Stop can be confirmed, then try Disband again.
+If revoking access fails after Stop was confirmed, the message also says that work
+was stopped. Other failures do not confirm this. Reconnect the member's computer,
+update Hermes there when asked, or wait for Stop, then retry Disband.
+
+**A lost reply never runs a turn twice.** The home sends each turn under the
+idempotency key `room:<task>:<generation>`. If the member gateway's answer is lost,
+or its replay cannot connect, the turn stays uncertain on that same key until the
+home can read it back, rather than starting it again. If its status reads keep failing for 30 seconds, the home treats the turn as
+uncertain, then waits up to another minute for that member gateway before deferring
+the turn, which frees the group chat for the next
+message. **Retry** on that turn asks the member gateway for the same attempt: it
+posts the reply if the run finished (unless a newer message in that thread has
+superseded it, as for any late reply), follows the run if it is still going, and
+never starts another attempt. **Discard** of that turn ends it the way Disband
+does, and never starts it: the home asks the member gateway which run the turn's
+idempotency key started, without sending the turn again. If none, the member
+gateway closes that key, so a late copy of the turn is refused there, and the turn
+is discarded at once. If a run is found, the home stops it and settles the turn
+only once that gateway confirms the run ended. While the member gateway is
+unreachable, or too old to answer that question, the turn is kept. Desktop asks
+you to reconnect an unreachable computer. If its Hermes version is too old,
+Desktop instead asks you to update Hermes on that computer, then try Discard
+again. A turn still running when it reaches its time limit is stopped, as it would
+be on the home. This holds while the member gateway still keeps the run's record: it
+forgets a finished run once the grant's status lifetime has passed, so a replay
+after that (a Retry under a new grant much later) can start the turn again.
+A closed unused key survives member restarts for 30 days after closing, the issuer's
+maximum status lifetime, covering every grant alive then. If the close reply was
+lost, Retry confirms that the key is closed and cancels the same attempt. After
+the closed key expires, a turn still deferred at home can start under newly granted
+access if you explicitly choose Retry.
+
+**Stop never claims more than the member gateway confirmed.** A turn is recorded as
+cancelled only once its gateway confirms the run ended. Stop of a deferred turn asks
+that gateway to stop the run the home knows of; if it cannot confirm (the gateway is
+down, or the home never learned the run's id), the turn stays deferred, and nothing
+is sent that could start it. A Stop of a running turn that its gateway does not
+confirm within a minute stops holding the group chat: the turn is recorded as deferred,
+not cancelled, and the group chat takes the next message. **Disband** waits for the
+same confirmation: it is refused (still stopping, or the member gateway is unreachable)
+until every member gateway confirms its turns ended, then revokes each member's grant
+at that gateway before the room is removed. While a member gateway is down the room
+and its route are kept; run Disband again once it is back. A deferred turn with a known
+run receipt may first wait for its exact Stop request, up to the client's 30-second
+timeout per member.
+
 ### Transferring hosted room authority
 
 Authority takeover is an **operator recovery procedure**, not an atomic handover.
@@ -368,11 +523,13 @@ Clicking a Connections Bot does **not** hop your window onto that machine — st
 
 See [Connecting Desktop to Many Hermes Instances](./multi-connection-desktop.md) for the full multi-connection guide.
 
-## Warm Bot Backends (how many bots run at once)
+## Local Bots and the gateway (how many bots run at once)
 
-Each local Bot runs in its own backend process, and Desktop keeps at most **Settings → Advanced → Warm Bot Backends** of them alive at once (default 3, ~60 MB each). Idle backends are reaped after the idle timeout next to that setting (default 10 minutes); the `Hermes backend for profile "<name>" exited (1)` line in `desktop.log` that follows an idle-reap message is that cleanup, not a crash. A Bot you open while every slot is busy waits up to 30 seconds for a slot, then fails with *timed out waiting for a free local slot*.
+Desktop does not run a backend per Bot. One gateway process per host owns every local profile's sessions: when you open a local Bot, Desktop runs `hermes gateway ensure --json` for that profile, which attaches to the running gateway or starts it if nothing serves the profile yet, and then dials it over WebSocket (`/api/ws`) with a one-use ticket. There is no Desktop-side backend pool, no limit setting for how many Bots can be warm, and no idle reaper — opening another Bot never waits for a slot, and reading another Bot's history costs only a request to the same gateway.
 
-Reads of another Bot's chat history and background transcript refreshes do **not** take a slot — only an interactive open or a running turn does. If you drive a large fleet (group chats with many members, or Kanban dispatch across many profiles), raise Warm Bot Backends toward the number of Bots you expect to be active at the same time and give the machine the memory to match. Setting it higher than the profiles you actually use only adds startup work.
+The gateway's lifetime is independent of Desktop windows. Closing a window or quitting Desktop only forgets the connection; it never stops the gateway, so your messaging bots, routines, and in-flight turns keep running, and Desktop re-attaches on the next open. Stop it deliberately with `hermes gateway stop`. If the gateway restarts underneath Desktop (an update, a crash, `hermes gateway stop` followed by a later open), Desktop re-runs `gateway ensure` once and reconnects. A profile marked `gateway.standalone: true` keeps a gateway of its own; Desktop attaches to it the same way.
+
+Remote gateways, SSH hosts, and Hermes Cloud instances in **Settings → Connections** are separate hosts with their own processes; their Bots run on that machine (see *Bots across machines* above), not on this host's gateway.
 
 ## Turning it off
 

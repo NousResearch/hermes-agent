@@ -517,6 +517,24 @@ export function filterVisibleProjects<T extends { id: string; isAuto?: boolean }
   return projects.filter(project => !(project.isAuto && dismissed.has(project.id)))
 }
 
+// Reverse a dismiss: un-hide an auto-derived project so its row returns to the
+// overview. Powers the "Undo" affordance on the hide toast (accidental hides
+// were otherwise irreversible — there is no other restore control). Idempotent
+// when the id isn't currently dismissed.
+export function restoreAutoProject(id: string): void {
+  const current = $dismissedAutoProjectIds.get()
+
+  if (current.includes(id)) {
+    $dismissedAutoProjectIds.set(current.filter(projectId => projectId !== id))
+  }
+}
+
+/** The hide/remove key for a linked lane. Another gateway's lane is keyed by that gateway and profile
+ *  too: a local lane at the same path is a different checkout, and hiding one must not hide the other. */
+export function worktreeDismissalId(id: string, owner?: { connectionId: string; profile: string }): string {
+  return owner ? JSON.stringify(['gateway-lane', owner.connectionId, owner.profile, id]) : id
+}
+
 export function dismissWorktree(id: string, { removed = false }: { removed?: boolean } = {}): void {
   const removedIds = $removedWorktreeIds.get().filter(worktreeId => worktreeId !== id)
   $removedWorktreeIds.set(removed ? [...removedIds, id] : removedIds)

@@ -39,6 +39,7 @@ class RecordingEnv:
             ["bash", "-c", command],
             capture_output=True, text=True, errors="replace",
             timeout=timeout + 30,
+            check=False,
         )
         out = proc.stdout + (proc.stderr or "")
         self.max_stdout = max(self.max_stdout, len(out))

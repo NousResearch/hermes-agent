@@ -15,7 +15,7 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
 
   const connectionLabel =
     !connectionId || connectionId === 'local'
-      ? translateNow('catalog.thisComputer')
+      ? translateNow('skillDeepLink.thisComputer')
       : $connectionsRegistry.get()?.connections.find(connection => connection.id === connectionId)?.label ||
         connectionId
 
@@ -23,20 +23,20 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
 
   const assertDestination = () => {
     if (connectionId !== getApiRequestConnection() || profile !== getApiRequestProfile()) {
-      throw new Error(translateNow('catalog.destinationChanged'))
+      throw new Error(translateNow('skillDeepLink.destinationChanged'))
     }
   }
 
   await confirm({
-    title: translateNow('catalog.installTitle', name),
-    description: translateNow('catalog.installDescription'),
+    title: translateNow('skillDeepLink.installTitle', name),
+    description: translateNow('skillDeepLink.installDescription'),
     details: [
-      { label: translateNow('catalog.source'), value: identifier },
-      { label: translateNow('catalog.installTo'), value: destination }
+      { label: translateNow('skillDeepLink.source'), value: identifier },
+      { label: translateNow('skillDeepLink.installTo'), value: destination }
     ],
     confirmLabel: translateNow('skills.hub.install'),
-    busyLabel: translateNow('catalog.installing'),
-    doneLabel: translateNow('catalog.installed'),
+    busyLabel: translateNow('skillDeepLink.installing'),
+    doneLabel: translateNow('skillDeepLink.installed'),
     onConfirm: async () => {
       // Recheck on retries too: a link must never follow a changed destination.
       assertDestination()
@@ -56,7 +56,7 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
       assertDestination()
       notify({
         kind: 'success',
-        title: translateNow('catalog.installComplete', name),
+        title: translateNow('skillDeepLink.installComplete', name),
         message: translateNow('skills.changesApplyNewSessions')
       })
     }

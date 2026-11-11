@@ -1,0 +1,34 @@
+name: study-tree
+repo: https://github.com/IpastorSan/study-tree
+sha: aae3bf53ca5d8429d8f0ff22bb14fcbcce505e03
+version: "0.1.1"
+title: Study Tree
+description: "Study with the agent without losing the thread: a side question you ask becomes its own branched session, the side threads show as a tree in a Desktop pane, and each one hands one recall-checked takeaway back to the thread it came from. The agent can also draw interactive widgets and one-question quizzes inline, with follow-up buttons. Disclosure: stores its tree in SQLite and agent-written HTML widgets under the active profile's plugin-data/study-tree/ (a widget over 200 KB or with any network reference is refused; Desktop shows it in its sandboxed preview frame); opens Hermes' state.db read-only to follow compression lineage; adds a short section to every session's system prompt, and through pre_llm_call injects a side-thread frame on each side-thread turn and each takeaway once into the parent's next turn; through transform_llm_output rewrites the final reply (study cards moved to the end as their own paragraphs, cards with unknown ids dropped, widget directives put on their own paragraphs, a widget button's prompt quoted at the top); creates a branched session (session.branch or session.branch_stored), renames it with session.title and sends the side question as its first prompt only when the user clicks Open; the Desktop half keeps the last text selected in the window in memory for 60 seconds to prefill the side-question dialog, and writes the glossary to the clipboard only when the user clicks Export glossary. No network calls, no shell commands, no background processes, no stored credentials, no telemetry."
+maintainer: IpastorSan
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/IpastorSan/study-tree/blob/aae3bf53ca5d8429d8f0ff22bb14fcbcce505e03/README.md
+image: https://raw.githubusercontent.com/IpastorSan/study-tree/aae3bf53ca5d8429d8f0ff22bb14fcbcce505e03/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/IpastorSan/study-tree/aae3bf53ca5d8429d8f0ff22bb14fcbcce505e03/docs/screenshot-widget.png
+  - https://raw.githubusercontent.com/IpastorSan/study-tree/aae3bf53ca5d8429d8f0ff22bb14fcbcce505e03/docs/screenshot-card.png
+  - https://raw.githubusercontent.com/IpastorSan/study-tree/aae3bf53ca5d8429d8f0ff22bb14fcbcce505e03/docs/screenshot-pane.png
+  - https://raw.githubusercontent.com/IpastorSan/study-tree/aae3bf53ca5d8429d8f0ff22bb14fcbcce505e03/docs/screenshot-side-thread.png
+readme: true
+platforms: []
+known_issues:
+  - "The cards, the pane and the widgets need Hermes Desktop. On the CLI, the TUI and messaging platforms a card shows as a plain ::study-tree-node line and a widget as a plain ::preview line."
+  - "The Desktop half is off by default: turn on Study Tree under Capabilities → Plugins after installing."
+  - "Widgets in the pane are view-only; their follow-up buttons work in the chat."
+capabilities:
+  provides_tools:
+    - study_branch
+    - study_tree
+    - study_resolve
+    - study_visual
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

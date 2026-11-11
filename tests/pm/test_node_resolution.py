@@ -374,7 +374,7 @@ def test_lsp_node_server_inherits_pm_runtime_and_preserves_overrides(node_store,
     assert server is not None
     spec = server.build_spawn(str(tmp_path), ctx)
     assert spec is not None
-    child = subprocess.run(spec.command, env=spec.env, capture_output=True, text=True, timeout=10)
+    child = subprocess.run(spec.command, env=spec.env, capture_output=True, text=True, timeout=10, check=False)
     assert child.returncode == 0, child.stderr
     observed = json.loads(child.stdout)
     assert shutil.which("node", path=observed["path"]) == str(node)

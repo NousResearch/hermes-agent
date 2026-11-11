@@ -1,0 +1,9 @@
+name: kaggle-competitions
+repo: https://github.com/landenjackson/hermes-kaggle-plugin
+sha: c5f2dadc9b6358efd09ac5b8b28ff62e74c5f7da
+description: "Track Kaggle competitions from your agent: live submission status, score history, personal-best watch, leaderboards, and new-score watch. Four agent tools over the Kaggle CLI (submissions, score history, watch for new results, leaderboards), a desktop pane, a full web page with sidebar nav, and a dashboard API route. Multi-competition - track any number of slugs via config. Auth resolves KAGGLE_API_TOKEN through Hermes's secret scope (declared secret in the manifest) or lets the CLI read ~/.kaggle/kaggle.json; child processes get a minimal explicit environment; the token is never logged or echoed. No telemetry, no third-party services. Disclosure — the tools and the dashboard page run your locally installed `kaggle` CLI (a third-party binary not covered by this pin) with a minimal environment that includes KAGGLE_API_TOKEN from Hermes's secret scope when set (otherwise the CLI reads ~/.kaggle/kaggle.json itself); submission data is cached under the Hermes plugin-data directory."
+maintainer: landenjackson
+tier: community
+category: tools
+docs_url: https://github.com/landenjackson/hermes-kaggle-plugin#readme
+requires_hermes: ">=0.23.0"

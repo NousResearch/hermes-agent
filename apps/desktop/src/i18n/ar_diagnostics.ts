@@ -73,6 +73,7 @@ export const arDiagnostics = {
       microphoneConstraintsUnsupported: 'قيود الميكروفون غير مدعومة على هذا الجهاز.',
       microphoneFailed: 'فشل الميكروفون',
       microphoneInUse: 'الميكروفون مستخدم من تطبيق آخر.',
+      microphoneNeedsHttps: 'يحتاج الميكروفون إلى اتصال آمن. افتح Webapp عبر HTTPS، أو عبر نفق SSH إلى 127.0.0.1، لاستخدامه.',
       microphonePermissionDenied: 'تم رفض إذن الميكروفون.',
       microphoneStartFailed: 'تعذر بدء تسجيل الميكروفون.',
       microphoneUnsupported: 'هذا المتصفح لا يدعم تسجيل الميكروفون.',
@@ -95,7 +96,7 @@ export const arDiagnostics = {
       inputTitleNamed: session => `مطلوب إدخال — ${session}`,
       inputBody: 'ينتظر Hermes ردّك.',
       turnDoneTitle: 'أنهى Hermes',
-      turnDoneBody: '',
+      turnDoneBody: 'اكتملت الرسالة.',
       turnErrorTitle: 'فشلت الجولة',
       backgroundDoneTitle: 'انتهت المهمة في الخلفية',
       backgroundFailedTitle: 'فشلت المهمة في الخلفية'

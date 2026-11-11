@@ -1,0 +1,36 @@
+name: skill-workshop
+title: "Skill Workshop"
+repo: https://github.com/flabanabba8/skill-workshop
+sha: 44422b9388bd856c5f0fff0ab6e72b9825ed8a44
+version: "0.1.0"
+description: "Get new skills for Hermes safely: mine them from your past chats (Skill Miner), build them from a description (First Principles Skill Builder), and guard against prompt injection in skills and content you bring in (Taint Shield). Installing a skill needs your approval. Disclosure: Skill Miner reads the Hermes session database read-only; Skill Builder runs --version on a fixed list of common tools and nvidia-smi and reads memory, disk space, skill names and model-cache folder names; Taint Shield watches tool calls in memory. Drafts, revisions and the trusted list live in plugin storage; installing a skill writes one file into the skills folder after your approval. Two install approvals and the Shield's block-or-ask rules use pre_tool_call. No network calls."
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/skill-workshop/blob/44422b9388bd856c5f0fff0ab6e72b9825ed8a44/README.md
+image: https://raw.githubusercontent.com/flabanabba8/skill-workshop/44422b9388bd856c5f0fff0ab6e72b9825ed8a44/assets/thumbnail.jpg
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - shield_report
+    - shield_scan
+    - shield_trust
+    - miner_scan
+    - miner_propose
+    - miner_diagnose
+    - miner_refine
+    - miner_check
+    - miner_install
+    - skillbuilder_resources
+    - skillbuilder_save
+    - skillbuilder_check
+    - skillbuilder_case
+    - skillbuilder_install
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - transform_tool_result
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -33,7 +33,7 @@ _BARE_JSON_RE = re.compile(r'\{\s*"name"\s*:\s*"(' + _NAME + r')"\s*,\s*"(?:argu
 # The TAIL of an XML call ending the reply when the reasoning starts mid-call (seen on hosted
 # Nemotron 3.5): closers only, at the very end, with no opener anywhere in the text.
 _XML_FRAGMENT_TAIL_RE = re.compile(r"(?:\s*</(?:parameter|function|tool_call)>)+\s*\Z")
-_XML_OPENER_RE = re.compile(r"<function=|<tool_call>")
+_XML_OPENER_RE = re.compile(r"<(?:function|parameter|tool_call)\b")
 
 _DECODER = json.JSONDecoder()
 

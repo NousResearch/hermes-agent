@@ -121,6 +121,15 @@ def test_closers_that_are_not_a_trailing_fragment_are_ignored(text):
     assert find_leaked_tool_call(text, TOOLS) is None
 
 
+@pytest.mark.parametrize("xml", [
+    '<function name="describe">This is XML output, not a tool call.</function>',
+    '<parameter name="format">xml</parameter>',
+])
+def test_complete_xml_elements_are_not_cutoff_tool_fragments(xml):
+    # A legitimate final XML answer must not consume a tool-call retry.
+    assert find_leaked_tool_call(xml, TOOLS) is None
+
+
 def test_full_named_call_keeps_its_name_over_the_fragment_case():
     text = "<function=read_file>\n<parameter=path>\n/a.py\n</parameter>\n</function>\n</tool_call>\n"
     leak = find_leaked_tool_call(text, TOOLS)

@@ -239,10 +239,13 @@ def cmd_whatsapp(args):
     pair_command = [node, str(bridge_script), "--pair-only", "--session", str(session_dir)]
     if getattr(args, "passkey_browser", None):
         pair_command.extend(["--passkey-browser", args.passkey_browser])
+    from tools.environments.local import hermes_subprocess_env
+    # Pair-only bridge.js reads no Hermes env; its npm deps must not see Hermes' credentials.
+    pair_env = with_hermes_node_path(hermes_subprocess_env())
     pair_result = None
     with contextlib.suppress(KeyboardInterrupt):
         # health: allow HX006 -- interactive child: ends on success, failure or Ctrl+C; a fixed bound kills it mid-prompt
-        pair_result = subprocess.run(pair_command, cwd=str(bridge_dir), env=with_hermes_node_path(), check=False,
+        pair_result = subprocess.run(pair_command, cwd=str(bridge_dir), env=pair_env, check=False,
                                      umask=store_umask)
 
     print()

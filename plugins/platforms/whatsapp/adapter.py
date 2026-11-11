@@ -734,10 +734,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _bridge_env(self) -> dict:
         """Subprocess env: the adapter's EFFECTIVE profile policy + profile-resolved WHATSAPP_* values + cache dirs."""
-        # with_hermes_node_path() copies os.environ when called with no arg: under a multiplexed secondary
-        # that copy carries the DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is
-        # re-resolved from this profile (dropped on a scoped miss), never inherited from the launch env.
-        bridge_env = with_hermes_node_path()
+        # The bridge is a networked Node process with third-party deps: it starts from the scrubbed
+        # child env, never Hermes' credentials. Under a multiplexed secondary the launch env carries the
+        # DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is re-resolved from this
+        # profile (dropped on a scoped miss), never inherited from the launch env.
+        from tools.environments.local import hermes_subprocess_env
+        bridge_env = with_hermes_node_path(hermes_subprocess_env())
         reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
         if reply_prefix:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = reply_prefix

@@ -574,6 +574,19 @@ def _try_dispatch_background_run(
     # below, and this is the only moment it heals a stale claim left by a killed prior run (#113923).
     _reap_stale_executions(job_name)
 
+    # --no-agent script jobs never route through the agent-delegation machinery
+    # (hx-dk4 / grecon-bd8; repro 2026-11-11 on runtime-v5: `hermes cron run` on
+    # a --no-agent --script job dispatched an async delegation, the CLI owner
+    # process exited before terminal recording ("Delegation owner exited before
+    # recording a terminal result", api_calls=0), the script never ran, and the
+    # run row stuck 'claimed' blocked later fires until #113923's reaper healed
+    # it). There is nothing to delegate: no LLM turn, and a script job delivers
+    # its own output. Returning None falls back to the synchronous path, whose
+    # terminal state is recorded in-process — immune to the owner-exit failure
+    # class. Placed AFTER the reap so a no-agent fire still heals stale claims.
+    if job.get("no_agent"):
+        return None
+
     # Finite sessions cannot route a detached result back after the turn ends (delegate_task's gate).
     try:
         from gateway.session_context import async_delivery_supported

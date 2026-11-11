@@ -1,6 +1,6 @@
 name: sieve
 repo: https://github.com/VGFreakXBL/hermes-sieve
-sha: a4b5da0b0e25a46544634047b6b9c94628ca7016
+sha: e38381b9b6901e2b3a738a501239fdef206979be
 subdir: ""
 title: SIEVE
 description: 'User-owned notification boundary for Hermes Agent. Event classes route through tiers T0 to T5 under quiet hours. Routine alerts hold for a digest. Urgent ones escalate, and the message names both the requested tier and the arm that actually ran.'
@@ -11,7 +11,8 @@ version: "0.1.0"
 docs_url: https://github.com/VGFreakXBL/hermes-sieve
 readme: true
 platforms: []
-screenshots: []
+screenshots:
+  - https://raw.githubusercontent.com/VGFreakXBL/hermes-sieve/e38381b9b6901e2b3a738a501239fdef206979be/docs/screenshots/sieve-matrix-pane.png
 known_issues:
   - 'Context slots such as meeting or sleeping are set with /sieve context. This build does not read location or calendar.'
   - 'T4 is a 60-second timer. T5 is an alarm one minute out. They share one tone. T5 is top priority, not a siren.'
@@ -21,7 +22,7 @@ known_issues:
   - 'The Tailscale/gateway watchdog (scripts/watch.py) is opt-in and does not start itself. Load it once from a terminal with launchctl bootstrap. It cannot see an outage while the Mac is asleep.'
   - 'The Desktop pane cannot write the phone. Desktop chat may refuse /sieve with permission_denied before the plugin starts. Run /sieve doctor in Discord or Telegram. That result is kept and shown on the pane.'
   - 'A probe gap (Mac asleep, or the watcher not running) means the link state during that gap is unknown. A drop and recovery across a sleep is not observed.'
-  - 'Gallery screenshots are not in this pin. They follow in a SHA bump.'
+  - 'One gallery screenshot (the matrix pane). More follow in a later SHA bump.'
 capabilities:
   provides_tools:
     - sieve_ping

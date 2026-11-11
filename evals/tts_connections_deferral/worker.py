@@ -239,12 +239,15 @@ def _real_backend_reached(*a, **kw):
 
 # Backstop: if a caller ever bypasses the stub above, the real managed/MCP backends raise instead of acting.
 connectors_tool.run_managed_action = connectors_tool.run_mcp_operation = _real_backend_reached
-if ARM in ARMS and ARMS[ARM][1]:
+if ARM in ARMS:  # every arm pins its sentence: the tree's own default may be either one
+    want = NEW_LEAD if ARMS[ARM][1] else OLD_LEAD
     for schema in (connectors_tool.MANAGE_CONNECTIONS_SCHEMA, registry.get_entry("manage_connections").schema):
-        if schema["description"].startswith(OLD_LEAD):
-            schema["description"] = NEW_LEAD + schema["description"][len(OLD_LEAD):]
-    if not registry.get_entry("manage_connections").schema["description"].startswith(NEW_LEAD):
-        print("ABORT: reworded sentence did not land in the registry schema", file=sys.stderr)
+        for lead in (NEW_LEAD, OLD_LEAD):
+            if schema["description"].startswith(lead):
+                schema["description"] = want + schema["description"][len(lead):]
+                break
+    if not registry.get_entry("manage_connections").schema["description"].startswith(want):
+        print("ABORT: the arm's first sentence did not land in the registry schema", file=sys.stderr)
         sys.exit(3)
 
 TOOLSETS = ["clarify", "code_execution", "cronjob", "file", "memory", "session_search", "skills", "terminal",
@@ -301,6 +304,12 @@ if DRY:
     proof["stub_log"], proof["conn_calls"] = LOG, len(CONN_CALLS)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(proof, f, indent=1, default=str)
+    # The dry cell is the gate: a visible credential file, a reachable host or a live backend fails it.
+    leaks = ([n for n, seen in proof["real_home_visible"].items() if seen]
+             + [h for h, state in proof["net"].items() if state == "CONNECTED"] + ["real_backend"] * (proof["real_backend"] == "RAN"))
+    if leaks:
+        print(f"ABORT: sandbox leak in the dry cell: {leaks}", file=sys.stderr)
+        sys.exit(4)
     sys.exit(0)
 
 PREAMBLE = f"Your working directory (the workspace) is: {workspace}\n\nTask: "
@@ -357,7 +366,8 @@ for m in messages:
         calls.append(name)
 final = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "assistant" and (m.get("content") or "").strip()), "")
 # Bridge-side schema refusals never reach the stub; count them so "valid on first call" is honest.
-refusals = sum(1 for m in messages if m.get("role") == "tool" and "failed argument validation" in str(m.get("content")))
+_REFUSED = ("failed argument validation", "The tool was NOT invoked", "must be an object")
+refusals = sum(1 for m in messages if m.get("role") == "tool" and any(s in str(m.get("content")) for s in _REFUSED))
 stub_calls = TTS_CALLS if TASK["kind"] == "tts" else CONN_CALLS if TASK["kind"] == "conn" else []
 if calls.count("manage_connections") > len(CONN_CALLS) + refusals:
     print("ABORT: manage_connections was called more often than the stub recorded", file=sys.stderr)

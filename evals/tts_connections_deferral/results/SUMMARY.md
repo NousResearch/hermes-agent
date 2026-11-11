@@ -99,4 +99,9 @@ Pass bar (against A, on every model: no fewer done, no more wrong-route cells, c
 tokens/task not higher): B fails on all three models, C fails on all three. The reworded line roughly halves the
 cost of deferral (B to C) and restores tasks done on qwen, but every task that uses the tool still pays one to
 three extra model calls for describe and call, so deferral only wins in sessions that never touch connections
-(1,536 Fable tokens saved per request). manage_connections stays eager.
+(1,536 Fable tokens saved per request). On this per-task bar manage_connections would stay eager; #153254 ships
+arm C anyway, because opted-in telemetry shows about 3.6% of reporting installs calling it on a given day.
+
+Limit found in review: `mcp_setup_github` asks for a server the bundled MCP catalog does not carry. The stub
+checks argument shape only, so those cells (5 per arm, the same on every arm) score an install the real tool
+would refuse.

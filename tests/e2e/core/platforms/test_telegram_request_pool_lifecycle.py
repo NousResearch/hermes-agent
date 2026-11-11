@@ -332,7 +332,8 @@ def test_pool_size_override_fits_the_process_descriptor_budget(monkeypatch):
     tnet.build_ptb_requests(_Capture, fallback_ips=ips, proxy_url=None, verify=False)
     transports = [b["httpx_kwargs"]["transport"] for b in built]
     paths = len(transports[0]._fallback_ips) + 1
-    assert paths <= 5, "the fallback-address count is unbounded"
+    assert paths <= telegram_pool.MAX_FALLBACK_IPS + len(tnet.SEED_FALLBACK_IPS) + 1, \
+        "the fallback-address count is unbounded"
     per_pool = [t._transport_kwargs["limits"].max_connections for t in transports]
     assert sum(per_pool) * paths <= soft // 4
     assert all(t._transport_kwargs["limits"].max_keepalive_connections <= p for t, p in zip(transports, per_pool))

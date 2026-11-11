@@ -125,7 +125,7 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
     from gateway.platforms._http_client_limits import platform_httpx_limits
     verify = platform_ssl_context() if verify is None else verify
     kwargs = ptb_request_kwargs()
-    ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))[:MAX_FALLBACK_IPS] if not proxy_url else []
+    ips = _cap_fallback_ips(fallback_ips) if not proxy_url else []
     base = platform_httpx_limits()
     pool = updates = None
     if base is not None:
@@ -355,6 +355,18 @@ def _normalize_fallback_ips(values: Iterable[str]) -> list[str]:
         else:
             normalized.append(str(addr))
     return normalized
+
+
+def _cap_fallback_ips(values: Iterable[str]) -> list[str]:
+    """Normalized, deduped ``values`` with at most ``MAX_FALLBACK_IPS`` non-seed IPs (the FD cap).
+    ``SEED_FALLBACK_IPS`` never count toward the cap and keep their place, so the tail
+    ``discover_fallback_ips`` puts them in survives any number of DoH answers."""
+    ips = list(dict.fromkeys(_normalize_fallback_ips(values)))
+    dropped = [ip for ip in ips if ip not in SEED_FALLBACK_IPS][MAX_FALLBACK_IPS:]
+    if dropped:
+        logger.info("[Telegram] Using the first %d fallback IPs plus the seed IPs; ignoring %s",
+                    MAX_FALLBACK_IPS, ", ".join(dropped))
+    return [ip for ip in ips if ip not in dropped]
 
 
 def parse_fallback_ip_env(value: str | None) -> list[str]:

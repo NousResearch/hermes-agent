@@ -1,0 +1,82 @@
+name: creator-studio
+title: "Creator Studio"
+repo: https://github.com/flabanabba8/creator-studio
+sha: 372427fcc25186feb5f501f9d47d993176094b6f
+version: "0.2.3"
+description: "Make media with Hermes from one request: researched lesson videos, two-host podcast episodes, captions for any recording, and narrated step-by-step tutorials. Bundles four plugins (YouTube Studio, Podcast Studio, Caption Studio, Tutorial Creator) into one entry. Disclosure: Research pages are fetched through an installed Camoufox browser you select (public addresses only). If you choose Gemini narration, each spoken line is sent to Google (Vertex) with your own Google Cloud login, behind a spend guard (default 0.50 USD). An HTTP speech recognizer, if you select one, receives audio only after your explicit consent. Runs FFmpeg and ffprobe, and for screen tutorials xwininfo, xprop, xdotool, pactl and xclip; the recorder starts one detached FFmpeg worker per take, and tutorial steps click and type through Hermes computer_use, so its approvals apply. Stores projects privately in plugin storage, one folder per part. No credential or project id is stored or shown. Nothing is uploaded or published."
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/creator-studio/blob/372427fcc25186feb5f501f9d47d993176094b6f/README.md
+image: https://raw.githubusercontent.com/flabanabba8/creator-studio/372427fcc25186feb5f501f9d47d993176094b6f/assets/thumbnail.jpg
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - youtube_make_visual
+    - youtube_generate_image
+    - youtube_start_topic
+    - youtube_research_fetch
+    - youtube_source_add
+    - youtube_source_read
+    - youtube_write_script
+    - youtube_material_add
+    - youtube_narrate
+    - youtube_assemble_project
+    - youtube_project_status
+    - youtube_check_timeline
+    - youtube_render_short
+    - youtube_make_slides
+    - youtube_render_slides
+    - youtube_description
+    - youtube_render_still
+    - youtube_render_clips
+    - youtube_stitch_segments
+    - podcast_start_topic
+    - podcast_research_fetch
+    - podcast_source_add
+    - podcast_source_read
+    - podcast_write_script
+    - podcast_material_add
+    - podcast_narrate
+    - podcast_assemble_project
+    - podcast_episode_files
+    - podcast_project_status
+    - podcast_load_episode
+    - podcast_lint_episode
+    - podcast_preflight
+    - podcast_check_script
+    - podcast_check_review
+    - podcast_pagecast_plan
+    - podcast_check_pagecast_cast
+    - podcast_show_notes
+    - podcast_caption_cues
+    - podcast_start_from_video
+    - podcast_mix
+    - podcast_mix_timeline
+    - captions_generate
+    - captions_for_latest
+    - captions_inspect
+    - captions_retime
+    - captions_suggest_alignment
+    - captions_recognizer_options
+    - captions_analyse_audio
+    - captions_audio_status
+    - captions_audio_review
+    - captions_audio_propose
+    - captions_audio_preview
+    - captions_audio_export
+    - captions_audio_cancel
+    - capture_sources
+    - capture_start
+    - capture_status
+    - capture_mark
+    - capture_stop
+    - capture_export
+    - tutorial_timeline
+    - tutorial_narrate
+    - tutorial_step
+    - tutorial_frame
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

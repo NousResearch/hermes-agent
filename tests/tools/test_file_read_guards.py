@@ -660,6 +660,28 @@ class TestOverlappingReadDedup(unittest.TestCase):
         r = self._read(1, 99)
         self.assertEqual(_shown_line_numbers(r), list(range(cut_at, 100)))
 
+    def test_sandbox_file_ops_never_withhold_lines(self):
+        """A sandbox's files are not the host's: a host file at the same path says nothing about
+        whether the sandbox copy changed, so its lines are never omitted as already seen."""
+        version = {"n": 0}
+
+        def sandbox_read(path, offset=1, limit=500):
+            lines = [f"{n}|v{version['n']} line {n}" for n in range(offset, min(offset + limit, 3001))]
+            return _FakeReadResult(content="\n".join(lines), total_lines=3000, file_size=1)
+
+        fake = MagicMock(env=object())
+        fake.read_file = sandbox_read
+        with patch("tools.file_tools._get_file_ops", return_value=fake), \
+                patch("tools.environments.base.env_uses_host_filesystem", return_value=False):
+            json.loads(read_file_tool(self._tmpfile, offset=2158, limit=15, task_id="ov"))
+            version["n"] = 1
+            shifted = json.loads(read_file_tool(self._tmpfile, offset=2160, limit=15, task_id="ov"))
+            again = json.loads(read_file_tool(self._tmpfile, offset=2160, limit=15, task_id="ov"))
+        for result in (shifted, again):
+            self.assertNotIn("omitted_lines", result)
+            self.assertEqual(_shown_line_numbers(result), list(range(2160, 2175)))
+            self.assertIn("v1 line 2160", result["content"])
+
     def test_edit_makes_the_whole_window_readable_again(self):
         self._read(2158, 15)
         # write_file_tool would refuse this: the task only read a partial view, and

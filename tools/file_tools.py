@@ -534,10 +534,11 @@ def _read_end_line(result_dict: dict, offset: int, limit: int) -> int:
     return end_line
 
 
-def _withholdable_seen_spans(task_data: dict, resolved_str: str, programmatic: bool) -> list:
-    """Already-returned line spans a read may omit. Same programmatic/review-fork exemption as
-    the exact-key stub: neither must ever see anything but a real read."""
-    if programmatic or is_background_review():
+def _withholdable_seen_spans(task_data: dict, resolved_str: str, exempt: bool) -> list:
+    """Already-returned line spans a read may omit. *exempt* (an in-cell read, or file ops whose
+    files are not the host's, so a host stat proves nothing) and review-fork reads omit nothing:
+    same rule as the exact-key stub."""
+    if exempt or is_background_review():
         return []
     return _unchanged_seen_spans(task_data, resolved_str)
 
@@ -631,7 +632,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
             task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
-            if returned_span and not programmatic:
+            if returned_span and version is not None and not programmatic:
                 _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
         except OSError:
             pass
@@ -766,7 +767,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             return _dedup_stub_or_block(task_data, dedup_key, path)
         # A different window over lines already returned (file unchanged) only
         # gets its unseen lines; see _withhold_seen_lines.
-        seen_spans = _withholdable_seen_spans(task_data, resolved_str, programmatic)
+        seen_spans = _withholdable_seen_spans(task_data, resolved_str, programmatic or version_before is None)
 
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()

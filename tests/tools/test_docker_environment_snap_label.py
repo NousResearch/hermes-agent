@@ -73,8 +73,9 @@ def test_snap_compat_stages_label_file_under_home(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _fail)
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(docker_env.EnvironmentConnectionError) as caught:
         _make_dummy_env(snap_compat=True)
+    assert isinstance(caught.value.__cause__, subprocess.CalledProcessError)
     assert seen["125_path"].parent.parent == home
     assert not seen["125_path"].exists() and not seen["125_path"].parent.exists()
 

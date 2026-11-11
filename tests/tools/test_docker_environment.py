@@ -1202,7 +1202,7 @@ def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     assert not run_invocations, "should not docker run when reusing an exited container"
 
 
-def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
+def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch, caplog):
     """When ``docker run`` fails (e.g. exit 125), the partially-created
     container must be removed by name.
 
@@ -1210,7 +1210,8 @@ def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
     leaving a stale ``Created`` container. The exited-only orphan reaper
     (``reap_orphan_containers``, ``status=exited``) never catches a
     ``Created`` orphan, so without this cleanup it leaks permanently.
-    Regression for #7439. Salvage of #7440 (@Tranquil-Flow).
+    Regression for #7439. Salvage of #7440 (Tranquil-Flow).
+    Also verifies the fixed-IP stderr report in #152972 (RunLittleTurtle).
     """
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
@@ -1227,7 +1228,8 @@ def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
                 raise subprocess.CalledProcessError(
-                    125, cmd, output="", stderr="docker: Error response from daemon"
+                    125, cmd, output="",
+                    stderr="docker: Error response from daemon: failed to set up container networking: Address already in use",
                 )
             if sub == "rm":
                 cleanup_calls.append(list(cmd))
@@ -1236,9 +1238,14 @@ def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
 
-    with pytest.raises(subprocess.CalledProcessError):
-        _make_dummy_env()
+    with pytest.raises(docker_env.EnvironmentConnectionError, match="Address already in use") as exc:
+        _make_dummy_env(
+            persistent_filesystem=True,
+            extra_args=["--network=mynet", "--ip=172.30.0.10"],
+        )
 
+    assert isinstance(exc.value.__cause__, subprocess.CalledProcessError)
+    assert "Address already in use" in caplog.text
     assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
     rm_cmd = cleanup_calls[0]
     assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"

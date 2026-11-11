@@ -170,8 +170,9 @@ def test_runtime_configuration_controls_persistent_reuse(monkeypatch, tmp_path, 
     if change.startswith("missing-image"):
         # Upstream's environment filter already separates images before attach.
         # A failed fresh image pull must leave the existing sandbox untouched.
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(docker_env.EnvironmentConnectionError) as caught:
             _make_dummy_env(**changed)
+        assert isinstance(caught.value.__cause__, subprocess.CalledProcessError)
         assert first._container_id in containers
         assert not any(cmd[1] in ("rm", "stop") and cmd[-1] == first._container_id
                        for cmd, _kw in calls)

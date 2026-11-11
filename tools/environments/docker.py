@@ -205,7 +205,9 @@ def reap_orphan_containers(
 
     # Per-container inspect keeps the failure blast radius to one container.
     now = datetime.datetime.now(datetime.UTC)
-    removed = reap_owned_containers(get_hermes_home(), docker, max_age_seconds, profile_filter)
+    removed = reap_owned_containers(
+        get_hermes_home(), docker, max_age_seconds,
+        _sanitize_label_value(profile_filter) if profile_filter else None)
     for cid in (ln.strip() for ln in listing.stdout.splitlines() if ln.strip()):
         finished_at = _container_finished_at(docker, cid)
         if finished_at is None:  # unknown age — be conservative
@@ -1283,10 +1285,10 @@ class DockerEnvironment(BaseEnvironment):
         # Snap-packaged Docker runs confined and cannot read host /tmp, so snap
         # mode stages the file in a random 0700 non-hidden directory under $HOME
         # instead; the TemporaryDirectory cleanup around the run is unchanged.
-        label_parent = str(Path.home()) if self._snap_compat else None
-        if self._snap_compat:
-            _sweep_stale_snap_label_dirs()
         try:
+            label_parent = str(Path.home()) if self._snap_compat else None
+            if self._snap_compat:
+                _sweep_stale_snap_label_dirs()
             with tempfile.TemporaryDirectory(prefix="hermes-docker-label-", dir=label_parent) as label_dir:
                 label_file = Path(label_dir) / "runtime.label"
                 label_file.write_text(f"{_RUNTIME_LABEL_KEY}={self._runtime_fp}\n", encoding="utf-8")
@@ -1295,17 +1297,33 @@ class DockerEnvironment(BaseEnvironment):
                 result = run_capture(
                     run_cmd, timeout=120, check=True,  # image pull may take a while
                     env=self._run_client_env)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
-            subprocess.run(
-                [self._docker_exe, "rm", "-f", container_name],
-                capture_output=True, timeout=10, stdin=subprocess.DEVNULL, check=False)
-            if owners is not None and lease is not None:
-                owners.release(lease)
+            container_id = result.stdout.strip()
+            if owners is not None:
+                owners.finish(container_name, container_id)
+        except BaseException as e:
+            stderr = (e.stderr or "") if isinstance(e, (subprocess.CalledProcessError, subprocess.TimeoutExpired)) else ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            detail = stderr.strip()
+            logger.warning(
+                "docker run failed for %s, cleaning up orphaned container: %s%s",
+                container_name, e, f"; stderr: {detail}" if detail else "")
+            try:
+                subprocess.run(
+                    [self._docker_exe, "rm", "-f", container_name],
+                    capture_output=True, timeout=10, stdin=subprocess.DEVNULL, check=False)
+            except Exception:
+                logger.warning("Failed to remove orphaned container %s", container_name, exc_info=True)
+            finally:
+                if owners is not None and lease is not None:
+                    owners.release(lease, failed_creation=True)
+            if isinstance(e, subprocess.CalledProcessError):
+                raise EnvironmentConnectionError(
+                    f"Docker run failed (exit {e.returncode}): {detail or e}",
+                    retry_hint="Check Docker networking and mounts, then retry.",
+                ) from e
             raise
-        container_id = result.stdout.strip()
         if owners is not None:
-            owners.finish(container_name, container_id)
             self._reuse_lease = lease
         logger.info("Started container %s (%s)", container_name, container_id[:12])
         return container_id
@@ -1387,8 +1405,8 @@ class DockerEnvironment(BaseEnvironment):
 
     def _recreate_container(self) -> bool:
         """Recreate a container removed out-of-band: label-based reuse first (another process
-        may have recreated it), else a fresh one from the saved image/run-args. False when
-        recovery fails so the caller surfaces the original error."""
+        may have recreated it), else a fresh one from the saved image/run-args. Connection
+        errors propagate to the terminal's degraded result; other recovery failures return False."""
         logger.warning("Container %s appears to be gone — attempting recovery", (self._container_id or "")[:12])
         lease = getattr(self, "_reuse_lease", None)
         try:

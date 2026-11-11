@@ -1,7 +1,7 @@
 """Process ownership for superseded, non-shared Docker sandboxes (#84969).
 
 The private namespace participates in the runtime fingerprint: clients which do
-not register ownership cannot attach to these containers. SQLite transactions
+not register ownership cannot attach to these containers. Per-container locks
 serialize reaping with claims; kernel-held file locks survive idle periods and
 are released on process death. Compatible persistent containers are never
 retired just for being idle. Shared keys and pre-protocol containers remain
@@ -79,6 +79,11 @@ class ReuseOwners:
         lock.__enter__()
         return ReuseLease(token, lock)
 
+    def _container_guard(self, name: str) -> _FileLock:
+        digest = hashlib.sha256(name.encode()).hexdigest()
+        # Keep the inode stable: unlinking permits two holders on different inodes.
+        return _FileLock(self.path.parent / ("container-" + digest + ".lock"), timeout=0)
+
     def reserve(self, name: str, labels: dict[str, str], fingerprint: str) -> ReuseLease:
         scope = _retirement_scope(labels)
         lease = self._lease()
@@ -103,19 +108,37 @@ class ReuseOwners:
             with self.transaction() as db:
                 row = db.execute("SELECT name FROM containers WHERE container_id=? AND retired=0",
                                  (container_id,)).fetchone()
+            if row is None:
+                return None
+            name = row[0]
+            with ExitStack() as locks:
+                try:
+                    locks.enter_context(self._container_guard(name))
+                except (OSError, RuntimeError):
+                    return None
+                # The discovery transaction must end before taking the guard.
+                with self.transaction() as db:
+                    row = db.execute("SELECT 1 FROM containers WHERE name=? AND container_id=? "
+                                     "AND retired=0", (name, container_id)).fetchone()
                 if row is None or not start():
                     return None
-                db.execute("INSERT INTO owners VALUES (?, ?)", (lease.token, row[0]))
-                db.execute("UPDATE containers SET superseded=NULL WHERE name=?", (row[0],))
+                with self.transaction() as db:
+                    db.execute("INSERT INTO owners VALUES (?, ?)", (lease.token, name))
+                    db.execute("UPDATE containers SET superseded=NULL WHERE name=?", (name,))
             claimed = True
             return lease
         finally:
             if not claimed:
-                lease.lock.__exit__(None, None, None)
+                self.release(lease)
 
-    def release(self, lease: ReuseLease) -> None:
+    def release(self, lease: ReuseLease, *, failed_creation: bool = False) -> None:
         try:
             with self.transaction() as db:
+                if failed_creation:
+                    # Keep failed runs discoverable by name even if finish never committed.
+                    db.execute("UPDATE containers SET superseded=COALESCE(superseded, ?) "
+                               "WHERE name=(SELECT name FROM owners WHERE token=?)",
+                               (time.time(), lease.token))
                 db.execute("DELETE FROM owners WHERE token=?", (lease.token,))
             # The lease lock file is the abandonment evidence: it may only vanish once
             # the row is committed. On a failed transaction both survive, so a retry can
@@ -138,6 +161,11 @@ class ReuseOwners:
                               (time.time() - max_age_seconds, profile, profile)).fetchall()
         for (name,) in candidates:
             with ExitStack() as locks:
+                # Guard before DB lock, held through external waits and retirement.
+                try:
+                    locks.enter_context(self._container_guard(name))
+                except (OSError, RuntimeError):
+                    continue
                 # A claimant may have revived this container since the inventory.
                 with self.transaction() as db:
                     row = db.execute("SELECT container_id, fingerprint FROM containers WHERE name=? "

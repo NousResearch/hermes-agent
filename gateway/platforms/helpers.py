@@ -503,26 +503,88 @@ def voice_mention_gate_enabled(extra: Optional[dict]) -> bool:
     return is_truthy_value((extra or {}).get("voice_mention_patterns"), default=False)
 
 
-async def spoken_mention_clips(paths: list[str], patterns) -> list[str]:
+def _gate_stt_scope(adapter: Any, source: Any) -> Any:
+    """The routed profile's runtime scope for *source*, as the turn will enter it, so the gate's STT
+    reads that profile's ``stt`` config and secrets; a no-op outside a runner."""
+    runner = getattr(adapter, "gateway_runner", None)
+    enter = getattr(runner, "_async_profile_scope_for_source", None)
+    if source is None or not callable(enter):
+        return contextlib.nullcontext()
+    adapter._canonicalize(source)
+    return enter(source)
+
+
+async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = None, source: Any = None,
+                               keep: frozenset = frozenset()) -> list[str]:
     """Transcribe a group voice note that only a spoken wake word could admit and match ``patterns``
-    against the transcript (the text gate runs before STT, so it never sees one: #102330). On a
-    match, the clips to attach; the turn reuses their transcripts, one STT call per clip. Otherwise
-    ``[]``, and the clips, fetched only for this check, are deleted."""
+    against the transcript (the text gate runs before STT, so it never sees one: #102330). STT runs
+    in the profile *source* routes to (``adapter.gateway_runner``) and never when that profile
+    disables it. On a match, the clips to attach; the turn reuses their transcripts, one STT call
+    per clip. Otherwise ``[]``, and the clips fetched only for this check are deleted (never those
+    in *keep*, which another owner still references)."""
     from gateway.run_inbound_transcription import remember_gate_transcript, transcribe_one_clip
     results: dict = {}
+    try:
+        async with _gate_stt_scope(adapter, source):
+            from tools.transcription_tools import is_stt_enabled
+            for path in paths if await asyncio.to_thread(is_stt_enabled) else ():
+                try:
+                    results[path] = await transcribe_one_clip(path)
+                except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
+                    logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
+            if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):
+                for path, result in results.items():
+                    remember_gate_transcript(path, result)
+                return list(paths)
+    except Exception as exc:  # health: allow BLE001 -- an unroutable source is dropped by ingress anyway
+        logger.warning("Spoken mention check could not enter the routed profile: %s", exc)
     for path in paths:
-        try:
-            results[path] = await transcribe_one_clip(path)
-        except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
-            logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
-    if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):
-        for path, result in results.items():
-            remember_gate_transcript(path, result)
-        return list(paths)
-    for path in paths:
-        with contextlib.suppress(OSError):
-            os.remove(path)
+        if path not in keep:
+            with contextlib.suppress(OSError):
+                os.remove(path)
     return []
+
+
+class ChatOrderedWork:
+    """Inbound work that may wait on gate-time STT runs off the platform's single reader, FIFO per
+    chat: a slow voice note delays only its own chat, and a message sent after it in that chat
+    still arrives after it. At most ``limit`` gate transcriptions run at once."""
+
+    def __init__(self, adapter: Any, limit: int = 4):
+        self._adapter, self._tails, self._slots = adapter, {}, asyncio.Semaphore(limit)
+
+    def busy(self, chat: str) -> bool:
+        tail = self._tails.get(chat)
+        return tail is not None and not tail.done()
+
+    def submit(self, chat: str, work, *, transcribes: bool) -> asyncio.Task:
+        prev = self._tails.get(chat)
+
+        async def run():
+            if prev is not None and not prev.done():
+                await asyncio.wait([prev])
+            try:
+                if transcribes:
+                    async with self._slots:
+                        await work()
+                else:
+                    await work()
+            except Exception:  # health: allow BLE001 -- one message's failure must not stall its chat
+                logger.exception("[%s] inbound work for chat %s failed", getattr(self._adapter, "name", "?"), chat)
+
+        task = asyncio.create_task(run())
+        self._tails[chat] = task
+        task.add_done_callback(lambda t: self._tails.pop(chat, None) if self._tails.get(chat) is t else None)
+        tasks = getattr(self._adapter, "_background_tasks", None)
+        if isinstance(tasks, set):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        return task
+
+
+def chat_ordered_work(adapter: Any) -> ChatOrderedWork:
+    """The adapter's :class:`ChatOrderedWork`, created on first use."""
+    return adapter.__dict__.setdefault("_chat_ordered_work", ChatOrderedWork(adapter))
 
 
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,

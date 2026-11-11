@@ -122,8 +122,8 @@ async def test_whatsapp_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path,
     assert isinstance(event, MessageEvent) is admitted
     if admitted:
         assert event.media_urls == [str(clip)] and event.text == "" and event.reply_expected is True
-    else:
-        assert not clip.exists()  # fetched only for the check
+    # Bridge-cached: the bridge's quotedMediaCache still points here for a later quoted reply.
+    assert clip.exists()
 
 
 @pytest.mark.asyncio
@@ -174,3 +174,99 @@ async def test_bluebubbles_group_voice_memo_wakes_on_the_spoken_wake_word(tmp_pa
 
     assert len(calls) == 1
     assert adapter.handle_message.await_count == (1 if admitted else 0)
+
+
+@pytest.mark.asyncio
+async def test_disabled_stt_never_transcribes_at_the_gate_even_with_local_fallback(tmp_path, monkeypatch):
+    """``stt.enabled: false`` is not a provider failure: the local fallback must not run either."""
+    import re
+    from gateway.platforms.helpers import spoken_mention_clips
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("stt:\n  enabled: false\n")
+    clip = tmp_path / "gate.ogg"
+    clip.write_bytes(OGG)
+    local = []
+
+    def fallback(path, _model=None):
+        local.append(path)
+        return {"success": True, "transcript": "hermes, what is on today", "provider": "local"}
+    with patch("tools.transcription_tools.transcribe_audio_local_fallback", side_effect=fallback):
+        assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS]) == []
+    assert local == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_gate_transcribes_in_the_routed_profile(tmp_path, monkeypatch):
+    """A shared bot's chat routed to another profile: the gate's STT runs in that profile's scope
+    (its ``stt`` config and secrets), the scope the turn enters, never the receiving bot's."""
+    import contextlib
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    launch, routed = tmp_path / "launch", tmp_path / "routed"
+    for home, enabled in ((launch, "false"), (routed, "true")):
+        home.mkdir()
+        (home / "config.yaml").write_text(f"stt:\n  enabled: {enabled}\n")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    entered = []
+
+    @contextlib.asynccontextmanager
+    async def scope(source):
+        entered.append(source.chat_id)
+        token = set_hermes_home_override(str(routed))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+    homes = []
+
+    def transcribe(path, _model=None, _source=None):
+        homes.append(str(get_hermes_home()))
+        return {"success": True, "transcript": "hermes, what is on today", "provider": "fake"}
+    adapter = _telegram(True)
+    adapter.gateway_runner = SimpleNamespace(_async_profile_scope_for_source=scope,
+                                             _profile_name_for_source=lambda *_a, **_k: None)
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._handle_media_message(SimpleNamespace(message=_voice_note(), update_id=1), SimpleNamespace())
+
+    assert entered == ["-100"] and homes == [str(routed)]
+    assert adapter.handle_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_photon_gate_stt_never_holds_the_inbound_reader(tmp_path, monkeypatch):
+    """A slow group voice note delays only its own chat: another chat's message (a /stop) is
+    dispatched meanwhile, and a later message in the SAME chat still arrives after the note."""
+    import asyncio
+    import base64
+    import json
+    import threading
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    seen = []
+    adapter.handle_message = AsyncMock(side_effect=lambda e: seen.append(e.message_id))
+    release = threading.Event()
+
+    def slow(path, _model=None, _source=None):
+        release.wait(10)
+        return {"success": True, "transcript": "hermes, what is on today", "provider": "fake"}
+
+    def line(mid, space, content):
+        return json.dumps({"messageId": mid, "space": space, "sender": {"id": "+15551234567"},
+                           "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
+    group = {"id": "group-guid", "type": "group", "phone": None}
+    dm = {"id": "dm-guid", "type": "dm", "phone": "+15551234567"}
+    voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+        await asyncio.wait_for(adapter._on_inbound_line(line("v1", group, voice)), 2)
+        await asyncio.wait_for(adapter._on_inbound_line(line("t1", group, {"type": "text", "text": "hermes later"})), 2)
+        await asyncio.wait_for(adapter._on_inbound_line(line("s1", dm, {"type": "text", "text": "/stop"})), 2)
+        assert seen == ["s1"]
+        release.set()
+        for _ in range(200):
+            if len(seen) == 3:
+                break
+            await asyncio.sleep(0.02)
+    assert seen == ["s1", "v1", "t1"]

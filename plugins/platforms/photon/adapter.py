@@ -43,7 +43,7 @@ from gateway.platforms._shared import (
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
-from gateway.platforms.helpers import voice_mention_gate_enabled
+from gateway.platforms.helpers import chat_ordered_work, voice_mention_gate_enabled
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
@@ -814,10 +814,26 @@ class PhotonAdapter(BasePlatformAdapter):
         msg_id = event.get("messageId")
         if msg_id and self._dedup.is_duplicate(msg_id):
             return
+        # A group voice note may wait on gate-time STT: run it off this single reader, FIFO per chat.
+        chat, transcribes = self._gate_stt_chat(event)
+        work = chat_ordered_work(self)
+        if transcribes or (chat and work.busy(chat)):
+            work.submit(chat, lambda: self._dispatch_inbound(event), transcribes=transcribes)
+            return
         try:
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
+
+    def _gate_stt_chat(self, event: dict[str, Any]) -> tuple[str, bool]:
+        """``(space id, True when the spoken-wake-word gate will transcribe it)``."""
+        space = event.get("space") or {}
+        content = event.get("content") or {}
+        if content.get("type") == "reply" and isinstance(content.get("content"), dict):
+            content = content["content"]
+        return space.get("id") or "", bool(
+            space.get("type") == "group" and self.require_mention and content.get("type") == "voice"
+            and voice_mention_gate_enabled(self.config.extra))
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
         await asyncio.sleep(_FFFC_WAIT_SECONDS)
@@ -936,7 +952,8 @@ class PhotonAdapter(BasePlatformAdapter):
             text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
-        if spoken and not await spoken_mention_clips(media_urls, self._mention_patterns):
+        if spoken and not await spoken_mention_clips(media_urls, self._mention_patterns, adapter=self,
+                                                     source=_event("").source):
             logger.debug("[photon] ignoring group voice note (require_mention=true, no wake word spoken)")
             return
         if gated:

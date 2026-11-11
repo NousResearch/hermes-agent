@@ -47,10 +47,11 @@ class TestWrapCommandAdvertisesHarness:
     """The shell-level export in BaseEnvironment._wrap_command."""
 
     def _wrap(self, command: str) -> str:
+        from tools.environments.base import ShellMode
         from tools.environments.local import LocalEnvironment
 
         env = LocalEnvironment.__new__(LocalEnvironment)
-        env._snapshot_ready = False
+        env._shell_mode = ShellMode.LOGIN
         env._session_id = "testsession0"
         env._cwd_marker = "__HERMES_CWD_testsession0__"
         env._snapshot_path = "/tmp/hermes-snap-testsession0.sh"

@@ -23,7 +23,9 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
+from tools.environments.base import (
+    BaseEnvironment, EnvironmentConnectionError, ShellMode, _SHELL_ENV_NAME_RE, get_sandbox_dir,
+)
 from tools.terminal_tool_config import (
     _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,
 )
@@ -1170,7 +1172,7 @@ class DockerEnvironment(BaseEnvironment):
                 return False
 
         try:
-            self._snapshot_ready = False
+            self._shell_mode = ShellMode.LOGIN
             self.init_session()
         except Exception as e:
             logger.error("Recovery: init_session failed in new container: %s", e)

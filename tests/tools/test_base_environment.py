@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tools import terminal_tool_sudo
-from tools.environments.base import BaseEnvironment, _load_json_store
+from tools.environments.base import BaseEnvironment, ShellMode, _load_json_store
 from tools.environments.base_output import _BoundedOutputCollector
 
 
@@ -114,7 +114,7 @@ class TestAtomicSnapshotWrite:
 
     def test_wrap_command_uses_atomic_temp_then_mv(self):
         env = _TestableEnv()
-        env._snapshot_ready = True
+        env._shell_mode = ShellMode.SNAPSHOT
         wrapped = env._wrap_command("echo hi", "/tmp")
         # Env dump goes to a temp file, not directly over the live snapshot.
         assert "export -p" in wrapped and "> " in wrapped
@@ -135,7 +135,7 @@ class TestAtomicSnapshotWrite:
         expands empty, collapsing every writer onto one temp path and
         reopening the #38249 race).  Regression for PR #54314."""
         env = _TestableEnv()
-        env._snapshot_ready = True
+        env._shell_mode = ShellMode.SNAPSHOT
         wrapped = env._wrap_command("echo hi", "/tmp")
         assert "mktemp " in wrapped
         assert ".tmp.XXXXXXXXXX" in wrapped
@@ -278,7 +278,7 @@ class TestEmbedStdinHeredoc:
 
 
 class TestInitSessionFailure:
-    def test_snapshot_ready_false_on_failure(self):
+    def test_failed_snapshot_runs_login_shell_without_sourcing(self):
         env = _TestableEnv()
 
         def failing_run_bash(*args, **kwargs):
@@ -287,7 +287,21 @@ class TestInitSessionFailure:
         env._run_bash = failing_run_bash
         env.init_session()
 
-        assert env._snapshot_ready is False
+        calls = []
+
+        def track_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            calls.append({"login": login, "cmd": cmd})
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            mock.stdout = iter([])
+            return mock
+
+        env._run_bash = track_run_bash
+        env.execute("echo test")
+
+        assert calls[0]["login"] is True
+        assert f"source {env._snapshot_path}" not in calls[0]["cmd"]
 
 
     def test_prefer_nonlogin_when_login_bash_is_dead(self):
@@ -306,9 +320,6 @@ class TestInitSessionFailure:
 
         env._run_bash = mock_run_bash
         env.init_session()
-
-        assert env._snapshot_ready is False
-        assert env._prefer_nonlogin is True
 
         calls = []
 

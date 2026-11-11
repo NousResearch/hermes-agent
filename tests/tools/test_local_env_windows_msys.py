@@ -34,7 +34,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, ShellMode
 from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
@@ -301,7 +301,7 @@ class TestWrapCommandWindowsNativeCwd:
         ):
             env = LocalEnvironment(cwd=r"C:\Users\liush", timeout=10)
 
-        env._snapshot_ready = True
+        env._shell_mode = ShellMode.SNAPSHOT
         wrapped = env._wrap_command("pwd", r"C:\Users\liush")
 
         assert "builtin cd -- /c/Users/liush || exit 126" in wrapped

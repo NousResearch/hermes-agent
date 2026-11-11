@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -31,6 +32,16 @@ from tools.environments.base_wait import _WaitTrace
 from utils import atomic_json_write, env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
+
+
+class ShellMode(Enum):
+    """How each command's bash starts: sourcing the session snapshot, as a login shell (no
+    snapshot yet, or it failed), or non-login because login bash itself is unusable."""
+
+    SNAPSHOT = "snapshot"
+    LOGIN = "login"
+    NONLOGIN = "nonlogin"
+
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery
 # (HERMES_DEBUG_INTERRUPT=1). Off by default to avoid flooding gateway logs.
@@ -323,11 +334,8 @@ class BaseEnvironment(ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._pipe_marker = _pipe_marker(self._session_id)
-        self._snapshot_ready = False
+        self._shell_mode = ShellMode.LOGIN
         self._snapshot_passthrough_names: set[str] = set()
-        # True when login bash is unusable (e.g. broken Git-for-Windows startup)
-        # so execute() must fall back to non-login ``bash -c``, not ``bash -l``.
-        self._prefer_nonlogin = False
 
     # --- Abstract methods ---
     def _run_bash(
@@ -413,9 +421,9 @@ class BaseEnvironment(ABC):
 
     def init_session(self):
         """Capture the login shell environment into the snapshot file (once, after construction).
-        On success ``_snapshot_ready`` is set so commands source the snapshot instead of running
+        On success the shell mode is SNAPSHOT so commands source the snapshot instead of running
         under ``bash -l``. On failure, fall back to ``bash -l`` per command — unless a non-login
-        probe shows login bash itself is dead, in which case prefer ``bash -c``."""
+        probe shows login bash itself is dead (e.g. broken Git-for-Windows startup), then ``bash -c``."""
         bootstrap = _snapshot_bootstrap_script(
             excluded_names=self._snapshot_excluded_passthrough_names(), **self._snapshot_script_kwargs(self.cwd))
         try:
@@ -423,13 +431,13 @@ class BaseEnvironment(ABC):
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
             if int(result.get("returncode") or 0) != 0:
                 raise RuntimeError(f"snapshot bootstrap failed with exit code {result.get('returncode')}")
-            self._snapshot_ready = True
+            self._shell_mode = ShellMode.SNAPSHOT
             self._update_cwd(result)
             logger.info("Session snapshot created (session=%s, cwd=%s)", self._session_id, self.cwd)
         except Exception as exc:
-            self._snapshot_ready = False
-            self._prefer_nonlogin, detail = self._probe_nonlogin_fallback(str(exc))
-            if self._prefer_nonlogin:
+            prefer_nonlogin, detail = self._probe_nonlogin_fallback(str(exc))
+            self._shell_mode = ShellMode.NONLOGIN if prefer_nonlogin else ShellMode.LOGIN
+            if prefer_nonlogin:
                 logger.warning(
                     "init_session failed (session=%s): %s — "
                     "login bash unusable; falling back to non-login bash -c",
@@ -475,7 +483,7 @@ class BaseEnvironment(ABC):
         return _wrap_command_script(
             command,
             passthrough_names=self._snapshot_excluded_passthrough_names(),
-            snapshot_ready=self._snapshot_ready,
+            snapshot_ready=self._shell_mode is ShellMode.SNAPSHOT,
             persist_env=self._persist_env,
             pipe_marker=self._pipe_marker,
             **self._snapshot_script_kwargs(cwd))
@@ -708,7 +716,7 @@ class BaseEnvironment(ABC):
 
         # Login shell if the snapshot failed (so the user's profile still
         # loads), unless login itself is broken — then non-login is the only path.
-        login = not self._snapshot_ready and not self._prefer_nonlogin
+        login = self._shell_mode is ShellMode.LOGIN
 
         parent_tid = threading.current_thread().ident
         # The activity callback is thread-local and the wait runs on the

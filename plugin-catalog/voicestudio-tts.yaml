@@ -1,6 +1,6 @@
 name: voicestudio-tts
 repo: https://github.com/EternalShade3D/voicestudio-hermes-plugin
-sha: "06997b106e5a9c3bd44ee6cce438716ea69aaec1"
+sha: "303d8090a04c3af5a570ecdcdf2f94621873dc72"
 description: >-
   VoiceStudio TTS provider for Hermes: registers a TTS provider so replies can be read aloud, or
   auto-spoken, in the user's own voices from the local VoiceStudio app, per profile. Settings are
@@ -9,8 +9,8 @@ description: >-
   plugin's plugin.yaml only when the user turns on sync_dropdown, which is off by default and is
   what turns the voice setting into a dropdown. Disclosure - sends the reply text, the voice id and
   the engine name when one is configured to the local server (default http://127.0.0.1:3900, plain
-  HTTP); no credentials, no telemetry, no other network calls, no extra dependency, no self-update
-  of code.
+  HTTP); no credentials, no telemetry, no other network calls, no declared dependency (the YAML write
+  uses the module Hermes ships), no self-update of code.
 maintainer: EternalShade3D
 tier: community
 category: voice

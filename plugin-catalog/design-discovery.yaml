@@ -1,25 +1,25 @@
 name: design-discovery
 title: Design Discovery
 repo: https://github.com/adip1303/hermes-design-discovery
-sha: b92cb6aa48e000f9ca777386958b58c8fb1fb0ca
+sha: 374d83b7d69d96d0bbdc04d71265ef39bb25bad3
 description: "Turns a vague product idea into a DESIGN.md a coding agent can build from: a few plain questions, three visual directions, changes in your own words. Loads fonts from Google Fonts."
 maintainer: adip1303
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
-version: "0.1.0"
-docs_url: https://github.com/adip1303/hermes-design-discovery/blob/b92cb6aa48e000f9ca777386958b58c8fb1fb0ca/README.md
+version: "0.1.1"
+docs_url: https://github.com/adip1303/hermes-design-discovery/blob/374d83b7d69d96d0bbdc04d71265ef39bb25bad3/README.md
 readme: true
 platforms: []
 known_issues:
   - Works best on capable models. Weaker models sometimes call a tool wrongly before recovering. Tested on GPT 6 Luna.
 capabilities:
   provides_tools:
-    - generate_directions
-    - record_understanding
-    - update_choice
+    - design_discovery_generate_directions
+    - design_discovery_record_understanding
+    - design_discovery_update_choice
     - design_discovery_get_state
-    - export_design_md
+    - design_discovery_export_design_md
   provides_hooks:
     - pre_llm_call
     - post_llm_call

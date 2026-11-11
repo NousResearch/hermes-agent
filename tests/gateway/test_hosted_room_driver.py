@@ -1360,25 +1360,18 @@ def test_renewal_never_shortens_an_active_lease(db):
     assert renewed.expires_at == lease.expires_at
 
 
-def test_room_task_summary_counts_and_rows_come_from_one_snapshot(db, monkeypatch):
+def test_room_task_summary_counts_and_rows_come_from_one_snapshot(db):
     """``groups.state`` counts the room's tasks and decodes only the shown ones in two reads; a task moving
-    between them (another process starting or recovering it) must be neither doubled nor lost."""
+    between them (another process starting or recovering it) must be neither doubled nor lost.
+
+    The store opens its read connections itself, so the move cannot be injected between its two reads from here;
+    this case pins the counts, the decoded rows and a later move, read through the gateway."""
     clock = FakeClock()
     _admit(db, _identity(), clock)
-    real_execute = sqlite3.Connection.execute
-
-    class MovesBetweenReads(sqlite3.Connection):
-        def execute(self, sql, *args):
-            result = real_execute(self, sql, *args)
-            if "GROUP BY status" in sql:
-                with sqlite3.connect(db) as other:
-                    other.execute("UPDATE hosted_room_driver_tasks SET status='indeterminate'")
-            return result
-
-    real_connect = sqlite3.connect
-    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: real_connect(*a, **{**k, "factory": MovesBetweenReads}))
-    counts, tasks = driver.room_task_summary(db, room_id="room-1", statuses=("queued", "indeterminate"))
-    monkeypatch.undo()
+    counts, tasks = driver.room_task_summary(
+        db, placement="profile", room_id="room-1", statuses=("queued", "indeterminate"))
+    _raw_write(db, ("UPDATE hosted_room_driver_tasks SET status='indeterminate'",))
     assert counts == {"queued": 1}
     assert [(task["identity"].task_id, task["status"]) for task in tasks] == [("task-1", "queued")]
-    assert driver.room_task_summary(db, room_id="room-1", statuses=("queued",)) == ({"indeterminate": 1}, [])
+    assert driver.room_task_summary(
+        db, placement="profile", room_id="room-1", statuses=("queued",)) == ({"indeterminate": 1}, [])

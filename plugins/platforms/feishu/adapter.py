@@ -346,7 +346,9 @@ class FeishuBatchState:
 
 # --- Admission: policy types ---
 
-RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
+RejectReason = Literal[
+    "self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected", "dm_policy_rejected",
+]
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -2458,6 +2460,11 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             logger.debug("[Feishu] Failed to fetch message for reaction routing", exc_info=True)
             return
         user_id_obj = getattr(event, "user_id", None)
+        # Same sender gates as text (#105157). No mention gate: reacting to our message addresses us.
+        reason = self._sender_policy_reject(user_id_obj, chat_id, is_group=chat_type_raw != "p2p")
+        if reason is not None:
+            logger.debug("[Feishu] dropping reaction event: %s", reason)
+            return
         reaction_type_obj = getattr(event, "reaction_type", None)
         emoji_type = str(getattr(reaction_type_obj, "emoji_type", "") or "UNKNOWN")
         action = "added" if "created" in event_type else "removed"
@@ -3438,6 +3445,17 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             # The group step below enforces mentions when require_mention is on; cover the rest here.
             if mode == "mentions" and not require_mention and not self._mentions_self(message):
                 return "bot_not_mentioned"
+        reason = self._sender_policy_reject(getattr(sender, "sender_id", None), chat_id, is_group=is_group, is_bot=is_bot)
+        if reason is not None or not is_group:
+            return reason
+        if require_mention and not self._mentions_self(message):
+            return "group_policy_rejected"
+        return None
+
+    def _sender_policy_reject(
+        self, sender_id: Any, chat_id: str, *, is_group: bool, is_bot: bool = False,
+    ) -> Optional[RejectReason]:
+        """DM allowlist / per-group policy for one sender — shared by messages and reactions."""
         if not is_group:
             # _allow_all_dm is snapshotted per-profile in _load_settings: _admit runs on the
             # lark_oapi WS thread with no secret scope, so a bare os.getenv would read the
@@ -3446,10 +3464,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             # pairing handshake can run (gateway auth fail-closes until approval).
             if self._allow_all_dm or not self._allowed_group_users:
                 return None
+            sender_ids = _sender_identity(SimpleNamespace(sender_id=sender_id))
             return None if sender_ids & self._allowed_group_users else "dm_policy_rejected"
-        if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):
-            return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        if not self._allow_group_message(sender_id, chat_id, is_bot=is_bot):
             return "group_policy_rejected"
         return None
 

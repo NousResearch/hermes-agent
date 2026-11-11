@@ -1,0 +1,35 @@
+name: case-trail
+title: "Case Trail"
+repo: https://github.com/flabanabba8/case-trail
+sha: 3acda21539db67966bccd80b8957ef08d08b33cb
+version: "0.4.3"
+description: "Trace case-history and treatment research to actual opinion passages; analyze supplied sources without a required repository. Disclosure: Sends search queries through the web provider you configured in Hermes and can fetch one public OpenJurist case page you select after a robots check. Stores source text and review notes privately. Novelty research tool, not legal advice; unaffiliated with Justia or OpenJurist."
+maintainer: flabanabba8
+tier: community
+category: web
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/case-trail/blob/3acda21539db67966bccd80b8957ef08d08b33cb/README.md
+image: https://raw.githubusercontent.com/flabanabba8/case-trail/3acda21539db67966bccd80b8957ef08d08b33cb/assets/thumbnail.jpg
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - caselaw_examine_source
+    - caselaw_examine_source_file
+    - caselaw_review_sources
+    - caselaw_search
+    - caselaw_fetch
+    - caselaw_examine
+    - caselaw_examine_file
+    - caselaw_fetch_public_opinion
+    - caselaw_examine_public_opinion
+    - caselaw_read_public_opinion
+    - caselaw_public_opinions
+    - caselaw_review
+    - caselaw_review_get
+    - caselaw_review_check_sources
+    - caselaw_review_check_public_sources
+    - caselaw_review_render
+    - caselaw_reviews
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

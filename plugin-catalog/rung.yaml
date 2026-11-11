@@ -3,19 +3,22 @@ repo: https://github.com/CalQuity/rung
 sha: 970be4f506c496586a7fec8b818491ceab602e4b
 subdir: hermes-plugin
 description: >-
-  Verification evidence for agent-written code. Before Hermes ends a turn in which it edited code, a
-  pre_verify hook asks Rung's local ledger whether the project's own checks covering those files
-  (tests, linters, type checkers, security scanners, property and formal checks recorded in rung.toml)
-  have a fresh passing verdict for the exact code on disk, and sends Hermes back with the check ids when
-  they do not (at most two continuations per turn). Tools rung_check, rung_plan and rung_kit return the
-  Rung CLI's JSON verdicts; rung_map drafts the app's feature map, whose features only the person approves
-  (/rung approve, not-built, drop are slash commands, never tools); a bundled skill sets Rung up.
-  Every verdict comes from a tool, never from a model. Disclosure: rung_check runs the commands listed
-  in the project's rung.toml (its own test, lint and build commands and any installed scanners) as
-  subprocesses in the session's working folder; the hook only reads Rung's ledger. The plugin makes no
-  network calls itself; rung_map drafting calls the model CLI chosen in rung.toml (claude, codex or an
-  OpenAI-compatible endpoint), which reads the project's source; checks may (osv-scanner queries OSV, the deps check queries PyPI or npm). Rung
-  writes verdicts under .rung/ in the project. No credentials, no telemetry. Requires rung-cli 0.4.
+  A verification kit for agent-written code, enforced inside Hermes. Rung builds the kit for a repository
+  (linters and type checkers, tests, property tests that must catch planted bugs, security gates, a
+  feature map the person approves with app-driving scripts, TLA+ and Lean models) and records every
+  verdict against the exact bytes it checked; a verdict expires when those bytes change. Before Hermes
+  ends a turn in which it edited code, a pre_verify hook asks Rung's local ledger whether the checks
+  covering those files have a fresh pass, and sends Hermes back with the check ids when they do not (at
+  most two continuations per turn). Tools rung_check, rung_plan, rung_kit and rung_map return the CLI's
+  JSON views; feature decisions are /rung slash commands only, never tools; a bundled skill sets the kit
+  up. Every verdict comes from a tool, never from a model. Disclosure: the tools run the Rung CLI as a
+  subprocess (argument list, no shell); rung_check then runs the commands in the project's own
+  rung.toml (its test, lint and build commands and installed scanners) without Hermes's per-command
+  approval prompt, inheriting Hermes's environment; the hook only reads the ledger. rung_map drafting
+  calls the model CLI chosen in rung.toml (claude, codex or an OpenAI-compatible endpoint), which reads
+  the project's source. No network calls from the plugin itself; checks may make them (osv-scanner
+  queries OSV, the deps check queries PyPI or npm). Nothing waits for a person. Rung writes verdicts
+  under .rung/ in the project. No credentials, no telemetry. Requires rung-cli 0.4.
 maintainer: CalQuity
 tier: community
 category: tools

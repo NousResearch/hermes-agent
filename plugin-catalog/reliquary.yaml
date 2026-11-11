@@ -3,18 +3,7 @@ title: Reliquary
 repo: https://github.com/Lokee86/reliquary-hermes
 sha: 0de70d170a575582aeb71ba3daff371fc0fdd42c
 version: "0.1.0"
-description: >-
-  Local, inspectable long-term memory with source provenance, conversation capture,
-  General/project REL routing, a read-only PHY identity layer, and an interactive
-  relationship-driven 3D graph in Hermes. Disclosure — launches a profile-scoped
-  Rust background host on authenticated loopback HTTP; reads/writes selected RELs,
-  reads the selected PHY and nonsecret processing-routes JSON, and persists copied
-  source text, queues, recovery state, and graph caches under the Hermes profile.
-  Optional processing and retrieval send bounded queries, source excerpts, and
-  Memories to explicitly configured model endpoints and can incur provider charges.
-  API keys and the host token come through Hermes scoped secret routes. No telemetry
-  or self-updater. The Windows native host requires a separate source build or a
-  manually verified artifact from the repository's attested public build workflow.
+description: "Local, inspectable long-term memory with source provenance, conversation capture, General/project REL routing, a read-only PHY identity layer, and an interactive relationship-driven 3D graph in Hermes. Disclosure — launches a profile-scoped Rust background host (built by the user from the repo's source or taken from its attested CI build; nothing is downloaded by the plugin) on HMAC-authenticated loopback HTTP that can keep running after a session to finish recovery; reads/writes the selected REL files, reads the selected PHY and a nonsecret processing-routes JSON, and stores copied source text, queues, recovery state and graph caches under the Hermes profile's reliquary directory; setup generates a local host token into the profile .env through Hermes' secret writer and sets memory.provider and plugins.enabled in config.yaml. Optional processing and retrieval send bounded queries, source excerpts and Memories to the model endpoints the user configures and can incur provider charges. Automatic and manual conversation capture and the Desktop graph need Hermes core patches the repo ships but does not apply (patches/hermes-104a7c4-hu08-history-export.patch, patches/hermes-45882968-plugin-rest-bytes.patch); on stock Hermes capture stays paused and Desktop shows list and inspector only. No telemetry or self-updater."
 maintainer: Lokee86
 tier: community
 category: memory

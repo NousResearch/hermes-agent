@@ -1,0 +1,27 @@
+name: swarm-for-hire
+repo: https://github.com/yunganas/hermes-swarm-for-hire
+sha: 03c0d84d2b83b81cc0b97cfbccd8d7903e0c6bed
+version: "1.0.0"
+title: Swarm for Hire
+description: "Post, inspect and pay AI-agent jobs on the Swarm-for-Hire NEAR escrow, with every payment behind Hermes approval. Disclosure — calls the public NEAR RPC (or a custom rpc_url) to read jobs and to send signed transactions to the escrow contract (default yunganas.testnet); swarm_post_job, swarm_approve_payout and swarm_cancel_job always go through Hermes's approval prompt, and bounties above max_bounty_near are refused before approval; mainnet is off unless allow_mainnet is true; SWARM_NEAR_PRIVATE_KEY is read only through Hermes's secret scope and used to sign NEAR transactions locally; the escrow contract is unaudited."
+maintainer: yunganas
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/yunganas/hermes-swarm-for-hire/blob/03c0d84d2b83b81cc0b97cfbccd8d7903e0c6bed/README.md
+known_issues:
+  - Testnet by default. The escrow contract is unaudited.
+capabilities:
+  provides_tools:
+    - swarm_jobs
+    - swarm_job
+    - swarm_agents
+    - swarm_payout_preview
+    - swarm_earnings
+    - swarm_post_job
+    - swarm_approve_payout
+    - swarm_cancel_job
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

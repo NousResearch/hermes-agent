@@ -1,17 +1,17 @@
 name: cybopal-one-devkit
 title: CyboPal ONE DevKit (unofficial)
 repo: https://github.com/drowzeys/hermes-cybopal-one-devkit
-sha: "ede0088906682517e5228b1f618c8d518ec239cd"
-version: "0.1.1"
-description: "Unofficial, not made or endorsed by CyboPal. Drive a CyboPal ONE (a 27-inch 4K screen on a 6-DOF robotic arm with the Pauli companion display) from Hermes: follow, posture presets, exact poses, gestures, both screens, both cameras and an emergency stop. Works today against the open source CyboPal ONE DevKit live simulator. Disclosure: HTTP calls only to the device_url setting (default http://127.0.0.1:5000), never following redirects or environment proxies, no other service and no telemetry; saves camera pictures in HERMES_HOME/plugin-data/cybopal-one-devkit/cameras (keeps the newest 30, deleting only older pictures it took); no secrets, shell commands, subprocesses or background threads; a tool call blocks for at most 10 s settling, or 60 s for a routine. Moves physical hardware when pointed at a real device: motion is refused while E-stopped and only cleared by an explicit clear_estop, and allow_motion off refuses all motion."
+sha: "45667506b9b68c435c8580d268654aa07c736436"
+version: "0.2.2"
+description: "Unofficial, not made or endorsed by CyboPal. Drive a CyboPal ONE (a 27-inch 4K screen on a 6-DOF robotic arm with the Pauli companion display) from Hermes: follow, posture presets, exact poses, gestures, both screens (markdown, pictures and videos), both cameras and an emergency stop; design new actions on the simulator and save them to run unchanged on the hardware. Works today against the open source CyboPal ONE DevKit live simulator. Disclosure: HTTP calls only to the device_url setting (default http://127.0.0.1:5000), never following redirects or environment proxies, no other service and no telemetry; saves camera pictures in HERMES_HOME/plugin-data/cybopal-one-devkit/cameras (keeps the newest 30, deleting only older pictures it took) and saved routines in routines.json there; cybopal_show reads a picture or video file it is given and uploads it to device_url (only PNG/JPEG/WebP/GIF/MP4/WebM checked by content, up to 64 MB); no secrets, shell commands, subprocesses or background threads; a tool call blocks for at most 10 s settling, or 60 s for a routine. Moves physical hardware when pointed at a real device: motion is refused while E-stopped and only cleared by an explicit clear_estop, and allow_motion off refuses all motion."
 maintainer: drowzeys
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-image: "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/ede0088906682517e5228b1f618c8d518ec239cd/assets/catalog/banner.png"
+image: "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/45667506b9b68c435c8580d268654aa07c736436/assets/catalog/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/ede0088906682517e5228b1f618c8d518ec239cd/assets/catalog/01-hermes-driving.jpg"
-  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/ede0088906682517e5228b1f618c8d518ec239cd/assets/catalog/02-emergency-stop.jpg"
+  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/45667506b9b68c435c8580d268654aa07c736436/assets/catalog/01-hermes-driving.jpg"
+  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/45667506b9b68c435c8580d268654aa07c736436/assets/catalog/02-emergency-stop.jpg"
 readme: true
 platforms: []
 capabilities:
@@ -20,6 +20,7 @@ capabilities:
     - cybopal_mode
     - cybopal_pose
     - cybopal_display
+    - cybopal_show
     - cybopal_look
     - cybopal_routine
     - cybopal_stop

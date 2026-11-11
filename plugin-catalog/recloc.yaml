@@ -7,7 +7,6 @@ description: "Location reminders that never leave your phone: ask the agent to r
 maintainer: SomeoneElseSt
 tier: community
 category: automation
-requires_hermes: ">=0.23"
 docs_url: https://github.com/SomeoneElseSt/recloc#readme
 readme: true
 capabilities:

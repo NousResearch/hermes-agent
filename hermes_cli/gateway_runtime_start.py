@@ -11,6 +11,22 @@ from hermes_cli.gateway_launchd_runtime import GatewayJob, start_gateway_job
 from hermes_cli.gateway_runtime_service import RuntimeStartError, remaining
 
 
+# A detached gateway claiming any of these believes the service launched it: it skips the
+# supervised-gateway conflict guard and races the unit (#73480).
+SUPERVISOR_MARKER_ENV = (
+    # A terminal's shell under a systemd service (gnome-terminal-server, a user unit) carries these; the
+    # unmanaged daemon would then identify as "systemd" and maintenance would refuse it as supervised.
+    "INVOCATION_ID", "JOURNAL_STREAM",
+    # Same for any process below a launchd/--external-supervisor gateway (its agents' tools, scripts they
+    # run): the daemon would identify as "launchd", never arm --idle-exit, and outlive every client.
+    # HERMES_S6_SUPERVISED_CHILD stays: without it `gateway run` in an s6 container redirects to s6.
+    "XPC_SERVICE_NAME", "LAUNCHD_SOCKET", "HERMES_LAUNCHD_LABEL",
+    "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_SUPERVISED_CHILD",
+    # systemd's notify socket and watchdog name the unit's main process: the daemon would feed them.
+    "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
+)
+
+
 # One launch's policy and pins, never the shared daemon's: hook consent would become daemon-lifetime
 # auto-approval for messaging/cron, and a Kanban worker's or terminal's pins would retarget every later
 # session's board, cwd and source. The behaviour values main's CLI read per process (ephemeral prompt,
@@ -26,18 +42,17 @@ DAEMON_STRIPPED_ENV = (
     # Human-presence/one-shot markers: inherited, every messaging/cron turn would read as attended or -q.
     "HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_SINGLE_QUERY_SESSION",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT", "HERMES_PREFILL_MESSAGES_FILE", "HERMES_INFERENCE_PROVIDER",
-    "HERMES_ENABLE_PROJECT_PLUGINS", "HERMES_TUI_CLIENT_ENV",
-    # A terminal's shell under a systemd service (gnome-terminal-server, a user unit) carries these; the
-    # unmanaged daemon would then identify as "systemd" and maintenance would refuse it as supervised.
-    "INVOCATION_ID", "JOURNAL_STREAM",
-    # Same for any process below a launchd/--external-supervisor gateway (its agents' tools, scripts they
-    # run): the daemon would identify as "launchd", never arm --idle-exit, and outlive every client.
-    # HERMES_S6_SUPERVISED_CHILD stays: without it `gateway run` in an s6 container redirects to s6.
-    "XPC_SERVICE_NAME", "LAUNCHD_SOCKET", "HERMES_LAUNCHD_LABEL",
-    "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_SUPERVISED_CHILD",
-    # systemd's notify socket and watchdog name the unit's main process: the daemon would feed them.
-    "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
+    "HERMES_ENABLE_PROJECT_PLUGINS", "HERMES_TUI_CLIENT_ENV", *SUPERVISOR_MARKER_ENV,
 )
+
+
+def strip_supervisor_markers(env: dict) -> dict:
+    """Drop :data:`SUPERVISOR_MARKER_ENV` from a detached gateway's env, in place; returns *env*."""
+    from tools.environments.local_env_policy import carry_gateway_profile_pin
+    carry_gateway_profile_pin(env)  # the supervisor markers go; the gateway keeps its profile pin
+    for key in SUPERVISOR_MARKER_ENV:
+        env.pop(key, None)
+    return env
 
 
 # The daemon would inherit an elevated client's token, and no normal window can reach it (gateway_elevated).

@@ -1166,9 +1166,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     # The watcher copies os.environ into the gateway child, so the child's env is the watcher's: a
     # host respawn gets the default root's secrets, a sibling profile's its own (never the launcher's).
-    watcher_env = restart_watcher_env(
-        run_argv, host=_restart_argv_is_host_gateway(run_argv) if host is None else host, home=home)
-    popen_env = {"env": watcher_env} if watcher_env is not None else {}
+    popen_env = {"env": restart_watcher_env(
+        run_argv, host=_restart_argv_is_host_gateway(run_argv) if host is None else host, home=home)}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
         subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the process that asked for the restart

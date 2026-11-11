@@ -189,6 +189,13 @@ def test_supply_chain_scan_flags_a_payload_line_copied_from_a_file_that_keeps_it
     assert "code = exec(" in (step.runner_temp / "supply-chain-findings.md").read_text(encoding="utf-8")
 
 
+def test_supply_chain_scan_flags_the_second_copy_of_a_moved_file(repo, step):
+    module, _ = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    twice = {"new/a.py": module, "new/b.py": module, "pkg/mod.py": FORWARD}
+    assert _scan_pr(repo, step, base, twice) == "true"
+
+
 def test_dependency_bounds_report_lists_only_floor_only_specs(repo, step):
     base = commit(repo, {"pyproject.toml": 'deps = [\n  "old>=1",\n]\n'})
     head = commit(repo, {"pyproject.toml": 'deps = [\n  "old>=1",\n  "bounded>=2,<3", "loose>=2.1",\n]\n'})

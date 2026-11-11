@@ -22,6 +22,48 @@ logger = logging.getLogger(__name__)
 
 _worker_process = False
 
+# The ``worker.adopt`` handshake is a round trip through the OWNER's event loop, which can be
+# inside one long turn for an hour (fan/gateway.log 2026-10-22: ``time=1018.3s api_calls=46``).
+# The upgrade is answered from that same loop, so the dial can lose the race:
+# fan/managed-worker.log 2026-10-22 has the run-730 worker dying on
+# ``TimeoutError: timed out while waiting for handshake response`` at 5 s, with nothing retrying.
+#
+# Raising that 5 s is not enough on its own. The bootstrap ticket is minted BEFORE the dial and
+# redeemed at admission (gateway/run_api.py), and ``TicketStore.TTL_SECONDS`` refuses anything
+# older than 30 s, so a budget past the TTL only trades a timeout for a refused ticket. Each
+# attempt therefore mints a FRESH ticket (the mint is served off the owner's loop, on the control
+# socket's own threads, so it still answers while a turn is running) and the per-attempt budget
+# stays inside the TTL. Attempts multiply the patience: 5 x 25 s rides out a ~125 s stall.
+WORKER_RPC_OPEN_TIMEOUT_SECONDS = 25.0
+WORKER_RPC_CONNECT_ATTEMPTS = 5
+WORKER_RPC_RETRY_SLEEP_SECONDS = 1.0
+
+
+def connect_worker_link(dial, *, open_timeout=None, attempts=None, sleep=None):
+    """Open the owner link, retrying only a handshake the OWNER's busy loop timed out.
+
+    ``dial(budget)`` mints a fresh bootstrap ticket and dials with that budget; it runs once per
+    attempt, so a retry never resends a spent single-use ticket. Only ``TimeoutError`` is
+    retried: an authentication or protocol refusal will not heal with another attempt, and
+    re-sending after a completed handshake is never safe. ``sleep`` is a test seam.
+    """
+    import time as _time
+    budget = WORKER_RPC_OPEN_TIMEOUT_SECONDS if open_timeout is None else float(open_timeout)
+    tries = max(1, int(WORKER_RPC_CONNECT_ATTEMPTS if attempts is None else attempts))
+    pause = _time.sleep if sleep is None else sleep
+    last = None
+    for attempt in range(tries):
+        try:
+            return dial(budget)
+        except TimeoutError as exc:
+            last = exc
+            if attempt + 1 < tries:
+                logger.warning(
+                    'owner handshake for worker.adopt timed out after %ss (attempt %d/%d); '
+                    'minting a fresh ticket and retrying', budget, attempt + 1, tries)
+                pause(WORKER_RPC_RETRY_SLEEP_SECONDS * (2 ** attempt))
+    raise last
+
 
 def is_worker_process():
     """A successful self-registration makes this interpreter compute-only.
@@ -150,13 +192,20 @@ class WorkerRPC:
         descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
         if descriptor.get('pid') == os.getpid():
             raise WorkerPersistenceError('synchronous_self_rpc')
-        ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
-        url, protocols = gateway_ws_target(endpoint, ticket)
-        # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
-        # No library keepalive: its pong deadline would run independently of (and could fail) a call
-        # inside its receipt budget; that budget and the observed close are the liveness checks.
-        self.link = _OwnerLink(connect(url, subprotocols=protocols, open_timeout=5, close_timeout=1,
-                                       max_size=8 * 1024 * 1024, proxy=None, ping_interval=None))
+        # The owner redeems this ticket at admission, at most TicketStore.TTL_SECONDS after the
+        # mint, so each attempt mints its own: a retry that resends the first ticket is refused
+        # as expired or invalid instead of waiting out the stalled loop.
+        def dial(budget):
+            ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
+            url, protocols = gateway_ws_target(endpoint, ticket)
+            # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not
+            # carry it. No library keepalive: its pong deadline would run independently of (and
+            # could fail) a call inside its receipt budget; that budget and the observed close are
+            # the liveness checks.
+            return _OwnerLink(connect(url, subprotocols=protocols, open_timeout=budget, close_timeout=1,
+                                      max_size=8 * 1024 * 1024, proxy=None, ping_interval=None))
+
+        self.link = connect_worker_link(dial)
         return self.link
 
     def _drop(self):

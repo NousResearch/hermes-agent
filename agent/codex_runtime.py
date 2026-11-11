@@ -1061,17 +1061,16 @@ class _CodexResponseAssembler:
     def _on_terminal(self, event: Any, event_type: str) -> bool:
         self.terminal = _TerminalFrame(event_type.removeprefix("response."))
         resp_obj = _event_field(event, "response")
+        # A frame that names no status reports its own kind: a bare response.failed is "failed".
+        rstatus = _event_field(resp_obj, "status")
+        self.terminal_status = rstatus if isinstance(rstatus, str) and rstatus else self.terminal.value
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
             self.terminal_service_tier = _event_field(resp_obj, "service_tier")
-            rstatus = _event_field(resp_obj, "status")
-            if isinstance(rstatus, str):
-                self.terminal_status = rstatus
             if event_type == "response.incomplete":
                 self.terminal_incomplete_details = _event_field(resp_obj, "incomplete_details")
             elif event_type == "response.failed":
                 self.terminal_error = _event_field(resp_obj, "error")
-        self.terminal_status = self.terminal_status or self.terminal.value
         return True
 
     # Exact-type handlers first, then substring-matched ones in priority order. ``error`` frames

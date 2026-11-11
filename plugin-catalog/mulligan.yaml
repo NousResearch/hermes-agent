@@ -1,7 +1,7 @@
 name: mulligan
 title: Mulligan
 repo: https://github.com/onyebuchidaniel60/mulligan
-sha: 79f445eb6e038ce8336f35d286497fb862db32ab
+sha: fef894a4552d72204c84665f67042467901f135a
 description: >-
   Counterfactual replay for Hermes: record a run, rewind to any step, edit one tool
   decision, replay forward in a fresh child session, and diff the branch against the

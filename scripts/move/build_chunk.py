@@ -40,6 +40,7 @@ GENERATORS = [
     ("scripts/gen_gateway_contracts.py", [], False),
     ("scripts/gen_serve_handler_ledger.py", [], False),
     ("scripts/gen_plugin_api_docs.py", [], False),
+    ("website/scripts/generate-skill-docs.py", [], False),  # its inputs are the SKILL.md files the docs pass rewrites
     ("scripts/gen_gateway_command_parity.py", ["--check"], True),
 ]
 

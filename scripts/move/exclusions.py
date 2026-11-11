@@ -25,6 +25,7 @@ KEPT_NAMES = (SHIPPED, PERSISTED, IDENTITY)
 EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/_old_updater.py", "", FROZEN),
     ("tests/compat/old_updater_dependencies.py", "", FROZEN),
+    ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_bootstrap")', PERSISTED),
     ("hermes_cli/_launchers.py", "def runtime_command(", PERSISTED),
     ("hermes_cli/_launchers.py", '_CLOSURE_REPAIR = """\\', PERSISTED),
     ("hermes_cli/_launchers.py", "return (\n        # The repair's own stdlib", PERSISTED),

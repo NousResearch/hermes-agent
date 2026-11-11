@@ -1,5 +1,6 @@
 import codecs
 import os
+import time
 
 from hermes_cli.env_loader import load_hermes_dotenv
 
@@ -622,3 +623,43 @@ def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkey
     (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=home)
     assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"
+
+
+def test_tz_env_applies_to_process_timezone(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("TZ=Asia/Shanghai\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setattr(time, "tzset", lambda: calls.append(os.environ.get("TZ")), raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("TZ") == "Asia/Shanghai"
+    assert calls == ["Asia/Shanghai"]
+
+
+def test_managed_tz_env_overrides_user_tz_before_tzset(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("TZ=UTC\n", encoding="utf-8")
+
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / ".env").write_text("TZ=Asia/Shanghai\n", encoding="utf-8")
+
+    calls = []
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    monkeypatch.setattr(time, "tzset", lambda: calls.append(os.environ.get("TZ")), raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("TZ") == "Asia/Shanghai"
+    assert calls == ["Asia/Shanghai"]
+

@@ -1157,3 +1157,50 @@ def test_a_browser_paste_still_reads_back_while_the_workspace_is_remote(host_hom
     paste.write_bytes(b"\x89PNG\r\n\x1a\n")
 
     assert _rt_files._is_host_file(str(paste), None) is True
+
+
+def test_a_generated_image_downloads_under_a_locked_files_root(forced_files_client, host_home, monkeypatch):
+    """The locked-root guard that preview already skips for a host file must skip download too.
+
+    ``image_generate`` writes to the host's ``cache/generated/images`` while a deployment can lock
+    ``HERMES_DASHBOARD_FILES_ROOT`` to a directory of its own: the preview returned the image, the
+    download answered 403. The browser mints a ticket for the same URL, so both routes must serve
+    the host's own file without dialing the workspace.
+    """
+    client, locked_root = forced_files_client
+    locked_root.mkdir(exist_ok=True)
+    # Only the Webapp surface mints file tickets.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(host_home))
+    monkeypatch.setattr(
+        _rt_files, "_fs_backend",
+        lambda profile=None: pytest.fail("A generated image download must not dial the workspace"),
+    )
+    image = _write_generated_image(host_home)
+    expected = image.read_bytes()
+
+    direct = client.get("/api/fs/download", params={"path": str(image)})
+    assert (direct.status_code, direct.content) == (200, expected)
+
+    minted = client.post("/api/files/ticket", json={"route": "download", "path": str(image)})
+    assert minted.status_code == 200, minted.text
+
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    ticketed = client.get(
+        "/api/fs/download", params={"path": str(image), "ticket": minted.json()["ticket"]},
+    )
+    assert (ticketed.status_code, ticketed.content) == (200, expected)
+
+
+def test_a_locked_files_root_still_refuses_a_download_outside_it(forced_files_client, host_home, monkeypatch):
+    """The download exception belongs to the host-file classifier, not to the route: a file outside
+    both the locked root and the profile's own folders keeps its 403."""
+    client, locked_root = forced_files_client
+    locked_root.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(host_home))
+    outside = locked_root.parent / "outside-secret.txt"
+    outside.write_text("not a host file", encoding="utf-8")
+
+    refused = client.get("/api/fs/download", params={"path": str(outside)})
+
+    assert refused.status_code == 403, refused.text

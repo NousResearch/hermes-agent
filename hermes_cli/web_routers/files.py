@@ -1432,7 +1432,11 @@ async def _fs_download_authority(
     local = await _fs_download_path(path, profile, session_id, session=session)
 
     def capture():
-        _hosted_fs_read_guard(local, request)
+        # The same staged-file exception read-data-url makes under a locked files root: a host
+        # file (a browser paste, a generated image, a staged upload) sits outside the managed
+        # tree by design, and the workspace is never dialed for it.
+        if not _is_host_file(str(local), profile):
+            _hosted_fs_read_guard(local, request)
         target, _st = _fs_regular_file(local, _fs_profile_home(profile))
         homes = [owner]
         target_home = named_profile_home(target)
@@ -1456,7 +1460,9 @@ async def _ticketed_fs_download(
     from hermes_cli.web_server_file_response import OpenedFileResponse
 
     def checked():
-        _hosted_fs_read_guard(authority.target, request)
+        # A ticket captured for a host file must stay redeemable here for the same reason.
+        if not _is_host_file(str(authority.target), profile):
+            _hosted_fs_read_guard(authority.target, request)
         target, _st = _fs_regular_file(authority.target, _fs_profile_home(profile))
         return target, None
 
@@ -1485,7 +1491,9 @@ async def fs_download(
         target, size = await asyncio.to_thread(_remote_download_target, backend, path)
         return _remote_download_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id, session=session)
-    _hosted_fs_read_guard(target, request)
+    # A host file downloads on the same exception its preview gets under a locked files root.
+    if not await asyncio.to_thread(_is_host_file, str(target), profile):
+        _hosted_fs_read_guard(target, request)
     target, _st = _fs_regular_file(target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(

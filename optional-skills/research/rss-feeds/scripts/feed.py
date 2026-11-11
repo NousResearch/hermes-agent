@@ -53,14 +53,16 @@ def parse_date(value: str | None) -> str | None:
     """Normalise RFC 822 (RSS) and ISO 8601 (Atom/JSON Feed) dates to UTC ISO."""
     if not value:
         return None
-    value = value.strip()
+    value = _WS_RE.sub(" ", value.strip())
+    if not value:
+        return None
     try:
         dt = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         try:
             dt = datetime.fromisoformat(value)
         except ValueError:
-            return value
+            return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC).isoformat()

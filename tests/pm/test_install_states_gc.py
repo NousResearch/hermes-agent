@@ -194,3 +194,20 @@ def test_state_used_while_another_orphan_is_removed_is_kept(tmp_path, monkeypatc
     monkeypatch.setattr(pm.install_states.shutil, "rmtree", remove_then_launch)
     assert collect_orphan_install_states(installs) == [deleted]
     assert (used / "environments" / "gen" / "venv").is_dir()
+
+
+def test_dry_run_lists_orphans_without_touching_them(tmp_path):
+    installs = tmp_path / "installs"
+    gone = _state(installs, "aaaa", tmp_path / "gone")
+    locked = _state(installs, "bbbb", tmp_path / "gone-too")
+    fd = os.open(locked / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        assert lock_fd(fd, wait=False)
+        assert collect_orphan_install_states(installs, dry_run=True) == [gone]
+        assert gone.exists() and (gone / "environments" / "gen" / "venv").is_dir()
+    finally:
+        os.close(fd)
+    # The real sweep downstream of the same list removes exactly what the hold no longer
+    # protects: the dry-run excluded the locked state, the unlocked sweep takes both.
+    assert set(collect_orphan_install_states(installs)) == {gone, locked}
+    assert not gone.exists() and not locked.exists()

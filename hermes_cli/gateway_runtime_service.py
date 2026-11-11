@@ -111,17 +111,21 @@ def _manager_environment(command: tuple[str, ...] | list[str], deadline: float) 
         manager_environment_pairs,
         manager_environment_pairs_json,
     )
-    result = _run([*command, "show-environment", "--output=json"], deadline)
+    # Bytes, not text: a value can hold a raw CR (v234-248 wrote the control
+    # bytes raw inside the quotes), and text mode would turn it into a line
+    # break and split the value in two.
+    result = _run([*command, "show-environment", "--output=json"], deadline, encoding=None)
     if result.returncode:
         # A build that refuses the flag still has the plain text form.
-        result = _run([*command, "show-environment"], deadline)
+        result = _run([*command, "show-environment"], deadline, encoding=None)
         if result.returncode:
             raise RuntimeStartError("service_identity_unverified", detail=_child_failure(
-                [*command, "show-environment"], result.returncode, result.stderr or result.stdout))
-        return manager_environment_pairs(result.stdout)
-    if result.stdout.startswith("{"):
-        return manager_environment_pairs_json(result.stdout)
-    return manager_environment_pairs(result.stdout)
+                [*command, "show-environment"], result.returncode,
+                (result.stderr or result.stdout).decode("utf-8", "surrogateescape")))
+        return manager_environment_pairs(result.stdout.decode("utf-8", "surrogateescape"))
+    if result.stdout.startswith(b"{"):
+        return manager_environment_pairs_json(result.stdout.decode("utf-8", "surrogateescape"))
+    return manager_environment_pairs(result.stdout.decode("utf-8", "surrogateescape"))
 
 
 def _systemd(home: Path, deadline: float) -> ExistingService | None:

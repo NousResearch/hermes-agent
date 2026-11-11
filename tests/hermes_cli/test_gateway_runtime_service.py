@@ -947,14 +947,31 @@ def test_manager_environment_pairs_keeps_the_raw_reread_off_a_quoting_dump(dump)
         manager_environment_pairs(dump)
 
 
+def test_the_manager_environment_keeps_a_raw_cr(monkeypatch):
+    """A value with a raw CR must survive the read whole.
+
+    v234-248 wrote the control bytes raw inside the ``$'...'`` quotes, so a
+    value can hold a CR that text mode would turn into a line break and split
+    the value in two.
+    """
+    from types import SimpleNamespace
+
+    from hermes_cli import gateway_runtime_service as service
+
+    def run(argv, *_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout=b"MANPAGER=$'a\rb'\n", stderr=b"")
+
+    monkeypatch.setattr(service, "_run", run)
+    assert service._manager_environment(("systemctl", "--user"), 0) == {"MANPAGER": "a\rb"}
+
+
 @pytest.mark.platforms("linux")
 def test_verify_systemd_does_not_mutate_the_manager_environment(tmp_path):
     """The check reads the manager environment; it must not write to it.
 
-    ``verify_systemd`` layered the unit's own ``Environment=`` on top of the
-    caller's mapping and popped from it too, so the unit's variables leaked
-    into the mapping the caller keeps for the other scope. The home the unit
-    names is refused, but only after the environment was rewritten.
+    ``verify_systemd`` gets the caller's mapping and has to leave it as it
+    found it: the caller reuses that mapping for the other scope, so a check
+    that rewrote it would leak one scope's variables into the other.
     """
     import pwd
 

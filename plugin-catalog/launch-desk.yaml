@@ -1,22 +1,22 @@
 name: launch-desk
 title: Launch Desk
 repo: https://github.com/posts-design/hermes-launch-desk
-sha: 8451385f9b8e37313910e5a8d98c45a3a686ddaa
+sha: 745208481188ebad236eb5dc8f9291fecc7aad22
 subdir: ""
 description: "Built something? Ask Hermes to prepare the launch, based on what posts.design learned from launches that worked: ideas from three real launch posts like yours, a post in your own words checked in code for slop, a share card from your own screenshots, colours and logo, and with /launch film a 14-second launch film in your brand plus a checklist so you don't post a sloppy video. You approve a preview first, then get the text, the card and a link that opens X with the post filled in. Disclosure: one posts.design search per run through your own posts MCP server, a fetch of your product site, brand kit and packs stored locally, two check-ins scheduled only if you say Yes, an optional Hermes Desktop page (off until you turn it on) whose read-only backend, served while the plugin is enabled, reads your packs and the times of the check-ins it scheduled, a launch film made only when you ask with /launch film, rendered on your machine by the renderer you set up (a configured command or HyperFrames on PATH) with HyperFrames telemetry off (Launch Desk downloads nothing itself; HyperFrames may download its own headless Chrome on its first render), plus posts.design's free playbook list and, on Pro, one playbook read (1 credit) the first time and again only when posts.design updates it, and nothing is ever posted; see the README for the full list."
 maintainer: posts-design
 tier: community
 category: tools
 requires_hermes: ">=0.22.6"
-docs_url: https://github.com/posts-design/hermes-launch-desk/blob/8451385f9b8e37313910e5a8d98c45a3a686ddaa/README.md
-version: "0.2.2"
-image: https://raw.githubusercontent.com/posts-design/hermes-launch-desk/8451385f9b8e37313910e5a8d98c45a3a686ddaa/assets/banner.png
+docs_url: https://github.com/posts-design/hermes-launch-desk/blob/745208481188ebad236eb5dc8f9291fecc7aad22/README.md
+version: "0.2.3"
+image: https://raw.githubusercontent.com/posts-design/hermes-launch-desk/745208481188ebad236eb5dc8f9291fecc7aad22/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/8451385f9b8e37313910e5a8d98c45a3a686ddaa/assets/screenshots/card-x.png
-  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/8451385f9b8e37313910e5a8d98c45a3a686ddaa/assets/screenshots/card-statement.png
-  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/8451385f9b8e37313910e5a8d98c45a3a686ddaa/assets/screenshots/card-split.png
-  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/8451385f9b8e37313910e5a8d98c45a3a686ddaa/assets/screenshots/feed-preview.png
-  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/8451385f9b8e37313910e5a8d98c45a3a686ddaa/assets/screenshots/cli-flow.png
+  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/745208481188ebad236eb5dc8f9291fecc7aad22/assets/screenshots/card-x.png
+  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/745208481188ebad236eb5dc8f9291fecc7aad22/assets/screenshots/card-statement.png
+  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/745208481188ebad236eb5dc8f9291fecc7aad22/assets/screenshots/card-split.png
+  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/745208481188ebad236eb5dc8f9291fecc7aad22/assets/screenshots/feed-preview.png
+  - https://raw.githubusercontent.com/posts-design/hermes-launch-desk/745208481188ebad236eb5dc8f9291fecc7aad22/assets/screenshots/cli-flow.png
 platforms: []
 known_issues:
   - "To use your posts.design account: hermes mcp add posts --url https://posts.design/mcp --auth oauth, then hermes config set plugins.entries.launch-desk.mcp_allowlist '[\"posts\"]', then hermes mcp login posts. Without it a bundled sample pack is used."

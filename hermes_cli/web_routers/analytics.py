@@ -76,7 +76,7 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         return await asyncio.to_thread(_run)
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
-    except ConfigWriteError as exc:  # an expected refusal (a newer build's stamp) says why
+    except ConfigWriteError as exc:  # an expected refusal (a lock, a bad value, a lost CAS race) says why
         if (refusal := config_refusal_http(exc)) is None:
             raise
         raise refusal from exc

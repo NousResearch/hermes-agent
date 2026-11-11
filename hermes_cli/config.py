@@ -611,8 +611,7 @@ from hermes_cli.personality import (
 # because callers and tests import these from hermes_cli.config)
 
 from hermes_cli.config_version_stamp import (
-    check_config_version, newer_stamp, newer_stamp_message, note_first_stamp, read_config_version_stamp,
-    stamp_missing_config)
+    check_config_version, newer_stamp_message, note_first_stamp, read_config_version_stamp, stamp_missing_config)
 
 
 # ---- Config Migration System ----
@@ -2366,9 +2365,6 @@ def save_config(
         # strip pass drop every user section whose value matches a default (#113301).
         from hermes_cli.config_backend import keeping_read_base
         _raw_for_paths = keeping_read_base(lambda: require_readable_config_before_write(config_path))
-        if (newer := newer_stamp(_raw_for_paths)) is not None and supports_file_tooling():
-            raise ConfigWriteError(f"This change was not saved. {newer_stamp_message(newer)}",
-                                   code="config_newer_stamp")
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
@@ -3370,6 +3366,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         _exit_invalid(f"✗ {e}")
     if legacy_key and _unset_nested(user_config, legacy_key):
         print(f"  (removed the shadowed {legacy_key} duplicate)")
+    from tools.mcp_tool_common import drop_legacy_disabled_for_key
+    drop_legacy_disabled_for_key(user_config, _split_key_path(key))
     # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
     # state of the OLD provider, and the runtime honours them for whatever provider the block now
     # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync

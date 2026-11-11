@@ -964,7 +964,9 @@ def run_migrations(
     with its warning in ``results["failed_warning"]``), else None. The ladder stops there: the
     caller stamps no further than the step before it, so the next pass retries it, and the later
     steps wait for it. Running them now would make that pass run them a second time, and a
-    one-time step would then overwrite a value the user set in between. *stop_at_failure* False
+    one-time step would then overwrite a value the user set in between. A stamp-independent step
+    (46, 50) that raises stops the ladder too, so the later steps wait for it even though the stamp
+    is already past its number and does not move. *stop_at_failure* False
     (an in-memory migration that is never written back) runs the rest anyway.
 
     *config_only* transforms the config document alone (see :data:`_CONFIG_ONLY`).

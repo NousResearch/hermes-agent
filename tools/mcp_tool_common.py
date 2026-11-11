@@ -165,6 +165,17 @@ def write_mcp_server_enabled(cfg: dict, on: bool) -> None:
     cfg.pop("disabled", None)
 
 
+def drop_legacy_disabled_for_key(config: dict, path: list) -> None:
+    """A generic write of ``mcp_servers.<name>.enabled`` (``hermes config set``) also drops the
+    legacy ``disabled``, as :func:`write_mcp_server_enabled` does, or an enable would not take."""
+    if len(path) != 3 or path[0] != "mcp_servers" or path[2] != "enabled":
+        return
+    servers = config.get("mcp_servers")
+    entry = servers.get(path[1]) if isinstance(servers, dict) else None
+    if isinstance(entry, dict) and entry.pop("disabled", None) is not None:
+        print(f"  (removed the legacy mcp_servers.{path[1]}.disabled key)")
+
+
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
     """Optional positive lifecycle timeout from top-level/nested ``lifecycle`` config (``0``
     disables; negatives and non-numbers are warned about and ignored)."""

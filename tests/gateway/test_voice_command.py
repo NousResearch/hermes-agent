@@ -664,7 +664,7 @@ class TestDiscordVoiceChannelMethods:
         from gateway.config import Platform, PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
-        adapter = object.__new__(DiscordAdapter)
+        adapter = DiscordAdapter(config)
         adapter.platform = Platform.DISCORD
         adapter.config = config
         adapter._client = MagicMock()

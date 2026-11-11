@@ -84,5 +84,6 @@ def run(cli, canonical, cmd):
         return route(cli, connection, (cmd or "").strip())
     except GatewayClientError as exc:
         from cli import _cprint
-        _cprint(f"  /{canonical}: {exc}")
+        # A refusal's code alone (``invalid_params``) does not say what to fix; its detail does.
+        _cprint(f"  /{canonical}: {(getattr(exc, 'data', None) or {}).get('detail') or exc}")
         return True

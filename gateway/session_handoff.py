@@ -24,6 +24,16 @@ def _session(connection, ref, params, fields, capability):
     authorize(connection, ref, params, capability)
 
 
+class HandoffRefusal(RuntimeStoreError):
+    """A refusal whose wire ``message`` is the human reason, as the sidecar's handoff errors were:
+    Desktop shows ``error.message`` verbatim, and a bare ``invalid_params`` never says what to fix
+    (``data`` still carries the reason code, field and detail)."""
+
+    def __init__(self, reason, detail, field=None):
+        super().__init__(reason, field=field, detail=detail)
+        self.wire_message = self.detail
+
+
 def _destination(platform_name):
     """The home channel the watcher will deliver to, by the CLI's own rule (relay-fronted platforms
     included): an unconfigured platform or a missing home channel would otherwise sit ``pending``
@@ -32,8 +42,8 @@ def _destination(platform_name):
     try:
         return resolve_handoff_home(platform_name)
     except HandoffTargetError as exc:
-        raise RuntimeStoreError('invalid_params', field='platform', detail=_REFUSALS[exc.reason].format(
-            platform=platform_name)) from None
+        raise HandoffRefusal('invalid_params', _REFUSALS[exc.reason].format(platform=platform_name),
+                       field='platform') from None
 
 
 _REFUSALS = {'unknown_platform': "unknown platform '{platform}'",
@@ -46,19 +56,19 @@ async def request(connection, ref, params):
     _session(connection, ref, params, {'session_id', 'profile', 'platform'}, 'session:control')
     platform_name = params.get('platform')
     if not isinstance(platform_name, str) or not platform_name.strip():
-        raise RuntimeStoreError('invalid_params', field='platform', detail='platform required')
+        raise HandoffRefusal('invalid_params', 'platform required', field='platform')
     platform_name = platform_name.strip().lower()
     live = connection.authority.sessions[ref.session_id]
     if live.task is not None and not live.task.done():
         # The watcher's repoint and synthetic turn would race the running one.
-        raise RuntimeStoreError('session_busy', detail='wait for the current turn to finish, then retry the handoff')
+        raise HandoffRefusal('session_busy', 'wait for the current turn to finish, then retry the handoff')
     db = connection.authority.db
 
     def write():
         home = _destination(platform_name)
         if not db.request_handoff(ref.session_id, platform_name):
-            raise RuntimeStoreError('session_busy', field='handoff',
-                                    detail='a handoff of this session is already in flight; wait for it to settle')
+            raise HandoffRefusal('session_busy', 'a handoff of this session is already in flight; wait for it to settle',
+                           field='handoff')
         return home
     home = await asyncio.to_thread(write)
     return {'queued': True, 'session_key': ref.session_id, 'platform': platform_name, 'home_name': home.name}

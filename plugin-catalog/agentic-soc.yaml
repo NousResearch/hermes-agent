@@ -1,7 +1,7 @@
 name: agentic-soc
 title: Hermes Agentic SOC
 repo: https://github.com/CyStrat-Services-GmbH/hermes-agentic-soc
-sha: 03bdbbcb21052d2409ebc595a270c28157667b30
+sha: 76dc9c3081b805d32946b994b779a444d34258db
 description: >-
   Evidence-first SOC and DFIR work for Hermes: six defense specialist personas
   (L1 triage, L2 incident response, threat hunting, DFIR compromise
@@ -20,7 +20,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/CyStrat-Services-GmbH/hermes-agentic-soc
-version: "0.2.3"
+version: "0.2.4"
 platforms: []
 known_issues:
   - "Local THOR triage needs a separately licensed THOR Lite executable: set `thor_path` in the plugin settings. No THOR binary, signature or rule set is bundled or downloaded."

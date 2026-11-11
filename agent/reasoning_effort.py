@@ -276,3 +276,16 @@ def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[
     effort = requested_effort(reasoning_config)
     clamped = clamp_effort(None if effort == "none" else effort, OX_ALPHA_EFFORTS, OX_ALPHA_OVERRIDES)
     return ({}, {"reasoning_effort": clamped}) if clamped in OX_ALPHA_EFFORTS else ({}, {})
+
+
+def alias_reasoning_level(result: object) -> str:
+    """The ``reasoning_effort`` a resolved alias bundles, as a ``--reasoning`` level ("" = none).
+
+    An alias like ``fast: {model: ..., reasoning_effort: low}`` names a model AND an effort, so a
+    plain ``/model fast`` applies both on every surface; an explicit ``--reasoning`` still wins."""
+    cfg = getattr(result, "reasoning_config", None)
+    if not isinstance(cfg, dict):
+        return ""
+    if cfg.get("enabled") is False:
+        return "none"
+    return str(cfg.get("effort") or "").strip().lower()

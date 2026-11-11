@@ -367,11 +367,29 @@ model_aliases:
     provider: x-ai
 ```
 
-For messaging gateways, an alias can also set `reasoning_effort`, such as `medium` or `false` to disable reasoning.
-A normal `/model <alias>` switch replaces the previous session reasoning override with this value.
-Without an alias reasoning value, the switch clears the previous override and uses per-model or global defaults.
-An explicit `/model <alias> --reasoning <level>` takes precedence.
-This behavior does not change CLI, TUI, Desktop, or temporary `/model --once` switches.
+An alias can also bundle a reasoning effort, so one word picks both the model
+and how hard it thinks (like an effort preset):
+
+```yaml
+model_aliases:
+  quick:
+    model: google/gemini-3.8-flash
+    provider: openrouter
+    reasoning_effort: low
+  deep:
+    model: anthropic/claude-opus-5.5
+    provider: openrouter
+    reasoning_effort: xhigh
+```
+
+`/model quick` then switches the model and sets the session's reasoning to `low`
+on every surface (CLI, TUI, Desktop, messaging). `reasoning_effort: false`
+(or `none`) turns reasoning off. An explicit `/model quick --reasoning high`
+wins over the alias value. The alias's effort is session-scoped: `--global`
+saves the model, not the alias's effort. In messaging, a plain switch to an
+alias without `reasoning_effort` also clears the previous session override, so
+per-model or global defaults apply. `/model --once` in messaging leaves
+reasoning unchanged; in the CLI/TUI it applies the effort for that one turn.
 
 An alias that points at its own endpoint can also carry that endpoint's
 credential, with either `api_key` (a literal, or a `"${VAR}"` reference) or

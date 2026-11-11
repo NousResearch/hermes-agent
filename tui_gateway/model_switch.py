@@ -388,8 +388,8 @@ def _apply_model_switch(
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
-    if reasoning_effort:
-        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
+    _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global,
+                            one_turn=one_turn, result=result)
     if count_switch:
         from hermes_cli.observability.shared_metrics_events import record_model_switch
 
@@ -437,12 +437,17 @@ def _reset_session_model_override(sid: str, session: dict) -> dict:
             "confirm_required": False, "scope": "session"}
 
 
-def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_global: bool, one_turn: bool) -> None:
+def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_global: bool, one_turn: bool,
+                            result=None) -> None:
     """``/model X --reasoning <level>``: the effort rides with the pick and shares its scope. Runs
     AFTER ``agent.switch_model`` (which re-resolves ``reasoning_config`` from config.yaml, so an
     earlier write would be clobbered). ``--once`` restores through ``one_turn_model_restore`` —
-    the snapshot's ``primary_runtime`` carries the pre-switch ``reasoning_config``."""
+    the snapshot's ``primary_runtime`` carries the pre-switch ``reasoning_config``. Without a
+    flag, the alias the pick resolved through may bundle a level: session-scoped, never --global."""
+    from agent.reasoning_effort import alias_reasoning_level
     from hermes_constants import parse_reasoning_effort
+    if not effort:
+        effort, persist_global = alias_reasoning_level(result), False
     parsed = parse_reasoning_effort(effort)
     if parsed is None:
         return

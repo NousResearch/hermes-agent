@@ -17,6 +17,7 @@ from hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
     host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
+from hermes_constants import parse_reasoning_effort
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
@@ -635,7 +636,6 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     if parsed.is_once and not parsed.model_input and not parsed.explicit_provider:
         errors.append(MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET)
     if parsed.reasoning_effort:
-        from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(parsed.reasoning_effort) is None:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
     if parsed.model_input.strip().lower() == MODEL_SWITCH_RESET_TOKEN and (
@@ -1787,11 +1787,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         request_overrides = _custom_provider_request_overrides(cp_for_ro) or None if cp_for_ro else None
     except Exception:
         request_overrides = None
-    from hermes_constants import parse_reasoning_effort
-    alias = DIRECT_ALIASES.get(st.resolved_alias)
-    reasoning_config = parse_reasoning_effort(alias.reasoning_effort) if alias else None
     return ModelSwitchResult(
-        reasoning_config=reasoning_config,
+        reasoning_config=parse_reasoning_effort(getattr(DIRECT_ALIASES.get(st.resolved_alias), "reasoning_effort", None)),
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",

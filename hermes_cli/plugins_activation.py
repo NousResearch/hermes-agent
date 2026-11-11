@@ -60,13 +60,14 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
         now["callbacks"] = callbacks
     if kinds.get("locale"):  # language-pack layers: the i18n caches reset on registration, so live at once
         now["locales"] = sorted(kinds["locale"])
+    load_error = ""
     if getattr(manifest, "kind", None) == "model-provider":
-        # providers/ discovery owns these and the forced sweep re-scans them: an update is live for new
-        # requests unless its import failed (#153300).
+        # providers/ discovery owns these and the forced sweep re-scans them: an updated tree serves new
+        # sessions once it imported; a failed import leaves the previous version serving (#153300).
         from providers import plugin_load_error
-        if error := plugin_load_error(Path(getattr(manifest, "path", None) or name).name):
-            return {"name": name, "key": plugin_key, "activated_now": {}, "deferred": {}, "load_error": error}
-        now["provider"] = [name]
+        load_error = plugin_load_error(Path(getattr(manifest, "path", None) or name).name)
+        if not load_error:
+            now["provider"] = [name]
     deferred: dict[str, list[str]] = {}
     tools = sorted(set(kinds.get("tool", ())) | set(getattr(loaded, "tools_registered", None) or ())
                    | set(getattr(manifest, "provides_tools", None) or ()))
@@ -79,6 +80,8 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
     if servers:
         deferred["mcp_servers"] = servers
     summary = {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}
+    if load_error:
+        summary["load_error"] = load_error
     # Read in the process that loaded the plugin (for a gateway answer, the gateway): a dependency
     # installed after it booted is not importable there until it restarts.
     from hermes_cli.plugins_loader import missing_python_dependencies
@@ -152,6 +155,10 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
     if missing:
         activation = {**(activation or {"name": name, "key": name}), "missing_dependencies": missing,
                       "missing_in": [process for process, deps in gaps.items() if deps]}
+    if gateway_error := (gateway_activation or {}).get("load_error"):
+        # The gateway's own import result decides what the gateway serves, whatever this process loaded.
+        now = {k: v for k, v in ((activation or {}).get("activated_now") or {}).items() if k != "provider"}
+        activation = {**(activation or gateway_activation), "activated_now": now, "load_error": gateway_error}
     return {"gateway_reloaded": reloaded, "activation": activation,
             "restart_required": not reloaded or bool(missing)}
 
@@ -323,7 +330,8 @@ def activation_hint(result: dict[str, Any]) -> str:
     if missing := act.get("missing_dependencies"):
         return "\n".join([*lines, dependency_restart_hint(missing, act.get("missing_in") or [])])
     if error := act.get("load_error"):
-        return "\n".join([*lines, f"The provider plugin failed to load in the running gateway: {error}"])
+        return "\n".join([*lines, f"The updated provider plugin failed to load ({error}); "
+                                  "the previous version keeps serving."])
     if not result.get("gateway_reloaded"):
         # Live in open chats, or no gateway runs or is installed for this profile (first-time setup):
         # a messaging gateway that starts later loads it at boot, so a restart applies to nothing.
@@ -333,7 +341,7 @@ def activation_hint(result: dict[str, Any]) -> str:
     now, deferred = act.get("activated_now") or {}, act.get("deferred") or {}
     parts = []
     if now:
-        now_labels = {"provider": "model provider (new requests use this version)"}
+        now_labels = {"provider": "model provider (new sessions use this version)"}
         parts.append("active in the running gateway now: " + ", ".join(now_labels.get(k, k) for k in sorted(now)))
     if deferred:
         labels: dict[str, str] = {"tools": "tools (next session)", "prompt": "system prompt (next session)",

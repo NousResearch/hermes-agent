@@ -3,20 +3,10 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 ``_sanitize_subprocess_env``, ``hermes_subprocess_env``) live in ``tools.environments.local``."""
 
 import functools
-import hashlib
 import os
 from typing import Optional
 
-# Ownership markers of the YAML -> env bridge (``gateway.platforms._shared.bridged_env_marker``).
-BRIDGED_ENV_MARKER_PREFIX = "HERMES_BRIDGED_"
-
-
-def bridged_env_digest(value: Optional[str]) -> Optional[str]:
-    """What a bridge marker stores for *value* (None stays None, so an unset name never matches).
-
-    Lives in this leaf so the spawn path (``local.served_profile_child_env``), which the post-update
-    restart runs after the checkout moves, never imports ``gateway.platforms``."""
-    return None if value is None else "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"

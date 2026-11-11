@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterable, Optional
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
-from tools.environments.local_env_policy import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
+from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
 
 logger = logging.getLogger(__name__)
 
@@ -157,8 +157,8 @@ def profile_scoped() -> bool:
 # edited YAML would never take effect (#109032's mirror image). The marker holds a digest, never
 # the value: bridged names include credential-bearing ones (``TELEGRAM_PROXY``) and allowlists the
 # subprocess scrub strips, and ownership only needs equality. The scrub also drops the markers
-# (``local_env_policy._is_hermes_internal_secret``); only a same-profile restart child gets them back. The prefix and digest live in that
-# leaf so the spawn path never imports ``gateway.platforms``.
+# (``local_env_policy._is_hermes_internal_secret``); only a same-profile restart child gets them back. The prefix and digest live in the
+# stdlib-only ``gateway.bridged_env`` so the spawn path never imports ``gateway.platforms``.
 
 
 def bridged_env_marker(name: str) -> str:

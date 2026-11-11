@@ -148,7 +148,7 @@ class ConfigBackendUnavailable(SystemExit):
     backend's config is exactly the silent failure this must not become."""
 
     # Names only: consumers may explain a refused source mapping without copying error text.
-    protected_env_names: tuple[str, ...] = ()
+    clashing_env_names: tuple[str, ...] = ()
 
 
 class ConfigWriteError(RuntimeError):

@@ -904,7 +904,7 @@ def _refuse_protected_env_from_sources(report, backend=None, environ_before=None
         f"A secrets: source supplies {', '.join(clash)}, which the {backend.name!r} config "
         "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
         f"from a secret source; remove the mapping. {outcome}")
-    error.protected_env_names = tuple(clash)
+    error.clashing_env_names = tuple(clash)
     raise error
 
 

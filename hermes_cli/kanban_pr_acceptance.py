@@ -97,8 +97,8 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
             hydrate_profile_secret_sources(profile_home)
     except ConfigBackendUnavailable as exc:
         detail = "assignee profile configuration/secret sources unavailable"
-        if exc.protected_env_names:
-            detail += (f"; a secret source supplies protected environment names: {', '.join(exc.protected_env_names)}. "
+        if exc.clashing_env_names:
+            detail += (f"; a secret source supplies protected environment names: {', '.join(exc.clashing_env_names)}. "
                        "Remove those mappings from the secret source configuration.")
         raise _GateAuthError(detail) from None
     if routed:

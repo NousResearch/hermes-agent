@@ -126,22 +126,46 @@ def check_and_record(
     return tripped
 
 
+def _load_sent(path) -> list[float]:
+    try:
+        sent = json.loads(path.read_text(encoding="utf-8-sig")).get("sent", [])
+        return [float(t) for t in sent if isinstance(t, (int, float))]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+
+
 def notice_loop_tripped(
     max_restarts: int = DEFAULT_MAX_RESTARTS, window_seconds: int = DEFAULT_WINDOW_SECONDS, *,
     now: Optional[float] = None, max_gap_seconds: int = DEFAULT_MAX_GAP_SECONDS,
 ) -> bool:
-    """Record one home-channel shutdown broadcast; True when ``max_restarts`` already went out in this
-    chain, so this one stays quiet. Muted broadcasts are recorded too: the loop stays muted until the
-    gateway has been up longer than the chain gap."""
+    """Record one stop in the home-notice chain; True when ``max_restarts`` notices were already
+    DELIVERED in this chain, so this one stays quiet. Every checked stop links the chain (a muted or
+    undeliverable one too: the loop stays muted until the gateway has been up longer than the chain
+    gap), but only :func:`record_notice_delivered` spends a slot, so a cycle with no connected
+    adapter does not use up a notice the user never saw."""
     ts = time.time() if now is None else now
     path = _notice_state_path()
     chain = _chain_ending_at(_load_boots(path), ts, _chain_gap(window_seconds, max_gap_seconds))
-    _save_boots((chain + [ts])[-_MAX_STORED_BOOTS:], path)
-    tripped = max_restarts > 0 and len(chain) >= max_restarts
+    sent = [t for t in _load_sent(path) if chain and t >= chain[0]]
+    _save_notice_state(chain + [ts], sent, path)
+    tripped = max_restarts > 0 and len(sent) >= max_restarts
     if tripped:
         logger.warning(
             "Restart loop: %d home-channel shutdown notices already sent with no gap wider than %ds; this one "
             "stays quiet until the gateway stays up. If this is a false positive, delete %s.",
-            len(chain), int(_chain_gap(window_seconds, max_gap_seconds)), path,
+            len(sent), int(_chain_gap(window_seconds, max_gap_seconds)), path,
         )
     return tripped
+
+
+def record_notice_delivered(*, now: Optional[float] = None) -> None:
+    """Spend one slot of the current chain: this stop's goodbye reached a home chat."""
+    path = _notice_state_path()
+    _save_notice_state(_load_boots(path), _load_sent(path) + [time.time() if now is None else now], path)
+
+
+def _save_notice_state(boots: list[float], sent: list[float], path) -> None:
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"boots": boots[-_MAX_STORED_BOOTS:], "sent": sent[-_MAX_STORED_BOOTS:]}),
+                        encoding="utf-8")

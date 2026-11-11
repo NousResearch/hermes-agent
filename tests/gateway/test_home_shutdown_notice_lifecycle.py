@@ -34,13 +34,13 @@ def _home_sends(adapter) -> int:
     return sum(1 for chat_id, _text, _meta in adapter.sent_calls if chat_id == HOME_CHAT)
 
 
-async def _stop_cycle(runner, adapter) -> None:
+async def _stop_cycle(runner, adapter, *, adapters=None) -> None:
     """One process lifetime ending in the real ``stop()`` (a fresh runner state per respawn)."""
     runner._home_shutdown_notice = None
     runner._running = True
     runner._stop_task = None
     runner._shutdown_event = asyncio.Event()
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.TELEGRAM: adapter} if adapters is None else adapters
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"):
         await runner.stop()
 
@@ -110,3 +110,15 @@ async def test_respawn_loop_caps_home_notices_with_running_home_task(runner):
 
     assert _home_sends(adapter) == 3  # restart_loop_guard.DEFAULT_MAX_RESTARTS
     assert not planned_restart_marker_path().exists()
+
+
+
+@pytest.mark.asyncio
+async def test_loop_cap_counts_delivered_notices_not_attempts(runner):
+    """A respawn that dies before Telegram connects tells nobody, so it must not spend a slot."""
+    runner, adapter = runner
+    for _ in range(10):
+        await _stop_cycle(runner, adapter, adapters={})  # no adapter connected: nothing delivered
+        await _stop_cycle(runner, adapter)
+
+    assert _home_sends(adapter) == 3  # restart_loop_guard.DEFAULT_MAX_RESTARTS delivered goodbyes

@@ -37,6 +37,11 @@ def settle_home_online_notice_debt(runner) -> None:
             logger.debug("Could not drop the planned-restart marker after a loop-muted stop", exc_info=True)
     elif outcome == HOME_NOTICE_SENT and not runner._restart_requested:
         write_planned_restart_marker()
+    if outcome == HOME_NOTICE_SENT and getattr(runner, "_home_notice_loop_checked", False):
+        # The loop cap counts goodbyes users saw, not stops that tried (a cycle with no adapter up).
+        from gateway import restart_loop_guard as rlg
+        rlg.record_notice_delivered()
+    runner._home_notice_loop_checked = False
 
 
 class GatewayHomeShutdownNoticeMixin:
@@ -45,6 +50,7 @@ class GatewayHomeShutdownNoticeMixin:
     # Set by the signal handler when SIGTERM is a planned ``--replace`` takeover (gateway/run_bootstrap.py).
     _planned_takeover_shutdown: bool = False
     _home_shutdown_notice: Optional[str] = None
+    _home_notice_loop_checked: bool = False  # this stop was linked into the notice chain
 
     def _home_shutdown_notice_muted_by_loop(self) -> bool:
         """Record this broadcast in the persisted notice chain; True once the chain is a loop.
@@ -54,6 +60,7 @@ class GatewayHomeShutdownNoticeMixin:
         chain and its limits are the restart-loop breaker's (``gateway.restart_loop_guard``)."""
         from gateway import restart_loop_guard as rlg
         max_restarts, window, max_gap = self._restart_loop_guard_config()
+        self._home_notice_loop_checked = True
         return rlg.notice_loop_tripped(max_restarts, window, max_gap_seconds=max_gap)
 
     def _home_shutdown_broadcast_skip_reason(self) -> Optional[str]:

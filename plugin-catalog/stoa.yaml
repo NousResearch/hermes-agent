@@ -1,7 +1,7 @@
 name: stoa
 title: Stoa
 repo: https://github.com/jarrett-del/hermes-stoa
-sha: 17999c00890f67c2d9bc223f3615bd31b80c903e
+sha: aa7fbc334303f4298820ebcea1384a19bd57fca6
 description: "A lightweight CRM you talk to: map a market, find the leads, run the pipeline. Send it a list in any form and approve what it would add or change before anything is saved. Market maps that check every company against your requirements with evidence, show who holds the market and who to call first, export as a shareable page and become leads in one click; a live pane beside the chat in the Desktop app and Webapp, with cards and maps drawn in the conversation; a web dashboard tab; a SQLite pipeline, playbooks that fit it to any niche, Slack cards whose buttons move a stage at once and hand the writing to Hermes, and meeting notes that become next steps. Disclosure — optional network calls to api.peopledatalabs.com (paid per result, capped), api.exa.ai and public-api.granola.ai only when their keys are set; reads the notes folder and CSV paths you name, writes exports to its own data folder; with allow_gateway_injection a button click queues one agent turn in the thread. Hermes Agent Plugin Hackathon entry."
 maintainer: jarrett-del
 tier: community
@@ -9,14 +9,14 @@ category: tools
 requires_hermes: ">=0.23.0"
 version: "0.6.2"
 platforms: [linux, macos]
-image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/17999c00890f67c2d9bc223f3615bd31b80c903e/docs/banner.jpg
+image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/aa7fbc334303f4298820ebcea1384a19bd57fca6/docs/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/17999c00890f67c2d9bc223f3615bd31b80c903e/docs/desktop-pane.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/17999c00890f67c2d9bc223f3615bd31b80c903e/docs/desktop-intake.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/17999c00890f67c2d9bc223f3615bd31b80c903e/docs/dashboard-pipeline.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/17999c00890f67c2d9bc223f3615bd31b80c903e/docs/dashboard-market-map.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/17999c00890f67c2d9bc223f3615bd31b80c903e/docs/dashboard-market-read.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/17999c00890f67c2d9bc223f3615bd31b80c903e/docs/dashboard-record.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/aa7fbc334303f4298820ebcea1384a19bd57fca6/docs/desktop-pane.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/aa7fbc334303f4298820ebcea1384a19bd57fca6/docs/desktop-intake.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/aa7fbc334303f4298820ebcea1384a19bd57fca6/docs/dashboard-pipeline.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/aa7fbc334303f4298820ebcea1384a19bd57fca6/docs/dashboard-market-map.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/aa7fbc334303f4298820ebcea1384a19bd57fca6/docs/dashboard-market-read.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/aa7fbc334303f4298820ebcea1384a19bd57fca6/docs/dashboard-record.jpg
 capabilities:
   provides_tools:
     - gtm_pipeline

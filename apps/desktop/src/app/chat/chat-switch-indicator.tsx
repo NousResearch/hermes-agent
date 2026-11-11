@@ -24,11 +24,17 @@ export type SwitchIndicatorState = 'failed' | 'idle' | 'pending' | 'slow' | 'sta
 
 type SwitchStage = 'pending' | 'slow' | 'stalled'
 
-// The stage is remembered together with the target it was measured for, so a
-// new target reads as `pending` in the same render instead of inheriting the
-// previous switch's rung for a frame.
+// Remember idle as a target transition too: retrying the same failed profile
+// must not inherit its previous attempt's stalled stage.
 function useSwitchStage(target: null | string): null | SwitchStage {
-  const [measured, setMeasured] = useState<{ stage: SwitchStage; target: string } | null>(null)
+  const [measured, setMeasured] = useState<{ stage: SwitchStage; target: null | string }>({
+    stage: 'pending',
+    target
+  })
+
+  if (measured.target !== target) {
+    setMeasured({ stage: 'pending', target })
+  }
 
   useEffect(() => {
     if (!target) {
@@ -48,7 +54,7 @@ function useSwitchStage(target: null | string): null | SwitchStage {
     return null
   }
 
-  return measured?.target === target ? measured.stage : 'pending'
+  return measured.target === target ? measured.stage : 'pending'
 }
 
 // Tint over an opaque surface: the pill floats over transcript text, so the

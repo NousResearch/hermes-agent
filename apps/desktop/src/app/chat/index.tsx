@@ -483,6 +483,28 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
   )
 })
 
+// Vibe hearts rise from the composer only when no pet is out (else they play
+// on the pet). Keep the pet subscriptions with this reaction-event surface.
+function ComposerHeartField() {
+  const petActive = useStore($petActive)
+  const petOverlayActive = useStore($petOverlayActive)
+
+  if (petActive || petOverlayActive) {
+    return null
+  }
+
+  return (
+    <HeartField
+      className="absolute inset-x-0 z-30"
+      config={COMPOSER_HEART_CONFIG}
+      style={{
+        top: 0,
+        bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
+      }}
+    />
+  )
+}
+
 const ChatViewContent = memo(function ChatViewContent({
   className,
   gateway,
@@ -556,10 +578,6 @@ const ChatViewContent = memo(function ChatViewContent({
   const currentCwd = useStore(view.$cwd)
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
-  // A pet anywhere (in-window or popped out) owns the hearts; composer only when none.
-  const petActive = useStore($petActive)
-  const petOverlayActive = useStore($petOverlayActive)
-  const petPresent = petActive || petOverlayActive
   const freshDraftReady = useStore($freshDraftReady)
   const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
@@ -824,18 +842,7 @@ const ChatViewContent = memo(function ChatViewContent({
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}
           {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
-          {/* Vibe hearts rise from the composer only when no pet is out (else
-              they play on the pet). Fired by the core `reaction` event. */}
-          {!petPresent && (
-            <HeartField
-              className="absolute inset-x-0 z-30"
-              config={COMPOSER_HEART_CONFIG}
-              style={{
-                top: 0,
-                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
-              }}
-            />
-          )}
+          <ComposerHeartField />
           {/* A session drag hovering an EDGE hands the visual to the zone
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />

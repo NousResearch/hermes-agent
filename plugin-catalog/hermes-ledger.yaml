@@ -1,0 +1,23 @@
+name: hermes-ledger
+title: Hermes Ledger
+repo: https://github.com/elyga408-oss/hermes-ledger
+sha: a9fa5a626810496f57ec4fb37fe9253035fd16d6
+version: "0.1.0"
+description: "Tamper-evident flight recorder: every tool call (arguments redacted), a SHA-256 of every result, and every approval decision are appended to a local hash-chained, Ed25519-signed log. `hermes ledger verify` walks the chain and names the first edited, deleted, reordered or truncated entry; `hermes ledger show` prints a timeline; `hermes ledger export --receipt` writes a signed receipt of one session that anyone can check with only the public key (records from other sessions appear as content-free stubs), with `hermes ledger verify-receipt` or the bundled standalone verify_receipt.py. An approval record binds to the exact call it approved. Adds a /ledger slash command, a Ledger dashboard tab with a chain-intact badge, and the skill hermes-ledger:ledger-audit. It proves the log was not changed after writing, not that the agent was honest when it wrote it (threat model in the README). Disclosure — five observer hooks (pre_tool_call, post_tool_call, post_approval_response, on_session_start, on_session_end) see every tool call's name, arguments and result and every approval prompt; arguments are redacted by pattern (sensitive key names, bearer/sk- and other token shapes, PEM keys, NAME=value secrets) before writing, which is best effort; results are hashed, never stored; writes only under plugin-data/hermes-ledger/ (ledger.jsonl, ledger.head, an Ed25519 private key at mode 0600 that is never printed, and its public key); the log is never pruned; observer only, never blocks, approves, denies or changes a call; no network, no credentials read, no background processes, no shell commands."
+maintainer: elyga408-oss
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/elyga408-oss/hermes-ledger#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_approval_response
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

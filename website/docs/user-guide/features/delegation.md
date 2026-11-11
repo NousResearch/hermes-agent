@@ -85,7 +85,7 @@ Subagents start with a **completely fresh conversation**. They have zero knowled
 
 One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
 
-The `goal` and `context` arrive as the subagent's first user message. Its system prompt carries nothing task-specific, so the subagents of one parent send an identical prompt prefix and can read each other's prompt cache.
+The `context` and `goal` arrive as the subagent's first user message, context first. Its system prompt carries nothing task-specific, so the subagents of one parent send an identical prompt prefix and can read each other's prompt cache, including a context they share. That first message is kept verbatim through context compression.
 
 This means the parent agent must pass **everything** the subagent needs in the call:
 
@@ -104,7 +104,7 @@ delegate_task(
 )
 ```
 
-The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
+The subagent's first message is your context followed by the goal. Its system prompt instructs it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
 
 ### Forwarding Images to a Subagent
 

@@ -217,8 +217,21 @@ def _build_child_system_prompt(
     return "\n".join(parts)
 
 def child_task_message(goal: str, context: Optional[str]) -> str:
-    """The child's first user turn: the goal, then the parent's context for it."""
-    return f"{goal}\n\nCONTEXT:\n{context}" if context and context.strip() else goal
+    """The child's first user turn: the parent's context, then the goal.
+
+    Context first, so siblings given one brief send the same leading bytes, and registered as the
+    message's stable prefix, which gives it a cache breakpoint of its own on marker routes. Every
+    brief is registered: a parent often sends one brief in separate calls, which a per-call
+    "shared" test cannot see. Scaffolds in use are refreshed on every request, so a wide fan-out
+    evicts only idle ones (one re-write when that session resumes).
+    """
+    if not (context and context.strip()):
+        return goal
+    from agent.prompt_cache_boundary import register_stable_prefix
+
+    prefix = f"CONTEXT:\n{context}\n\nTASK:\n"
+    register_stable_prefix(prefix)
+    return prefix + goal
 
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:

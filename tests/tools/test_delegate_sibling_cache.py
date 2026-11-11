@@ -32,8 +32,7 @@ def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn(
     assert first["tools"] == second["tools"]
     assert "auditing numbers" not in str(first["messages"][0])
     task = first["messages"][1]
-    assert task["role"] == "user" and task["content"].startswith("count the files")
-    assert "The parent is auditing numbers." in task["content"]
+    assert task["role"] == "user" and task["content"] == "CONTEXT:\nThe parent is auditing numbers.\n\nTASK:\ncount the files"
     assert "The parent is fixing the gateway." in second["messages"][1]["content"]
 
 
@@ -70,6 +69,51 @@ def test_schema_correction_turn_carries_the_contract_even_after_a_compaction():
     assert len(correction["messages"]) < len(requests[-2]["messages"]), "the retry was expected to compact"
     assert "OUTPUT CONTRACT" in correction["messages"][-1]["content"] and '"count"' in correction["messages"][-1]["content"]
     assert len(entry["tool_trace"]) == 10
+
+
+def test_a_shared_brief_is_one_cacheable_prefix_for_every_sibling():
+    """Siblings given one context send it as the same leading bytes, as their own marked part on a marker route."""
+    from agent.prompt_caching import apply_anthropic_cache_control
+    from tools.delegate_tool_progress import child_task_message
+
+    brief = "Repo layout and rules: " + "x" * 2000
+    one, two = (child_task_message(goal, brief) for goal in ("find the bug", "write the test"))
+
+    def first_user_parts(content):
+        planned = apply_anthropic_cache_control([{"role": "system", "content": "sys"}, {"role": "user", "content": content}])
+        return planned[1]["content"]
+
+    parts_one, parts_two = first_user_parts(one), first_user_parts(two)
+    assert parts_one[0] == parts_two[0] and brief in parts_one[0]["text"] and "cache_control" in parts_one[0]
+    assert parts_one[1]["text"].endswith("find the bug")
+    assert first_user_parts(child_task_message("lone task", None))[0]["text"] == "lone task"
+
+
+def test_a_steered_child_keeps_its_brief_through_a_second_compaction():
+    """After a steer, compaction restates the steer as the in-flight turn; the brief must not go into the summary."""
+    from unittest.mock import patch
+
+    from agent.context_compressor import ContextCompressor
+    from agent.prompt_builder import steer_user_row
+
+    brief = "CONTEXT:\nRULE-IN-THE-MIDDLE " + "detail " * 300 + "\n\nTASK:\ncount the files"
+    rounds = []
+    for i in range(30):
+        cid = f"c{i}"
+        rounds += [{"role": "assistant", "content": "", "tool_calls": [{"id": cid, "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"}}]},
+                   {"role": "tool", "tool_call_id": cid, "content": "output " * 200}]
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": brief}] + rounds[:26]
+    messages += [steer_user_row("also check the tests")] + rounds[26:]
+
+    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        child = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=4)
+    child.pin_task_turn = True
+    child.compression_count = 1  # the steer lands after an earlier compaction
+    with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+        out = child.compress(messages)
+
+    assert any(m.get("role") == "user" and m.get("content") == brief for m in out)
 
 
 def test_codex_siblings_share_the_session_header_the_backend_caches_under():

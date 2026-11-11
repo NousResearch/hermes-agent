@@ -24,7 +24,7 @@ os.makedirs(home); os.makedirs(ws)
 isolate_host(root, home)
 NONCE = uuid.uuid4().hex[:10]
 with open(os.path.join(home, "config.yaml"), "w") as f:
-    f.write("delegation:\n  max_iterations: 14\n")
+    f.write("delegation:\n  max_iterations: 14\n  max_concurrent_children: 10\n")
 # A per-run SOUL line keeps every other live session's cache entries out of this run.
 with open(os.path.join(home, "SOUL.md"), "w") as f:
     f.write(f"You are Hermes. Probe run {NONCE}.\n")
@@ -73,6 +73,13 @@ def _ends_with(final, marker):
     return str(final or "").rstrip().endswith(marker)
 
 
+SHARED_BRIEF = ("The parent is auditing the numbers in this repo. End your final reply with the exact word AUDIT-OK.\n"
+                + open(os.path.join(TREE, "AGENTS.md")).read()[:13000])
+if os.environ.get("SC_SHARED") == "1":  # one long brief for every child, different goals
+    CHILDREN = [(n, SHARED_BRIEF, f, w, "AUDIT-OK") for n, _, f, w, _ in CHILDREN]
+if os.environ.get("SC_WIDE"):  # N children in one batch, same brief shape, distinct files
+    CHILDREN = [(f"W{i}", CHILDREN[i % 3][1], CHILDREN[i % 3][2], CHILDREN[i % 3][3], CHILDREN[i % 3][4])
+                for i in range(int(os.environ["SC_WIDE"]))]
 GOAL = "Use the terminal to list this directory, then read {}.txt and reply with the number in it."
 if os.environ.get("SC_LONG") == "1":  # several rounds per child, to see in-session reads past the shared prefix
     GOAL = ("Run these one per terminal call, in this order, never combined: `ls -la`, `cat alpha.txt`, `cat beta.txt`, "
@@ -80,12 +87,13 @@ if os.environ.get("SC_LONG") == "1":  # several rounds per child, to see in-sess
             "Then reply with the number in {}.txt.")
 if os.environ.get("SC_PARALLEL") == "1":  # one batch: do concurrent siblings under one scope still cache in-session?
     raw = delegate_task(tasks=[{"goal": GOAL.format(c[2]), "context": c[1]} for c in CHILDREN], parent_agent=parent)
+    print(raw[:300], file=sys.stderr) if not raw.lstrip().startswith("{") else None
     results = json.loads(raw).get("results") or []
     by_sid = {}
     for c in calls:
         by_sid.setdefault(c["sid"], []).append((c["prompt"], c["cache_read"]))
     rec = {"arm": ARM, "route": PROVIDER, "model": MODEL, "parallel": True, "nonce": NONCE,
-           "task_ok": [c[3] in str(r.get("summary") or "") for c, r in zip(CHILDREN, results)],
+           "task_ok": [c[3] in str(r.get("summary") or "") for c, r in zip(CHILDREN, results)], "n_children": len(CHILDREN),
            "context_followed": [_ends_with(r.get("summary"), c[4]) for c, r in zip(CHILDREN, results)],
            "n_results": len(results), "finals": [str(r.get("summary") or "")[-200:] for r in results],
            "calls": list(by_sid.values())}

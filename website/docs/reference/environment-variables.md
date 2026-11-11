@@ -332,6 +332,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `TELEGRAM_FREE_RESPONSE_CHATS` | Comma-separated chat IDs where `require_mention` is bypassed and Hermes responds to every group message. Equivalent to `telegram.free_response_chats`. |
 | `TELEGRAM_FREE_RESPONSE_TOPICS` | Comma-separated `<chat_id>:<thread_id>` pairs where `require_mention` is bypassed for a single forum topic only. Telegram's General topic is normalized to thread ID `1`. Equivalent to `telegram.free_response_topics`. |
 | `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
+| `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | Debounce window for Telegram photo/album bursts (default: `0.8`). |
+| `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | Debounce window for rapid consecutive Telegram text messages (default: `0.3`, clamped `0.08`–`2.0`). |
+| `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Extra window to detect client-side splits of one long Telegram message (default: `1.0`, clamped between the text batch delay and `4.0`). |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
 | `DISCORD_ALLOW_ALL_USERS` | Allow any Discord user to trigger the bot (dev only). |

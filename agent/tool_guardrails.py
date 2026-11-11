@@ -359,13 +359,15 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
         return decision
 
-    def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
+    def before_call(
+        self, tool_name: str, args: Mapping[str, Any] | None, *, loop_caps: bool = True,
+    ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
-        cap_block = self._check_loop_cap(tool_name, args, signature)
+        # A call that will not run neither spends nor meets a cap; caps otherwise ignore hard_stop_enabled.
+        cap_block = self._check_loop_cap(tool_name, args, signature) if loop_caps else None
         if cap_block is not None or not self.config.hard_stop_enabled:
             return cap_block or allow
         # A mutation since this call last failed makes the retry a new experiment.

@@ -1175,7 +1175,7 @@ def _ask_yes_no(prompt: str) -> bool:
 
 def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, Any]:
     """Migrate config to latest version, prompting for new required fields."""
-    results = {"env_added": [], "config_added": [], "warnings": []}
+    results = {"env_added": [], "config_added": [], "warnings": [], "floor_refused": False}
 
     stamp_missing_config()  # a missing config.yaml reads as current below: stamp its legacy browser settings
     # Validate before any side effect: sanitize_env_file() rewrites .env, never for refused (malformed) YAML.
@@ -1204,6 +1204,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     # A newer build's stamp: its steps' trigger keys may mean something this build does not know.
     newer = has_explicit_version and current_ver > latest_ver
     failed = None
+    results["floor_refused"] = floor_refused
     if floor_refused or newer:
         msg = newer_stamp_message(current_ver) if newer else support_floor_message()
         results["warnings"].append(msg)
@@ -3567,7 +3568,9 @@ def _cmd_config_migrate(args):
         for warning in results["warnings"]:
             print(color(f"  ⚠️  {warning}", Colors.YELLOW))
     print()
-    if stopped:
+    # Asked to migrate and refused: the file is still stale, so scripts checking
+    # only the exit code must not read this as success (#152717).
+    if stopped or results.get("floor_refused"):
         sys.exit(1)
 
 

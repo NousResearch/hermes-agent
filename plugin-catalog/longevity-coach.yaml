@@ -1,0 +1,23 @@
+name: longevity-coach
+repo: https://github.com/pridiuksson/highlander-longevity-coach
+sha: 5a3aa78db918593ec0f4079f718de1dd8de392d1
+subdir: plugin
+description: "Health coaching loop for Hermes: 9 config-free skills, 9 typed tools, and the weekly-crunch automation blueprint (outcome ledger, stress triage, biometric recovery/rebound verification). Local-first, stdlib-only, no credentials. Disclosure: referenced health values are sent to the active model provider."
+maintainer: pridiuksson
+tier: community
+category: tools
+docs_url: https://github.com/pridiuksson/highlander-longevity-coach#readme
+capabilities:
+  provides_tools:
+    - coach_ledger_add
+    - coach_ledger_resolve
+    - coach_ledger_report
+    - coach_ledger_reflect
+    - coach_stress_triage
+    - coach_recovery_record
+    - coach_recovery_verify
+    - coach_recovery_report
+    - coach_run_crunch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

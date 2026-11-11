@@ -528,7 +528,7 @@ def push_target(branch: str) -> list[str]:
     if remote == "." or git("remote", "get-url", remote, check=False).returncode != 0:
         raise Stop(f"--push: {branch} has no remote to push to (found {remote!r}); push it yourself afterwards.")
     head = git("symbolic-ref", "-q", f"refs/remotes/{remote}/HEAD", check=False).stdout.strip()
-    if branch in {head.rsplit("/", 1)[-1] if head else "", "main", "master"}:
+    if branch in {head.removeprefix(f"refs/remotes/{remote}/") if head else "", "main", "master"}:
         raise Stop(f"--push: {branch} is the default branch of {remote}; migrate a feature branch instead.")
     return [remote, f"refs/heads/{branch}"]
 
@@ -566,6 +566,9 @@ def resume(accept_flags: bool) -> dict:
     state["accept_flags"] = state["accept_flags"] or accept_flags
     if out("diff", "--name-only", "--diff-filter=U"):
         raise Stop("Unmerged files remain; resolve them and `git add` them first.")
+    if "pending_rewrite" not in state and git("diff", "--quiet", check=False).returncode != 0:
+        raise Stop("Tracked files have unstaged changes, which the next step would discard; "
+                   "`git add` or stash them first.")
     if git("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
         git("commit", "--no-edit")
     elif pending := state.pop("pending_rewrite", None):

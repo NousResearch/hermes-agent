@@ -523,6 +523,44 @@ def _omit_seen_lines(result_dict: dict, span: tuple, seen_spans: list) -> list:
     return omitted
 
 
+def _read_end_line(result_dict: dict, offset: int, limit: int) -> int:
+    """Last file line a read covered: the byte-budget cut, else the requested window clamped to EOF."""
+    if result_dict.get("truncated_by") == "bytes":
+        return int(result_dict.get("next_offset", offset)) - 1
+    total_lines = result_dict.get("total_lines")
+    end_line = offset + limit - 1
+    if isinstance(total_lines, int) and total_lines > 0:
+        end_line = min(end_line, total_lines)
+    return end_line
+
+
+def _withholdable_seen_spans(task_data: dict, resolved_str: str, programmatic: bool) -> list:
+    """Already-returned line spans a read may omit. Same programmatic/review-fork exemption as
+    the exact-key stub: neither must ever see anything but a real read."""
+    if programmatic or is_background_review():
+        return []
+    return _unchanged_seen_spans(task_data, resolved_str)
+
+
+def _withhold_seen_lines(task_data: dict, result, result_dict: dict, path: str, resolved_str: str,
+                         span: tuple | None, seen_spans: list) -> str | None:
+    """Drop already-returned lines from this read (see _omit_seen_lines) and note the omitted
+    ranges on the result; returns the stub/BLOCK when no unseen line is left, else None."""
+    omitted = _omit_seen_lines(result_dict, span, seen_spans) if span and seen_spans else []
+    if not omitted:
+        return None
+    if not result_dict["content"]:
+        # Per-path key: shifting the window must not restart the escalation.
+        return _dedup_stub_or_block(task_data, (resolved_str, "seen_lines"), path, overlapping=True)
+    result.content = result_dict["content"]
+    ranges = ", ".join(f"{lo}-{hi}" if lo != hi else str(lo) for lo, hi in omitted)
+    result_dict["omitted_lines"] = ranges
+    result_dict["_note"] = (
+        f"Lines {ranges} omitted: unchanged since your earlier read_file result in this "
+        "conversation, which is still current. Only the other lines are shown.")
+    return None
+
+
 def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str, *, overlapping: bool = False) -> str:
     """Return the "unchanged" stub for a read that would only re-send lines already
     returned, escalating to a hard BLOCK after 2 stubs so weak tool-followers don't
@@ -727,10 +765,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
         # A different window over lines already returned (file unchanged) only
-        # gets its unseen lines; see _omit_seen_lines. Same programmatic/review-fork exemption
-        # as the exact-key stub above: neither must ever see anything but a real read.
-        seen_spans = ([] if (programmatic or is_background_review())
-                      else _unchanged_seen_spans(task_data, resolved_str))
+        # gets its unseen lines; see _withhold_seen_lines.
+        seen_spans = _withholdable_seen_spans(task_data, resolved_str, programmatic)
 
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
@@ -754,17 +790,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
         returned_span = _returned_line_span(result_dict, offset, limit)
-        omitted = _omit_seen_lines(result_dict, returned_span, seen_spans) if returned_span and seen_spans else []
-        if omitted:
-            if not result_dict["content"]:
-                # Per-path key: shifting the window must not restart the escalation.
-                return _dedup_stub_or_block(task_data, (resolved_str, "seen_lines"), path, overlapping=True)
-            result.content = result_dict["content"]
-            ranges = ", ".join(f"{lo}-{hi}" if lo != hi else str(lo) for lo, hi in omitted)
-            result_dict["omitted_lines"] = ranges
-            result_dict["_note"] = (
-                f"Lines {ranges} omitted: unchanged since your earlier read_file result in this "
-                "conversation, which is still current. Only the other lines are shown.")
+        stub = _withhold_seen_lines(task_data, result, result_dict, path, resolved_str, returned_span, seen_spans)
+        if stub is not None:
+            return stub
         redacted = False
         if result.content:
             unredacted = result.content
@@ -789,12 +817,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "to keep context usage efficient."))
 
         total_lines = result_dict.get("total_lines")
-        if result_dict.get("truncated_by") == "bytes":
-            end_line = int(result_dict.get("next_offset", offset)) - 1
-        else:
-            end_line = offset + limit - 1
-            if isinstance(total_lines, int) and total_lines > 0:
-                end_line = min(end_line, total_lines)
+        end_line = _read_end_line(result_dict, offset, limit)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
                                         returned_span=returned_span, programmatic=programmatic,

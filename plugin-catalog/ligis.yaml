@@ -1,0 +1,49 @@
+name: ligis
+repo: https://github.com/sneldao/ligis
+sha: 8986a622ac476f5d7c2efc01f93a0424973ac2fd
+subdir: hermes-plugin
+title: Ligis — Counterparty Credentials
+description: >-
+  Verify that a payee holds a live, third-party-issued, revocable on-chain
+  capability credential before your agent pays them. Hermes agents pay other
+  agents, and the destination address comes from the HTTP answer asking for
+  the money — nothing in the x402 flow ties that address to anything the
+  payee has proven about itself, which is the gap ERC-8478 states in spec
+  form. ligis reads the credential registry directly over read-only
+  JSON-RPC and answers the question the payment flow leaves open: is this
+  counterparty entitled to this? Four tools (ligis_check_capability,
+  ligis_capability_hash, ligis_verify_payee, ligis_chains) plus a
+  pre_tool_call gate that intercepts payment-shaped tool calls and
+  escalates to Hermes's approval prompt when the payee cannot be
+  credentialed. A capability is indexed by the keccak-256 hash of its name,
+  so the same capability resolves to the same bytes on every chain and a
+  credential minted on one chain is found on another. No key, no hosted
+  service, no secret scope: verifying a credential is a read, so the only
+  thing trusted is the chain. Disclosure — makes read-only HTTPS JSON-RPC
+  eth_call requests to the configured RPC endpoint (default
+  https://testnet-rpc.monad.xyz for monad-testnet and
+  https://atlantic.dplabs-internal.com for pharos-atlantic); the RPC
+  operator sees the caller's IP address and the queried registry and
+  subject addresses; it holds no keys, signs nothing, sends no
+  transactions, reads no files outside its own plugin data directory, runs
+  no background processes, and has no telemetry. The pre_tool_call hook
+  escalates to Hermes's approval prompt, which unattended surfaces (cron,
+  --yolo, approvals off) refuse rather than auto-approve.
+maintainer: sneldao
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/sneldao/ligis/tree/main/hermes-plugin
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - ligis_check_capability
+    - ligis_capability_hash
+    - ligis_verify_payee
+    - ligis_chains
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

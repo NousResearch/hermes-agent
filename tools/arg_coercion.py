@@ -18,7 +18,10 @@ from tools.schema_sanitizer import resolve_local_schema_ref
 logger = logging.getLogger("model_tools")
 
 
-def project_tool_args(tool_name: str, args: dict[str, Any], *, schema: dict | None = None) -> dict[str, Any]:
+def project_tool_args(
+    tool_name: str, args: dict[str, Any], *, schema: dict | None = None,
+    compat_args: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     """Strip arguments not declared in the tool's registered schema.
 
     Prevents hidden control-plane parameters (e.g. ``force`` on the terminal
@@ -30,7 +33,8 @@ def project_tool_args(tool_name: str, args: dict[str, Any], *, schema: dict | No
     When *schema* is supplied (e.g. from a scope-resolved ``ToolEntry``) it is
     used directly, avoiding a second bare-name registry lookup that could
     resolve against a different profile/registration than the one that
-    selected the handler.
+    selected the handler. Explicit compatibility arguments from that same
+    entry remain accepted, including legacy aliases and wrong-tool guards.
     """
     if not args or not isinstance(args, dict):
         return args
@@ -48,7 +52,7 @@ def project_tool_args(tool_name: str, args: dict[str, Any], *, schema: dict | No
     if params.get("additionalProperties") is not False:
         return args
 
-    declared = set(properties.keys())
+    declared = set(properties.keys()).union(compat_args)
     unknown = set(args.keys()) - declared
     if not unknown:
         return args

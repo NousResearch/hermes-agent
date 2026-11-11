@@ -1103,7 +1103,7 @@ class ToolRegistry:
         # matches the handler that will execute.
         from tools.arg_coercion import project_tool_args
 
-        args = project_tool_args(name, args, schema=entry.schema)
+        args = project_tool_args(name, args, schema=entry.schema, compat_args=entry.compat_args)
         try:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+from hermes_constants import mark_named_profile_deleted
 from hermes_state import DeletedWalGenerationError, SessionDB
 from hermes_state_dbfile import (
     RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
@@ -253,6 +254,149 @@ def test_capture_refuses_to_guess_by_pathname(tmp_path, force_wal):
         assert not list(tmp_path.glob("state.db.retired-wal-*"))
     finally:
         db.close()
+
+
+@not_windows
+def test_capture_does_not_recreate_missing_database_parent(tmp_path, force_wal):
+    home = tmp_path / "profile"
+    home.mkdir()
+    path = home / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    try:
+        require_wal(db)
+        identity = db._db_sidecar_identity["-wal"]
+        moved = tmp_path / "archived-profile"
+        home.rename(moved)
+        try:
+            with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+                capture_retired_wal_generation(
+                    path, sidecar_identity={"-wal": identity}, trigger="unserve")
+            assert not home.exists()
+        finally:
+            moved.rename(home)
+    finally:
+        db.close()
+
+
+@not_windows
+def test_capture_does_not_write_into_tombstoned_profile_home(tmp_path, force_wal):
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    home = root / "profiles" / "profile"
+    home.mkdir(parents=True)
+    path = home / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    try:
+        require_wal(db)
+        identity = db._db_sidecar_identity["-wal"]
+        mark_named_profile_deleted(home)
+        with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+            capture_retired_wal_generation(
+                path, sidecar_identity={"-wal": identity}, trigger="unserve")
+        assert home.exists()
+        assert not list(home.glob("state.db.retired-wal-*"))
+    finally:
+        db.close()
+
+
+@not_windows
+def test_close_retry_never_resurrects_a_removed_profile_home(tmp_path, force_wal):
+    """Production sequence reported on 0.22.6: close attempt #1 runs while the tombstone is already
+    written but the home still exists — the capture fails, the handle stays pinned, and the retry
+    only happens at a later shutdown, after the lifecycle has removed the home entirely. Pre-guard,
+    the retry's ``staging.mkdir(parents=True)`` resurrected the home and left an empty, marker-less
+    profile directory behind. Both attempts must refuse without creating anything, and the home
+    must stay absent."""
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    home = root / "profiles" / "profile"
+    home.mkdir(parents=True)
+    path = home / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    try:
+        require_wal(db)
+        _wal_only_sentinel(db, "gw-0")
+        mark_named_profile_deleted(home)
+        lose_sidecars(path, rename=False)
+
+        # Attempt #1: tombstoned-but-present home — refused, handle stays open, nothing written.
+        with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+            db.close()
+        assert db._conn is not None
+        assert home.exists()
+        assert not list(home.glob("state.db.retired-wal-*"))
+
+        # The lifecycle then removes the home; the later retry must not mkdir it back into existence.
+        shutil.rmtree(home)
+        with pytest.raises(RetiredGenerationCaptureError, match="could not write"):
+            db.close()
+        assert db._conn is not None
+        assert not home.exists()
+        assert not list(path.parent.glob("state.db.retired-wal-*"))
+        assert not list(path.parent.glob("*.partial"))
+    finally:
+        # The capture can never succeed now, so close() would keep refusing to settle; release the
+        # raw connection the way close() itself does once the generation is settled.
+        conn, db._conn = getattr(db, "_conn", None), None
+        if conn is not None:
+            db._close_connection_quietly(conn)
+
+
+@not_windows
+def test_registry_release_or_close_never_resurrects_a_removed_profile_home(tmp_path, force_wal, caplog):
+    """Production closes reach the guard through ``hermes_state_registry.release_or_close``, not a bare
+    ``close()``. Attempt #1 is the registry final release (``_teardown`` -> ``_close_quietly``); because
+    that release drops the generation, attempt #2 — the retry at a later shutdown, after the lifecycle
+    has removed the home entirely — goes through the non-shared fallback close. The settle refusal must
+    be surfaced, not raised, on both attempts, and neither may recreate the removed profile home.
+    (Registry-level probe for this sequence independently verified by chhxbchhxb.)"""
+    import hermes_state_registry as registry
+    from hermes_state_registry import release_or_close
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    home = root / "profiles" / "profile"
+    home.mkdir(parents=True)
+    path = home / "state.db"
+    db = registry.acquire(path)
+    try:
+        db.create_session("reg-0", "cli")
+        require_wal(db)
+        _wal_only_sentinel(db, "reg-0")
+        mark_named_profile_deleted(home)
+        lose_sidecars(path, rename=False)
+
+        # Attempt #1: tombstoned-but-present home via the registry final release.
+        with caplog.at_level("ERROR"):
+            release_or_close(db)  # must not raise
+        assert db._conn is not None, "final release must pin the handle while the capture is owed"
+        assert db._retired_generation_capture is None
+        assert home.exists()
+        assert not list(home.glob("state.db.retired-wal-*"))
+        with registry._lock:
+            assert path.resolve() not in registry._generations, "final release must drop the generation"
+            assert id(db) not in registry._retired, "a dropped generation must not linger as retired"
+
+        # The lifecycle then removes the home; the later retry goes through the fallback close and
+        # must not mkdir the home back into existence.
+        shutil.rmtree(home)
+        with caplog.at_level("ERROR"):
+            release_or_close(db)
+        assert db._conn is not None
+        assert not home.exists(), "a registry close must not recreate the tombstoned profile home"
+        assert not list(home.parent.glob("**/*retired-wal*"))
+        assert not list(home.parent.glob("**/*.partial"))
+
+        settle = [record.getMessage() for record in caplog.records if "did not settle at close" in record.getMessage()]
+        assert len(settle) == 2, settle
+        assert all("Named profile home does not exist" in message for message in settle)
+    finally:
+        conn, db._conn = getattr(db, "_conn", None), None
+        if conn is not None:
+            db._close_connection_quietly(conn)
 
 
 # ── Recoverable after the writer process has exited ──────────────────────────────────────────────────

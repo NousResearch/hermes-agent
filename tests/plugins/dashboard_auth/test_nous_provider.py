@@ -33,6 +33,7 @@ import plugins.dashboard_auth.nous as nous_plugin
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
     ProviderError,
+    RefreshExpiredError,
     Session,
     assert_protocol_compliance,
 )
@@ -442,28 +443,31 @@ class TestVerifySession:
         token = _mint_token(rsa_keypair, ttl_seconds=-600)
         assert provider.verify_session(access_token=token) is None
 
-    def test_wrong_audience_raises_provider_error(self, provider, rsa_keypair):
+    def test_wrong_audience_returns_none(self, provider, rsa_keypair):
+        # A wrong-audience token is a confirmed denial (the IdP answered, the token
+        # isn't ours): verify_session must return None so middleware refreshes /
+        # re-logins instead of answering the misleading 503 "provider unreachable".
         token = _mint_token(rsa_keypair, aud="agent:other-instance")
-        with pytest.raises(ProviderError, match="verification failed"):
-            provider.verify_session(access_token=token)
+        assert provider.verify_session(access_token=token) is None
 
     def test_verification_failure_message_surfaces_token_claims(
-        self, provider, rsa_keypair
+        self, provider, rsa_keypair, caplog
     ):
         """Operators need to see the actual iss/aud the token carries to debug
-        config drift between HERMES_DASHBOARD_PORTAL_URL/CLIENT_ID and Portal."""
+        config drift between HERMES_DASHBOARD_PORTAL_URL/CLIENT_ID and Portal: the
+        rejection is a 401, so the warning log is where drift shows up."""
+        import logging
         token = _mint_token(rsa_keypair, iss="https://evil.example")
-        with pytest.raises(ProviderError) as excinfo:
-            provider.verify_session(access_token=token)
-        msg = str(excinfo.value)
+        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+            assert provider.verify_session(access_token=token) is None
+        msg = caplog.text
         # Both the observed (token) and expected (configured) values appear.
         assert "'https://evil.example'" in msg
         assert "'https://portal.example.com'" in msg  # configured portal URL
 
     def test_agent_instance_id_mismatch_rejected(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair, agent_instance_id="some-other-id")
-        with pytest.raises(ProviderError, match="agent_instance_id mismatch"):
-            provider.verify_session(access_token=token)
+        assert provider.verify_session(access_token=token) is None
 
     def test_contract_version_missing_warns_but_succeeds(
         self, provider, rsa_keypair, caplog
@@ -544,3 +548,18 @@ class TestRefreshAndRevoke:
         assert kwargs["data"]["client_id"] == "agent:inst123"
         assert kwargs["data"]["refresh_token"] == "rt_old_value"
         assert kwargs["headers"]["x-nous-refresh-token"] == "rt_old_value"
+
+    def test_refresh_verify_denial_maps_to_refresh_expired(self, provider, rsa_keypair):
+        """A verify-stage denial inside the refresh grant (exchange OK, but the granted
+        token isn't ours) maps to RefreshExpiredError so the middleware refresh scan
+        rejects this provider instead of crashing on an uncaught InvalidCodeError."""
+        access_token = _mint_token(rsa_keypair, aud="agent:other-instance")
+        mock_resp = self._mock_post(
+            200,
+            {"access_token": access_token, "token_type": "Bearer", "refresh_token": "rt2"},
+        )
+        with patch(
+            "plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp
+        ):
+            with pytest.raises(RefreshExpiredError, match="verification failed"):
+                provider.refresh_session(refresh_token="rt_old")

@@ -1,0 +1,27 @@
+name: pugin
+repo: https://github.com/ShawnCRMer/hermes-pugin
+sha: "4cb5692d424f317f5e1b9c92eae9f65cf212a16f"
+title: PUGin
+description: "A dancing companion for Hermes Desktop that beams in while the chat you're viewing is working and beams out when its whole job is done: the reply, plus the subagents, background processes and Kanban cards that chat started. Work from other chats never counts. Click him for a list of what's running (with Stop for subagents and processes); NEED YOU!, STUCK? and DONE! callouts take you to the approval, the stalled card or the finished work. Seven characters, size, opacity, presence and reduced-motion settings. Disclosure — no network calls (all media is bundled inline), no telemetry, no shell, no credentials. While its window is visible the Desktop half polls Hermes's subagent, background-process and pending-approval lists for the focused chat every 4 s, and its backend route opens the Kanban board databases under the Hermes root (every non-archived board, shared across profiles) read-only with SQLite and returns only the cards linked to that chat. Its only actions are Stop (kills the chosen background process or interrupts the chosen subagent, after a click and a confirm click) and Open, which switches to the Kanban page and copies the card id to the clipboard. Settings are kept in Desktop plugin storage."
+maintainer: ShawnCRMer
+tier: community
+category: desktop
+version: "4.4.2"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ShawnCRMer/hermes-pugin#readme
+image: https://raw.githubusercontent.com/ShawnCRMer/hermes-pugin/4cb5692d424f317f5e1b9c92eae9f65cf212a16f/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-pugin/4cb5692d424f317f5e1b9c92eae9f65cf212a16f/docs/pugin-demo.gif
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-pugin/4cb5692d424f317f5e1b9c92eae9f65cf212a16f/docs/click-him.jpg
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-pugin/4cb5692d424f317f5e1b9c92eae9f65cf212a16f/docs/nudges.jpg
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-pugin/4cb5692d424f317f5e1b9c92eae9f65cf212a16f/docs/settings-characters.jpg
+readme: true
+platforms: []
+known_issues:
+  - "Needs Hermes Desktop; the companion has no CLI or TUI surface."
+  - "Kanban tracking needs a Hermes with the Kanban board; without it PUGin follows the chat, its subagents and processes, and Settings says Kanban is unavailable."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

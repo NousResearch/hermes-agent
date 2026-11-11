@@ -24,6 +24,10 @@ export interface TimelinePartMetadata {
   storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
+  /** A clarify row's tie to the session's live request, set by the transcript re-arm
+   *  (`restorePendingClarifyToolCall`): the id of the request it bound to this row, or `''` on every
+   *  other open clarify row it saw. Only the row carrying the live request's id renders it. */
+  clarifyRequestId?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
@@ -51,6 +55,10 @@ export type ChatMessage = {
   interim?: boolean
   /** The user stopped this reply before it finished; its text is partial. */
   interrupted?: boolean
+  /** A projected queued prompt (`user-queued-…`) whose own turn has started:
+   *  `message.start` arrived after it was drawn. It is now that turn's user
+   *  row, not a prompt still waiting for a later turn. */
+  queuedTurnStarted?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
@@ -73,6 +81,13 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** A safety-refused turn kept for display only. The backend dropped the whole
+   *  refused turn from the model's context but retained the user's own message
+   *  (projected as a `content_refused` user row). It renders as a greyed,
+   *  non-interactive block showing the text plus `notice` — never a normal user
+   *  bubble and never the model's reply. `notice` is absent on older backends;
+   *  the renderer falls back to an i18n string. */
+  contentRefused?: { notice?: string }
 }
 
 export type GatewayEventPayload = {
@@ -87,6 +102,8 @@ export type GatewayEventPayload = {
   name?: string
   tool_id?: string
   tool_call_id?: string
+  /** tool.progress: 0-100 when the MCP server sent a total. */
+  percent?: number | null
   args?: unknown
   arguments?: unknown
   context?: string
@@ -118,6 +135,10 @@ export type GatewayEventPayload = {
   yolo?: boolean
   running?: boolean
   turn_started_at?: number | null
+  /** message.start / delta / interim: the prompt turn's wire identity (segment-identity.ts). */
+  turn_id?: string
+  segment?: number
+  offset?: number
   cwd?: string
   branch?: string
   terminal_backend?: string

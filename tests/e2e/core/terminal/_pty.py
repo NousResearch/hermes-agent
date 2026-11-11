@@ -14,6 +14,7 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import struct
@@ -92,6 +93,20 @@ def session_members(sid: int) -> list[int]:
     return out
 
 
+def _argv(pid: int) -> list[str]:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").split("\0")[:-1]
+    except OSError:
+        return []
+
+
+def _pgid_of(pid: int) -> int | None:
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
 def cmdline(pid: int) -> str:
     try:
         return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
@@ -125,6 +140,16 @@ class PtyHermes:
             TMPDIR=str(root / "tmp"), TERM="xterm-256color", COLORTERM="truecolor",
             PYTHONUNBUFFERED="1", HERMES_STATE_DB_GUARD_BYPASS="1",
         )
+        if "--tui" in argv_tail:
+            # The prebuilt-bundle launch, as tui_pty does. A checkout launch first asks whether
+            # ui-tui/dist is current, which only PM's node may answer; the sandbox home has no PM
+            # store, so it rebuilds from source and lazily downloads python/node/pnpm before the UI
+            # can take the terminal (on CI that download stalled past wait_ready's 120s).
+            from tests.e2e.core.tui_pty._helpers import private_tui_dir
+            env["HERMES_TUI_DIR"] = str(private_tui_dir(root))
+            node = shutil.which("node")
+            if node:  # the runner's node, so the launcher never lazily installs one into the sandbox
+                env["HERMES_NODE"] = node
         master, slave = os.openpty()
         self._set_winsize(master, rows, cols)
         self.master = master
@@ -287,14 +312,24 @@ class PtyHermes:
 
         The profile's ``gateway run`` is not a leftover: ``hermes chat`` attaches to it and it
         keeps serving (cron, messaging, the next client) after the client exits; ``close()`` still
-        tears it down with the rest of this harness's tree."""
+        tears it down with the rest of this harness's tree. Neither is that gateway's owner-death
+        supervisor while the gateway lives: it belongs to the gateway, and after the gateway's last
+        owned command it stays for an idle grace on purpose (``_SUPERVISOR_IDLE_EXIT_S``)."""
         from gateway.status import looks_like_gateway_command_line
+        from hermes_cli.process_identity import is_owner_death_supervisor
 
         def alive() -> list[int]:
             pids = set(session_members(self.sid))
             # Same pid AND same start time: a recycled pid is not our leftover.
             pids |= {pid for pid, started in self.seen_members if _start_time(pid) == started}
-            return sorted(pid for pid in pids if not looks_like_gateway_command_line(cmdline(pid)))
+            gateways = {pid for pid in pids if looks_like_gateway_command_line(cmdline(pid))}
+            gateway_pgids = {str(pgid) for pgid in map(_pgid_of, gateways) if pgid is not None}
+
+            def gateway_supervisor(pid: int) -> bool:
+                argv = _argv(pid)
+                return is_owner_death_supervisor(argv) and len(argv) > 2 and argv[2] in gateway_pgids
+
+            return sorted(pid for pid in pids - gateways if not gateway_supervisor(pid))
         try:
             poll(lambda: not alive(), timeout=timeout, what="the PTY session to empty")
         except AssertionError:

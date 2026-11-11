@@ -5,6 +5,7 @@ Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import os
 import queue
@@ -87,6 +88,28 @@ def _record_shell_hook_consent():
         logger.warning("shell-hook consent check failed", exc_info=True)
 
 
+@contextmanager
+def lease_handed_over(cli, held):
+    """Run a gateway attach without this CLI's own active-session lease, then re-claim it.
+
+    A row the gateway has not imported yet (a legacy / in-process session) is imported under the
+    active-session registry lock, which refuses (``runtime_coordination_required``) while ANY live
+    lease holds the id, including this process's own. The block may move ``cli.session_id`` to the
+    id the gateway returned: the lease is re-claimed for that id (main's exclusivity is kept), or
+    for the unchanged id when the block raises."""
+    if not held:
+        yield
+        return
+    cli._release_active_session()
+    try:
+        yield
+    except BaseException:
+        cli._claim_active_session("cli", stderr=True)
+        raise
+    if not cli._claim_active_session("cli", stderr=True):
+        raise RuntimeError("session_already_owned")
+
+
 class CLIInitMixin:
     """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state."""
 
@@ -139,6 +162,7 @@ class CLIInitMixin:
         self.final_response_markdown = _frm if _frm in {"render", "strip", "raw"} else "strip"
 
         self._inline_diffs_enabled = display.get("inline_diffs", True)
+        self._inline_images_mode = display.get("inline_images", "auto")
 
         # Per-turn accounting: CLI-only chrome riding the tool-progress feed.
         self._turn_summary_enabled = bool(display.get("turn_summary", True))
@@ -369,6 +393,8 @@ class CLIInitMixin:
     def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         from cli import _hermes_home
+        from hermes_cli.left_core_migration import serve_notices_on_stderr
+        serve_notices_on_stderr()
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
@@ -434,26 +460,19 @@ class CLIInitMixin:
         if getattr(self, "_gateway_session_open", False) or not isinstance(store, GatewaySessionStore):
             return
         launch = _gateway_launch(self)
-        # A resumed row this gateway has not imported yet (a legacy / in-process session) is imported
-        # under the active-session registry lock, which refuses while ANY live lease holds the id —
-        # including this process's own, claimed before the first turn. Hand the slot over around the
-        # attach, then re-claim it for the id the gateway returned (main's exclusivity is kept).
         held = getattr(self, "_resumed", False) and getattr(self, "_active_session_lease", None) is not None
         _record_shell_hook_consent()
-        if held:
-            self._release_active_session()
-        sid = store.open_session(self, launch)
-        self._gateway_session_open = True
-        from hermes_cli import gateway_plugin_commands, tools_config
-        tools_config._gateway_plugin_toolsets = lambda: gateway_plugin_commands.toolsets(self)
-        _adopt_gateway_toolsets(self, store)
-        from hermes_cli.gateway_tools import bind_session
-        bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
-        if sid and sid != self.session_id:
-            self.session_id = sid
-            getattr(self, "_write_terminal_breadcrumb", lambda: None)()
-        if held and not self._claim_active_session("cli", stderr=True):
-            raise RuntimeError("session_already_owned")
+        with lease_handed_over(self, held):
+            sid = store.open_session(self, launch)
+            self._gateway_session_open = True
+            from hermes_cli import gateway_plugin_commands, tools_config
+            tools_config._gateway_plugin_toolsets = lambda: gateway_plugin_commands.toolsets(self)
+            _adopt_gateway_toolsets(self, store)
+            from hermes_cli.gateway_tools import bind_session
+            bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
+            if sid and sid != self.session_id:
+                self.session_id = sid
+                getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
     def _new_session_id(self, now, *, branch_of=None, title=None):
         """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway

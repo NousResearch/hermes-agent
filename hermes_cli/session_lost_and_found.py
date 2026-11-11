@@ -877,7 +877,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
 def rebuild_fts_indexes(dest: sqlite3.Connection) -> dict[str, str]:
     """Rebuild derived FTS indexes from the salvaged canonical rows."""
     results: dict[str, str] = {}
-    for table in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"):
+    for table in ("messages_fts", "messages_fts_trigram"):
         if not _table_columns(dest, table):
             continue
         try:

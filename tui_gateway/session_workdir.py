@@ -183,7 +183,7 @@ def _workspace_cwd(profile_home, raw: str) -> str:
 
 def _terminal_task_cwd(session: dict | None) -> str:
     """The cwd terminal_tool should use for this TUI session (NOT host-validated: a non-local backend's cwd lives
-    inside the target environment)."""
+    inside the target environment). "" when the backend's own default applies."""
     return _terminal_task_cwd_with_source(session)[0]
 
 
@@ -209,8 +209,14 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
             return raw, "process"
         if backend == "ssh":
             return "~", "process"
+    # A host directory nobody picked (the gateway's launch dir) names nothing inside a sandbox: register no cwd, so
+    # the backend's own default applies, as on the messaging gateway. "" is that "no cwd" answer.
+    if _is_remote_launch_cwd(session):
+        return "", "process"
     if session and session.get("cwd"):
         return str(session["cwd"]), "session"
+    if not _host_cwd_is_terminal_cwd(profile_home):
+        return "", "process"
     return _completion_cwd(), "process"
 
 
@@ -266,10 +272,37 @@ def _persisted_session_cwd(session: dict) -> str | None:
 
 
 def _is_remote_launch_cwd(session: dict | None) -> bool:
-    """An ssh session's cwd that nobody picked: the gateway's launch directory, a path on THIS host. Host-side context
-    discovery reads it from memory, but it is never persisted: a resume adopts a stored ssh cwd as the remote
-    workspace."""
-    return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
+    """A cwd nobody picked for a session whose terminal does not run in host directories: an ssh session's, or a
+    sandbox backend's (modal, daytona, singularity, sprites, ...) when it is a directory on THIS host: the gateway's
+    launch directory (``/opt/data`` in the Docker image). Host-side context discovery reads it from memory, but it
+    never becomes the terminal cwd and is never persisted: a resume adopts a stored cwd as the session's workspace.
+    A sandbox path (``/workspace``) is not a host directory and stays."""
+    if not session or session.get("explicit_cwd"):
+        return False
+    profile_home = session.get("profile_home")
+    if _cwd_is_remote(profile_home):
+        return True
+    cwd = str(session.get("cwd") or "")
+    return bool(cwd) and not _host_cwd_is_terminal_cwd(profile_home) and os.path.isdir(cwd)
+
+
+def _host_cwd_is_terminal_cwd(profile_home) -> bool:
+    """Whether a host directory can be the terminal cwd of a session bound to ``profile_home``: the local backend runs
+    in it, docker mounts it at ``/workspace`` (``docker_mount_cwd_to_workspace``) or creates it (``docker run -w``),
+    and a plugin backend declaring neither ``is_remote`` nor ``is_container`` runs on this host. ssh, modal, daytona,
+    singularity, sprites and the other sandboxes run somewhere the host's directories do not exist."""
+    backend = _bound_terminal_backend(profile_home)
+    if backend in {"local", "docker"}:
+        return True
+    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    if backend in _BUILTIN_BACKENDS:
+        return False
+    # An unknown or unloaded plugin is treated as remote: sending it a host path is the failure this guards. The
+    # registry is read in the session's OWN profile scope: callers (session.create) run before that home is bound.
+    from agent.terminal_env_registry import provider_flag
+    scope = str(profile_home) if profile_home else None
+    return not (provider_flag(backend, "is_remote", True, scope=scope)
+                or provider_flag(backend, "is_container", True, scope=scope))
 
 
 def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
@@ -288,6 +321,27 @@ def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
     except (OSError, RuntimeError):
         return False
     return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
+
+
+def _is_launch_dir(cwd: str, profile_home) -> bool:
+    """Whether ``cwd`` IS a directory a Hermes process is launched from rather than a folder someone picked: the
+    Hermes root (``/opt/data`` in the Docker image), a subprocess home (``/opt/data/home``), the bound profile's
+    home, the install tree, the OS user's home or ``/`` (the desktop's launch dirs). Folders below them are not: a
+    user may keep a workspace there."""
+    from agent.runtime_cwd import _is_install_tree
+    from hermes_constants import get_default_hermes_root, get_real_home
+
+    if not os.path.isabs(cwd):
+        return False
+    try:
+        path = Path(cwd).resolve()
+        home = Path(profile_home or get_hermes_home()).expanduser().resolve()
+        root = get_default_hermes_root(home=home).resolve()
+        launch = {home, home / "home", root, root / "home", Path(path.anchor),
+                  Path(get_real_home()).resolve(), Path.home().resolve()}
+    except (OSError, RuntimeError):
+        return False
+    return path in launch or _is_install_tree(path)
 
 
 def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
@@ -312,10 +366,16 @@ def _is_other_profiles_cwd(cwd: str, profile_home) -> bool:
 
 def _resumable_stored_cwd(cwd, profile_home) -> str:
     """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
-    own host tree (a host launch directory, never a remote workspace), or a named profile's row holds another
-    profile's (the resume then lands in :func:`_profile_default_cwd` and re-persists it)."""
+    own host tree (a host launch directory, never a remote workspace), when a sandbox session's row holds a launch
+    directory itself (:func:`_is_launch_dir`: rows written before launch dirs stopped being persisted), or when a
+    named profile's row holds another profile's (the resume then lands in :func:`_profile_default_cwd` and
+    re-persists it). Hydration and ``session.resume`` both adopt through here, then treat the result as the
+    session's workspace. A folder a sandbox user picked (even under the Hermes root or ``$HOME``) stays."""
     cwd = str(cwd or "")
     if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+        return ""
+    if cwd and not _cwd_is_remote(profile_home) and not _host_cwd_is_terminal_cwd(profile_home) \
+            and _is_launch_dir(cwd, profile_home):
         return ""
     if cwd and _is_other_profiles_cwd(cwd, profile_home):
         return ""
@@ -450,19 +510,39 @@ def _register_session_cwd(session: dict | None) -> None:
     if hints is not None and hasattr(hints, "rebind_working_dir"):
         hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
-        from tools.terminal_tool import register_task_env_overrides
+        from tools.terminal_tool import _ensure_terminal_env_bridged, register_task_env_overrides
+        from tools.terminal_tool_config import _tenv, _tenv_bool
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
         # The cwd/override record is keyed by the ROUTED home (#123989). session.create is a plain
         # @method, so bind the session's own profile home here or the record lands under the raw key
         # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
         # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
         import hermes_constants as hc
+        from tools.terminal_scope import TerminalPolicyUnavailable, install_and_reset_profile_terminal_scope
 
         with contextlib.ExitStack() as stack:
             profile_home = session.get("profile_home")
             if profile_home and hc.hermes_home_key(hc.get_hermes_home()) != hc.hermes_home_key(profile_home):
                 stack.callback(hc.reset_hermes_home_override, hc.set_hermes_home_override(str(profile_home)))
-            register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
+                stack.enter_context(install_and_reset_profile_terminal_scope(profile_home))
+            overrides = {"cwd": cwd, "cwd_source": cwd_source}
+            _ensure_terminal_env_bridged()
+            try:
+                unmounted_docker = _tenv("TERMINAL_ENV", "local") == "docker" and not _tenv_bool(
+                    "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+            except TerminalPolicyUnavailable:
+                # An unreadable profile's terminal refuses every call anyway: register the cwd as usual
+                # so project tools still find the folder. (register_task_env_overrides writes the record
+                # before its live-env update, which raises under this refusal scope.)
+                unmounted_docker = False
+            if unmounted_docker:
+                # A host cwd is not a directory in this sandbox. An empty cwd leaves its configured cwd
+                # and a later in-container cd intact; host-side readers (project tools) still find the
+                # session's own folder under ``host_workspace``.
+                overrides = {"cwd": "", "cwd_source": "process"}
+                if cwd_source == "session":
+                    overrides["host_workspace"] = cwd
+            register_task_env_overrides(session["session_key"], overrides)
 
 
 def _workdir_row_model_config(session: dict) -> tuple[str, dict]:

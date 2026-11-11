@@ -21,7 +21,8 @@ from hermes_cli.web_server_dashboard import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginAutoUpdateBody, _PluginProvidersPutBody,
+    _PluginVisibilityBody,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -141,11 +142,13 @@ async def get_plugins_hub(request: Request, profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
 
 
-def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
+def _plugin_action(result: dict, fallback_error: str, *, rescan: bool,
+                   client_decides: tuple[str, ...] = ("consent_required",)) -> dict:
     """Common tail of agent-plugin mutations: 400 on ``ok=False``, then invalidate caches
-    (rescanning discovery when files changed on disk). A ``consent_required`` answer is not a failure:
-    nothing changed, the client shows the delta and retries with consent."""
-    if result.get("consent_required"):
+    (rescanning discovery when files changed on disk). An answer flagged by one of *client_decides*
+    is not a failure: nothing changed, the client shows it (the capability delta, the scan findings)
+    and retries with the user's decision."""
+    if any(result.get(flag) for flag in client_decides):
         return result
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or fallback_error)
@@ -223,10 +226,46 @@ def _validate_plugin_name(name: str) -> str:
     return name
 
 
-async def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool) -> dict:
+async def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *,
+                               rescan: bool, client_decides: tuple[str, ...] = ("consent_required",)) -> dict:
     _require_token(request)
     return await _plugin_mutation(lambda: _plugin_action(
-        action(_validate_plugin_name(name)), fallback_error, rescan=rescan))
+        action(_validate_plugin_name(name)), fallback_error, rescan=rescan, client_decides=client_decides))
+
+
+@router.post("/api/dashboard/agent-plugins/update-all")
+async def post_agent_plugins_update_all(request: Request):
+    """Update every plugin with an update, unattended: a widened pin or a git update's caution scan comes back
+    ``needs_review`` (nothing changed) for the plugin's own Update action to walk."""
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import update_all_unattended
+
+    def _run() -> dict:
+        outcome = update_all_unattended()
+        if any(r["status"] == "updated" for r in outcome["results"]):
+            _get_dashboard_plugins(force_rescan=True)
+        _invalidate_plugins_hub_cache()
+        return outcome
+
+    return await _plugin_mutation(_run)
+
+
+@router.get("/api/dashboard/plugins/auto-update")
+async def get_plugins_auto_update(request: Request):
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import auto_update_state
+    return await _plugin_mutation(auto_update_state)
+
+
+@router.put("/api/dashboard/plugins/auto-update")
+async def put_plugins_auto_update(request: Request, body: _PluginAutoUpdateBody):
+    _require_token(request)
+    from hermes_cli.plugins_auto_update import set_auto_update
+    from hermes_cli.plugins_cmd import PluginOperationError
+    try:
+        return await _plugin_mutation(lambda: set_auto_update(body.enabled))
+    except PluginOperationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
@@ -247,15 +286,17 @@ async def post_agent_plugin_disable(request: Request, name: str):
 async def post_agent_plugin_update(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
     # Body is optional: ``{"accept_capabilities": true}`` applies a re-pin the user confirmed after a
-    # ``consent_required`` answer.
+    # ``consent_required`` answer; ``{"force": true}`` applies an update whose scan returned caution
+    # after the user saw the ``scan_findings``.
     try:
         body = await request.json()
     except Exception:
         body = {}
-    accept = isinstance(body, dict) and body.get("accept_capabilities") is True
+    body = body if isinstance(body, dict) else {}
+    accept, force = body.get("accept_capabilities") is True, body.get("force") is True
     return await _named_plugin_action(
-        request, name, lambda n: dashboard_update_user_plugin(n, accept_capabilities=accept), "Update failed.",
-        rescan=True)
+        request, name, lambda n: dashboard_update_user_plugin(n, accept_capabilities=accept, force=force),
+        "Update failed.", rescan=True, client_decides=("consent_required", "scan_blocked"))
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")

@@ -18,7 +18,8 @@ from pm.paths import lockfile_path
 from pm.registry import walk
 from pm.store import current_target
 
-_ROOTS = {"python": ["uv"], "node": ["npm"], "all": ["npm", "uv"]}
+# npm stays beside pnpm: website/ and the sidecars are standalone npm projects.
+_ROOTS = {"python": ["uv"], "node": ["npm", "pnpm"], "all": ["npm", "pnpm", "uv"]}
 
 
 def parse_package_list(value: str) -> list[str]:
@@ -31,10 +32,18 @@ def parse_package_list(value: str) -> list[str]:
     return sorted({name.strip() for name in value.split(",")})
 
 
-def packages(toolchain: str, extra: list[str] | None = None) -> list[str]:
+def roots(toolchain: str, lock: Lockfile) -> list[str]:
+    """The toolchain's roots plus the developer tools (just) this lockfile pins."""
+    from pm.testenv import developer_tools
+
+    return _ROOTS[toolchain] + developer_tools(lock.names())
+
+
+def packages(toolchain: str, extra: list[str] | None = None, lock: Lockfile | None = None) -> list[str]:
     # walk() resolves the deps-first closure, so an extra tool's dependencies
     # (ffmpeg -> none) come along without listing them.
-    return sorted(package.name for package in walk(_ROOTS[toolchain] + (extra or [])))
+    lock = lock or Lockfile(lockfile_path())
+    return sorted(package.name for package in walk(roots(toolchain, lock) + (extra or [])))
 
 
 def file_commands(destination: str, values: dict) -> None:
@@ -69,7 +78,7 @@ def prepare(args) -> None:
     home = args.home.resolve()
     lock = Lockfile(lockfile_path())
     target = current_target()
-    names = packages(args.toolchain, args.packages)
+    names = packages(args.toolchain, args.packages, lock)
     values = {
         "packages": json.dumps(names), "target": target, "arch": target.split("-")[1],
         "store": str(home / "tools"),
@@ -119,8 +128,52 @@ def archive_inputs(args) -> None:
     from scripts.ci.archive_inputs import Archive, pinned_inputs, stage_inputs
     from scripts.releases import r2
 
-    pins = pinned_inputs(repo_root(), target=current_target(), packages=set(packages(args.toolchain, args.packages)))
+    lock = Lockfile(repo_root() / "pm/lock.json")
+    pins = pinned_inputs(repo_root(), target=current_target(),
+                         packages=set(packages(args.toolchain, args.packages, lock)))
     stage_inputs(pins, archive=Archive(*r2.credentials()), store=Store(args.home.resolve() / "tools"))
+
+
+# IO_REPARSE_TAG_LX_SYMLINK: a WSL-style symlink, which Python cannot open.
+_LX_SYMLINK = 0xA000001D
+
+
+def restore_cygwin_symlinks(root: Path) -> int:
+    """Rewrite the WSL symlinks a cache restore left in the PM store as Cygwin ones.
+
+    Git for Windows ships symlinks such as etc/mtab as Cygwin system files (a
+    ``!<symlink>`` file with the SYSTEM attribute), and PM's digest covers those
+    bytes. @actions/cache restores the store with Git's MSYS tar under
+    MSYS=winsymlinks:nativestrict, which writes a symlink to a non-Windows target
+    as a WSL reparse point instead. Python cannot open that, so the digest check
+    failed and every Windows job re-extracted Git (~21s on arm64). Recreate each
+    one with Git's own ln under winsymlinks:sys. PM still verifies the entry, so a
+    link that comes back different only costs the re-extraction it used to.
+    """
+    if os.name != "nt" or not root.is_dir():
+        return 0
+    import shutil
+    import subprocess
+
+    readlink, ln = shutil.which("readlink"), shutil.which("ln")
+    if not (readlink and ln):
+        return 0
+    env = dict(os.environ, MSYS="winsymlinks:sys")
+    repaired = 0
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                if os.lstat(path).st_reparse_tag != _LX_SYMLINK:
+                    continue
+                target = subprocess.run([readlink, path], env=env, capture_output=True,
+                                        text=True, check=True, timeout=30).stdout.rstrip("\n")
+                os.remove(path)
+                subprocess.run([ln, "-s", target, path], env=env, check=True, timeout=30)
+                repaired += 1
+            except (OSError, subprocess.SubprocessError):
+                continue
+    return repaired
 
 
 def install(args) -> None:
@@ -136,7 +189,10 @@ def install(args) -> None:
     from pm.registry import get_package
 
     names = packages(args.toolchain, args.packages)
-    for name in _ROOTS[args.toolchain] + args.packages:
+    repaired = restore_cygwin_symlinks(store_root())
+    if repaired:
+        print(f"Restored {repaired} Cygwin symlink(s) in the cached PM store")
+    for name in roots(args.toolchain, Lockfile(lockfile_path())) + args.packages:
         ensure(name, explicit=True, progress=_live_progress(name))
     facts = Facts(facts_path())
     target = current_target()
@@ -171,11 +227,21 @@ def install(args) -> None:
         })
         outputs["uv-cache-path"] = str(uv_cache_dir())
     if "npm" in names:
+        # Outside any checkout, so a project package.json or .npmrc in the
+        # caller's cwd can neither change the answer nor fail the query.
         cache = subprocess.check_output(
             [str(binaries["npm"]), "config", "get", "cache"],
-            env=environment, text=True, encoding="utf-8", timeout=60,
+            cwd=args.home.resolve(), env=environment, text=True, encoding="utf-8", timeout=60,
         ).strip()
         outputs["npm-cache-path"] = cache
+    if "pnpm" in names:
+        # pnpm hard-links from its store only within one drive and copies across
+        # drives; on Windows its default store is on the profile's drive, not the
+        # checkout's. The runner's temp dir, which holds this home, sits beside
+        # the workspace.
+        store = args.home.resolve() / "cache" / "pnpm" / "store"
+        exported["pnpm_config_store_dir"] = store
+        outputs["pnpm-store-path"] = str(store)
     file_commands("GITHUB_ENV", exported)
     file_commands("GITHUB_OUTPUT", outputs)
     add_path(path)

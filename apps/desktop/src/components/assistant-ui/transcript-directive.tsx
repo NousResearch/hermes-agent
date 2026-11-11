@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import type { FC, ReactNode } from 'react'
 import { useMemo } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { type Contribution, useContributions } from '@/contrib'
 import { ContribBoundary } from '@/contrib/react/boundary'
 import {
@@ -47,22 +49,35 @@ const DirectiveEntry: FC<{
   streaming: boolean
 }> = ({ contribution, parsed, streaming }) => {
   const render = (contribution.data as TranscriptDirectiveContribution).render
+  // The surface this transcript renders in (primary pane or a tile) names the
+  // chat that owns the card, so its actions can address that chat's composer.
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || null
 
   // Stable component IDENTITY per (render, parsed) — a fresh type per parent
-  // render would remount the widget (card-sized jump). Streaming arrives as a
-  // real prop on that stable type, so the settle flip re-renders the same
-  // mount instead of being memo-skipped (ref-only reads were exactly that).
+  // render would remount the widget (card-sized jump). Streaming and the owning
+  // session arrive as real props on that stable type, so the settle flip
+  // re-renders the same mount instead of being memo-skipped (ref-only reads
+  // were exactly that).
   const Leaf = useMemo(
     () =>
-      function DirectiveLeafHost({ streaming: live }: { streaming: boolean }) {
-        return <>{render({ attrs: parsed.attrs, source: parsed.source, streaming: live })}</>
+      function DirectiveLeafHost({
+        sessionId: owner,
+        streaming: live
+      }: {
+        sessionId: null | string
+        streaming: boolean
+      }) {
+        return <>{render({ attrs: parsed.attrs, sessionId: owner, source: parsed.source, streaming: live })}</>
       },
     [render, parsed]
   )
 
   return (
     <ContribBoundary id={contribution.id} variant="chip">
-      <Leaf streaming={streaming} />
+      <Leaf sessionId={sessionId} streaming={streaming} />
     </ContribBoundary>
   )
 }

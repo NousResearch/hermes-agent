@@ -1,0 +1,19 @@
+name: workout-tracker
+title: Workout Tracker
+repo: https://github.com/latentbyte/skills
+sha: 4f5adc4671c625c7c36aa1bf80f8253c53c9ea56
+subdir: plugins/workout-tracker
+version: "1.0.0"
+description: "Plan gym workouts through Workout Tracker's hosted MCP servers (Streamable HTTP at workout.lbyte.app): search a rated exercise catalog and check a draft plan's weekly sets per muscle and session length with no account, then, with a personal access token, save plans to the user's account and make one active. Bundles the workout-tracker skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: two servers. workout-tracker (/mcp/public) needs no credentials and never receives the token. workout-tracker-account (/mcp/account) acts on the user's account with a token they create in the app, sent as an Authorization header from WORKOUT_TRACKER_TOKEN in the profile environment; when it is unset, Hermes skips that server and the catalog tools still work. The token covers plans, timing, gear, targets and read-only history; it cannot sync workouts or manage tokens. Both servers are marked untrusted, so Hermes asks before every tool not annotated read-only. The skill tells the agent to read https://workout.lbyte.app/llms.txt for the plan format. The tool set is served by the remote servers at runtime and is not covered by the pinned sha. No telemetry."
+maintainer: Latent Byte
+tier: community
+category: tools
+docs_url: https://workout.lbyte.app/llms.txt
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

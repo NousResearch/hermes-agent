@@ -33,6 +33,7 @@ def _turn(platform, published, *, live=None):
     turn._approval_owner = (authority, 's', 1)
     turn._publish_execution = lambda kind, payload: published.append((kind, payload)) or True
     turn._publish_api_tool = lambda *a, **k: None
+    turn._schedule = lambda coro, _message: coro.close()  # the session.control.update hop to the gateway loop
     return turn
 
 
@@ -630,4 +631,38 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
                 assert subagent_records(None, session_id='elsewhere', session_db=real_db, route='route-a') == []
     finally:
         for sid in ('fallback-child', 'wrong-db-child', 'wrong-route-child', 'stale-child'):
+            _unregister_subagent(sid)
+
+
+def test_subagent_roster_survives_a_parent_rebuild():
+    """A cached-agent rebuild (/reasoning, /model, a policy refresh, idle eviction) gives the session a
+    NEW parent object while a background child keeps running under the old one. subagent.list follows
+    the conversation (durable owner id in this session's lineage, same session DB file), so the dock
+    keeps the child; another conversation or another profile's DB never sees it."""
+    import weakref
+    from gateway.session_ancillary import subagent_records
+    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+
+    class Parent:
+        pass
+
+    def db(path):
+        return SimpleNamespace(db_path=path)
+
+    old = Parent()
+    old.session_id, old._session_db = 'conv-1', db('/p/a/state.db')
+    rebuilt = Parent()
+    rebuilt.session_id, rebuilt._session_db = 'conv-1', db('/p/a/state.db')
+    child = SimpleNamespace(_delegate_parent_ref=weakref.ref(old), _session_db=db('/p/a/state.db'))
+    other_profile = SimpleNamespace(_delegate_parent_ref=weakref.ref(old), _session_db=db('/p/b/state.db'))
+    other_conv = SimpleNamespace(_delegate_parent_ref=weakref.ref(old), _session_db=db('/p/a/state.db'))
+    _register_subagent({'subagent_id': 'live-child', 'agent': child, 'owner_agent_session_id': 'conv-1'})
+    _register_subagent({'subagent_id': 'other-profile', 'agent': other_profile, 'owner_agent_session_id': 'conv-1'})
+    _register_subagent({'subagent_id': 'other-conv', 'agent': other_conv, 'owner_agent_session_id': 'conv-2'})
+    try:
+        assert [r['subagent_id'] for r in subagent_records(rebuilt)] == ['live-child']
+        # Read-only projection only: the control/tail path (no lineage) still sees nothing for the new parent.
+        assert subagent_records(rebuilt, include_fallback_evicted=False) == []
+    finally:
+        for sid in ('live-child', 'other-profile', 'other-conv'):
             _unregister_subagent(sid)

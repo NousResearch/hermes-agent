@@ -138,7 +138,7 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     """Off the owner loop: the stored policy, its refresh from this profile home's files, and the generation
     it was derived at. None when the session takes no refresh or nothing moved. *adopt_only*: the adoption
     of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment)."""
-    from gateway.run import _load_gateway_config
+    from gateway.session_local import load_profile_config
     from gateway.session_policy import SURFACES, restore_policy
     from hermes_state_local import local_receipt
     from hermes_state_mutation_prepared import policy_picks
@@ -151,7 +151,7 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
         return None
     home = Path(authority.db.db_path).resolve().parent
     terminal = {} if mcp_only or adopt_only else build_profile_terminal_scope(home)
-    live, picked = _load_gateway_config(home / 'config.yaml'), policy_picks(authority.db, session_id)
+    live, picked = load_profile_config(home), policy_picks(authority.db, session_id)
     base = old
     if not mcp_only:
         # Opening a Bot Chat an earlier build froze adopts it: it follows its profile from now on.
@@ -260,7 +260,7 @@ async def refresh_resumed_policy(authority, ref, *, attached=False):
                    ref.session_id, reason)
 
 
-def _drop_terminal(authority, ref):
+def drop_session_terminal(authority, ref):
     """The session's own cached terminal environments (keyed by its route, or its ids under per-session
     isolation): the terminal tool reuses one by key whatever backend built it. A profile-shared one stays.
     Its recorded cwd (keyed by its route or task id) goes too: it wins over the new binding's directory."""
@@ -284,7 +284,7 @@ def _drop_terminal(authority, ref):
 async def _publish(authority, ref, moved=False):
     from gateway.session_local import local_session_info, publish_local_policy
     if moved:  # before the drain can run a turn on the new binding with the old environment
-        await asyncio.to_thread(_drop_terminal, authority, ref)
+        await asyncio.to_thread(drop_session_terminal, authority, ref)
     publish_local_policy(authority, ref.session_id)
     # A drain that ran during the off-loop commit saw the new stored policy beside the old live one and
     # paused; with both equal again, anything admitted meanwhile runs.

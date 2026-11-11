@@ -21,7 +21,7 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -110,6 +110,7 @@ Examples:
     hermes fallback [list]        Show fallback provider chain
     hermes fallback add           Add a fallback provider (same picker as `hermes model`)
     hermes fallback remove        Remove a fallback provider from the chain
+    hermes fallback check [--live]  Check each fallback entry can be used (exit 1 if not)
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
@@ -156,6 +157,10 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(estimated cost, token counts, model, api_calls) to PATH. "
         "The report is written even when the run fails, so pipelines "
         "can always account for spend. No effect outside -z/--oneshot."))
+    add("--cpu-profile", metavar="PATH", default=None, help=(
+        "Profile this process with cProfile and write PATH (pstats) plus PATH.txt (top functions) "
+        "on exit. A relative PATH goes under the profile's logs/profiles/. Adds overhead for as "
+        "long as the process runs; under --tui it profiles the launcher, not the agent backend."))
     # --model / --provider are accepted at the top level so they can pair with -z without the
     # `chat` subcommand; if neither -z nor a subcommand consumes them, they fall through as None.
     inherited(parser, "-m", "--model", default=None, help=(
@@ -240,8 +245,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "interpreted, so quotes, $(...), and backticks are preserved "
         "verbatim. Mutually exclusive with -q."))
     # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking and its dispatch sites do
-    # `if args.oneshot: _run_and_exit_oneshot(args.oneshot)` — a shared boolean dest would be
-    # passed as the prompt.
+    # read `args.oneshot` as the prompt — a shared boolean dest would be passed as the prompt.
     add("--oneshot", dest="oneshot_exit", action="store_true", default=False, help=(
         "With -q/--query-file: answer the query and exit (legacy "
         "single-query behavior) instead of seeding an interactive "
@@ -343,7 +347,7 @@ def _plugin_command_install_hint(prog: str, value: str):
 
 
 def _moved_command_hint(prog: str, value: str) -> str:
-    """``hermes auth spotify`` / ``hermes spotify`` after Spotify left core: where the command went."""
+    """Where a command that left core went (``hermes auth spotify``, ``hermes mcp serve``, ...)."""
     from hermes_cli.left_core_migration import moved_command_hint
     return moved_command_hint(prog, value)
 

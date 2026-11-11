@@ -6,6 +6,7 @@ import time
 import pytest
 import psutil
 
+from hermes_cli.process_identity import worker_birth
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
 from tools import async_delegation as ledger
@@ -16,7 +17,7 @@ def test_worker_dispatch_is_bound_to_execution_and_cannot_replace_foreign_rows(t
     db = SessionDB(tmp_path / 'state.db')
     db.create_session('parent', source='cli')
     db.create_session('other', source='cli')
-    handlers = worker_delegation_handlers('worker-a', os.getpid(), psutil.Process().create_time())
+    handlers = worker_delegation_handlers('worker-a', os.getpid(), worker_birth(psutil.Process()))
     payload = {'delegation_id': 'deleg_owned', 'task': {'goal': 'inert'}, 'dispatched_at': time.time(),
                'parent_session_id': 'parent', 'session_key': '', 'origin_ui_session_id': '', 'origin_session_id': ''}
     def apply(name, payload, sid='parent', table=handlers):
@@ -27,7 +28,7 @@ def test_worker_dispatch_is_bound_to_execution_and_cannot_replace_foreign_rows(t
         with closing(sqlite3.connect(tmp_path / 'state.db')) as conn:
             ledger._initialize_schema(conn)
         apply('delegation.dispatch', payload)
-        foreign = worker_delegation_handlers('worker-b', os.getpid(), psutil.Process().create_time())
+        foreign = worker_delegation_handlers('worker-b', os.getpid(), worker_birth(psutil.Process()))
         for sid, table in [('other', handlers), ('parent', foreign)]:
             with pytest.raises(RuntimeStoreError, match='permission_denied'):
                 apply('delegation.read', {'delegation_id': 'deleg_owned'}, sid, table)
@@ -47,7 +48,7 @@ def test_worker_completion_claims_refund_and_preserve_terminal_result(tmp_path):
     from gateway.session_worker_delegation import worker_delegation_handlers
     db = SessionDB(tmp_path / 'state.db')
     db.create_session('parent', source='cli')
-    handlers = worker_delegation_handlers('worker-a', os.getpid(), psutil.Process().create_time())
+    handlers = worker_delegation_handlers('worker-a', os.getpid(), worker_birth(psutil.Process()))
     def apply(name, **payload):
         return db._execute_write(lambda conn: handlers['delegation.' + name](db, conn, 'parent', payload))
     try:

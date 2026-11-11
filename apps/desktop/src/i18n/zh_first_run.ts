@@ -28,6 +28,8 @@ export const zhFirstRun: FirstRunCopy = {
   skip: '跳过设置',
   skipTip: '结束引导设置并打开新对话。',
   skipFailed: '无法跳过设置',
+  slashOffTitle: '设置期间无法使用斜杠命令',
+  slashOffBody: '设置完成后即可照常使用。',
   localModel: {
     title: '这台电脑可以在本地运行模型',
     text: (model, size) => `${model}（${size}）适合你的硬件。它免费运行，你的对话会留在这台电脑上。`,

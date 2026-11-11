@@ -36,6 +36,9 @@ async def readiness(authority, actor, params, *, runtime):
                 return {'provider_configured': bool(_has_any_provider_configured(strict_profile_scope=True))}
             except Exception as exc:  # a readiness probe reports, never raises
                 logger.debug('readiness probe failed', exc_info=True)
+                if runtime:
+                    from hermes_cli.runtime_readiness import readiness_failure
+                    return readiness_failure(exc)
                 return {'ok': False, 'error': str(exc)}
 
     return await asyncio.to_thread(probe)

@@ -15,7 +15,6 @@ from starlette.responses import JSONResponse
 HEADER = 'x-hermes-gateway-ticket'
 
 
-@contextmanager
 def native_profile_scope(request):
     """Resolve the request's implicit selectors (omitted / '' / 'current') in the TICKET's home.
 
@@ -26,7 +25,12 @@ def native_profile_scope(request):
     binds its home override too, so it never inherits a foreign override that happens to be
     ambient in the request context.
     """
-    grant = getattr(request.state, 'native_http_principal', None)
+    return grant_home_scope(getattr(request.state, 'native_http_principal', None))
+
+
+@contextmanager
+def grant_home_scope(grant):
+    """Bind *grant*'s home as the task-local home override; no-op without a grant."""
     if grant is None:
         yield
         return
@@ -235,6 +239,34 @@ def redeem_native_ws(conn):
                 or authority_for_profile_id(runner, grant['profile_id']) is None):
             return None
         for value in conn.query_params.getlist('profile'):
+            _own_profile(value, grant['profile_id'])
+    except PermissionError:
+        return None
+    return grant
+
+
+AUDIO_STREAM_PATHS = frozenset({'/api/audio/speak-stream', '/api/audio/transcribe-stream'})
+
+
+def redeem_audio_ws(ws):
+    """Redeem the ``interactive`` grant a local Desktop's audio stream upgrade presents; None when refused.
+
+    The voice sockets are siblings of the Desktop's ``/api/ws`` dial and ride the same one-use
+    grant in the same gateway subprotocol (``gateway/run_api.py``), under the HTTP seam's
+    peer/Origin/served-profile rules. The upgrade's ``profile`` selectors must name the grant's home.
+    """
+    from hermes_cli.web_server_boundary import _gateway_ws_ticket_from_subprotocol
+    ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
+    gate = _native_store(ws, [ticket]) if reason == 'ok' and ws.url.path in AUDIO_STREAM_PATHS else None
+    if gate is None:
+        return None
+    runner, store = gate
+    from gateway.session_authorities import authority_for_profile_id
+    try:
+        grant = store.redeem(ticket, profile_id=None, purpose='interactive')
+        if authority_for_profile_id(runner, grant['profile_id']) is None:
+            return None
+        for value in ws.query_params.getlist('profile'):
             _own_profile(value, grant['profile_id'])
     except PermissionError:
         return None

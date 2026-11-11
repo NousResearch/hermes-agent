@@ -24,6 +24,8 @@ from ipaddress import ip_address
 import httpx
 import pytest
 
+from tests.waiting import async_wait_until
+
 pytest.importorskip("telegram")
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -69,6 +71,9 @@ class _Edge:
         self._sock = socket.create_server(("127.0.0.1", 0))
         self.port = self._sock.getsockname()[1]
         self.connections = 0
+        self.closed = 0  # connections the edge has FIN'd (idle timeout) or reset
+        self.served = 0
+        self.received = 0
         threading.Thread(target=self._accept, daemon=True).start()
 
     def _accept(self) -> None:
@@ -83,7 +88,7 @@ class _Edge:
     def _serve(self, conn: socket.socket, number: int) -> None:
         try:
             if number == self._reset_conn:
-                time.sleep(0.05)
+                time.sleep(0.05)  # health: allow HX013 -- the reset lands while sibling connects are in flight
                 conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
                 return
             tls = self._ctx.wrap_socket(conn, server_side=True)
@@ -96,11 +101,12 @@ class _Edge:
                         return
                     head += chunk
                 headers, _, body = head.partition(b"\r\n\r\n")
+                self.received += 1
                 length = next((int(line.split(b":", 1)[1]) for line in headers.split(b"\r\n")
                                if line.lower().startswith(b"content-length:")), 0)
                 while len(body) < length:
                     body += tls.recv(65536)
-                time.sleep(self._delay)
+                time.sleep(self._delay)  # health: allow HX013 -- a slow edge keeps requests in flight across the drain
                 method = headers.split(b" ", 2)[1].rsplit(b"/", 1)[-1]
                 result = ({"id": 1, "is_bot": True, "first_name": "edge", "username": "edge_bot"}
                           if method == b"getMe" else
@@ -108,10 +114,12 @@ class _Edge:
                 payload = json.dumps({"ok": True, "result": result}).encode()
                 tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n"
                             % len(payload) + payload)
+                self.served += 1
         except OSError:
             pass  # idle timeout or reset: closing the socket below is the edge's FIN
         finally:
             conn.close()
+            self.closed += 1
 
     def close(self) -> None:
         self._sock.close()
@@ -151,12 +159,14 @@ def _point_at_edge(monkeypatch, edge: _Edge) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-async def _settle_and_sweep(bot: Bot) -> int:
-    """Wait past the edge's idle FIN, then send once more: httpcore closes every peer-closed idle
-    socket still IN a pool on the next request, so any CLOSE_WAIT left is one no pool owns."""
-    await asyncio.sleep(_EDGE_IDLE_S + 0.6)
+async def _settle_and_sweep(bot: Bot, edge: _Edge) -> int:
+    """Wait until the edge has FIN'd every connection, then send once more: httpcore closes every
+    peer-closed idle socket still IN a pool on the next request, so any CLOSE_WAIT left is one no
+    pool owns."""
+    await async_wait_until(lambda: edge.closed >= edge.connections, timeout=10, what="edge FINs every connection")
+    served = edge.served
     await bot.send_message(5, "sweep")
-    await asyncio.sleep(0.1)
+    await async_wait_until(lambda: edge.served > served, timeout=10, what="sweep request served")
     return _close_wait_fds()
 
 
@@ -183,14 +193,17 @@ async def test_request_drain_mid_flight_orphans_no_socket(tmp_path, monkeypatch,
     await bot.initialize()
     try:
         for _ in range(6):
+            received = edge.received
             sends = [asyncio.ensure_future(bot.send_message(5, "x")) for _ in range(4)]
-            await asyncio.sleep(0.01)  # the sends are mid-connect / mid-response
+            # Drain once a send is being answered: the rest are mid-connect or mid-response.
+            await async_wait_until(lambda: edge.received > received, timeout=10, interval=0.001,
+                                   what="a send reaches the edge")
             # The adapter's pool-timeout / polling drain (_drain_general_connections_after_pool_timeout).
             await general.shutdown()
             await general.initialize()
             results = await asyncio.gather(*sends, return_exceptions=True)
             assert [r for r in results if isinstance(r, Exception)] == []
-        assert await _settle_and_sweep(bot) == 0
+        assert await _settle_and_sweep(bot, edge) == 0
     finally:
         await bot.shutdown()
         edge.close()
@@ -212,7 +225,7 @@ async def test_one_failed_connect_keeps_requests_in_flight_on_that_path(tmp_path
         results = await asyncio.gather(*[bot.send_message(5, "x") for _ in range(8)], return_exceptions=True)
         assert edge.connections > 4, "the reset connection was never made; the test did not exercise a failed path"
         assert [r for r in results if isinstance(r, Exception)] == []
-        assert await _settle_and_sweep(bot) == 0
+        assert await _settle_and_sweep(bot, edge) == 0
     finally:
         await bot.shutdown()
         edge.close()
@@ -281,3 +294,35 @@ async def test_aclosed_transport_serves_the_next_request_on_a_fresh_pool(monkeyp
     assert served[0].closed
     await (await transport.handle_async_request(request)).aclose()
     assert len(served) == 2 and served[1] is not served[0]
+
+
+@pytest.mark.asyncio
+async def test_no_proxy_custom_base_url_is_reached_directly(tmp_path, monkeypatch):
+    """A self-hosted Bot API server in NO_PROXY is reached directly even with HTTPS_PROXY set: the
+    adapter's request builder decided "no proxy" for it, and the transport must not re-resolve the
+    proxy against api.telegram.org and route the base_url host through it (#47188)."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    server_ctx, client_ctx = _tls_pair(tmp_path)
+    edge = _Edge(server_ctx)
+    for key in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXY", "https_proxy", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    dead_proxy = socket.create_server(("127.0.0.1", 0))  # accepts, never answers: a proxied request hangs
+    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{dead_proxy.getsockname()[1]}")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", "3")
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.platform_ssl_context", lambda: client_ctx)
+    base_url = f"https://127.0.0.1:{edge.port}/bot"
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123:abc", extra={
+        "base_url": base_url, "base_file_url": f"https://127.0.0.1:{edge.port}/file/bot",
+        "fallback_ips": ["149.154.166.110"]}))
+    general, updates = await adapter._build_ptb_requests()
+    bot = Bot("123:abc", request=general, get_updates_request=updates, base_url=base_url)
+    try:
+        assert (await bot.get_me()).username == "edge_bot"
+        assert edge.served == 1
+    finally:
+        await bot.shutdown()
+        edge.close()
+        dead_proxy.close()

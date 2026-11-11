@@ -1264,9 +1264,9 @@ hermes kanban notify-unsubscribe t_abcd \
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
 When an agent runs `notify-subscribe` from inside a gateway chat (through its terminal tool) and the
-target is that same chat, a missing `--user-id` is filled with the sender of the turn. In groups with
+target is that same chat (and topic), a missing `--user-id` is filled with the sender of the turn. In groups with
 `group_sessions_per_user` (the default), that keeps the wake in the participant's own session instead
-of a second, shared one. Subscriptions to any other chat never take the caller's id.
+of a second, shared one. Subscriptions to any other chat or topic never take the caller's id.
 
 **Discord threads under `profile_routes`:** when the gateway multiplexes profiles and routes a *channel*
 to a profile, a subscription created from the CLI for a *thread* in that channel needs the thread's route

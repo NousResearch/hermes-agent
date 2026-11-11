@@ -1,7 +1,7 @@
 name: signaldesk
 title: SignalDesk
 repo: https://github.com/codeybot-labs/signaldesk
-sha: 8e33788fb927fa955f009d8bc1b9a4b850087a8d
+sha: 1fb9efc3d6895f5852d5f04b9a6e09477e1f559e
 version: "0.2.0"
 description: "Draft-first lead desk for founders and marketers: scan public hiring and launch signals (HN Who is hiring, YC hiring, Show HN, Launch HN, new YC companies; optional Product Hunt with a token) and local businesses on an OpenStreetMap map (LocalLead Map: city + business type or a drawn area, shown on an OpenLayers map), score them against your ICP, draft outreach, and never send without in-plugin approval. Cron and unattended runs fail closed. Disclosure — fetches public JSON from Algolia HN Search and the yc-oss static API; map scans (only when the user runs one) geocode with Nominatim (max 1 request/second, identifying User-Agent, cached 30 days) and query an Overpass API instance (one request at a time, timeout, cached 7 days), with a small bundled real OSM extract as offline fallback; the map loads standard OSM tiles in the browser; map data © OpenStreetMap contributors, ODbL, with attribution shown on the map and written into CSV and .eml exports; bundles OpenLayers 10.5.0 (BSD-2-Clause); optional DNS MX lookups (UDP only, no SMTP probing); optional Product Hunt GraphQL v2 only when PRODUCTHUNT_TOKEN is set (optional_env / secret_scope, not required to install; Product Hunt API terms restrict commercial use without permission); lead data lives in $HERMES_HOME/plugin-data/signaldesk/; drafts use the host LLM when available otherwise a local template; SignalDesk never transmits email (it writes a local .eml / mailto after approval, or the user may use a Hermes email tool which the pre_tool_call hook blocks unless the lead is approved and the session is interactive); no telemetry; no third-party mail APIs; no paid data providers required."
 maintainer: codeybot-labs
@@ -11,14 +11,14 @@ requires_hermes: ">=0.22.0"
 docs_url: https://github.com/codeybot-labs/signaldesk#readme
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/codeybot-labs/signaldesk/8e33788fb927fa955f009d8bc1b9a4b850087a8d/assets/catalog-banner.png
+image: https://raw.githubusercontent.com/codeybot-labs/signaldesk/1fb9efc3d6895f5852d5f04b9a6e09477e1f559e/assets/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/8e33788fb927fa955f009d8bc1b9a4b850087a8d/docs/screenshots/01-board-1920.png
-  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/8e33788fb927fa955f009d8bc1b9a4b850087a8d/docs/screenshots/06-map-1920.png
-  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/8e33788fb927fa955f009d8bc1b9a4b850087a8d/docs/screenshots/07-map-lead-draft.png
-  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/8e33788fb927fa955f009d8bc1b9a4b850087a8d/docs/screenshots/04-draft-approve.png
-  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/8e33788fb927fa955f009d8bc1b9a4b850087a8d/docs/screenshots/03-approved-panel.png
-  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/8e33788fb927fa955f009d8bc1b9a4b850087a8d/docs/screenshots/02-board-1280.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/1fb9efc3d6895f5852d5f04b9a6e09477e1f559e/docs/screenshots/01-board-1920.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/1fb9efc3d6895f5852d5f04b9a6e09477e1f559e/docs/screenshots/06-map-1920.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/1fb9efc3d6895f5852d5f04b9a6e09477e1f559e/docs/screenshots/07-map-lead-draft.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/1fb9efc3d6895f5852d5f04b9a6e09477e1f559e/docs/screenshots/04-draft-approve.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/1fb9efc3d6895f5852d5f04b9a6e09477e1f559e/docs/screenshots/03-approved-panel.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/1fb9efc3d6895f5852d5f04b9a6e09477e1f559e/docs/screenshots/02-board-1280.png
 known_issues:
   - "The Hermes Desktop board page (desktop/plugin.js) passes catalog desktop-surface validation but was not clicked through in a live Desktop window on the build machine. The interactive HTML board is the supported demo and review UI."
   - "Product Hunt is optional and stays off unless PRODUCTHUNT_TOKEN is set. Product Hunt API terms restrict commercial use without permission."

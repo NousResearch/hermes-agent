@@ -49,8 +49,11 @@ def configured_route_capability(agent: Any, capability: str) -> Optional[bool]:
     if live or any(name.startswith("custom:") for name in names):
         decisions = {_entry_decision(e, model, capability) for e in live}
         return False if False in decisions else (True if decisions == {True} else None)
-    decisions = {_entry_decision(e, model, capability) for e in entries} - {None}
-    return (False not in decisions) if decisions else None
+    # Without a named identity, even one unconfigured sibling makes an opt-in ambiguous.
+    decisions = {_entry_decision(e, model, capability) for e in entries}
+    if decisions == {True}:
+        return True
+    return False if False in decisions else None
 
 
 def literal_think_tags_capability(agent: Any) -> bool:

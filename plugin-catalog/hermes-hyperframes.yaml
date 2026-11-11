@@ -1,0 +1,33 @@
+name: hermes-hyperframes
+repo: https://github.com/wesleymatosdev/hermes-hyperframes-plugin
+sha: 0413369ed07a99f6c16b6c22d3dc0c4037bbccb3
+title: "Hyperframes"
+description: >-
+  Drive Hyperframes (Apache-2.0 HTML video compositions) from Hermes: six
+  hyperframes_* agent tools (lint, managed Studio preview lifecycle, timeline
+  readback, frame snapshots for visual verification, Studio-selection context
+  bridge, MP4 render) plus a dashboard tab with project switching, the live
+  Studio preview embedded, and an agent chat bound to a real Hermes gateway
+  session — the same conversation a terminal sees via `hermes chat --resume`.
+  Wraps a pinned local Hyperframes CLI (no npx) and talks only to loopback
+  services: the local CLI and the gateway's own api_server.
+maintainer: wesleymatosdev
+tier: community
+category: automation
+version: "0.3.0"
+screenshots:
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/0413369ed07a99f6c16b6c22d3dc0c4037bbccb3/docs/screenshots/before-nebula.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/0413369ed07a99f6c16b6c22d3dc0c4037bbccb3/docs/screenshots/after-minimal.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-hyperframes-plugin/0413369ed07a99f6c16b6c22d3dc0c4037bbccb3/docs/screenshots/after-chat-native.png
+platforms: []
+capabilities:
+  provides_tools:
+    - hyperframes_lint
+    - hyperframes_preview
+    - hyperframes_preview_context
+    - hyperframes_timeline
+    - hyperframes_snapshot
+    - hyperframes_render
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

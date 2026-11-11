@@ -1,0 +1,20 @@
+name: blastradius
+repo: https://github.com/valenciayuna/hermes-plugin-blastradius
+sha: 5cba6578af0e80c5eec29bda423fb11870d653be
+description: "Reads a destructive shell command before it runs and reports what it would actually delete: how many files, how many git can restore, how many it cannot, the total size, and which of them look valuable, then lets policy decide whether to show the report, block the call, or demand a one-shot blast_allow. Covers rm and rm -rf, git clean, git reset --hard, truncate -s 0, `> file` and `: >` truncating redirects, and mv overwrite, including nested bash -c, subshells, and chained commands with cd tracking; anything it cannot resolve is reported as unmeasured instead of guessed. Snapshots and verified restore exist as a separate step (blast_snapshot, blast_restore); restore skips files edited after the snapshot unless overwrite_conflicts is set. Disclosure - no network; reads file metadata, directory listings, and the output of read-only git calls (git ls-files, git check-ignore, git rev-parse); writes snapshot copies under HERMES_HOME/plugin-data/; strict policy blocks the tool call while balanced and relaxed report and continue; local terminal backend only; no telemetry. Disclosure — no network and no telemetry; on every terminal call it reads file metadata, directory listings and the output of read-only git calls (git ls-files, git check-ignore, git rev-parse); it writes snapshot copies under the Hermes plugin data dir (or BLASTRADIUS_SNAPSHOT_DIR), and blast_restore with confirm writes snapshotted files back to their original paths, skipping files edited since unless overwrite_conflicts is set; its blocks add to Hermes approval and never replace it, and the agent can relax them through blast_policy or a one-shot blast_allow (BLASTRADIUS_ALLOW=1 turns them off); local terminal backend only."
+maintainer: valenciayuna
+tier: community
+docs_url: https://github.com/valenciayuna/hermes-plugin-blastradius
+platforms: []
+capabilities:
+  provides_tools:
+  - blast_radius
+  - blast_allow
+  - blast_snapshot
+  - blast_snapshots
+  - blast_restore
+  - blast_policy
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

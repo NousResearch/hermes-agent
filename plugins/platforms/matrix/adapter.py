@@ -71,6 +71,7 @@ except ImportError:
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
+from gateway.approval_actor import approval_refusal, picker_refusal, refusal_text
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, transcode_to_ogg_opus,
@@ -2550,8 +2551,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if prompt.offered and choice not in prompt.offered:  # a hand-added ✅ on a Deny-only card: keep it live
             await self._send_invalid_reaction_feedback(room_id, reacts_to, t("platform.matrix.approval.invalid_reaction"))
             return True
-        from gateway.approval_actor import approval_refusal, refusal_text
-        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id):
+        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id,
+                                         choice=choice):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
             return True
         try:
@@ -2620,8 +2621,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if getattr(self, "_authorization_check", None) is not None:
             return self._is_sender_authorized(user_id, chat_id=room_id) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
-        return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
-            self._allowed_user_ids and user_id in self._allowed_user_ids)
+        return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
@@ -2629,13 +2629,14 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.info("Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
             await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
             return False
-        requester = getattr(prompt, "requester_user_id", None)
-        # getattr: object.__new__-built test doubles may lack the attribute.
-        if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
+        # getattr: object.__new__-built test doubles may lack the attributes.
+        if getattr(self, "_approval_require_sender", True) and (requester := getattr(prompt, "requester_user_id", None)) and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
             await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
             return False
-        return True
+        if opener := picker_refusal(getattr(prompt, "on_selected", None), sender, extra=getattr(getattr(self, "config", None), "extra", None)):
+            await self._send_invalid_reaction_feedback(room_id, target_event_id, refusal_text(opener))
+        return opener is None
 
     async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> None:
         try:

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -219,6 +220,9 @@ options = json.loads(sys.argv[3])
 # Public method names of the real PluginContext, computed by the parent so the
 # stub's attribute surface cannot drift from the class plugins run against.
 context_methods = set(options["context_methods"])
+# Service properties (``ctx.llm``, ``ctx.state``, ...): plugins capture them in register() and
+# use them later, so the probe hands back an inert service whose methods are no-ops.
+context_properties = set(options.get("context_properties", ()))
 provider_kind = options["kind"] == "model-provider"
 
 recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": [], "trusted_inbound": []}
@@ -265,7 +269,20 @@ class RecordingContext:
                 return None
 
             return _noop
+        if name in context_properties:
+            return _InertService()
         raise AttributeError(name)
+
+
+class _InertService:
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def _noop(*args, **kwargs):
+            return None
+
+        return _noop
 
 
 def emit(payload):
@@ -330,11 +347,12 @@ emit(recorded)
 def _probe_options(manifest: dict) -> dict:
     from hermes_cli.plugins import PluginContext
 
+    public = [n for n in dir(PluginContext) if not n.startswith("_")]
     return {
         "kind": str(manifest.get("kind") or ""),
-        "context_methods": sorted(
-            n for n in dir(PluginContext)
-            if not n.startswith("_") and callable(getattr(PluginContext, n))
+        "context_methods": sorted(n for n in public if callable(getattr(PluginContext, n))),
+        "context_properties": sorted(
+            n for n in public if isinstance(getattr(PluginContext, n), (property, cached_property))
         ),
     }
 

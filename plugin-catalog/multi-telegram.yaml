@@ -1,0 +1,37 @@
+name: multi-telegram
+title: Multi-Telegram
+repo: https://github.com/sergio-dev1-py/multibot_telegram
+sha: 52dc0735ea8cb1fe8402c4cc6671c2328963a92c
+description: >-
+  Run an arbitrary number of Telegram bot identities through one Hermes profile
+  and agent. Each bot has its own token reference, display identity, allowlists,
+  role prompt, welcome message and session policy; replies always leave through
+  the bot that received the triggering message. Optional shared-session groups
+  continue one stored Hermes transcript for the same external chat/user/topic.
+  Disclosure - long polling to the Telegram Bot API uses one bot token per bot,
+  read from the active profile's secret scope via a per-bot token_env; no
+  telemetry, subprocess, self-update or core overrides; authorized inbound
+  attachments are cached through Hermes; non-secret status and proactive routes
+  are stored under HERMES_HOME/plugin-data. Transcript isolation is not memory
+  isolation: MEMORY.md, USER.md, session_search and tools are profile-wide; use
+  separate profiles or restrict toolsets for hard isolation. Webhooks, inline
+  clarify/approval keyboards and out-of-process cron delivery are not implemented.
+maintainer: sergio-dev1-py
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/sergio-dev1-py/multibot_telegram#readme
+version: "1.1.1"
+readme: true
+platforms: []
+known_issues:
+  - "Long polling only; webhooks are not implemented."
+  - "Inline clarify/approval keyboards are not implemented; text fallback is used."
+  - "Out-of-process cron delivery is not implemented."
+  - "Isolated transcripts do not isolate profile memory, USER.md, session_search or tools; use separate profiles or restrict toolsets."
+  - "Telegram DM topics are unverified."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

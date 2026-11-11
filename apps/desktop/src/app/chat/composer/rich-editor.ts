@@ -914,3 +914,114 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     editor.appendChild(document.createElement('br'))
   }
 }
+
+const isBlockElement = (node: Node | null): node is HTMLElement =>
+  node?.nodeType === Node.ELEMENT_NODE &&
+  ((node as HTMLElement).tagName === 'DIV' || (node as HTMLElement).tagName === 'P')
+
+/** The editor's direct child holding `node` (or `node` itself when it is one). */
+function topLevelChild(editor: HTMLElement, node: Node): ChildNode | null {
+  let current: Node | null = node
+
+  while (current && current.parentNode !== editor) {
+    current = current.parentNode
+  }
+
+  return (current as ChildNode | null) ?? null
+}
+
+/**
+ * Whether the caret sits on the editor's first (or last) line, i.e. ArrowUp
+ * (or ArrowDown) would leave the text instead of moving the caret inside it.
+ * Only then should those keys browse sent history or the queue; anywhere else
+ * they belong to the caret, like any multi-line text box.
+ *
+ * Hard breaks come from the DOM (a `<br>` or a block wrapper on that side of
+ * the caret; the trailing `<br>` Chromium keeps at the very end renders no
+ * line, so it doesn't count). Soft wraps come from layout: any text box on
+ * that side sitting a line above (or below) the caret. A range selection is
+ * never "on the edge" (the keys extend or collapse it natively); no caret in
+ * the editor counts as on the edge.
+ */
+export function caretOnEdgeLine(editor: HTMLElement, edge: 'first' | 'last'): boolean {
+  const selection = editor.ownerDocument.getSelection()
+
+  if (!selection || selection.rangeCount === 0) {
+    return true
+  }
+
+  const caret = selection.getRangeAt(0)
+
+  if (!editor.contains(caret.startContainer) || !editor.contains(caret.endContainer)) {
+    return true
+  }
+
+  if (!selection.isCollapsed) {
+    return false
+  }
+
+  const side = editor.ownerDocument.createRange()
+  side.selectNodeContents(editor)
+
+  if (edge === 'first') {
+    side.setEnd(caret.startContainer, caret.startOffset)
+  } else {
+    side.setStart(caret.endContainer, caret.endOffset)
+  }
+
+  // Hard breaks: a <br> on that side of the caret.
+  for (const br of Array.from(editor.querySelectorAll('br'))) {
+    if (!side.intersectsNode(br)) {
+      continue
+    }
+
+    // Chromium's trailing <br> (last node of the editor or of the last block)
+    // keeps the box tall but draws no line of its own.
+    const trailing =
+      !br.nextSibling && (br.parentNode === editor || (isBlockElement(br.parentNode) && !br.parentNode.nextSibling))
+
+    if (edge === 'last' && trailing) {
+      continue
+    }
+
+    return false
+  }
+
+  // Hard breaks: block wrappers (Chromium wraps lines in <div> after Enter).
+  const children = Array.from(editor.childNodes)
+  const anchor = caret.startContainer
+  let home: ChildNode | null = null
+  let others: ChildNode[]
+
+  if (anchor === editor) {
+    others = edge === 'first' ? children.slice(0, caret.startOffset) : children.slice(caret.startOffset)
+  } else {
+    home = topLevelChild(editor, anchor)
+    const index = home ? children.indexOf(home) : -1
+    others = edge === 'first' ? children.slice(0, Math.max(0, index)) : children.slice(index + 1)
+  }
+
+  const content = others.filter(node => !isBlankNode(node))
+
+  if (content.length > 0 && (isBlockElement(home) || content.some(isBlockElement))) {
+    return false
+  }
+
+  // Soft wraps: a text box wholly above (below) the caret's line. jsdom has no
+  // layout, so there this check finds nothing.
+  const caretBox = typeof caret.getClientRects === 'function' ? (caret.getClientRects()[0] ?? null) : null
+
+  if (caretBox && caretBox.height > 0) {
+    for (const box of Array.from(side.getClientRects())) {
+      if (box.height === 0) {
+        continue
+      }
+
+      if (edge === 'first' ? box.bottom <= caretBox.top + 1 : box.top >= caretBox.bottom - 1) {
+        return false
+      }
+    }
+  }
+
+  return true
+}

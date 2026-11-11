@@ -1,9 +1,9 @@
 name: hermes-teamops
 repo: "https://github.com/agentworker33-droid/hermes-teamops"
-sha: "9fbeb38d8a35fb790b96245468a0412cf7340e64"
+sha: "39a0858e0d40c5f194ba074ac8b8de69f8791ddc"
 subdir: teamops
 title: "TeamOps — build and run your agent team"
-description: "One plugin for the full lifecycle of a multi-agent Hermes team. Deploy a whole team from a blueprint (profiles, SOULs, crons, shared kanban, mesh edges) with `hermes teams deploy`, verify it with Deploy Guard (preflight/smoke/rollback), watch fleet status and the mesh map, catch silent cron gaps (Cron911) and dead models (Model Guard), get a daily standup digest, and broadcast decisions across teams (mesh sync). Includes an in-plugin Agent Factory (template generator) so you can extend a base blueprint with a new role or scaffold a new team from a one-line spec and deploy it with the same verified pipeline. 16 tools plus the `hermes teams` CLI. Owner actions (deploy/rollback/factory-deploy) are gated on human approval via a pre_tool_call hook and refused in cron/unattended runs; blueprint paths are confined to the blueprint root and tool schemas expose no path arguments. Local-first: everything runs against your own HERMES_HOME; nothing leaves the machine."
+description: "One plugin for the full lifecycle of a multi-agent Hermes team. Deploy a whole team from a blueprint (profiles, SOULs, crons, shared kanban/mesh) with `hermes teams deploy`, verify it with Deploy Guard (preflight/smoke/rollback), watch fleet status and the mesh map, catch silent cron gaps (Cron911) and dead models (Model Guard), get a daily standup digest, and broadcast decisions across teams (mesh sync). The Agent Factory is an in-plugin template generator: from a one-line spec it extends a base blueprint with a new role or scaffolds a new team, then deploys it via the same verified pipeline (fixture fallback for demos). 16 tools plus the hermes teams CLI. Local-first: everything runs against your own HERMES_HOME; nothing leaves the machine. Disclosure — deploying creates Hermes profiles and cron jobs; rollback deletes only teamops-prefixed profiles and files under <home>/teams/<team>/; fleet and cron scans read every profile's cron store."
 maintainer: "Dalton Wyant / AutomatedAgents"
 tier: community
 category: automation

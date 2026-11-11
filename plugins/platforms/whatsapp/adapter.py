@@ -363,18 +363,20 @@ def _bridge_token_lock(lock_path: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _load_or_create_bridge_token(session_path: Path) -> str:
+def _load_or_create_bridge_token(session_path: Path, *, rotate: bool = False) -> str:
     """Per-session secret shared by the adapter, the bridge it spawns and standalone (cron) senders; 0600 beside creds.json.
 
     Created once under an exclusive lock so two first-use callers (gateway start + a cron delivery) agree on one
-    value; a short or unreadable file is replaced. Raises OSError when the session dir cannot be written."""
+    value; a short or unreadable file is replaced. ``rotate`` mints a fresh one regardless (each new bridge spawn),
+    so a token that leaked to whoever held the port of a dead bridge dies with it. Raises OSError when the session
+    dir cannot be written."""
     import secrets
     from utils import atomic_write_text
     session_path.mkdir(parents=True, exist_ok=True)
     token_path = session_path / _BRIDGE_TOKEN_FILE
     with _bridge_token_lock(token_path.with_name(_BRIDGE_TOKEN_FILE + ".lock")):
         with suppress(OSError):
-            existing = token_path.read_text(encoding="utf-8-sig").strip()
+            existing = "" if rotate else token_path.read_text(encoding="utf-8-sig").strip()
             if len(existing) >= 32:
                 return existing
         token = secrets.token_urlsafe(32)
@@ -548,6 +550,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_process: Optional[subprocess.Popen] = None
         self._foreign_bridge_session: Optional[str] = None  # set by _reuse_running_bridge when /health names another profile's session
         self._bridge_probe_timed_out = False  # set by _reuse_running_bridge when the port's holder gave no /health answer
+        self._bridge_holder_unproven = False  # set by _reuse_running_bridge when the port's holder failed the token proof
         from .bridge_ownership import standalone_bridge_port
         try:
             # Same resolution as out-of-process sends, so a profile that recorded a port while serving as a
@@ -646,9 +649,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
         self._foreign_bridge_session = None
         self._bridge_probe_timed_out = False
+        self._bridge_holder_unproven = False
         try:
             ok, data = await self._probe_bridge_health()
-            if not ok or data is None:
+            if not ok:
+                # It answered but cannot prove this session's token: another profile's bridge on the shared port
+                # (each session has its own token), an impostor, or our own pre-auth bridge. Only the last may be
+                # stopped, and only by its pidfile; connect() never kills this holder by port.
+                self._bridge_holder_unproven = True
+                return False
+            if data is None:
                 return False
             # Another profile's bridge (same default port) is neither adopted, which would answer as that
             # profile's phone, nor killed: connect() reports it. Checked before status because a bridge in
@@ -856,30 +866,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not secondary or prior_bridge_is_ours:
                 await asyncio.to_thread(_kill_stale_bridge_by_pidfile, self._session_path)
             if not secondary:
-                if self._bridge_probe_timed_out:
-                    # No /health answer is no ownership evidence (another profile's busy bridge looks the same), and
-                    # our own stale bridge was just reaped by its pidfile: a holder that remains is left running.
-                    await asyncio.sleep(1)
-                    try:
-                        held = bool(_port_listener_pids(self._bridge_port))
-                    except Exception:
-                        held = True  # listeners could not be listed: still no evidence to kill on
-                    if held:
-                        self._set_fatal_error(
-                            "whatsapp_bridge_unresponsive",
-                            f"Port {self._bridge_port} is held by a process that did not answer /health in time, so "
-                            f"Hermes cannot tell whose WhatsApp bridge it is; nothing on port {self._bridge_port} was "
-                            "stopped. Stop that process, or give this profile its own port via "
-                            "platforms.whatsapp.extra.bridge_port.",
-                            retryable=True,
-                        )
+                if self._bridge_probe_timed_out or self._bridge_holder_unproven:
+                    if await self._unidentified_holder_remains():
                         return False
-                await asyncio.to_thread(_kill_port_process, self._bridge_port)
+                else:
+                    await asyncio.to_thread(_kill_port_process, self._bridge_port)
             # The kills above return after SIGTERM (or SIGKILL past the grace); a slow-exiting bridge could still
             # hold the port, and the blind sleep that used to sit here spawned onto it — EADDRINUSE, retried forever.
             # A secondary that skipped the kills found the port free, so this returns at once on that path.
             if not await self._wait_bridge_port_free():
                 return False
+            self._bridge_token = _load_or_create_bridge_token(self._session_path, rotate=True)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")  # noqa: ASYNC230 -- long-lived log handle handed to the bridge subprocess
@@ -905,6 +902,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if lock_acquired:
                     self._release_platform_lock()
                 self._close_bridge_log()
+
+    async def _unidentified_holder_remains(self) -> bool:
+        """Port holder that gave no identity (no /health answer, or no proof of this session's token): our own stale
+        bridge was just reaped by its pidfile, so a holder that remains is left running → True with a named fatal."""
+        await asyncio.sleep(1)
+        try:
+            held = bool(_port_listener_pids(self._bridge_port))
+        except (OSError, subprocess.SubprocessError, ValueError):  # netstat/lsof missing, timed out, or unparseable
+            held = True  # listeners could not be listed: still no evidence to kill on
+        if not held:
+            return False
+        if self._bridge_probe_timed_out:
+            self._set_fatal_error(
+                "whatsapp_bridge_unresponsive",
+                f"Port {self._bridge_port} is held by a process that did not answer /health in time, so "
+                f"Hermes cannot tell whose WhatsApp bridge it is; nothing on port {self._bridge_port} was "
+                "stopped. Stop that process, or give this profile its own port via "
+                "platforms.whatsapp.extra.bridge_port.",
+                retryable=True,
+            )
+        else:
+            self._set_fatal_error(
+                "whatsapp_bridge_foreign_session",
+                f"Port {self._bridge_port} is held by a WhatsApp bridge (or another process) that cannot prove this "
+                f"session's token, most likely another profile's bridge; nothing on port {self._bridge_port} was "
+                "stopped. Give this profile its own port via platforms.whatsapp.extra.bridge_port "
+                "(one distinct bridge_port per profile).",
+                retryable=False,
+            )
+        return True
 
     def _close_bridge_log(self) -> None:
         if self._bridge_log_fh:

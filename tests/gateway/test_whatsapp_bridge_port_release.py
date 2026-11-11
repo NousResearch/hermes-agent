@@ -105,6 +105,7 @@ def _make_adapter(bridge_script: str, session_path: Path, port: int):
     adapter._session_path = Path(os.path.abspath(os.path.expanduser(str(session_path))))
     adapter._foreign_bridge_session = None
     adapter._bridge_probe_timed_out = False
+    adapter._bridge_holder_unproven = False
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None

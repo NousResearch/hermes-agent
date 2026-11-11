@@ -60,6 +60,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._session_path = Path(os.path.abspath(os.path.expanduser(str(session_path))))
     adapter._foreign_bridge_session = None  # mirror __init__; harness builds via __new__
     adapter._bridge_probe_timed_out = False
+    adapter._bridge_holder_unproven = False
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
@@ -274,9 +275,46 @@ class TestStaleBridgeHandshake:
             assert await adapter.connect() is False  # not adopted; the replacement bridge "died" (mock) → False
 
         mock_popen.assert_called_once()
-        assert mock_popen.call_args.kwargs["env"]["HERMES_WHATSAPP_BRIDGE_TOKEN"] == _TEST_TOKEN
+        # The fresh bridge gets a fresh token (persisted for cron), so whatever the impostor saw is already dead.
+        spawned_token = mock_popen.call_args.kwargs["env"]["HERMES_WHATSAPP_BRIDGE_TOKEN"]
+        assert spawned_token != _TEST_TOKEN and len(spawned_token) >= 32
+        assert (tmp_path / "session" / ".bridge-token").read_text(encoding="utf-8") == spawned_token
         assert all("Authorization" not in headers for _url, headers in mock_client.requests), mock_client.requests
         assert [url.rsplit("/", 1)[1] for url, _ in mock_client.requests] == ["auth-proof"] * len(mock_client.requests)
+
+    @pytest.mark.asyncio
+    async def test_other_profiles_bridge_that_cannot_prove_our_token_is_left_running(self, tmp_path):
+        """Each profile's bridge holds its own token, so another profile's live bridge on the shared default port fails
+        this session's proof. It must be reported, never killed by port and never replaced."""
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session")
+        mock_client = _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False, "session": str(tmp_path / "other-profile-session")},
+            knows_token=False,
+        )
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile, \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
+             patch("plugins.platforms.whatsapp.adapter._port_listener_pids", return_value=[4242]), \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=MagicMock()) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            assert await adapter.connect() is False
+
+        mock_kill_port.assert_not_called()
+        mock_popen.assert_not_called()
+        mock_kill_pidfile.assert_called_once()  # our own stale bridge may still be reaped, by identity only
+        assert adapter._fatal_error_code == "whatsapp_bridge_foreign_session"
+        assert adapter._fatal_error_retryable is False
+        assert f"nothing on port {adapter._bridge_port} was stopped" in adapter._fatal_error_message
+        assert all("Authorization" not in headers for _url, headers in mock_client.requests)
+        assert (tmp_path / "session" / ".bridge-token").read_text(encoding="utf-8") == _TEST_TOKEN  # no spawn, no rotation
 
     @pytest.mark.asyncio
     async def test_adopted_bridge_is_driven_with_the_bearer(self, tmp_path):

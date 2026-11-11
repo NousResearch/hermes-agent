@@ -90,7 +90,11 @@ gateway on first start), and the bridge requires it as a bearer token on every
 route. Before adopting a bridge that is already running, the gateway first sends
 a challenge to `GET /auth-proof` and adopts the listener only when it proves it
 holds the secret, so an impostor that bound the port first never learns the
-token and is simply replaced. Cron and `hermes send` deliveries read the same
+token. A listener that fails the proof (another profile's bridge, which holds
+its own token, or an impostor) is never stopped by port: once this session's
+own bridge has been stopped by its pidfile, a listener still holding the port
+fails WhatsApp with `whatsapp_bridge_foreign_session`. Every newly spawned
+bridge gets a fresh secret. Cron and `hermes send` deliveries read the same
 file; they never create it, and a session that has not yet been started by the
 gateway reports `No WhatsApp bridge token`. A bridge launched by hand without
 `HERMES_WHATSAPP_BRIDGE_TOKEN` refuses to serve.

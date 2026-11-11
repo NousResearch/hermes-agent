@@ -804,6 +804,67 @@ class TestGithubExemptionAbuse:
         ) == ""
 
 
+class TestOriginFromEnv:
+    """The cron origin must capture parent_chat_id for thread sessions so a
+    deleted thread can fall back to its parent channel at delivery time."""
+
+    def test_captures_parent_chat_id_for_thread_origin(self):
+        from tools.cronjob_tools import _origin_from_env
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(
+            platform="discord",
+            chat_id="thread-456",
+            chat_name="#general / reminder thread",
+            thread_id="thread-456",
+            parent_chat_id="parent-channel-123",
+        )
+        try:
+            origin = _origin_from_env()
+        finally:
+            clear_session_vars(tokens)
+
+        assert origin["parent_chat_id"] == "parent-channel-123"
+        assert origin["platform"] == "discord"
+        assert origin["thread_id"] == "thread-456"
+
+    def test_parent_chat_id_omitted_when_absent(self):
+        from tools.cronjob_tools import _origin_from_env
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(platform="telegram", chat_id="999")
+        try:
+            origin = _origin_from_env()
+        finally:
+            clear_session_vars(tokens)
+
+        assert "parent_chat_id" not in origin
+
+    def test_captures_chat_type_for_dm_origin(self):
+        from tools.cronjob_tools import _origin_from_env
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(platform="telegram", chat_id="user-1", chat_type="dm")
+        try:
+            origin = _origin_from_env()
+        finally:
+            clear_session_vars(tokens)
+
+        assert origin["chat_type"] == "dm"
+
+    def test_chat_type_omitted_when_absent(self):
+        from tools.cronjob_tools import _origin_from_env
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(platform="telegram", chat_id="999")
+        try:
+            origin = _origin_from_env()
+        finally:
+            clear_session_vars(tokens)
+
+        assert "chat_type" not in origin
+
+
 class TestScheduleKnobToolSurface:
     """The model-facing tool must expose the per-job timezone and grace knobs (§4/§5)."""
 

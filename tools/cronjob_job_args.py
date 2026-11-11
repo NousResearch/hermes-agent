@@ -96,7 +96,7 @@ def _origin_from_env(
         logger.debug(
             "Cron origin captured thread_id=%s for %s:%s",
             thread_id, origin_platform, origin_chat_id)
-    return {
+    origin = {
         "platform": origin_platform, "chat_id": origin_chat_id,
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None, "thread_id": thread_id,
         # Lets a delivery mirror resolve the participant's session in per-user-isolated groups.
@@ -105,6 +105,16 @@ def _origin_from_env(
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
     }
+    # Preserve the parent channel for a thread-origin job. If the thread later disappears,
+    # delivery can retry the parent instead of losing the notification.
+    parent_chat_id = get_session_env("HERMES_SESSION_PARENT_CHAT_ID") or None
+    if parent_chat_id:
+        origin["parent_chat_id"] = parent_chat_id
+    # Preserve chat kind so a private DM never escalates into a shared home channel.
+    chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE") or None
+    if chat_type:
+        origin["chat_type"] = chat_type
+    return origin
 
 
 def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:

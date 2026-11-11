@@ -1623,7 +1623,11 @@ SEND_ERROR_KINDS = frozenset(
 _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
 _SUBCHAT_NOT_FOUND_SUBSTRINGS = (
     "message to edit not found", "message to reply not found", "thread not found", "topic_deleted",
-    "message_id_invalid")
+    "topic_closed", "message_id_invalid",
+    # Discord: 10003 Unknown Channel (deleted/inaccessible channel or thread).
+    "unknown channel", "error code: 10003",
+    # Slack: archived or missing channel is a sub-chat-level failure.
+    "channel_not_found", "is_archived")
 
 
 def _error_blob(exc: Optional[BaseException] = None, error_text: str = "") -> str:
@@ -1648,8 +1652,17 @@ _SEND_ERROR_CLASSIFIERS: tuple[tuple[str, Callable[[str], bool]], ...] = (
         or ("bad request" in b and "entit" in b))),
     ("forbidden", lambda b: _any_in(
         b, "forbidden", "bot was blocked", "blocked by the user", "user is deactivated",
-        "not enough rights", "have no rights", "not a member")),
-    ("not_found", lambda b: _any_in(b, *_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS, *_SUBCHAT_NOT_FOUND_SUBSTRINGS)),
+        "not enough rights", "have no rights", "not a member",
+        # Discord: 50001 Missing Access / 50013 Missing Permissions.
+        "missing access", "missing permissions", "error code: 50001", "error code: 50013",
+        # Slack: bot removed from / lacks permission for the channel.
+        "not_in_channel", "missing_scope", "restricted_action")),
+    ("not_found", lambda b: (
+        _any_in(b, *_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS, *_SUBCHAT_NOT_FOUND_SUBSTRINGS)
+        # Generic container failures from adapters with free-text errors.
+        or ("not found" in b and any(x in b for x in ("channel", "thread", "conversation", "room")))
+        or ("archiv" in b and ("thread" in b or "channel" in b))
+        or ("thread" in b and "locked" in b))),
     ("rate_limited", lambda b: _any_in(b, "flood", "too many requests", "retry after", "rate limit")),
     ("transient", lambda b: _any_in(b, *_RETRYABLE_ERROR_PATTERNS, "connecttimeout")))
 

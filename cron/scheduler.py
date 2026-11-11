@@ -4369,8 +4369,8 @@ from cron.scheduler_tick import tick
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
 from cron.scheduler_delivery import (
-    _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
-    _resolve_delivery_targets,
+    _attempt_delivery_fallback, _deliver_result, _delivery_lane_value, _normalize_deliver_value,
+    _resolve_delivery_target, _resolve_delivery_targets,
 )
 from cron.scheduler_script import (
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,

@@ -53,3 +53,29 @@ async def test_old_card_tapped_after_restart_does_not_resolve_the_new_card():
         resolve.assert_not_called()
         await after._handle_callback_query(_tap(new_card), MagicMock())  # control: the new card answers
     assert resolve.call_count == 1 and resolve.call_args.args[:2] == (_SESSION, "once")
+
+
+def _update_card_data(adapter: TelegramAdapter, answer: str) -> str:
+    # The id the card's buttons carry (python-telegram-bot's keyboard is stubbed in this suite).
+    return f"update_prompt:{answer}:{getattr(adapter, '_update_prompt_id', '')}"
+
+
+@pytest.mark.asyncio
+async def test_old_update_card_tapped_after_restart_does_not_answer_the_new_prompt(tmp_path):
+    before = _adapter()
+    await before.send_update_prompt(chat_id="12345", prompt="Restore stash?", session_key=_SESSION)
+    old_yes = _update_card_data(before, "y")
+
+    after = _adapter()
+    await after.send_update_prompt(chat_id="12345", prompt="Overwrite config?", session_key=_SESSION)
+    response = tmp_path / ".update_response"
+    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
+            patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        await after._handle_callback_query(_tap(old_yes), MagicMock())
+        assert not response.exists(), "the old /update card answered the new prompt"
+        new_yes, new_no = _update_card_data(after, "y"), _update_card_data(after, "n")
+        await after._handle_callback_query(_tap(new_no), MagicMock())  # control: the new card answers
+        assert response.read_text() == "n"
+        response.unlink()
+        await after._handle_callback_query(_tap(new_yes), MagicMock())
+        assert not response.exists(), "an answered /update card answered again"

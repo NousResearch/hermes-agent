@@ -212,3 +212,32 @@ def test_plugin_that_reads_a_secret_while_registering_loads_in_its_profile(plugi
     finally:
         set_multiplex_active(False)
     assert res is not None and res["result"]["output"] == "reg:infra-key", res
+
+
+def test_absent_command_probe_reads_the_registry_under_the_discovery_lock(plugin_homes, monkeypatch):
+    """A reload holds the discovery lock while it clears and refills the registry; the no-discovery
+    probe must read it under that lock, never between the loaded check and the read."""
+    import threading
+
+    from hermes_cli import plugins as plugins_mod
+
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    assert "launchonly" in manager._plugin_commands
+
+    class _Probe(dict):
+        def __contains__(self, key):
+            def other_thread():  # an RLock: only another thread (a reload) sees it held
+                got = manager._discovery_lock.acquire(blocking=False)
+                if got:
+                    manager._discovery_lock.release()
+                reads.append(got)
+            worker = threading.Thread(target=other_thread)
+            worker.start()
+            worker.join()
+            return dict.__contains__(self, key)
+
+    reads: list = []
+    monkeypatch.setattr(manager, "_plugin_commands", _Probe(manager._plugin_commands))
+    assert plugins_mod.plugin_command_absent_nowait("launchonly") is False
+    assert reads == [False]

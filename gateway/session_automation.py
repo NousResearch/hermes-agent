@@ -485,7 +485,8 @@ def _reset_predecessor(db, session_id, seen):
     if not parent or parent in seen:
         return None
     parent_row = db.get_session(parent) or {}
-    if parent_row.get('end_reason') in (None, ''):
+    # Pre-marker /branch rows have no _branched_from; 'branched' is not a reset edge.
+    if parent_row.get('end_reason') in (None, '', 'branched'):
         return None
     return parent
 

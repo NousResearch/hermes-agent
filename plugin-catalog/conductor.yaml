@@ -1,18 +1,19 @@
 name: conductor
 title: Conductor
-repo: https://github.com/capthvnsen/hermes-captain
-sha: 6cb9aefebbbd4b0f8e73b6ccdfad3c2f327f9485
-description: "Hermes leads coding agents on your machines: any terminal coding agent, T3 Code threads, and Orca terminals. It starts a run, waits with no model, and puts one message into the chat that asked when the run finishes, errors, stalls, or needs an approval; T3 and Orca runs can be steered and stopped. Two skills: brief turns a brain-dump into a brief, lead runs the work. Disclosure: runs the agent command you name, git status, and ssh and tmux when you give a host (arguments only, no shell strings from user text, never an approval-bypass flag); network is only ssh to hosts you name; keeps one wait thread per run and a detached agent process or tmux window; writes run records to its plugin data folder and event files, exit codes and logs under ~/.conductor; reads and stores no credentials; no telemetry. Finish messages on a messaging gateway need plugins.entries.conductor.allow_gateway_injection: true. Imports one private function, gateway.session_context.bound_session_key, guarded, to learn which chat asked."
+repo: https://github.com/capthvnsen/hermes-conductor
+sha: b01e811a4c93d8b7bcbd02beaca257ae6c65e3ef
+description: "Hermes leads coding agents on your machines: any terminal coding agent, T3 Code threads, and Orca terminals. It starts a run, waits with no model, and puts one message into the chat that asked when the run finishes, errors, stalls, or needs an approval; T3 and Orca runs can be steered and stopped. It can run 10+ agents at once, one ping each. Two skills: brief researches, asks one round of questions and writes the brief; lead runs the work and checks each report. Disclosure: runs the agent command you name, git status, and ssh and tmux when you give a host (arguments only, no shell strings from user text, never an approval-bypass flag); network is only ssh to hosts you name; keeps one wait thread per run and a detached agent process or tmux window; writes run records to its plugin data folder and event files, exit codes and logs under ~/.conductor; reads and stores no credentials; no telemetry. Finish messages on a messaging gateway need plugins.entries.conductor.allow_gateway_injection: true. Imports one private function, gateway.session_context.bound_session_key, guarded, to learn which chat asked."
 maintainer: capthvnsen
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/capthvnsen/hermes-captain/blob/6cb9aefebbbd4b0f8e73b6ccdfad3c2f327f9485/README.md
+docs_url: https://github.com/capthvnsen/hermes-conductor/blob/b01e811a4c93d8b7bcbd02beaca257ae6c65e3ef/README.md
 version: "0.4.2"
-image: https://raw.githubusercontent.com/capthvnsen/hermes-captain/6cb9aefebbbd4b0f8e73b6ccdfad3c2f327f9485/assets/banner.png
+image: https://raw.githubusercontent.com/capthvnsen/hermes-conductor/b01e811a4c93d8b7bcbd02beaca257ae6c65e3ef/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/capthvnsen/hermes-captain/6cb9aefebbbd4b0f8e73b6ccdfad3c2f327f9485/assets/demo-run.jpg
-  - https://raw.githubusercontent.com/capthvnsen/hermes-captain/6cb9aefebbbd4b0f8e73b6ccdfad3c2f327f9485/assets/demo-approval.jpg
+  - https://raw.githubusercontent.com/capthvnsen/hermes-conductor/b01e811a4c93d8b7bcbd02beaca257ae6c65e3ef/assets/workflow.jpg
+  - https://raw.githubusercontent.com/capthvnsen/hermes-conductor/b01e811a4c93d8b7bcbd02beaca257ae6c65e3ef/assets/demo-run.jpg
+  - https://raw.githubusercontent.com/capthvnsen/hermes-conductor/b01e811a4c93d8b7bcbd02beaca257ae6c65e3ef/assets/demo-app.png
 platforms: [linux, macos]
 capabilities:
   provides_tools:

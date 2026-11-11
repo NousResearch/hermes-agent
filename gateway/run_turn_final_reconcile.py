@@ -40,14 +40,17 @@ def _edit_carries_whole(adapter: Any, chat_id: str, content: str) -> bool:
     """Whether one ``edit_message(finalize=True)`` can show all of *content*: the adapter splits an
     oversized final edit into continuations itself (``SPLITS_OVERSIZED_FINAL_EDIT``, Telegram), or
     *content* fits one message in the adapter's own length units. Google Chat, Slack and DingTalk
-    cut an oversized edit short and still report success, so only the normal send is whole there."""
+    cut an oversized edit short and still report success, so only the normal send is whole there.
+    Slack cuts the FORMATTED text (``&`` -> ``&amp;``), others the raw text: both must fit."""
     if getattr(adapter, "SPLITS_OVERSIZED_FINAL_EDIT", False) is True:
         return True
     from gateway.platforms.base import BasePlatformAdapter
     limit, len_fn = getattr(adapter, "MAX_MESSAGE_LENGTH", 4096), len
     if isinstance(adapter, BasePlatformAdapter):
         limit, len_fn = adapter.max_message_length_for_chat(chat_id), adapter.message_len_fn_for_chat(chat_id)
-    return isinstance(limit, int) and len_fn(content) <= limit
+    fmt = getattr(adapter, "format_message", None)
+    sent = (content, fmt(content)) if callable(fmt) else (content,)
+    return isinstance(limit, int) and all(len_fn(text) <= limit for text in sent)
 
 
 def owns_reconcilable_preview(consumer: Any, chat_id: str = "", content: Optional[str] = None) -> bool:

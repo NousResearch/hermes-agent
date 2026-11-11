@@ -1,0 +1,33 @@
+name: zen-mode
+repo: https://github.com/latentJake/hermes-zenmode
+sha: 04a2b69394f27e19984d065e67ce13ceb9d6c78f
+title: Zen Mode
+description: 'Every Hermes Desktop conversation in one stack that recedes into the screen, ordered like an
+  inbox: failed, needs you, working, unread, pinned, then the rest. Answer approvals and questions on the card,
+  hold a thread beside the stack, start or branch a chat without leaving, switch a live chat''s model, and tune
+  the 3D live. Desktop plugin (desktop/plugin.js inside the plugin SDK surface) plus a read-only dashboard
+  backend that reads the session list from state.db. No network, no credentials, no agent tools, hooks,
+  middleware or env vars.'
+maintainer: latentJake
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.19.0"
+docs_url: https://github.com/latentJake/hermes-zenmode#readme
+image: https://raw.githubusercontent.com/latentJake/hermes-zenmode/04a2b69394f27e19984d065e67ce13ceb9d6c78f/docs/img/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/latentJake/hermes-zenmode/04a2b69394f27e19984d065e67ce13ceb9d6c78f/docs/img/zen-mode-stack.jpg
+  - https://raw.githubusercontent.com/latentJake/hermes-zenmode/04a2b69394f27e19984d065e67ce13ceb9d6c78f/docs/img/zen-mode-hold.jpg
+  - https://raw.githubusercontent.com/latentJake/hermes-zenmode/04a2b69394f27e19984d065e67ce13ceb9d6c78f/docs/img/zen-mode-model-menu.jpg
+  - https://raw.githubusercontent.com/latentJake/hermes-zenmode/04a2b69394f27e19984d065e67ce13ceb9d6c78f/docs/img/zen-mode-new-chat.jpg
+  - https://raw.githubusercontent.com/latentJake/hermes-zenmode/04a2b69394f27e19984d065e67ce13ceb9d6c78f/docs/img/zen-mode-needs-you.jpg
+  - https://raw.githubusercontent.com/latentJake/hermes-zenmode/04a2b69394f27e19984d065e67ce13ceb9d6c78f/docs/img/zen-mode-tune.jpg
+platforms: [macos]
+known_issues:
+  - Early beta, tested on Hermes v0.23.0 on macOS only.
+  - Pins and stored (not live) transcripts need the Python half enabled under plugins.enabled; without it the stack still works for live chats.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,6 +1,6 @@
 name: rails
 repo: https://github.com/grimmjoww/hermes-rails
-sha: 1f9c61a251f2420fc2843c18b5a7ab6e3c5fe262
+sha: 25d1e018ced05968af17a348d35ef7a7272e31b1
 title: Rails
 description: "Guardrails and decision plugin: a fast local System 1 model (d1-3B Decision Guard) decides on every turn whether the agent is only looking or changing things, flags work you did not ask for, makes code work load the matching skill and run a test before 'done', and shows every decision inline as a tag. Optional d3 vision checks the screen before a computer-use task is called done and adds decide, screen_find, screen_check and video_check tools. Disclosure — network calls only to local model servers on 127.0.0.1 (ports 8089, 8898, 8899); no third-party services, no telemetry, no shell commands, no stored credentials, no Python dependencies. Appends a decision log to <HERMES_HOME>/logs/rails.jsonl (long tokens masked); reads the newest computer-use screenshot and media passed to its tools to send them to the local vision model; reads skill names from a sibling superpowers plugin folder if present; short-lived daemon threads for second-opinion and prompt-injection checks. Ideas (shadow mode, decision log) credited to kerpopule/hermes-jev-skills; not a fork."
 maintainer: grimmjoww

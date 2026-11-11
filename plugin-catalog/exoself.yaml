@@ -1,6 +1,6 @@
 name: exoself
 repo: https://github.com/cYoren/hermes-exoself
-sha: 1470d537057be407e1718345bee2f2dddc600266
+sha: 2084c2da19c4a8e4dd9a6dcfb19ab2530688b41a
 title: exoself
 description: >-
   A drawn temperament for the agent. One 32 byte seed, drawn once per profile with

@@ -1,6 +1,6 @@
 name: hermes-studio
 repo: https://github.com/PabloTheThinker/hermes-studio
-sha: e3428e3ee05096ac933274fc6c134d4e584dc997
+sha: 82565463c5403d80b9868f42eed4a8bb7aa7fa38
 subdir: hermes_plugin/hermes-studio
 title: Hermes Studio
 description: >-
@@ -8,27 +8,32 @@ description: >-
   shorts out, plus timeline edits, Canva-style designs and photo tools, as 14
   chat tools and a /studio chat slash. Whisper + FFmpeg on your machine. Never
   posts. Disclosure — every tool runs the separately installed hermes-studio
-  CLI as a subprocess with a timeout (missing engine returns a
-  missing_dependency error with the install command); hermes_studio_desk
-  starts a detached local desk process on 127.0.0.1:3870 (loopback only);
-  optional download of public media URLs via yt-dlp/HTTP when you pass a URL;
-  optional local Ollama for clip titles; writes caption cues and a desk log
-  under ~/.hermes/clips; caption lines are written by the calling Hermes
-  agent; no credentials, no telemetry and no social publish.
+  CLI (v0.6.2+) as a subprocess with a timeout and a minimal environment
+  (PATH, HOME, LANG, TMPDIR, PYTHONPATH, HERMES_STUDIO_*); a missing or older
+  engine returns a missing_dependency error with the install command.
+  Tool calls read only media/image files under home, /mnt, /media, /srv or the
+  library, and write only new files inside ~/.hermes/clips (never overwrite).
+  Links must be public http(s); yt-dlp runs with every connection and
+  redirect hop checked against loopback, private, link-local, CGNAT and
+  reserved addresses. hermes_studio_desk starts a detached local desk on
+  127.0.0.1:3870 (loopback only). Optional local Ollama for clip titles.
+  Caption cues and the desk log go under <hermes home>/plugin-data/hermes-studio.
+  Caption lines are written by the calling Hermes agent; no credentials, no
+  telemetry and no social publish.
 maintainer: PabloTheThinker
 tier: community
 category: tools
 requires_hermes: ">=0.19.0"
 docs_url: https://github.com/PabloTheThinker/hermes-studio#readme
-version: "0.6.1"
-image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e3428e3ee05096ac933274fc6c134d4e584dc997/docs/catalog/banner.png
+version: "0.6.2"
+image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e3428e3ee05096ac933274fc6c134d4e584dc997/docs/catalog/01-timeline.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e3428e3ee05096ac933274fc6c134d4e584dc997/docs/catalog/02-clips-library.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e3428e3ee05096ac933274fc6c134d4e584dc997/docs/catalog/05-edit-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/01-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/02-clips-library.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/05-edit-timeline.jpg
 platforms: []
 known_issues:
-  - Needs the Hermes Studio engine installed (curl install script or uv tool install) so agent tools can invoke the hermes-studio CLI. If the CLI is missing, each tool returns a missing_dependency error with those install commands.
+  - Needs the Hermes Studio engine v0.6.2 or newer installed separately (uv tool install git+https://github.com/PabloTheThinker/hermes-studio@v0.6.2). If the CLI is missing or older, each tool returns a missing_dependency error with that command.
 capabilities:
   provides_tools:
     - hermes_studio_run

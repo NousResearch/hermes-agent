@@ -1,0 +1,31 @@
+name: lethe
+title: Lethe
+repo: https://github.com/itsflownium/hermes-lethe
+sha: f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1
+description: "Take one chat off the record with /lethe or the Desktop panel. Hermes can still use what it knows, but nothing from that chat is written to MEMORY.md, USER.md or skills (including by the background review), its transcript is deleted when it ends, and a 'Where it went' river in the CLI, TUI and Desktop shows every write that was kept out. Disclosure — deletes the off-the-record chat's rows from state.db via SessionDB.delete_session (keep_transcript: true to keep them), vetoes memory/skill_manage/provider save tools in those chats only, reads Hermes config and session rows, and posts a status line after each CLI/TUI turn."
+maintainer: itsflownium
+tier: community
+category: memory
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/itsflownium/hermes-lethe#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/itsflownium/hermes-lethe/f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1/assets/social-preview.png
+screenshots:
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1/assets/review/panel-light.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1/assets/review/panel-dark.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - External memory providers (memory.provider) are not covered; Hermes syncs them outside tool calls. The README has a prompt for extending a local copy.
+  - The end-of-chat receipt can't print at /exit in the CLI/TUI yet (the shared gateway drops plugin end-of-session messages); use /lethe-end first. The transcript is deleted either way.
+  - In a brand-new Desktop chat, typing /lethe first hits Hermes's "Submission destination changed" error; use the panel's Start off the record.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - on_session_finalize
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

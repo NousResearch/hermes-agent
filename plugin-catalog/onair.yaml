@@ -1,0 +1,21 @@
+name: onair
+repo: https://github.com/perfect7613/hermes-onair
+sha: "2245b9158300f2a60a5dda859f037b3cc3244b03"
+version: "0.1.0"
+title: On Air
+description: "Hermes inside your OBS. Control scenes, sources, recording and streaming by asking; put cards and chapter titles on stream; design animated scenes or build one from an image, GIF, video or voice line; answer questions about your screen on an overlay; mark the good moments and get the highlight reel, YouTube chapters and a draft title when you stop. Disclosure: connects to OBS's WebSocket server (127.0.0.1:4455 by default) and nothing else; live_ask sends a screenshot and your question to the model configured in Hermes; runs ffmpeg and ffprobe from PATH with fixed arguments to render reels; writes only under the plugin data directory; no telemetry."
+maintainer: perfect7613
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/perfect7613/hermes-onair/blob/2245b9158300f2a60a5dda859f037b3cc3244b03/README.md
+readme: true
+capabilities:
+  provides_tools: [live_status, live_scene, live_source, live_design_scene, live_output, live_overlay, live_screenshot, live_ask, live_mark, live_session, live_reel, live_obs_request]
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Needs OBS Studio with its WebSocket server enabled (Tools → WebSocket Server Settings). Run /live setup once, then /live doctor to check."
+  - "Highlight reels need ffmpeg and ffprobe on PATH. Marks and OBS control work without them."
+  - "If OBS's browser engine stops drawing, overlays and designed scenes go blank until OBS is restarted. /live doctor detects this; media scenes and sounds keep working."

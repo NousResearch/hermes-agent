@@ -4,25 +4,41 @@ repo: https://github.com/mojomast/hermes-templeos
 sha: c61d00eb4d36c5e3c7cd57a2985985aed8db42f0
 subdir: ""
 description: >-
-  Run a local TempleOS-family guest (default Temple of Hermes 0.1.2; optional
-  TinkerOS 5.20-rc10, stock TempleOS 5.03, or ZealOS) in
-  QEMU so the Hermes agent and the user can share one live screen. Disclosure
-  — spawns qemu-system-x86_64 as a child (KVM only when /dev/kvm can be
-  opened, otherwise TCG) with a minimal non-secret child environment; may
+  TempleOS for Hermes: run a TempleOS-family OS in a local QEMU VM and share one
+  live screen with the Hermes agent, which can see, type, click and write HolyC.
+  The default guest is Temple of Hermes 0.1.2; TinkerOS 5.20-rc10, stock
+  TempleOS 5.03 and ZealOS are optional. Four tools: templeos_vm (start, stop,
+  reset, snapshot, restore and doctor the VM), templeos_screen (PNG look, serial
+  or on-screen text, wait for idle, frame hash, operator lore), templeos_input
+  (type, keys, click, move, HolyC) and templeos_files (list, pull and push files
+  over COM1). The Hermes Desktop pane shows the same screen in Watch, Shared or
+  Take control mode; when you take control, agent input pauses until you hand
+  back. The pane's animated Terry companion is on by default and can be hidden
+  or turned off. Bundled skill: templeos:templeos-operator. It is for TempleOS
+  and HolyC enthusiasts, retro-OS tinkering, and watching an agent work a real
+  640×480 OS beside you. To start, on Linux x86_64 with Hermes 0.23.0 or newer,
+  install QEMU (for example sudo apt install qemu-system-x86 qemu-utils), then
+  run hermes plugins install templeos --enable and hermes plugins doctor
+  templeos; doctor fetches the default ISO from its official release and checks
+  its SHA-256. Open the TempleOS pane and ask Hermes to start the VM and print a
+  HolyC hello world. KVM is used when /dev/kvm can be opened (usually the kvm
+  group), otherwise TCG. Disclosure — spawns qemu-system-x86_64 as a child (KVM
+  only when /dev/kvm can be opened, otherwise TCG) with a minimal non-secret
+  child environment and keeps that QEMU process running in the background; may
   fetch a pinned ISO from its official HTTPS URL (SHA-256 verified,
   connection-pinned, no proxy); injects keys and HolyC over QMP/serial;
-  transfers files over a framed COM1 protocol; keeps a background QEMU
-  process; and stores disks and ISOs under plugin data. Networking is always
-  off (-nic none). QEMU and ISOs are not bundled. This is a child hypervisor,
-  not an OS sandbox. An optional Temple of Hermes HBBS/1 / chat bridge is
-  off by default; the destination is the allow-list name bbs and the TLS
-  endpoint comes from host config, never from guest text (loopback or
-  private LAN allowed only because the operator set them; metadata and
-  link-local are refused). The optional TEMPLEOS_CHAT_BRIDGE_TOKEN is read
-  only through Hermes secret scope. Observer hooks animate the Terry
-  companion from session events; they return None and do not approve, modify,
-  or log other tools. The Desktop pane uses ctx.rest only. Terry is an
-  original fan tribute with no official TempleOS affiliation.
+  transfers files over a framed COM1 protocol; and stores disks and ISOs under
+  plugin data. Networking is always off (-nic none). QEMU and ISOs are not
+  bundled. This is a child hypervisor, not an OS sandbox. Disclosure — an
+  optional Temple of Hermes HBBS/1 / chat bridge is off by default; the
+  destination is the allow-list name bbs and the TLS endpoint comes from host
+  config, never from guest text (loopback or private LAN allowed only because
+  the operator set them; metadata and link-local are refused). The optional
+  TEMPLEOS_CHAT_BRIDGE_TOKEN is read only through Hermes secret scope.
+  Disclosure — observer hooks animate the Terry companion from session events;
+  they return None and do not approve, modify, or log other tools. The Desktop
+  pane uses ctx.rest only. Terry is an original fan tribute with no official
+  TempleOS affiliation.
 maintainer: mojomast
 tier: community
 category: desktop

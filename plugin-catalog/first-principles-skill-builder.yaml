@@ -1,0 +1,23 @@
+name: first-principles-skill-builder
+title: "First Principles Skill Builder"
+repo: https://github.com/flabanabba8/first-principles-skill-builder
+sha: ac0b7a43a23173bde2017fc6e09b576cf26cfbe6
+version: "0.1.0"
+description: "Build, check and improve agent skills that adapt to the tools, hardware and permissions you actually have: resource discovery, draft linting, contrasting-case evidence and revision history. Installing needs your approval. Disclosure: Reads the machine's tools and settings that you point it at, lints and tests draft skills locally and stores revisions in plugin storage; installing a skill needs your approval (pre_tool_call hook). No network or model calls of its own."
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/first-principles-skill-builder/blob/ac0b7a43a23173bde2017fc6e09b576cf26cfbe6/README.md
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - skillbuilder_resources
+    - skillbuilder_save
+    - skillbuilder_check
+    - skillbuilder_case
+    - skillbuilder_install
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

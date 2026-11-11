@@ -1,0 +1,18 @@
+name: timecapsule
+repo: https://github.com/brayedan/timecapsule
+sha: d59ee3509c5728434a2394b266678c609bbbcf5c
+description: Sealed messages for later — seal a note so it cannot be read until its release condition is met (a date, N days of silence, or the sealer's explicit release), with a grace ladder and slow, announced deletion. Local-only, stdlib-only, no network.
+maintainer: brayedan
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - timecapsule_seal
+    - timecapsule_list
+    - timecapsule_open
+    - timecapsule_delete
+    - timecapsule_restore
+    - timecapsule_reseal
+    - timecapsule_status

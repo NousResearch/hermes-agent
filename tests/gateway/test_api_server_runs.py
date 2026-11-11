@@ -560,7 +560,9 @@ class TestRunStatus:
         """
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
+            with patch.object(adapter, "_create_agent") as mock_create, patch.object(
+                adapter._memory_sessions, "checkin"
+            ):
                 mock_agent = MagicMock()
                 mock_agent.run_conversation.return_value = {"final_response": "done"}
                 mock_agent.provider = "openai-codex"
@@ -572,9 +574,12 @@ class TestRunStatus:
                 mock_agent.session_cache_write_tokens = 11
                 mock_create.return_value = mock_agent
 
-                resp = await cli.post("/v1/runs", json={"input": "hello", "model": "deepseek-v4-pro"})
+                # No lock and no request-level model: metadata must describe the globally
+                # selected runtime that actually served this run.
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
                 run_id = (await resp.json())["run_id"]
 
+                status = {}
                 for _ in range(40):
                     status = await (await cli.get(f"/v1/runs/{run_id}")).json()
                     if status["status"] == "completed":
@@ -582,13 +587,20 @@ class TestRunStatus:
                     await asyncio.sleep(0.05)
 
                 assert status["status"] == "completed"
-                # Top-level model still echoes the request; the served pair is disclosed alongside.
-                assert status["model"] == "deepseek-v4-pro"
-                # Canonical api_server runtime shape (same as /v1/chat/completions), not a thinner twin.
+                # The top-level model reflects the request/config default; runtime identifies what
+                # actually served the lock-free run.
+                assert status["model"] != status["runtime"]["model"]
                 assert status["runtime"] == {
-                    "provider": "openai-codex", "model": "gpt-5.6-luna", "route_source": "raw_request",
-                    "requested": {"provider": "", "model": "deepseek-v4-pro"},
+                    "provider": "openai-codex", "model": "gpt-5.6-luna", "route_source": "global",
                 }
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                event_body = await events_resp.text()
+                completed = next(
+                    json.loads(line.removeprefix("data: "))
+                    for line in event_body.splitlines()
+                    if line.startswith("data: ") and '"event": "run.completed"' in line
+                )
+                assert completed["runtime"] == status["runtime"]
                 assert status["usage"] == {
                     "input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
                     "cache_read_tokens": 84, "cache_write_tokens": 11,

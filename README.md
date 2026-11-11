@@ -23,7 +23,7 @@
 
 **Unitalk Desktop** is the official enterprise distribution of [Hermes Agent](https://github.com/NousResearch/hermes-agent) developed by [Nous Research](https://nousresearch.com).
 
-While vanilla Hermes is built as a developer-centric agent configured via CLI and raw terminal environments, **Unitalk Desktop** packages the engine into a turn-key, 1-click installable application tailored for companies, executives, and business teams.
+**Unitalk Desktop** packages the engine into a turn-key, 1-click installable application tailored for companies, executives, and business teams.
 
 ### Core Value Proposition
 

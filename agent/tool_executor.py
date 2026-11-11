@@ -1686,7 +1686,12 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if function_name == "delegate_task":
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
-        return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
+        from tools.arg_validation import call_with_arg_checks
+        from tools.registry import registry
+        return _SequentialDispatch(
+            lambda next_args: call_with_arg_checks(
+                registry.get_entry(function_name), next_args, agent._dispatch_delegate_task),
+            spinner=spinner, is_delegate=True)
     if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),

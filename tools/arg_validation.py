@@ -96,9 +96,6 @@ def flag_unknown_args(result: Any, name: str, unknown: list[str], valid: str) ->
         return result
     if not isinstance(payload, dict):
         return result
-    error = payload.get("error")
-    if isinstance(error, str) and all(key in error for key in unknown):
-        return result  # the handler already answered for these names itself
     warning = (f"{', '.join(unknown)}: not a parameter of {name} and was probably ignored. "
                f"Valid parameters: {valid}.")
     previous = payload.get("_warning")

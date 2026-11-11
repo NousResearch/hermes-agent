@@ -11,11 +11,15 @@ const PROVIDER_ORDER: Record<string, number> = {
   nous: 0,
   'openai-codex': 1,
   'minimax-oauth': 2,
-  'qwen-oauth': 3,
-  'xai-oauth': 4,
-  anthropic: 5,
-  'claude-code': 6
+  'xai-oauth': 3,
+  anthropic: 4,
+  'claude-code': 5
 }
+
+// Providers with flow='external' (terminal-based auth) are hidden from the
+// onboarding picker — only browser-based OAuth flows are shown to keep the
+// first-run experience simple.
+const HIDDEN_PROVIDER_IDS = new Set(['qwen-oauth'])
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
@@ -23,7 +27,9 @@ export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY_NAMES[p.id] 
 const orderOf = (p: OAuthProvider) => PROVIDER_ORDER[p.id] ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
-  [...providers].sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))
+  [...providers]
+    .filter(p => !HIDDEN_PROVIDER_IDS.has(p.id))
+    .sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))
 
 export function FeaturedProviderRow({
   onSelect,

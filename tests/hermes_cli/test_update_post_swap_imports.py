@@ -132,6 +132,11 @@ try:
         update_cmd._complete_source_update(request(token))
     elif CASE in ("systemd_resume", "launchd_resume", "windows_resume"):
         update_cmd._resume_paused_gateways_at_exit(token, request(token))
+    elif CASE == "restart_child_env":
+        # What the Windows restart (``gateway_windows``) builds for each relaunched gateway.
+        os.environ["HERMES_BRIDGED_TELEGRAM_REACTIONS"] = "sha256:0"
+        from tools.environments.local import served_profile_child_env
+        served_profile_child_env(target_home=home, inherit_credentials=True)
     elif CASE == "shallow_count":
         plan = update_cmd._prepare_checkout_for_update(
             ["git"], "main", "main", is_fork=False, assume_yes=True, gateway_mode=False,
@@ -157,6 +162,7 @@ _OUTCOMES = {
     "launchd_resume": "returned",
     "windows_resume": "returned",
     "shallow_count": "commit_count=-1",
+    "restart_child_env": "returned",
 }
 
 

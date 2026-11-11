@@ -23,7 +23,7 @@ from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.process_identity import own_process_groups, release_process_groups
 from tools.environments.local_env_policy import (
-    BRIDGED_ENV_MARKER_PREFIX, _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST,
+    BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest, _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST,
     _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
@@ -479,7 +479,6 @@ def _carry_bridge_markers(env: dict, source: Mapping[str, str], *, own_profile: 
     still holds the exact value the marker's digest names: that child (a daemon restart) re-bridges
     the same ``config.yaml`` and must know which inherited values are the bridge's to refresh. A child
     for any other profile, or one whose scrub dropped or replaced the value, never sees a marker."""
-    from gateway.platforms._shared import bridged_env_digest
     for key in [k for k in env if k.upper().startswith(BRIDGED_ENV_MARKER_PREFIX)]:
         del env[key]
     if not own_profile:

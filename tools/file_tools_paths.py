@@ -315,6 +315,15 @@ def _resolve_base_dir(
             return _resolve_ssh_path(".", task_id)
         container_paths = _uses_container_paths(task_id)
     root = _authoritative_workspace_root(task_id) or (_container_default_cwd(task_id) if container_paths else None)
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        # The process cwd is this host's directory, never the sandbox's: with no absolute in-sandbox anchor a
+        # relative path has nothing to resolve against.
+        text = _host_text(root, container_paths, task_id) if root else ""
+        if not posixpath.isabs(text):
+            raise ValueError("Cannot resolve a relative path: the sandbox's working directory is not known. "
+                             "Pass an absolute path.")
+        return _anchor(text, os.getcwd, container_paths)
     # A backend's relative cwd is anchored to the process cwd once, here.
     return _anchor(_host_text(root or os.getcwd(), container_paths, task_id), os.getcwd, container_paths)
 

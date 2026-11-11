@@ -64,7 +64,7 @@ class TestStreamStaleCircuitBreaker:
     def test_interrupted_pre_response_wait_advances_streak(self, monkeypatch):
         """Qualified pre-response interrupts advance the breaker, while early
         and mid-stream user cancellations remain neutral."""
-        from agent.chat_completion_helpers import (
+        from agent.chat_completion_stale import (
             _check_stale_giveup,
             _record_interrupted_provider_wait,
         )

@@ -1,6 +1,7 @@
 """Request-local worker lifecycle, watchdog polling, and wait status."""
 
 from agent import chat_completion_helpers as h
+from agent import chat_completion_stale as stale
 from agent import chat_completion_wait_notice as wn
 
 
@@ -245,10 +246,10 @@ class _NonStreamRequest:
         circuit breaker (#58962, see ``_stale_streak``)."""
         agent, wd = self.agent, self.wd
         silent_hint = h._codex_silent_hang_hint(agent, self.api_kwargs)
-        h._report_stale_nonstream_kill(agent, self.api_kwargs, elapsed, wd.stale_timeout, hint=silent_hint)
+        stale._report_stale_nonstream_kill(agent, self.api_kwargs, elapsed, wd.stale_timeout, hint=silent_hint)
         self._abort_request("stale_call_kill")
-        h._bump_stale_streak(agent)
-        h._touch_stale_kill_activity(agent, elapsed)
+        stale._bump_stale_streak(agent)
+        stale._touch_stale_kill_activity(agent, elapsed)
         self._await_worker_after_kill(
             f"Non-streaming API call timed out after {int(elapsed)}s with no response (threshold: {int(wd.stale_timeout)}s)"
             + (f". {silent_hint}" if silent_hint else ""))
@@ -256,7 +257,7 @@ class _NonStreamRequest:
     def _interrupt(self, elapsed: float) -> None:
         agent = self.agent
         last_event_ts, _, _, _ = self._codex_watchdog_snapshot()
-        h._record_interrupted_provider_wait(agent, elapsed,
+        stale._record_interrupted_provider_wait(agent, elapsed,
             response_started=self.wd.codex and last_event_ts is not None
         )
         # Mark cancelled BEFORE force-closing so the worker treats the transport
@@ -315,5 +316,5 @@ class _NonStreamRequest:
             raise self.result["error"]
         # Success — the provider proved responsive: clear the breaker (#58962).
         if self.result["response"] is not None:
-            h._reset_stale_streak(agent)
+            stale._reset_stale_streak(agent)
         return self.result["response"]

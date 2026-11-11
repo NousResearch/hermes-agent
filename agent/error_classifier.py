@@ -1088,9 +1088,9 @@ def _by_transport(c: _Ctx) -> Optional[Verdict]:
         return _V_CONTEXT_OVERFLOW if c.large_session(0.6, 120000, 200) else _V_TIMEOUT
     if any(p in msg for p in _PREMATURE_CLOSE_PATTERNS) and not c.status_code:
         return _V_TIMEOUT
-    # Stale-call circuit breaker (_check_stale_giveup RuntimeError before any
-    # network call): as ``unknown`` it would burn every retry instantly.
-    if c.error_type == "RuntimeError" and "consecutive stale attempts" in msg and "aborting this call" in msg:
+    # Stale-call circuit breaker (_check_stale_giveup raises StaleGiveupError
+    # before any network call): as ``unknown`` it would burn every retry instantly.
+    if c.error_type == "StaleGiveupError":
         return _v(_R.timeout, **_ABORT_FALLBACK)
     transport = (c.error_type in _TRANSPORT_ERROR_TYPES or any(m in c.error_type for m in _TRANSPORT_TYPE_MARKERS)
                  or isinstance(c.error, (TimeoutError, ConnectionError, OSError)))

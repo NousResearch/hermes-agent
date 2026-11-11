@@ -171,6 +171,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+    # A hosted path names the tenant's sandbox, and its skills are not this host's: resolving it
+    # against this profile's locked skills would stat host paths and name host skills.
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("skills"):
+        return None
     from tools.skill_lock import path_refusal
     if reason := path_refusal(candidates):
         return f"Refusing to write to {filepath}: {reason}"

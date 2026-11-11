@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h1 align="center">Unitalk Desktop ☤</h1>
+<h1 align="center">Unitalk Desktop </h1>
 
 <p align="center">
   <b>AI کولیبریٹر جو آپ کے کاروبار کے ساتھ بڑھتا ہے۔ ہرمیس کے ذریعے تقویت یافتہ۔</b>

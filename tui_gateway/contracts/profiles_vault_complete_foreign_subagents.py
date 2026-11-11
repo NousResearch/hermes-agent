@@ -186,7 +186,8 @@ method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
 
 
 class ProfilesCreateParams(ProfileParams):
-    """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` and
+    """``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the
+    active profile, no bundled skills); ``mirror_credentials`` and
     ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider."""
 
     name: str

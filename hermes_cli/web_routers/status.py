@@ -30,6 +30,7 @@ from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
+from hermes_cli.web_routers.status_public import redact_status_for_unverified
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -226,51 +227,6 @@ def _public_platform_entry(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     return {k: v for k, v in value.items() if k not in _PRIVATE_PLATFORM_ENTRY_KEYS}
-
-
-# What an unverified caller may read of a platform entry: lifecycle enum, the source-controlled
-# error code, the attention flag and timestamps. ``error_message`` is adapter exception text (endpoint
-# URLs, response bodies, credential names) and any other key is whatever an adapter chose to write,
-# so the anonymous projection is an allowlist, never a denylist (#90700).
-_PUBLIC_PLATFORM_STATES = frozenset({
-    "connected", "connecting", "disabled", "disconnected", "fatal", "paused", "retrying", "running", "ok"})
-# Source-controlled codes (``telegram_polling_conflict``, ``loop_liveness_watchdog``) are snake_case
-# identifiers; anything else (spaces, URLs, quotes, ``=``) is prose and does not pass.
-_PUBLIC_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
-
-
-def _anonymous_platform_entry(value: Any) -> dict[str, Any]:
-    """Allowlisted, value-validated view of one platform entry for an unverified caller."""
-    if not isinstance(value, dict):
-        return {}
-    entry: dict[str, Any] = {}
-    state = value.get("state")
-    if state is not None:
-        entry["state"] = state if isinstance(state, str) and state in _PUBLIC_PLATFORM_STATES else "unknown"
-    code = value.get("error_code")
-    if isinstance(code, str) and _PUBLIC_CODE_RE.fullmatch(code):
-        entry["error_code"] = code
-    if isinstance(value.get("needs_attention"), bool):
-        entry["needs_attention"] = value["needs_attention"]
-    for key in ("retrying_since", "updated_at"):
-        stamp = normalize_updated_at(value.get(key)) if isinstance(value.get(key), str) else None
-        if stamp is not None:
-            entry[key] = stamp
-    return entry
-
-
-def _redact_status_for_unverified(status: dict[str, Any]) -> None:
-    """Reduce the free-text diagnostics of a ``/api/status`` body to bounded codes in place.
-    Full detail stays for a caller the auth gate would accept on a gated route."""
-    from agent.monitoring.gateway_health import classify_exit_reason
-    status["gateway_platforms"] = {key: _anonymous_platform_entry(value)
-                                   for key, value in (status.get("gateway_platforms") or {}).items()}
-    reason = status.get("gateway_exit_reason")
-    if reason is not None and not (isinstance(reason, str) and _PUBLIC_CODE_RE.fullmatch(reason)):
-        status["gateway_exit_reason"] = classify_exit_reason(
-            reason, state=status.get("gateway_state"), restart_requested=False)
-    # Remediation prose naming the colliding profiles and the credential's env var.
-    status["multiplex_standalone_reason"] = None
 
 
 def _merge_profile_gateway_platforms(gateway_platforms: dict, profile_platforms: dict) -> dict:
@@ -698,7 +654,7 @@ async def get_status(profile: Optional[str] = None,
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
 
         if not verified:
-            _redact_status_for_unverified(status)
+            redact_status_for_unverified(status)
         if signed_out:
             return {key: value for key, value in status.items() if key in _WEBAPP_SIGNED_OUT_STATUS_KEYS}
         return status

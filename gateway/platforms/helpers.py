@@ -525,14 +525,16 @@ def _sender_may_use_bot(adapter: Any, source: Any) -> bool:
 
 
 def bypasses_chat_order(text: Any) -> bool:
-    """A slash command the base adapter dispatches even mid-run (``should_bypass_active_session``):
-    it skips :class:`ChatOrderedWork`'s per-chat wait, so a group ``/stop`` or ``/deny`` never waits on
-    an earlier voice note's gate STT (the base adapter's two guards then route it as usual)."""
-    from hermes_cli.commands import should_bypass_active_session
+    """A running-agent escape hatch (``/stop``, ``/approve``, ``/deny``): it acts on work already in
+    flight, so it skips :class:`ChatOrderedWork`'s per-chat wait and never waits on an earlier voice
+    note's gate STT. Every other command (``/new``, ``/undo``, ``/status``) keeps its place behind it."""
+    from gateway.session_commands import _ESCAPE_HATCHES
+    from hermes_cli.commands import resolve_command
     head = str(text or "").lstrip().split(maxsplit=1)
     if not head or not head[0].startswith("/"):
         return False
-    return should_bypass_active_session(head[0][1:].lower().split("@", 1)[0])
+    cmd = resolve_command(head[0][1:].split("@", 1)[0])
+    return cmd is not None and cmd.name in _ESCAPE_HATCHES
 
 
 async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = None, source: Any = None,

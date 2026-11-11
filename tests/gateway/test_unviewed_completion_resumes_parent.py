@@ -147,7 +147,8 @@ async def test_successes_do_not_spend_the_failure_wake_budget(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason, resumes', [('cli_close', False), ('new_session', False), ('ws_orphan_reap', True)])
+@pytest.mark.parametrize('reason, resumes', [('cli_close', False), ('new_session', False), ('tui_close', False),
+                                             ('ws_orphan_reap', True), ('startup_orphan_reap', True)])
 async def test_close_pending_across_a_restart_still_decides(tmp_path, monkeypatch, reason, resumes):
     """The user exits while the result is queued (the close waits for the idle FIFO), then the gateway
     restarts: recovery re-arms the stored close, but the in-memory dispatch refusal is gone."""

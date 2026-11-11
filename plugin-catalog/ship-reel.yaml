@@ -1,0 +1,36 @@
+name: ship-reel
+title: Ship Reel
+repo: https://github.com/AshThunder/ship-reel
+sha: 1b72949d32ea8a8c33afe67dab15c6473d822ab2
+version: "0.2.0"
+description: "Turns a URL and a one-line brief into a finished product demo reel. The agent plans a shot list and dry-runs it against the live page, records it in headless Chromium, edits it with auto-zoom, a drawn cursor, captions, title and end cards, optional local voice-over and a music bed into 16:9 and 9:16 MP4s, verifies the result (duration, resolution, black or frozen frames, loudness, captions) and fixes what fails, then drafts the post text. It never posts. Disclosure: opens the user-supplied URL and the pages in its shot list in headless Chromium; runs ffmpeg/ffprobe and local render worker processes; writes only to its plugin data directory (or SHIP_REEL_HOME); with the optional kokoro-onnx extra installed, downloads the Kokoro TTS model (~120 MB) once from its official GitHub release, SHA-256 pinned. Refuses sign-up, login, payment, submit, delete and wallet clicks unless allow_risky is set, and never enters credentials. No telemetry, no API keys."
+maintainer: AshThunder
+category: tools
+tier: community
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/AshThunder/ship-reel/blob/1b72949d32ea8a8c33afe67dab15c6473d822ab2/README.md
+screenshots:
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/1b72949d32ea8a8c33afe67dab15c6473d822ab2/docs/img/nous-title-card.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/1b72949d32ea8a8c33afe67dab15c6473d822ab2/docs/img/nous-hermes-menu.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/1b72949d32ea8a8c33afe67dab15c6473d822ab2/docs/img/lockwatch-explorer.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/1b72949d32ea8a8c33afe67dab15c6473d822ab2/docs/img/nous-vertical.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/1b72949d32ea8a8c33afe67dab15c6473d822ab2/docs/img/meta-demo-record.png
+readme: true
+capabilities:
+  provides_tools:
+    - plan_reel
+    - record_reel
+    - edit_reel
+    - verify_reel
+    - fix_reel
+    - list_reels
+    - reel_status
+    - draft_post
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Requires ffmpeg and ffprobe on PATH, and Chromium for Playwright (python -m playwright install chromium).
+  - Voice-over is optional and needs pip install "kokoro-onnx>=0.4,<1"; without it reels render with captions and music only.
+  - Records public pages only; flows behind a sign-in are out of scope for this version.
+  - Some sites' own search boxes do not work in a headless browser.

@@ -181,9 +181,10 @@ def delegation_wakes_parent(evt: dict) -> bool:
 def completion_resumes_parent(evt: dict) -> bool:
     """True for a result the parent asked to hear about and carries on from: an async delegation's
     final result (not the early per-task notice, not a manual cron run's finished text) or a background
-    process's exit. Its unviewed local parent runs it as a turn, as a watched one does, so the work goes
-    on while no client is connected (a laptop asleep, a closed tab). ``delegation_wakes_parent`` is the
-    failed subset, whose wakes are bounded (gateway/session_completion_notes.py)."""
+    process's exit, whatever its exit code. Its unviewed local parent runs it as a turn, as a watched one
+    does, so the work goes on while no client is connected (a laptop asleep, a closed tab).
+    ``delegation_wakes_parent`` is the failed-delegation subset, whose wakes are bounded
+    (gateway/session_completion_notes.py); a process exit is never in it."""
     if evt.get("type") == "async_delegation":
         if evt.get("task_failure_notice"):
             return False

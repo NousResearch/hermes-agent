@@ -18,7 +18,8 @@ ending the work: a laptop asleep, a dropped socket or a closed browser tab leave
 mid-flight, and the parent dispatched that work to carry on when it finished. Only a chat the user
 closed (exit, /new, a resume or branch switch) keeps its results as notes. An async delegation whose
 final result has a failed child (``wakes_parent``) is a resume too, bounded: at most
-``UNATTENDED_WAKE_LIMIT`` failed-result wakes in a row while nobody watches.
+``UNATTENDED_WAKE_LIMIT`` failed-result wakes in a row while nobody watches. Only failed delegations
+spend that limit: successful results and process exits, whatever their exit code, are not counted.
 """
 import json
 from functools import partial
@@ -72,7 +73,8 @@ def _wakes_unviewed_parent(authority, session_id, live, descriptor):
     """A result the parent carries on from (``resumes_parent``) or a failed async delegation
     (``wakes_parent``) with no viewer attached: the parent dispatched that work and is waiting on it,
     so it runs as the parent's turn instead of stalling until a human returns. Not in a chat the user
-    closed (``_closed_by_user``); a failure not past ``UNATTENDED_WAKE_LIMIT``."""
+    closed (``_closed_by_user``); a failed delegation not past ``UNATTENDED_WAKE_LIMIT`` (a process
+    exit is a resume whatever its exit code)."""
     failed = descriptor.get('wakes_parent')
     if not (failed or descriptor.get('resumes_parent')) or _closed_by_user(authority, session_id):
         return False

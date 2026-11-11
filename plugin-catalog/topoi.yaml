@@ -1,0 +1,21 @@
+name: topoi
+title: Topoi
+repo: https://github.com/AlaisterLeung/topoi
+sha: 4da93e404457bcf4616031393fff31eda5b4c412
+version: "1.0.0"
+description: "Group your Hermes Agent chats into topics, in Hermes Desktop and in the Dashboard. A sidebar lists the topics active in the past week with a status dot per thread (working, waiting, unread, idle), a new chat files under your home topic, threads move between topics, and a topic's threads are searchable by message content. Cron job results arrive as topic threads you can reply to, and the reply continues that run's session. The gateway owns one topic registry and both clients read and write it over the plugin's REST API, so an edit in the Dashboard reaches the desktop app. Disclosure: registers a gateway platform adapter that runs in the Hermes process on the gateway event loop; serves an HTTP API at /api/plugins/topoi/ through the plugin host on the Dashboard's own origin and auth; writes the topic registry and the framework home_channel projection into config.yaml; keeps session-to-topic bindings in a plugin-private SQLite database; reads the per-profile session databases and the cron job store to list threads and their results; bundles one skill; makes no third-party network calls, stores no credentials and reports no telemetry."
+maintainer: AlaisterLeung
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/AlaisterLeung/topoi#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/AlaisterLeung/topoi/4da93e404457bcf4616031393fff31eda5b4c412/docs/screenshots/desktop-new-chat.png
+  - https://raw.githubusercontent.com/AlaisterLeung/topoi/4da93e404457bcf4616031393fff31eda5b4c412/docs/screenshots/desktop-settings.png
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

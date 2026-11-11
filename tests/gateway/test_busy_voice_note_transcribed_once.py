@@ -149,3 +149,26 @@ async def test_same_clip_forwarded_to_another_chat_still_echoes_there(tmp_path, 
         assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']  # chat A's turn: already shown
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_clip_listed_twice_in_one_message_echoes_once(tmp_path, monkeypatch):
+    calls = []
+
+    def transcribe_audio(path, model=None, source=None):
+        calls.append(path)
+        return {'success': True, 'transcript': 'twice', 'provider': 'f'}
+
+    monkeypatch.setattr('tools.transcription_tools.transcribe_audio', transcribe_audio)
+    runner, authority, source, _agent, sent = await _busy_rig(tmp_path, monkeypatch)
+    clip = tmp_path / 'note.ogg'
+    clip.write_bytes(b'OggS current and quoted media')
+    try:
+        event = MessageEvent(text='', message_type=MessageType.VOICE, source=source, message_id='d1',
+                             media_urls=[str(clip), str(clip)], media_types=['audio/ogg', 'audio/ogg'])
+        await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+        assert len(calls) == 1
+        assert [m for m in sent if '"twice"' in m] == ['🎙️ "twice"']
+    finally:
+        authority.db.close()

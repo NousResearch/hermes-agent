@@ -207,8 +207,9 @@ class GatewayInboundTranscriptionMixin:
         shown = await asyncio.to_thread(take_echoed_clips, event, audio_paths)  # echoed when it arrived busy
         clips: dict = {}
         message_text, _ = await self._enrich_message_with_transcription(message_text, audio_paths, clips)
-        _successful_transcripts = [clips[p][0] for p in audio_paths
-                                   if p in clips and clips[p][0] is not None and p not in shown]
+        # ``clips`` holds each clip once, in order (enrichment dedupes repeated paths and bytes).
+        _successful_transcripts = [transcript for path, (transcript, _note) in clips.items()
+                                   if transcript is not None and path not in shown]
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
         # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.

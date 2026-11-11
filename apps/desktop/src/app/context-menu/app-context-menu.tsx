@@ -20,6 +20,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { type Translations, useI18n } from '@/i18n'
+import { copyImageFromUrl } from '@/lib/browser-image-copy'
 import { writeClipboardText } from '@/lib/clipboard'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { hostHas } from '@/lib/host-capabilities'
@@ -350,12 +351,20 @@ function domSections(
             onSelect={() => openExternalLink(target.imageUrl)}
           />
         ) : null,
-        <Item
-          icon="file-media"
-          key="image-copy"
-          label={copy.image.copyImage}
-          onSelect={() => void window.hermesDesktop?.contextMenuCopyImage?.()}
-        />,
+        window.hermesDesktop?.contextMenuCopyImage || target.imageUrl ? (
+          <Item
+            icon="file-media"
+            key="image-copy"
+            label={copy.image.copyImage}
+            onSelect={() => {
+              if (window.hermesDesktop?.contextMenuCopyImage) {
+                void window.hermesDesktop.contextMenuCopyImage()
+              } else if (target.imageUrl) {
+                void copyImageFromUrl(target.imageUrl)
+              }
+            }}
+          />
+        ) : null,
         target.imageUrl ? (
           <Item
             icon="copy"

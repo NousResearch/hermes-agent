@@ -1,0 +1,45 @@
+name: so101-arm
+repo: https://github.com/jamesEmerson112/Riz
+sha: 09203664d364458b39b2b44f11f21be1347bbe3d
+title: SO-101 Arm
+description: "Give Hermes a robot arm, safely: an SO-101 (a MuJoCo sim on your laptop, or a real arm through LeRobot) driven by named skills, never joint angles. A top-down camera grid corrects its aim, a missed pick is rehearsed on simulated copies before the retry, a plain-code watchdog parks the arm on faults, a pre_tool_call guard refuses motion until a repair is verified, and only a person can lift a freeze (/arm unfreeze). Disclosure — the plugin talks only to a local Unix socket (mode 0600) served by an arm host you start yourself (python -m so101_host serve); its log hooks send tool names, results and token counts (never conversation text) to that socket for the viewer. The arm host is a separate program from the same repository: it writes run records under ~/.so101-arm/, `fetch-model` runs git to download MuJoCo Menagerie's SO-101 model at a pinned commit, `serve --video` runs ffmpeg, and `serve --real` drives a physical arm over USB serial."
+maintainer: jamesEmerson112
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/jamesEmerson112/Riz#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/jamesEmerson112/Riz/09203664d364458b39b2b44f11f21be1347bbe3d/media/card.png
+screenshots:
+  - https://raw.githubusercontent.com/jamesEmerson112/Riz/09203664d364458b39b2b44f11f21be1347bbe3d/media/correct.gif
+  - https://raw.githubusercontent.com/jamesEmerson112/Riz/09203664d364458b39b2b44f11f21be1347bbe3d/media/heal.gif
+  - https://raw.githubusercontent.com/jamesEmerson112/Riz/09203664d364458b39b2b44f11f21be1347bbe3d/media/stall.gif
+  - https://raw.githubusercontent.com/jamesEmerson112/Riz/09203664d364458b39b2b44f11f21be1347bbe3d/media/pick.gif
+platforms: [linux, macos]
+known_issues:
+  - "Needs the arm host from the same repository running beside Hermes: python -m so101_host fetch-model, then python -m so101_host serve (add --view to watch the arm)."
+  - "The real-arm driver (LeRobot) is tested against a mock robot only; it hasn't been run on hardware yet."
+capabilities:
+  provides_tools:
+    - arm_go_home
+    - arm_reach
+    - arm_approach
+    - arm_grip
+    - arm_lift
+    - arm_release
+    - arm_park
+    - arm_play
+    - arm_pick_up
+    - arm_look
+    - arm_rehearse
+    - arm_status
+    - arm_restart_sensor
+    - arm_check
+    - arm_handoff
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_api_request
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

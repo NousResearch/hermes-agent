@@ -448,12 +448,10 @@ class PairingStore:
             matching_ids = _matching_ids(platform, approved, user_id)
             if not matching_ids:
                 return False
-            for approved_user_id in matching_ids:
-                del approved[approved_user_id]
-            self._save_json(path, approved)
             # An unexpired code issued before the revoke would otherwise re-grant access
             # without a fresh request. Same lock as both approval paths, so an in-flight
             # approval either lands before this (and is revoked) or finds no entry.
+            # Written before the approved record so a failed write leaves revoke retryable.
             pending_path = self._pending_path(platform)
             pending = self._load_json(pending_path)
             stale = [
@@ -464,6 +462,9 @@ class PairingStore:
                 del pending[entry_id]
             if stale:
                 self._save_json(pending_path, pending)
+            for approved_user_id in matching_ids:
+                del approved[approved_user_id]
+            self._save_json(path, approved)
             # Keep the allowlist mirror in sync (no-op if added by other means).
             _sync_allowlist_remove(platform, user_id)
             return True

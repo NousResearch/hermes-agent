@@ -573,6 +573,30 @@ class TestRevoke:
                 "user_name": "Bob",
             }
 
+    def test_failed_pending_write_leaves_revoke_retryable(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), \
+                patch("gateway.pairing._sync_allowlist_remove") as allowlist_remove:
+            store = PairingStore()
+            store._approve_user("telegram", "user1")
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            real_save = PairingStore._save_json
+
+            def failing_pending_save(path, data):
+                if path == store._pending_path("telegram"):
+                    raise OSError("disk full")
+                real_save(path, data)
+
+            with patch.object(store, "_save_json", side_effect=failing_pending_save):
+                with pytest.raises(OSError):
+                    store.revoke("telegram", "user1")
+
+            assert store.is_approved("telegram", "user1") is True
+            assert store.revoke("telegram", "user1") is True
+            assert store.is_approved("telegram", "user1") is False
+            assert store.approve_code("telegram", stale_code) is None
+            allowlist_remove.assert_called_once_with("telegram", "user1")
+
     @pytest.mark.parametrize("approve_via", ["code", "request_id"])
     def test_revoke_from_other_store_invalidates_codes_for_both_approval_paths(self, tmp_path, approve_via):
         """The CLI revokes while the dashboard holds its own store: neither the DM'd code nor

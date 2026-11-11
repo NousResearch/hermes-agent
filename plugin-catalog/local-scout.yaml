@@ -1,0 +1,29 @@
+name: local-scout
+repo: https://github.com/Angerosteles/local-scout
+sha: c1e732ba4e9d431a711ea141c0095352a95bd7a2
+description: >-
+  Local privacy and safety layer for Hermes. Detected personal data and secrets (e-mails,
+  phones, cards and CVVs, IBANs, SSNs, PESEL numbers, addresses, API keys; person names in
+  prompts) are replaced with one-way placeholders on your machine before Hermes sends a request
+  to a model: user prompts, file and terminal output, MCP tool results, tool-call arguments and
+  auxiliary calls such as title generation, in CLI and gateway sessions. Also flags prompt
+  injection in what the agent reads (flagged, not blocked), offers optional calibrated local
+  triage that can answer routine tickets with no main model call, an optional basal method
+  through a basal engine you run locally, and local Insights.
+  Disclosure — no network calls by default; the optional basal method calls a basal engine on
+  this machine only (loopback); masking runs inside Hermes hooks and middleware on content
+  Hermes already passes to plugins; setup-triage and calibrate read only a history file you name;
+  state and telemetry stay in the profile, export is opt-in; no shell commands, no background
+  processes, no stored credentials; every scope needs explicit consent from the CLI.
+maintainer: Angerosteles
+tier: community
+category: tools
+requires_hermes: ">=0.23.0,<0.24.0"
+platforms: [linux, macos]
+docs_url: https://github.com/Angerosteles/local-scout#readme
+version: "1.7.4"
+capabilities:
+  provides_tools: [scout_handle, scout_calibrate, scout_inspect, scout_recipes, scout_choose, scout_train, scout_predict, scout_report, scout_calculate]
+  provides_hooks: [post_tool_call, pre_api_request, pre_auxiliary_call, post_api_request, post_auxiliary_call, transform_llm_output, transform_tool_result, transform_terminal_output]
+  provides_middleware: [llm_request, llm_execution]
+  requires_env: []

@@ -86,9 +86,10 @@ def _rel_skills_posix(path: Path) -> str:
 
 def _iter_skill_mds(root: Path, sort: bool = False) -> Iterator[Path]:
     """Yield every non-excluded SKILL.md under ``root`` (nothing when it does not exist)."""
+    from agent.skill_utils import excluded_below_root
     found = root.rglob("SKILL.md") if root.exists() else iter(())
     for skill_md in sorted(found) if sort else found:
-        if not is_excluded_skill_path(skill_md):
+        if not excluded_below_root(skill_md, root):
             yield skill_md
 
 

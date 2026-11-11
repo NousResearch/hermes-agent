@@ -177,9 +177,8 @@ export function ChatSidebar({
   // is open.
   const [effectiveModel, setEffectiveModel] = useState('')
   // Whether the effective model supports reasoning effort — gates the
-  // ReasoningPicker. Read from the same `/api/model/info` capabilities the
-  // (currently unused) ModelInfoCard surfaces, so the dashboard exposes a
-  // control to *set* the level, not just a read-only "Reasoning" badge.
+  // ReasoningPicker. Read from the `/api/model/info` capabilities so the
+  // dashboard exposes a control to *set* the level.
   const [supportsReasoning, setSupportsReasoning] = useState(false)
   // Bumped on model change/save so ReasoningPicker re-reads the saved effort
   // (config is profile-scoped the same way the model badge is).

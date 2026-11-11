@@ -397,7 +397,7 @@ async def run_reaper(registry: PtySessionRegistry, *, interval: float = 60.0) ->
         try:
             await registry.reap_idle()
         except Exception:
-            pass
+            logger.warning("PTY reaper pass failed", exc_info=True)
 
 
 class PtySessionRegistry:

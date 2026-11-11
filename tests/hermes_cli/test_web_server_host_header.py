@@ -493,6 +493,20 @@ def test_token_page_and_route_map_are_not_cors_readable_from_another_local_port(
         assert (r.headers.get("access-control-allow-origin") == origin) is granted, (origin, r.status_code)
 
 
+@pytest.mark.parametrize("path", ["/docs", "/redoc"])
+def test_dashboard_client_routes_are_not_shadowed_by_api_reference_pages(monkeypatch, path):
+    """/docs is the dashboard's Documentation page; a reload must reach the SPA, not an API browser."""
+    from fastapi.testclient import TestClient
+
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+    monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+    r = TestClient(ws.app).get(path, headers={"Host": "127.0.0.1:9119"})
+    assert "swagger" not in r.text.lower() and "redoc" not in r.text.lower()
+
+
 @pytest.mark.parametrize("bound_host", ["0.0.0.0", "::"])
 @pytest.mark.parametrize("host, origin, allowed", [
     ("localhost:9119", "http://localhost:9119", True),       # the page itself, opened on this host

@@ -173,9 +173,10 @@ async def standalone_lifespan(app: "FastAPI"):
         hosted_room_start_thread.join(timeout=1.0)
         if cron_stop is not None:
             cron_stop.set()
-        pty_reaper_task.cancel()
-        selftest_task.cancel()
-        auto_archive_task.cancel()
+        background = (pty_reaper_task, selftest_task, auto_archive_task)
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
         eager_reconcile_thread.join()
         await PTY_REGISTRY.close_all()
 

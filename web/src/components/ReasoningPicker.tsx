@@ -3,7 +3,7 @@
  * Chat sidebar, mirroring the desktop app's composer effort radio.
  *
  * The dashboard previously only showed a read-only "Reasoning" capability
- * badge (see ModelInfoCard) with no way to actually choose the effort level —
+ * badge with no way to actually choose the effort level —
  * unlike the desktop app, which exposes a radio in its model menu. This closes
  * that parity gap.
  *

@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 343
+   "undecided": 340
   },
   "rpc": {
    "authority": 108,
@@ -196,10 +196,7 @@
   {"current_path": "hermes_cli.web_routers.webapp:launch_page", "decision": "undecided", "handler": "GET /webapp/launch", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.webapp:child_window_page", "decision": "undecided", "handler": "GET /webapp/window", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_server_dashboard:mount_spa.<locals>.no_frontend", "decision": "undecided", "handler": "GET /{full_path:path}", "kind": "http", "ref": ""},
-  {"current_path": "fastapi.applications:FastAPI.setup.<locals>.swagger_ui_html", "decision": "undecided", "handler": "GET HEAD /docs", "kind": "http", "ref": ""},
-  {"current_path": "fastapi.applications:FastAPI.setup.<locals>.swagger_ui_redirect", "decision": "undecided", "handler": "GET HEAD /docs/oauth2-redirect", "kind": "http", "ref": ""},
   {"current_path": "fastapi.applications:FastAPI.setup.<locals>.openapi", "decision": "undecided", "handler": "GET HEAD /openapi.json", "kind": "http", "ref": ""},
-  {"current_path": "fastapi.applications:FastAPI.setup.<locals>.redoc_html", "decision": "undecided", "handler": "GET HEAD /redoc", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:stream_managed_file", "decision": "undecided", "handler": "HEAD /api/files/stream", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_download", "decision": "undecided", "handler": "HEAD /api/fs/download", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:rename_profile_endpoint", "decision": "undecided", "handler": "PATCH /api/profiles/{name}", "kind": "http", "ref": ""},

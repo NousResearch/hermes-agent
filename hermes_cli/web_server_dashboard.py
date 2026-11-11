@@ -490,10 +490,13 @@ def _discover_user_themes() -> list:
         try:
             data = yaml.safe_load(f.read_text(encoding="utf-8-sig"))
         except Exception:
+            _log.warning("dashboard theme %s skipped: not readable YAML", f.name, exc_info=True)
             continue
         normalised = _normalise_theme_definition(data)
-        if normalised is not None:
-            result.append(normalised)
+        if normalised is None:
+            _log.warning("dashboard theme %s skipped: no 'name' field or not a mapping", f.name)
+            continue
+        result.append(normalised)
     return result
 
 

@@ -18,7 +18,6 @@ interface Props {
 }
 
 type Phase =
-  | "idle"
   | "starting"
   | "awaiting_user"
   | "submitting"

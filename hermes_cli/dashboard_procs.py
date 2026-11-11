@@ -775,14 +775,6 @@ def _restart_killed_backends(
     return unrecovered
 
 
-def _norm_exe(path) -> str:
-    """Canonical lower-cased executable path for comparison."""
-    try:
-        return str(Path(path).resolve()).lower()
-    except (OSError, ValueError):
-        return str(path).lower()
-
-
 def _detect_concurrent_hermes_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None) -> list[tuple[int, str]]:
     """Historical main export: stop old updaters without scanning live shims.

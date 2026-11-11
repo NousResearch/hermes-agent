@@ -54,8 +54,15 @@ def add_empty_response_retry_hint(agent: Any, api_messages: list[dict[str, Any]]
     if not hint or not api_messages or api_messages[-1].get("role") not in {"user", "tool"}:
         return ""
     tail = api_messages[-1]
-    content = tail.get("content")
     suffix = "\n\n" + hint
+    if tail.get("role") == "tool" and getattr(agent, "api_mode", None) == "anthropic_messages":
+        # Appended to a tool result, the reminder reads as text the tool returned, and models
+        # hardened against prompt injection disregard it (Claude Haiku 5.5 said so in 6 of 7
+        # live runs). On the Messages API a separate user row merges into the same user turn as
+        # the tool_result, as its own text block, so roles and the cache prefix are unchanged.
+        api_messages.append({"role": "user", "content": hint})
+        return suffix
+    content = tail.get("content")
     if isinstance(content, list):
         content = [*content, {"type": "text", "text": suffix}]
     else:

@@ -1,22 +1,22 @@
 name: visual-workflow
 repo: https://github.com/Printaga/Hermes-Workflow
-sha: c2f546c9a4dff35d10c861c9ba6dab58c83285ce
+sha: 3f7a6a185e489ff4d75a0e8c1a9050c300f602d5
 description: "Visual drag-and-drop agent-workflow designer for Hermes: Trigger, Agent, Condition, Approval, Output nodes on a canvas, executed by a plugin-owned sequential runner."
 maintainer: Printaga Publishing LLC
 tier: community
 category: automation
 requires_hermes: ">=0.21"
 docs_url: "https://github.com/Printaga/Hermes-Workflow#readme"
-version: "1.0.0"
+version: "1.1.0"
 screenshots:
-  - https://raw.githubusercontent.com/Printaga/Hermes-Workflow/c2f546c9a4dff35d10c861c9ba6dab58c83285ce/docs/media/screens/01-designer-daily-digest.png
-  - https://raw.githubusercontent.com/Printaga/Hermes-Workflow/c2f546c9a4dff35d10c861c9ba6dab58c83285ce/docs/media/screens/02-schedules.png
-  - https://raw.githubusercontent.com/Printaga/Hermes-Workflow/c2f546c9a4dff35d10c861c9ba6dab58c83285ce/docs/media/screens/03-hello-world-telegram.png
+  - https://raw.githubusercontent.com/Printaga/Hermes-Workflow/3f7a6a185e489ff4d75a0e8c1a9050c300f602d5/docs/media/screens/01-designer-daily-digest.png
+  - https://raw.githubusercontent.com/Printaga/Hermes-Workflow/3f7a6a185e489ff4d75a0e8c1a9050c300f602d5/docs/media/screens/02-schedules.png
+  - https://raw.githubusercontent.com/Printaga/Hermes-Workflow/3f7a6a185e489ff4d75a0e8c1a9050c300f602d5/docs/media/screens/03-hello-world-telegram.png
 readme: true
 platforms: []
 title: "Visual Workflow"
 capabilities:
   provides_tools: [workflow_design_save, workflow_design_load, workflow_design_validate, workflow_design_run, workflow_design_respond]
-  provides_hooks: []
+  provides_hooks: [pre_tool_call]
   provides_middleware: []
   requires_env: []

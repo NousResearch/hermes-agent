@@ -35,15 +35,15 @@ def _client_direct_enabled() -> bool:
         from hermes_cli.config import load_config
         voice_cfg = load_config().get("voice") or {}
         if not isinstance(voice_cfg, dict):
-            return True
+            return False
         value = voice_cfg.get("client_direct", True)
     except Exception:
-        return True
+        return False
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off"}
-    return True
+    return False
 
 
 def _relay(reason: str) -> dict[str, Any]:

@@ -47,15 +47,10 @@ _HOMEBREW_CI_POLLER_HINT = (
     'loops.'
 )
 
-# Notes that name process_manage end with this: Tool Search defers it by default, and a bare
-# process_manage call then fails until the model routes it through the bridge.
-_PROCESS_MANAGE_BRIDGE_HINT = " If process_manage is not in your tool list, call it through tool_call."
-
 # A foreground call whose only backgrounding was a trailing `&` is spawned as background=true.
 _AUTO_BACKGROUND_NOTE = (
     "Ran in the background (the trailing & was converted to background=true; Hermes tracks the "
     "process). Do NOT re-run it. Use process_manage (poll/log/wait/kill, session_id above) to check it."
-    + _PROCESS_MANAGE_BRIDGE_HINT
 )
 
 _ASYNC_UNSUPPORTED_NOTE = (
@@ -244,7 +239,6 @@ _SUBAGENT_NOTIFY_NOTE = (
     "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
     "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
     "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
-    + _PROCESS_MANAGE_BRIDGE_HINT
 )
 
 _YIELDED_NOTE = (

@@ -92,31 +92,56 @@ def test_deferred_call_recovers_through_bridge_without_changing_prompt(tmp_path,
     assert sorted(call_ids) == sorted(m["tool_call_id"] for m in messages if m["role"] == "tool")
 
 
-_FAKE_START = {"output": "Background process started", "session_id": "proc_fake", "pid": 1,
-               "exit_code": 0, "error": None, "notify_on_complete": True}
+# main's note text, verbatim: successful background starts must stay byte-identical in every mode.
+_AUTO_BACKGROUND_NOTE = (
+    "Ran in the background (the trailing & was converted to background=true; Hermes tracks the "
+    "process). Do NOT re-run it. Use process_manage (poll/log/wait/kill, session_id above) to check it."
+)
+_SUBAGENT_NOTIFY_NOTE = (
+    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+    "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
+    "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
+    "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
+)
+_START = {"output": "Background process started", "session_id": "proc_fake", "pid": 1,
+          "exit_code": 0, "error": None}
+_EXPECTED = {
+    "notify": {**_START, "notify_on_complete": True},
+    "auto": {**_START, "auto_backgrounded": _AUTO_BACKGROUND_NOTE},
+    "subagent": {**_START, "notify_on_complete": False, "subagent_note": _SUBAGENT_NOTIFY_NOTE},
+}
 
 
+def _stub_spawn(monkeypatch):
+    """Stub only the process launch, so the real background-start code builds the result."""
+    from types import SimpleNamespace
+
+    from tools import terminal_tool_background
+
+    monkeypatch.setattr(terminal_tool_background, "_spawn", lambda *_a, **_kw: SimpleNamespace(
+        id="proc_fake", pid=1, watcher_platform="", parent_session_id=None))
+
+
+@pytest.mark.parametrize("case", sorted(_EXPECTED))
 @pytest.mark.parametrize("mode", ["deferred", "eager", "disabled"])
-def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
-    from tools import terminal_tool
-
-    # Never start a real process: the spawn returns main's background-start payload.
-    monkeypatch.setattr(terminal_tool, "spawn_background_process",
-                        lambda **_kw: json.dumps(_FAKE_START))
+def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode, case):
+    _stub_spawn(monkeypatch)
+    if case == "subagent":
+        monkeypatch.setattr("agent.delegation_context.is_delegated_child_context", lambda: True)
+    args = ({"command": "echo discovery-probe &"} if case == "auto" else
+            {"command": "echo discovery-probe", "background": True, "notify_on_complete": True})
     config = "tools:\n  tool_search:\n    enabled: off\n" if mode == "eager" else ""
     agent = _agent(tmp_path, monkeypatch, config, ["todo"] if mode == "disabled" else None)
     result, _ = _run(agent, monkeypatch, [
-        _response(("background", "terminal", {
-            "command": "echo discovery-probe", "background": True, "notify_on_complete": True,
-        })),
+        _response(("background", "terminal", args)),
         _response(("missing", "todo_list", {})) if mode == "disabled" else _response(),
         _response(),
     ])
     assert result["completed"]
     prompt = agent._cached_system_prompt
     background = next(m["content"] for m in result["messages"] if m.get("tool_call_id") == "background")
-    # Terminal results keep main's shape in every mode: no key added after the tool returns.
-    assert json.loads(background) == _FAKE_START
+    # Successful background starts keep main's keys and note text in every mode.
+    assert json.loads(background) == _EXPECTED[case]
     assert "# Tool discovery" not in prompt
     if mode == "disabled":
         assert "todo_list" not in prompt
@@ -126,13 +151,3 @@ def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
     else:
         # Same todo sentence main picks from the direct tool list (deferred = not direct).
         assert (_TODO_SENTENCE in prompt) == (mode == "eager")
-
-
-def test_process_manage_notes_carry_the_bridge_hint():
-    from tools.terminal_tool_background import (
-        _AUTO_BACKGROUND_NOTE, _PROCESS_MANAGE_BRIDGE_HINT, _SUBAGENT_NOTIFY_NOTE,
-    )
-
-    for note in (_AUTO_BACKGROUND_NOTE, _SUBAGENT_NOTIFY_NOTE):
-        assert note.endswith(_PROCESS_MANAGE_BRIDGE_HINT)
-        assert "tool_call" in note

@@ -98,8 +98,11 @@ def _first_session_started_at(home: Path | None = None) -> float | None:
     database = home / "state.db"
     if not database.exists():
         return time.time()
+    from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
+    from hermes_state_holders import read_only_db_uri
+
     with contextlib.closing(
-        sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=1)
+        connect_tracked(read_only_db_uri(database), uri=True, timeout=1, tracking_path=database)
     ) as connection:
         row = connection.execute("SELECT MIN(started_at) FROM sessions").fetchone()
     if not row or row[0] is None:
@@ -127,6 +130,7 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
     with contextlib.suppress(Exception):
         language = _display_language()
     from .shared_metrics_install import install_v4_snapshot_fields
+    from .shared_metrics_prepared_compaction import prepare_ahead_state
 
     return {**contract.install_snapshot_fields(
         memory_provider=_sub(_sub(config, "memory"), "provider"),
@@ -140,4 +144,4 @@ def collect_install_snapshot(config: dict[str, Any]) -> dict[str, str]:
         main_provider=_sub(model, "provider") if isinstance(model, dict) else None,
         terminal_backend=_sub(_sub(config, "terminal"), "backend"),
         display_language=language,
-    ), **install_v4_snapshot_fields(config)}
+    ), **install_v4_snapshot_fields(config), "compression_prepare_ahead": prepare_ahead_state(config)}

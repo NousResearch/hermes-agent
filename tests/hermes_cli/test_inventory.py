@@ -178,14 +178,16 @@ def test_include_unconfigured_appends_canonical_skeletons():
     with _list_auth_returning(rows):
         payload = build_models_payload(ctx, include_unconfigured=True)
     # All canonical providers other than openrouter should appear as
-    # skeleton rows. MoA is virtual/opt-in and excluded from unconfigured.
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    # skeleton rows. MoA is virtual/opt-in and excluded from unconfigured;
+    # so is a pre-release provider the user has not signed into.
+    from hermes_cli.models_catalog_static import listed_canonical_providers
 
     seen_slugs = {r["slug"] for r in payload["providers"]}
-    for entry in CANONICAL_PROVIDERS:
+    for entry in listed_canonical_providers():
         if entry.slug == "moa":
             continue  # virtual; only shown when explicitly configured
         assert entry.slug in seen_slugs, f"missing {entry.slug}"
+    assert "solstice" not in seen_slugs
     # Skeletons have empty models and source='canonical'.
     skeletons = [r for r in payload["providers"]
                  if r.get("source") == "canonical"]
@@ -442,9 +444,11 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
     # First row: first canonical provider in declaration order.
     assert slugs[0] == CANONICAL_PROVIDERS[0].slug
     # Custom row trails all visible canonical rows. MoA is virtual/opt-in
-    # so it is excluded from the unconfigured skeleton set.
+    # so it is excluded from the unconfigured skeleton set, and so is an
+    # unlisted pre-release provider.
+    from hermes_cli.models_catalog_static import listed_canonical_providers
     visible_canonical_count = sum(
-        1 for e in CANONICAL_PROVIDERS if e.slug != "moa"
+        1 for e in listed_canonical_providers() if e.slug != "moa"
     )
     assert slugs.index("custom:Ollama") >= visible_canonical_count
 
@@ -794,3 +798,23 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
     # allow-list and is never shortlisted — the constant-read invariant above is now carried
     # by the capabilities lookups alone.
     assert large_row["featured_models"] == []
+
+
+def test_apply_limits_skips_window_plan_rows():
+    """A window plan says its limits in ``plan_usage``; the credential-cooldown chip would add a second,
+    unrelated reset time, so ``_apply_limits`` leaves that row alone. Other pooled rows keep it."""
+    from hermes_cli import inventory
+
+    class _Pool:
+        def limit_state(self, models):
+            return {"scope": "account", "resets_at": 1_800_000_000}
+
+    rows = [
+        {"slug": "nous", "models": ["a/b"], "plan_usage": {"kind": "usage_window"}},
+        {"slug": "example", "models": ["a/b"]},
+    ]
+    with patch("hermes_cli.auth.read_credential_pool", return_value={"nous": [{}], "example": [{}]}), \
+            patch("agent.credential_pool.load_pool", return_value=_Pool()):
+        inventory._apply_limits(rows)
+    assert "limit" not in rows[0]
+    assert rows[1]["limit"]["scope"] == "account"

@@ -1,0 +1,22 @@
+name: coach
+repo: https://github.com/Printaga/Hermes-Coach
+sha: fb3e1d931dc87e441ad425d2830ea783e901bc85
+description: "Four modes: Consult on demand, Active per-turn review, Review before claiming done, and Decide for forks with Jev. Disclosure — once you configure a coach model, Coach sends turn transcripts, tool-call summaries and up to 128,000 characters of `git` diff from your working repo to that model through Hermes' model routing; the optional Decide mode (off by default) sends the agent's question, options and state to `openrouter.ai` (Typesafe's Jev model, your `OPENROUTER_API_KEY`) or `api.typesafe.ai` (your `TYPESAFE_API_KEY`); it runs read-only `git` in your session directory, keeps a background review thread, can hold a \"done\" reply once for review, and `/coach grant` writes its own model-override permission into `config.yaml`."
+maintainer: Printaga Publishing LLC
+tier: community
+category: models
+requires_hermes: ">=0.22.7"
+docs_url: "https://github.com/Printaga/Hermes-Coach#readme"
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/Printaga/Hermes-Coach/fb3e1d931dc87e441ad425d2830ea783e901bc85/docs/media/screens/01-status.png
+  - https://raw.githubusercontent.com/Printaga/Hermes-Coach/fb3e1d931dc87e441ad425d2830ea783e901bc85/docs/media/screens/02-listing.png
+  - https://raw.githubusercontent.com/Printaga/Hermes-Coach/fb3e1d931dc87e441ad425d2830ea783e901bc85/docs/media/screens/03-modes.png
+readme: true
+platforms: []
+title: "Coach"
+capabilities:
+  provides_tools: [coach_ask, coach_decide]
+  provides_hooks: [post_llm_call, pre_llm_call, pre_verify, post_tool_call, subagent_start, subagent_stop, on_session_end]
+  provides_middleware: []
+  requires_env: [OPENROUTER_API_KEY, TYPESAFE_API_KEY]

@@ -28,7 +28,7 @@ def _desktop_product_present(tmp_path: Path) -> int:
     env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                HERMES_INSTALL_DIR=(tmp_path / "install").as_posix())
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest >/dev/null\ndesktop_product_present\n"
-    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30).returncode
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False).returncode
 
 
 @pytest.mark.parametrize("unpacked", UNPACKED_DIRS)
@@ -45,6 +45,6 @@ def test_install_sh_without_desktop_build(tmp_path):
 def test_install_ps1_candidates_match_install_sh():
     body = INSTALL_PS1.read_text(encoding="utf-8")
     fn = body[body.index("function Test-DesktopProductPresent"):]
-    listed = re.search(r"foreach \(\$candidate in @\((.*?)\)\)", fn, re.S)
+    listed = re.search(r"foreach \(\$candidate in @\((.*?)\)\)", fn, re.DOTALL)
     assert listed, "Test-DesktopProductPresent candidate list not found"
     assert set(re.findall(r'"([^"]+)"', listed.group(1))) == set(UNPACKED_DIRS)

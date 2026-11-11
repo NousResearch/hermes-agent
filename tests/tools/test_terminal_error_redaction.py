@@ -3,8 +3,8 @@
 import json
 from types import SimpleNamespace
 
-import agent.redact as redact
-import tools.terminal_tool as terminal_tool
+from agent import redact
+from tools import terminal_tool
 
 
 SECRET = "OPENAI_API_KEY=sk-testterminalerrorredaction1234567890"
@@ -18,7 +18,6 @@ def _minimal_terminal_config(cwd="/tmp"):
         "host_cwd": None,
         "modal_mode": "auto",
         "docker_image": "",
-        "singularity_image": "",
         "modal_image": "",
         "daytona_image": "",
     }

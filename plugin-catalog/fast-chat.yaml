@@ -1,0 +1,23 @@
+name: fast-chat
+title: Hermes Fast Chat
+repo: https://github.com/iyoda/hermes-fast-chat
+sha: a08a5b19daf0859f1d8f20c710178fd67635c4dd
+description: "One-command Fast startup for Hermes CLI/TUI until built-in startup gets easier. Disclosure — `hermes fast-chat` runs the Hermes executable (or the one given with --hermes-bin) without a shell to bootstrap the gateway and may start a long-running gateway that keeps running after it exits; on Hermes releases without `gateway attach` it obtains a single-use session ticket over the local same-user gateway control socket; it reads the active profile's model, fallback-route and display settings from config.yaml (never inline keys) and, when no --model is given, tries the configured fallback routes until one accepts Fast, so the session can open on a different provider/model; sessions it creates (including empty ones left by refused routes) use the Fast/ultrafast service tier, which can cost more with the provider; no telemetry, no credential reads."
+maintainer: iyoda
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+version: "0.1.2"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Disclosure: runs the selected Hermes executable without a shell; may leave a Gateway running and saves new sessions. Fast/ultrafast may cost more."
+  - "Disclosure: reads active-profile configuration and, on legacy versions, its socket pointer; uses authenticated Gateway WebSocket / same-user control socket. Connection grants stay in memory; no provider credential-store reads, telemetry, self-updates, or approval bypass."
+  - "Requires plugins.isolation: in_process; CLI command registration is skipped in host mode."
+  - "Verified on macOS; Linux has not been tested against a live Gateway. Windows is not included in this listing."
+  - "Legacy bootstrap depends on the same-user Gateway control protocol; incompatible Gateway contracts fail at launch."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

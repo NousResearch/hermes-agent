@@ -18,7 +18,7 @@ import tomllib
 import pytest
 
 from pm.store import current_target
-from tests.pm._fixtures import _wheel, served as served
+from tests.pm._fixtures import _wheel, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -48,16 +48,17 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
            "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
     canary = tmp_path / "ambient-bin"
     canary.mkdir()
-    npm_called = tmp_path / "npm-called"
-    (canary / "npm").write_text(f'#!/bin/sh\nprintf called > "{npm_called}"\nexit 99\n', encoding="utf-8")
-    (canary / "npm").chmod(0o755)
+    manager_called = tmp_path / "package-manager-called"
+    for name in ("npm", "pnpm"):
+        (canary / name).write_text(f'#!/bin/sh\nprintf {name} >> "{manager_called}"\nexit 99\n', encoding="utf-8")
+        (canary / name).chmod(0o755)
     env["PATH"] = str(canary) + os.pathsep + env["PATH"]
     for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE"):
         if key in os.environ:
             env[key] = os.environ[key]
 
     def run(argv, *, cwd=tmp_path, expected=0):
-        result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=180)
+        result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=180, check=False)
         assert result.returncode == expected, result.stdout + result.stderr
         return result
 
@@ -67,12 +68,16 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     source.mkdir()
     for name in ("pm", "hermes_cli", "hermes_platform"):
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
-    for name in ("utils.py", "hermes_constants.py", "hermes_yaml.py", "hermes_bootstrap.py", "setup-hermes.sh"):
+    for name in ("utils.py", "hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "hermes_bootstrap.py",
+                 "setup-hermes.sh"):
         shutil.copy2(ROOT / name, source / name)
-    # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog);
-    # the rest of agent/ stays out so the tail cannot grow a dependency on the agent runtime.
+    # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog),
+    # its config/env layer consults the stdlib-only safe-worker policy, and the update path's wait
+    # loops use the stdlib-only agent.deadline; the rest of agent/ stays out so the tail cannot grow
+    # a dependency on the agent runtime.
     (source / "agent").mkdir()
-    for name in ("__init__.py", "jiter_preload.py", "i18n.py", "i18n_layers.py", "i18n_languages.py"):
+    for name in ("__init__.py", "jiter_preload.py", "i18n.py", "i18n_layers.py", "i18n_languages.py",
+                 "safe_worker_policy.py", "deadline.py"):
         shutil.copy2(ROOT / "agent" / name, source / "agent" / name)
     (source / "locales").mkdir()
     shutil.copy2(ROOT / "locales/en.yaml", source / "locales/en.yaml")
@@ -127,7 +132,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     command = ["bash", str(ROOT / "scripts/install.sh"), "--dir", str(install),
                "--branch", "fixture", "--commit", commit, "--non-interactive", "--json"]
     result = run(command, expected=1 if fault else 0)
-    assert not npm_called.exists()
+    assert not manager_called.exists()
     if fault:
         assert not (install / ".hermes-bootstrap-complete").exists()
         assert not (home / ".local/bin/hermes").exists()

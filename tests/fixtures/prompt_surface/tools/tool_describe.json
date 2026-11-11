@@ -1,0 +1,19 @@
+{
+  "description": "Load the full JSON schemas for tools returned by `tool_search`. Required before `tool_call` if a tool's parameters are unknown. Batch every schema you need into one call.",
+  "name": "tool_describe",
+  "parameters": {
+    "properties": {
+      "names": {
+        "description": "Exact tool names (as returned by tool_search). A single string is accepted and treated as one name.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "names"
+    ],
+    "type": "object"
+  }
+}

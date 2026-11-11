@@ -12,9 +12,9 @@ parses.
 
 import pytest
 
-import agent.skill_bundles as skill_bundles
-import agent.skill_commands as skill_commands
-import tools.skills_tool as skills_tool
+from agent import skill_bundles
+from agent import skill_commands
+from tools import skills_tool
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE,
@@ -151,7 +151,7 @@ class TestGatewayAutoLoadScaffold:
         return f"{joined}\n\n{user_text}" if user_text else joined
 
     def test_describes_the_typed_request(self, skills):
-        message = self._auto_load_scaffold(skills_dir := skills, ["work"],
+        message = self._auto_load_scaffold(skills, ["work"],
                                            user_text="Fix the CI gate before the release")
         assert describe_skill_invocation(message) == "Fix the CI gate before the release"
 

@@ -200,7 +200,7 @@ class TestLoadMCPConfig:
 
 class TestMCPParallelSafetyProvenance:
     def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
 
         first = SimpleNamespace(session=object(), _registered_tool_names=[])
         second = SimpleNamespace(session=object(), _registered_tool_names=[])
@@ -234,7 +234,7 @@ class TestMCPParallelSafetyProvenance:
                 mcp_tool._parallel_safe_servers.update(saved_parallel)
 
     def test_tool_provenance_keeps_exact_raw_server_names(self):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_registration as _mcp_registration
 
         first_tool = "mcp__foo_bar__first"
@@ -267,7 +267,7 @@ class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
         self, monkeypatch
     ):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_config as _mcp_config
         from tools import mcp_tool_discovery as _mcp_discovery
 
@@ -314,7 +314,7 @@ class TestMCPStatus:
         assert statuses["disabled"]["disabled"] is True
 
     def test_status_ignores_a_runtime_owned_by_another_profile(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_config as _mcp_config
         from tools import mcp_tool_discovery as _mcp_discovery
 
@@ -352,7 +352,7 @@ class TestMCPStatus:
 
 
     def test_scoped_shutdown_clears_only_its_connection_status(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         from tools import mcp_tool_lifecycle, mcp_tool_loop
 
         monkeypatch.setattr(mcp_tool_loop, "_stop_mcp_loop", lambda **_kwargs: None)
@@ -1295,7 +1295,6 @@ class TestToolsetInjection:
             result1 = discover_mcp_tools()
             assert "mcp__good__ping" in result1
             assert "mcp__broken__ping" not in result1
-            first_attempts = call_count
 
             # "Fix" the broken server
             broken_fixed = True
@@ -1997,12 +1996,14 @@ class _CompatType:
 
 try:
     from mcp.types import (
+        ClientCapabilities,
         CreateMessageResult,
         ErrorData,
         SamplingCapability,
         TextContent,
     )
 except ImportError:
+    ClientCapabilities = _CompatType
     CreateMessageResult = _CompatType
     ErrorData = _CompatType
     SamplingCapability = _CompatType
@@ -2495,6 +2496,58 @@ class TestMetricsTracking:
 # ---------------------------------------------------------------------------
 
 
+    @staticmethod
+    def _capability_payload(capability):
+        if hasattr(capability, "model_dump"):
+            return capability.model_dump(exclude_none=True)
+        return {k: v for k, v in vars(capability).items() if v is not None}
+
+    @classmethod
+    def _client_capability_payload(cls, sampling_capability):
+        capabilities = ClientCapabilities(sampling=sampling_capability)
+        return cls._capability_payload(capabilities)
+
+    def test_default_omits_tools_capability(self):
+        """Strict servers reject unknown sampling.tools, so it stays off by default (#5468)."""
+        handler = SamplingHandler("sk", {})
+        assert handler.expose_client_tools is False
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        assert isinstance(cap, SamplingCapability)
+        assert cap.tools is None
+        assert "tools" not in self._capability_payload(cap)
+        assert self._client_capability_payload(cap) == {"sampling": {}}
+
+    def test_sampling_tools_capability_is_opt_in(self):
+        handler = SamplingHandler("sk3", {"expose_client_tools": True})
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        assert isinstance(cap.tools, SamplingToolsCapability)
+        assert "tools" in self._capability_payload(cap)
+        assert self._client_capability_payload(cap) == {"sampling": {"tools": {}}}
+
+    @pytest.mark.parametrize(
+        "raw_value, expected",
+        [
+            (False, False),
+            ("false", False),
+            ("0", False),
+            ("off", False),
+            (True, True),
+            ("true", True),
+            ("1", True),
+            ("yes", True),
+        ],
+    )
+    def test_sampling_tools_capability_parses_bool_flags(self, raw_value, expected):
+        handler = SamplingHandler("sk4", {"expose_client_tools": raw_value})
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        payload = self._capability_payload(cap)
+        if expected:
+            assert isinstance(cap.tools, SamplingToolsCapability)
+            assert "tools" in payload
+        else:
+            assert cap.tools is None
+            assert "tools" not in payload
+
 # ---------------------------------------------------------------------------
 # 14. MCPServerTask integration
 # ---------------------------------------------------------------------------
@@ -2577,7 +2630,6 @@ class TestDiscoveryConnectConcurrency:
 
         def fake_run_on_mcp_loop(factory, timeout=None):
             captured["timeout"] = timeout
-            return None
 
         # 40 servers = 14 waves at cap 3: uncapped, the pass would block 28 min
         # and outlive the waiter budget by 26+ minutes.
@@ -2976,7 +3028,7 @@ class TestMCPDiscoveryCrossProcessLock:
     @pytest.fixture(autouse=True)
     def _fast_retries(self):
         """Override retry constants so tests are fast."""
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool
         orig_max = mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES
         orig_delay = mcp_tool._MCP_DISCOVERY_LOCK_RETRY_DELAY_S
         mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES = 3
@@ -3002,7 +3054,7 @@ class TestMCPDiscoveryCrossProcessLock:
             with patch("tools.mcp_tool_loop._try_acquire_mcp_discovery_lock", mock_acquire), \
                  patch("tools.mcp_tool._MCP_AVAILABLE", True), \
                  patch("tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
-                 patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp__test_srv__ping"]) as reg_spy:
+                 patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp__test_srv__ping"]):
                 result = discover_mcp_tools()
             assert result == ["mcp__test_srv__ping"]
             release_spy.assert_called_once()
@@ -3018,7 +3070,7 @@ class TestMCPDiscoveryCrossProcessLock:
              patch("tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
              patch("tools.mcp_tool_discovery.register_mcp_servers") as reg_spy, \
              patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
-            result = discover_mcp_tools()
+            discover_mcp_tools()
         # Must still run local discovery
         reg_spy.assert_called_once_with(mock_config)
 

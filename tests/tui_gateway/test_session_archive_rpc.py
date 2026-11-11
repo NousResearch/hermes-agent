@@ -15,7 +15,7 @@ delete it permanently. ``session.archive`` mirrors ``session.set_hidden``:
 import pytest
 
 import tui_gateway.server as srv
-import tui_gateway.methods_session  # noqa: F401  (registers the RPC methods)
+import tui_gateway.methods_session
 from hermes_state import SessionDB
 
 

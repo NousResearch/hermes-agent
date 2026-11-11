@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 # Bootstrap the repo root onto sys.path so this script can import the
@@ -22,11 +22,11 @@ from pathlib import Path
 # is import-light: only os/sys + version constants).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli.update_channel import (  # noqa: E402
+from hermes_cli.update_channel import (
     _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
     is_canary_tag,
 )
-from scripts.releases.authors import resolve_author  # noqa: E402
+from scripts.releases.authors import resolve_author
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,6 +37,7 @@ def git(*args, cwd=None):
         ["git"] + list(args),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"git {' '.join(args)} failed: {result.stderr}", file=sys.stderr)
@@ -51,6 +52,7 @@ def git_result(*args, cwd=None):
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
 
 
@@ -65,17 +67,16 @@ def list_remotes() -> list[str]:
 def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     """Dispatch the release pipeline after its draft exists.
 
-    Stable workflows run on the tag so all reusable checks see the same
-    commit. Their gate owns artifact publication and channel promotion.
-    Canary builds keep default-branch workflow/cache scope and tagged inputs.
-    Explicit dispatch also works for tags created by GITHUB_TOKEN.
+    Both channels run the default-branch workflow with the tag as an input, so
+    caches share one scope and scripts come from main. A stable run resolves its
+    claim tag to the commit under test. Its gate owns artifact publication and
+    channel promotion. Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
     canary = _CANARY_TAG_RE.fullmatch(tag) is not None
     if not canary and not STABLE_TAG_RE.fullmatch(tag):
         raise ValueError("Expected an exact stable or canary release tag")
     workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
-    cmd = ["gh", "workflow", "run", workflow, "--ref", "main" if canary else tag,
-           "-f", f"tag={tag}"]
+    cmd = ["gh", "workflow", "run", workflow, "--ref", "main", "-f", f"tag={tag}"]
     if canary:
         cmd += ["-f", "upload_release=true"]
     if gh_repo:
@@ -86,12 +87,13 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
 
-    dispatch_ref = (_default_branch(gh_repo) or "main") if canary else tag
+    dispatch_ref = _default_branch(gh_repo) or "main"
     cmd[cmd.index("--ref") + 1] = dispatch_ref
 
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"  ✗ Could not start the release pipeline: {result.stderr.strip()}")
@@ -110,6 +112,7 @@ def _default_branch(gh_repo: str | None) -> str | None:
     result = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         return None
@@ -432,6 +435,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     view = subprocess.run(
         ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease,url"],
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     # A draft is served at an untagged-* URL, never releases/tag/<tag>; gh's
     # answer is the only working link to it.
@@ -444,6 +448,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         create.extend(["--notes-file", str(notes_file)] if notes_file else ["--generate-notes"])
         created = subprocess.run(
             create, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            check=False,
         )
         if created.returncode != 0:
             raise ValueError(created.stderr.strip() or "Canary draft could not be recovered")
@@ -488,7 +493,7 @@ def cmd_canary(args) -> None:
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
     YAML.
     """
-    date_utc = args.date or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    date_utc = args.date or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
     if not gh_repo:
@@ -576,7 +581,7 @@ def prune_old_canaries(args) -> None:
     """
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
+    cutoff = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y%m%d")
 
     tags = git("tag", "--list", "v*+canary.*", "--sort=-creatordate")
     doomed = []
@@ -597,6 +602,7 @@ def prune_old_canaries(args) -> None:
         result = subprocess.run(
             gh_cmd, capture_output=True, text=True, encoding="utf-8",
             errors="replace", cwd=str(REPO_ROOT),
+            check=False,
         )
         if result.returncode == 0:
             print(f"✓ Deleted {tag}")
@@ -641,23 +647,34 @@ def main():
     release_cmd = subcommands.add_parser(
         "release", help="Claim a version, cut a draft, and dispatch the gate")
     release_cmd.add_argument("--commit", required=True, metavar="SHA",
-                             help="The main commit to release")
+                             help="The commit to release; it must be on main or a release/* branch")
     release_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
     release_cmd.add_argument("--autopublish", action="store_true",
                              help="Publish on green instead of leaving a draft")
-    release_cmd.add_argument("--skip-bundles", action="store_true",
-                             help="Release only the tag and the Docker image: no desktop, Termux or "
-                                  "PM bundle builds, smokes, feeds or Store check. The desktop update "
-                                  "channel stays on the previous bundle release.")
-    release_cmd.add_argument("--skip-tests", action="store_true",
-                             help="Emergency release: skip CI, Nix, PM bundle, install/update E2E, "
-                                  "Termux, Windows, native smoke and upgrade acceptance jobs. "
-                                  "Artifacts still build and publish.")
+    from scripts.releases import lanes as lane_set
+
+    release_cmd.add_argument("--only", action="append", metavar="LANES",
+                             help="Start from exactly these lanes instead of the default set "
+                                  "(comma-separated, repeatable).")
+    release_cmd.add_argument("--with", dest="with_lanes", action="append", metavar="LANES",
+                             help="Also build or test these lanes (comma-separated, repeatable).")
+    release_cmd.add_argument("--without", dest="without_lanes", action="append", metavar="LANES",
+                             help="Do not build or test these lanes (comma-separated, repeatable).")
+    release_cmd.epilog = ("Lanes (default on unless noted): "
+                          + "; ".join(f"{lane.name}{'' if lane.default else ' (off)'} = {lane.doc}"
+                                      for lane in lane_set.LANES))
+    release_cmd.formatter_class = argparse.RawDescriptionHelpFormatter
     # SUPPRESS keeps a --no-changelog given before the subcommand from being
     # reset by this parser's default.
     release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,
                              help="Leave the commit list out of the draft body")
     release_cmd.add_argument("--remote", type=str)
+    changelog_cmd = subcommands.add_parser(
+        "changelog", help="Print the changelog the next stable release draft would carry")
+    changelog_cmd.add_argument("--commit", required=True, metavar="SHA",
+                               help="Commit the release would be cut at")
+    changelog_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
+    changelog_cmd.add_argument("--remote", type=str)
     publish_cmd = subcommands.add_parser(
         "publish", help="Publish a green stable release through the ordered sequencer")
     publish_cmd.add_argument("--version", required=True)
@@ -671,9 +688,10 @@ def main():
     add_arguments(parser)
     args = parser.parse_args()
 
-    from scripts.releases.entrypoint import cmd_abandon, cmd_publish, cmd_release
+    from scripts.releases.entrypoint import cmd_abandon, cmd_changelog, cmd_publish, cmd_release
 
-    stable_commands = {"release": cmd_release, "publish": cmd_publish, "abandon": cmd_abandon}
+    stable_commands = {"release": cmd_release, "publish": cmd_publish, "abandon": cmd_abandon,
+                       "changelog": cmd_changelog}
     if args.command:
         stable_commands[args.command](args)
         return
@@ -700,7 +718,7 @@ def main():
         if selected:
             handler(args)
             return
-    parser.error("select release, publish, abandon, --canary, --build-commit, or a channel operation")
+    parser.error("select release, publish, abandon, changelog, --canary, --build-commit, or a channel operation")
 
 
 if __name__ == "__main__":

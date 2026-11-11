@@ -46,19 +46,27 @@ class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
     Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
-    Session snapshot preserves env vars across calls; CWD persists via in-band
+    Session snapshot preserves exported env vars across calls (unless
+    ``persistent=False``); CWD persists via in-band
     stdout markers. Uses SSH ControlMaster for connection reuse.
     """
 
     # Passthrough values are re-forwarded on every command (see _run_bash), so like docker/local
     # they stay out of the remote snapshot under multiplex.
     _profile_scoped_passthrough = True
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
+    # cleanup() only closes the ControlMaster sockets: a nohup'd background job keeps running on
+    # the host and the next execute() reconnects, so its poller still collects the real exit.
+    cleanup_stops_processes = False
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
-                 probe_only: bool = False, sync_files: bool = True):
-        super().__init__(cwd=cwd, timeout=timeout)
+                 probe_only: bool = False, sync_files: bool = True, persistent: bool = True):
+        from tools.terminal_tool_config import coerce_ssh_remote_cwd
+
+        # cwd may be a raw terminal.cwd naming a directory on the machine running Hermes; coercion is
+        # idempotent, so callers that already coerced are unaffected.
+        super().__init__(cwd=coerce_ssh_remote_cwd(cwd, "ssh"), timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
@@ -254,7 +262,7 @@ class SSHEnvironment(BaseEnvironment):
         ssh_cmd = self._build_ssh_command() + [
             f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
-            result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120)
+            result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace").strip()
             # A socket not named *.sock is the only rc=2 we knowingly accept, and only when
@@ -288,6 +296,7 @@ class SSHEnvironment(BaseEnvironment):
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
+        self.stop_all_processes()
         if self._sync_manager:
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
@@ -296,6 +305,6 @@ class SSHEnvironment(BaseEnvironment):
                 continue
             with contextlib.suppress(OSError, subprocess.SubprocessError):
                 cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
-                subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+                subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()

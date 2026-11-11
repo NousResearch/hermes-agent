@@ -59,7 +59,7 @@ function resolveDevCdpPort({ env, isPackaged, devServer }: DevCdpInput): DevCdpD
     return { port: null, reason: 'packaged' }
   }
 
-  // A dev server means a source-tree run (`npm run dev` / `hgui`).
+  // A dev server means a source-tree run (`pnpm run dev` / `hgui`).
   if (!devServer) {
     return { port: null, reason: 'no-dev-server' }
   }

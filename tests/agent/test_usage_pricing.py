@@ -48,7 +48,7 @@ _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_r
 @pytest.fixture
 def models_dev_registry(monkeypatch):
     """A models.dev cache holding the vendors' rate cards; the providers' own /models carry no prices."""
-    import agent.models_dev as models_dev
+    from agent import models_dev
 
     monkeypatch.setattr(models_dev, "_models_dev_cache", _MODELS_DEV_REGISTRY)
     monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
@@ -179,8 +179,8 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
 
     assert entry is not None
     assert entry.source == "provider_models_api"
-    assert entry.input_cost_per_million == Decimal("1")
-    assert entry.output_cost_per_million == Decimal("2")
+    assert entry.input_cost_per_million == Decimal(1)
+    assert entry.output_cost_per_million == Decimal(2)
 
 
 
@@ -283,9 +283,31 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     assert result.amount_usd is not None
 
 
+@pytest.mark.parametrize("bare", ["claude-opus-5", "claude-opus-5-5", "claude-fable-5-2"])
+@pytest.mark.parametrize("scope", ["", "us.", "global."])
+def test_bedrock_claude_opus_5_prices_like_direct_anthropic(bare, scope):
+    """Regression for #100848: Bedrock bills Claude at Anthropic's per-token
+    rates, so a Bedrock Opus 5 / 5.5 session must price from the snapshot at
+    the direct-Anthropic rates instead of falling through to ``unknown``."""
+    direct = get_pricing_entry(bare, provider="anthropic")
+    scoped = get_pricing_entry(f"{scope}anthropic.{bare}", provider="bedrock")
+    assert direct is not None and scoped is not None
+    assert scoped.source == "official_docs_snapshot"
+    for field in ("input", "output", "cache_read", "cache_write"):
+        attr = f"{field}_cost_per_million"
+        assert getattr(scoped, attr) == getattr(direct, attr), attr
 
 
+def test_static_bedrock_catalog_claude_models_price_from_snapshot():
+    """Every Claude id Hermes offers in the offline Bedrock picker must price
+    from the official snapshot; a missing row records $0 / ``unknown``."""
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
+    claude_ids = [m for m in _PROVIDER_MODELS["bedrock"] if "anthropic.claude" in m]
+    assert claude_ids
+    for model in claude_ids:
+        entry = get_pricing_entry(model, provider="bedrock")
+        assert entry is not None and entry.source == "official_docs_snapshot", model
 
 
 def test_fireworks_router_fast_tier_prices_distinctly():
@@ -386,6 +408,18 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
         assert model in _PROVIDER_MODELS["vertex"], model
 
 
+def test_gemini_4_carbon_is_pickable_and_prices_like_argon(monkeypatch):
+    from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_args, **_kwargs: {})
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    carbon = estimate_usage_cost("gemini-4-carbon", usage, provider="gemini")
+    argon = estimate_usage_cost("gemini-4-argon", usage, provider="gemini")
+    assert "gemini-4-carbon" in _PROVIDER_MODELS["gemini"]
+    assert (carbon.status, carbon.source) == ("estimated", "official_docs_snapshot")
+    assert carbon.amount_usd == argon.amount_usd and carbon.amount_usd > 0
+
+
 
 
 
@@ -399,7 +433,7 @@ class TestFormatCostLabel:
     """Tests for magnitude-scaled cost label formatting."""
 
     def test_zero_renders_as_dollar_zero(self):
-        assert format_cost_label(Decimal("0")) == "$0.00"
+        assert format_cost_label(Decimal(0)) == "$0.00"
 
     def test_sub_cent_renders_4dp(self):
         """Costs below $0.01 render at 4 decimal places (#79220)."""
@@ -455,7 +489,7 @@ class TestSubscriptionIncludedNotes:
             provider="openai-codex",
         )
         assert result.status == "included"
-        assert result.amount_usd == Decimal("0")
+        assert result.amount_usd == Decimal(0)
         assert len(result.notes) > 0
 
 

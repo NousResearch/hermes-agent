@@ -4,7 +4,8 @@ Everything funnels through :func:`resolve_image_source` so size and magic-byte c
 exactly once. Images are the default; video callers opt in via ``permitted=("video",)``.
 Security (GHSA-gpxw-6wxv-w3qq): under a non-local backend vision is confined like the file
 tools — host-read only inside a media cache (bind-mounted into the sandbox), anything else is
-exec-read *inside the sandbox*, so ``vision_analyze('/etc/passwd')`` never reads the host.
+exec-read *inside the sandbox*, so ``vision_analyze('/etc/passwd')`` never reads the host. In a
+hosted scope there are no host reads at all: every path is read in the agent's own sandbox.
 """
 from __future__ import annotations
 
@@ -16,9 +17,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# Raw-bytes INGEST budget: deliberately the 50MB download cap, NOT the 20MB provider
-# payload cap — that one is enforced post-resize at the call sites.
+# Raw-bytes INGEST budget for sandbox and data: sources (50 MiB). The sandbox exec-read returns
+# the file as base64 on stdout, so captured text + decoded bytes + copies peak near 4x the file
+# in this process; it stays at the 50MB download cap. HTTP downloads keep their own stream cap
+# (vision_tools._VISION_MAX_DOWNLOAD_BYTES).
 _MAX_INGEST_BYTES = 50 * 1024 * 1024
+# Host-file reads (250 MiB): bounded during the read, big enough for full-res camera/scan
+# images, which call sites downscale before the 20MB provider payload cap.
+_MAX_HOST_READ_BYTES = 250 * 1024 * 1024
+# Chunk size for host reads whose st_size under-reports (see _read_host_bytes_bounded).
+_HOST_READ_CHUNK = 1024 * 1024
 
 
 class ImageResolutionError(Exception):
@@ -75,12 +83,36 @@ async def resolve_image_source(
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
-        data = await asyncio.to_thread(host_target.read_bytes)
+        # Videos are never downscaled and video_analyze refuses over 50 MB of base64, so the
+        # larger host budget only helps images; videos keep the ingest cap and fail at the stat.
+        cap = _MAX_HOST_READ_BYTES if "image" in permitted else _MAX_INGEST_BYTES
+        data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s, cap)
         return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
         # Any path was host-readable, so a miss means the file doesn't exist.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
+
+
+def _read_host_bytes_bounded(path: Path, src: str, cap: int) -> bytes:
+    """Read a host file with ``cap`` enforced DURING the read. ``read_bytes()`` buffered the whole
+    file before ``_finalize`` checked its size. ``read(n)`` preallocates n bytes, so the first read
+    asks for the stat'd size (not the cap); when ``st_size`` under-reports (procfs-style files) the
+    rest streams in chunks and stops past ``cap``. The honest-size check reads nothing at all."""
+    size = path.stat().st_size
+    if size > cap:
+        raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+    with path.open("rb") as fh:
+        data = fh.read(size + 1)
+        if len(data) > size:
+            parts, total = [data], len(data)
+            while total <= cap and (chunk := fh.read(_HOST_READ_CHUNK)):
+                parts.append(chunk)
+                total += len(chunk)
+            if total > cap:
+                raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+            data = b"".join(parts)
+    return data
 
 
 def _guard_credential_read(host_target: Path, src: str) -> None:
@@ -93,7 +125,7 @@ def _guard_credential_read(host_target: Path, src: str) -> None:
         # model-supplied local paths. Import is best-effort (guard unavailability must not break image
         # loading); a real block always propagates.
         from agent.file_safety import raise_if_read_blocked
-    except Exception:  # noqa: BLE001 — guard unavailable: proceed
+    except Exception:
         return
     try:
         raise_if_read_blocked(str(host_target))
@@ -145,7 +177,11 @@ async def _download_to_bytes(url: str) -> bytes:
 
 def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host (keys off ``TERMINAL_ENV``, read
-    through the per-turn terminal scope so a routed multiplex profile sees ITS backend)."""
+    through the per-turn terminal scope so a routed multiplex profile sees ITS backend). Never in a
+    hosted scope: a hosted agent's media lives in its sandbox whatever backend is configured."""
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return False
     from tools.terminal_scope import terminal_env
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
@@ -168,17 +204,21 @@ def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
     """Host path to read, or ``None`` (caller exec-reads inside the sandbox instead).
 
     Local backend: any path. Non-local: only paths inside a media cache root (a
-    container-visible cache path is first translated back to its host mount).
+    container-visible cache path is first translated back to its host mount). Hosted scope: none —
+    the profile's media caches are not the agent's, so every path is read inside its sandbox.
     """
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return None
     if _is_local_terminal_backend():
         try:
             return p.resolve()
-        except Exception:  # noqa: BLE001 — unresolved path: let is_file() fail downstream
+        except Exception:
             return p
     from tools.credential_files import from_agent_visible_cache_path
     try:
         real = Path(from_agent_visible_cache_path(str(p))).resolve()
-    except Exception:  # noqa: BLE001 — cannot resolve -> not a safe host read
+    except Exception:
         return None
     if any(real.is_relative_to(root.resolve()) for root in _media_cache_roots()):
         return real
@@ -270,10 +310,11 @@ async def _resolve_container_fallback(
 def _finalize(
     data: bytes, declared_mime: str, origin: str, src: str, permitted: tuple = ("image",)
 ) -> ResolvedImage:
-    """Chokepoint: 50MB ingest cap + type check. Images by magic bytes; video (opt-in) by
-    extension + mp4 sniff — enough because every downstream consumer re-validates."""
+    """Chokepoint: size ceiling + type check. Images by magic bytes; video (opt-in) by
+    extension + mp4 sniff — enough because every downstream consumer re-validates. Each
+    reader enforces its own tighter cap first; this is the ceiling for all of them."""
     from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
-    if len(data) > _MAX_INGEST_BYTES:
+    if len(data) > _MAX_HOST_READ_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin=origin)
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is not None:

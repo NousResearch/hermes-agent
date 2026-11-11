@@ -1,9 +1,9 @@
 // Launch a standalone, fully isolated perf instance and leave it running so you
-// can attach the harness (`npm run perf`) or DevTools to it. Ctrl-C tears it
+// can attach the harness (`pnpm run perf`) or DevTools to it. Ctrl-C tears it
 // down and removes its temp dirs.
 //
-//   npm run perf:serve                 # :9222, temp HERMES_HOME + user-data-dir
-//   PERF_PORT=9333 npm run perf:serve  # custom CDP port
+//   pnpm run perf:serve                # :9222, temp HERMES_HOME + user-data-dir
+//   PERF_PORT=9333 pnpm run perf:serve # custom CDP port
 //
 // This is the isolation seam: because it uses its own --user-data-dir the
 // Electron single-instance lock never collides with a running `hgui`.
@@ -22,7 +22,7 @@ const instance = await startIsolatedInstance({
   userDataDir: process.env.PERF_USER_DATA
 })
 
-console.log(`[perf:serve] READY — attach with: npm run perf -- --port ${port}`)
+console.log(`[perf:serve] READY — attach with: pnpm run perf --port ${port}`)
 
 let closing = false
 const shutdown = () => {

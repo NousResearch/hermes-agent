@@ -235,7 +235,7 @@ class TestNonRegularFileReads(unittest.TestCase):
         def call():
             try:
                 box["raw"] = read_file_tool(path, task_id=task_id)
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 box["exc"] = exc
 
         worker = threading.Thread(target=call, daemon=True)

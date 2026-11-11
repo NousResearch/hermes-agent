@@ -1,0 +1,28 @@
+name: hermes-axiom-agent
+title: Axiom Agent
+repo: https://github.com/percyhendrux123-prog/hermes-axiom-agent
+sha: "1861b7820d5866e36b07dc54bb647f9eefa94bd5"
+subdir: ""
+version: "0.1.0"
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+platforms: [linux, macos]
+readme: true
+description: >-
+  Adds the nine-article Axiom Doctrine as pre_llm_call context (compact form capped at 1800
+  characters, full at 4000, owner additions separately at 800) and a /doctrine command that
+  reports, per article, whether a matching enforcer plugin (standing, hermes-axioma, tripwire,
+  handydandy, hermes-gatekeeper) is loaded and enabled. Enforces nothing itself: no tools,
+  middleware or approval hooks, and ENFORCED means an enforcer is loaded and enabled, not
+  verified coverage. Reads an optional owner additions file and only the top-level name line of
+  user-plugin manifests, without following symlinked files; makes no writes, network,
+  subprocess or model calls. No Python dependencies.
+known_issues:
+  - "Installed state covers user-plugin manifests under HERMES_HOME/plugins; an inactive pip or bundled enforcer shows as not found (a loaded one is detected through ctx.has_plugin)."
+  - "Doctrine text is advice to the model, not a control. Install and enable the enforcer plugins for enforcement."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

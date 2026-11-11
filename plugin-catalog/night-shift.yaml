@@ -1,0 +1,24 @@
+name: night-shift
+repo: https://github.com/MuhammadMurtuzaHussain/Hermes-Hackathon
+sha: 857ff062407f620f16edd2824bbe61570c2a4cfb
+subdir: night-shift
+version: "1.0.0"
+title: Night Shift
+description: "An on-call engineer that never sleeps. Alerts trigger a read-only investigation, a human approves the fix with one tap in Slack, and Night Shift runs it, proves recovery, and writes the runbook as a skill so the next incident is recognised. Disclosure — runs read-only shell diagnostics during an incident, and after a listed human approves it runs the approved commands through the terminal tool without a second Hermes prompt (optionally over the configured ssh prefix). Destructive commands are refused at proposal time. Sends container logs, status and database activity to the model provider. Calls Prometheus at the configured URL and Slack through the user's Hermes Slack app. Writes runbook skills through skill_manage and keeps incident state in plugin state. No telemetry, stores no credentials."
+maintainer: MuhammadMurtuzaHussain
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/MuhammadMurtuzaHussain/Hermes-Hackathon/blob/857ff062407f620f16edd2824bbe61570c2a4cfb/night-shift/README.md
+screenshots:
+  - https://raw.githubusercontent.com/MuhammadMurtuzaHussain/Hermes-Hackathon/857ff062407f620f16edd2824bbe61570c2a4cfb/docs/screenshots/card-proposed.png
+  - https://raw.githubusercontent.com/MuhammadMurtuzaHussain/Hermes-Hackathon/857ff062407f620f16edd2824bbe61570c2a4cfb/docs/screenshots/card-resolved.png
+  - https://raw.githubusercontent.com/MuhammadMurtuzaHussain/Hermes-Hackathon/857ff062407f620f16edd2824bbe61570c2a4cfb/docs/screenshots/card-recognised.png
+known_issues:
+  - "Diagnostics assume Docker. docker_host_prefix, deploy_history_command and db_check_command cover other setups, but only local Docker has been tested end to end."
+  - "Slack buttons need plugins.isolation: in_process (the default), because they use native Slack handlers. /nightshift approve (two steps: it shows the exact commands, then runs them on a confirm code) works in either mode."
+capabilities:
+  provides_tools: [nightshift_diagnose, nightshift_query_metrics, nightshift_recall, nightshift_propose_fix, nightshift_escalate, nightshift_resolve]
+  provides_hooks: [pre_llm_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

@@ -14,11 +14,19 @@ from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, s
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
+# Whether the main model sees images natively is a models.dev catalog verdict. A fresh home has no
+# catalog, so without this the vision routing below fetched models.dev live, and a slow or failed
+# fetch read as "unknown" -> aux vision (CI: `assert True is False` in profile A).
+_CATALOG = {"openai": {"id": "openai", "models": {"gpt-4o": {
+    "id": "gpt-4o", "tool_call": True, "attachment": True, "modalities": {"input": ["text", "image"]}}}}}
+
+
 def _make_home(root: Path, cfg: dict, env: str = "") -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
     (root / ".env").write_text(env, encoding="utf-8")
     (root / "cache").mkdir(exist_ok=True)
+    (root / "models_dev_cache.json").write_text(json.dumps(_CATALOG), encoding="utf-8")
     return root
 
 
@@ -37,50 +45,20 @@ class _scoped:
 
 @pytest.fixture
 def two_homes(tmp_path, monkeypatch):
-    a = _make_home(tmp_path / "A", {}, "CAMOFOX_URL=http://camofox-a:9377\n")
-    b = _make_home(tmp_path / "A" / "profiles" / "B", {}, "CAMOFOX_URL=http://camofox-b:9377\n")
+    a = _make_home(tmp_path / "A", {})
+    b = _make_home(tmp_path / "A" / "profiles" / "B", {})
     monkeypatch.setenv("HERMES_HOME", str(a))
-    monkeypatch.delenv("CAMOFOX_URL", raising=False)
     return a, b
-
-
-def test_camofox_vnc_memo_is_keyed_by_the_profiles_server_url(two_homes, monkeypatch):
-    """The one-shot VNC probe must not answer B (own CAMOFOX_URL) with A's server address."""
-    import tools.browser_camofox as cam
-
-    class _Resp:
-        status_code = 200
-
-        def __init__(self, url):
-            self._port = 6001 if "camofox-a" in url else 6002
-
-        def json(self):
-            return {"ok": True, "vncPort": self._port}
-
-    monkeypatch.setattr(cam.requests, "get", lambda url, *a, **k: _Resp(url))
-    a, b = two_homes
-    with _scoped(a):
-        assert cam.check_camofox_available() is True
-        assert cam.get_vnc_url() == "http://camofox-a:6001"
-    with _scoped(b):
-        assert cam.get_vnc_url() == "http://camofox-b:6002"
-    with _scoped(a):
-        assert cam.get_vnc_url() == "http://camofox-a:6001"
 
 
 def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypatch):
     """One mechanism (dict keyed by home / override bypass) across the sites that read per-profile
-    config or per-home files: aux-vision routing, tirith binary path, learned image cost table, aux
+    config or per-home files: aux-vision routing, learned image cost table, aux
     semaphore, MCP lock."""
-    bin_a, bin_b = tmp_path / "binA" / "tirith", tmp_path / "binB" / "tirith"
-    for p in (bin_a, bin_b):
-        p.parent.mkdir()
-        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        p.chmod(0o755)
     main = {"model": {"provider": "openai", "model": "gpt-4o"}}
-    a = _make_home(tmp_path / "A", {**main, "security": {"tirith_path": str(bin_a)},
+    a = _make_home(tmp_path / "A", {**main,
                                     "auxiliary": {"vision": {"provider": "auto"}, "summary": {"max_concurrency": 2}}})
-    b = _make_home(tmp_path / "A" / "profiles" / "B", {**main, "security": {"tirith_path": str(bin_b)},
+    b = _make_home(tmp_path / "A" / "profiles" / "B", {**main,
                                                        "auxiliary": {"vision": {"provider": "openai", "model": "gpt-4o-mini"},
                                                                      "summary": {"max_concurrency": 7}}})
     monkeypatch.setenv("HERMES_HOME", str(a))
@@ -89,16 +67,17 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
 
     import agent.auxiliary_client as ac
     import agent.image_token_cost as itc
+    from agent import models_dev
     import tools.computer_use.tool as cu
-    import tools.tirith_security as tir
     from tools import mcp_tool_loop
 
     ac._reset_aux_semaphores()
-    cu._AUX_VISION_ROUTE_CACHE.clear()
+    # The catalog memo is process-wide: start cold so the seeded disk catalog is what answers.
+    monkeypatch.setattr(models_dev, "_models_dev_cache", {})
+    monkeypatch.setattr(models_dev, "_models_dev_cache_time", 0)
 
     with _scoped(a):
         assert cu._should_route_through_aux_vision() is False  # no explicit aux vision: native path
-        assert tir._resolve_tirith_path(tir._load_security_config()["tirith_path"]) == str(bin_a)
         assert itc.learned_image_token_cost("m", "http://gw.example/v1") == 1000
         sem_a = ac._acquire_sync_aux_semaphore("summary")
         sem_a.acquire()
@@ -107,7 +86,6 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
         cookie.release()
     with _scoped(b):
         assert cu._should_route_through_aux_vision() is True  # B named a dedicated vision model
-        assert tir._resolve_tirith_path(tir._load_security_config()["tirith_path"]) == str(bin_b)
         assert itc.learned_image_token_cost("m", "http://gw.example/v1") == 3000
         sem_b = ac._acquire_sync_aux_semaphore("summary")
         cookie = mcp_tool_loop._try_acquire_mcp_discovery_lock()

@@ -36,11 +36,8 @@ def _make_runner(hermes_home=None):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
-    runner._update_prompt_pending = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._failed_platforms = {}
     # config is accessed by _check_slash_access and quick_commands lookup;
     # None makes policy_for_source return a disabled (allow-all) policy.
@@ -310,7 +307,7 @@ class TestUpdatePromptInterception:
 
         event = _make_event(text="/new", chat_id="67890")
         session_key = "agent:main:telegram:dm:67890"
-        runner._update_prompt_pending[session_key] = True
+        runner._session_state(session_key).persistent.update_prompt_pending = True
         runner._is_user_authorized = MagicMock(return_value=True)
         runner._session_key_for_source = MagicMock(return_value=session_key)
         runner._handle_reset_command = AsyncMock(return_value="reset ok")
@@ -330,7 +327,7 @@ class TestUpdatePromptInterception:
         assert not (hermes_home / ".update_prompt.json").exists()
         # Pending flag is cleared so stray future input won't be
         # re-intercepted for a prompt that is no longer outstanding.
-        assert session_key not in runner._update_prompt_pending
+        assert not runner._session_state(session_key).persistent.update_prompt_pending
 
 # ---------------------------------------------------------------------------
 # cmd_update --gateway flag
@@ -367,7 +364,7 @@ class TestCmdUpdateGatewayMode:
         monkeypatch.setattr(main, "_run_pre_update_backup", lambda args: None)
         monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
         monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: None)
-        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
+        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
         monkeypatch.setattr(update_cmd, "run_completion", lambda request: {"exit_code": 0, "receipt": None})
         gateway_prompt = MagicMock(return_value="n")
         monkeypatch.setattr(update_cmd, "_gateway_prompt", gateway_prompt)

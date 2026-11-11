@@ -12,6 +12,8 @@ from pathlib import Path
 from contextlib import suppress
 from typing import Optional
 
+from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+
 
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
@@ -63,7 +65,11 @@ def _is_under(resolved: str | Path, base: str | Path) -> bool:
 
 
 def _resolve_target(path: str) -> Optional[Path]:
-    """``Path(expanduser(path)).resolve()``, or None when resolution fails."""
+    """``Path(expanduser(path)).resolve()``, or None when resolution fails (a hosted agent's path:
+    its lexical form, see ``sandbox_lexical_path``)."""
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    if (lexical := sandbox_lexical_path(path)) is not None:
+        return Path(lexical)
     with suppress(OSError, RuntimeError):
         return Path(os.path.expanduser(str(path))).resolve()
     return None
@@ -95,8 +101,11 @@ def _guard_homes(path: str = "") -> set[str]:
 
 
 def _homes_and_resolved(path: str) -> tuple[set[str], str]:
-    """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair."""
-    return _guard_homes(path), os.path.realpath(os.path.expanduser(str(path)))
+    """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair (a hosted
+    agent's path: its lexical form, see ``sandbox_lexical_path``)."""
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    lexical = sandbox_lexical_path(path)
+    return _guard_homes(path), lexical if lexical is not None else os.path.realpath(os.path.expanduser(str(path)))
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +195,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # root: overwriting the root .env leaks credentials across every profile that
     # inherits it, and the root Anthropic PKCE store is still read by default /
     # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; both Bitwarden caches hold Secrets Manager material.
+    # token store; SECRET_CACHE_STORES hold secret values and the Photon sidecar token.
     #
     # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
     # deliberately NOT here: #45947 freed those control files on purpose
@@ -195,8 +204,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     hermes_files = (
         ".env", ".anthropic_oauth.json",
         os.path.join("auth", "google_oauth.json"),
-        os.path.join("cache", "bws_cache.json"),
-        os.path.join("cache", "bws_cache.enc.json"),
+        *SECRET_CACHE_STORES,
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
@@ -242,11 +250,13 @@ def build_write_approval_paths(home: str) -> set[str]:
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
-# browser-profile/ (copied cookies / Login Data) hold credential material.
+# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
+# browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
+# browser credential and its grants to native apps) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+_HERMES_PROTECTED_SUBPATHS = (
+    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp")
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -273,7 +283,9 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     if denial or not entry:
         return denial
     parent, leaf = split_entry(os.path.expanduser(str(path)))
-    entry_path = os.path.join(os.path.realpath(parent or "."), leaf)
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    lexical_parent = sandbox_lexical_path(parent or ".")
+    entry_path = os.path.join(lexical_parent if lexical_parent is not None else os.path.realpath(parent or "."), leaf)
     return _classify_resolved_write_denial(homes, entry_path)
 
 
@@ -342,10 +354,9 @@ _DID_SUFFIX = (
 
 # Exact-file credential stores under HERMES_HOME / <root>. The agent never
 # needs these directly — provider tools consume them through internal channels.
-# bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
 _CREDENTIAL_FILE_NAMES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
-    os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
+    os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
 )
 
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for
@@ -360,8 +371,13 @@ _READ_DENIED_DIRS = (
      "is inside the Hermes real-profile browser snapshot (copied cookies/logins) and cannot be read directly."),
     # vault.key + vault.json.enc sit side by side; key + ciphertext = plaintext, so the whole dir is one credential.
     ("vault",
-     "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
-     "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault_fill resolves them server-side)."),
+     "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault).",
+     "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault resolves them server-side)."),
+    # session-token is the Webapp's browser credential (a bare token no redaction pattern masks); the
+    # rest are its grants to native apps and its Web Access registration.
+    ("webapp",
+     "is the Hermes Webapp sign-in directory and cannot be read directly.",
+     "is a Hermes Webapp sign-in file (the browser credential or its sign-in records) and cannot be read directly."),
 )
 
 
@@ -370,7 +386,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     Blocked: internal skill-hub caches (prompt-injection carriers), credential
     stores under HERMES_HOME and the global root (exact files, plus anything
-    under ``mcp-tokens/`` and ``browser-profile/``), and project-local ``.env``
+    under ``mcp-tokens/``, ``browser-profile/``, ``vault/`` and ``webapp/``), and project-local ``.env``
     files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
     Callers that resolve relative paths against a non-process cwd (e.g.
@@ -385,7 +401,9 @@ def get_read_block_error(path: str) -> Optional[str]:
     nt_error = get_nt_namespace_error(path, verb="Read")
     if nt_error:
         return nt_error
-    resolved = Path(path).expanduser().resolve()
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    lexical = sandbox_lexical_path(path)
+    resolved = Path(lexical) if lexical is not None else Path(path).expanduser().resolve()
     hermes_dirs = _hermes_dirs()
     reason = None
     if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
@@ -423,7 +441,7 @@ def raise_if_read_blocked(path: str) -> None:
     """
     try:
         blocked = get_read_block_error(path)
-    except Exception:  # noqa: BLE001 - guard must never break local-file loading
+    except Exception:
         return
     if blocked:
         raise ValueError(blocked)

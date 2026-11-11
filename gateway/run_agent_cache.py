@@ -555,6 +555,10 @@ class GatewayAgentCacheMixin:
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if running_agent is _AGENT_PENDING_SENTINEL:
+            # No agent to interrupt yet: end the setup itself, or the turn keeps its FIFO claim (#138358).
+            from gateway.run_turn_setup_guard import cancel_preagent_setup
+            cancel_preagent_setup(self, session_key)
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.
         # Each interrupted unit still returns as a completion (status=interrupted, partial output).

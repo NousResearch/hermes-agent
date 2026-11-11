@@ -38,11 +38,15 @@ def _reload(cli, connection, cmd):
     return True
 
 
+# A route's verdict for a command that ended the CLI session (a completed /handoff): handled, and
+# ``process_command`` answers False as it does for /quit, so the running app exits.
+EXIT_SESSION = object()
+
+
 def _handoff(cli, connection, cmd):
     """``/handoff <platform>`` on the owner: ``handoff.request`` writes the pending row in the owner's
-    store and its watcher performs the transfer, polled here with main's two-phase wait
-    (``HermesCLI._handoff_wait``: 60 s to be claimed, then 15 min while the transfer runs)."""
-    import time
+    store, where its watcher claims it (this process's own store write would never be seen), and
+    main's two-phase wait (``HermesCLI._handoff_wait``) polls it through the owner."""
     from hermes_cli.cli_commands_session_tools import _command_arg, _cp, _t
     platform_name = _command_arg(cmd, lower=True)
     if not platform_name:
@@ -54,43 +58,11 @@ def _handoff(cli, connection, cmd):
     queued = connection.call("handoff.request", session_id=cli.session_id, platform=platform_name) or {}
     _cp(f"  {_t('handoff.queued', title=cli.session_id[:8], platform=platform_name, home=queued.get('home_name', ''))}",
         f"  {_t('handoff.waiting')}")
-    pending_deadline, running_deadline, next_heartbeat = time.time() + cli._HANDOFF_PENDING_TIMEOUT, None, None
-    while True:
-        record = connection.call("handoff.state", session_id=cli.session_id) or {}
-        current = record.get("state") or "pending"
-        if current == "completed":
-            _cp("", f"  {_t('handoff.complete', platform=platform_name)}",
-                f"  {_t('handoff.resume_hint', title=cli.session_id)}", "")
-            from cli import _handed_off_session_ids
-            _handed_off_session_ids.add(cli.session_id)  # the gateway owns the row now (#88234)
-            cli._should_exit = True  # same exit semantics as /quit
-            return True
-        if current == "failed":
-            _cp(f"  {_t('handoff.failed', error=record.get('error') or _t('handoff.unknown_error'))}",
-                f"  {_t('handoff.session_intact_retry')}")
-            return True
-        now = time.time()
-        if current == "running":
-            if running_deadline is None:
-                _cp(f"  {_t('handoff.picked_up')}")
-                running_deadline = now + cli._HANDOFF_RUNNING_TIMEOUT
-                next_heartbeat = now + cli._HANDOFF_HEARTBEAT_EVERY
-            elif now >= running_deadline:
-                # The watcher owns a claimed row: failing it here would split the session.
-                _cp(f"  {_t('handoff.taking_long')}", f"  {_t('handoff.check_platform', platform=platform_name)}",
-                    f"  {_t('handoff.no_longer_waiting')}", f"  {_t('handoff.retry_when_settled')}")
-                return True
-            elif now >= next_heartbeat:
-                _cp(f"  {_t('handoff.still_transferring')}")
-                next_heartbeat = now + cli._HANDOFF_HEARTBEAT_EVERY
-        elif now >= pending_deadline:
-            # Unclaimed: CAS-fail it so the user can retry (a claim racing this instant wins).
-            if (connection.call("handoff.fail", session_id=cli.session_id,
-                                error="timed out waiting for gateway") or {}).get("state") == "completed":
-                continue
-            _cp(f"  {_t('handoff.timed_out')}", f"  {_t('handoff.session_intact')}")
-            return True
-        time.sleep(0.5)
+    kept = cli._handoff_wait(
+        platform_name, cli.session_id,
+        read_state=lambda: connection.call("handoff.state", session_id=cli.session_id),
+        fail_pending=lambda reason: connection.call("handoff.fail", session_id=cli.session_id, error=reason))
+    return True if kept else EXIT_SESSION
 
 
 _ROUTES = {"diff": _diff, "reload": _reload, "handoff": _handoff}
@@ -99,7 +71,8 @@ REFUSED = frozenset()
 
 
 def run(cli, canonical, cmd):
-    """True when the gateway answered the command (the local handler must not run)."""
+    """Truthy when the gateway answered the command (the local handler must not run); ``EXIT_SESSION``
+    when that answer ended the CLI session."""
     route = _ROUTES.get(canonical)
     if route is None:
         return False

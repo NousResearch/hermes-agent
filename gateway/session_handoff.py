@@ -25,22 +25,21 @@ def _session(connection, ref, params, fields, capability):
 
 
 def _destination(platform_name):
-    """The home channel the watcher will deliver to, validated up front: an unconfigured platform or
-    a missing home channel would otherwise sit ``pending`` until the client gives up."""
-    from gateway.config import Platform, load_gateway_config
+    """The home channel the watcher will deliver to, by the CLI's own rule (relay-fronted platforms
+    included): an unconfigured platform or a missing home channel would otherwise sit ``pending``
+    until the client gives up."""
+    from gateway.handoff_target import HandoffTargetError, resolve_handoff_home
     try:
-        platform = Platform(platform_name)
-    except ValueError:
-        raise RuntimeStoreError('invalid_params', field='platform', detail=f"unknown platform '{platform_name}'")
-    config = load_gateway_config()
-    if not getattr(config.platforms.get(platform), 'enabled', False):
-        raise RuntimeStoreError('invalid_params', field='platform',
-                                detail=f"platform '{platform_name}' is not configured/enabled in the gateway")
-    home = config.get_home_channel(platform)
-    if not home or not home.chat_id:
-        raise RuntimeStoreError('invalid_params', field='platform', detail=(
-            f'no home channel configured for {platform_name}; set one with /sethome on the destination chat first'))
-    return home
+        return resolve_handoff_home(platform_name)
+    except HandoffTargetError as exc:
+        raise RuntimeStoreError('invalid_params', field='platform', detail=_REFUSALS[exc.reason].format(
+            platform=platform_name)) from None
+
+
+_REFUSALS = {'unknown_platform': "unknown platform '{platform}'",
+             'platform_not_enabled': "platform '{platform}' is not configured/enabled in the gateway",
+             'no_home_channel': 'no home channel configured for {platform}; set one with /sethome on the '
+                                'destination chat first'}
 
 
 async def request(connection, ref, params):

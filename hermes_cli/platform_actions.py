@@ -72,17 +72,28 @@ def _optional_text(**values: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _optional_size(**values: Any) -> Optional[dict[str, Any]]:
+    """``invalid_argument`` for a widget dimension that is given but is not a positive integer of pixels."""
+    for name, value in values.items():
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+            return _err("invalid_argument", f"{name} must be a positive integer when given")
+    return None
+
+
 # -- Telegram HTML widgets (Bot API 10.4): the adapter does the Bot API calls -------------------------
 
 
 async def _telegram_send_widget(
-        adapter, chat_id, html, chat_data, public_data, caption, allow_queries, disable_notification, thread_id):
-    error = _optional_text(chat_data=chat_data, public_data=public_data, caption=caption, thread_id=thread_id)
+        adapter, chat_id, html, chat_data, public_data, caption, allow_queries, disable_notification, thread_id,
+        width, height):
+    error = (_optional_text(chat_data=chat_data, public_data=public_data, caption=caption, thread_id=thread_id)
+             or _optional_size(width=width, height=height))
     if error is not None:
         return error
     sent = await adapter.send_widget(
         chat_id, html, chat_data=chat_data, public_data=public_data, caption=caption,
-        allow_queries=bool(allow_queries), disable_notification=bool(disable_notification), thread_id=thread_id)
+        allow_queries=bool(allow_queries), disable_notification=bool(disable_notification), thread_id=thread_id,
+        width=width, height=height)
     message_id = sent.get("message_id") if isinstance(sent, dict) else None
     if message_id is None:
         return _err("action_failed", "telegram sendWidget returned no message id")
@@ -243,15 +254,19 @@ class PlatformActions:
     async def send_widget(
             self, platform: str, chat_id: str, html: str, *, chat_data: Optional[str] = None,
             public_data: Optional[str] = None, caption: Optional[str] = None, allow_queries: bool = True,
-            disable_notification: bool = False, thread_id: Optional[str] = None) -> dict[str, Any]:
+            disable_notification: bool = False, thread_id: Optional[str] = None, width: Optional[int] = None,
+            height: Optional[int] = None) -> dict[str, Any]:
         """Send a message with an HTML widget; ``message_id`` in the result addresses later data edits.
 
         The HTML is fixed once sent; ``chat_data`` and ``public_data`` (up to 1024 bytes each) are what
         ``edit_widget_data`` rewrites. With ``allow_queries`` a tap in the widget reaches the plugin as a
-        ``widget_query`` platform event. Telegram currently delivers widgets to private chats only."""
+        ``widget_query`` platform event. ``width`` / ``height`` fix the widget's size in logical pixels
+        (Telegram clamps the width to 200 up to the bubble's width and the height to 50-600); omitted, the
+        widget fills the bubble's width and follows its content's height. Telegram currently delivers widgets
+        to private chats only."""
         return await self._run(
             "send_widget", platform, chat_id, html, chat_data, public_data, caption, allow_queries,
-            disable_notification, thread_id, chat_id=chat_id, html=html,
+            disable_notification, thread_id, width, height, chat_id=chat_id, html=html,
         )
 
     async def edit_widget_data(

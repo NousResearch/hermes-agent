@@ -2744,13 +2744,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def send_widget(
         self, chat_id: str, html: str, *, chat_data: Optional[str] = None, public_data: Optional[str] = None,
         caption: Optional[str] = None, allow_queries: bool = True, disable_notification: bool = False,
-        thread_id: Optional[str] = None) -> dict[str, Any]:
+        thread_id: Optional[str] = None, width: Optional[int] = None,
+        height: Optional[int] = None) -> dict[str, Any]:
         """``sendWidget``: the raw message dict Telegram returns (its ``message_id`` addresses later edits). The
         topic Telegram reports for the message is remembered, so a tap on the widget names it again."""
         sent = await telegram_widgets.send_widget(
             self._bot, normalize_telegram_chat_id(chat_id), html, chat_data=chat_data, public_data=public_data,
             caption=caption, allow_queries=allow_queries, disable_notification=disable_notification,
-            thread_id=thread_id)
+            thread_id=thread_id, width=width, height=height)
         self._widget_threads.remember(sent)
         return sent
 

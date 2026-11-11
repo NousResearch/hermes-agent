@@ -696,7 +696,10 @@ the plugin id, verb, platform, and outcome.
 Telegram HTML widgets (Bot API 10.4) have three verbs of their own, Telegram
 only (other platforms answer `unsupported_platform_action`). `send_widget` sends
 a message with a widget and returns its `message_id`; the HTML is fixed once
-sent. `edit_widget_data` rewrites the widget's `chat_data` / `public_data`
+sent; optional `width` / `height` fix its size in logical pixels (Telegram
+clamps the width to 200 up to the bubble's width and the height to 50-600),
+and without them it fills the bubble and follows its content's height.
+`edit_widget_data` rewrites the widget's `chat_data` / `public_data`
 packets (up to 1024 bytes each) without touching the HTML: an omitted packet
 stays, an empty string removes it, and `modified` is `False` when Telegram
 already had the same data. A tap in the widget reaches the plugin as the

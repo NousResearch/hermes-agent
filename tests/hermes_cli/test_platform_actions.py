@@ -279,7 +279,27 @@ class TestTelegramWidgetVerbs:
         assert result == {"ok": True, "action": "send_widget", "message_id": "501"}
         adapter.send_widget.assert_awaited_once_with(
             "88", "<b>hi</b>", chat_data='{"n":1}', public_data=None, caption="Dashboard",
-            allow_queries=True, disable_notification=True, thread_id=None)
+            allow_queries=True, disable_notification=True, thread_id=None, width=None, height=None)
+
+    def test_send_widget_passes_the_widget_size(self):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.send_widget("telegram", "88", "<b>hi</b>", width=320, height=240))
+        assert result["ok"] is True
+        assert adapter.send_widget.await_args.kwargs == {
+            "chat_data": None, "public_data": None, "caption": None, "allow_queries": True,
+            "disable_notification": False, "thread_id": None, "width": 320, "height": 240}
+
+    @pytest.mark.parametrize("size", [{"width": 0}, {"height": -1}, {"width": "320"}, {"height": 2.5},
+                                      {"width": True}])
+    def test_the_widget_size_must_be_a_positive_integer(self, size):
+        actions = PlatformActions("p")
+        adapter = _telegram_adapter()
+        with _grant(True), _runner_with({Platform.TELEGRAM: adapter}):
+            result = asyncio.run(actions.send_widget("telegram", "88", "<b>hi</b>", **size))
+        assert result["error"] == "invalid_argument"
+        adapter.send_widget.assert_not_awaited()
 
     def test_send_widget_without_a_message_back_is_action_failed(self):
         actions = PlatformActions("p")

@@ -21,21 +21,21 @@ from gateway import lifecycle_ledger, status
 pytestmark = pytest.mark.platforms("linux")
 
 _HOLD = textwrap.dedent("""
-    import json, os, sys, time
+    import json, os, sys
     sys.path.insert(0, sys.argv[1])
     from gateway import lifecycle_ledger, status
     status._looks_like_gateway_process = lambda pid: True
     ok, _ = status.acquire_scoped_lock("telegram-bot-token", "123:fixture")
     lifecycle_ledger.record_startup(defer_integrity_check=True)
     print(json.dumps({"ok": ok, "pid": os.getpid()}), flush=True)
-    time.sleep(60)
+    sys.stdin.read()  # hold the lock until the test closes our stdin
 """)
 
 
 def _unshare_works():
     if shutil.which("unshare") is None:
         return False
-    probe = subprocess.run(["unshare", "--user", "--map-root-user", "--pid", "--fork", "true"],
+    probe = subprocess.run(["unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "true"],
                            capture_output=True, timeout=10, check=False)
     return probe.returncode == 0
 
@@ -52,7 +52,7 @@ def namespaced_holder(tmp_path, monkeypatch):
     proc = subprocess.Popen(
         ["unshare", "--user", "--map-root-user", "--pid", "--fork", "--mount-proc",
          sys.executable, "-c", _HOLD, str(root)],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         line = proc.stdout.readline()
         assert line, proc.stderr.read()
@@ -62,8 +62,12 @@ def namespaced_holder(tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
         yield held, home, locks
     finally:
-        proc.kill()
-        proc.wait(timeout=10)
+        proc.stdin.close()  # the holder exits on EOF; the namespace goes with its init
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
 
 
 def test_a_live_owner_in_another_pid_namespace_keeps_the_token_lock(namespaced_holder, monkeypatch):

@@ -4,10 +4,7 @@ repo: https://github.com/JustinPerea/Hermes-arena
 sha: "8c7ba632f82fb9ea945eede6b548981ad552d147"
 subdir: hermes-plugin
 version: "1.0.0"
-description: >-
-  A pixel-art platform fighter that runs inside Hermes Desktop. Four fighters, two stages, and
-  three ways to play: against a CPU, with a second player on the same keyboard, or online
-  through Find a match or a room code. Online play connects the two computers directly.
+description: "A pixel-art platform fighter that runs inside Hermes Desktop. Four fighters, two stages, and three ways to play: against a CPU, with a second player on the same keyboard, or online through Find a match or a room code. Online play connects the two computers directly. Disclosure — online play connects to the public PeerJS signaling server (wss://0.peerjs.com) and Google's STUN server (stun.l.google.com), then opens a direct WebRTC connection that shows your IP address to the other player; the game page loads Google Fonts (fonts.googleapis.com) into the Desktop window each time it opens. No chats, Hermes data or credentials are sent."
 maintainer: JustinPerea
 tier: community
 category: desktop

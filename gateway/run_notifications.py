@@ -301,9 +301,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if image_paths or url_images:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    images, captioned = caption_with_footer(adapter, [*images, *url_images], footer_line)
+                    images, _ = caption_with_footer(adapter, [*images, *url_images], footer_line)
                     result = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
-                    captioned = captioned and caption_landed(result, images[-1][0])
+                    captioned = caption_landed(result, images)  # only once the send confirmed it
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:

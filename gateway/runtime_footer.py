@@ -140,30 +140,48 @@ class FooteredReply(str):
         return instance
 
 
+class _FooterCaption(str):
+    """A photo caption that carries the runtime footer (``caption_with_footer``)."""
+    runtime_footer: str
+
+
 def caption_with_footer(adapter: Any, images: list, footer: str) -> tuple[list, bool]:
     """``(images, True)`` with ``footer`` on the last ``(url, alt)`` photo's caption when the
-    adapter declares ``media_caption_limit`` and the caption fits it (UTF-16 units)."""
+    adapter declares ``media_caption_limit`` and the caption fits it (UTF-16 units). Never on an
+    animation: a GIF goes out on its own path, whose failure the batch result does not list."""
     limit = int(getattr(adapter, "media_caption_limit", 0) or 0)
-    if not footer or not images or limit <= 0:
+    target = next((i for i in range(len(images) - 1, -1, -1)
+                   if not adapter._is_animation_url(images[i][0])), None) if footer and limit > 0 else None
+    if target is None:
         return images, False
-    url, alt = images[-1]
-    caption = f"{alt}\n\n{footer}" if alt else footer
+    url, alt = images[target]
+    caption = _FooterCaption(f"{alt}\n\n{footer}" if alt else footer)
     if len(caption.encode("utf-16-le")) // 2 > limit:
         return images, False
-    return [*images[:-1], (url, caption)], True
+    caption.runtime_footer = footer
+    return [*images[:target], (url, caption), *images[target + 1:]], True
 
 
-def caption_landed(result: Any, last_url: str) -> bool:
-    """The batch delivered its LAST photo (the one the footer rode): ``success`` means at least one
-    photo landed, so a last photo listed in ``raw_response["failed"]`` (``(path_or_url, error)``)
-    took the footer with it."""
-    if not getattr(result, "success", False):
+def caption_landed(result: Any, images: list) -> bool:
+    """The photo whose caption carries the footer was delivered: ``success`` means at least one
+    photo landed, so that photo listed in ``raw_response["failed"]`` (``(path_or_url, error)``)
+    took the footer with it. False when no caption carries it."""
+    url = next((u for u, alt in images if getattr(alt, "runtime_footer", "")), None)
+    if url is None or not getattr(result, "success", False):
         return False
-    failed = (getattr(result, "raw_response", None) or {}).get("failed") if isinstance(
-        getattr(result, "raw_response", None), dict) else None
+    raw = getattr(result, "raw_response", None)
     from urllib.parse import unquote
-    lost = {str(item[0]) for item in failed or () if item}
-    return last_url not in lost and unquote(last_url.removeprefix("file://")) not in lost
+    lost = {str(item[0]) for item in (raw.get("failed") if isinstance(raw, dict) else None) or () if item}
+    return url not in lost and unquote(url.removeprefix("file://")) not in lost
+
+
+async def send_footer_unless_captioned(adapter: Any, chat_id: str, images: list, result: Any,
+                                       metadata: Any, record_delivery: Any) -> None:
+    """Non-streamed send path: the footer a photo caption carried, sent as its own message (as
+    before #74547) when that photo did not land."""
+    footer = next((alt.runtime_footer for _u, alt in images if getattr(alt, "runtime_footer", "")), "")
+    if footer and not caption_landed(result, images):
+        record_delivery(await adapter._send_with_retry(chat_id=chat_id, content=footer, metadata=metadata))
 
 
 def footer_onto_photo_caption(adapter: Any, extracted: Any, image_exts: Iterable[str]) -> Any:

@@ -25,6 +25,7 @@ from hermes_dir_acl import make_user_dir
 from agent.image_eviction_policy import image_dimensions_from_bytes
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
 from tools.computer_use.tool_clipboard import _do_clipboard_read, _do_clipboard_write, _summarize_clipboard_write
+from tools.computer_use.tool_zoom_menu import _do_invoke_menu, _do_zoom
 
 logger = logging.getLogger(__name__)
 
@@ -450,25 +451,6 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
     fence()
     return _capture_response(cap, session_id=session_id)
 
-def _do_zoom(backend, action, args, fence=lambda: None, **_):
-    region = args.get("region")
-    if not (isinstance(region, list) and len(region) == 4 and all(isinstance(v, (int, float)) for v in region)
-            and region[0] < region[2] and region[1] < region[3]):
-        return json.dumps({"error": "zoom requires `region` = [x1, y1, x2, y2] in capture pixels with x1<x2, y1<y2"})
-    cap = backend.zoom(tuple(region))
-    fence()
-    # No session_id: a zoom crop must never be deduped against (or replace) the full capture's frame.
-    return _capture_response(cap)
-
-def _do_invoke_menu(backend, action, args, **_):
-    path = args.get("menu_path")
-    if not (isinstance(path, list) and path and all(isinstance(s, str) and s.strip() for s in path)):
-        return json.dumps({"error": "invoke_menu requires `menu_path`, e.g. [\"File\", \"Export\", \"PDF…\"]"})
-    res = backend.invoke_menu([s.strip() for s in path])
-    # Flat payload, no escalate verdict: the driver resolves the path through accessibility only, and the pixel
-    # rungs that verdict recommends are exactly the fallback a refused menu path must not take.
-    return json.dumps({"ok": res.ok, "action": res.action, **_present(message=res.message, code=res.code)})
-
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
 
@@ -539,7 +521,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
     # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
-    if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
+    if ((spec.input or action == "invoke_menu") and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
             and (mismatch := _input_target_mismatch(backend, requested_app)) is not None):
         return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
             f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "

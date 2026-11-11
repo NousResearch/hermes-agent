@@ -50,3 +50,28 @@ def test_refused_menu_path_surfaces_its_code_without_a_pixel_escalation_verdict(
     out = json.loads(_dispatch(backend, "invoke_menu", {"menu_path": ["File", "Nope"]}))
     assert out["code"] == "menu_path_unavailable" and out["ok"] is False and "verdict" not in out
     assert backend._session.calls[-1][1]["path"] == ["File", "Nope"]
+
+
+def test_invoke_menu_goes_through_approval_and_the_app_guard(monkeypatch):
+    # Public handler: with nobody to ask the menu command is BLOCKED before the backend; a mismatched app= is
+    # refused instead of running File > Close in whatever window was captured last.
+    from tools import approval
+    from tools.computer_use import tool as cu_tool
+
+    for name in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: None)
+    backend = _Backend({"isError": False, "data": "ok", "structuredContent": {}})
+    backend.start = backend.stop = lambda: None
+    backend.is_available = lambda: True
+    cu_tool.reset_backend_for_tests()
+    cu_tool._backend = backend
+    out = json.loads(cu_tool.handle_computer_use({"action": "invoke_menu", "menu_path": ["File", "Close"]}))
+    assert out["error"].startswith("BLOCKED") and backend._session.calls == [], out
+
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", True)
+    out = json.loads(cu_tool.handle_computer_use({"action": "invoke_menu", "menu_path": ["File", "Close"], "app": "Other"}))
+    assert out["code"] == "input_target_mismatch" and backend._session.calls == []
+    out = json.loads(cu_tool.handle_computer_use({"action": "invoke_menu", "menu_path": ["File", "Close"], "app": "App"}))
+    assert out["ok"] is True and backend._session.calls[-1][0] == "invoke_menu"

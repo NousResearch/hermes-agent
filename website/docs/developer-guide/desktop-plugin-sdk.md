@@ -1468,6 +1468,7 @@ host.layout.closePane(paneId)              // chat panes only; like the tab's �
 host.layout.arrangeSessions(spec)          // re-tile every chat zone at once; sidebar and rails stay put → boolean
 host.layout.newChatTile({ pane?, pos? })   // fresh chat as a new tile (default right of main) → boolean
 host.layout.redirectNewSessionTab(fn)      // take over a chat strip's "+": fn(chatPane) → true if handled → disposer
+host.layout.redirectNewSession(fn)         // take over ⌘N / Ctrl+N: fn() → true if handled → disposer
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state
@@ -1698,6 +1699,12 @@ ctx.onDispose(host.layout.redirectNewSessionTab(pane => host.layout.newChatTile(
 
 Return `false` (or throw) and the stock new tab opens. Only one handler is
 active, the most recent; ⌘T and the "+" of other tab kinds are unaffected.
+
+`host.layout.redirectNewSession(fn)` does the same for the new-session shortcut
+(⌘N / Ctrl+N, keybind `session.new`), which otherwise starts a fresh session in
+the focused chat and so replaces that tile. `fn` takes no arguments; return
+`true` once handled, `false` (or throw) for the stock behaviour. One handler,
+the latest wins; returns a disposer.
 
 To make a plugin's shortcuts editable on its own settings page, render
 `KeybindEditor` for each `KEYBINDS_AREA` action id. It shows the same row as

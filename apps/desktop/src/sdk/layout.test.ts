@@ -184,4 +184,26 @@ describe('host.state.sessionLayout / host.layout', () => {
     })
     expect(store.$newSessionTabRedirect.get()!('session-tile:a')).toBe(false)
   })
+
+  it('redirectNewSession: one handler, latest wins, throws and false fall through, disposer clears only its own', async () => {
+    const { host, store } = await setup()
+    const seen: string[] = []
+
+    const off1 = host.layout.redirectNewSession(() => (seen.push('1'), true))
+    const off2 = host.layout.redirectNewSession(() => (seen.push('2'), false))
+    const run = store.$newSessionRedirect.get()!
+
+    expect(run()).toBe(false)
+    expect(seen).toEqual(['2'])
+
+    off1()
+    expect(store.$newSessionRedirect.get()).toBe(run)
+    off2()
+    expect(store.$newSessionRedirect.get()).toBeNull()
+
+    host.layout.redirectNewSession(() => {
+      throw new Error('boom')
+    })
+    expect(store.$newSessionRedirect.get()!()).toBe(false)
+  })
 })

@@ -17,6 +17,7 @@ import type { ChatArrangement, LayoutNode, Orientation } from '@/components/pane
 import {
   $activeTreeGroup,
   $layoutTree,
+  $newSessionRedirect,
   $newSessionTabRedirect,
   $newSessionTileAction,
   arrangeTreeChat,
@@ -170,6 +171,33 @@ export const layoutHost = {
     return () => {
       if ($newSessionTabRedirect.get() === own) {
         $newSessionTabRedirect.set(null)
+      }
+    }
+  },
+
+  /** Take over the new-session shortcut (⌘N / Ctrl+N, keybind `session.new`).
+   *  Stock, it starts a fresh session in the focused chat, replacing what that
+   *  tile shows. `handler` returns true when it handled the press (e.g. opened
+   *  a new tile), false to keep the stock behaviour. One handler at a time, the
+   *  latest wins; a throw falls through. Returns a disposer; call it on unload. */
+  redirectNewSession: (handler: () => boolean): (() => void) => {
+    if (typeof handler !== 'function') {
+      return () => {}
+    }
+
+    const own = (): boolean => {
+      try {
+        return handler() === true
+      } catch {
+        return false
+      }
+    }
+
+    $newSessionRedirect.set(own)
+
+    return () => {
+      if ($newSessionRedirect.get() === own) {
+        $newSessionRedirect.set(null)
       }
     }
   }

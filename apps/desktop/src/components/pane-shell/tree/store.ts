@@ -820,6 +820,12 @@ export const $newSessionTabAction = atom<(() => void) | null>(null)
  *  false falls through to `$newSessionTabAction`. Null when nobody redirects. */
 export const $newSessionTabRedirect = atom<((anchorPane: string) => boolean) | null>(null)
 
+/** A plugin's takeover of the new-session shortcut (⌘N / Ctrl+N, keybind
+ *  `session.new`) via `host.layout.redirectNewSession`: returning true means it
+ *  handled the press, false falls through to the stock fresh session (which
+ *  replaces the focused chat). Null when nobody redirects. */
+export const $newSessionRedirect = atom<(() => boolean) | null>(null)
+
 /** Where a new chat tile lands: an edge (or the center, as a tab) of a pane. */
 export interface NewSessionTilePlacement {
   pane: string

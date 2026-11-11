@@ -1,0 +1,30 @@
+name: hermes-handle-it
+repo: https://github.com/casualsav/hermes-handle-it
+sha: 08b78ef44eda747674699a582c0c3c3ca8bbe3d0
+description: "Handle It: your agent sits in the customer support chat so you don't have to. Hermes holds a company's live customer-support
+  chat for you in its own browser, negotiates toward your goal for as long as it takes, and asks
+  you before it agrees to an offer, pays, cancels or shares a detail you did not allow. Ends with
+  the outcome and a saved transcript. Disclosure: opens the support pages you name in a local
+  Chromium (Playwright) with its own profile under $HERMES_HOME/hermes-handle-it, types messages
+  into them on your behalf, reads a password from Hermes's vault only for a login handle it is given
+  and types it only on that login's own origin, and saves transcripts and screenshots there; no other network calls,
+  no telemetry, no stored credentials."
+maintainer: casualsav
+tier: community
+category: automation
+title: Handle It
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/casualsav/hermes-handle-it
+version: "0.1.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - support_chat_start
+    - support_chat_send
+    - support_chat_wait
+    - support_chat_end
+  provides_hooks:
+    - pre_tool_call
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

@@ -16,6 +16,8 @@ import pytest
 from hermes_cli.gateway_agent import GatewayAgent
 from hermes_cli.gateway_session_store import GatewaySessionStore
 
+pytestmark = pytest.mark.platforms("posix")  # SIGHUP exists only on POSIX hosts
+
 
 @pytest.fixture
 def cli_mod():
@@ -26,7 +28,8 @@ def cli_mod():
     cli_mod._cleanup_done = False
 
 
-def _hang_up(cli_mod, cli, signum):
+def _hang_up(cli_mod, cli, signame):
+    signum = getattr(signal, signame)
     with patch.object(cli_mod, "_arm_exit_watchdog_on_shutdown_signal"), \
             patch.object(cli_mod, "_interrupt_agent_for_signal") as interrupt, \
             pytest.raises(KeyboardInterrupt):  # no prompt_toolkit app in a test: the fallback unwind
@@ -37,14 +40,14 @@ def _hang_up(cli_mod, cli, signum):
     return interrupt
 
 
-@pytest.mark.parametrize("signum", [signal.SIGHUP, signal.SIGTERM])
+@pytest.mark.parametrize("signame", ["SIGHUP", "SIGTERM"])
 @patch("hermes_cli.lifecycle.invoke_hook")
-def test_hangup_mid_turn_leaves_the_gateway_session_running(_hook, cli_mod, signum):
+def test_hangup_mid_turn_leaves_the_gateway_session_running(_hook, cli_mod, signame):
     cli = cli_mod.HermesCLI()
     cli._session_db = MagicMock(spec=GatewaySessionStore)
     cli.agent = GatewayAgent(connection=MagicMock(), session_id="gw-session")
     cli._agent_running = True
-    interrupt = _hang_up(cli_mod, cli, signum)
+    interrupt = _hang_up(cli_mod, cli, signame)
     interrupt.assert_not_called()
     assert "session.interrupt" not in [c.args[0] for c in cli.agent.connection.call.call_args_list]
     cli._session_db.end_session.assert_not_called()
@@ -56,7 +59,7 @@ def test_hangup_at_an_idle_prompt_does_not_close_the_gateway_session(_hook, cli_
     cli._session_db = MagicMock(spec=GatewaySessionStore)
     cli.agent = GatewayAgent(connection=MagicMock(), session_id="gw-session")
     cli._agent_running = False
-    _hang_up(cli_mod, cli, signal.SIGHUP)
+    _hang_up(cli_mod, cli, "SIGHUP")
     cli._session_db.end_session.assert_not_called()
     cli._session_db.delete_session.assert_not_called()
 
@@ -69,6 +72,6 @@ def test_hangup_in_cli_local_mode_still_interrupts_and_ends_the_session(_hook, c
     cli.agent = MagicMock(session_id="local-session")
     cli._agent_running = True
     with patch("hermes_cli.cli_tui_runtime_mixin.request_hard_interrupt"):
-        interrupt = _hang_up(cli_mod, cli, signal.SIGHUP)
+        interrupt = _hang_up(cli_mod, cli, "SIGHUP")
     interrupt.assert_called_once_with(cli.agent, signal.SIGHUP)
     cli._session_db.end_session.assert_called_once_with("local-session", "cli_close")

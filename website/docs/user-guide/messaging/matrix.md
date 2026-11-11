@@ -423,6 +423,28 @@ Reaction controls use:
 
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
 
+### Reaction Answers (`reaction_triggers`)
+
+By default a reaction on one of the bot's messages does nothing unless it answers an approval or picker prompt. Set `matrix.reaction_triggers` to let a 👍/👎 answer the bot's last question without typing a reply:
+
+```yaml
+matrix:
+  # Opt-in. false/absent (default) = reactions only operate approval/picker prompts.
+  # true = 👍 and 👎 on the bot's OWN messages reach the agent.
+  reaction_triggers: true
+  # Or name the emoji yourself:
+  # reaction_triggers: ["👍", "👎", "✅"]
+```
+
+Environment equivalent: `MATRIX_REACTION_TRIGGERS` (`true` or a comma-separated list of emoji).
+
+- The reaction arrives as an agent turn with text `reaction:added:👍` (the same convention as Slack's reaction triggers), as a reply to the reacted-to message: the agent sees `[Replying to your previous message: "..."]` and knows which question was answered. It joins that message's thread; an unthreaded message becomes the thread root when a reply there would be threaded anyway.
+- Only reactions on messages the bot itself sent count; the sender is read from the homeserver (decrypted when encrypted). Reactions on other people's messages and removed reactions do nothing.
+- The reactor must pass the same gates as a typed message: `allowed_users` (live authorization), `allowed_rooms`, bridge and `ignore_user_patterns` senders, and the startup-sync replay filter. The bot's own reactions (including the 👀/✅/❌ lifecycle reactions) never feed back, and no lifecycle reactions are put on a reaction answer. If you list ✅ or ❌ in a room shared with another bot that is on `allowed_users`, that bot's processing reactions on this bot's messages count as answers too.
+- A reaction key is free text, so only short listed emoji route; variation selectors and skin tones are ignored when matching (👍🏽 counts as 👍).
+- A reaction is an answer, not a question: the agent may act on it and stay silent (a bare silence token is not replaced by the "no reply" notice).
+- Approval and model/choice picker prompts keep priority: a reaction on a pending prompt operates the prompt, never both.
+
 ### Media Limits
 
 Hermes uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.

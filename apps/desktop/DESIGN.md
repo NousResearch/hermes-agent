@@ -81,13 +81,15 @@ Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
 
-The crowded-agent screenshots supersede the older boxed-machine sidebar
-(`147:7470`). Each machine has a plain heading with a leading connection dot
-and real connection context/status. A 2px green guide contains separate agent
-cards: 54px rows, 32px rounded antenna-outline avatars, a subtle agent-color
-fill, and a persistent vertical action ellipsis. The selected owner gets a
-15% brand-blue fill. Names and descriptions use actual owner metadata; never
-invent team names, sharing counts, or connection state.
+Each expanded machine groups its heading, agents, and sessions in one rounded
+6px container. Keep the body subtle (3% neutral fill) and the selected machine
+heading brighter (4% neutral fill); the heading's lower corners join the body
+and round again when collapsed. Do not replace this boundary with a vertical
+connection-colored guide. The crowded-agent cards remain inside that container:
+54px rows, 32px rounded antenna-outline avatars, a subtle agent-color fill, and
+a persistent vertical action ellipsis. The selected owner gets a 15% brand-blue
+fill. Names, descriptions, and connection status use actual owner metadata;
+never invent team names, sharing counts, or connection state.
 
 The agent name/avatar opens that owner's canonical chat without a redundant
 child row. Its menu offers **New chat with this agent**, **Open agent**, and

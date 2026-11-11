@@ -1,13 +1,15 @@
 name: aegis-spend-guard
 repo: https://github.com/georgeonweb3/hermes-aegis-spend-guard
-sha: 1d7ada31dbab899c2d0d7c8dd0cdb1bb81825c47
+sha: 766bf7c85d7b1d315ad357907f61ca2d20f6b45d
 title: Aegis Spend Guard
 description: >-
   Owner-set spend policy for Hermes Agent, enforced in a pre_tool_call hook before any
   spend executes. The owner configures a per-transaction cap, a daily limit, recipient
   allow/blocklists, a spend-tool scope and a warn zone (default 80% of a limit). Every
   tool call that spends money — an explicit amount in its arguments, a fixed per-call
-  price from the owner's paid_tools map, or a spend-shaped tool with no readable price —
+  price from the owner's paid_tools map, a spend-shaped tool with no readable price, or
+  a spend written into command/script text the agent is about to run (a money literal
+  alongside a payment verb; on by default, the owner can turn the script gate off) —
   is evaluated by a worst-wins policy engine (BLOCK > WARN > ALLOW across frozen, amount,
   blocklist, per-transaction cap, daily limit, allowlist and tool-scope checks, the same
   semantics as the author's Aegis spend-control contract on Base and the tgp-guard
@@ -27,7 +29,7 @@ tier: community
 category: tools
 docs_url: https://github.com/georgeonweb3/hermes-aegis-spend-guard#readme
 requires_hermes: ">=0.23.0"
-version: "1.1.0"
+version: "1.1.1"
 platforms: []
 capabilities:
   provides_tools:

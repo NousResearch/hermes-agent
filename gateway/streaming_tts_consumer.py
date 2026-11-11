@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import logging
 import queue
 import threading
@@ -26,6 +27,13 @@ _DONE = object()
 
 class _HandleDeclined(Exception):
     """The adapter declined ``begin_streaming_tts`` when the first PCM chunk arrived."""
+
+
+class _Outcome(enum.Enum):
+    """What the drain task delivered, written once by ``_settle``."""
+    NONE = enum.auto()  # unsettled, or nothing was audible
+    COMPLETED = enum.auto()  # every clause played
+    PARTIAL = enum.auto()  # audio was audible, then a failure or a dropped clause
 
 
 class StreamingTTSConsumer:
@@ -46,8 +54,8 @@ class StreamingTTSConsumer:
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=256)
         self._handle: Optional[StreamingTTSHandle] = None
         self._task: Optional[asyncio.Task] = None  # drain task, created once by start()
-        self._completed = self._partial = self._aborted = False
-        self._finished = self._dropped = self._suppress_whole_file = False
+        self._outcome = _Outcome.NONE
+        self._aborted = self._finished = self._dropped = False
         self._lock, self._strip_markdown = threading.Lock(), None  # stripper lazily imported
 
     def _streamer_format(self) -> AudioFormat:
@@ -55,11 +63,12 @@ class StreamingTTSConsumer:
                               for f in ("sample_rate", "channels", "sample_width")})
 
     active = property(lambda self: self._streamer is not None)  # usable streaming provider
-    completed = property(lambda self: self._completed)  # streaming audio fully delivered
-    partial = property(lambda self: self._partial)  # some audio audible before a failure/drop
+    completed = property(lambda self: self._outcome is _Outcome.COMPLETED)
+    partial = property(lambda self: self._outcome is _Outcome.PARTIAL)
     audible = property(lambda self: bool(self._handle and self._handle.audible))  # PCM written
     dropped = property(lambda self: self._dropped)  # queue saturation dropped >= 1 clause
-    suppress_whole_file = property(lambda self: self._suppress_whole_file)  # skip whole-file TTS
+    # Once audio was audible, whole-file TTS would replay the response from its beginning.
+    suppress_whole_file = audible
     done = property(lambda self: self._task is not None and self._task.done())  # drain task ended
 
     def _enqueue_clauses(self, clauses, full_msg: str, *, log_errors: bool) -> None:
@@ -115,12 +124,10 @@ class StreamingTTSConsumer:
         return self._task
 
     def _settle(self, *, failed: bool) -> None:
-        """Set outcome flags from what was audible: never report completion after a failure or a
-        dropped clause; keep suppression whenever audio was audible (no replay from the start)."""
-        audible, degraded = bool(self._handle and self._handle.audible), failed or self._dropped
-        self._completed = audible and not degraded
-        self._partial = self._partial or (audible and degraded)
-        self._suppress_whole_file = audible
+        """Record the outcome from what was audible: never report completion after a failure or a
+        dropped clause."""
+        if self.audible:
+            self._outcome = _Outcome.PARTIAL if failed or self._dropped else _Outcome.COMPLETED
 
     async def _open_handle(self) -> bool:
         """Open the adapter's streaming-audio handle at the streamer's now-final format; False when
@@ -142,7 +149,6 @@ class StreamingTTSConsumer:
         if not self.active or not self._adapter.supports_streaming_tts(self._chat_id, self._audio_format):
             logger.debug("adapter %s does not support streaming TTS", getattr(self._adapter, "name", "?"))
             return
-        self._suppress_whole_file = False
         try:
             while not self._aborted:
                 try:
@@ -202,10 +208,8 @@ class StreamingTTSConsumer:
                 continue
             if self._handle is None and not await self._open_handle():
                 raise _HandleDeclined()
-            was_audible = self._handle.audible
             await self._adapter.write_streaming_tts(self._handle, chunk)
-            if not was_audible:
-                self._handle.audible = self._suppress_whole_file = True
+            self._handle.audible = True
 
     async def _safe_abort(self, reason: str) -> None:
         """Abort the adapter stream, swallowing errors (idempotent)."""
@@ -236,4 +240,4 @@ class StreamingTTSConsumer:
         if self._task is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
-        return self._completed
+        return self.completed

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.platforms.base import AudioFormat, StreamingTTSHandle
-from gateway.streaming_tts_consumer import StreamingTTSConsumer
+from gateway.streaming_tts_consumer import StreamingTTSConsumer, _Outcome
 from tools.tts_streaming import SentenceChunker
 
 
@@ -125,12 +125,10 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer._chunker = SentenceChunker()
     consumer._queue = queue.Queue(maxsize=256)
     consumer._handle = None
-    consumer._completed = False
-    consumer._partial = False
+    consumer._outcome = _Outcome.NONE
     consumer._aborted = False
     consumer._finished = False
     consumer._dropped = False
-    consumer._suppress_whole_file = False
     consumer._task = None
     consumer._lock = threading.Lock()
     consumer._strip_markdown = None

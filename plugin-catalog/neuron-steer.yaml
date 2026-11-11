@@ -4,7 +4,7 @@
 # shelf; image may be empty; sha is a mandatory full 40-char pin).
 name: neuron-steer
 repo: https://github.com/mrfentmen/hermes-neuron-steer
-sha: 59b4fa1cdc54599c129e1130a4a3bfc01356c12a
+sha: d36b0c92d984fde306a2436a300b67a8ba5fdc53
 description: >-
   Neuron steering for Hermes Agent, implementing Nous Research's own
   Contrastive Neuron Attribution (arXiv:2605.12290). Find the sparse MLP
@@ -17,8 +17,8 @@ tier: community
 category: tools
 requires_hermes: ">=0.20.0"
 docs_url: https://github.com/mrfentmen/hermes-neuron-steer#readme
-version: "1.0.0"
-image: ""
+version: "1.1.0"
+image: https://raw.githubusercontent.com/mrfentmen/hermes-neuron-steer/d36b0c92d984fde306a2436a300b67a8ba5fdc53/docs/banner.jpg
 platforms: []
 capabilities:
   provides_tools:
@@ -26,6 +26,8 @@ capabilities:
     - neuron_steer_generate
     - neuron_steer_scan
     - neuron_steer_list
+    - neuron_steer_show
+    - neuron_steer_demo
   provides_hooks: []
   provides_middleware: []
   requires_env: []

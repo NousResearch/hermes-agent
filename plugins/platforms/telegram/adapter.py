@@ -180,7 +180,8 @@ from plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
 from plugins.platforms.telegram.telegram_entities import (
-    addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
+    addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, quote_rich_text, rich_message_filter,
+    rich_message_text)
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin
 from plugins.platforms.telegram.telegram_replacement import TelegramReplacementMixin
@@ -6492,6 +6493,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         quote_text = expand_quote_link_entities(quote, message.reply_to_message) if quote is not None else None
         if quote_text:
             return reply_to_id, quote_text
+        if quote is not None and (rich_quote := quote_rich_text(quote)) is not None:
+            return reply_to_id, rich_quote or None
         reply_to_text = expand_link_entities(message.reply_to_message) or None
         if not reply_to_text:
             reply_to_text = rich_message_text(message.reply_to_message) or None

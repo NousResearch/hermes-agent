@@ -147,3 +147,22 @@ def test_native_quote_at_a_mismatched_position_is_left_as_quoted():
     event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "the changelog"
+
+
+def test_quote_from_rich_message_uses_selected_rich_texts():
+    """Bot API 10.4: a quote chosen from a rich message has empty ``text`` and the selection in
+    ``rich_texts`` (PTB 22.8 keeps it in ``api_kwargs``). The whole rich message must not leak in."""
+    from types import MappingProxyType
+
+    from gateway.platforms.event import MessageType
+
+    rich = {"blocks": [{"type": "paragraph", "text": "Item A: deploy fix"},
+                       {"type": "paragraph", "text": [{"type": "bold", "text": "Item B"}, ": rotate keys"]}]}
+    msg = _make_message(text="mark this one as done", reply_to_text="")
+    msg.reply_to_message.api_kwargs = {"rich_message": rich}
+    msg.quote = SimpleNamespace(text="", position=19, api_kwargs=MappingProxyType({
+        "rich_texts": [[{"type": "bold", "text": "Item B"}, ": rotate keys"]]}))
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "Item B: rotate keys"

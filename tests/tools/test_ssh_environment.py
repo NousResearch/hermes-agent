@@ -54,9 +54,10 @@ class TestBuildSSHCommand:
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
 
+    @pytest.mark.platforms("posix")
     def test_base_flags(self, monkeypatch):
-        # ControlMaster flags are POSIX-only (#73927): assert them only
-        # where multiplexing is enabled so the test passes on Windows too.
+        # ControlMaster (a Unix-socket per-uid control dir) is POSIX-only (#73927);
+        # Windows is covered by test_controlmaster_gated_off_on_windows.
         monkeypatch.setattr(ssh_env, "_SSH_MULTIPLEX", True)
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
@@ -154,6 +155,7 @@ class TestControlSocketPath:
     _SSH_CONTROLMASTER_SUFFIX = 17
     _MAX_SUN_PATH = 103
 
+    @pytest.mark.platforms("posix")  # sun_path budget: Windows has no ControlMaster socket
     @pytest.mark.parametrize("fake_tmp", [
         # macOS $TMPDIR shape from #11840: ``/var/folders/XX/YYYYYYYYY/T``.
         "/var/folders/2t/wbkw5yb158jc3zhswgl7tz9c0000gn/T",

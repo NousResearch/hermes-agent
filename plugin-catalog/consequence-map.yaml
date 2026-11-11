@@ -19,7 +19,10 @@ description: >-
   operation stream and writes to its own database under the Hermes
   plugin-data directory, reached through the public plugins.plugin_storage
   surface; it imports no private Hermes module. No network calls, no
-  telemetry, no stored credentials, no background processes.
+  telemetry, no stored credentials, no background processes. The subdir
+  points at the directory that holds plugin.yaml; a subdirectory install
+  fetches only that directory, so see known_issues for the packaging
+  limitation at this pin.
 maintainer: BitSempre
 tier: community
 category: desktop
@@ -43,3 +46,4 @@ known_issues:
   - "Revocation of an Ed25519 key is not observed by a verifier that was already constructed."
   - "The audit trail exposes no public API for full chain verification; the checkpoint detects a tampered record_hash only."
   - "The repository contains an older duplicated snapshot of the tree alongside the live one; it is history, not a second product."
+  - "A subdirectory install of this pin checks out only ConsequenceMap/plugin/, so the implementation package ConsequenceMap/consequence_map/ is not fetched with it and the plugin registers 0 hooks. Install the repository root instead, or use a build where the implementation package lives inside the plugin directory."

@@ -25,7 +25,6 @@ KEPT_NAMES = (SHIPPED, PERSISTED, IDENTITY)
 EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/_old_updater.py", "", FROZEN),
     ("tests/compat/old_updater_dependencies.py", "", FROZEN),
-    ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_bootstrap")', PERSISTED),
     ("hermes_cli/_launchers.py", "def runtime_command(", PERSISTED),
     ("hermes_cli/_launchers.py", '_CLOSURE_REPAIR = """\\', PERSISTED),
     ("hermes_cli/_launchers.py", "return (\n        # The repair's own stdlib", PERSISTED),
@@ -98,6 +97,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("tools/bot_desktop/runtime.py", 'Path(project_root_str()), module="tools.bot_desktop.idle_watch")),', SHIPPED),
     ("tools/mcp_tool_lifecycle.py", '"tui_gateway.slash_worker", "tui_gateway.entry",', IDENTITY),
     ("tui_gateway/host_supervisor.py", 'return "tui_gateway.compute_host" in _pid_command(pid)', IDENTITY),
+    ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_bootstrap")', PERSISTED),
 )
 
 BY_HAND: tuple[tuple[str, str], ...] = (

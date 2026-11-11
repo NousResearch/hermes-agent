@@ -70,6 +70,28 @@ function truthyParam(value: string | undefined, defaultValue = false): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes'
 }
 
+/** Links claimed by an exact `kind/name`, checked before the plugin and skill
+ *  rules below. Add an exact route here rather than as another branch in
+ *  `resolveDeepLinkAction`: the code-health ratchet holds that function at its
+ *  complexity on main. */
+const EXACT_ROUTES = new Map<string, (params: Record<string, string>) => DeepLinkAction>([
+  // hermes://chat/new?prompt=… — the website's "Run in Hermes" buttons. Only
+  // `new` is claimed: every other chat/<name> stays ignored so a future
+  // chat/<id> resume shape is still free to be designed.
+  ['chat/new', params => ({ type: 'chat-new', prompt: normalizeChatNewPrompt(params.prompt) })],
+  // The browser leg of a connection came back (hermes://connections/done?op=…&status=…). The op id
+  // names the operation to show; the status is carried but never moves a row, because the link is
+  // whatever the user's browser was pointed at.
+  [
+    'connections/done',
+    params => {
+      const op = (params.op || '').trim()
+
+      return op ? { type: 'connection-done', op, status: (params.status || '').trim() } : { type: 'ignore' }
+    }
+  ]
+])
+
 export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefined): DeepLinkAction {
   if (!payload?.kind) {
     return { type: 'ignore' }
@@ -79,20 +101,10 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
     return { type: 'composer-blueprint', name: payload.name, params: payload.params || {} }
   }
 
-  // hermes://chat/new?prompt=… — the website's "Run in Hermes" buttons. Only
-  // `new` is claimed: every other chat/<name> stays ignored so a future
-  // chat/<id> resume shape is still free to be designed.
-  if (payload.kind === 'chat' && payload.name === 'new') {
-    return { type: 'chat-new', prompt: normalizeChatNewPrompt(payload.params?.prompt) }
-  }
+  const exact = EXACT_ROUTES.get(`${payload.kind}/${payload.name}`)
 
-  // The browser leg of a connection came back (hermes://connections/done?op=…&status=…). The op id
-  // names the operation to show; the status is carried but never moves a row, because the link is
-  // whatever the user's browser was pointed at.
-  if (payload.kind === 'connections' && payload.name === 'done') {
-    const op = (payload.params?.op || '').trim()
-
-    return op ? { type: 'connection-done', op, status: (payload.params?.status || '').trim() } : { type: 'ignore' }
+  if (exact) {
+    return exact(payload.params || {})
   }
 
   // A `catalog` param claims the link outright: even when a `repo` rides along

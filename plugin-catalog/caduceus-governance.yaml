@@ -3,12 +3,12 @@ title: Caduceus Governance
 description: "Deterministic, model-free admission control for what Hermes writes into its own skills: content lanes, operator-owned executable checks, a provenance lane for writes made after untrusted web/browser/MCP content, a tamper-evident ledger, and operator release/rollback. Observe by default."
 repo: https://github.com/Epistetechnician/caduceus
 subdir: plugin/caduceus_governance
-sha: "85123c90ad38dbac91af32d6f17705ee4a0a70f9"
+sha: "3d980d823d79a38c741b3f95b1db071e1803f137"
 tier: community
 maintainer: Epistetechnician
 version: "0.1.0"
 category: tools
-docs_url: https://github.com/Epistetechnician/caduceus/blob/85123c90ad38dbac91af32d6f17705ee4a0a70f9/plugin/caduceus_governance/README.md
+docs_url: https://github.com/Epistetechnician/caduceus/blob/3d980d823d79a38c741b3f95b1db071e1803f137/plugin/caduceus_governance/README.md
 known_issues:
   - Evidence is local-development only (Claude Haiku 4.5, small samples, simulated web read); see docs/CLAIMS.md.
   - A hostile line written with no untrusted input in the session is not caught by default; the review dial (prose) reaches a human but costs reading every prose change.

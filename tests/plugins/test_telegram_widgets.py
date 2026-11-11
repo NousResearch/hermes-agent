@@ -24,6 +24,7 @@ from telegram import Update
 from telegram.request import BaseRequest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.session import build_session_key
 from plugins.platforms.telegram import telegram_widgets
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -165,10 +166,11 @@ class TestWidgetQueryOf:
 
 class TestWidgetQueryEvent:
     def test_envelope(self):
+        # A widget this adapter did not send (or sent before a restart): no topic is known.
         assert bare_adapter()._normalize_platform_event(update_of(widget_query())) == {
             "platform": "telegram",
             "event_type": "widget_query",
-            "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh"},
+            "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh", "thread_id": None},
         }
 
     def test_ids_are_text_and_bounded_and_json_safe(self):
@@ -260,7 +262,7 @@ async def test_a_tap_polled_from_telegram_reaches_the_platform_event_boundary(mo
     event, source = seen[0]
     assert event == {
         "platform": "telegram", "event_type": "widget_query",
-        "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh"},
+        "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh", "thread_id": None},
     }
     assert (source.user_id, source.chat_id, source.chat_type, source.message_id) == ("88", "88", "dm", "472")
     assert "1:7" in claimed  # admitted and completed once
@@ -282,6 +284,82 @@ async def test_the_webhook_subscription_asks_for_widget_queries_too(monkeypatch,
 
     assert "widget_query" in started["allowed_updates"]
     assert "message" in started["allowed_updates"]
+
+
+# ---------------------------------------------------------------------------
+# The topic a widget was sent into: Telegram's widget_query names none
+# ---------------------------------------------------------------------------
+
+
+def sent_into_topic(message_id=501, thread=7):
+    """``sendWidget``'s reply for a widget sent into a topic of a private chat with the bot."""
+    return 200, {"ok": True, "result": {
+        "message_id": message_id, "date": 0, "chat": {"id": CHAT, "type": "private"},
+        "message_thread_id": thread, "is_topic_message": True}}
+
+
+async def tap_after_send(monkeypatch, tmp_path, stub, **send):
+    """Send a widget, then poll a tap on it the way the gateway does; returns what reached the boundary."""
+    stub._updates.append([{"update_id": 9, "widget_query": widget_query(message_id=501)}])
+    seen = []
+
+    async def observe(event, source):
+        seen.append((event, source))
+
+    async with connected(monkeypatch, tmp_path, stub) as adapter:
+        adapter.set_platform_event_handler(observe)
+        await adapter.send_widget("88", "<b>hi</b>", **send)
+        await adapter._start_polling_once(
+            adapter._app, drop_pending_updates=False, error_callback=None, schedule_verifier=False)
+        deadline = time.monotonic() + 10
+        while not seen and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+    assert len(seen) == 1
+    return seen[0]
+
+
+class TestWidgetTopic:
+    @pytest.mark.asyncio
+    async def test_a_tap_in_a_private_chat_topic_names_the_topic(self, monkeypatch, tmp_path):
+        """The widget went into topic 7 of the private chat. Its tap names the topic in the payload and in the
+        authorized source, so a plugin's origin and the source both key the topic's session, not the root DM."""
+        stub = StubRequest(replies={"sendWidget": sent_into_topic()})
+        event, source = await tap_after_send(monkeypatch, tmp_path, stub, thread_id="7")
+        assert event["payload"] == {
+            "query_id": "q1", "chat_id": "88", "message_id": "501", "data": "refresh", "thread_id": "7"}
+        assert source.thread_id == "7"
+        assert build_session_key(source).endswith(":dm:88:7")
+
+    @pytest.mark.asyncio
+    async def test_a_widget_in_the_chat_itself_has_no_topic(self, monkeypatch, tmp_path):
+        event, source = await tap_after_send(monkeypatch, tmp_path, StubRequest())
+        assert event["payload"]["thread_id"] is None
+        assert source.thread_id is None
+        assert build_session_key(source).endswith(":dm:88")
+
+    def test_the_topic_is_the_one_telegram_reports(self):
+        threads = telegram_widgets.WidgetThreads()
+        threads.remember(sent_into_topic(thread=7)[1]["result"])
+        assert threads.thread_of(widget_query(message_id=501)) == "7"
+        assert threads.thread_of(widget_query(message_id=502)) is None
+        assert threads.thread_of(widget_query(message_id=501, chat={"id": 99, "type": "private"})) is None
+
+    @pytest.mark.parametrize("reply", [
+        None, True, "501", {"message_id": 501},
+        {"message_id": 501, "chat": {"id": CHAT}, "message_thread_id": 7},  # not a topic message
+        {"message_id": 501, "message_thread_id": 7, "is_topic_message": True},  # no chat
+        {"message_id": 501, "chat": {"id": CHAT}, "message_thread_id": True, "is_topic_message": True},
+    ])
+    def test_a_reply_without_a_topic_is_not_remembered(self, reply):
+        threads = telegram_widgets.WidgetThreads()
+        threads.remember(reply)
+        assert threads.thread_of(widget_query(message_id=501)) is None
+
+    def test_the_memory_is_bounded_and_forgets_the_oldest(self):
+        threads = telegram_widgets.WidgetThreads(limit=2)
+        for message_id in (501, 502, 503):
+            threads.remember(sent_into_topic(message_id=message_id)[1]["result"])
+        assert [threads.thread_of(widget_query(message_id=m)) for m in (501, 502, 503)] == [None, "7", "7"]
 
 
 # ---------------------------------------------------------------------------

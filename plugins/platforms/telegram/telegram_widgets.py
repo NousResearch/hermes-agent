@@ -11,6 +11,7 @@ extended twice and a native ``widget_query`` object is read through ``to_dict()`
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any, Optional
 
@@ -18,6 +19,8 @@ UPDATE_TYPE = "widget_query"
 EVENT_TYPE = "widget_query"
 # Ids and the 1-64 byte query data as text; the bound the other Telegram events put on ids.
 _TEXT_LIMIT = 128
+# Widget messages whose topic one adapter remembers; the oldest is forgotten first.
+_THREAD_MEMORY_LIMIT = 4096
 
 
 def allowed_updates(update_cls: Any) -> list[str]:
@@ -64,9 +67,44 @@ def identities(query: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_event(query: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+class WidgetThreads:
+    """The topic each widget message was sent into, as Telegram reported it in ``sendWidget``'s reply.
+
+    A ``widget_query`` carries no ``message_thread_id``, while the gateway keys a topic of a private chat (or of a
+    forum) as its own session; this is how a tap names the topic again. The memory is per adapter and in process,
+    bounded to the most recent widgets: a tap on a widget sent before a restart, or by another process, has no
+    known topic."""
+
+    def __init__(self, limit: int = _THREAD_MEMORY_LIMIT) -> None:
+        self._limit = limit
+        self._threads: OrderedDict[tuple[str, str], str] = OrderedDict()
+
+    def remember(self, sent: Any) -> None:
+        """Record the topic of a sent widget message; a reply outside a topic or of an unexpected shape is
+        ignored (the rule ``message_edited`` uses: ``message_thread_id`` only on a topic message)."""
+        if not isinstance(sent, Mapping) or sent.get("is_topic_message") is not True:
+            return
+        chat = sent.get("chat")
+        chat_id = _text(chat.get("id")) if isinstance(chat, Mapping) else None
+        message_id = _text(sent.get("message_id"))
+        thread_id = _text(sent.get("message_thread_id"))
+        if not chat_id or not message_id or not thread_id:
+            return
+        self._threads[(chat_id, message_id)] = thread_id
+        self._threads.move_to_end((chat_id, message_id))
+        while len(self._threads) > self._limit:
+            self._threads.popitem(last=False)
+
+    def thread_of(self, query: Mapping[str, Any]) -> Optional[str]:
+        """The topic of the widget message a query came from, or ``None`` when it is not known."""
+        ids = identities(query)
+        return self._threads.get((ids["chat_id"], ids["message_id"]))
+
+
+def normalize_event(query: Mapping[str, Any], thread_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     """``widget_query`` → the ``widget_query`` platform event: ``query_id``, ``chat_id``, ``message_id`` and
-    the ``data`` the widget sent, all text; ``None`` when an identity is missing or malformed."""
+    the ``data`` the widget sent, all text, plus ``thread_id``, the widget's topic when the adapter knows it
+    (see ``WidgetThreads``); ``None`` when an identity is missing or malformed."""
     ids = identities(query)
     query_id = _text(query.get("id"))
     data = query.get("data")
@@ -77,7 +115,7 @@ def normalize_event(query: Mapping[str, Any]) -> Optional[dict[str, Any]]:
         "event_type": EVENT_TYPE,
         "payload": {
             "query_id": query_id, "chat_id": ids["chat_id"], "message_id": ids["message_id"],
-            "data": data[:_TEXT_LIMIT]},
+            "data": data[:_TEXT_LIMIT], "thread_id": thread_id},
     }
 
 

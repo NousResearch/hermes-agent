@@ -154,6 +154,12 @@
       "entries": [
         "hermes_cli.plugin_session:session_client"
       ]
+    },
+    {
+      "source": "plugins/index.md § Preview when compaction fires",
+      "entries": [
+        "hermes_cli.compaction_preview"
+      ]
     }
   ]
 }

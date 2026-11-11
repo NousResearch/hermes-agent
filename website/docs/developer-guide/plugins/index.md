@@ -1255,6 +1255,46 @@ def open_skill(name):
 Plugin-registered skills (`ctx.register_skill`) are not on disk under these roots; `find_all_skills()`
 returns the on-disk catalog only.
 
+### Preview when compaction fires
+
+A plugin that explains or checks compaction (a cost advisor, a config doctor, a status pane) should ask
+Hermes for the trigger instead of recomputing it. The trigger depends on the context window, the
+`compression.model_thresholds` ranking, the small-window floor, the output reservation, the
+`compression.threshold_tokens` cap and the per-model overrides, and those change between releases.
+`hermes_cli.compaction_preview` is public and covered by the compatibility contract:
+
+| Import | What it gives you |
+|---|---|
+| `preview_compaction(config, *, model, provider="", context_length=None, main_route=True, max_tokens=None)` | A `CompactionPreview`: the trigger a session on this route installs under `config`, with the factors behind it. Pass `context_length` when you already know the window (the `post_api_request` hook reports the live one); otherwise it is resolved for you. |
+| `resolve_context_window(config, *, model, provider="", main_route=True)` | A `ContextWindow(tokens, source)`. `source` is `"config"` (`model.context_length`), `"custom_provider"`, `"resolved"` (a catalog knew the model) or `"default"` (nothing knew it, so the number is a static default and not a detected limit). |
+| `threshold_rule_applies(key, *, model, provider="")` | Whether a `compression.model_thresholds` key matches the route, by the compressor's own ranking. |
+
+`CompactionPreview` carries `model` and `provider` as the session runs them (provider alias resolved,
+model id in the provider's notation), `context_length`, `context_source`, `threshold_tokens`,
+`base_percent`, `effective_percent`, `matched_rule`, `output_reservation` and `threshold_cap`.
+
+```python
+from hermes_cli.compaction_preview import preview_compaction
+from hermes_cli.config import load_config
+
+def explain(model: str, provider: str = "") -> str:
+    preview = preview_compaction(load_config(), model=model, provider=provider)
+    note = " (assumed window)" if preview.context_source == "default" else ""
+    return f"compacts at {preview.threshold_tokens:,} of {preview.context_length:,} tokens{note}"
+```
+
+`main_route=True` says the route is the configured default one, so `model.context_length` and the custom
+provider entry behind `model.base_url` apply. Pass `main_route=False` for a fallback, delegation or
+auxiliary route. `config` is an effective config mapping; catalog caches and `model_overrides` are read
+from the active Hermes home, so to preview another profile bind it first with
+`hermes_constants.set_hermes_home_override`.
+
+The preview never uses a credential. No base URL or API key reaches the window lookup, a Bedrock window
+comes from the offline table (a session probes AWS), and a Mixture of Agents preset is read from config
+(a session resolves the aggregator's runtime). The lookup may still fetch a public model list, as it does
+for a session: OpenRouter's for OpenRouter and Nous routes and for a route with no provider, Novita's for
+Novita routes.
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —

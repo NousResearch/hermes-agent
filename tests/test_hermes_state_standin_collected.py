@@ -233,6 +233,27 @@ def test_an_explicit_close_releases_at_once_and_its_collection_releases_nothing(
     assert _handles(scope) == 0
 
 
+def test_a_reaper_that_fails_to_start_leaves_no_handle_behind(tmp_path, monkeypatch):
+    class Unstartable:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(hermes_state, "_reaper", None)
+    monkeypatch.setattr(hermes_state, "_ReaperThread", Unstartable)
+    scope = profile_scope(home=tmp_path)
+    anchor = open_persistence(scope, eager=True)
+    try:
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            hermes_state.SessionDB(tmp_path / "state.db")
+        assert _handles(scope) == 1
+    finally:
+        anchor.close()
+    assert _handles(scope) == 0
+
+
 def test_a_stand_in_opened_again_after_close_and_dropped_releases_the_new_handle(tmp_path):
     scope = profile_scope(home=tmp_path)
     anchor = open_persistence(scope, eager=True)

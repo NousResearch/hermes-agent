@@ -13,8 +13,7 @@ from typing import Any, Optional
 
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
-    _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
-    is_automatic_end_reason)
+    _non_continuation_child_sql, _sql_session_last_active, is_automatic_end_reason)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -33,11 +32,7 @@ _CHAIN_STEP_SQL = f"""
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
-                    ORDER BY
+{_non_continuation_child_sql('child.', 'parent.id')}                    ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
                         WHEN child.ended_at IS NULL THEN 1

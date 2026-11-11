@@ -17,7 +17,7 @@ from agent.session_activity import (
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
@@ -120,20 +120,20 @@ def _session_filter_where(
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
-    (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
+    (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only, not their
+    continuations (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
     where: list[str] = []
     params: list[Any] = []
     if exclude_children and include_subagents:
-        where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
+        where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} = s.parent_session_id)")
     elif exclude_children:
         where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
     # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd
-    # for robustness: 1. A stable ``_branched_from`` marker in model_config, written by /branch at creation
-    # time. This survives the parent being reopened and re-ended with a different end_reason (e.g.
-    # tui_shutdown overwriting 'branched'), which otherwise hides the branch — see issue #20856. 2. The
+    # for robustness: 1. A ``_branched_from`` marker naming the row's parent (continuations inherit it),
+    # written by /branch at creation time. This survives the parent being reopened and re-ended with a
+    # different end_reason (tui_shutdown overwriting 'branched'), which otherwise hides it (#20856). 2. The
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
@@ -159,34 +159,26 @@ def _session_filter_where(
 def _expand_compression_lineage_ids(conn, frontier: list[str]) -> list[str]:
     """One both-direction compression-edge step from *frontier*: forward through every
     continuation child and backward through the compression parent, using the SAME edge
-    definition as ``_CHAIN_STEP_SQL`` / the list-projection CTE (parent ended with
-    ``reason='compression'``, child is not a branch / reset / delegate / tool session).
-    Branch/reset children are NOT continuations — they are their own conversations."""
+    definition as ``_CHAIN_STEP_SQL`` (``_non_continuation_child_sql``)."""
     ids = [sid for sid in frontier if sid]
     if not ids:
         return []
     out: list[str] = []
+    child_filter = _non_continuation_child_sql("child.", "parent.id")
     for chunk in _id_chunks(ids, _SQL_IN_CHUNK // 4):  # each id bound 4x below
         ph = _session_ids_placeholders(chunk)
-        child_filter = (
-            f"{_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
-            f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
-            f"AND NOT ({_RESET_CHILD_SQL.format(a='child')}) "
-            "AND COALESCE(child.source, '') != 'tool'"
-        )
         out.extend(row["id"] for row in conn.execute(
             # forward: every continuation of a compression-ended frontier row
             f"SELECT child.id FROM sessions parent "
             f"JOIN sessions child ON child.parent_session_id = parent.id "
-            f"WHERE parent.id IN ({ph}) AND parent.end_reason = 'compression' AND {child_filter}",
+            f"WHERE parent.id IN ({ph}) AND parent.end_reason = 'compression'{child_filter}",
             chunk,
         ).fetchall())
         out.extend(row["id"] for row in conn.execute(
             # backward: the compression parent of a frontier row
             f"SELECT parent.id FROM sessions child "
             f"JOIN sessions parent ON parent.id = child.parent_session_id "
-            f"WHERE child.id IN ({ph}) AND parent.end_reason = 'compression' "
-            f"AND {child_filter}",
+            f"WHERE child.id IN ({ph}) AND parent.end_reason = 'compression'{child_filter}",
             chunk,
         ).fetchall())
     return out
@@ -311,15 +303,7 @@ _INHERIT_PARENT_META_SQL = (
     ))
     + "\n                     WHERE id = ? AND parent_session_id IS NOT NULL"
 )
-# A delegate/branch fork of a row that happens to have ended on compression is still not that
-# conversation's continuation. Markers are matched against the QUERIED parent id rather than mere
-# presence, for the same reason as _NON_CONTINUATION_CHILD_FILTER_SQL: a continuation inherits its
-# parent's model_config verbatim, so presence-matching would misclassify it as a delegate.
-_FORK_EDGE_EXCLUSION_SQL = "".join(
-    f"\n                       AND COALESCE({_sql_json_extract('model_config', f'$.{marker}')}, '')"
-    "\n                           != parent_session_id"
-    for marker in ("_delegate_from", "_branched_from")
-)
+# Only a compression continuation inherits routing: a fork of a row that ended on compression is not one.
 _INHERIT_PARENT_ROUTING_SQL = (
     "UPDATE sessions\n                       SET "
     + _INHERIT_SEP.join(_inherit_col_sql(c) for c in (
@@ -331,8 +315,8 @@ _INHERIT_PARENT_ROUTING_SQL = (
     "                           SELECT 1 FROM sessions p\n"
     "                           WHERE p.id = sessions.parent_session_id\n"
     "                             AND p.end_reason = 'compression'\n"
-    "                       )"
-    + _FORK_EDGE_EXCLUSION_SQL
+    "                       )\n"
+    + _non_continuation_child_sql("", "parent_session_id")
 )
 
 
@@ -1166,12 +1150,7 @@ class SessionSessionsMixin:
         compression_parent_edge = f"""
             parent.end_reason = 'compression'
             AND child.parent_session_id = parent.id
-            AND json_extract(
-                COALESCE(child.model_config, '{{}}'), '$._branched_from'
-            ) IS NULL
-            AND {_delegate_from_json('child.model_config')} IS NULL
-            AND COALESCE(child.source, '') != 'tool'
-        """
+{_non_continuation_child_sql('child.', 'parent.id')}        """
 
         query = f"""
             WITH RECURSIVE
@@ -1386,11 +1365,7 @@ class SessionSessionsMixin:
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
-                ),
+{_non_continuation_child_sql('child.', 'parent.id')}                ),
                 chain_max AS (
                     SELECT
                         root_id,

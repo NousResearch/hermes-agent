@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_state_common import (
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS_SQL, _non_continuation_child_sql, _sql_json_extract,
     _sql_session_last_active)
 from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
@@ -32,11 +32,7 @@ _COMPRESSION_LINEAGE_CTE = f"""
                         JOIN sessions child ON child.id = lineage.id
                         JOIN sessions parent ON parent.id = child.parent_session_id
                         WHERE parent.end_reason = 'compression'
-                          AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                          AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                          AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                          AND COALESCE(child.source, '') != 'tool'
-                    )
+{_non_continuation_child_sql('child.', 'parent.id')}                    )
                 """
 
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).

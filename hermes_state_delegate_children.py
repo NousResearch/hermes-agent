@@ -15,16 +15,18 @@ def delegate_descendant_ids(db, session_id: str) -> list[str]:
     compression segments it continues.
 
     The walk up stops at a delegate or branch row: those are not continuations of their parent, and a
-    subagent must never claim its parent's children. A delegate ``session_id`` itself has none.
+    subagent must never claim its parent's children. Every segment of a delegate conversation carries
+    ``_delegate_from``, so a delegate ``session_id`` itself has none; a branch stops only at the row
+    whose ``_branched_from`` names its own parent, since its continuations inherit the marker.
     """
     seeds: list[str] = []
     for sid in reversed(db._session_lineage_root_to_tip(session_id)):
-        row = db._read_one("SELECT model_config FROM sessions WHERE id = ?", (sid,))
+        row = db._read_one("SELECT model_config, parent_session_id FROM sessions WHERE id = ?", (sid,))
         config = _parse_model_config(row[0]) if row is not None else {}
         if config.get("_delegate_from"):
             break
         seeds.append(sid)
-        if config.get("_branched_from"):
+        if row is not None and config.get("_branched_from") == row[1]:
             break
     # A misrouted child resumed as the chat can have compression continuations; v33 leaves those
     # unmarked (they ARE continuations), but the pre-fix resolver saved subscriptions under their ids.

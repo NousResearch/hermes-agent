@@ -23,21 +23,16 @@ def stored_child_session(db: Any, subagent_id: str, conversation_ids: Iterable[s
     ``parent_session_id`` chain must reach the conversation, and a hop is followed only when the
     row is its parent's delegate child or compression continuation. A branch or reset fork of the
     conversation, or any unrelated session, never lends its children. Every segment carries the
-    marker, so the tip is the owned segment that no owned segment continues by compression
-    (``get_compression_tip`` does not follow a delegate child's rotations: its chain step skips rows
-    carrying ``_delegate_from``)."""
+    marker; the child's root is the owned segment its delegator forked, and its compression tip is
+    the newest segment."""
     ancestors = frozenset(sid for sid in conversation_ids if sid)
     if not subagent_id or not ancestors:
         return None
     candidates = db.subagent_session_ids(subagent_id, SUBAGENT_ID_KEY)
     get, owns = _lineage_reader(db, ancestors)
-    owned = [sid for sid in candidates if owns(sid)]
-    # The tip is the owned segment no owned segment continues by compression; ``started_at`` only breaks
-    # a tie, since the wall clock can step back between a rotation's two rows.
-    owned_ids = frozenset(owned)
-    continued = {seg["parent_session_id"] for seg in map(get, owned)
-                 if seg is not None and seg.get("parent_session_id") in owned_ids and _continues(db, seg, get)}
-    return next((sid for sid in owned if sid not in continued), None)
+    owned = (get(sid) for sid in candidates if owns(sid))
+    root = next((row["id"] for row in owned if _delegated_from(row, row["parent_session_id"])), None)
+    return db.get_compression_tip(root) if root else None
 
 
 def _lineage_reader(db: Any, ancestors: frozenset[str]):

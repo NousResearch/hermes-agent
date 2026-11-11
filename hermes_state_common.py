@@ -172,8 +172,10 @@ def _sql_preview_raw(session_id_expr: str = "s.id") -> str:
 
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
-# /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
-_BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
+# /branch child (kept visible, never cascade-deleted): marker naming its parent (a continuation inherits
+# the marker, see _non_continuation_child_sql) OR legacy end_reason heuristic.
+_BRANCH_CHILD_SQL = (
+    f"COALESCE({_sql_json_extract('{a}.model_config', '$._branched_from')}, '') = {{a}}.parent_session_id"
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
@@ -229,7 +231,9 @@ def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
     """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
     (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
     inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
-    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
+    ``child`` is the column prefix (``""``, ``"c."``).  The one edge rule of every compression walker
+    (chain/tip, lineage, list projection, resume, delete, prune); ``_is_explicit_fork_child_row`` is
+    its row-level twin."""
     return "".join(
         f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
         for marker in ("_branched_from", "_delegate_from", "_reset_from")
@@ -237,8 +241,10 @@ def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
 
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
-# Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
-_RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
+# Marker naming its parent, or the same-key fallback for pre-marker rows (exact key keeps subagent
+# children out).
+_RESET_CHILD_SQL = (
+    f"COALESCE({_sql_json_extract('{a}.model_config', '$._reset_from')}, '') = {{a}}.parent_session_id"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL))
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).

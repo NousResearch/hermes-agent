@@ -1,0 +1,31 @@
+name: answer-summary
+repo: https://github.com/ArronPK/hermes-answer-summary
+sha: 156f0a06f0f9051f75946465df351708e6bfc62c
+title: Answer Summary
+description: >-
+  Long-session comprehension for Hermes Desktop: a short AI recap above the
+  composer for every assistant reply, a one-click Catch up brief for the whole
+  session, and a right-docked Discuss side chat that inherits the conversation,
+  supports another model, and hands a structured outcome back to the main chat.
+  Disclosure: reads the active session transcript and sends selected text to the
+  user's configured model provider for summaries, recaps, side-chat replies and
+  handoffs; creates hidden child sessions for Discuss; stores caches in Desktop
+  local storage; writes to the clipboard only on Copy. No telemetry, external
+  services, credentials, shell, or filesystem access.
+maintainer: ArronPK
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://github.com/ArronPK/hermes-answer-summary#readme
+readme: true
+platforms: []
+known_issues:
+  - Desktop only; not available in the CLI or messaging gateway.
+  - Summaries and Catch up use the configured auxiliary model and can cost tokens.
+  - Discuss side chats are discussion-only and cannot run tools or modify files.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

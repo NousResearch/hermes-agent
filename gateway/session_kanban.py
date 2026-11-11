@@ -54,7 +54,7 @@ def build_kanban_policy(connection, params, config):
         if value:
             params_policy[name] = value
     if task.max_runtime_seconds:
-        # Local patch (Andrew 2026-11-04): the card's dispatcher cap is the worker's real deadline.
+        # The card's dispatcher cap is the worker's real deadline.
         # Fold it into the run budget so the 80% wrap-up notice fires before the kill, never after
         # it under the profile's longer agent.run_budget_seconds. 120s is left for the checkpoint.
         card_budget = max(60.0, float(task.max_runtime_seconds) - 120.0)

@@ -188,6 +188,6 @@ def test_compress_returns_valid_messages():
 
 ## 另请参阅
 
-- [上下文压缩与缓存](/developer-guide/context-compression-and-caching) — 内置压缩器的工作原理
-- [Memory Provider 插件](/developer-guide/memory-provider-plugin) — 类似的单选插件系统（用于内存）
-- [插件](/user-guide/features/plugins) — 通用插件系统概述
+- [上下文压缩与缓存](./context-compression-and-caching.md) — 内置压缩器的工作原理
+- [Memory Provider 插件](./memory-provider-plugin.md) — 类似的单选插件系统（用于内存）
+- [插件](../user-guide/features/plugins.md) — 通用插件系统概述

@@ -5,8 +5,10 @@ import {
   $removedSessionIds,
   $sessionMutationsInFlight,
   beginSessionMutation,
+  captureSessionTombstoneGenerations,
   endSessionMutation,
   isSessionRemovalPending,
+  tombstoneLifecycleChanged,
   tombstoneSessions,
   untombstoneSessions
 } from './session-removal'
@@ -42,6 +44,52 @@ describe('isSessionRemovalPending', () => {
     expect(isSessionRemovalPending('')).toBe(false)
     expect(isSessionRemovalPending('   ')).toBe(false)
     expect(isSessionRemovalPending(null)).toBe(false)
+  })
+})
+
+describe('tombstone generations', () => {
+  it('bumps a per-id generation on add and remove, leaving unrelated ids untouched', () => {
+    const beforeAdd = captureSessionTombstoneGenerations()
+
+    tombstoneSessions(['sess-1'])
+
+    expect(tombstoneLifecycleChanged(beforeAdd, ['sess-1'])).toBe(true)
+    expect(tombstoneLifecycleChanged(beforeAdd, ['unrelated'])).toBe(false)
+
+    const beforeRemove = captureSessionTombstoneGenerations()
+    untombstoneSessions(['sess-1'])
+
+    expect(tombstoneLifecycleChanged(beforeRemove, ['sess-1'])).toBe(true)
+  })
+
+  it('detects an add → remove ABA cycle even though membership is back to unchanged', () => {
+    // The core #85163 race: while a by-id resolve is in flight, the target is
+    // archived AND the archive rolls back. Membership (in vs out) is the same
+    // before and after, but the request raced a doomed row.
+    const before = captureSessionTombstoneGenerations()
+
+    tombstoneSessions(['aba-1'])
+    untombstoneSessions(['aba-1'])
+
+    expect($removedSessionIds.get()).toEqual(new Set())
+    expect(tombstoneLifecycleChanged(before, ['aba-1'])).toBe(true)
+  })
+
+  it('a snapshot taken after the lifecycle settles compares equal again', () => {
+    tombstoneSessions(['settled-1'])
+    untombstoneSessions(['settled-1'])
+
+    const after = captureSessionTombstoneGenerations()
+
+    expect(tombstoneLifecycleChanged(after, ['settled-1'])).toBe(false)
+  })
+
+  it('ignores blank ids rather than inventing generations', () => {
+    const before = captureSessionTombstoneGenerations()
+
+    tombstoneSessions([null, '', '   '])
+
+    expect(tombstoneLifecycleChanged(before, [null, '', '   '])).toBe(false)
   })
 })
 

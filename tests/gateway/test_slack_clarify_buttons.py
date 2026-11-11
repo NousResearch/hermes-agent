@@ -135,6 +135,65 @@ class TestSlackSendClarify:
 
 
     @pytest.mark.asyncio
+    async def test_long_choices_render_in_full_with_positional_buttons(self):
+        """#78115: a 51-char option is clipped by the Slack client (below the 75-char API
+        cap) with no tooltip; the full text must be in the body, the button just its number."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        long_choice = "Build a REST API with auth, rate limits & <pagination>"
+        wide_cjk = "가" * 25  # 25 codepoints, 50 display columns
+
+        await adapter.send_clarify(
+            chat_id="C1", question="Scope?", choices=[long_choice, "MVP only"],
+            clarify_id="cid3", session_key="sk3")
+        blocks = mock_client.chat_postMessage.call_args[1]["blocks"]
+        body = blocks[0]["text"]["text"]
+        assert "1. Build a REST API with auth, rate limits &amp; &lt;pagination&gt;" in body
+        assert "2. MVP only" in body
+        labels = [e["text"]["text"] for e in blocks[1]["elements"]]
+        assert labels == ["1", "2", "✏️ Other…"]
+        assert blocks[1]["elements"][0]["value"] == "cid3|0"
+
+        await adapter.send_clarify(
+            chat_id="C1", question="Q", choices=[wide_cjk, "b"], clarify_id="cid4", session_key="sk4")
+        blocks = mock_client.chat_postMessage.call_args[1]["blocks"]
+        assert wide_cjk in blocks[0]["text"]["text"]
+        assert blocks[1]["elements"][0]["text"]["text"] == "1"
+
+        # Over the 3000-char section cap every option keeps its numbered line (shortened),
+        # so no positional button points at a line that was cut off; escaping counts.
+        huge = ["<&> " * 300 + f"tail {i}" for i in range(4)]
+        await adapter.send_clarify(
+            chat_id="C1", question="Pick", choices=huge, clarify_id="cid5", session_key="sk5")
+        body = mock_client.chat_postMessage.call_args[1]["blocks"][0]["text"]["text"]
+        assert len(body) <= 3000 and "…" in body
+        assert all(f"\n{n}. " in body and f"tail {n - 1}" in body for n in (1, 2, 3, 4))
+
+        # A question that alone nearly fills the section is cut, not the list after it.
+        await adapter.send_clarify(
+            chat_id="C1", question="q" * 2990, choices=[f"{n}" * 60 for n in range(1, 5)],
+            clarify_id="cid6", session_key="sk6")
+        body = mock_client.chat_postMessage.call_args[1]["blocks"][0]["text"]["text"]
+        assert len(body) <= 3000 and body.endswith(f"\n4. {'4' * 60}")
+        assert all(f"\n{n}. {str(n) * 60}" in body for n in (1, 2, 3, 4))
+
+    @pytest.mark.asyncio
+    async def test_short_choices_no_numbered_list(self):
+        """When every option fits its button, the body stays the question alone (#78115)."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "88.88"})
+
+        await adapter.send_clarify(
+            chat_id="C1", question="Pick one", choices=["short", "also short"],
+            clarify_id="cid_short", session_key="sk_short")
+
+        blocks = mock_client.chat_postMessage.call_args[1]["blocks"]
+        assert blocks[0]["text"]["text"] == "❓ Pick one"
+        assert [e["text"]["text"] for e in blocks[1]["elements"]][:2] == ["short", "also short"]
+
+    @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]
@@ -152,6 +211,61 @@ class TestSlackSendClarify:
         assert "&lt;A&gt;" in section_text
         assert "&amp;" in section_text
 
+    @pytest.mark.asyncio
+    async def test_retire_clarify_card_drops_buttons_and_makes_a_late_click_a_noop(self):
+        """Gateway-driven retirement (timeout / prose / reset) rewrites the card and wins the race
+        against a later button click on the same message."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        mock_client.chat_update = AsyncMock()
+        cm.register("cid-retire", "sk-retire", "Which environment?", ["staging", "production"])
+        await adapter.send_clarify(
+            chat_id="C1", question="Which environment?", choices=["staging", "production"],
+            clarify_id="cid-retire", session_key="sk-retire")
+
+        await adapter.retire_clarify_card("cid-retire", "⏳ expired")
+
+        kwargs = mock_client.chat_update.call_args.kwargs
+        assert (kwargs["channel"], kwargs["ts"], kwargs["text"]) == ("C1", "1.2", "⏳ expired")
+        assert all(block["type"] != "actions" for block in kwargs["blocks"])
+
+        await adapter._handle_clarify_action(AsyncMock(), {
+            "message": {"ts": "1.2", "blocks": kwargs["blocks"]},
+            "channel": {"id": "C1"}, "user": {"name": "norbert", "id": "U_N"},
+        }, {"action_id": "hermes_clarify_choice_0", "value": "cid-retire|0"})
+        assert mock_client.chat_update.await_count == 1
+        assert not cm._entries["cid-retire"].event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_other_click_keeps_the_card_retirable_until_the_clarify_ends(self):
+        """'Other' is not terminal: the clarify stays pending for typed text, so a later
+        timeout/reset must still be able to rewrite the '✏️ Awaiting typed answer' card."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        mock_client.chat_update = AsyncMock()
+        cm.register("cid-other", "sk-other", "Which environment?", ["staging", "production"])
+        await adapter.send_clarify(
+            chat_id="C1", question="Which environment?", choices=["staging", "production"],
+            clarify_id="cid-other", session_key="sk-other")
+        await adapter._handle_clarify_action(AsyncMock(), {
+            "message": {"ts": "1.2", "blocks": []},
+            "channel": {"id": "C1"}, "user": {"name": "norbert", "id": "U_N"},
+        }, {"action_id": "hermes_clarify_other", "value": "cid-other|other"})
+        assert "Awaiting typed answer" in mock_client.chat_update.call_args.kwargs["text"]
+
+        cm.clear_session("sk-other")
+        await adapter.retire_clarify_card("cid-other", "⏳ expired")
+
+        assert mock_client.chat_update.await_count == 2
+        assert mock_client.chat_update.call_args.kwargs["text"] == "⏳ expired"
 
 # ===========================================================================
 # _handle_clarify_action — choice click resolves (b)

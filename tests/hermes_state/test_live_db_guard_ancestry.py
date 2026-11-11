@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+import hermes_state_guard
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -78,6 +79,7 @@ def _run_probe(env):
         text=True,
         cwd=str(REPO_ROOT),
         timeout=120,
+        check=False,
     )
     verdict = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
     if verdict == "NO-ROOT":
@@ -134,10 +136,12 @@ class TestPytestProcessRecognition:
             ["/venv/bin/pytest", "-q"],
             [r"C:\venv\Scripts\pytest.exe", "-q"],
             ["/usr/bin/py.test", "tests/"],
+            ["/venv/bin/python", "/repo/scripts/run_tests_parallel.py", "-q"],
+            ["python3.14", "-u", "scripts/run_tests_parallel.py"],
         ],
     )
     def test_recognises_pytest_invocations(self, cmdline):
-        assert hermes_state._process_looks_like_pytest(self._FakeProc(cmdline))
+        assert hermes_state_guard._process_looks_like_pytest(self._FakeProc(cmdline))
 
     @pytest.mark.parametrize(
         "cmdline",
@@ -147,14 +151,19 @@ class TestPytestProcessRecognition:
             # A path that merely *contains* "pytest" is not a pytest process:
             # tmp paths like /tmp/pytest-of-dev/... show up in real argv.
             ["hermes", "run", "--file", "/tmp/pytest-of-dev/test0/input.txt"],
+            # Naming the test runner is not running it: only the script a
+            # Python interpreter runs counts.
+            ["hermes", "chat", "-q", "fix the timeout in scripts/run_tests_parallel.py"],
+            ["nvim", "scripts/run_tests_parallel.py"],
+            ["/usr/bin/python", "-m", "hermes_cli.main", "chat", "-q", "scripts/run_tests_parallel.py"],
         ],
     )
     def test_ignores_non_pytest_invocations(self, cmdline):
-        assert not hermes_state._process_looks_like_pytest(self._FakeProc(cmdline))
+        assert not hermes_state_guard._process_looks_like_pytest(self._FakeProc(cmdline))
 
     def test_unreadable_process_is_not_pytest(self):
         class _Denied:
             def cmdline(self):
                 raise PermissionError("access denied")
 
-        assert not hermes_state._process_looks_like_pytest(_Denied())
+        assert not hermes_state_guard._process_looks_like_pytest(_Denied())

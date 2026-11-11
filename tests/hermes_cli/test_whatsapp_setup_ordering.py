@@ -17,7 +17,7 @@ import io
 import os
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,7 +40,7 @@ def _env_value(hermes_home: Path, key: str) -> str | None:
     env_file = hermes_home / ".env"
     if not env_file.exists():
         return None
-    for line in env_file.read_text().splitlines():
+    for line in env_file.read_text(encoding="utf-8-sig").splitlines():
         if "=" not in line:
             continue
         k, _, v = line.partition("=")
@@ -54,7 +54,7 @@ def test_aborted_setup_does_not_enable_whatsapp(isolated_home, monkeypatch):
 
     WHATSAPP_ENABLED must NOT be present in .env after abort.
     """
-    from hermes_cli.main import cmd_whatsapp
+    from hermes_cli.main_platform_setup import cmd_whatsapp
 
     # First input() = mode choice, second input() = allowed-users prompt
     # We raise KeyboardInterrupt on the second call to simulate abort.
@@ -74,28 +74,29 @@ def test_aborted_setup_does_not_enable_whatsapp(isolated_home, monkeypatch):
     buf = io.StringIO()
     with redirect_stdout(buf):
         try:
-            cmd_whatsapp(MagicMock())
+            cmd_whatsapp(SimpleNamespace())
         except KeyboardInterrupt:
             pass
 
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None, (
         "Setup aborted before pairing — WHATSAPP_ENABLED must not be set. "
-        f"Got .env: {(isolated_home / '.env').read_text() if (isolated_home / '.env').exists() else '(missing)'}"
+        f"Got .env: {(isolated_home / '.env').read_text(encoding='utf-8-sig') if (isolated_home / '.env').exists() else '(missing)'}"
     )
 
 
-def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatch):
+@pytest.mark.parametrize("paired", [True, False])
+def test_existing_pairing_skip_branch_enables_only_paired_identity(isolated_home, monkeypatch, paired):
     """User runs ``hermes whatsapp`` with an existing paired session and
     chooses "no, keep my session" at the re-pair prompt.  The env var
     should be (re-)written to true so the gateway picks WhatsApp back up,
     even if the var was lost since the original pairing.
     """
-    from hermes_cli.main import cmd_whatsapp
+    from hermes_cli.main_platform_setup import cmd_whatsapp
 
     # Pre-create a paired session WITHOUT WHATSAPP_ENABLED in .env.
     session = isolated_home / "whatsapp" / "session"
     session.mkdir(parents=True)
-    (session / "creds.json").write_text("{}")
+    (session / "creds.json").write_text('{"me":{"id":"15551234567:1@s.whatsapp.net"}}' if paired else "{}", encoding="utf-8-sig")
     monkeypatch.setenv("WHATSAPP_MODE", "bot")
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
 
@@ -111,30 +112,17 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     monkeypatch.setattr("builtins.input", fake_input)
     monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
-    # Skip the bridge npm install — we're testing setup-ordering, not bridge
-    # bootstrapping.  Pretend node_modules exists (Path.exists -> True for that
-    # specific check is hard to scope, so instead pretend npm install would
-    # succeed silently if reached).
-    monkeypatch.setattr(
-        "subprocess.run",
-        lambda *_a, **_kw: MagicMock(returncode=0, stderr=""),
-    )
-    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/npm")
-    # Patch (bridge_dir / "node_modules").exists() by stubbing Path.exists
-    # to True for that one specific subpath.  Easier: pre-create it as a
-    # symlink to /tmp.  But we can't write to the repo.  Instead, stub
-    # Path.exists wholesale to True for node_modules; the creds.json check
-    # in the same function still works because we wrote it ourselves.
-    _orig_exists = Path.exists
-    def _stub_exists(self):
-        if self.name == "node_modules":
-            return True
-        return _orig_exists(self)
-    monkeypatch.setattr(Path, "exists", _stub_exists)
+    # Dependency bootstrap has its own tests; session reuse must not depend on
+    # Node/npm installed on the test host or mutate the real source checkout.
+    bridge = isolated_home / "bridge"
+    bridge.mkdir()
+    (bridge / "bridge.js").write_text("", encoding="utf-8")
+    monkeypatch.setattr("gateway.platforms.whatsapp_common.resolve_whatsapp_bridge_dir", lambda: bridge)
+    monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda path: True)
 
     buf = io.StringIO()
     with redirect_stdout(buf):
-        cmd_whatsapp(MagicMock())
+        cmd_whatsapp(SimpleNamespace())
 
-    # The skip-rebar branch should have set the env var on its way out.
-    assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+    # Keeping partial credentials must not enable an unfinished pairing.
+    assert (_env_value(isolated_home, "WHATSAPP_ENABLED") == "true") == paired

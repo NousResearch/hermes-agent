@@ -15,13 +15,13 @@ Modify or debug s6 services in the Hermes Docker image.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/hermes-s6-container-supervision` |
-| Path | `optional-skills/devops\hermes-s6-container-supervision` |
+| Path | `optional-skills/devops/hermes-s6-container-supervision` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux |
 | Tags | `docker`, `s6`, `supervision`, `gateway`, `profiles` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 
@@ -55,16 +55,17 @@ If you're just running the Hermes Agent and want to use Docker, see `website/doc
 │   │   ├── seed .env / config.yaml / SOUL.md
 │   │   └── skills_sync.py
 │   └── 02-reconcile-profiles          ← hermes_cli.container_boot
-│       ├── chown /run/service (hermes-writable for runtime register)
+│       ├── mkdir+chown /run/hermes-service (hermes-owned gateway scandir; /run/service stays root)
 │       └── walk $HERMES_HOME/profiles/<name>/gateway_state.json
-│           → recreate /run/service/gateway-<name>/
+│           → recreate /run/hermes-service/gateway-<name>/
 │           → auto-start only those with prior_state == "running"
 │
 ├── s6-rc.d (static services, in /etc/s6-overlay/s6-rc.d/)
 │   ├── main-hermes/run                ← exec sleep infinity (no-op slot)
-│   └── dashboard/run                  ← if HERMES_DASHBOARD=1, runs `hermes dashboard`
+│   ├── dashboard/run                  ← if HERMES_DASHBOARD=1, runs `hermes dashboard`
+│   └── profile-gateways/run           ← `s6-setuidgid hermes s6-svscan /run/hermes-service`
 │
-├── /run/service (s6-svscan watches; tmpfs)
+├── /run/hermes-service (hermes s6-svscan from s6-rc `profile-gateways` watches; tmpfs)
 │   ├── gateway-coder/                 ← runtime-registered per-profile
 │   │   ├── type        ("longrun")
 │   │   ├── run         ("#!/command/with-contenv sh ... exec s6-setuidgid hermes hermes -p coder gateway run")
@@ -103,7 +104,7 @@ The original plan (v1–v3) called for main hermes to run as a supervised s6-rc 
 
 So we use the s6-overlay-native CMD pattern via the dispatcher: `ENTRYPOINT ["/opt/hermes/docker/entrypoint-dispatch.sh"]`, which under PID 1 exec's `/init /opt/hermes/docker/main-wrapper.sh "$@"`. The wrapper is prepended to user args automatically — so `docker run <image> --version` becomes `/init main-wrapper.sh --version`, and `--version` doesn't get intercepted by /init's POSIX shell. The wrapper drops to hermes via `s6-setuidgid`, then exec's the chosen program. The program's exit code becomes the container exit code, exactly matching the pre-s6 tini contract. When the entrypoint is NOT PID 1 (Fly Machines, `docker run --init`), the dispatcher skips `/init` entirely (it would abort with `can only run as pid 1`), restores the s6 helper PATH, runs stage2-hook.sh, and exec's main-wrapper.sh directly — no supervised services on that path (#38349).
 
-Trade-off: main hermes is unsupervised under s6. That exactly matches its behavior under tini (the pre-s6 image). Dashboard supervision is the only **new** guarantee — and per-profile gateways under `/run/service/` get full supervision.
+Trade-off: main hermes is unsupervised under s6. That exactly matches its behavior under tini (the pre-s6 image). Dashboard supervision is the only **new** guarantee — and per-profile gateways under `/run/hermes-service/` get full supervision.
 
 ## Quick recipes
 
@@ -118,7 +119,7 @@ docker exec <c> sh -c 'cat /proc/1/comm; readlink /proc/1/exe'
 
 ```sh
 # /command/ isn't on docker-exec PATH — use absolute path
-docker exec <c> /command/s6-svstat /run/service/gateway-<name>
+docker exec <c> /command/s6-svstat /run/hermes-service/gateway-<name>
 # "up (pid …) … seconds"            → running
 # "down (exitcode N) … seconds, normally up, want up, …" → s6 wants it up but the process keeps exiting (crash loop)
 # "down … normally up, ready …"     → user stopped it
@@ -127,9 +128,9 @@ docker exec <c> /command/s6-svstat /run/service/gateway-<name>
 ### Bring a service up/down manually
 
 ```sh
-docker exec <c> /command/s6-svc -u /run/service/gateway-<name>   # up
-docker exec <c> /command/s6-svc -d /run/service/gateway-<name>   # down
-docker exec <c> /command/s6-svc -t /run/service/gateway-<name>   # SIGTERM (restart)
+docker exec <c> /command/s6-svc -u /run/hermes-service/gateway-<name>   # up
+docker exec <c> /command/s6-svc -d /run/hermes-service/gateway-<name>   # down
+docker exec <c> /command/s6-svc -t /run/hermes-service/gateway-<name>   # SIGTERM (restart)
 ```
 
 ### Watch the cont-init reconciler log
@@ -175,6 +176,10 @@ The cont-init reconciler runs as hermes (`s6-setuidgid hermes` in `02-reconcile-
 ### Files written by `docker exec` are root-owned
 
 `docker exec` defaults to root. Either pass `--user hermes` or rely on the stage2 chown sweep next reboot. Don't write files under `$HERMES_HOME/profiles/<name>/` as root manually — the next reconcile pass will sweep them but in-flight operations may hit perm errors.
+
+### Root code must not work inside `/run/hermes-service`
+
+The gateway scandir is hermes-owned, so hermes can rename anything in it and leave a symlink behind. Root writes, chmods and chowns there follow that symlink. Root registration therefore builds each slot in `/run/.hermes-service.staging` (root, 0700, same tmpfs) and publishes it with one `rename`; `S6ServiceManager` runs `s6-svc`, `s6-svwait` and `s6-svscanctl` through `s6-setuidgid hermes` when called as root. Keep new root-side code on those paths.
 
 ### Service slot exists but s6-svstat says "s6-supervise not running"
 

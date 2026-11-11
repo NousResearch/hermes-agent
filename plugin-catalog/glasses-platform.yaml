@@ -1,0 +1,25 @@
+name: glasses-platform
+repo: https://github.com/100yenadmin/glasses-platform
+sha: 6d608549f6465d49de107976b173814460a14c76
+title: Hermes Glasses
+description: "Your own Hermes agent on your smart glasses and other devices: it sees what you see, answers by voice, and taps you on the lens when something is due. A gateway platform that adds glasses as a channel, with short spoken-style replies to the device that asked, camera photos (requested when you ask what you are looking at, or taken by the agent with its glasses_capture_photo tool), voice in and out through Hermes's own speech settings, streamed replies for heads-up displays, approval and clarify prompts on every device (approval cards with buttons, or a spoken yes or no), and cron and heartbeat pushes to all of a user's devices, kept for offline devices across gateway restarts. Also connects Even Realities G2 glasses (an Even Hub app you pack yourself), ESP32 voice boxes running the open-source xiaozhi firmware, the Omi pendant (real-time transcript webhook) and Pebble watches (the open-source Bobby app); devices that cannot keep a socket open (an Apple Watch through a Siri Shortcut, scripts) use an HTTP route. Pair a device with `hermes glasses pair` (QR code) or try it from the terminal with `hermes glasses try`. Speaks the bridge protocol of the community hermes-glasses iOS app (v0) and a richer v1; a simulator, JavaScript and Python clients and a conformance kit are included. Disclosure — opens an unencrypted listener on all interfaces (port 8765: WebSocket /voice, /xiaozhi and /bobby/<token>/query; HTTP /turn, /pending, /approval, /xiaozhi/ota/<token>, /omi/<token>/transcript and /bobby/<token>/quota) that refuses to start without a device token (use Tailscale or a TLS proxy off your home network; Omi's servers must reach the webhook over the internet); each device token, sent in a header, query or URL path, gets full agent chat as its user, bypassing the gateway allowlist, including answering approval prompts and clarify questions; `hermes glasses pair` writes device tokens to the profile .env, and the xiaozhi OTA reply gives the box its WebSocket address with its own token; with Omi, transcripts come from Omi's servers and answers go back through them; the agent can take a glasses camera photo at any time during a glasses conversation and photos are also captured automatically on visual keywords (auto_capture: off disables that), saved in Hermes's image cache; recordings and spoken replies use Hermes's own stt/tts settings, so a cloud speech provider receives the audio or text; pushes for offline devices are kept in $HERMES_HOME/glasses/outbox.json (owner-only); Omi transcript segments are held in memory for up to ten minutes per session; the device's new-session button answers Hermes's /new confirmation for that user; it runs a local ffmpeg (no shell) only to convert audio; no outbound network calls of its own and no telemetry."
+maintainer: 100yenadmin
+tier: community
+category: platform
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/100yenadmin/glasses-platform#readme
+version: "0.6.2"
+image: https://raw.githubusercontent.com/100yenadmin/glasses-platform/b8db447a8302c76dcde1d9ab55ae88ddb55d06ef/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/100yenadmin/glasses-platform/6d608549f6465d49de107976b173814460a14c76/clients/even-g2/docs/answer.png
+  - https://raw.githubusercontent.com/100yenadmin/glasses-platform/6d608549f6465d49de107976b173814460a14c76/clients/even-g2/docs/reminder.png
+platforms: []
+known_issues:
+  - "Preview: proven against the bundled simulators and a real Hermes gateway with real models (the G2 app in the official Even Hub simulator, Pebble with a Bobby-protocol client); not yet tested on real glasses, watches, voice boxes or an Omi pendant, or with the iOS app on a device."
+  - "Each device needs a companion app or firmware that speaks one of its protocols: the community hermes-glasses iOS app in bridge mode, the bundled G2 app, xiaozhi firmware, an Omi app webhook or the Bobby app."
+  - "Without a terminal, install with --yes-deps (it needs aiohttp and qrcode); otherwise the plugin installs but stays disabled."
+capabilities:
+  provides_tools: [glasses_capture_photo, glasses_show_text, glasses_buzz]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

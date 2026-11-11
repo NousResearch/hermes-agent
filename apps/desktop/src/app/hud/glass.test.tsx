@@ -47,11 +47,14 @@ describe('useHudGlass', () => {
     const { container } = render(<Harness backing />)
     const input = container.querySelector('input')!
 
+    const shell = container.querySelector('[data-hud-shell]')!
     act(() => input.focus())
     expect(frostState()).toBe(true)
+    expect(shell.hasAttribute('data-hud-typing')).toBe(true)
 
     act(() => input.blur())
     expect(frostState()).toBe(false)
+    expect(shell.hasAttribute('data-hud-typing')).toBe(false)
   })
 
   it('stays off while the band is not covering the window, however engaged', () => {
@@ -72,5 +75,10 @@ describe('useHudGlass', () => {
     await nextFrame()
 
     expect(frostState()).toBe(false)
+    expect(container.querySelector('[data-hud-shell]')?.hasAttribute('data-hud-drawer')).toBe(true)
+    rerender(<Harness backing />)
+    await nextFrame()
+    expect(container.querySelector('[data-hud-shell]')?.hasAttribute('data-hud-drawer')).toBe(false)
+    expect(frostState()).toBe(true)
   })
 })

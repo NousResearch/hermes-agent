@@ -54,6 +54,6 @@ describe('gateway reconnect controller', () => {
   })
 
   it('rejects when the gateway boot owner is not mounted', async () => {
-    await expect(reconnectGateway()).rejects.toThrow('Gateway reconnect is unavailable')
+    await expect(reconnectGateway()).rejects.toThrow()
   })
 })

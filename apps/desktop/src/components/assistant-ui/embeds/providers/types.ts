@@ -35,7 +35,7 @@ export interface FrameEmbed extends BaseEmbed {
   renderer: 'frame'
 }
 
-/** Twitter/X ships no iframe URL — only a widget script (see social-embed.tsx). */
+/** Twitter/X: the iframe URL is built from the id and theme (see social-embed.tsx). */
 export interface TweetEmbed extends BaseEmbed {
   renderer: 'tweet'
   tweetId: string

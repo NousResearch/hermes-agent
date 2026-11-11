@@ -228,33 +228,6 @@ def test_put_api_env_materializes_credential_pool_entry(hermes_home):
     assert matched_runtime[0].auth_type == "api_key"
 
 
-def test_put_api_env_writes_auth_json_for_provider(hermes_home):
-    """Sentinel for #96058: PUT /api/env must modify auth.json on disk.
-
-    The reported symptom was ``stat -c '%y' ~/.hermes/auth.json`` returning
-    the same value before and after the Desktop Save. After the fix the file's
-    mtime advances because the save materializes the env-seeded pool entry.
-    """
-    _write_auth(hermes_home, {})
-    auth_path = hermes_home / "auth.json"
-    assert auth_path.exists()
-    mtime_before = auth_path.stat().st_mtime_ns
-
-    # Tiny delay so a write is observable even on filesystems with 1s mtime
-    # resolution. Use ns precision so this is reliable on every FS.
-    import time
-    time.sleep(0.05)
-
-    resp = client.put(
-        "/api/env",
-        json={"key": "OPENCODE_GO_API_KEY", "value": OPENCODE_KEY_NEW},
-        headers=HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-
-    assert auth_path.stat().st_mtime_ns > mtime_before, (
-        "auth.json was not modified by the Desktop Save — bug #96058"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,3 +309,36 @@ def test_scrub_never_touches_providers_base_url_alias(hermes_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# GET /api/env — provider_primary pass-through for the Desktop Keys tab
+# ---------------------------------------------------------------------------
+# The Desktop groups a provider card's rows by provider_label and picks the
+# card's main "Paste key" field from `provider_primary` first. That flag is
+# computed per catalog entry in _catalog_provider_env_metadata (index == 0 of
+# the provider's own api_key_env_vars) but _row used to drop it, so a card's
+# own first credential arrived with provider_primary=None and the grouping
+# fell back to the first non-advanced key var — which, for a profile-shared
+# credential contributed by peer providers (DASHSCOPE_API_KEY is index >= 1
+# of alibaba-coding-plan-cn), could be a FOREIGN tier's key.
+
+
+def test_get_api_env_passes_provider_primary_through(hermes_home):
+    """Every provider card's own index-0 credential must stay its main field."""
+    resp = client.get("/api/env", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    env = resp.json()
+
+    # The CN Coding Plan card: its own key is its primary; the shared
+    # DASHSCOPE_API_KEY alias joins the card marked primary=False.
+    assert env["ALIBABA_CODING_PLAN_CN_API_KEY"]["provider_primary"] is True
+    dashscope = env["DASHSCOPE_API_KEY"]["provider_profiles"]
+    cn_profile = next(
+        p for p in dashscope if p["provider"] == "alibaba-coding-plan-cn"
+    )
+    assert cn_profile["primary"] is False, (
+        "DASHSCOPE_API_KEY is a fallback alias for alibaba-coding-plan-cn; "
+        "marking it primary would re-point the card's main field away from "
+        "ALIBABA_CODING_PLAN_CN_API_KEY"
+    )

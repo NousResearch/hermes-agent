@@ -1,0 +1,20 @@
+name: precleared
+repo: https://github.com/gabrielaoimevbore-beep/hermes-precleared
+sha: ba4c8f9bc3a4f0ea3e0de2f4d77313eeb12677ec
+title: Precleared
+description: "Checks cold email against the law before it goes out: when the agent sends an email with a send tool, one of Hermes's email skills (himalaya, agentmail, Google Workspace) or an email API call, Precleared checks each new recipient against UK PECR and UK GDPR, US CAN-SPAM, Canada's CASL and German, French, Australian, Irish and Dutch rules; anything not cleared goes to Hermes's approval prompt (or is refused in block mode) with the rule, its source and a signed receipt. Adds precleared_check and precleared_verify_receipt tools and a cold-email-check skill. Disclosure — when the agent sends email through a send tool, an email skill (himalaya, agentmail, Google Workspace), a mailer command or an email-API call, and on every precleared_check call, the plugin sends each new recipient's address with the configured sender country, address source, pitch and optional prospect country to precleared.dev over HTTPS; Precleared keeps a signed receipt of each check that anyone holding the receipt id can open at precleared.dev/r/<id>. The optional PRECLEARED_API_KEY is read through Hermes's secret scope and sent only in the Authorization header; without a key, checks draw on a free allowance shared by everyone on the same network. Emails not cleared go to Hermes's approval prompt (or are refused in block mode), and verdicts are cached under hashed addresses in plugin state for 30 days. No shell commands, background processes or telemetry; maintained by the operator of Precleared."
+maintainer: gabrielaoimevbore-beep
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/gabrielaoimevbore-beep/hermes-precleared#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - precleared_check
+  - precleared_verify_receipt
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

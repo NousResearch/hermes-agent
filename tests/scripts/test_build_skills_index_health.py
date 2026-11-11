@@ -39,7 +39,7 @@ class _FakeSource:
     def search(self, query, limit=10):
         return [_meta(f"{self._src}-{i}", self._src) for i in range(self._n)]
 
-    def enrich_owners(self, skills, max_workers=30):
+    def enrich_owners(self, skills, max_workers=30, budget_seconds=None):
         # No-op: fake source doesn't need owner enrichment.
         return 0
 

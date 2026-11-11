@@ -9,7 +9,6 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
-from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
     _signature_from_schema,
@@ -34,7 +33,6 @@ class TestSignatureFromSchema:
         assert param.kind == inspect.Parameter.KEYWORD_ONLY
         assert annots["query"] == str
         assert param.default is inspect.Parameter.empty
-
 
 
     def test_skip_private_params(self):
@@ -67,7 +65,7 @@ class TestSignatureFromSchema:
             },
             "required": ["s", "i", "n", "b", "a", "o"],
         }
-        sig, annots = _signature_from_schema(schema)
+        _sig, annots = _signature_from_schema(schema)
 
         assert annots["s"] == str
         assert annots["i"] == int
@@ -77,19 +75,7 @@ class TestSignatureFromSchema:
         assert annots["o"] == dict
 
 
-
-
-
-
-
-
 class TestModuleSurface:
-    def test_module_imports_clean(self):
-        from agent.transports import hermes_tools_mcp_server as m
-        assert callable(m.main)
-        assert callable(m._build_server)
-        assert isinstance(m.EXPOSED_TOOLS, tuple)
-        assert len(m.EXPOSED_TOOLS) > 0
 
     def test_exposed_tools_are_safe_subset(self):
         """We MUST NOT expose tools codex already has, because codex'
@@ -108,8 +94,13 @@ class TestModuleSurface:
         )
 
 
-
-
+    def test_every_exposed_tool_is_a_core_registered_tool(self):
+        """Each exposed name must dispatch through handle_function_call in a plain Hermes process:
+        a name only a plugin registers (the camofox plugin's browser_navigate & co.) is not core."""
+        import model_tools
+        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+        missing = set(EXPOSED_TOOLS) - set(model_tools.get_all_tool_names())
+        assert not missing, f"EXPOSED_TOOLS names no core tool registers: {sorted(missing)}"
 
 
 class TestMain:

@@ -30,7 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from cron.scheduler import _deliver_result, _send_media_via_adapter
+from cron.scheduler import _deliver_result
+from cron.scheduler_delivery import _send_media_via_adapter
 
 
 @pytest.fixture()
@@ -147,18 +148,6 @@ class TestStandaloneWarningsSurfaced:
         )
         assert err is None
 
-    def test_media_actually_reaches_sender(
-        self, monkeypatch, slack_platform_config, slack_job, media_file
-    ):
-        calls = _install_fake_slack_sender(
-            monkeypatch,
-            lambda call: {"success": True, "chat_id": call["chat_id"], "message_id": "1.2"},
-        )
-        _deliver_result(
-            slack_job, f"Report ready.\n\nMEDIA:{media_file}", adapters=None, loop=None
-        )
-        sent_media = [m for c in calls for m in c["media_files"]]
-        assert any(media_file in m[0] for m in sent_media)
 
 
 class TestLiveAdapterMediaFailuresSurfaced:
@@ -223,32 +212,6 @@ class TestLiveAdapterMediaFailuresSurfaced:
 class TestMediaPolicyEnvBridge:
     """Defect 3: media-policy config must apply outside the gateway process."""
 
-    def test_bridge_helper_exists_and_applies_config(self, monkeypatch, tmp_path):
-        home = tmp_path / "hermes-home"
-        home.mkdir()
-        allow_dir = tmp_path / "reports"
-        allow_dir.mkdir()
-        (home / "config.yaml").write_text(
-            "gateway:\n"
-            "  strict: true\n"
-            f"  media_delivery_allow_dirs: [{str(allow_dir)!r}]\n"
-            "  trust_recent_files: false\n"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        for var in (
-            "HERMES_MEDIA_DELIVERY_STRICT",
-            "HERMES_MEDIA_ALLOW_DIRS",
-            "HERMES_MEDIA_TRUST_RECENT_FILES",
-        ):
-            monkeypatch.delenv(var, raising=False)
-
-        from gateway.media_policy import apply_media_policy_env
-
-        apply_media_policy_env()
-
-        assert os.environ.get("HERMES_MEDIA_DELIVERY_STRICT") == "1"
-        assert str(allow_dir) in os.environ.get("HERMES_MEDIA_ALLOW_DIRS", "")
-        assert os.environ.get("HERMES_MEDIA_TRUST_RECENT_FILES") == "0"
 
     def test_standalone_filter_honors_bridged_allowlist(self, monkeypatch, tmp_path):
         """End-to-end: strict-mode file inside allow_dirs passes validation

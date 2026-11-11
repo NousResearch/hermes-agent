@@ -12,7 +12,8 @@ from run_agent import AIAgent
 _ARGS = {"action": "poll", "session_id": "proc_x"}
 
 
-def _validate(arguments, *, valid_tool_names=("terminal", "tool_search", "tool_describe", "tool_call"),
+def _validate(arguments, *, name="process_manage",
+              valid_tool_names=("terminal", "tool_search", "tool_describe", "tool_call"),
               enabled_toolsets=None, provider_data=None):
     """Real validation on an agent whose tool search deferred process_manage behind the bridge."""
     from agent.turn_tool_validation import validate_tool_calls
@@ -25,7 +26,7 @@ def _validate(arguments, *, valid_tool_names=("terminal", "tool_search", "tool_d
     agent.enabled_toolsets, agent.disabled_toolsets = enabled_toolsets, None
     agent._vprint = lambda *a, **k: None
     tc = SimpleNamespace(id="call_1", type="function",
-                         function=SimpleNamespace(name="process_manage", arguments=arguments))
+                         function=SimpleNamespace(name=name, arguments=arguments))
     messages = []
     message = SimpleNamespace(content="", tool_calls=[tc], provider_data=provider_data)
     verdict = validate_tool_calls(agent, message, "tool_calls",
@@ -34,40 +35,35 @@ def _validate(arguments, *, valid_tool_names=("terminal", "tool_search", "tool_d
     return verdict, tc, [m["content"] for m in messages if m.get("role") == "tool"], agent
 
 
-@pytest.mark.parametrize("arguments, expected, executor_name", [
-    (json.dumps(_ARGS), _ARGS, "process_manage"),
-    ("", {}, "tool_call"),  # the bridge's schema probe refuses the missing 'action'
+@pytest.mark.parametrize("name, arguments, expected, executor_name", [
+    ("process_manage", json.dumps(_ARGS), _ARGS, "process_manage"),
+    ("process", json.dumps(_ARGS), _ARGS, "process_manage"),  # legacy alias, as older hints spell it
+    ("process_manage", "", {}, "tool_call"),  # the bridge's schema probe refuses the missing 'action'
 ])
-def test_real_name_is_rewritten_into_the_bridge_call(arguments, expected, executor_name):
-    from agent.tool_executor import _parse_tool_call
-
-    verdict, tc, errors, agent = _validate(arguments)
-
-    assert verdict.action == "ok"
-    assert tc.function.name == "tool_call"
-    assert json.loads(tc.function.arguments) == {"calls": [{"name": "process_manage", "arguments": expected}]}
-    assert errors == []
-    parsed = _parse_tool_call(agent, tc)
-    assert parsed.name == executor_name
-    assert (parsed.scope_block is None) == (executor_name == "process_manage")
-
-
-def test_native_replay_names_the_bridge_call():
-    """Signed-thinking turns replay from the ordered sidecars; the routed call must replay as tool_call."""
+def test_real_name_is_rewritten_into_the_bridge_call(name, arguments, expected, executor_name):
+    """The call runs as a model-written ``tool_call`` would, and signed-thinking turns, which
+    replay from the ordered native sidecars, replay it under the bridge name too."""
     from agent.anthropic_message_convert import _convert_assistant_message
     from agent.bedrock_adapter import _assistant_blocks
+    from agent.tool_executor import _parse_tool_call
 
     provider_data = {
         "anthropic_content_blocks": [{"type": "thinking", "thinking": "poll it", "signature": "sig"},
-                                     {"type": "tool_use", "id": "call_1", "name": "process_manage", "input": _ARGS}],
+                                     {"type": "tool_use", "id": "call_1", "name": name, "input": expected}],
         "bedrock_content_blocks": [{"reasoningContent": {"text": "poll it", "signature": "sig"}},
-                                   {"toolUse": {"toolUseId": "call_1", "name": "process_manage", "input": _ARGS}}],
+                                   {"toolUse": {"toolUseId": "call_1", "name": name, "input": expected}}],
     }
-    _, tc, _, _ = _validate(json.dumps(_ARGS), provider_data=provider_data)
+    verdict, tc, errors, agent = _validate(arguments, name=name, provider_data=provider_data)
+    routed = {"calls": [{"name": "process_manage", "arguments": expected}]}
+
+    assert verdict.action == "ok" and errors == []
+    assert tc.function.name == "tool_call"
+    assert json.loads(tc.function.arguments) == routed
+    parsed = _parse_tool_call(agent, tc)
+    assert parsed.name == executor_name
+    assert (parsed.scope_block is None) == (executor_name == "process_manage")
     stored = {"role": "assistant", "content": "", **provider_data, "tool_calls": [
         {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}]}
-    routed = {"calls": [{"name": "process_manage", "arguments": _ARGS}]}
-
     assert [b for b in _convert_assistant_message(stored)["content"] if b["type"] == "tool_use"] == [
         {"type": "tool_use", "id": "call_1", "name": "tool_call", "input": routed}]
     assert [b["toolUse"] for b in _assistant_blocks(stored, "") if "toolUse" in b] == [

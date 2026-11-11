@@ -35,6 +35,9 @@ def _shown(formatted: str) -> str:
         ("see https://e.com/a?x=\\in&y", "see https://e.com/a?x=\\in&y"),
         # A currency pair keeps both dollar signs even with a space before the amount.
         ("$5 \\to $ 10", "$5 → $ 10"),
+        # A digit on the next line or after a space is prose, never an amount: the math still maps.
+        ("1. Show $x \\to y$\n2. Then $a \\le b$\n3. Done", "1. Show x → y\n2. Then a ≤ b\n3. Done"),
+        ("$\\alpha$ 3 times", "α 3 times"),
     ],
 )
 def test_format_message_renders_latex_macros_as_unicode(markdown, visible):

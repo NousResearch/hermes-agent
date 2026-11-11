@@ -2,7 +2,7 @@ name: turn-completion-nudge
 repo: https://github.com/ether-btc/turn-completion-nudge
 sha: 3453efe28689f3855eb9865e9033f8823a0961e2
 subdir: "plugin"
-description: "Nudges the agent to continue when a turn ends prematurely (planning or announcing next steps it has not done). Fail-open: never blocks a turn."
+description: "Nudges the agent to continue when a turn ends prematurely (planning or announcing next steps it has not done). Fail-open: never blocks a turn. Disclosure — when the user sets `send_turn_text: true`, clipped turn text (about 1,200 chars of the user request and 1,500 chars of the assistant reply) is sent to OpenRouter (openrouter.ai, billed to the user's OPENROUTER_API_KEY) after each turn to score whether to nudge; with `amos_fallback: true` the same text may go to the keyless Amos/Scira API (api.amos.scira.ai). Both are off by default."
 maintainer: ether-btc
 tier: community
 category: tools

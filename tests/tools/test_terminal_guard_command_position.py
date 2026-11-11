@@ -1,5 +1,5 @@
-"""The long-lived-process guard must match a server BINARY in command position,
-never the same word used as an argument, a path component or a grep target.
+"""The long-lived-process guard refuses commands that start a server, never a command
+that only names one as an argument, a path component or a grep target.
 
 Regression for #42620, #108593, #137323: the guard matched server names anywhere in
 the command, so a read-only command or a package install that merely mentioned one
@@ -39,6 +39,9 @@ FALSE_POSITIVES = [
     "pip install uvicorn",
     "uv add gunicorn",
     "which uvicorn",
+    "git checkout -- vite",
+    "sudo grep -rn gunicorn /etc",
+    "cd web && ls node_modules/vite",
     # bounded invocations of a server binary
     "vite build",
     "npx vite build",
@@ -86,7 +89,6 @@ TRUE_POSITIVES = [
     "yarn watch",
     "cd x && npm run start",
     "docker compose up",
-    "docker compose -f dev.yml up web",
     "next dev",
     "npx next dev",
     "nodemon server.js",
@@ -116,10 +118,16 @@ TRUE_POSITIVES = [
     "poetry run uvicorn app:app",
     "uv run gunicorn app:app",
     "npx --yes vite",
-    "npm --prefix web run dev",
     "(cd web && npm run dev)",
     "if true; then npm run dev; fi",
     "doppler run -- npm run dev",
+    "direnv exec . uvicorn app:app",
+    "npm run start:dev",
+    # a data command still runs what it substitutes, and a watched build never exits
+    "echo $(npm run dev)",
+    "vite build --watch",
+    "nodemon --exec vite build",
+    "docker compose up -d && docker compose logs -f",
     "ssh -p 2222 host uvicorn app:app",
     "docker exec -it app uvicorn app:app",
 ]

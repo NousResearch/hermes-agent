@@ -86,130 +86,114 @@ def _strip_quotes(command: str) -> str:
     return re.sub(r"`[^`]*`", "``", result)
 
 
-# A server binary only means "this starts a server" in COMMAND POSITION: the first word of a
-# command segment, after env assignments, shell keywords, wrappers (sudo, env, timeout…) and
-# runners (npx, poetry run…). Anywhere else it is an argument or a path component
-# (`pip show uvicorn`, `ls node_modules/vite`, `grep -rn nodemon .`), which must run. Tokens are
-# walked rather than regex-matched so cost stays linear on any input.
-_SEGMENT_SPLIT_RE = re.compile(r"[;&|\n(){}]+")
+_LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b",
+    r"\bdocker\s+compose\s+up\b",
+    r"\bdocker\s+compose\s+logs\s+(?:-f|--follow)\b",   # what usually follows a detached `up`
+    r"\bnext\s+dev\b",
+    r"\bvite(?:\s|$)",
+    r"\bnodemon\b",
+    r"\buvicorn\b",
+    r"\bgunicorn\b",
+    r"\bpython(?:3)?\s+-m\s+http\.server\b",
+))
+
+# The patterns above match a server name anywhere, so a command that only MENTIONS one
+# (`grep -rn uvicorn .`, `ls node_modules/vite`, `npm install nodemon`) was refused too. A
+# command segment is excused when the word it executes is known to treat its arguments as
+# data, or when it is a bounded form of a server command. Everything else keeps the anywhere
+# match: an unrecognised wrapper (`direnv exec . uvicorn`) must still be refused, so the closed
+# set is the excuse list, never a launcher list.
+_SEGMENT_SPLIT_RE = re.compile(r"[;&|\n]+")
+# Windows launchers name the same command: `npm.cmd run dev`, `uvicorn.exe app:app`.
+_WIN_LAUNCHER_SUFFIX_RE = re.compile(r"\b(\w+)\.(?:exe|cmd|bat|ps1)\b", re.IGNORECASE)
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*=")
-_WIN_LAUNCHER_SUFFIX_RE = re.compile(r"\.(?:exe|cmd|bat|ps1)$")
-_SHELL_KEYWORDS = frozenset({"then", "do", "else", "elif", "if", "while", "until", "time", "!", "exec", "command"})
-# wrapper → (flags that take a separate value, leading positional arguments before the command)
-_COMMAND_WRAPPERS = {
-    "sudo": ({"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"}, 0),
-    "env": ({"-u", "-C", "-S"}, 0),
-    "nice": ({"-n"}, 0),
-    "ionice": ({"-c", "-n", "-p"}, 0),
-    "stdbuf": ((), 0),
-    "timeout": ({"-s", "-k"}, 1),
-    "xargs": ({"-I", "-n", "-P", "-L", "-d", "-E", "-s"}, 0),
-    "ssh": ({"-p", "-i", "-o", "-l", "-F", "-J"}, 1),  # the positional is the host
+# Substitutions run their contents whatever the outer command is (`echo $(npm run dev)`).
+_SUBSTITUTION_MARKERS = ("$(", "`", "<(", ">(")
+_TRANSPARENT_PREFIXES = frozenset({"sudo", "time", "then", "do", "else", "!"})
+_DATA_COMMANDS = frozenset((
+    "echo printf cat ls ll dir type grep egrep fgrep rg ag ack head wc stat du df file which whereis "
+    "whence rm rmdir mkdir cp mv ln touch chmod chown cd pushd test [ sed awk sort uniq cut tr jq yq "
+    "tree basename dirname realpath readlink diff cmp tar zip unzip fd locate pgrep ps lsof "
+    "curl wget git export unset"
+).split())
+_DATA_UNLESS_FLAGGED = {
+    "find": ("-exec", "-execdir", "-ok", "-okdir"),
+    "tail": ("-f", "-F", "--follow"),
 }
-_RUNNERS = {  # runner → subcommand that must follow it (None: the next word is the command)
-    "npx": None, "bunx": None, "pnpx": None,
-    "poetry": "run", "uv": "run", "pipenv": "run", "pdm": "run", "hatch": "run",
-}
-_JS_PACKAGE_MANAGERS = frozenset({"npm", "pnpm", "yarn", "bun"})
-_JS_PM_VALUE_FLAGS = frozenset({"--prefix", "-C", "--cwd", "--dir", "--filter", "-F", "-w", "--workspace"})
-_JS_PM_SERVER_SCRIPTS = frozenset({"dev", "start", "serve", "watch"})
-_COMPOSE_VALUE_FLAGS = frozenset({"-f", "--file", "-p", "--project-name", "--project-directory", "--profile", "--env-file"})
-_DOCKER_EXEC_VALUE_FLAGS = frozenset({"-e", "--env", "-u", "--user", "-w", "--workdir", "--env-file"})
-_SERVER_BINARIES = frozenset({"vite", "nodemon", "uvicorn", "gunicorn"})
-_SERVER_MODULES = frozenset({"uvicorn", "gunicorn", "http.server"})
-_BOUNDED_SERVER_ARGS = {"vite": ("build", "optimize"), "gunicorn": ("--check-config",)}
+_PACKAGE_TOOLS = frozenset("npm pnpm yarn bun pip pip3 uv poetry pdm pipx brew apt apt-get apk dnf conda cargo gem".split())
+_PACKAGE_DATA_SUBCOMMANDS = frozenset((
+    "install i add update up upgrade remove rm uninstall ls list view info show why outdated audit ci "
+    "pkg search freeze download sync lock"
+).split())
+_VITE_LAUNCHERS = frozenset({"sudo", "npx", "bunx", "pnpx", "npm", "pnpm", "yarn", "bun", "exec", "dlx", "x"})
 
 
-def _word(token: str) -> str:
-    """Basename of *token* without a Windows launcher suffix (`.\\Scripts\\uvicorn.exe` → `uvicorn`)."""
-    return _WIN_LAUNCHER_SUFFIX_RE.sub("", re.split(r"[/\\]", token.lower())[-1])
+def _is_bounded_server_form(tokens: list) -> bool:
+    """A server command that exits by itself: a one-shot build, a config check, a detached start."""
+    words = [t.lower() for t in tokens]
+    for i, word in enumerate(words[:-1]):
+        if re.split(r"[/\\]", word)[-1] == "vite" and words[i + 1] in ("build", "optimize"):
+            # Only when vite itself is the command (`nodemon --exec vite build` is not), and a
+            # watched build never exits.
+            return (all(w in _VITE_LAUNCHERS or w.startswith("-") or _ENV_ASSIGNMENT_RE.match(w) for w in words[:i])
+                    and not any(w in ("--watch", "-w") for w in words))
+    if "--check-config" in words:
+        return any(re.split(r"[/\\]", w)[-1] == "gunicorn" for w in words)
+    # Detached `compose up` returns once the containers have started. What follows a bare `--`
+    # belongs to another program, so a `-d` there does not count.
+    if "--" in words:
+        words = words[:words.index("--")]
+    return "compose" in words and "up" in words and any(w in ("-d", "--detach") for w in words)
 
 
-def _skip_flags(tokens: list, i: int, value_flags=()) -> int:
-    """Index of the first non-flag token at or after *i*; a flag in *value_flags* also consumes its value."""
-    while i < len(tokens) and tokens[i].startswith("-"):
-        i += 2 if tokens[i] in value_flags else 1
-    return i
-
-
-def _command_start(tokens: list) -> int:
-    """Index of the word the shell will execute, past assignments, keywords, wrappers and runners."""
+def _command_word(tokens: list) -> tuple[str, list]:
+    """``(word, args)`` for the command a segment executes, past env assignments and the few
+    prefixes that pass a command through unchanged. A wrong skip can only land on a word that
+    is not a data command, which keeps the anywhere match."""
     i = 0
     while i < len(tokens):
-        word = _word(tokens[i])
-        if _ENV_ASSIGNMENT_RE.match(tokens[i]) or word in _SHELL_KEYWORDS:
+        word = re.split(r"[/\\]", tokens[i].lstrip("({").lower())[-1]
+        if word == "sudo":
             i += 1
-        elif word in _COMMAND_WRAPPERS:
-            value_flags, positionals = _COMMAND_WRAPPERS[word]
-            i = _skip_flags(tokens, i + 1, value_flags) + positionals
-        elif word in _RUNNERS and (_RUNNERS[word] is None or tokens[i + 1:i + 2] == [_RUNNERS[word]]):
-            i = _skip_flags(tokens, i + (1 if _RUNNERS[word] is None else 2))
-        elif word in _JS_PACKAGE_MANAGERS and tokens[i + 1:i + 2] and tokens[i + 1] in ("exec", "dlx", "x"):
-            i = _skip_flags(tokens, i + 2)
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 2 if tokens[i] in ("-u", "-g") else 1
+        elif word in _TRANSPARENT_PREFIXES or _ENV_ASSIGNMENT_RE.match(tokens[i]):
+            i += 1
         else:
-            break
-    return i
+            return word, tokens[i + 1:]
+    return "", []
 
 
-def _server_binary_runs(word: str, args: list) -> bool:
-    """A server binary serves unless a bounded subcommand follows (`vite build`)."""
-    return not any(arg in _BOUNDED_SERVER_ARGS.get(word, ()) for arg in args)
-
-
-def _js_script_serves(args: list) -> bool:
-    script = args[_skip_flags(args, 0, _JS_PM_VALUE_FLAGS):]
-    if script[:1] in (["run"], ["run-script"]):
-        script = script[1:]
-    if not script:
+def _only_names_a_server(segment: str) -> bool:
+    """True when *segment* cannot start a server whatever names it mentions."""
+    if any(marker in segment for marker in _SUBSTITUTION_MARKERS):
         return False
-    # `yarn vite` / `pnpm vite` run the local binary of that name.
-    return script[0] in _JS_PM_SERVER_SCRIPTS or (
-        script[0] in _SERVER_BINARIES and _server_binary_runs(script[0], script[1:]))
+    tokens = segment.split()
+    if _is_bounded_server_form(tokens):
+        return True
+    word, args = _command_word(tokens)
+    if word in _DATA_UNLESS_FLAGGED:  # `find -exec` runs a command; `tail -f` never exits
+        return not any(arg in _DATA_UNLESS_FLAGGED[word] for arg in args)
+    if word == "command":
+        return args[:1] in (["-v"], ["-V"])
+    if (word in ("uv", "python", "python3") and args[:1] == ["pip"]) or args[:2] == ["-m", "pip"]:
+        args = args[args.index("pip") + 1:]
+    elif word not in _PACKAGE_TOOLS:
+        return word in _DATA_COMMANDS
+    return next((arg for arg in args if not arg.startswith("-")), "") in _PACKAGE_DATA_SUBCOMMANDS
 
 
-def _compose_up_attached(args: list) -> bool:
-    """`compose up` holds the terminal unless detached, which returns once containers start."""
-    args = args[_skip_flags(args, 0, _COMPOSE_VALUE_FLAGS):]
-    return args[:1] == ["up"] and not any(a in ("-d", "--detach") for a in args[1:])
-
-
-def _python_runs_server_module(args: list) -> bool:
-    return "-m" in args and any(m in _SERVER_MODULES for m in args[args.index("-m") + 1:args.index("-m") + 2])
-
-
-def _docker_holds_terminal(args: list) -> bool:
-    if args[:1] == ["compose"]:
-        return _compose_up_attached(args[1:])
-    if args[:1] == ["exec"]:  # `docker exec [flags] <container> <command…>`
-        return _segment_starts_server(args[_skip_flags(args, 1, _DOCKER_EXEC_VALUE_FLAGS) + 1:])
-    return False
-
-
-_SERVER_COMMANDS = {
-    **{name: (lambda args, name=name: _server_binary_runs(name, args)) for name in _SERVER_BINARIES},
-    **{name: _js_script_serves for name in _JS_PACKAGE_MANAGERS},
-    "docker": _docker_holds_terminal,
-    "docker-compose": _compose_up_attached,
-    "next": lambda args: args[:1] == ["dev"],
-}
-
-
-def _segment_starts_server(tokens: list) -> bool:
-    i = _command_start(tokens)
-    if i >= len(tokens):
-        return False
-    word, args = _word(tokens[i]), tokens[i + 1:]
-    if re.fullmatch(r"python[\d.]*|py", word):
-        return _python_runs_server_module(args)
-    check = _SERVER_COMMANDS.get(word)
-    return bool(check and check(args))
+def _names_a_server(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _LONG_LIVED_FOREGROUND_PATTERNS)
 
 
 def _starts_long_lived_server(unquoted: str) -> bool:
-    # A bare `--` hands the rest to another program (`doppler run -- npm run dev`), so what
-    # follows it is checked as a command of its own.
-    return any(_segment_starts_server(part.split())
-               for seg in _SEGMENT_SPLIT_RE.split(unquoted) for part in re.split(r"(?:^|\s)--(?:\s|$)", seg))
+    unquoted = _WIN_LAUNCHER_SUFFIX_RE.sub(r"\1", unquoted)
+    # Whole-string check first: nearly every command names no server at all.
+    return _names_a_server(unquoted) and any(
+        _names_a_server(segment) and not _only_names_a_server(segment)
+        for segment in _SEGMENT_SPLIT_RE.split(unquoted))
 
 
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.

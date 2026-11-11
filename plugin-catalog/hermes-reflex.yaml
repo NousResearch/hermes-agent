@@ -1,0 +1,12 @@
+name: hermes-reflex
+repo: https://github.com/arjunbagga-xyz/hermes-reflex
+sha: 3010515e54490dabcc9b881fedcd7401a2371e66
+title: Hermes Reflex
+description: Skill-to-executable-code reflex compiler with parameter injection, 3-gate
+  pre-trust verification, Curator archive recovery, and two-tier native Hermes GenUI
+  with a draggable sticky-note pinboard pane.
+maintainer: arjunbagga-xyz
+tier: community
+category: automation
+version: 1.0.0
+docs_url: https://github.com/arjunbagga-xyz/hermes-reflex#readme

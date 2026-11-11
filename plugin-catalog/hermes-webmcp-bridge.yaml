@@ -1,0 +1,30 @@
+name: hermes-webmcp-bridge
+title: Hermes WebMCP Bridge
+repo: https://github.com/NifasathA/hermes-webmcp-bridge
+sha: c75bece094260f45c6e9ff7792dae0aea3686920
+description: "Permission-aware, ephemeral WebMCP capabilities with origin allowlists, schema validation, conservative risk classification, exact one-call approvals, and safe revocation. Disclosure — connects only to operator-configured Chrome DevTools WebSocket endpoints and invokes website-provided WebMCP tools; those websites may make their own network requests. It does not launch a browser, read credentials, execute arbitrary JavaScript, or persist website capabilities."
+maintainer: NifasathA
+tier: community
+category: web
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+docs_url: https://github.com/NifasathA/hermes-webmcp-bridge/blob/c75bece094260f45c6e9ff7792dae0aea3686920/README.md
+readme: true
+platforms: []
+known_issues:
+  - Requires an operator-managed Chromium 149+ CDP endpoint started with WebMCP experimental features enabled.
+  - Regular Chromium 151+ on Linux ARM64 may hit upstream navigation issue 554752968; chromium-shell is the verified workaround.
+  - WebMCP remains experimental, and website-provided tool behavior is outside the plugin's control.
+capabilities:
+  provides_tools:
+    - webmcp_connect
+    - webmcp_list_tools
+    - webmcp_execute
+    - webmcp_disconnect
+  provides_hooks:
+    - pre_tool_call
+    - on_session_end
+    - on_session_reset
+  provides_middleware:
+    - tool_execution
+  requires_env: []

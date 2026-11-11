@@ -12,9 +12,10 @@ and the batch-scan algorithm; this module pins the HOOK contract:
   (d) post_tool_call releases the claim when the call failed (and keeps it on success)
   (e) enforcement defaults OFF — the plugin is inert until the flag is enabled
   (f) the plugin manifest + register() wire both hooks
-  (g) the Direct-scanner repo derivation: a non-default dispatch-context repo is
-      honoured for bare ``GH-n`` / ``#n`` refs, and ``DEFAULT_REPO_*`` applies
-      ONLY when the context carries no repo at all
+  (g) the Direct-scanner repo derivation: a non-default SERVER-SIDE
+      dispatch-context repo is honoured for bare ``GH-n`` / ``#n`` refs,
+      ``DEFAULT_REPO_*`` applies ONLY when the context carries no repo at all,
+      and model-controlled batch / ``tasks[]`` repo fields are ignored
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ REPO_NAME = "ANDREW-GRP"
 SCOPE_33 = "gh:andrew288369/andrew-grp#33"
 SCOPE_39 = "gh:andrew288369/andrew-grp#39"
 SCOPE_47 = "gh:andrew288369/andrew-grp#47"
+SCOPE_48 = "gh:andrew288369/andrew-grp#48"
 
 
 @pytest.fixture(autouse=True)
@@ -374,29 +376,36 @@ def test_g2_scopes_from_text_falls_back_to_default_repo_only_without_context():
     assert gate._scopes_from_text("Work GH-47 now", ("otherowner",)) == {SCOPE_47}
 
 
-def test_g3_scan_dispatch_scope_derives_the_repo_per_text():
-    """``scan_dispatch_scope`` resolves the repo per text: explicit
-    ``default_repo``, else the batch's own repo field, else the individual
-    ``tasks[]`` entry's repo field, else ``DEFAULT_REPO_*``."""
+def test_g3_scan_dispatch_scope_ignores_model_controlled_repo_fields():
+    """The ledger repo key is SERVER-SIDE only: a repo carried on the batch or
+    on a ``tasks[]`` entry is model-controlled input and MUST NOT influence the
+    scope. Only an explicit ``default_repo`` (card/session context) or
+    ``DEFAULT_REPO_*`` applies."""
     batch = {"goal": "Work GH-47", "context": ""}
     assert gate.scan_dispatch_scope(batch, default_repo="otherowner/other-repo") == [SCOPE_OTHER_47]
-    # No context at all -> DEFAULT_REPO_*.
+    # No server-side context -> DEFAULT_REPO_*.
     assert gate.scan_dispatch_scope(batch) == [SCOPE_47]
-    # The batch's OWN repo field is honoured even without ``default_repo``.
+    # The batch's OWN repo field is model input -> ignored.
     batch_repo = {"goal": "Work GH-47", "context": "", "repo": "otherowner/other-repo"}
-    assert gate.scan_dispatch_scope(batch_repo) == [SCOPE_OTHER_47]
-    # An explicit ``default_repo`` outranks the batch's own repo field.
-    batch_both = {"goal": "Work GH-47", "context": "", "repo": "someone/else"}
-    assert gate.scan_dispatch_scope(batch_both, default_repo="otherowner/other-repo") == [SCOPE_OTHER_47]
-    # A tasks[] entry's own repo applies to its own text; the top-level goal
-    # keeps the batch/default repo.
+    assert gate.scan_dispatch_scope(batch_repo) == [SCOPE_47]
+    # A tasks[] entry's own repo is model input -> ignored for its own text too.
     batch_tasks = {
         "goal": "Work GH-47",
         "context": "",
         "tasks": [{"goal": "Review GH-48", "context": "", "source_repo": "otherowner/other-repo"}],
     }
-    assert gate.scan_dispatch_scope(batch_tasks) == [SCOPE_47, SCOPE_OTHER_48]
-    # A tasks[] entry with no repo inherits the batch repo.
+    assert gate.scan_dispatch_scope(batch_tasks) == [SCOPE_47, SCOPE_48]
+    # An explicit server-side default_repo outranks every model-controlled field.
+    batch_both = {
+        "goal": "Work GH-47",
+        "context": "",
+        "repo": "someone/else",
+        "tasks": [{"goal": "Review GH-48", "context": "", "repository": "someone/else"}],
+    }
+    assert gate.scan_dispatch_scope(batch_both, default_repo="otherowner/other-repo") == [
+        SCOPE_OTHER_47, SCOPE_OTHER_48,
+    ]
+    # All texts inherit the same server-side repo.
     batch_tasks_inherit = {
         "goal": "Work GH-47",
         "context": "",
@@ -469,6 +478,53 @@ def test_g6_pre_tool_call_context_repo_changes_the_conflict_key(_private_ledger,
     )
     assert res2 is None, res2
     assert gate.claimed_scopes("call-g6b") == [SCOPE_47]
+
+
+def test_g7_pre_tool_call_cannot_be_moved_off_the_server_side_repo(_private_ledger, monkeypatch):
+    """BYP-2 regression (NEO MEDIUM): a crafted dispatch must not choose the
+    ledger repo. A ``repo`` / ``tasks[].source_repo`` field on the model-
+    controlled payload is ignored; the hook claims on the SERVER-SIDE
+    ``default_repo`` or ``DEFAULT_REPO_*`` only."""
+    monkeypatch.setenv("HERMES_OWNERSHIP_DIRECT_ENFORCE", "1")
+    _seed(_private_ledger, SCOPE_OTHER_47, "session-other")
+
+    # (i) The batch tries to move the claim onto otherowner/other-repo#47,
+    # which a foreign session owns. The hook ignores that and claims the
+    # DEFAULT repo's #47 instead.
+    res = gate.pre_tool_call(
+        tool_name="delegate_task",
+        args={"batch": {"goal": "Work GH-47 per directive", "context": "",
+                        "repo": "otherowner/other-repo"}},
+        session_id="session-A", tool_call_id="call-g7a",
+    )
+    assert res is None, res
+    assert gate.claimed_scopes("call-g7a") == [SCOPE_47]
+    assert inspect_ownership(_open(_private_ledger), SCOPE_47)["verdict"] == VERDICT_OWNED
+    assert inspect_ownership(_open(_private_ledger), SCOPE_OTHER_47)["owner"] == "session-other"
+
+    # (ii) Same attempt via a tasks[] entry repo field -> still the default repo.
+    res2 = gate.pre_tool_call(
+        tool_name="delegate_task",
+        args={"batch": {"goal": "Work GH-47 per directive", "context": "",
+                        "tasks": [{"goal": "Review GH-48", "context": "",
+                                   "source_repo": "otherowner/other-repo"}]}},
+        session_id="session-A", tool_call_id="call-g7b",
+    )
+    assert res2 is None, res2
+    assert gate.claimed_scopes("call-g7b") == [SCOPE_47, SCOPE_48]
+
+    # (iii) The server-side default_repo is still honoured: it moves the claim
+    # onto the foreign-owned other-repo issue and the batch is blocked.
+    res3 = gate.pre_tool_call(
+        tool_name="delegate_task",
+        args={"batch": {"goal": "Work GH-47 per directive", "context": "",
+                        "repo": "someone/else"}},
+        session_id="session-A", tool_call_id="call-g7c",
+        default_repo="otherowner/other-repo",
+    )
+    assert isinstance(res3, dict) and res3.get("action") == "block", res3
+    assert SCOPE_OTHER_47 in res3["message"], res3
+    assert gate.claimed_scopes("call-g7c") == []
 
 
 def _open(db_path):

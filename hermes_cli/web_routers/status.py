@@ -228,6 +228,51 @@ def _public_platform_entry(value: Any) -> Any:
     return {k: v for k, v in value.items() if k not in _PRIVATE_PLATFORM_ENTRY_KEYS}
 
 
+# What an unverified caller may read of a platform entry: lifecycle enum, the source-controlled
+# error code, the attention flag and timestamps. ``error_message`` is adapter exception text (endpoint
+# URLs, response bodies, credential names) and any other key is whatever an adapter chose to write,
+# so the anonymous projection is an allowlist, never a denylist (#90700).
+_PUBLIC_PLATFORM_STATES = frozenset({
+    "connected", "connecting", "disabled", "disconnected", "fatal", "paused", "retrying", "running", "ok"})
+# Source-controlled codes (``telegram_polling_conflict``, ``loop_liveness_watchdog``) are snake_case
+# identifiers; anything else (spaces, URLs, quotes, ``=``) is prose and does not pass.
+_PUBLIC_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _anonymous_platform_entry(value: Any) -> dict[str, Any]:
+    """Allowlisted, value-validated view of one platform entry for an unverified caller."""
+    if not isinstance(value, dict):
+        return {}
+    entry: dict[str, Any] = {}
+    state = value.get("state")
+    if state is not None:
+        entry["state"] = state if isinstance(state, str) and state in _PUBLIC_PLATFORM_STATES else "unknown"
+    code = value.get("error_code")
+    if isinstance(code, str) and _PUBLIC_CODE_RE.fullmatch(code):
+        entry["error_code"] = code
+    if isinstance(value.get("needs_attention"), bool):
+        entry["needs_attention"] = value["needs_attention"]
+    for key in ("retrying_since", "updated_at"):
+        stamp = normalize_updated_at(value.get(key)) if isinstance(value.get(key), str) else None
+        if stamp is not None:
+            entry[key] = stamp
+    return entry
+
+
+def _redact_status_for_unverified(status: dict[str, Any]) -> None:
+    """Reduce the free-text diagnostics of a ``/api/status`` body to bounded codes in place.
+    Full detail stays for a caller the auth gate would accept on a gated route."""
+    from agent.monitoring.gateway_health import classify_exit_reason
+    status["gateway_platforms"] = {key: _anonymous_platform_entry(value)
+                                   for key, value in (status.get("gateway_platforms") or {}).items()}
+    reason = status.get("gateway_exit_reason")
+    if reason is not None and not (isinstance(reason, str) and _PUBLIC_CODE_RE.fullmatch(reason)):
+        status["gateway_exit_reason"] = classify_exit_reason(
+            reason, state=status.get("gateway_state"), restart_requested=False)
+    # Remediation prose naming the colliding profiles and the credential's env var.
+    status["multiplex_standalone_reason"] = None
+
+
 def _merge_profile_gateway_platforms(gateway_platforms: dict, profile_platforms: dict) -> dict:
     """Merge independent per-profile gateway platform states: hosts running separate gateway
     services per profile (``gateway_mode == "multiple"``) persist each profile's platform
@@ -527,22 +572,28 @@ _WEBAPP_SIGNED_OUT_STATUS_KEYS = frozenset({
     "auth_required", "auth_providers", "auth_flows"})
 
 
-async def _webapp_caller_signed_out(request: Request) -> bool:
-    """True when this request reached the gateway's Webapp behind its sign-in gate with no
-    session the gate would accept. ``/api/status`` is public, so the gate never verified one."""
+async def _status_caller_verified(request: Request) -> bool:
+    """True when the caller carries a credential the auth gate would accept on a gated route
+    (session cookie/bearer, native principal, or the loopback session token). ``/api/status`` is
+    public, so the gate never verified one. ``None`` is an in-process caller, not a network one."""
     from hermes_cli.web_server import _require_token
-    from hermes_cli.web_server_surface import surface
-    if request is None or surface(request.app.state) != "webapp" \
-            or not getattr(request.app.state, "auth_required", False):
-        return False
-    if getattr(request.state, "session", None) is None:
+    if request is None:
+        return True
+    if getattr(request.app.state, "auth_required", False) and getattr(request.state, "session", None) is None:
         from hermes_cli.dashboard_auth.middleware import peek_session
         request.state.session = await run_in_threadpool(peek_session, request)
     try:
         _require_token(request)
     except HTTPException:
-        return True
-    return False
+        return False
+    return True
+
+
+def _webapp_caller_signed_out(request: Request, verified: bool) -> bool:
+    """True when this request reached the gateway's Webapp behind its sign-in gate unverified."""
+    from hermes_cli.web_server_surface import surface
+    return (not verified and surface(request.app.state) == "webapp"
+            and bool(getattr(request.app.state, "auth_required", False)))
 
 
 @router.get("/api/status")
@@ -556,7 +607,8 @@ async def get_status(profile: Optional[str] = None,
     process-global skills-module attributes a concurrent request would cross-restore.
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
-    signed_out = await _webapp_caller_signed_out(request)
+    verified = await _status_caller_verified(request)
+    signed_out = _webapp_caller_signed_out(request, verified)
     status_scope = None
     # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.
     requested_profile = "" if signed_out else (profile or "").strip()
@@ -645,6 +697,8 @@ async def get_status(profile: Optional[str] = None,
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
 
+        if not verified:
+            _redact_status_for_unverified(status)
         if signed_out:
             return {key: value for key, value in status.items() if key in _WEBAPP_SIGNED_OUT_STATUS_KEYS}
         return status

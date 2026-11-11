@@ -1,7 +1,7 @@
 name: reliquary
 title: Reliquary
 repo: https://github.com/Lokee86/reliquary-hermes
-sha: 20d398459a91de3b67eb6cee12bd325f1a304c56
+sha: 0de70d170a575582aeb71ba3daff371fc0fdd42c
 version: "0.1.0"
 description: >-
   Local, inspectable long-term memory with source provenance, conversation capture,
@@ -19,14 +19,15 @@ maintainer: Lokee86
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/Lokee86/reliquary-hermes/tree/20d398459a91de3b67eb6cee12bd325f1a304c56
+docs_url: https://github.com/Lokee86/reliquary-hermes/tree/0de70d170a575582aeb71ba3daff371fc0fdd42c
 screenshots:
-  - https://raw.githubusercontent.com/Lokee86/reliquary-hermes/20d398459a91de3b67eb6cee12bd325f1a304c56/assets/graph-overview.png
+  - https://raw.githubusercontent.com/Lokee86/reliquary-hermes/0de70d170a575582aeb71ba3daff371fc0fdd42c/assets/graph-overview.png
 readme: true
 platforms:
   - windows
 known_issues:
   - Build the native host with scripts/build-native.ps1 before running Hermes memory setup; no executable is committed or automatically downloaded.
+  - The attested CI artifact uses optimization level 1; the local source-build script retains full release optimization.
   - Processing accepts nonsecret JSON routes and a Hermes-managed API key. Reliquary CVCFG credentials and Codex subscription sign-in are unsupported in this catalog package.
   - Stock Desktop supports browsing. Desktop graph bytes, setup, and writes depend on Hermes SDK/native-admission capabilities; the web dashboard supports setup and writes.
   - Automatic capture and project routing require trusted Hermes history/project capabilities. Unsupported hosts pause automatic capture and use General memory for new sessions.

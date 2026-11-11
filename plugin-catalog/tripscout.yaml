@@ -1,6 +1,6 @@
 name: tripscout
 repo: https://github.com/marcofailli/tripscout
-sha: 03ee33a44102b36f7a155a90e6699b6e71c8a9a0
+sha: 9d3d583e0d33b65b1942c769fe90bede58b56f69
 subdir: ""
 description: >-
   Cheap city-break finder: prices flights AND lodging together across a date window, adds the
@@ -27,8 +27,8 @@ maintainer: marcofailli
 tier: community
 category: tools
 requires_hermes: ">=0.23"
-docs_url: https://github.com/marcofailli/tripscout/tree/03ee33a44102b36f7a155a90e6699b6e71c8a9a0
-version: "0.3.7"
+docs_url: https://github.com/marcofailli/tripscout/tree/9d3d583e0d33b65b1942c769fe90bede58b56f69
+version: "0.3.8"
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

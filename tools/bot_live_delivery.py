@@ -31,16 +31,13 @@ _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 def _usable_state_db(home: Path) -> Path | None:
     """``home/state.db`` when it holds a store, else None.
 
-    A 0-byte file is an interrupted initialisation, not an empty profile: SQLite opens it and
-    then every query fails with "no such table: sessions". Callers treat it as "no store" so
-    the fallback delivery path still sends the message (#153048)."""
+    A 0-byte or table-less file is an interrupted initialisation, not an empty profile: SQLite
+    opens it and then every query fails with "no such table: sessions". Callers read it as "no
+    store" (no owner), the same as a missing file; a damaged non-empty store still raises (#153048)."""
+    from hermes_state_dbfile import state_db_holds_store
+
     db_path = home / 'state.db'
-    try:
-        if db_path.is_file() and db_path.stat().st_size > 0:
-            return db_path
-    except OSError:
-        return None
-    return None
+    return db_path if state_db_holds_store(db_path) else None
 
 
 def _bot_chat_tip(home: Path) -> str | None:

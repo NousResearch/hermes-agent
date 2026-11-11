@@ -86,7 +86,9 @@ class _Session:
         if path not in self._dbs:
             if self.read_only:
                 from hermes_state import SessionDB
-                self._dbs[path] = SessionDB(path, read_only=True) if path.exists() else _EMPTY_STORE
+                from hermes_state_dbfile import state_db_holds_store
+                # A 0-byte or table-less file is an unfinished init, read as empty like a missing one (#153048).
+                self._dbs[path] = SessionDB(path, read_only=True) if state_db_holds_store(path) else _EMPTY_STORE
             else:
                 from hermes_state_registry import acquire
                 self._dbs[path] = acquire(path)

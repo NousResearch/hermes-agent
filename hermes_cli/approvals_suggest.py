@@ -151,8 +151,9 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     that actually executed (i.e. carried an implied user approval).
     """
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    from hermes_state_dbfile import state_db_holds_store
     path = Path(db_path) if db_path else default_db_path()
-    if not path.exists():
+    if not state_db_holds_store(path):  # missing, 0-byte or table-less: no history yet (#153048)
         return []
 
     since_ts = 0.0 if days <= 0 else time.time() - days * 86400

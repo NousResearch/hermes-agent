@@ -40,11 +40,13 @@ async def test_a_restart_inside_a_flood_window_keeps_the_chat_quiet(tmp_path):
     old._bot.send_message = AsyncMock(side_effect=_FloodError(200.0))
     refused = await old.send("4242", "hello")
     assert refused.success is False and refused.error.startswith("flood_control:")
-    await _flush(old)
+    assert (await old.send("4243", "second chat")).success is False  # a second window while the first write runs
+    await old.disconnect()  # shutdown: background tasks are cancelled, the pending window write still lands
 
     new = _adapter(tmp_path)  # the next process, same profile home and bot
-    again = await new.send("4242", "after restart")
-    assert again.success is False and again.error.startswith("flood_control:")
+    for chat in ("4242", "4243"):
+        again = await new.send(chat, "after restart")
+        assert again.success is False and again.error.startswith("flood_control:")
     new._bot.send_message.assert_not_called()  # no request fired into the penalty
     # Another chat of the same bot is unaffected.
     assert (await new.send("999", "other chat")).success is True

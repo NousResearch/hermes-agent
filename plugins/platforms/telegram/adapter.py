@@ -210,7 +210,7 @@ from plugins.platforms.telegram.telegram_network import (
     proxy_target_hosts, telegram_verify)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
-from plugins.platforms.telegram.telegram_flood_cooldown import TelegramFloodCooldownMixin
+from plugins.platforms.telegram.telegram_flood_cooldown import TelegramFloodCooldownMixin, land_persisted_state
 from plugins.platforms.telegram.telegram_send_errors import LOST, classify_send_exception, explain_username_chat_not_found, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
 from plugins.platforms.telegram.telegram_split import REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
@@ -3168,10 +3168,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 logger.warning("[%s] Error during Telegram disconnect: %s", self.name, _redact_telegram_error_text(e))
         self._app = None
         self._bot = None
-        # Land the last completed receipts before a replacement adapter reads them.
-        flush = getattr(self, "_update_receipt_flush", None)
-        if flush is not None and not flush.done():
-            await self._await_disconnect_step(asyncio.shield(flush), _DISCONNECT_STEP_TIMEOUT, "update-receipt flush")
+        await land_persisted_state(self)  # update receipts + flood windows, before a replacement reads them
         logger.info("[%s] Disconnected from Telegram", self.name)
 
     def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:

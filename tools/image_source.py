@@ -57,11 +57,26 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
+# ``doc.pdf#page=3`` (the PDF open-parameters fragment) picks the page a PDF source renders.
+_PDF_PAGE_RE = re.compile(r"#page=(\d{1,5})$", re.IGNORECASE)
+_PDF_RENDER_DPI, _PDF_RENDER_TIMEOUT = 150, 60
+
+
 async def resolve_image_source(
     src: str, ctx: ResolveContext, *, permitted: tuple = ("image",)) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
+    m = _PDF_PAGE_RE.search(s) if "image" in permitted and not s.startswith("data:") else None
+    resolved = await _resolve_source(s[:m.start()] if m else s, ctx, permitted)
+    if resolved.mime == "application/pdf":
+        return await asyncio.to_thread(_render_pdf_page, resolved, int(m.group(1)) if m else 1, s)
+    if m:
+        raise NotAnImage("#page= applies only to PDF sources", src=s, origin=resolved.origin)
+    return resolved
+
+
+async def _resolve_source(s: str, ctx: ResolveContext, permitted: tuple) -> ResolvedImage:
     if s.startswith("data:"):
         data, mime = _resolve_data_url(s)
         return _finalize(data, mime, "data", s, permitted)
@@ -78,7 +93,7 @@ async def resolve_image_source(
     # Everything else is a filesystem path — including bare relative names like "pic.png"
     # (a path-shape gate here regressed them once).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+    p = Path(os.path.expanduser(candidate))  # health: allow ASYNC240 -- moved unchanged from resolve_image_source; no I/O
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
@@ -312,6 +327,10 @@ def _finalize(
         if "image" not in permitted:
             raise NotAnImage("source is an image, but this argument takes a video", src=src, origin=origin)
         return ResolvedImage(data=data, mime=sniffed, origin=origin)
+    if "image" in permitted and data[:5] == b"%PDF-":
+        # Perplexity Computer passes document pages to the model as images (Agent API native document
+        # input); here a PDF source renders one page (page 1 unless ``#page=N``) via poppler.
+        return ResolvedImage(data=data, mime="application/pdf", origin=origin)
     if "image" in permitted and b"<svg" in data[:4096].lower():
         # Pass SVG through — call sites rasterize it to PNG before embedding.
         return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
@@ -352,3 +371,20 @@ async def resolve_local_source_to_data_url(
     encoded = base64.b64encode(resolved.data).decode("ascii")
     mime = resolved.mime or "application/octet-stream"
     return f"data:{mime};base64,{encoded}"
+
+
+def _render_pdf_page(pdf: ResolvedImage, page: int, src: str) -> ResolvedImage:
+    """Rasterize one 1-based PDF page to PNG with ``pdftoppm`` (bytes in on stdin, PNG out on stdout)."""
+    import subprocess
+    cmd = ["pdftoppm", "-png", "-r", str(_PDF_RENDER_DPI), "-singlefile", "-f", str(page), "-l", str(page), "-"]
+    try:
+        proc = subprocess.run(cmd, input=pdf.data, capture_output=True, timeout=_PDF_RENDER_TIMEOUT, check=False)
+    except FileNotFoundError:
+        raise NotAnImage("PDF pages need pdftoppm (poppler-utils) to render", src=src, origin=pdf.origin)
+    except subprocess.TimeoutExpired:
+        raise NotAnImage(f"rendering PDF page {page} timed out", src=src, origin=pdf.origin)
+    if proc.returncode != 0 or not proc.stdout:
+        detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise NotAnImage(f"could not render PDF page {page}: {detail[-1] if detail else 'no output'}",
+                         src=src, origin=pdf.origin)
+    return _finalize(proc.stdout, "", pdf.origin, src)

@@ -716,3 +716,37 @@ class TestHeicDetection:
         path, _mime, err = vt._normalize_to_supported_image(broken, "image/avif")
         assert path is None
         assert "AV1" in err or "Pillow" in err
+
+
+
+def _blank_pdf(pages: int = 2) -> bytes:
+    """A minimal valid PDF with ``pages`` blank pages (xref offsets computed)."""
+    kids = " ".join(f"{3 + i} 0 R" for i in range(pages))
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>".encode()]
+    objs += [b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>"] * pages
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+@pytest.mark.skipif(__import__("shutil").which("pdftoppm") is None, reason="needs poppler pdftoppm")
+@pytest.mark.parametrize("suffix, ok", [("", True), ("#page=2", True), ("#page=9", False)])
+@pytest.mark.asyncio
+async def test_pdf_source_renders_the_requested_page(tmp_path, monkeypatch, suffix, ok):
+    """A PDF given to vision becomes a PNG of page 1, or of ``#page=N``; out of range is refused."""
+    isrc = _reload(monkeypatch, tmp_path / "hermes")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(_blank_pdf())
+    if not ok:
+        with pytest.raises(isrc.NotAnImage, match="page 9"):
+            await isrc.resolve_image_source(f"{pdf}{suffix}", isrc.ResolveContext())
+        return
+    res = await isrc.resolve_image_source(f"{pdf}{suffix}", isrc.ResolveContext())
+    assert res.mime == "image/png" and res.data[:8] == b"\x89PNG\r\n\x1a\n"

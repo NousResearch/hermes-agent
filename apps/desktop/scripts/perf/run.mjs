@@ -171,8 +171,10 @@ async function main() {
         let detail = null
 
         for (let i = 0; i < runs; i++) {
+          const runOpts = { ...flags, perfPort: port }
+
           if (cpuProfile && i === 0) {
-            const { result, profile } = await withCpuProfile(cdp, () => scenario.run(cdp, flags))
+            const { result, profile } = await withCpuProfile(cdp, () => scenario.run(cdp, runOpts))
             const out = join(cpuProfileDir, `${name}-${Date.now()}.cpuprofile`)
             writeFileSync(out, JSON.stringify(profile))
             console.log(`\n[cpuprofile] wrote ${out}`)
@@ -183,7 +185,7 @@ async function main() {
             perRun.push(result.metrics)
             detail = result.detail
           } else {
-            const result = await scenario.run(cdp, flags)
+            const result = await scenario.run(cdp, runOpts)
             perRun.push(result.metrics)
             detail = result.detail
           }

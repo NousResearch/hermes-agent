@@ -18,9 +18,15 @@
 
 import { sleep } from '../lib/cdp.mjs'
 
-/** Seed `tiles` busy session tiles. Same publish path as `multitab` /
- *  `render-churn`, but the driver never runs — the turn just stays open. */
-const setup = (tiles, seedTurns) => `
+/**
+ * Seed `tiles` busy session tiles. Same publish path as `multitab` /
+ * `render-churn`, but the driver never runs — the turn just stays open.
+ *
+ * Exported for `idle-burn` (#128134), whose per-process CPU windows reuse the
+ * identical busy-with-nothing-arriving setup so both scenarios measure one
+ * shape of "running but silent".
+ */
+export const seedBusyTiles = (tiles, seedTurns) => `
   (() => {
     const hook = window.__HERMES_SESSION_TILES__
     if (!hook) return 'no-hook'
@@ -58,7 +64,7 @@ const setup = (tiles, seedTurns) => `
   })()
 `
 
-const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
+export const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
 
 /** Measure the app's self-inflicted commit rate with nothing happening. */
 const idleCost = seconds => `
@@ -183,7 +189,7 @@ const TYPE = withFrames(`
   }
 `)
 
-const CLEANUP = `
+export const CLEANUP = `
   (() => {
     if (window.__IDLE__) {
       for (const { sid, rid } of window.__IDLE__.ids) {

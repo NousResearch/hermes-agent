@@ -4,8 +4,7 @@ repo: https://github.com/akinduroifedayo/living-spaces
 sha: 8134be424b5a5756a89278e729ab537475f45155
 subdir: src/living-spaces
 version: "0.1.0"
-# Author: Living Spaces contributors. License: MIT (repository-root LICENSE).
-description: "An open canvas for your bots in Hermes Desktop: build dashboards, trackers, mini-apps and visual pieces from chat, keep their data, and change them through chat. MIT-licensed. Disclosure — generated apps run in sandboxed frames; mediated public HTTPS can send Space data and user-supplied API keys to third parties. Keys saved as Space data are not encrypted by the plugin. Native Hermes cron provides upkeep; agent jobs use model calls and enabled tools. No telemetry."
+description: "An open canvas for your bots in Hermes Desktop. Ask in chat and your bot builds dashboards, trackers, mini-apps and visual pieces in a Spaces tab. Each Space keeps its data, and you change it by asking."
 maintainer: akinduroifedayo
 tier: community
 category: desktop
@@ -17,12 +16,6 @@ screenshots:
   - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/8134be424b5a5756a89278e729ab537475f45155/docs/design/premium-pass/regeneration/astra-run/shots/research-desktop-overview.png
   - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/8134be424b5a5756a89278e729ab537475f45155/docs/design/premium-pass/regeneration/astra-run/shots/sky-desktop-today.png
   - https://raw.githubusercontent.com/akinduroifedayo/living-spaces/8134be424b5a5756a89278e729ab537475f45155/docs/design/premium-pass/regeneration/astra-run/shots/pair-desktop-progress.png
-known_issues:
-  - "Direct frame networking, live embeds, WebSockets and runtime CDN libraries are not supported in this release. Internet Off is not a complete outbound block: WebRTC can still send data readable by the Space."
-  - "Uses private Hermes session/cron imports and a raw Desktop bridge call; compatibility warnings require maintainer review."
-  - "Scheduled bot upkeep is proven for a write while the Space is closed; an already-open Space receiving a later write without reload has not been verified."
-  - "Spaces created before bot binding show 'no maintaining session is bound' until bound from chat. Hardened one-click protection and a fourth reference Space are not included in this pin."
-  - "Remove upkeep before uninstalling: native cron jobs can outlive plugin removal. Saved keys may remain in revisions or backups; vendored-library provenance and notice gaps are documented in THIRD-PARTY.md."
 capabilities:
   provides_tools:
     - spaces_list

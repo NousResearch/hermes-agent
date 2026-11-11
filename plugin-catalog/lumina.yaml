@@ -1,19 +1,21 @@
 name: lumina
 title: Lumina
 repo: https://github.com/samirsawarkar/lumina
-sha: "23674ba046180394d736a26ff12ce53aa305fdee"
+sha: "aaced5beb7bdb93cf7267060bb81fb49d4762c67"
 version: "0.1.0"
 description: "Protects the private documents in your Apple Photos library, on-device. A privacy check-up finds passports, payment cards, passwords and ID documents; Safe Send makes a redacted copy and re-reads it to prove nothing sensitive remains; Leak Guard, a pre_tool_call hook, blocks any Hermes tool call that would send a raw image of an ID document off the Mac. Also searches photos by person, place, scene or text in the image, lists expiry dates, creates albums and renders memory videos. Disclosure: macOS only; reads the Apple Photos library database and image files (needs Full Disk Access) through osxphotos; creates albums in Photos via AppleScript only when asked; runs Apple Vision text recognition locally and the local sips and ffmpeg binaries; the pre_tool_call hook inspects every tool call's arguments and reads image files they name; recognised text is cached in the plugin's own data folder; Lumina makes no network requests, stores no credentials and has no telemetry. Text of matched photos (snippets, or full text of up to 5 photos when asked) is returned to the model."
 maintainer: samirsawarkar
 tier: community
 category: tools
 requires_hermes: ">=0.23"
-docs_url: https://github.com/samirsawarkar/lumina/blob/23674ba046180394d736a26ff12ce53aa305fdee/README.md
+docs_url: https://github.com/samirsawarkar/lumina/blob/aaced5beb7bdb93cf7267060bb81fb49d4762c67/README.md
 readme: true
 platforms: [macos]
 screenshots:
-  - https://raw.githubusercontent.com/samirsawarkar/lumina/23674ba046180394d736a26ff12ce53aa305fdee/docs/img/checkup.png
-  - https://raw.githubusercontent.com/samirsawarkar/lumina/23674ba046180394d736a26ff12ce53aa305fdee/docs/img/safe-send.png
+  - https://raw.githubusercontent.com/samirsawarkar/lumina/aaced5beb7bdb93cf7267060bb81fb49d4762c67/docs/img/checkup.png
+  - https://raw.githubusercontent.com/samirsawarkar/lumina/aaced5beb7bdb93cf7267060bb81fb49d4762c67/docs/img/safe-send.png
+  - https://raw.githubusercontent.com/samirsawarkar/lumina/aaced5beb7bdb93cf7267060bb81fb49d4762c67/docs/img/leak-guard.png
+  - https://raw.githubusercontent.com/samirsawarkar/lumina/aaced5beb7bdb93cf7267060bb81fb49d4762c67/docs/img/reveal.png
 capabilities:
   provides_tools: [lumina_search, lumina_create_album, lumina_library_info, lumina_on_this_day, lumina_export, lumina_read_text, lumina_expiry, lumina_make_memory, lumina_redact, lumina_privacy_check]
   provides_hooks: [pre_tool_call, post_tool_call, transform_llm_output, pre_llm_call]

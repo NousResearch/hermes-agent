@@ -110,16 +110,20 @@ def _is_sensitive_filename(name: str) -> bool:
 
 def _is_sensitive_path(path: Path) -> bool:
     """True when the basename is sensitive OR any path component (case-
-    insensitive) is a credential directory. Read-side guard (list/read/
-    download); the write endpoints are a separate threat class.
-
-    Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
-    (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard
-    to them is out of scope for this fix.
+    insensitive) is a credential directory. Guards reads (list/read/download,
+    #57505) and, via :func:`_refuse_sensitive_write`, writes (#85387).
     """
     if _is_sensitive_filename(path.name):
         return True
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+
+
+def _refuse_sensitive_write(target: Path) -> None:
+    """403 when a write/delete would land on a credential file the read side hides.
+
+    Checks the symlink-resolved target too: a write through a link replaces the file it points at."""
+    if _is_sensitive_path(target) or _is_sensitive_path(Path(os.path.realpath(target))):
+        raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
 
 
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
@@ -864,6 +868,7 @@ async def stream_managed_file(
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
     policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
+    _refuse_sensitive_write(target)
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not overwrite:
@@ -959,6 +964,7 @@ async def upload_managed_file_stream(
 @router.post("/api/files/mkdir")
 def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    _refuse_sensitive_write(target)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
     with _io_errors("Directory is not writable", "Could not create directory"):
@@ -969,6 +975,7 @@ def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
 @router.delete("/api/files")
 def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
+    _refuse_sensitive_write(target)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
@@ -1113,6 +1120,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     target = await _fs_download_path(
         payload.path, profile, payload.session_id, session=session, decode_fallback=False, own_sandbox_only=True,
     )
+    _refuse_sensitive_write(target)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 

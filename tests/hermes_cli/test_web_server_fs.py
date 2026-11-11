@@ -622,6 +622,21 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert (tmp_path / "report%20v2.md").read_text() == "new"
 
 
+@pytest.mark.parametrize("name", [".env", "config.yaml", "auth.json"])
+def test_fs_write_text_refuses_sensitive_files(client, tmp_path, name):
+    """#85387: read-text refuses credential files, so the spot editor's save must too;
+    a symlink to one is refused as well."""
+    secret = tmp_path / name
+    secret.write_text("SECRET=1")
+    link = tmp_path / "notes.md"
+    link.symlink_to(secret)
+
+    for target in (secret, link):
+        response = client.post("/api/fs/write-text", json={"path": str(target), "content": "EVIL=1"})
+        assert response.status_code == 403, target
+    assert secret.read_text() == "SECRET=1"
+
+
 def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):
     """A browser paste is saved in the profile's host image cache even when its workspace is an
     SSH machine. Sending it reads it back through this route, so that one host-owned path must not

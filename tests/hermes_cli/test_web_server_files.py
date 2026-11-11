@@ -954,3 +954,41 @@ def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, m
     response = _OFF_LOOP_ROUTES[route](client, seeded, spy)
     assert response.status_code == 200, response.text
     assert seen and not any(seen), seen
+
+
+def test_managed_writes_refuse_sensitive_paths(forced_files_client):
+    """#85387: upload, upload-stream, mkdir and delete refuse the same credential
+    files the read side hides, so an operator who points the managed root at
+    HERMES_HOME cannot have .env / config.yaml overwritten or removed through it."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    env_file = root / ".env"
+    env_file.write_text("SECRET=1")
+    config = root / "config.yaml"
+    config.write_text("model: safe\n")
+    link = root / "notes.txt"
+    link.symlink_to(config)
+
+    for target in (env_file, config, link, root / "mcp-tokens" / "github.json"):
+        upload = client.post("/api/files/upload", json={
+            "path": str(target), "data_url": "data:text/plain;base64,RVZJTD0x", "overwrite": True,
+        })
+        assert upload.status_code == 403, target
+        stream = client.post(
+            "/api/files/upload-stream",
+            files={"file": ("x", b"EVIL=1", "text/plain")},
+            data={"path": str(target), "overwrite": "true"},
+        )
+        assert stream.status_code == 403, target
+    assert client.post("/api/files/mkdir", json={"path": str(root / "pairing")}).status_code == 403
+    for target in (env_file, link):
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, target
+
+    assert env_file.read_text() == "SECRET=1"
+    assert config.read_text() == "model: safe\n"
+    assert not (root / "mcp-tokens").exists() and not (root / "pairing").exists()
+    assert sorted(p.name for p in root.iterdir()) == [".env", "config.yaml", "notes.txt"]
+
+    plain = _seed_file(client, root, "plain.txt")
+    assert client.request("DELETE", "/api/files", json={"path": str(plain)}).status_code == 200

@@ -383,7 +383,7 @@ def test_burst_stamps_host_pressure_and_names_capacity(kanban_home, caplog):
     refusal payload carries the host's own numbers (PSI, load, memory, swap) and the log names
     memory/IO pressure, so the next operator reads a cause instead of "Gateway disconnected"."""
     pressure = {
-        "psi_mem_full_avg60": 4.47, "psi_io_full_avg60": 18.15, "load1": 27.08, "load15": 19.4,
+        "psi_memory_full_avg60": 4.47, "psi_io_full_avg60": 18.15, "load1": 27.08, "load15": 19.4,
         "mem_available_kib": 20_971_520, "swap_used_kib": 7_340_032,
     }
     with kbc.connect() as conn:
@@ -498,7 +498,8 @@ class _FakeClient:
         return False
 
 
-def _submit_client(monkeypatch, client, tmp_path, *, owner_wait: float = 0.0) -> int:
+def _submit_client(monkeypatch, client, tmp_path, *, owner_wait: float = 0.0,
+                   tui_gateway_url: str = "") -> int:
     """Drive the submitter through its real entry point and return the code it exits with.
 
     ``owner_wait`` is the redial loop's give-up deadline (``OWNER_WAIT_S``, 180 s on main). The
@@ -508,6 +509,9 @@ def _submit_client(monkeypatch, client, tmp_path, *, owner_wait: float = 0.0) ->
     kept dialing before it gave up, is pinned on purpose by
     :func:`test_owner_silence_redials_before_exiting_its_code` rather than left implicit in every
     test's wall clock.
+
+    ``tui_gateway_url`` is set only AFTER the environment is scrubbed, because the topology refusal
+    is ``run()``'s first statement: the variable has to survive to it.
     """
     for key in ("HERMES_KANBAN_BOARD", "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID",
                 "HERMES_KANBAN_CLAIM_LOCK", "HERMES_KANBAN_DB", "HERMES_TUI_GATEWAY_URL"):
@@ -517,6 +521,8 @@ def _submit_client(monkeypatch, client, tmp_path, *, owner_wait: float = 0.0) ->
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "1")
     monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:1")
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    if tui_gateway_url:
+        monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", tui_gateway_url)
     monkeypatch.setattr(kwc, "connect_gateway", lambda: client, raising=False)
     import hermes_cli.gateway_client as gc
     monkeypatch.setattr(gc, "connect_gateway", lambda: client)
@@ -530,6 +536,20 @@ def test_connect_failure_exits_host_refusal_code(kanban_home, tmp_path, monkeypa
     client = _FakeClient(fail_at="kanban.run",
                          error=GatewayClientError("Gateway connection failed; no local fallback"))
     assert _submit_client(monkeypatch, client, tmp_path) == HOST_REFUSAL
+
+
+def test_a_tui_topology_refusal_exits_host_refusal_code(kanban_home, tmp_path, monkeypatch):
+    """``run()``'s very first line is a refusal of its own, and it had no test.
+
+    A worker bound to a TUI gateway cannot submit a claim at all — that is the host's topology, not
+    the card's, so it books on the same never-reached lane as a gateway that would not open: 71,
+    uncounted, retried promptly. Pinned on the code the fleet books (and on the socket never being
+    dialled), not on the exception class.
+    """
+    client = _FakeClient(fail_at="kanban.run", error=AssertionError("dialled anyway"))
+    assert _submit_client(monkeypatch, client, tmp_path,
+                          tui_gateway_url="ws://127.0.0.1:9/owner") == HOST_REFUSAL
+    assert client.calls == [], "the topology refusal must short-circuit before any dial"
 
 
 def test_no_ready_owner_exits_host_refusal_code(kanban_home, tmp_path, monkeypatch):

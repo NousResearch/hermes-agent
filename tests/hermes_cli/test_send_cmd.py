@@ -109,7 +109,8 @@ def whatsapp_bridge(monkeypatch):
                 return BridgeResponse(proof=_bridge_auth_proof(token, headers["X-Hermes-Bridge-Challenge"]))
             return BridgeResponse(health=True)
 
-        def post(self, url, *, json, timeout):
+        def post(self, url, *, json, timeout, headers=None):
+            assert headers == {"Authorization": f"Bearer {token}"}
             calls.append((url.rsplit("/", 1)[-1], json))
             return BridgeResponse()
 

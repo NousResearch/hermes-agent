@@ -75,7 +75,7 @@ async def test_rich_send_maps_bare_macros_and_keeps_math_for_the_client():
 @pytest.mark.parametrize(
     "markdown",
     ["Run .\\to\\file.ps1", "%APPDATA%\\top\\cfg", "[docs](https://e.com/?q=\\to)", "see https://e.com/a?x=\\in&y",
-     "[plot](https://example.com/f(x)?q=\\alpha)"],
+     "[plot](https://example.com/f(x)?q=\\alpha)", "\\alpha\\beta\\data", "\\alpha\\beta-file"],
 )
 def test_rich_latex_keeps_paths_and_link_targets(markdown):
     from plugins.platforms.telegram.telegram_markdown import normalize_rich_latex

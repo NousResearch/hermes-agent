@@ -1,21 +1,22 @@
 name: jobby
 repo: https://github.com/desaianm/jobby-hermes
-sha: c94ed481d19e46982739d973f9d19a1c72aae586
-description: Source-backed job discovery and PDF/DOCX application drafts inside Hermes; no autonomous submission.
+sha: 3b8c62670c138078e85c839f08f24a6a81213254
+description: Source-backed international job discovery and PDF/DOCX application drafts inside Hermes; no autonomous submission.
 maintainer: desaianm
 tier: community
 category: desktop
 title: Jobby
 requires_hermes: ">=0.22.5"
 version: "0.1.0"
-docs_url: https://github.com/desaianm/jobby-hermes/blob/c94ed481d19e46982739d973f9d19a1c72aae586/README.md
+docs_url: https://github.com/desaianm/jobby-hermes/blob/3b8c62670c138078e85c839f08f24a6a81213254/README.md
 screenshots:
-  - https://raw.githubusercontent.com/desaianm/jobby-hermes/c94ed481d19e46982739d973f9d19a1c72aae586/docs/images/jobby-desk.png
+  - https://raw.githubusercontent.com/desaianm/jobby-hermes/3b8c62670c138078e85c839f08f24a6a81213254/docs/images/jobby-desk.png
 readme: true
 platforms:
   - linux
 known_issues:
-  - Canada-only bounded discovery; independent LinkedIn success is unverified.
+  - One provider-supported country per search; live coverage outside the earlier Canadian example and independent LinkedIn success are unverified.
+  - Screenshot and video show the earlier Canadian-example UI, not acceptance of the current international UI.
   - Documents require human review; native desk does not submit applications.
   - Packaged Desktop installer and full native race matrix remain unverified.
   - Full-source validation warns about an opt-in development qualifier's private PluginManager import; runtime entrypoints use public APIs.

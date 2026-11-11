@@ -78,6 +78,7 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
+    assert "HERMES_KANBAN_PINNED_RUNTIME" not in captured["env"]
     assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
     assert captured["env"]["HERMES_KANBAN_RUN_ID"] == "7"
     assert captured["env"]["HERMES_KANBAN_CLAIM_LOCK"] == "lock"
@@ -101,6 +102,7 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
 
     def fake_popen(cmd, *args, **kwargs):
         captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -114,6 +116,9 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     # Mutable model strings are not launch authority; the owner reads the claimed card.
     assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
     assert task.model_override not in captured["cmd"]
+    # A pinned task must not silently fall back to the profile-wide chain when the
+    # pinned provider fails, so the dispatcher flags the pin for the worker CLI.
+    assert captured["env"]["HERMES_KANBAN_PINNED_RUNTIME"] == "1"
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):
     """Under multiplex a worker spawn with ``terminal.env_passthrough`` configured must

@@ -16,7 +16,7 @@ that the `hermes-atm` package (pip; source in atm-core `crates/hermes-atm`) call
 deliver agent-team-mail nudges into a profile's chat session. Everything else in the
 stack exists to support or test that seam.
 
-Current stack shape as of v0.23.0 (9 substantive commits + this doc's own update commit = 10 above the base tag; replay ALL of them on every rebase):
+Current stack shape as of v0.23.1 (12 commits above the base tag; replay ALL of them on every rebase):
 1. `feat: reseat public injection seam onto mixin-split run.py` — the API + hook exposure + tests
 2. `fix(gateway): P1 review fixes HGF-001..004 (injection seam)` — review-round hardening
 3. `style(tests): strip trailing whitespace (HGF-005)`
@@ -38,16 +38,31 @@ Current stack shape as of v0.23.0 (9 substantive commits + this doc's own update
    leave the diffstat invariant.
 9. `docs(atm): stack shape 10 above base — kanban fix rides the stack (this
    commit)` — the shape/invariant update for item 8.
+10. `cron: keep --no-agent script jobs off the async-delegation fire path` —
+    fork-only fleet fix (hx-dk4, from grecon-bd8 2026-10-06 family; repro
+    2026-11-11 runtime-v5): direct `hermes cron run` on a --no-agent --script
+    job dispatched an async delegation whose CLI owner exited before terminal
+    recording — script never ran, run row stuck 'claimed', later fires blocked
+    by "already being fired". Gate sends no-agent jobs to the synchronous
+    path (terminal state in-process). Bug verified LIVE on upstream main
+    (fb5d314b10) — **UPSTREAM SUBMISSION CANDIDATE**, same removal rule as
+    item 8: when it merges upstream AND is contained in the base tag, DROP it
+    at the next replay; its 2 files then leave the diffstat invariant.
+11. `docs(atm): stack shape 12 above base — cron no-agent fire-path fix rides
+    the stack (this commit)` — the shape/invariant update for item 10.
 
 Stack diffstat invariant: `git diff vX^{commit}..stack-tip` touches exactly
-**11 files** as of v0.23.0 — the 6 ATM/banner files (5 seam/contract +
-`README.md`) plus the kanban fix's 5 (`hermes_cli/kanban_db.py`,
+**13 files** as of v0.23.1 — the 6 ATM/banner files (5 seam/contract +
+`README.md`), the kanban fix's 5 (`hermes_cli/kanban_db.py`,
 `hermes_cli/kanban_db_termination.py`,
 `tests/hermes_cli/test_kanban_complete_worker_termination.py`,
-`tests/tools/test_kanban_worker_self_exit.py`, `tools/kanban_tools.py`).
-The kanban 5 leave the invariant when item 8 retires (upstream merge + base
-containment). A sync candidate touching fewer files dropped a patch; more files
-grew the stack without a contract update.
+`tests/tools/test_kanban_worker_self_exit.py`, `tools/kanban_tools.py`), and
+the cron fire-path fix's 2 (`tools/cronjob_tools.py`,
+`tests/tools/test_cronjob_run_background.py`).
+The kanban 5 leave the invariant when item 8 retires; the cron 2 leave when
+item 10 retires (upstream merge + base containment). A sync candidate touching
+fewer files dropped a patch; more files grew the stack without a contract
+update.
 
 ## The contract (every item is load-bearing)
 

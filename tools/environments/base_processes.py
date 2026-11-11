@@ -48,7 +48,7 @@ class LongLivedProcessMixin:
         return state["lock"]
 
     def _spawn_long_lived(self, argv: list[str], child_env: Optional[dict]) -> subprocess.Popen:
-        from tools.environments.streams import (exec_prefix, open_stream, sandbox_temp_dir, shell_joined)
+        from tools.environments.streams import exec_prefix, open_stream, sandbox_temp_dir
         try:
             prefix = exec_prefix(self)  # type: ignore[arg-type]  # a BaseEnvironment at runtime, the mixin in isolation
             if prefix is None:
@@ -56,18 +56,16 @@ class LongLivedProcessMixin:
             # A backend with an exec prefix (docker exec -i, ssh, a plugin prefix) runs the service
             # inside the sandbox behind a LOCAL client; killing that client need not stop it. The
             # service's pid is therefore recorded inside the sandbox before it execs, and
-            # _reap_long_lived stops it there before closing the client. The transport shape is
-            # open_stream's own (``exports; exec argv``): stdin/stdout stay the service's.
-            quoted = " ".join(shlex.quote(str(word)) for word in argv)
+            # _reap_long_lived stops it there before closing the client. The transport is open_stream's
+            # own; a ``/bin/sh -c`` wrapper records its pid and execs the service (argv passed as positional
+            # words, so it keeps the pid and stdin/stdout stay the service's). The wrapper is POSIX sh by
+            # absolute path: child_env is already exported when it starts, so its PATH or BASH_ENV must
+            # not decide whether (or how) it runs; the service is still found through that PATH.
             pidfile = f"{sandbox_temp_dir(self)}/hermes_llp_{uuid.uuid4().hex[:16]}.pid"  # type: ignore[arg-type]
-            exports = " ".join(f"export {key}={shlex.quote(str(value))};" for key, value in (child_env or {}).items())
-            script = f"{exports} echo $$ > {shlex.quote(pidfile)} 2>/dev/null ; exec {quoted}"
-            if shell_joined(self):  # type: ignore[arg-type]
-                command = [*prefix, shlex.join(["bash", "-c", script])]
-            else:
-                command = [*prefix, "bash", "-c", script]
-            proc = subprocess.Popen(  # windows-footgun: ok — the prefix is a Linux sandbox's client (docker/ssh/apptainer)
-                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
+            wrapper = ["/bin/sh", "-c", f"echo $$ > {shlex.quote(pidfile)} 2>/dev/null; exec \"$@\"", "sh",
+                       *(str(word) for word in argv)]
+            exports = {key: str(value) for key, value in (child_env or {}).items()}
+            proc = open_stream(self, wrapper, child_env=exports)  # type: ignore[arg-type]
             proc._hermes_remote_pidfile = pidfile  # type: ignore[attr-defined]  # teardown metadata, not a pipe
             return proc
         except RuntimeError as exc:

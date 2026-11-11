@@ -1,6 +1,6 @@
 name: shadow-army
 repo: https://github.com/SilentKnight87/shadow-army
-sha: 9a3019a55aa8d8070b68062ab85b453a601b8901
+sha: a75465a08ab6e5b1b92f8d3853c797badf750934
 subdir: shadow-army
 title: Shadow Army
 description: Kanban close gate. A different model family must PASS the exact code first; deleted test assertions are flagged.
@@ -11,12 +11,12 @@ requires_hermes: ">=0.23.0"
 version: "0.4.0"
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/9a3019a55aa8d8070b68062ab85b453a601b8901/docs/img/readme-real-catch.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/9a3019a55aa8d8070b68062ab85b453a601b8901/docs/img/readme-ledger.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/9a3019a55aa8d8070b68062ab85b453a601b8901/docs/img/readme-hero.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/9a3019a55aa8d8070b68062ab85b453a601b8901/docs/img/readme-removed.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/9a3019a55aa8d8070b68062ab85b453a601b8901/docs/img/readme-stale.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/9a3019a55aa8d8070b68062ab85b453a601b8901/docs/img/readme-kanban.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/a75465a08ab6e5b1b92f8d3853c797badf750934/docs/img/readme-real-catch.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/a75465a08ab6e5b1b92f8d3853c797badf750934/docs/img/readme-ledger.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/a75465a08ab6e5b1b92f8d3853c797badf750934/docs/img/readme-hero.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/a75465a08ab6e5b1b92f8d3853c797badf750934/docs/img/readme-removed.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/a75465a08ab6e5b1b92f8d3853c797badf750934/docs/img/readme-stale.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/a75465a08ab6e5b1b92f8d3853c797badf750934/docs/img/readme-kanban.png
 platforms: [linux, macos]
 known_issues:
   - Gates only the agent's kanban_complete tool; manual board moves, shell commands and disabling the plugin bypass it.

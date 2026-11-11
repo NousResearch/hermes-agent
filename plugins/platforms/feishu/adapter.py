@@ -2879,24 +2879,17 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
 
-        # Feishu sends url_verification unsigned; the token check above is its only authentication.
+        # url_verification is unsigned (the token above is its only auth): no signature check, and no quota charge without a token.
+        # Quota (key app_id:path:remote_ip, as openclaw) is charged only after auth, so forged traffic can't get real deliveries 429'd.
         is_url_verification = payload.get("type") == "url_verification"
-        if (self._encrypt_key and not is_url_verification
-                and not self._is_webhook_signature_valid(request.headers, body_bytes)):
+        if self._encrypt_key and not is_url_verification and not self._is_webhook_signature_valid(request.headers, body_bytes):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
             return self._webhook_reject(remote_ip, "401-sig", 401, "Invalid signature")
-
-        # Charge the delivery quota only after authentication, so unauthenticated traffic from the
-        # same source address cannot exhaust it and get real Feishu deliveries rejected with 429.
-        # An encrypt-key-only url_verification carries no credential, so it is not charged either.
-        # Key is app_id:path:remote_ip (matches openclaw key structure).
-        authenticated = self._verification_token or not is_url_verification
-        if authenticated and not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
+        if (self._verification_token or not is_url_verification) and not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
             logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
             return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
 
-        # Token is validated above BEFORE reflecting the challenge, so an unauthenticated
-        # remote can't prove endpoint control by getting its own challenge echoed back.
+        # Token is checked above BEFORE reflecting the challenge, so a remote can't get its own challenge echoed.
         if is_url_verification:
             return web.json_response({"challenge": payload.get("challenge", "")})
 

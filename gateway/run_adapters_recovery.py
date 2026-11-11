@@ -355,7 +355,7 @@ class GatewaySecondaryReconnectMixin:
                             )
                             # What a primary reconnect replays too: the owed notice spans served profiles' home
                             # channels, and sessions boot skipped for this offline adapter wait for this call.
-                            self._schedule_planned_restart_replay()
+                            self._schedule_restart_notice_replay()
                             try:
                                 self._schedule_resume_pending_sessions(platform=platform)
                             except Exception:

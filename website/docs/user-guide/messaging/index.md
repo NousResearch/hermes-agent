@@ -949,6 +949,8 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+A notice that cannot go out yet is kept, not dropped. This covers the home-channel notice and the "restarted successfully" reply to the chat that sent `/restart`. A platform can still be reconnecting, or Telegram can be waiting for its first successful poll. The gateway sends the notice once that platform reconnects or its send path is ready. A `/restart` reply still undelivered 30 minutes later is discarded.
+
 ### Typing indicators
 
 While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `config.yaml`, which defaults to `true`:

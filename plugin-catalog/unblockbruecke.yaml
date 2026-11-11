@@ -1,0 +1,33 @@
+name: unblockbruecke
+title: Unblockbrücke
+repo: https://github.com/studioluftbruecke/hermes-unblockbruecke
+sha: f11471187d1aa25b81e4644da08a22148035841a
+description: >-
+  Cards to unblock yourself or your agent, drawn by you when you are stuck and by Hermes when its
+  tool calls keep failing.
+maintainer: studioluftbruecke
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://unblockbruecke.luftbruecke.studio
+version: "0.1.4"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-5.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Auto-draw is off by default. Switch on \"Hermes draws when stuck\" in Settings, Plugins, Unblockbrücke, Agent settings."
+  - "With Hermes on a server, install the plugin on the Desktop computer too, on the same version: Desktop loads the Unblockbrücke page from its own computer."
+capabilities:
+  provides_tools:
+    - unblockbruecke_card
+    - unblockbruecke_decks
+  provides_hooks:
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

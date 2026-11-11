@@ -119,13 +119,13 @@ STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
 STRATEGY_LEAST_USED = "least_used"
-STRATEGY_USAGE_BALANCED = "usage_balanced"
+STRATEGY_RESET_FIRST = "reset_first"
 SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
-    STRATEGY_USAGE_BALANCED,
+    STRATEGY_RESET_FIRST,
 }
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
@@ -1960,7 +1960,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     # ---- selection ---------------------------------------------------------
 
     def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
-        if self._strategy == STRATEGY_USAGE_BALANCED:
+        if self._strategy == STRATEGY_RESET_FIRST:
             from agent.credential_pool_usage import prepare_selection
             prepare_selection(self.provider, self.entries())
         entry, pending_refresh = self._select_under_lock(model=model)

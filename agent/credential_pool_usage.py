@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import math
-import random
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,8 +18,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _PROVIDER = "openai-codex"
 _COLD_WAIT_SECONDS = 2.0
-# A reset a few seconds away must not attract every new session on an old reading.
-_MIN_REMAINING_PERIOD = 0.05
 
 
 def _path(identity: str) -> Path:
@@ -91,7 +88,7 @@ def _reading(entry: PooledCredential) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def _score(reading: dict | None, now: float) -> float | None:
+def _next_reset(reading: dict | None, now: float) -> float | None:
     if reading is None or not _number(reading.get("fetched_at")):
         return None
     age = now - reading["fetched_at"]
@@ -100,13 +97,13 @@ def _score(reading: dict | None, now: float) -> float | None:
     windows = reading.get("windows")
     if not isinstance(windows, list) or not windows:
         return None
-    scores = [_window_score(window, now) for window in windows]
-    if 0 in scores:
+    resets = [_window_reset(window, now) for window in windows]
+    if 0 in resets:
         return 0.0  # An active exhausted week still blocks when the short window has reset.
-    return None if any(score is None for score in scores) else min(scores)
+    return None if any(reset is None for reset in resets) else min(resets)
 
 
-def _window_score(window: object, now: float) -> float | None:
+def _window_reset(window: object, now: float) -> float | None:
     if not isinstance(window, dict):
         return None
     used, reset, period = (window.get(key) for key in ("used_percent", "reset_at", "limit_window_seconds"))
@@ -114,8 +111,7 @@ def _window_score(window: object, now: float) -> float | None:
         return None
     if not 0 <= used <= 100 or period <= 0 or reset <= now:
         return None  # A crossed reset needs a new reading, not an assumed refill.
-    fraction_of_period = max((reset - now) / period, _MIN_REMAINING_PERIOD)
-    return (1 - used / 100) / fraction_of_period
+    return 0.0 if used == 100 else reset
 
 
 def prepare_selection(provider: str, entries: list[PooledCredential]) -> None:
@@ -129,9 +125,9 @@ def prepare_selection(provider: str, entries: list[PooledCredential]) -> None:
         if entry.last_status in {"dead", "exhausted"}:
             continue
         reading = _reading(entry)
-        cold |= _score(reading, now) is None
+        cold |= _next_reset(reading, now) is None
         # A recent persisted reading also throttles fresh CLI processes.
-        if _score(reading, now) is not None and now - reading["fetched_at"] < cache.REFRESH_AFTER_S:
+        if _next_reset(reading, now) is not None and now - reading["fetched_at"] < cache.REFRESH_AFTER_S:
             continue
         requests.append({"provider": provider, "identity_id": cache._identity_id_for(provider, entry),
                          "base_url": entry.base_url, "api_key": entry.runtime_api_key, "persist_usage": True})
@@ -143,14 +139,12 @@ def prepare_selection(provider: str, entries: list[PooledCredential]) -> None:
 
 
 def choose_entry(provider: str, entries: list[PooledCredential]) -> PooledCredential:
-    """Weighted pacing across both windows; incomplete observations retain round-robin order."""
+    """Use the account resetting soonest; preserve round-robin for ties and unknown usage."""
     if provider != _PROVIDER:
         return entries[0]
     now = time.time()
-    weights = [_score(_reading(entry), now) for entry in entries]
-    candidates = [(entry, weight) for entry, weight in zip(entries, weights) if weight != 0]
-    if not candidates:
-        return entries[0]  # Preserve the existing request/error-driven exhaustion path.
-    if any(weight is None for _, weight in candidates):
-        return candidates[0][0]
-    return random.choices([entry for entry, _ in candidates], weights=[weight for _, weight in candidates], k=1)[0]
+    resets = [(entry, _next_reset(_reading(entry), now)) for entry in entries]
+    known = [(entry, reset) for entry, reset in resets if reset is not None and reset > 0]
+    if known:
+        return min(known, key=lambda candidate: candidate[1])[0]
+    return next((entry for entry, reset in resets if reset is None), entries[0])

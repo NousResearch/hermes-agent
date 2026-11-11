@@ -15,7 +15,7 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, STRATEGY_USAGE_BALANCED, PooledCredential, _codex_principal_identity,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, STRATEGY_RESET_FIRST, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 from agent.credential_pool_admin import CredentialNotSavedError
@@ -875,7 +875,7 @@ _STRATEGY_DESCRIPTIONS = {
     STRATEGY_ROUND_ROBIN: "Cycle through keys evenly",
     STRATEGY_LEAST_USED: "Always pick the least-used key",
     STRATEGY_RANDOM: "Random selection",
-    STRATEGY_USAGE_BALANCED: "Codex remaining allowance and reset times (other providers: round-robin)"}
+    STRATEGY_RESET_FIRST: "Codex account resetting soonest (other providers: round-robin)"}
 
 
 def _interactive_strategy() -> None:

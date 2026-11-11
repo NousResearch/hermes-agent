@@ -174,7 +174,7 @@ credential_pool_strategies:
 | `fill_first` (default) | Use the first healthy key until it's exhausted, then move to the next; order is each credential's `priority` (`hermes auth priority` changes it) |
 | `round_robin` | Cycle through keys evenly, rotating after each selection |
 | `least_used` | Always pick the key with the lowest request count |
-| `usage_balanced` | Codex: weight new selections by remaining allowance and reset time; otherwise round-robin |
+| `reset_first` | Codex: use the account with allowance left that resets soonest; otherwise round-robin |
 | `random` | Random selection among healthy keys |
 
 ### Demoting a healthy credential {#demoting-a-healthy-credential}
@@ -198,27 +198,26 @@ credential ahead of it is benched.
 Sessions that already hold a credential keep it until they rotate; new sessions (and the next
 gateway start) follow the new order.
 
-### Usage-aware Codex balancing
+### Use the Codex account that resets soonest
 
 ```yaml
 credential_pool_strategies:
-  openai-codex: usage_balanced
+  openai-codex: reset_first
 ```
 
-For each account, Hermes divides the fraction of allowance remaining by the fraction of its
-window remaining, then takes the lowest result across the active windows. Both the short and
-weekly limit therefore constrain selection. A window with half its allowance left and only a
-quarter of its time left gets a weight of 2; one with a tenth left and half its time left gets
-0.2. The remaining-time fraction has a floor of 0.05 so a nearly due reset cannot create an
-unbounded weight. New selections draw randomly in proportion to these weights, spreading
-simultaneous session starts rather than sending all of them to the highest-weight account.
-Percentages do not reveal absolute plan capacities: this balances allowance pacing, not tokens
-per dollar or an estimate of how much a new session will consume.
+For each account with allowance left in every active window, Hermes finds its earliest upcoming
+reset. New selections use the account with the earliest reset, so its remaining allowance gets
+used before it expires. An account with 10% left resetting in an hour is selected before one with
+90% left resetting tomorrow. Both short and weekly windows count: an exhausted weekly window
+makes the account ineligible even when its short window resets soon. Equal reset times rotate
+in pool order. Selection is deterministic; it does not weight or randomly distribute accounts.
 
 Existing conversations keep their credentials. Cooldowns, credential refresh, reclaiming the
-original account and provider fallback work as before. A known fully used account gets zero
-weight while another candidate has headroom or unknown usage. When every candidate is fully
-used, the existing request/error-driven exhaustion path still decides cooldowns and fallback.
+original account and provider fallback work as before. A fresh, fully known account with
+headroom takes precedence over accounts with unknown usage. If no such account exists,
+unknown accounts rotate in pool order, skipping known fully used accounts. When every account
+is known to be fully used, the existing request/error-driven exhaustion path still decides
+cooldowns and fallback.
 
 Usage reads reuse the account-usage cache and its read-only background fetcher; they never
 refresh OAuth tokens. Reads are throttled to once per account every two minutes within a
@@ -227,8 +226,8 @@ directory, with hashed identity filenames and no tokens, email addresses or raw 
 responses. Fresh CLI processes can use these readings and skip a fetch while they are recent.
 A cold start waits at most two seconds for the background reader, outside the credential-pool
 lock. Missing or invalid readings, readings older than 15 minutes, and windows whose reset has
-passed use round-robin until fresh data arrives. Known fully used accounts remain excluded
-from that fallback when another candidate exists. Other providers use round-robin.
+passed are unknown until fresh data arrives. A known exhausted active window still excludes
+an account when another window has already reset. Other providers use round-robin.
 
 ## Error Recovery
 

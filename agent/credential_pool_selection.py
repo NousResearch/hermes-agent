@@ -28,7 +28,7 @@ def select_unlocked(
     # logs immediately.
     self._last_no_entries_log_at = None
 
-    if self._strategy == pool_mod.STRATEGY_USAGE_BALANCED:
+    if self._strategy == pool_mod.STRATEGY_RESET_FIRST:
         from agent.credential_pool_usage import choose_entry
         entry = choose_entry(self.provider, available)
     elif self._strategy == pool_mod.STRATEGY_RANDOM:
@@ -42,7 +42,7 @@ def select_unlocked(
     # refresh); it used to move only while ``least_used`` was active.
     if count:
         entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
-    if self._strategy in {pool_mod.STRATEGY_ROUND_ROBIN, pool_mod.STRATEGY_USAGE_BALANCED} and len(available) > 1:
+    if self._strategy in {pool_mod.STRATEGY_ROUND_ROBIN, pool_mod.STRATEGY_RESET_FIRST} and len(available) > 1:
         rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
         rotated.append(replace(entry, priority=len(self._entries) - 1))
         self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]

@@ -1483,7 +1483,7 @@ credential_pool_strategies:
   anthropic: least_used      # always pick the least-used key
 ```
 
-Options: `fill_first` (default), `round_robin`, `least_used`, `random`, `usage_balanced` (Codex allowance/reset-aware selection; other providers use round-robin). See [Credential Pools](./features/credential-pools.md) for full documentation.
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`, `reset_first` (Codex account resetting soonest; other providers use round-robin). See [Credential Pools](./features/credential-pools.md) for full documentation.
 
 ## Prompt caching
 

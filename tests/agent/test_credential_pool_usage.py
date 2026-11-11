@@ -1,9 +1,7 @@
-"""Allowance pacing, durable cold starts and session affinity for usage_balanced."""
-from collections import Counter
+"""Earliest reset selection, durable cold starts and session affinity for reset_first."""
 from dataclasses import replace
 from datetime import UTC, datetime
 import json
-import random
 import time
 
 import pytest
@@ -26,7 +24,7 @@ def _snapshot(*windows):
 
 
 def _pool(monkeypatch, snapshots):
-    (get_hermes_home() / "config.yaml").write_text("credential_pool_strategies:\n  openai-codex: usage_balanced\n")
+    (get_hermes_home() / "config.yaml").write_text("credential_pool_strategies:\n  openai-codex: reset_first\n")
     rows = [PooledCredential(provider="openai-codex", id=str(i), label=f"account{i}", source="manual",
                             auth_type="api_key", access_token=f"fixture-{i}", priority=i)
             for i in range(len(snapshots))]
@@ -51,25 +49,29 @@ def test_first_selection_uses_disk_readings_and_retains_session(monkeypatch):
     assert sum(e.request_count for e in pool.entries()) == before
 
 
-def test_weighted_selection_favors_headroom_due_soon_and_spreads(monkeypatch):
-    pool = _pool(monkeypatch, [_snapshot(_window(50, 151200)), _snapshot(_window(90, 302400))])
-    rng = random.Random(42)
-    monkeypatch.setattr(routing.random, "choices", rng.choices)
-    counts = Counter(routing.choose_entry(pool.provider, pool.entries()).id for _ in range(1000))
-    assert 850 < counts["0"] < 960
-    assert counts["1"] > 40
+def test_earliest_reset_wins_even_with_less_headroom(monkeypatch):
+    pool = _pool(monkeypatch, [_snapshot(_window(10, 86400)), _snapshot(_window(99, 3600))])
+    assert [pool.select().id for _ in range(8)] == ["1"] * 8
 
 
-def test_short_window_constrains_healthy_week_and_zero_never_wins(monkeypatch):
+def test_earliest_window_counts_but_every_window_needs_headroom(monkeypatch):
     pool = _pool(monkeypatch, [
-        _snapshot(_window(99, 9000, 18000), _window(10, 302400)),
-        _snapshot(_window(50, 9000, 18000), _window(50, 302400)),
-        _snapshot(_window(100, 1)),
+        _snapshot(_window(10, 9000, 18000), _window(20, 302400)),
+        _snapshot(_window(99, 3600, 18000), _window(50, 302400)),
+        _snapshot(_window(20, 1, 18000), _window(100, 302400)),
     ])
-    now = time.time()
-    assert routing._score(routing._reading(pool.entries()[0]), now) < 0.021
-    assert routing._score(routing._reading(pool.entries()[1]), now) > 0.99
-    assert routing._score(routing._reading(pool.entries()[2]), now) == 0
+    assert [pool.select().id for _ in range(4)] == ["1"] * 4
+
+
+def test_equal_resets_rotate_in_pool_order(monkeypatch):
+    window = _window(20, 3600)
+    pool = _pool(monkeypatch, [_snapshot(window), _snapshot(window), _snapshot(window)])
+    assert [pool.select().id for _ in range(6)] == ["0", "1", "2", "0", "1", "2"]
+
+
+def test_known_headroom_takes_precedence_over_unknown(monkeypatch):
+    pool = _pool(monkeypatch, [None, _snapshot(_window(99, 3600))])
+    assert [pool.select().id for _ in range(4)] == ["1"] * 4
 
 
 def test_missing_usage_round_robins_without_spending_known_exhausted(monkeypatch):
@@ -86,7 +88,7 @@ def test_missing_usage_round_robins_without_spending_known_exhausted(monkeypatch
 def test_invalid_or_stale_reading_is_unknown(change):
     reading = {"fetched_at": time.time(), "windows": [_window(20, 3600)]}
     reading.update(change)
-    assert routing._score(reading, time.time()) is None
+    assert routing._next_reset(reading, time.time()) is None
 
 
 def test_cooldown_is_not_overridden_by_good_usage(monkeypatch):

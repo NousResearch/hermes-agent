@@ -36,6 +36,7 @@ from agent.error_classifier import (
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
+from agent.auxiliary_preflight import _validate_proxy_env_urls, check_aux_requested_route, check_aux_resolved_route
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_profile_gates import (
     PROFILE_REASONING_KEYS, contains_profile_reasoning_fields, profile_forwards_max_tokens,
@@ -139,7 +140,7 @@ from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, model_forces_max_completion_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -2859,25 +2860,6 @@ def _current_custom_base_url() -> str:
     return custom_base or ""
 
 
-def _validate_proxy_env_urls() -> None:
-    """Fail fast on malformed proxy env URLs (a shell typo like ``:6153export`` otherwise surfaces as a cryptic httpx ``Invalid port``)."""
-    from urllib.parse import urlparse
-    normalize_proxy_env_vars()
-    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-        value = str(os.environ.get(key) or "").strip()
-        if not value:
-            continue
-        try:
-            parsed = urlparse(value)
-            if parsed.scheme:
-                _ = parsed.port          # raises ValueError for e.g. '6153export'
-        except ValueError as exc:
-            raise RuntimeError(
-                f"Malformed proxy environment variable {key}={value!r}. "
-                "Fix or unset your proxy settings and try again."
-            ) from exc
-
-
 def _validate_base_url(base_url: str) -> None:
     """Reject obviously broken custom endpoint URLs before they reach httpx."""
     from urllib.parse import urlparse
@@ -5269,6 +5251,19 @@ def resolve_provider_client(
     (full auto-detection chain). ``model=None`` → provider's default aux model. ``raw_codex`` → bare OpenAI
     client for ``responses.stream()`` callers. ``api_mode`` forces "codex_responses"/"chat_completions"/
     "anthropic_messages" instead of auto-detect. Returns (client, resolved_model) or (None, None)."""
+    check_aux_requested_route(provider, model, explicit_base_url)  # routing_policy, before any discovery
+    client, resolved_model = _resolve_provider_client_unchecked(
+        provider, model, async_mode, raw_codex, explicit_base_url, explicit_api_key, api_mode, main_runtime,
+        is_vision, task)
+    check_aux_resolved_route(provider, client, resolved_model or model)  # the physical route it picked
+    return client, resolved_model
+
+
+def _resolve_provider_client_unchecked(
+    provider: str, model: str | None, async_mode: bool, raw_codex: bool, explicit_base_url: str | None,
+    explicit_api_key: Optional[str | Callable[[], str]], api_mode: str | None,
+    main_runtime: Optional[dict[str, Any]], is_vision: bool, task: Optional[str],
+) -> tuple[Optional[Any], Optional[str]]:
     _validate_proxy_env_urls()
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.

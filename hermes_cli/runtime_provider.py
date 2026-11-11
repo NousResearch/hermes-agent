@@ -1077,6 +1077,15 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    # routing_policy: refuse a denied or implicit route BEFORE any ladder rung inspects credentials
+    # or turns an unavailable primary into an unrelated route; the resolved route is checked again below.
+    from hermes_cli.routing_policy import check_requested_route, check_route, current_routing_policy
+    policy = current_routing_policy()
+    requested_model = str(target_model or _get_model_config().get("default") or "")
+    check_requested_route(policy, requested_provider=requested_provider, model=requested_model)
+    # model.base_url only counts when it belongs to the requested provider (same rule the rungs use).
+    check_route(policy, provider=requested_provider, model=requested_model,
+                base_url=str(explicit_base_url or _config_base_url_for_provider(_get_model_config(), requested_provider)))
     from hermes_cli.left_core_migration import recover_for_provider
     recover_for_provider(requested_provider)  # a provider whose plugin left core: install it before resolving
     _raise_if_provider_disabled(requested_provider)
@@ -1089,6 +1098,8 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    check_route(policy, provider=str(runtime.get("provider") or ""), model=requested_model,
+                base_url=str(runtime.get("base_url") or ""))
     # model.openai_runtime is applied ONCE, after the ladder: every rung (pool, OAuth store,
     # explicit --api-key/--base-url, env key) hardcodes the wire api_mode for openai/openai-codex,
     # so applying the opt-in inside one rung left the others on codex_responses (#115169).
@@ -1194,6 +1205,7 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
         from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs, get_fallback_chain
+        from hermes_cli.routing_policy import RoutingPolicyError
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()
@@ -1204,6 +1216,8 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
             except AuthError as fb_exc:
                 logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
                 continue
+            except RoutingPolicyError:
+                raise  # a denied route is the operator's verdict, not a misconfigured entry to skip
             except Exception as fb_exc:
                 # Not a credential problem: a mistyped provider/base_url must be visible, not silently skipped.
                 logger.warning("Fallback entry %s/%s is misconfigured and was skipped: %s", provider, model, fb_exc)

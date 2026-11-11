@@ -1473,6 +1473,22 @@ If auto-compression is disabled, the warning tells you context may be truncated 
 
 Context pressure is automatic — no configuration needed. It fires purely as a user-facing notification and does not modify the message stream or inject anything into the model's context.
 
+## Routing Policy
+
+An opt-in policy that refuses model routes. It is checked wherever Hermes resolves a route: main sessions, cron, delegation, the fallback chain and auxiliary tasks. It is checked once on the requested route, before any credential lookup, and again on the route that was actually resolved, including the provider auto-discovery landed on.
+
+```yaml
+routing_policy:
+  enabled: true
+  require_explicit: false   # true: refuse auto-discovery and silent default models
+  deny:
+    providers: []           # e.g. ["example-provider"]
+    models: []              # glob patterns, e.g. ["vendor/*", "model-family-*"]
+    base_url_hosts: []      # hosts or URLs; subdomains match too
+```
+
+A denied route raises `routing policy denies …`. A denial stops the main fallback chain instead of skipping to the next entry. Without a `routing_policy` key, or with `enabled: false`, nothing changes. A malformed block fails closed, and so does an empty `routing_policy:` key, which YAML reads as `null`: every model resolution raises `invalid routing policy …` until the block is fixed or removed. The policy is enforced at route resolution only. It is not re-checked at the wire send, and a cached auxiliary client keeps the route it was created with until restart.
+
 ## Credential Pool Strategies
 
 When you have multiple API keys or OAuth tokens for the same provider, configure the rotation strategy:

@@ -14,7 +14,7 @@ and head commits in ``_HERMES_PR_BASE_SHA`` and ``_HERMES_PR_HEAD_SHA``. Each su
 on nearly every PR and trained reviewers to ignore the scanner; keep it ruthlessly narrow.
 Both diff base...head, from the merge base, so only changes this PR introduces are judged, not
 changes that landed on main after the PR branched off. An added line that the same diff also
-removes is a moved line and is not judged; see ``numbered_added_lines``.
+removes from a file of the same name is a moved line and is not judged; see ``numbered_added_lines``.
 """
 
 from __future__ import annotations
@@ -77,17 +77,23 @@ def numbered_added_lines(diff: str) -> list[str]:
 
     The diff has no rename detection, so a moved file is all removed lines at its old path and all
     added lines at its new one. An added line is left out when the diff also removes a line with
-    the same text, once per removed line: a copy whose source keeps the line, or a second copy of a
-    moved file, is still judged.
+    the same text from a file of the same name, once per removed line. A copy whose source keeps
+    the line, a second copy of a moved file, and text taken from a file of another name are still
+    judged.
     """
     lines = diff.split("\n")
-    removed = Counter(line[1:] for line in lines if line.startswith("-"))
+    keys, name = [], ""
+    for line in lines:
+        if line.startswith("diff --git "):
+            name = line.rsplit("/", 1)[-1].rstrip('"')
+        keys.append((name, line[1:]))
+    removed = Counter(key for key, line in zip(keys, lines) if line.startswith("-"))
     added = []
-    for number, line in enumerate(lines, 1):
+    for number, (key, line) in enumerate(zip(keys, lines), 1):
         if not line.startswith("+"):
             continue
-        if removed[line[1:]]:
-            removed[line[1:]] -= 1
+        if removed[key]:
+            removed[key] -= 1
         else:
             added.append(f"{number}:{line}")
     return added

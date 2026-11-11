@@ -196,6 +196,14 @@ def test_supply_chain_scan_flags_the_second_copy_of_a_moved_file(repo, step):
     assert _scan_pr(repo, step, base, twice) == "true"
 
 
+def test_supply_chain_scan_flags_a_payload_line_taken_from_a_file_of_another_name(repo, step):
+    module, _ = _module_with_payload()
+    payload = module.splitlines(keepends=True)[-1]
+    base = commit(repo, {"tests/fixture.py": module, "pkg/run.py": "x = 1\n"})
+    taken = {"tests/fixture.py": module.removesuffix(payload), "pkg/run.py": "x = 1\n" + payload}
+    assert _scan_pr(repo, step, base, taken) == "true"
+
+
 def test_dependency_bounds_report_lists_only_floor_only_specs(repo, step):
     base = commit(repo, {"pyproject.toml": 'deps = [\n  "old>=1",\n]\n'})
     head = commit(repo, {"pyproject.toml": 'deps = [\n  "old>=1",\n  "bounded>=2,<3", "loose>=2.1",\n]\n'})

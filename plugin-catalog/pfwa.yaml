@@ -1,0 +1,26 @@
+name: pfwa
+title: PFWA
+repo: https://github.com/MirakoolDev/pfwa-hermes
+sha: 615b4c40298876c094079aa6435e8388d39d0165
+version: "1.0.0"
+description: "Provably fair randomness for Hermes, plus prediction markets on Robinhood Chain. pfwa_random gives a number, coin flips, winner picks from a list or a shuffle from a drand evmnet (League of Entropy) round chosen before it existed, with the round, signature and derivation so anyone can recheck it: for giveaways, raffles, draws and tie-breaks an LLM would otherwise make up. Market tools list PFWA's open markets, read live prices onchain, show a wallet's positions and claimable winnings, list results, and build unsigned buy, sell or claim transactions for the user's own wallet to sign; two more read HoodRand requests and the live Sherwood game round. Native Python plugin, standard library only, no keys and no configuration. Disclosure: network calls go only to www.pfwa.fun (public agent API), rpc.mainnet.chain.robinhood.com (read-only eth_call; wallet addresses the user asks about are sent in balanceOf calls) and drand's public relays (api.drand.sh, api2.drand.sh, api3.drand.sh). The plugin never asks for, stores or uses a private key and never sends a transaction."
+maintainer: PFWA
+tier: community
+category: tools
+docs_url: https://github.com/MirakoolDev/pfwa-hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - pfwa_random
+    - pfwa_markets
+    - pfwa_quote
+    - pfwa_positions
+    - pfwa_build_tx
+    - pfwa_results
+    - hoodrand_lookup
+    - sherwood_game
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

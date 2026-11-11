@@ -143,30 +143,35 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
 
 def _path_is_sensitive(candidate: Path) -> bool:
     lowered = {part.lower() for part in candidate.parts}
-    if ".git" in lowered or ".ssh" in lowered:
-        return True
-    return candidate.name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    return bool(lowered & {".git", ".ssh"}) or candidate.name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
 
 
 def _is_sensitive_auto_approve_path(path: str) -> bool:
-    """Return whether *path* — or the symlink target it resolves to — is sensitive.
+    """Whether *path* as written OR its symlink-resolved target is sensitive.
 
-    The literal path alone is not enough: an innocuously named symlink such as
-    ``notes.txt`` pointing at ``~/.ssh/authorized_keys`` (or ``link.txt`` ->
-    ``.env`` inside the workspace) would otherwise pass this check and be
-    auto-approved under the ``session``/``workspace_session`` policies, defeating
-    the "sensitive paths always ask" guarantee. We therefore inspect both the
-    unresolved path and its ``resolve()``d target so symlinks cannot launder a
-    write to a protected file.
-    """
+    The literal name alone lets ``notes.txt -> ~/.ssh/authorized_keys`` (or a
+    symlinked parent dir) through; the target alone loses a literal ``.git``
+    component whose link points at an innocuously named directory. Unresolvable
+    paths fail closed: they ask."""
     expanded = Path(path).expanduser()
     if _path_is_sensitive(expanded):
         return True
     try:
-        resolved = expanded.resolve(strict=False)
+        return _path_is_sensitive(expanded.resolve(strict=False))
     except (OSError, RuntimeError):
-        return False
-    return _path_is_sensitive(resolved)
+        return True
+
+
+def _literal_paths(proposal: EditProposal) -> tuple[str, ...]:
+    """Target paths exactly as the model wrote them.
+
+    ``path`` is always included and V4A targets only in patch mode: keying on a
+    present ``patch`` string would let a stray one shadow the real ``path``."""
+    args = proposal.arguments
+    literal = [str(args["path"])] if args.get("path") else []
+    if proposal.tool_name == "patch" and args.get("mode") == "patch" and isinstance(args.get("patch"), str):
+        literal.extend(_extract_v4a_patch_paths(args["patch"]))
+    return tuple(literal)
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:
@@ -178,6 +183,11 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
     # must run per real target or a sensitive/escaped file hides in the join.
     paths = proposal.paths or (proposal.path,)
     if policy == AUTO_APPROVE_ASK or any(_is_sensitive_auto_approve_path(p) for p in paths):
+        return False
+    # Builders canonicalize the target (symlinks followed), so a literal ``.git``
+    # link to an innocuously named directory survives only in the raw arguments.
+    # Lexical only: a relative literal has no trustworthy base here.
+    if any(_path_is_sensitive(Path(p).expanduser()) for p in _literal_paths(proposal)):
         return False
     resolved = [Path(p).expanduser().resolve(strict=False) for p in paths]
     if policy == AUTO_APPROVE_SESSION:

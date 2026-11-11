@@ -1,0 +1,50 @@
+name: own-compute
+title: Own Compute
+repo: https://github.com/Siioh/hermes-own-compute
+sha: "f12408b5294f08bb278659239462027c4828d984"
+version: "0.1.0"
+tier: community
+category: tools
+maintainer: Siioh
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Siioh/hermes-own-compute#readme
+platforms: [linux, macos, windows]
+
+description: "Bring your own compute. For researchers and scientists with a workstation, a lab server or a cluster account. Runs sandboxed container environments, Slurm batch jobs and cloud agents (a Hermes agent in a sandbox on the user's own machine, not a hosted service, that hands its work back as a git branch) on SSH hosts, Slurm login nodes, and the Docker or Podman on this computer. Independent of Nous Research. A Compute page in Hermes Desktop shows every machine and what runs on it, and the same actions are chat tools with approval cards before anything starts, changes or is deleted. Disclosure — runs ssh, git and the container runtime (podman or docker), and on Slurm hosts sbatch, squeue, sacct, scancel and srun, on the hosts you add; opens ssh -L tunnels bound to 127.0.0.1 and terminal windows when you click; adds a host's key to your SSH known-hosts file on first contact (accept-new); remote hosts pull container images from public registries; cloud agents send the model key you store as a Hermes secret (CC_AGENT_API_KEY or a profile model's key) into the agent's sandbox, where commands the agent runs can read it, and call the model endpoint you choose from inside that sandbox only; one background thread starts on the first tool call or chat turn (reachability checks, Slurm and agent polling, time and idle limits); stores hosts, templates, run records and saved file copies in the plugin's data folder; reads secrets only through the Hermes secret scope; no telemetry, no update check, no call to any service run by the author."
+
+capabilities:
+  provides_tools:
+    - compute_status
+    - env_spawn
+    - env_exec
+    - env_control
+    - env_open
+    - slurm_submit
+    - slurm_jobs
+    - cloud_agent_spawn
+    - cloud_agent_status
+    - cloud_agent_collect
+    - cloud_agent_stop
+    - env_files
+    - compute_host
+    - cloud_agent_message
+    - cloud_agent_rerun
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []   # CC_AGENT_API_KEY and HF_TOKEN are optional_env in plugin.yaml, not required
+
+known_issues:
+  - "Tested on Windows 11 (Hermes Webapp), Fedora 43 with rootless Podman, and macOS 27.2 on Apple Silicon, against a Slurm test cluster running in containers. The native Hermes Desktop app, GPUs and Docker on Linux were not tested."
+  - "Cloud agents need a model from an API-key provider or a model server you run; a sign-in or subscription provider cannot be used. The agent's key is readable by commands the agent itself runs in its sandbox: use a scoped, spend-capped key."
+  - "Slurm only (no PBS or LSF). Cloud agents are off on Slurm hosts. The Hermes gateway has to run on the computer that shows the Compute page. An EC2 host starts a machine in your own AWS account that AWS bills while it runs; EC2 was tested on us-east-1 and t3.micro only."
+
+screenshots:
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/f12408b5294f08bb278659239462027c4828d984/docs/images/cloud-agent-run.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/f12408b5294f08bb278659239462027c4828d984/docs/images/chat-approval.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/f12408b5294f08bb278659239462027c4828d984/docs/images/overview.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/f12408b5294f08bb278659239462027c4828d984/docs/images/jobs.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/f12408b5294f08bb278659239462027c4828d984/docs/images/screen.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/f12408b5294f08bb278659239462027c4828d984/docs/images/add-host-types.png
+

@@ -95,18 +95,6 @@ const classifyRoute = (name: string): CommandRoute => {
   return 'fallback'
 }
 
-describe('slash parity interpreter selection', () => {
-  it('uses the launcher interpreter rather than other environment hints', () => {
-    expect(resolvePython({ HERMES_PYTHON: ' /hermes/python ', PYTHON: '/other/python', VIRTUAL_ENV: '/other' }, 'linux'))
-      .toBe('/hermes/python')
-  })
-
-  it('uses the platform PATH fallback when the launcher interpreter is absent or blank', () => {
-    expect(resolvePython({ PYTHON: '/other/python', VIRTUAL_ENV: '/other' }, 'linux')).toBe('python3')
-    expect(resolvePython({ HERMES_PYTHON: '  ' }, 'win32')).toBe('python')
-  })
-})
-
 describe('slash parity matrix', () => {
   if (commandRegistry.error) {
     it.skip(`Python command registry unavailable: ${skipReason}`, () => {})

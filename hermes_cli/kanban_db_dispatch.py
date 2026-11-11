@@ -1380,6 +1380,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1398,6 +1399,9 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    ``expected_run_id``: change nothing unless that run is still the task's
+    current run (a worker lane's ``WorkerLaneClaim.fail``).
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1407,7 +1411,7 @@ def _record_task_failure(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
-        if row is None:
+        if row is None or expected_run_id is not None and row["current_run_id"] != expected_run_id:
             return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
@@ -1788,7 +1792,7 @@ def dispatch_profile_allowlist_summary() -> str:
             "profile, or the config could not be read — omit the key to allow any)")
 
 
-def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
+def _has_spawnable(conn: sqlite3.Connection, status: str, board: Optional[str] = None) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
@@ -1800,22 +1804,23 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     if profile_exists is None:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
-    return any(profile_exists(row["assignee"]) for row in rows)
+    return any(profile_exists(row["assignee"]) or _kbl.has_lane(row["assignee"], board) for row in rows)
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def has_spawnable_ready(conn: sqlite3.Connection, *, board: Optional[str] = None) -> bool:
     """True iff a ready+assigned+unclaimed task maps to a real Hermes profile.
 
     Lets health telemetry tell "stuck" (``0 spawned`` with spawnable work) from
     "correctly idle" (only control-plane lanes waiting on ``claim_task``). Falls
-    back to "any assigned" when ``profile_exists`` is unimportable.
+    back to "any assigned" when ``profile_exists`` is unimportable. A plugin worker lane whose
+    assignee/board filters match counts as spawnable too (``kanban_db_lanes.has_lane``).
     """
-    return _has_spawnable(conn, "ready")
+    return _has_spawnable(conn, "ready", board)
 
 
-def has_spawnable_review(conn: sqlite3.Connection) -> bool:
+def has_spawnable_review(conn: sqlite3.Connection, *, board: Optional[str] = None) -> bool:
     """:func:`has_spawnable_ready` for the review column."""
-    return _has_spawnable(conn, "review")
+    return _has_spawnable(conn, "review", board)
 
 
 def review_dispatch_enabled() -> bool:
@@ -2036,19 +2041,6 @@ def dispatch_once(
     return result
 
 
-def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
-    """Back-compat: older spawn_fn signatures (and test stubs) accept only
-    ``(task, workspace)``; pass ``board`` only when the callable supports it."""
-    import inspect
-    try:
-        sig = inspect.signature(spawn_fn)
-        if "board" in sig.parameters:
-            return spawn_fn(task, workspace, board=board)
-        return spawn_fn(task, workspace)
-    except (TypeError, ValueError):
-        return spawn_fn(task, workspace)
-
-
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2073,8 +2065,7 @@ def _dispatch_lane_task(
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
-    profile_exists = _profile_exists_fn()
-    if profile_exists is not None and not profile_exists(assignee):
+    if not _kbl.runnable(conn, task_id, assignee, board=board, lane=lane, native=_profile_exists_fn()):
         result.skipped_nonspawnable.append(task_id)
         # Per-task diagnostic so ``show``/``tail`` name the missing profile instead of leaving
         # the card in ``ready`` with zero board evidence (#122422). Unlike a respawn guard the
@@ -2148,7 +2139,7 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+        pid = _kbl.spawn(conn, claimed, str(workspace), board=board, lane=lane, native=spawn_fn or _default_spawn)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid), run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
@@ -2308,6 +2299,7 @@ def _any_spawnable_review(
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
+    board: Optional[str] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
@@ -2319,13 +2311,13 @@ def _any_spawnable_review(
     """
     if not review_rows:
         return False
-    profile_exists = _profile_exists_fn()
+    native = _profile_exists_fn()
     running = per_profile_running or {}
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
             continue
-        if profile_exists is not None and not profile_exists(assignee):
+        if not _kbl.runnable(conn, row["id"], assignee, board=board, lane="review", native=native):
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
@@ -2369,8 +2361,9 @@ def _dispatch_once_locked(
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
-    call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
-    the PID so later ticks catch crashes before the TTL. Cap semantics:
+    hand it to a matching plugin worker lane (``kanban_db_lanes``), else call
+    ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording the
+    PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
     _run_reclaim_phase(
@@ -2413,7 +2406,7 @@ def _dispatch_once_locked(
     # one slot back.
     ready_budget = spawn_budget
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
-        conn, review_rows,
+        conn, review_rows, board=board,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
@@ -2961,4 +2954,5 @@ def run_daemon(
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
+from hermes_cli import kanban_db_lanes as _kbl
 from hermes_cli import kanban_db_workspace as _kbw

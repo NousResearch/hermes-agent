@@ -1,0 +1,31 @@
+name: listeningkit-log
+title: ListeningKit Log
+repo: https://github.com/deepmroot/listeningkit-log
+sha: dd8960d6ab904c351786e1b6ae95ef3c2ad94849
+description: >-
+  Run X, Discord, Slack, Instagram and Reddit conversations from Hermes through
+  the locally installed log MCP server: inspect inboxes and full threads, find
+  conversations awaiting a reply, draft in the user's voice, and send only
+  after approval. LinkedIn support is currently limited to a session-status
+  check. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/),
+  configuration only. Disclosure — starts the separately installed logMcp
+  executable as a long-running stdio process; log makes network calls directly
+  to the social platforms the user signed into and reads account sessions,
+  cookies and message history from its own ~/.logCli data directory. Write tools
+  can send replies, DMs and posts, and can like or follow as the user's account;
+  the server is marked untrusted so Hermes asks for approval. The MCP tool set
+  comes from the user's installed log version at runtime and is not covered by
+  this plugin's pinned commit.
+maintainer: deepmroot
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/deepmroot/listeningkit-log#readme
+version: "0.1.0"
+readme: true
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [LOG_ACCOUNTS]

@@ -1,0 +1,25 @@
+name: audit-lens
+repo: https://github.com/Luecria/hermes-audit-lens
+sha: 972cd6a469ddb04c1ef25941e20852ee8583ff60
+description: >-
+  Deterministic smart-contract security review inside Hermes: fetch verified
+  source from Sourcify, run pattern-based static checks (reentrancy,
+  tx.origin, unchecked calls, unprotected selfdestruct, delegatecall,
+  access control), flag likely-known issues against a curated SWC database,
+  and draft structured findings. Standard library only, no dependencies.
+maintainer: Luecria
+tier: community
+category: tools
+docs_url: https://github.com/Luecria/hermes-audit-lens#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - audit_contract
+    - fetch_verified_source
+    - check_duplicate
+    - draft_finding
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

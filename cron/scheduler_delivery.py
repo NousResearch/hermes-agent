@@ -1723,10 +1723,8 @@ def _prepare_target_delivery(
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
     origin_user_id = origin.get("user_id") if origin_target else None
 
-    # DM shape for BOTH the flatten gate and seed chat_type (Slack DM ids start with "D").
-    origin_chat_type = str(origin.get("chat_type") or "").lower()
-    is_dm_target = origin_chat_type == "dm" or (
-        not origin_chat_type and str(chat_id).startswith("D"))
+    # DM shape for BOTH the flatten gate and seed chat_type.
+    is_dm_target = _origin.target_is_dm(origin, platform_name, chat_id)
 
     # in_channel gate shared by thread-flatten and flat seed — they MUST match or brief and
     # session land in different places. Origin qualifies unconditionally; others only when the

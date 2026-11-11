@@ -1,7 +1,7 @@
 name: deck-diff
 title: Deck Diff
 repo: https://github.com/Baophan00/deck-diff
-sha: 70db4e36348e2c9cdfbea5ac920062fde07955e5
+sha: 5c7f65460b2481da2055094408291bf6320ced1f
 version: "0.1.0"
 description: >-
   Content integrity for courseware: compare a source .pptx with the lesson data generated from it

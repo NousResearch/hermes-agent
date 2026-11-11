@@ -13,7 +13,9 @@ systemic-identical-error breaker trips at 1. Four distinguishable outcomes share
 
 Phase is what separates them, and phase is already observable: the submitter prints
 ``Session: <id>`` only after ``kanban.run`` was answered, i.e. only after the owner checked the
-claim and wrote its ``owner_admitted`` marker.
+claim and wrote its ``owner_admitted`` marker. The marker is the authority a booking reads, not the
+exit code: an admitted attempt can still die as a raw non-restartable transport error, which maps
+to 71 ("never reached the owner") whatever phase it died in.
 """
 
 from __future__ import annotations
@@ -161,10 +163,17 @@ def classify_refusal(
     retry worker as the run error in ``## Prior attempts``; the session id, the reconcile flag and
     the host's pressure numbers reach it (and the board UI) as run metadata.
     """
-    reconcile = kind == "turn_unknown"
-    session_id = None
-    if reconcile and conn is not None and task_id:
-        session_id = admitted_session_id(conn, task_id, board=board)
+    # The board's durable evidence outranks the code the submitter died with. The two disagree on a
+    # reachable path: ``kanban_worker_client.run`` re-raises a NON-restartable dial raw, so an
+    # attempt the owner admitted (marker committed, ``Session:`` printed) exits with a plain
+    # ``GatewayUnavailableError`` and ``submitter_exit_code`` calls that 71 — "never reached the
+    # owner", which is false, and whose "a retry duplicates nothing" sentence invites a second
+    # worker to redo a possibly-pushed turn. A committed ``owner_admitted`` marker means the owner
+    # saw this claim, whatever the exit code says; the reclaim fence cannot stand in for that
+    # reading, because it steps aside once the worker is provably dead — which is exactly this
+    # aftermath. Read the marker once; it is also the session id the retry has to resume.
+    session_id = admitted_session_id(conn, task_id, board=board) if conn is not None and task_id else None
+    reconcile = kind == "turn_unknown" or session_id is not None
     payload: dict[str, Any] = {
         "pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code,
         "infrastructure": True, "reconcile_required": reconcile, "transport_refusal": True,

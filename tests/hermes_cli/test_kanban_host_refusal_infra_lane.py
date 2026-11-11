@@ -26,6 +26,7 @@ card failure, so a genuinely poisoned card still reaches the breaker.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_transport as kbt
+from hermes_cli import kanban_owner_recovery
 from hermes_cli import kanban_worker_client as kwc
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, GatewayUnavailableError
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
@@ -84,6 +86,46 @@ def _refused_worker(
     lines += [refusal, f"{KANBAN_WORKER_EXIT_TRAILER}{rc}"]
     with open(log, "a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _owner_ledger(path: Path, session_id: str, request_id: str, status: str, outcome: str) -> Path:
+    """The owner's own admission ledger, the table ``session_admissions`` the receipt points at.
+
+    The reclaim fence reads the admission there (read-only, by URI) before it will let the sweep
+    book anything, so a booking test that wants a *settled* admission has to write a real row:
+    without one the fence reads "the owner said nothing we can read" and the run keeps its claim.
+    """
+    with sqlite3.connect(path) as store:
+        store.execute(
+            "CREATE TABLE IF NOT EXISTS session_admissions "
+            "(target_session_id TEXT, request_id TEXT, status TEXT, outcome TEXT)")
+        store.execute("INSERT INTO session_admissions VALUES (?,?,?,?)",
+                      (session_id, request_id, status, outcome))
+    return path
+
+
+def _admitted(conn, tid: str, session_id: str, pid: int, ledger: Path,
+              *, admission: tuple[str, str] = ("terminal", "completed")) -> None:
+    """Commit the durable ``owner_admitted`` marker the owner writes for the run it admits.
+
+    Written the way ``gateway.session_kanban.run_task``'s ``admit_claim`` writes it (one board write
+    txn, keyed by the run, payload pointing at the owner's ledger), so a booking that reads it is
+    reading real board evidence — the PRIMARY channel. The worker log's ``Session:`` line stays
+    absent in these tests, which is what makes the two channels pinnable apart.
+
+    ``admission`` is the settled state the owner left in its ledger: ``terminal/completed`` (the
+    turn ended; ``recover_session_inputs`` never rewrites it) or ``terminal/interrupted``. Both
+    release the reclaim fence, which is what makes the booking — and therefore its wording — the
+    only thing standing between this attempt and a second worker redoing it.
+    """
+    run_id = conn.execute("SELECT current_run_id FROM tasks WHERE id=?", (tid,)).fetchone()[0]
+    request_id = f'kanban:["{tid}",{run_id}]'
+    _owner_ledger(ledger, session_id, request_id, *admission)
+    kb._append_event(conn, tid, "owner_admitted",
+                     {"db": str(ledger), "session_id": session_id, "request_id": request_id,
+                      "pid": pid, "birth": 1.0},
+                     run_id=run_id)
+    conn.commit()
 
 
 def _latest(conn, tid: str):
@@ -180,6 +222,104 @@ def test_never_submitted_refusal_retries_promptly(kanban_home):
         )
         kbd.detect_crashed_workers(conn)
         assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_a_durable_admission_marker_reconciles_even_a_host_refusal_booking(kanban_home):
+    """SF-1: the board's durable evidence decides reconcile, not the submitter's exit code.
+
+    An ADMITTED attempt can still exit 71. ``kanban_worker_client.run`` re-raises a non-restartable
+    dial raw (``if not _restartable(exc): raise``), bypassing the phase split, and
+    ``submitter_exit_code`` maps a raw ``GatewayUnavailableError`` to 71 whatever phase it died in.
+    The owner DID see the claim — its ``owner_admitted`` marker is committed for this run — so
+    booking it with "nothing of this attempt ran, so a retry duplicates nothing" is the
+    misinstruction that lets a second worker re-derive possibly-pushed work, and it hides the
+    session id the retry needs. The marker is the authority: the code is not.
+
+    No ``Session:`` line is written to the worker log here, so the booking can only reach the
+    session id through the event-authority leg of :func:`admitted_session_id`.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _refused_worker(
+            conn, tid, 77001, HOST_REFUSAL,
+            "Kanban owner refused: Gateway inaccessible: authorization",
+        )
+        _admitted(conn, tid, SESSION_A, 77001, kanban_home / "owner-state.db")
+
+        kbd.detect_crashed_workers(conn)
+
+        run, task = _latest(conn, tid)
+        assert task is not None
+        assert run["outcome"] == "transport_refused"
+        meta = kb._json_dict(run["metadata"])
+        assert meta["reconcile_required"] is True, meta
+        assert meta["session_id"] == SESSION_A
+        error = task.last_failure_error or ""
+        assert "do not redo" in error.lower()
+        assert SESSION_A in error
+        # Still the infrastructure lane: reconciling is not the card being counted a failure.
+        assert task.consecutive_failures == 0
+        # An ambiguous outcome is spaced, never resent on the next tick.
+        assert kbd.check_respawn_guard(conn, tid) == "infrastructure_cooldown"
+
+
+@pytest.mark.parametrize(
+    "admission, lapse_claim",
+    [(("terminal", "completed"), False),
+     (("terminal", "interrupted"), False),
+     (("started", None), True)],
+    ids=["settled-completed", "settled-interrupted", "unresolved-lapsed-claim"])
+def test_the_reclaim_fence_does_not_stand_in_place_of_the_booking(kanban_home, admission, lapse_claim):
+    """The fence the review leaned on releases as soon as the attempt is provably over.
+
+    ``owner_reclaim_blocked(crash_sweep=True)`` protects an admission that may still be in flight;
+    once the owner's ledger says ``terminal`` (``completed`` is durable —
+    ``settle_session_input`` accepts it and ``recover_session_inputs`` rewrites only
+    ``started``/STEERING) and the worker pid is dead, it steps aside and the sweep books. The third
+    arm is the worst case, not the settled ones: an admission still marked ``started`` whose claim
+    has lapsed with no heartbeat and whose owner process is gone —
+    ``owner_attempt_provably_over`` releases that too. So the booking's own wording is the last line
+    of defence against a duplicate run, and it has to be right in every arm the fence releases.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="t", assignee="a")
+        _refused_worker(
+            conn, tid, 77002, HOST_REFUSAL,
+            "Kanban owner refused: Gateway inaccessible: authorization",
+        )
+        _admitted(conn, tid, SESSION_A, 77002, kanban_home / "owner-state.db", admission=admission)
+        if lapse_claim:
+            conn.execute("UPDATE tasks SET claim_expires=?, last_heartbeat_at=NULL WHERE id=?",
+                         (int(time.time()) - 3600, tid))
+            conn.commit()
+        assert kanban_owner_recovery.owner_reclaim_blocked(conn, tid, crash_sweep=True) is False
+
+        assert kbd.detect_crashed_workers(conn) == []
+
+        run, task = _latest(conn, tid)
+        assert task is not None
+        assert run["outcome"] == "transport_refused", (admission, task.last_failure_error)
+        assert kb._json_dict(run["metadata"])["reconcile_required"] is True, admission
+
+
+def test_admitted_session_id_reads_the_owner_admitted_event_with_no_worker_log(kanban_home):
+    """The PRIMARY channel, read directly: the event leg must answer when no log exists.
+
+    Every booking guard reaches the session id through the ``Session:`` log line, so a mutant that
+    deletes the ``owner_admitted`` query still ships 49 green tests — and the fix above would then
+    ride on a channel no test can break. This pins the event leg on its own, with no log to fall
+    back on.
+    """
+    with kbc.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="t", assignee="a")
+        claimed = kb.claim_task(conn, tid, claimer=f"{host}:w82001")
+        assert claimed is not None
+        kb._append_event(conn, tid, "owner_admitted",
+                         {"session_id": SESSION_A, "pid": 82001}, run_id=claimed.current_run_id)
+        conn.commit()
+        assert not kb.worker_log_path(tid).exists(), "no log: the fallback has nothing to read"
+        assert kbt.admitted_session_id(conn, tid) == SESSION_A, "event-authority leg not read"
 
 
 def test_managed_interpreter_code_does_not_mask_the_submitter_refusal(kanban_home):

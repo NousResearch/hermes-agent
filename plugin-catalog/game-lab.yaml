@@ -1,0 +1,38 @@
+name: game-lab
+title: "Game Lab"
+repo: https://github.com/flabanabba8/game-lab
+sha: 0ecbaaf8b68e2d449fd68e32aa3aa47592977353
+version: "0.1.0"
+description: "Work on games with Hermes: mod a game on a safe copy, translate its text without breaking it, and playtest it by pressing and holding keys and reporting honestly. Bundles three plugins (ModLab, Game Localization Studio, Playtest Pilot). Disclosure: Works on a copy of a game folder you own and drives Universal Modder and Reverse Engineer Anything (ModLab); reads RPG Maker data files you select and keeps translation drafts in plugin storage; presses and holds keys and clicks in the one window you select through Hermes computer use and xdotool on X11, each hold behind the plugin's own approval rule, and grabs that window with ffmpeg. No network calls of its own, no credentials, no bundled game files."
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/game-lab/blob/0ecbaaf8b68e2d449fd68e32aa3aa47592977353/README.md
+image: https://raw.githubusercontent.com/flabanabba8/game-lab/0ecbaaf8b68e2d449fd68e32aa3aa47592977353/assets/thumbnail.jpg
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - modlab_resources
+    - modlab_toolkit
+    - modlab_rea_native
+    - modlab_create
+    - modlab_inspect
+    - modlab_apply
+    - modlab_rollback
+    - modlab_select_preserved
+    - localize_inspect
+    - localize_get
+    - localize_translate
+    - localize_validate
+    - localize_export
+    - localize_list_drafts
+    - playtest_start
+    - playtest_action
+    - playtest_replay
+    - playtest_observe
+    - playtest_report
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

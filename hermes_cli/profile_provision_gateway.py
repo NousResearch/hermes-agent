@@ -77,13 +77,20 @@ def _local_profile_dir(name: str) -> Optional[Path]:
         return None
 
 
-def _made_here(made: ProfileCreateReceipt, local: Optional[Path], existed_before: bool) -> bool:
-    """Whether this create made the profile ``-p <name>`` selects on this machine: absent before the request,
-    present now, at the path the gateway reports. Path equality alone is not enough (another machine with
-    the same home layout reports the same path), nor is a loopback URL (a tunnel or container can serve
-    another home)."""
+def _is_profile(local: Optional[Path]) -> bool:
+    """Whether ``-p <name>``'s directory here is a profile: it carries an identity marker. A shell a deleted
+    profile left behind carries none (``create_profile`` replaces it), and nothing else creates one."""
+    from hermes_constants import named_profile_has_identity
+    return local is not None and local.is_dir() and named_profile_has_identity(local)
+
+
+def _made_here(made: ProfileCreateReceipt, local: Optional[Path], was_profile: bool) -> bool:
+    """Whether this create made the profile ``-p <name>`` selects on this machine: not a profile before the
+    request, one now, at the path the gateway reports. Path equality alone is not enough (another machine
+    with the same home layout reports the same path), nor is a loopback URL (a tunnel or container can
+    serve another home)."""
     from hermes_cli.profiles import profile_matches_home
-    return (local is not None and not existed_before and local.is_dir()
+    return (not was_profile and _is_profile(local)
             and profile_matches_home(local.name, Path(made.path)))
 
 
@@ -121,7 +128,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
     machine = " on the gateway's machine" if remote else ""
     unknown = f"{where} may have created '{request.name}'; check `hermes profile list`{machine} before retrying"
     local = _local_profile_dir(request.name)
-    existed_before = local is not None and local.is_dir()
+    was_profile = _is_profile(local)
     attached = False
 
     async def _run():
@@ -165,7 +172,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
         # It made a profile without a full, well-typed receipt (``--clone`` / ``--sync-imports`` may be ignored).
         raise GatewayCreateError(f"{where} answered without the details this version needs; {unknown}")
     made = dataclasses.replace(made, warnings=[redact_create_text(w) for w in made.warnings])
-    return _with_local_alias(made, request) if request.alias and _made_here(made, local, existed_before) else made
+    return _with_local_alias(made, request) if request.alias and _made_here(made, local, was_profile) else made
 
 
 def _with_local_alias(made: ProfileCreateReceipt, request: ProfileCreateRequest) -> ProfileCreateReceipt:

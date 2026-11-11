@@ -1,14 +1,15 @@
 name: first-principles-skill-builder
 title: "First Principles Skill Builder"
 repo: https://github.com/flabanabba8/first-principles-skill-builder
-sha: ac0b7a43a23173bde2017fc6e09b576cf26cfbe6
+sha: 5681be06f3ca46a4a6c99b82d6ee8cda203d1fb3
 version: "0.1.0"
-description: "Build, check and improve agent skills that adapt to the tools, hardware and permissions you actually have: resource discovery, draft linting, contrasting-case evidence and revision history. Installing needs your approval. Disclosure: Reads the machine's tools and settings that you point it at, lints and tests draft skills locally and stores revisions in plugin storage; installing a skill needs your approval (pre_tool_call hook). No network or model calls of its own."
+description: "Build, check and improve agent skills that adapt to the tools, hardware and permissions you actually have: resource discovery, draft linting, contrasting-case evidence and revision history. Installing needs your approval. Disclosure: Checks which common tools are installed (runs --version on a fixed list, and nvidia-smi), reads memory, disk space, skill names and model-cache folder names, lints and tests draft skills locally and stores revisions in plugin storage; installing a skill writes one file into your skills folder and needs your approval (pre_tool_call hook). No network or model calls of its own."
 maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/first-principles-skill-builder/blob/ac0b7a43a23173bde2017fc6e09b576cf26cfbe6/README.md
+docs_url: https://github.com/flabanabba8/first-principles-skill-builder/blob/5681be06f3ca46a4a6c99b82d6ee8cda203d1fb3/README.md
+image: https://raw.githubusercontent.com/flabanabba8/first-principles-skill-builder/5681be06f3ca46a4a6c99b82d6ee8cda203d1fb3/assets/thumbnail.jpg
 platforms: [linux]
 capabilities:
   provides_tools:

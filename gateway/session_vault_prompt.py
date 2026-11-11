@@ -43,7 +43,9 @@ def vault_prompt_scope(turn, agent):
         yield
         return
     from agent.vault_backends import unlock
+    from gateway.session_finite import finite_turn_required
     authority, session_id, _generation = turn._approval_owner
+    wait = finite_turn_required() is not True  # as sudo_prompt_scope: a finite turn stays headless
 
     def ask(method, params, timeout):
         from gateway.session_server_requests import ask_viewer
@@ -51,7 +53,8 @@ def vault_prompt_scope(turn, agent):
         if live is None:
             return ""
         return ask_viewer(live.event_stream, session_id, method, params, timeout=timeout,
-                          cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
+                          cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)),
+                          wait_for_viewer=wait)
 
     def unlock_prompt(backend, display_name):
         return ask("vault.unlock_prompt", {"backend": backend, "display_name": display_name}, UNLOCK_TIMEOUT_S)

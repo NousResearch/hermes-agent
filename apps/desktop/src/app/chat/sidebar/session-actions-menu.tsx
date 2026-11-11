@@ -39,7 +39,9 @@ import {
   moveSessionToProject,
   projectIdForCwd,
   projectRootCwd,
-  refreshProjectTree
+  reclaimWorktreePath,
+  refreshProjectTree,
+  worktreeLaneForCwd
 } from '@/store/projects'
 import {
   $activeSessionId,
@@ -54,12 +56,8 @@ import {
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { ambientRequestFor } from '@/store/session-gone-latch'
-import {
-  $sessionStates,
-  $sessionTiles,
-  closeAllOpenSessionTiles,
-  requestForOwnedSession
-} from '@/store/session-states'
+import { waitForSessionRemoval } from '@/store/session-removal'
+import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles, requestForOwnedSession } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -163,6 +161,10 @@ interface SessionActions {
    *  archive verb becomes Unarchive and restores the session (#98813). */
   archived?: boolean
   profile?: string
+  /** The row's own cwd and owning connection (sidebar rows): the worktree
+   *  verb resolves its lane from these instead of the capped recents list. */
+  cwd?: null | string
+  connectionId?: null | string
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -258,6 +260,78 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   )
 }
 
+// "Archive & remove worktree": one verb for a session that ran in its own
+// linked worktree — put the chat away AND reclaim the tree it worked in, the
+// way `hermes worktree prune` would (never forced: uncommitted changes or
+// unique commits keep the tree, and the toast says which; a merged branch
+// goes with its tree, a pushed open-PR branch stays). Its own component so
+// only an OPEN menu subscribes to the session and project stores (same
+// reasoning as MoveToProjectItems). Renders nothing for a main checkout, the
+// kanban bucket, or a plain folder — none is a tree a session may reclaim.
+// The row's own `cwd`/`connectionId` (passed by the sidebar row) win over the
+// recents lookup: project views list chats outside the capped `$sessions`
+// page, and the owner keeps a remote chat from matching a local lane that
+// shares its path string.
+function ArchiveRemoveWorktreeItem({
+  kit,
+  sessionId,
+  cwd: rowCwd,
+  connectionId: rowConnectionId,
+  onArchive
+}: {
+  kit: MenuKit
+  sessionId: string
+  cwd?: null | string
+  connectionId?: null | string
+  onArchive?: () => void
+}) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  // Subscribing to the tree keeps the lane lookup live while the menu is open.
+  useStore($projectTree)
+  const listed = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const cwd = rowCwd?.trim() || listed?.cwd || ''
+  const lane = worktreeLaneForCwd(cwd, rowCwd?.trim() ? rowConnectionId : listed?.connection_id)
+
+  if (!lane || !onArchive) {
+    return null
+  }
+
+  return renderActionItem(kit, {
+    icon: 'git-branch',
+    label: r.archiveRemoveWorktree,
+    onSelect: () => {
+      triggerHaptic('warning')
+      // The archive must land before the tree goes: a refused or failed
+      // archive restores the row, and its workspace must still be there.
+      const archived = waitForSessionRemoval(sessionId)
+      onArchive()
+
+      archived
+        .then(ok => {
+          if (!ok) {
+            return
+          }
+
+          return reclaimWorktreePath(lane.repoPath, lane.worktreePath, lane.owner).then(result => {
+            if (result.removed) {
+              notify({
+                durationMs: 4_000,
+                kind: 'success',
+                message: result.branchDeleted
+                  ? r.worktreeRemovedBranchDeleted(result.branch)
+                  : r.worktreeRemoved(lane.label)
+              })
+            } else {
+              notify({ durationMs: 6_000, kind: 'info', message: r.worktreeKept(lane.label, result.reason) })
+            }
+          })
+        })
+        .catch(err => notifyError(err, t.sidebar.projects.removeWorktreeFailed))
+    }
+  })
+}
+
 function useSessionActions({
   sessionId,
   title,
@@ -265,6 +339,8 @@ function useSessionActions({
   unread = false,
   archived = false,
   profile,
+  cwd,
+  connectionId,
   onPin,
   onToggleUnread,
   onBranch,
@@ -593,6 +669,13 @@ function useSessionActions({
       )}
       <kit.Separator />
       {dangerItems.map(item => renderActionItem(kit, item))}
+      <ArchiveRemoveWorktreeItem
+        connectionId={connectionId}
+        cwd={cwd}
+        kit={kit}
+        onArchive={archived ? undefined : onArchive}
+        sessionId={sessionId}
+      />
       {onHideTabBar && (
         <>
           <kit.Separator />

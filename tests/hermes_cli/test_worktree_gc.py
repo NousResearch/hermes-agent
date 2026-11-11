@@ -200,6 +200,100 @@ class TestAuditVerdicts:
         assert "kanban" in record.reason
 
 
+class TestReclaimOne:
+    """``reclaim_worktree`` — the single-tree door (Desktop session action, ``hermes worktree
+    remove``): same verdicts as the sweep, structured for a UI, never forced."""
+
+    def test_clean_tree_removed_with_branch_and_dirty_tree_kept_with_reason(self, repo):
+        clean, clean_branch = _add_worktree(repo, "hermes-clean")
+        dirty, dirty_branch = _add_worktree(repo, "hermes-dirty")
+        (dirty / "README.md").write_text("edited\n")
+
+        gone = worktree_gc.reclaim_worktree(str(repo), str(clean))
+        assert gone["removed"] is True and gone["branch_deleted"] is True
+        assert gone["branch"] == clean_branch and not clean.exists()
+
+        kept = worktree_gc.reclaim_worktree(str(repo), str(dirty))
+        assert kept["removed"] is False and kept["verdict"] == "keep"
+        assert "uncommitted" in kept["reason"] and dirty.exists()
+        assert _git(["rev-parse", "--verify", dirty_branch], repo)
+
+        # The REST shape Desktop reads: a plain policy keep is the one forceable verdict.
+        from hermes_cli import web_git
+        rest = web_git.worktree_reclaim(str(repo), str(dirty))
+        assert rest["outcome"] == "kept" and rest["forceable"] is True and rest["removed"] is False
+
+    def test_tree_a_live_process_works_in_is_kept_unforceable(self, repo):
+        """The live-process check ``prune`` applies: a clean merged tree a running process
+        uses (cwd here, no git lock) stays, and the verdict never offers force."""
+        import subprocess
+        import sys
+        tree, _ = _add_worktree(repo, "hermes-busy")
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(tree))
+        try:
+            kept = worktree_gc.reclaim_worktree(str(repo), str(tree))
+        finally:
+            proc.kill()
+            proc.wait()
+        assert kept["removed"] is False and tree.exists()
+        assert kept["outcome"] == "in-use" and kept["forceable"] is False
+
+    def test_dirty_tree_a_live_process_uses_is_never_forceable_nor_force_removed(self, repo):
+        """A running session's tree with uncommitted edits is a policy keep, the verdict that
+        offers force: the live-process check must run for it too, and the force path itself
+        (``force=True`` on the core door, and the REST force remove) must refuse it."""
+        import subprocess
+        import sys
+        from hermes_cli import web_git
+        tree, branch = _add_worktree(repo, "hermes-busy-dirty")
+        (tree / "README.md").write_text("edited\n")
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(tree))
+        try:
+            kept = worktree_gc.reclaim_worktree(str(repo), str(tree))
+            forced = web_git.worktree_reclaim(str(repo), str(tree), force=True)
+            with pytest.raises(RuntimeError, match="running process"):
+                web_git.worktree_remove(str(repo), str(tree), True)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert kept["outcome"] == "in-use" and kept["forceable"] is False
+        assert f"pid {proc.pid}" in kept["reason"]
+        assert forced["removed"] is False and forced["outcome"] == "in-use"
+        assert tree.exists() and (tree / "README.md").read_text() == "edited\n"
+        # Once nothing uses it, the confirmed force removes it and keeps the branch.
+        gone = web_git.worktree_reclaim(str(repo), str(tree), force=True)
+        assert gone["removed"] is True and gone["branchDeleted"] is False and not tree.exists()
+        assert _git(["rev-parse", "--verify", branch], repo)
+
+    def test_untracked_file_git_quotes_is_archived_by_its_real_name(self, repo, tmp_path, monkeypatch):
+        """``git status`` C-quotes names with spaces/quotes/non-ASCII; reading without ``-z``
+        archived only the plain file and the force removal deleted the quoted one unsaved."""
+        home = tmp_path / "hh"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        tree, _ = _add_worktree(repo, "hermes-quoted")
+        (tree / "plain.txt").write_text("a\n")
+        (tree / "sp ace \u00fc.txt").write_text("b\n")
+        result = worktree_gc.reclaim_worktree(str(repo), str(tree))
+        saved = {p.name for p in (home / "archive" / "worktree-prune").rglob("*.txt")}
+        assert saved == {"plain.txt", "sp ace \u00fc.txt"}
+        assert result["removed"] is True and result["outcome"] == "removed"
+
+        tree2, _ = _add_worktree(repo, "hermes-unsaveable")
+        (tree2 / "scratch.txt").write_text("c\n")
+        monkeypatch.setattr(worktree_gc, "_archive_untracked", lambda *_a: None)
+        failed = worktree_gc.reclaim_worktree(str(repo), str(tree2))
+        assert failed["removed"] is False and tree2.exists() and (tree2 / "scratch.txt").exists()
+        assert failed["outcome"] == "archive-failed" and failed["forceable"] is False
+
+    def test_main_checkout_and_foreign_dirs_are_refused(self, repo, tmp_path):
+        stranger = tmp_path / "stranger"
+        stranger.mkdir()
+        for path in (repo, stranger, repo / ".worktrees" / "does-not-exist"):
+            result = worktree_gc.reclaim_worktree(str(repo), str(path))
+            assert result["removed"] is False and result["verdict"] == "unknown"
+        assert (repo / "README.md").exists() and stranger.exists()
+
+
 class TestReclaim:
     def test_reap_removes_tree_and_branch(self, repo):
         tree, branch = _add_worktree(repo, "hermes-clean")

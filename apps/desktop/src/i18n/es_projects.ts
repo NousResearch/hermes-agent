@@ -74,9 +74,9 @@ export const esProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   removeWorktree: 'Eliminar worktree',
   removeWorktreeFailed: 'No se pudo eliminar el worktree (¿hay cambios sin confirmar?)',
   removeWorktreeConfirm:
-    'Elimínalo de Git (se borra el directorio del worktree; la rama se conserva) o simplemente oculta el carril de la barra lateral y deja el worktree en disco.',
-  removeWorktreeDirty:
-    'Este worktree tiene cambios sin confirmar. Fuerza la eliminación (se descartarán esos cambios) o simplemente oculta el carril y consérvalo en disco.',
+    'Elimínalo de Git (se borra el directorio del worktree y, cuando el trabajo ya está en el remoto, su rama; los archivos sin seguimiento se archivan antes) o simplemente oculta el carril de la barra lateral y deja el worktree en disco.',
+  removeWorktreeDirty: reason =>
+    `Este worktree se conservó: ${reason}. Fuerza la eliminación (se descartará ese trabajo) o simplemente oculta el carril y consérvalo en disco.`,
   forceRemove: 'Forzar eliminación',
   enter: label => `Abrir ${label}`,
   reorder: label => `Reordenar ${label}`,

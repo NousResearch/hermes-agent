@@ -202,3 +202,47 @@ export function isSessionRemovalPending(sessionId: null | string | undefined): b
 
   return $removedSessionIds.get().has(id) || $sessionMutationsInFlight.get().has(id)
 }
+
+/** Settles once the archive/delete the caller just started for `sessionId`
+ *  has an outcome, read from the removal lifecycle that verb already drives:
+ *  true when the row stayed tombstoned after its RPC left flight (persisted);
+ *  false when the RPC failed (the verb untombstones before it ends the
+ *  mutation), or when no removal started within `startMs` (the verb refused,
+ *  e.g. unresolved ownership). A combined verb such as "Archive & remove
+ *  worktree" waits on this so a failed archive never loses its workspace. */
+export function waitForSessionRemoval(sessionId: string, startMs = 15_000): Promise<boolean> {
+  const id = sessionId.trim()
+
+  return new Promise(resolve => {
+    let started = false
+    let settled = false
+
+    const check = () => {
+      if (settled) {
+        return
+      }
+
+      // The verb tombstones a moment BEFORE it marks the RPC in flight, so
+      // only the in-flight edge counts as "started".
+      const inFlight = $sessionMutationsInFlight.get().has(id)
+
+      if (inFlight) {
+        started = true
+      } else if (started) {
+        finish($removedSessionIds.get().has(id))
+      }
+    }
+
+    const offRemoved = $removedSessionIds.listen(check)
+    const offInFlight = $sessionMutationsInFlight.listen(check)
+    const timer = setTimeout(() => !started && finish(false), startMs)
+
+    function finish(value: boolean) {
+      settled = true
+      clearTimeout(timer)
+      offRemoved()
+      offInFlight()
+      resolve(value)
+    }
+  })
+}

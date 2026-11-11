@@ -57,6 +57,14 @@ import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
+// The row facts the session menu needs: archived state, plus the row's own cwd
+// and owning connection for "Archive & remove worktree" (rows in a project
+// view can sit outside the capped recents list, and the owner keeps a remote
+// chat from matching a same-path local lane).
+function sessionMenuRow(session: SessionInfo) {
+  return { archived: Boolean(session.archived), connectionId: session.connection_id, cwd: session.cwd }
+}
+
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
   /** TUI-style tree stem for branched sessions (`└─ ` / `├─ `). */
@@ -326,7 +334,7 @@ function SidebarSessionRowImpl({
         </span>
       ))}
       <SessionActionsMenu
-        archived={Boolean(session.archived)}
+        {...sessionMenuRow(session)}
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
@@ -357,7 +365,7 @@ function SidebarSessionRowImpl({
 
   return (
     <SessionContextMenu
-      archived={Boolean(session.archived)}
+      {...sessionMenuRow(session)}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}

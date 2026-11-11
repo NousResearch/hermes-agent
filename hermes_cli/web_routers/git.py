@@ -7,6 +7,7 @@ wrappers (git/gh can block).
 """
 
 import asyncio
+import contextvars
 import shutil
 import time
 from functools import partial
@@ -26,6 +27,7 @@ from hermes_cli.web_models import (
     GitPathBody,
     GitPrListBody,
     GitWorktreeAddBody,
+    GitWorktreeReclaimBody,
     GitWorktreeRemoveBody,
 )
 
@@ -35,10 +37,16 @@ router = APIRouter()
 
 
 async def _git_op(fn, *args):
-    """Run a (blocking) git op off the event loop; map a failed mutation to 400."""
+    """Run a (blocking) git op off the event loop; map a failed mutation to 400.
+
+    ``run_in_executor`` does not carry contextvars into the worker, so the request's profile
+    binding (a secondary profile's native ticket sets the task-local home override) would be
+    lost and the op would write that profile's archive/registry/cache under the launch home.
+    Run the op inside a copy of the request's context instead."""
     loop = asyncio.get_running_loop()
+    context = contextvars.copy_context()
     try:
-        return await loop.run_in_executor(None, fn, *args)
+        return await loop.run_in_executor(None, context.run, fn, *args)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
 
@@ -213,6 +221,13 @@ async def git_worktree_add_route(body: GitWorktreeAddBody):
 async def git_worktree_remove_route(body: GitWorktreeRemoveBody):
     return await _git_op(
         _web_git.worktree_remove, _git_path(body.path), _git_path(body.worktreePath), body.force
+    )
+
+
+@router.post("/api/git/worktree/reclaim")
+async def git_worktree_reclaim_route(body: GitWorktreeReclaimBody):
+    return await _git_op(
+        _web_git.worktree_reclaim, _git_path(body.path), _git_path(body.worktreePath), body.force
     )
 
 

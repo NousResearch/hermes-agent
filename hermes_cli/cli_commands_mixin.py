@@ -116,6 +116,7 @@ _BG_PROVIDER_KWARGS = {
 _WORKTREE_SUBCOMMANDS = {
     **dict.fromkeys(("prune", "gc", "clean"), "_worktree_prune"),
     **dict.fromkeys(("list", "ls"), "_worktree_list"),
+    **dict.fromkeys(("remove", "rm"), "_worktree_remove"),
     **dict.fromkeys(("new", "add", "create"), "_worktree_new")}
 
 # Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
@@ -978,9 +979,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /worktree ------------------------------------------------------------------------
     def _handle_worktree_command(self, cmd_original: str) -> None:
-        """Handle /worktree [new [name]|list|prune [--dry-run]] — isolated git worktrees.
-        ``new`` moves this session into the tree (as ``hermes -w``: kept on exit only with
-        unpushed commits); ``prune`` never deletes tracked changes, unique commits, or in-use trees."""
+        """Handle /worktree [new [name]|list|remove <name>|prune [--dry-run]] — isolated git
+        worktrees. ``new`` moves this session into the tree (as ``hermes -w``: kept on exit only
+        with unpushed commits); ``remove`` and ``prune`` never delete tracked changes, unique
+        commits, or in-use trees."""
         import cli as _cli
         parts = cmd_original.split(None, 2)
         sub = parts[1].lower() if len(parts) > 1 else ""
@@ -994,7 +996,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             else:
                 print(f"  {_t('worktree.none_active')}")
             if repo_root:
-                _pr(f"  {_t('worktree.hint_new')}", f"  {_t('worktree.hint_prune')}")
+                _pr(f"  {_t('worktree.hint_new')}", f"  {_t('worktree.hint_remove')}",
+                    f"  {_t('worktree.hint_prune')}")
             else:
                 print(f"  {_t('worktree.not_in_repo_note')}")
             return
@@ -1008,28 +1011,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         getattr(self, handler)(repo_root, rest)
 
     def _worktree_prune(self, repo_root: str, rest: str) -> None:
-        import cli as _cli
-        from hermes_cli import worktree_gc
-        rest = rest.lower()
-        dry_run = "--dry-run" in rest or "-n" in rest.split()
-        active = _cli._active_worktree
-        tree_records = worktree_gc.audit_worktrees(repo_root, with_sizes=False)
-        if active:
-            # Never reap the tree this session is sitting in, even if judged clean+merged.
-            active_path = str(active.get("path") or "")
-            tree_records = [record for record in tree_records if record.path != active_path]
-        actions = worktree_gc.reclaim_worktrees(repo_root, dry_run=dry_run, records=tree_records)
-        actions += worktree_gc.reclaim_branches(repo_root, dry_run=dry_run)
-        if actions:
-            _pr(*(f"  {line}" for line in actions),
-                "  " + _t("worktree.actions_planned" if dry_run else "worktree.actions_done", count=len(actions)))
-        else:
-            print(f"  {_t('worktree.nothing_to_reclaim')}")
-        kept = [r for r in tree_records
-                if r.verdict == "keep" and "kanban" not in r.reason and "in use" not in r.reason]
-        if kept:
-            _pr(f"  {_t('worktree.preserved', count=len(kept))}",
-                *(f"    {record.name}: {record.reason}" for record in kept))
+        from hermes_cli.cli_commands_worktree import worktree_prune
+        worktree_prune(repo_root, rest)
+
+    def _worktree_remove(self, repo_root: str, rest: str) -> None:
+        from hermes_cli.cli_commands_worktree import worktree_remove
+        worktree_remove(repo_root, rest)
 
     def _worktree_list(self, repo_root: str, rest: str) -> None:
         try:

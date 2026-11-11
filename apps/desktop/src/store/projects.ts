@@ -7,13 +7,14 @@ import {
   liveSessionProjectId,
   NO_PROJECT_ID,
   projectOwnerBySessionId,
-  type SidebarProjectTree
+  type SidebarProjectTree,
+  type SidebarSessionGroup
 } from '@/app/chat/sidebar/projects/workspace-groups'
-import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import type { HermesGitBaseBranch, HermesGitBranch, HermesWorktreeReclaim } from '@/global'
 import { getHermesConfig, hermesApi, type HermesGateway, type SessionInfo } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
-import { desktopGit, desktopGitFor, type GitOwnerRoute } from '@/lib/desktop-git'
+import { desktopGit, desktopGitFor, type GitOwnerRoute, reclaimWorktree } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
@@ -1643,6 +1644,129 @@ export async function removeWorktreePath(
 
   await git.worktreeRemove(repoPath, worktreePath, options)
   bumpWorktrees()
+}
+
+// Remove a worktree the way `hermes worktree prune` would: never forced, the
+// branch deleted only when its content is upstream, kept-with-reason otherwise.
+// The lanes re-probe whether or not the tree went, so a verdict of "kept" still
+// repaints the sidebar from git's truth. `owner` sends it to the gateway the
+// repo lives on (same routing as `removeWorktreePath`).
+//
+// `force` (the confirmed force prompt) goes through the same backend door, which
+// re-checks for running processes and refuses a tree a live session uses, so the
+// local Electron git bridge never runs a bare `remove --force` on its own say-so.
+export async function reclaimWorktreePath(
+  repoPath: string,
+  worktreePath: string,
+  owner?: GitOwnerRoute,
+  options?: { force?: boolean }
+): Promise<HermesWorktreeReclaim> {
+  const force = options?.force === true
+
+  try {
+    return await reclaimWorktree(repoPath, worktreePath, owner, force ? { force } : undefined)
+  } catch (err) {
+    if (!isMissingRestEndpoint(err)) {
+      throw err
+    }
+
+    // A backend from before the reclaim route: keep main's plain `git worktree
+    // remove` (git itself refuses a tree with changes or untracked files), and
+    // offer force only for those refusals, as main did.
+    return await legacyWorktreeRemove(repoPath, worktreePath, owner, force)
+  } finally {
+    bumpWorktrees()
+  }
+}
+
+async function legacyWorktreeRemove(
+  repoPath: string,
+  worktreePath: string,
+  owner: GitOwnerRoute | undefined,
+  force: boolean
+): Promise<HermesWorktreeReclaim> {
+  const base = { actions: [], branch: '', branchDeleted: false, verdict: 'unknown' as const }
+
+  try {
+    await removeWorktreePath(repoPath, worktreePath, { force }, owner)
+
+    return { ...base, forceable: false, outcome: 'removed', reason: '', removed: true }
+  } catch (err) {
+    const reason = String((err as Error)?.message ?? err)
+
+    return {
+      ...base,
+      forceable: /force|modified|untracked|dirty|contains/i.test(reason),
+      outcome: 'kept',
+      reason,
+      removed: false
+    }
+  }
+}
+
+export interface WorktreeLane {
+  repoPath: string
+  worktreePath: string
+  label: string
+  owner?: GitOwnerRoute
+}
+
+// A linked-worktree lane's path when it covers `target` (never the main
+// checkout, the kanban bucket or a plain folder's heuristic lane).
+function reclaimableLanePath(group: SidebarSessionGroup, target: string): string {
+  const path = (group.path || '').trim()
+
+  return path && !group.isMain && !group.isKanban && group.isGit !== false && isUnderPath(path, target) ? path : ''
+}
+
+// The linked-worktree lane whose path is `cwd` (or contains it), with its repo
+// and owning gateway, for session verbs that act on the tree the session ran
+// in. Null for a main checkout, the kanban bucket, a plain folder, or a cwd no
+// lane covers — none of those is a tree a session may reclaim.
+//
+// `connectionId` is the clicked row's owner (`connection_id`; empty = the
+// active gateway). Only lanes on THAT gateway match: a remote chat and a local
+// worktree can share a path string, and a path-only match would send the
+// reclaim to the other machine's tree.
+export function worktreeLaneForCwd(cwd: string, connectionId?: null | string): null | WorktreeLane {
+  const target = (cwd || '').trim()
+
+  if (!target) {
+    return null
+  }
+
+  const active = activeGatewayConnectionId() || ''
+  const rowOwner = (connectionId || '').trim() || active
+
+  let best: null | WorktreeLane = null
+  let bestLen = -1
+
+  for (const project of $projectTree.get()) {
+    if ((project.connectionId || active) !== rowOwner) {
+      continue
+    }
+
+    const owner = project.connectionId
+      ? { connectionId: project.connectionId, profile: project.profile || 'default' }
+      : undefined
+
+    for (const repo of project.repos) {
+      if (!repo.path) {
+        continue
+      }
+
+      for (const group of repo.groups) {
+        const path = reclaimableLanePath(group, target)
+
+        if (path && path.length > bestLen) {
+          bestLen = path.length
+          best = { label: group.label, owner, repoPath: repo.path, worktreePath: path }
+        }
+      }
+    }
+  }
+
+  return best
 }
 
 // Reveal a project/worktree path in the OS file manager (git-GUI standard).

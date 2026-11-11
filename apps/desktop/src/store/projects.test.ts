@@ -2,7 +2,11 @@ import { waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import {
+  NO_PROJECT_ID,
+  type SidebarProjectTree,
+  type SidebarSessionGroup
+} from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
@@ -27,12 +31,14 @@ import {
   pickProjectFolders,
   projectIdForCwd,
   projectNameForCwd,
+  reclaimWorktreePath,
   refreshProjects,
   refreshProjectTree,
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
-  updateProject
+  updateProject,
+  worktreeLaneForCwd
 } from './projects'
 import {
   $removedSessionIds,
@@ -67,7 +73,8 @@ vi.mock('@/store/gateway', () => ({
 
 vi.mock('@/lib/desktop-git', async importOriginal => ({
   ...((await importOriginal()) as Record<string, unknown>),
-  desktopGit: vi.fn()
+  desktopGit: vi.fn(),
+  reclaimWorktree: vi.fn()
 }))
 
 vi.mock('@/hermes', () => ({
@@ -390,6 +397,96 @@ describe('projectNameForCwd', () => {
 
     expect(projectNameForCwd('/somewhere/else')).toBeNull()
     expect(projectNameForCwd('')).toBeNull()
+  })
+})
+
+describe('worktreeLaneForCwd (archive & remove worktree)', () => {
+  const lane = (over: Partial<SidebarSessionGroup> & Pick<SidebarSessionGroup, 'id' | 'label' | 'path'>) => ({
+    sessions: [],
+    ...over
+  })
+
+  beforeEach(() => {
+    $projectTree.set([
+      {
+        id: 'p_app',
+        label: 'App',
+        path: '/repos/app',
+        repos: [
+          {
+            groups: [
+              lane({ id: 'main', isMain: true, label: 'main', path: '/repos/app' }),
+              lane({ id: 'fix', label: 'fix-login', path: '/repos/app/.worktrees/fix-login' }),
+              lane({ id: 'kb', isKanban: true, label: 'Kanban', path: '/repos/app/.worktrees' }),
+              lane({ id: 'folder', isGit: false, label: 'notes', path: '/repos/app/notes' })
+            ],
+            id: 'r_app',
+            label: 'app',
+            path: '/repos/app',
+            sessionCount: 0
+          }
+        ],
+        sessionCount: 0
+      }
+    ])
+  })
+
+  it('resolves a session cwd inside a linked worktree to that lane and its repo', () => {
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login/src')).toEqual({
+      label: 'fix-login',
+      repoPath: '/repos/app',
+      worktreePath: '/repos/app/.worktrees/fix-login'
+    })
+  })
+
+  it('offers nothing for the main checkout, the kanban bucket, a plain folder, or a stranger cwd', () => {
+    // The main checkout is never a reclaim target: a session there must not
+    // grow an "archive & remove worktree" verb that would delete the repo.
+    expect(worktreeLaneForCwd('/repos/app/src')).toBeNull()
+    expect(worktreeLaneForCwd('/repos/app/.worktrees')).toBeNull()
+    expect(worktreeLaneForCwd('/repos/app/notes')).toBeNull()
+    expect(worktreeLaneForCwd('/elsewhere')).toBeNull()
+    expect(worktreeLaneForCwd('')).toBeNull()
+
+    // Owner-scoped: the fixture's project is the active (local) gateway's. A remote chat
+    // whose cwd spells the same path must not reclaim the local tree.
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login', 'studio')).toBeNull()
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login', '')?.worktreePath).toBe(
+      '/repos/app/.worktrees/fix-login'
+    )
+    const local = $projectTree.get()[0]
+    $projectTree.set([{ ...local, connectionId: 'studio', id: 'p_studio', profile: 'work' }])
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login', 'studio')?.owner).toEqual({
+      connectionId: 'studio',
+      profile: 'work'
+    })
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login')).toBeNull()
+  })
+})
+
+describe('reclaimWorktreePath on a backend without the reclaim route', () => {
+  it("falls back to main's plain git worktree remove, offering force only for git's refusals", async () => {
+    vi.mocked(git.reclaimWorktree).mockRejectedValue(
+      new Error('404: {"detail":"No such API endpoint: /api/git/worktree/reclaim"}')
+    )
+    const worktreeRemove = vi.fn().mockResolvedValueOnce(undefined)
+    desktopGit.mockReturnValue({ worktreeRemove } as never)
+
+    const gone = await reclaimWorktreePath('/repos/app', '/repos/app/.worktrees/fix')
+    expect(worktreeRemove).toHaveBeenCalledWith('/repos/app', '/repos/app/.worktrees/fix', { force: false })
+    expect(gone).toMatchObject({ forceable: false, outcome: 'removed', removed: true })
+
+    worktreeRemove.mockRejectedValueOnce(
+      new Error("fatal: '/repos/app/.worktrees/fix' contains modified or untracked files, use --force to delete it")
+    )
+    const kept = await reclaimWorktreePath('/repos/app', '/repos/app/.worktrees/fix')
+    expect(kept).toMatchObject({ forceable: true, outcome: 'kept', removed: false })
+
+    // A transient failure of the new route is not a capability verdict.
+    worktreeRemove.mockClear()
+    vi.mocked(git.reclaimWorktree).mockRejectedValue(new Error('request timed out'))
+    await expect(reclaimWorktreePath('/repos/app', '/repos/app/.worktrees/fix')).rejects.toThrow('timed out')
+    expect(worktreeRemove).not.toHaveBeenCalled()
   })
 })
 

@@ -10,7 +10,8 @@ import {
   isSessionRemovalPending,
   tombstoneLifecycleChanged,
   tombstoneSessions,
-  untombstoneSessions
+  untombstoneSessions,
+  waitForSessionRemoval
 } from './session-removal'
 
 afterEach(() => {
@@ -124,5 +125,26 @@ describe('requestSessionResume refuses a doomed session', () => {
     requestSessionResume('deleted-1')
 
     expect($sessionResumeRequest.get()).toBe(queued)
+  })
+})
+
+describe('waitForSessionRemoval (archive & remove worktree)', () => {
+  // Driven exactly the way archiveSession drives the lifecycle: tombstone,
+  // begin, then on failure untombstone BEFORE end; on success end alone.
+  it('settles true only for a persisted archive, false for a failed or never-started one', async () => {
+    const ok = waitForSessionRemoval('a')
+    tombstoneSessions(['a'])
+    beginSessionMutation(['a'])
+    endSessionMutation(['a'])
+    await expect(ok).resolves.toBe(true)
+
+    const failed = waitForSessionRemoval('b')
+    tombstoneSessions(['b'])
+    beginSessionMutation(['b'])
+    untombstoneSessions(['b'])
+    endSessionMutation(['b'])
+    await expect(failed).resolves.toBe(false)
+
+    await expect(waitForSessionRemoval('c', 5)).resolves.toBe(false)
   })
 })

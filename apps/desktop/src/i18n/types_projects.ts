@@ -69,7 +69,7 @@ export interface SidebarProjectsTranslations {
   removeWorktree: string
   removeWorktreeFailed: string
   removeWorktreeConfirm: string
-  removeWorktreeDirty: string
+  removeWorktreeDirty: (reason: string) => string
   forceRemove: string
   enter: (label: string) => string
   reorder: (label: string) => string

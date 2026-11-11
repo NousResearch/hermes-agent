@@ -16,9 +16,9 @@ import {
   setWorkspaceNodeOpen,
   worktreeDismissalId
 } from '@/store/layout'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import type { AgentProfileRoute } from '@/store/profile'
-import { removeWorktreePath } from '@/store/projects'
+import { reclaimWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
@@ -177,11 +177,13 @@ function RepoFlatSection({
       (removedWorktrees.includes(laneKey(group)) && group.path && discoveredWorktreePaths.has(group.path))
   )
 
-  // Removal asks how: actually `git worktree remove` it, or just hide the lane
-  // and leave the worktree on disk. A dirty worktree escalates to a force prompt
-  // instead of erroring (those changes are usually throwaway).
+  // Removal asks how: reclaim it under the prune policy (`hermes worktree
+  // prune` for one tree: a merged branch goes with it, untracked scratch is
+  // archived first, real work keeps it), or just hide the lane and leave the
+  // worktree on disk. A tree the policy keeps escalates to a force prompt that
+  // names the reason instead of erroring (those changes are usually throwaway).
   const [removeTarget, setRemoveTarget] = useState<null | SidebarSessionGroup>(null)
-  const [forceTarget, setForceTarget] = useState<null | SidebarSessionGroup>(null)
+  const [forceTarget, setForceTarget] = useState<null | { group: SidebarSessionGroup; reason: string }>(null)
 
   const removeViaGit = async (group: SidebarSessionGroup, force = false) => {
     if (!repo.path || !group.path) {
@@ -189,16 +191,27 @@ function RepoFlatSection({
     }
 
     try {
-      await removeWorktreePath(repo.path, group.path, { force }, owner)
-      dismissWorktree(laneKey(group), { removed: true })
-    } catch (err) {
-      // git refuses a non-force remove on a dirty/locked worktree — offer force
-      // rather than dead-ending on an error toast.
-      if (!force && /force|modified|untracked|dirty|locked|contains/i.test(String((err as Error)?.message ?? ''))) {
-        setForceTarget(group)
+      // The force leg goes through the backend's reclaim door too: it re-checks
+      // for running processes and answers `in-use` instead of deleting a live
+      // session's tree, whatever this prompt showed.
+      const result = await reclaimWorktreePath(repo.path, group.path, owner, force ? { force } : undefined)
+
+      if (result.removed) {
+        dismissWorktree(laneKey(group), { removed: true })
+
+        if (result.branchDeleted) {
+          notify({ durationMs: 4_000, kind: 'success', message: s.row.worktreeRemovedBranchDeleted(result.branch) })
+        }
+      } else if (result.forceable === true) {
+        setForceTarget({ group, reason: result.reason })
       } else {
-        notifyError(err, s.projects.removeWorktreeFailed)
+        // In use, another lifecycle's, or the untracked-file archive failed:
+        // force would delete what the policy refused to, so this is an
+        // error, never a prompt.
+        notifyError(new Error(result.reason), s.projects.removeWorktreeFailed)
       }
+    } catch (err) {
+      notifyError(err, s.projects.removeWorktreeFailed)
     }
   }
 
@@ -261,9 +274,9 @@ function RepoFlatSection({
         group => void removeViaGit(group)
       )}
       {worktreeDialog(
-        forceTarget,
-        setForceTarget,
-        s.projects.removeWorktreeDirty,
+        forceTarget?.group ?? null,
+        () => setForceTarget(null),
+        s.projects.removeWorktreeDirty(forceTarget?.reason ?? ''),
         s.projects.forceRemove,
         group => void removeViaGit(group, true)
       )}

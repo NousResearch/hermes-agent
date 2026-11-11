@@ -42,7 +42,7 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
 
   if (conn.authMode === 'oauth') {
     if (!mint) {
-      throw new Error('This Desktop build cannot refresh OAuth WebSocket tickets. Update Hermes Desktop and try again.')
+      throw new Error('This Desktop build cannot refresh OAuth WebSocket tickets. Update Unitalk Desktop and try again.')
     }
 
     try {

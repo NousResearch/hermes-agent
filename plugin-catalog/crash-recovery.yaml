@@ -2,7 +2,7 @@ name: crash-recovery
 title: Crash Recovery
 version: "0.1.0"
 repo: https://github.com/sammy-XXIV/hermes-crash-recovery
-sha: 95f86b72865d4025b7630ee36c7314e0fdea76e6
+sha: 2d00ff5832a6a6d7aca0c09ef500a64a890efa14
 description: >-
   Durable, hash-chained tool-call journal that blocks protected actions while a previous outcome is unknown, including after a crash or a new session. Operator reconciliation releases the recovery gate; actions are never automatically replayed.
   Disclosure — stores tool/session metadata, argument and result hashes, a local integrity checkpoint and operator evidence under the active profile's plugin-data directory; never auto-prunes. Serializes protected calls per profile. No network, shell execution, credential reads or background tasks in the plugin itself. Optional demos spawn and force-kill owned local workers; the native demo also opens a temporary loopback provider and starts/stops an isolated Hermes CLI/gateway.

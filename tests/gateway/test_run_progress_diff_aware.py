@@ -89,6 +89,42 @@ class DistinctPreviewAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class SamePreviewDistinctArgsAgent:
+    """Two non-terminal tool.started with the SAME preview string but DIFFERENT args
+    (kvnloo review): the dedup identity must come from the raw args, so these must NOT
+    collapse to (×N) even though the supplied preview text is identical."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb("tool.started", "web_search", "Searching", {"query": "cats"})
+        time.sleep(0.35)  # health: allow HX013 -- inter-emit gap flushes the two progress bubbles under test
+        cb("tool.started", "web_search", "Searching", {"query": "dogs"})
+        time.sleep(0.35)  # health: allow HX013 -- let the second bubble render before the turn ends
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SamePreviewSameArgsAgent:
+    """Identical preview AND identical args twice — a genuine repeat that MUST still collapse to (×N)."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb("tool.started", "web_search", "Searching", {"query": "cats"})
+        time.sleep(0.35)  # health: allow HX013 -- inter-emit gap flushes the two progress bubbles under test
+        cb("tool.started", "web_search", "Searching", {"query": "cats"})
+        time.sleep(0.35)  # health: allow HX013 -- let the repeat-count bubble render before the turn ends
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _all_progress_text(adapter) -> str:
     """Every byte of progress the adapter ever rendered (sends + edits)."""
     parts = [call["content"] for call in adapter.sent]
@@ -184,3 +220,46 @@ async def test_distinct_nonterminal_previews_do_not_collapse(monkeypatch, tmp_pa
     text = _all_progress_text(adapter)
     assert "two" in text, f"diff-aware tail of second preview missing: {text!r}"
     assert "(×" not in text, f"distinct previews wrongly collapsed: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_same_preview_distinct_args_do_not_collapse(monkeypatch, tmp_path):
+    """Constant preview, different args (kvnloo review): two web_search calls both previewed
+    as "Searching" but with different queries must NOT be counted as a repeat — the dedup
+    identity derives from the raw args, not the shared preview string."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SamePreviewDistinctArgsAgent,
+        session_id="sess-diff-same-preview-distinct-args",
+        config_data={"display": {"tool_progress": "all", "tool_preview_length": 40}},
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    text = _all_progress_text(adapter)
+    assert "(×" not in text, f"distinct args wrongly collapsed on a shared preview: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_true_repeat_nonterminal_same_args_collapses(monkeypatch, tmp_path):
+    """Identical preview AND identical args twice still collapses to a (×2) repeat count —
+    deriving the key from args must not break genuine repeats."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SamePreviewSameArgsAgent,
+        session_id="sess-diff-repeat-nonterminal",
+        config_data={"display": {"tool_progress": "all", "tool_preview_length": 40}},
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    text = _all_progress_text(adapter)
+    assert "(×2)" in text, f"true non-terminal repeat did not collapse: {text!r}"

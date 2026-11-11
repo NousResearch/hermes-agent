@@ -268,10 +268,11 @@ class _MatrixHtmlSanitizer(HTMLParser):
         "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
     _VOID_TAGS = {"br", "hr"}
 
-    def __init__(self) -> None:
+    def __init__(self, tex_store: list[tuple[str, str]] | None = None) -> None:
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
         self._skip_depth = 0
+        self._tex_store = tex_store or []
 
     @staticmethod
     def _safe_url(value: str) -> str:
@@ -286,7 +287,7 @@ class _MatrixHtmlSanitizer(HTMLParser):
         safe: list[str] = []
         for key, value in attrs:
             attr = str(key or "").lower()
-            raw_value = "" if value is None else str(value)
+            raw_value = _tokens_to_tex_source("" if value is None else str(value), self._tex_store)
             if tag == "a" and attr == "href":
                 href = self._safe_url(raw_value)
                 if href:
@@ -316,7 +317,7 @@ class _MatrixHtmlSanitizer(HTMLParser):
             self._parts.append(text)
 
     def handle_data(self, data: str) -> None:
-        self._emit(_html_escape(data))
+        self._emit(_tokens_to_mx_maths(_html_escape(data), self._tex_store))
 
     def handle_entityref(self, name: str) -> None:
         self._emit(f"&{name};")
@@ -640,9 +641,10 @@ def _scoped_recovery_key() -> str:
 # Our sanitizer allowlists tags/attrs, so data-mx-maths cannot pass through HTML
 # sanitization directly. Instead, math is swapped for opaque sentinel tokens before
 # Markdown conversion (protecting TeX from escaping) and expanded back to math
-# markup after sanitization. Tokens are plain printable text with no special
-# HTML/Markdown meaning, so both the Markdown converter and the sanitizer
-# pass them through verbatim.
+# markup by the sanitizer, in text nodes only: a token in an attribute value
+# (a link URL) reverts to its $source$, since markup there would break out of
+# the quoted value. Tokens are plain printable text with no special
+# HTML/Markdown meaning, so the Markdown converter passes them through verbatim.
 _TEX_TOKEN_RE = re.compile(r"HERMESTEX(?:DISPLAY|INLINE)(\d+)HERMESTEXEND")
 _TEX_DISPLAY_TOKEN = "HERMESTEXDISPLAY%dHERMESTEXEND"
 _TEX_INLINE_TOKEN = "HERMESTEXINLINE%dHERMESTEXEND"
@@ -687,8 +689,23 @@ def _tokens_to_mx_maths(html: str, store: list[tuple[str, str]]) -> str:
 
     return _TEX_TOKEN_RE.sub(_expand, html)
 
-def _sanitize_matrix_html(html: str) -> str:
-    sanitizer = _MatrixHtmlSanitizer()
+
+def _tokens_to_tex_source(text: str, store: list[tuple[str, str]]) -> str:
+    """Turn sentinel tokens back into their ``$tex$``/``$$tex$$`` source text."""
+
+    def _restore(match: re.Match[str]) -> str:
+        idx = int(match.group(1))
+        if idx >= len(store):
+            return match.group(0)
+        tag, tex = store[idx]
+        return f"$${tex}$$" if tag == "div" else f"${tex}$"
+
+    return _TEX_TOKEN_RE.sub(_restore, text)
+
+
+def _sanitize_matrix_html(html: str, tex_store: list[tuple[str, str]] | None = None) -> str:
+    """Allowlist-sanitize ``html``; TeX tokens expand to ``data-mx-maths`` only in text nodes."""
+    sanitizer = _MatrixHtmlSanitizer(tex_store)
     try:
         sanitizer.feed(html or "")
         sanitizer.close()
@@ -3034,8 +3051,8 @@ class MatrixAdapter(BasePlatformAdapter):
             md.reset()
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
-            return _tokens_to_mx_maths(_sanitize_matrix_html(html), tex_store)
-        return _tokens_to_mx_maths(_sanitize_matrix_html(self._markdown_to_html_fallback(text)), tex_store)
+            return _sanitize_matrix_html(html, tex_store)
+        return _sanitize_matrix_html(self._markdown_to_html_fallback(text), tex_store)
 
     @staticmethod
     def _sanitize_link_url(url: str) -> str:
@@ -3173,8 +3190,9 @@ def _standalone_payloads(message: str) -> list[dict[str, Any]]:
         if _md is not None:
             tokenized, tex_store = _latex_to_tokens(chunk)
             html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
-            formatted = {"format": "org.matrix.custom.html", "formatted_body": _tokens_to_mx_maths(
-                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)}
+            # Same allowlist as the adapter path: Markdown passes raw HTML and any link scheme through.
+            html = _sanitize_matrix_html(re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
+            formatted = {"format": "org.matrix.custom.html", "formatted_body": html}
             if _content_bytes({**payload, **formatted}) <= _MAX_CONTENT_BYTES:
                 payload.update(formatted)
         payloads.append(payload)

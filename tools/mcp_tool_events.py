@@ -5,6 +5,9 @@ Opt-in per server (``mcp_servers.<name>.events: true``): the SDK drops the serve
 capability while parsing, so it cannot gate these tools the way ``resources``/``prompts`` do. Each
 subscription is a dynamic webhook route (``webhook_subscriptions.json``) with an ``mcp_event`` block
 (server, event name, arguments); its grant and replay cursor live in ``mcp_event_subscriptions.json``.
+Both files sit in the subscribing profile's home, passed explicitly to every read and write here; a
+named profile's callback URL carries its ``/p/<profile>/`` prefix, under which the listener serves
+that profile's store.
 The gateway's webhook adapter receives the deliveries (``gateway/platforms/webhook_mcp_events.py``) and
 the server task keeps every route's subscription alive with :func:`run_refresh_loop`. Delivery modes
 ``poll`` and ``push`` are not implemented.
@@ -20,6 +23,7 @@ import re
 import secrets
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from tools.mcp_tool_common import _parse_boolish
@@ -52,8 +56,12 @@ def events_enabled(config: dict) -> bool:
     return _parse_boolish((config or {}).get("events"), default=False)
 
 
-def _route_name(server_name: str, name: str, arguments: dict) -> str:
-    digest = hashlib.sha256(json.dumps([server_name, name, arguments], sort_keys=True).encode()).hexdigest()
+def _route_name(home: Path, server_name: str, name: str, arguments: dict) -> str:
+    """Unique across every store the listener merges: a named profile's name is part of the digest."""
+    from hermes_cli.webhook import store_profile
+    profile = store_profile(home)
+    key = [server_name, name, arguments] if profile is None else [profile, server_name, name, arguments]
+    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
     return f"mcp-{_ROUTE_SLUG_RE.sub('-', server_name.lower()).strip('-')[:32]}-{digest[:12]}"
 
 
@@ -73,8 +81,9 @@ def _callback_base() -> Optional[str]:
     return url if url.startswith("https://") else None
 
 
-def _callback_url(url_base: str, route_name: str) -> str:
-    return f"{url_base}/webhooks/{route_name}"
+def _callback_url(url_base: str, route_name: str, route: dict, home: Path) -> str:
+    from hermes_cli.webhook import route_path
+    return f"{url_base}{route_path(route_name, route, home)}"
 
 
 def _server_routes(subscriptions: dict, server_name: str) -> dict[str, dict]:
@@ -103,10 +112,11 @@ def _mcp_error(exc: BaseException) -> Optional[dict]:
     return {"code": exc.code, "message": exc.message, **({"data": exc.data} if exc.data is not None else {})}
 
 
-def _subscribe_params(route_name: str, route: dict, url_base: str, state: dict) -> dict:
+def _subscribe_params(route_name: str, route: dict, url_base: str, state: dict, home: Path) -> dict:
     event = route["mcp_event"]
+    url = _callback_url(url_base, route_name, route, home)
     params = {"name": event["name"], "arguments": event["arguments"],
-              "delivery": {"mode": "webhook", "url": _callback_url(url_base, route_name), "secret": route["secret"]},
+              "delivery": {"mode": "webhook", "url": url, "secret": route["secret"]},
               "ttlMs": event.get("ttl_ms", _DEFAULT_TTL_MS)}
     if state.get("cursor"):
         params["cursor"] = state["cursor"]
@@ -119,38 +129,37 @@ def _subscribe_params(route_name: str, route: dict, url_base: str, state: dict) 
 # here instead, keyed by route name: an admitted run pins a digest of its route config and its reply is
 # refused if the route changed, so per-event cursor writes on the route would strand in-flight runs.
 
-def _state_path():
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / _STATE_FILENAME
+def _state_path(home: Path) -> Path:
+    return home / _STATE_FILENAME
 
 
-def _load_state() -> dict[str, dict]:
+def _load_state(home: Path) -> dict[str, dict]:
     """Lock-free read; writers publish by atomic rename."""
     try:
-        data = json.loads(_state_path().read_text(encoding="utf-8-sig"))
+        data = json.loads(_state_path(home).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
     return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
-def _mutate_state(mutate, *, route_must_exist: Optional[str] = None) -> Any:
+def _mutate_state(home: Path, mutate, *, route_must_exist: Optional[str] = None) -> Any:
     """Apply *mutate* to the state under the webhook store's lock (never nested inside
     ``_mutate_subscriptions``: the lock is not reentrant). With *route_must_exist*, nothing is written
     and None is returned when that route is gone."""
     from hermes_cli.webhook import _load_subscriptions_unlocked, _subscriptions_lock
     from utils import atomic_json_write
-    with _subscriptions_lock():
+    with _subscriptions_lock(home):
         if route_must_exist is not None:
-            route = _load_subscriptions_unlocked().get(route_must_exist)
+            route = _load_subscriptions_unlocked(home).get(route_must_exist)
             if not (isinstance(route, dict) and isinstance(route.get("mcp_event"), dict)):
                 return None
-        state = _load_state()
+        state = _load_state(home)
         result = mutate(state)
-        atomic_json_write(_state_path(), state, mode=0o600)
+        atomic_json_write(_state_path(home), state, mode=0o600)
         return result
 
 
-def _store_grant(route_name: str, result: dict, url: str) -> Optional[dict]:
+def _store_grant(home: Path, route_name: str, result: dict, url: str) -> Optional[dict]:
     """Record a subscribe/refresh result for a route that still exists (an unsubscribe made while the
     request was in flight wins); returns the stored state, None when the route is gone. ``url`` is half
     of the server's subscription key, so unsubscribe must send the one that was granted."""
@@ -161,20 +170,20 @@ def _store_grant(route_name: str, result: dict, url: str) -> Optional[dict]:
             entry["cursor"] = result["cursor"]
         state[route_name] = entry
         return entry
-    return _mutate_state(mutate, route_must_exist=route_name)
+    return _mutate_state(home, mutate, route_must_exist=route_name)
 
 
-def store_cursor(route_name: str, cursor: str) -> None:
+def store_cursor(home: Path, route_name: str, cursor: str) -> None:
     """Persist the newest replay cursor the server sent for a route (occurrences and ``gap``)."""
     def mutate(state: dict) -> None:
         state[route_name] = {**state.get(route_name, {}), "cursor": cursor}
-    if _load_state().get(route_name, {}).get("cursor") != cursor:
-        _mutate_state(mutate, route_must_exist=route_name)
+    if _load_state(home).get(route_name, {}).get("cursor") != cursor:
+        _mutate_state(home, mutate, route_must_exist=route_name)
 
 
-def drop_state(route_name: str) -> None:
-    if route_name in _load_state():
-        _mutate_state(lambda state: state.pop(route_name, None))
+def drop_state(home: Path, route_name: str) -> None:
+    if route_name in _load_state(home):
+        _mutate_state(home, lambda state: state.pop(route_name, None))
 
 
 def _refresh_due_at(state: dict) -> float:
@@ -192,7 +201,7 @@ def _refresh_due_at(state: dict) -> float:
     return min(granted_at + (expires - granted_at) * _REFRESH_AT_FRACTION, expires - 60)
 
 
-def _write_route(route_name: str, route: Optional[dict]) -> None:
+def _write_route(home: Path, route_name: str, route: Optional[dict]) -> None:
     from hermes_cli.webhook import _mutate_subscriptions
 
     def mutate(subscriptions: dict) -> None:
@@ -200,25 +209,25 @@ def _write_route(route_name: str, route: Optional[dict]) -> None:
             subscriptions.pop(route_name, None)
         else:
             subscriptions[route_name] = route
-    _mutate_subscriptions(mutate)
+    _mutate_subscriptions(mutate, home)
     if route is None:
-        drop_state(route_name)
+        drop_state(home, route_name)
 
 
-def _load_routes(server_name: str) -> dict[str, dict]:
+def _load_routes(home: Path, server_name: str) -> dict[str, dict]:
     from hermes_cli.webhook import _load_subscriptions
-    return _server_routes(_load_subscriptions(), server_name)
+    return _server_routes(_load_subscriptions(home), server_name)
 
 
-async def _subscribe_route(session, route_name: str, route: dict, url_base: str) -> Optional[dict]:
+async def _subscribe_route(session, home: Path, route_name: str, route: dict, url_base: str) -> Optional[dict]:
     """``events/subscribe`` for one route and record the grant; returns the stored state. When the
     route was removed while the request was in flight (an unsubscribe in another process holds its own
     lock, not this one), the subscription just granted is released again and None is returned."""
-    state = (await asyncio.to_thread(_load_state)).get(route_name, {})
-    params = _subscribe_params(route_name, route, url_base, state)
+    state = (await asyncio.to_thread(_load_state, home)).get(route_name, {})
+    params = _subscribe_params(route_name, route, url_base, state, home)
     result = await _send(session, "events/subscribe", params)
     url = params["delivery"]["url"]
-    stored = await asyncio.to_thread(_store_grant, route_name, result, url)
+    stored = await asyncio.to_thread(_store_grant, home, route_name, result, url)
     if stored is None:
         event = route["mcp_event"]
         try:
@@ -236,16 +245,16 @@ def _wake_refresh_loops(server_name: str) -> None:
         loop.call_soon_threadsafe(wake.set)
 
 
-async def refresh_server_subscriptions(server, *, force: bool,
+async def refresh_server_subscriptions(server, home: Path, *, force: bool,
                                        failures: Optional[dict[str, tuple[int, float]]] = None) -> float:
-    """Re-subscribe this server's routes that are due (all of them when *force*, i.e. on a fresh
+    """Re-subscribe this server's routes in *home*'s store that are due (all of them when *force*, i.e. on a fresh
     connection, where the server may have lost soft state). A route disabled in the dashboard is left to
     lapse; turning it back on resubscribes it. A failed refresh is retried with exponential back-off:
     *failures* maps a route to (consecutive failures, retry time) across passes. Returns the next due time."""
     failures = {} if failures is None else failures
     url_base = _callback_base()
-    routes = await asyncio.to_thread(_load_routes, server.name)
-    states = await asyncio.to_thread(_load_state)
+    routes = await asyncio.to_thread(_load_routes, home, server.name)
+    states = await asyncio.to_thread(_load_state, home)
     next_due = float("inf")
     for route_name in routes:
         due = _refresh_due_at(states.get(route_name, {}))
@@ -255,10 +264,10 @@ async def refresh_server_subscriptions(server, *, force: bool,
             try:
                 async with server._rpc_lock:
                     # Re-read under the lock: an unsubscribe that ran while we waited must not be undone.
-                    route = (await asyncio.to_thread(_load_routes, server.name)).get(route_name)
+                    route = (await asyncio.to_thread(_load_routes, home, server.name)).get(route_name)
                     stored = None
                     if route is not None and route.get("enabled", True) is not False:
-                        stored = await _subscribe_route(server.session, route_name, route, url_base)
+                        stored = await _subscribe_route(server.session, home, route_name, route, url_base)
                 if stored is None:
                     failures.pop(route_name, None)
                     continue
@@ -267,7 +276,7 @@ async def refresh_server_subscriptions(server, *, force: bool,
                 if error and error["code"] in _TERMINAL_REFRESH_CODES:
                     logger.warning("MCP server '%s': event subscription %s refused by the server (%s); removing it",
                                    server.name, route_name, error)
-                    await asyncio.to_thread(_write_route, route_name, None)
+                    await asyncio.to_thread(_write_route, home, route_name, None)
                     failures.pop(route_name, None)
                     continue
                 count = failures.get(route_name, (0, 0.0))[0] + 1
@@ -283,8 +292,9 @@ async def refresh_server_subscriptions(server, *, force: bool,
     return next_due
 
 
-async def run_refresh_loop(server) -> None:
-    """Keep this server's event subscriptions alive for the life of one session (cancelled with it)."""
+async def run_refresh_loop(server, home: Path) -> None:
+    """Keep this server's event subscriptions in *home*'s store alive for the life of one session
+    (cancelled with it)."""
     wake = asyncio.Event()
     waker = (asyncio.get_running_loop(), wake)
     _refresh_wakers.setdefault(server.name, set()).add(waker)
@@ -294,7 +304,7 @@ async def run_refresh_loop(server) -> None:
         while True:
             wake.clear()  # before the pass, so a subscription made during it still wakes the next one
             try:
-                next_due = await refresh_server_subscriptions(server, force=force, failures=failures)
+                next_due = await refresh_server_subscriptions(server, home, force=force, failures=failures)
             except Exception as exc:
                 logger.warning("MCP server '%s': event subscription refresh failed: %s", server.name, exc,
                                exc_info=True)
@@ -312,7 +322,11 @@ async def run_refresh_loop(server) -> None:
 
 
 def start_refresh_task(server) -> Optional[asyncio.Task]:
-    return asyncio.create_task(run_refresh_loop(server)) if events_enabled(server._config) else None
+    """Runs in the server task, whose context is the connecting profile's: its home owns the routes."""
+    if not events_enabled(server._config):
+        return None
+    from hermes_constants import get_hermes_home
+    return asyncio.create_task(run_refresh_loop(server, get_hermes_home()))
 
 
 # ---- utility tools ----
@@ -326,8 +340,10 @@ async def _list_event_types(session, args: dict, server_name: str) -> dict:
         cursor = result.get("nextCursor")
         if not cursor or pages >= _MAX_LIST_PAGES:
             break
-    routes = await asyncio.to_thread(_load_routes, server_name)
-    states = await asyncio.to_thread(_load_state)
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    routes = await asyncio.to_thread(_load_routes, home, server_name)
+    states = await asyncio.to_thread(_load_state, home)
     subscribed = [{"name": r["mcp_event"]["name"], "arguments": r["mcp_event"]["arguments"],
                    "deliver": r.get("deliver", "log"), "refreshBefore": states.get(n, {}).get("refresh_before"),
                    **({"enabled": False} if r.get("enabled", True) is False else {})}
@@ -340,13 +356,15 @@ async def _list_event_types(session, args: dict, server_name: str) -> dict:
 
 
 async def _subscribe_event(session, args: dict, server_name: str) -> dict:
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
     url_base = _callback_base()
     if url_base is None:
         return {"error": "MCP events need the gateway's webhook listener reachable over HTTPS: set "
                          "platforms.webhook.extra.public_url in config.yaml and run the gateway."}
     arguments = args.get("arguments") or {}
-    route_name = _route_name(server_name, args["name"], arguments)
-    existing = (await asyncio.to_thread(_load_routes, server_name)).get(route_name)
+    route_name = _route_name(home, server_name, args["name"], arguments)
+    existing = (await asyncio.to_thread(_load_routes, home, server_name)).get(route_name)
     if existing is not None and existing.get("enabled", True) is False:
         # Only the dashboard's enable action turns a route back on (same rule as hermes_cli.webhook).
         return {"error": f"The subscription to '{args['name']}' with these arguments is turned off in the "
@@ -364,13 +382,13 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
         "created_at": (existing or {}).get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mcp_event": {"server": server_name, "name": args["name"], "arguments": arguments}}
     if existing is None:
-        await asyncio.to_thread(drop_state, route_name)  # a fresh subscription replays nothing stale
+        await asyncio.to_thread(drop_state, home, route_name)  # a fresh subscription replays nothing stale
     # The route must exist before subscribing: the server verifies the callback with a signed challenge.
-    await asyncio.to_thread(_write_route, route_name, route)
+    await asyncio.to_thread(_write_route, home, route_name, route)
     try:
-        stored = await _subscribe_route(session, route_name, route, url_base)
+        stored = await _subscribe_route(session, home, route_name, route, url_base)
     except Exception as exc:
-        await asyncio.to_thread(_write_route, route_name, existing)
+        await asyncio.to_thread(_write_route, home, route_name, existing)
         error = _mcp_error(exc)
         if error is None:
             raise
@@ -383,13 +401,15 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
 
 
 async def _unsubscribe_event(session, args: dict, server_name: str) -> dict:
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
     arguments = args.get("arguments") or {}
-    route_name = _route_name(server_name, args["name"], arguments)
-    route = (await asyncio.to_thread(_load_routes, server_name)).get(route_name)
+    route_name = _route_name(home, server_name, args["name"], arguments)
+    route = (await asyncio.to_thread(_load_routes, home, server_name)).get(route_name)
     if route is None:
         return {"error": f"No subscription to '{args['name']}' with these arguments on '{server_name}'"}
-    state = (await asyncio.to_thread(_load_state)).get(route_name, {})
-    url = state.get("url") or _callback_url(_callback_base() or "", route_name)
+    state = (await asyncio.to_thread(_load_state, home)).get(route_name, {})
+    url = state.get("url") or _callback_url(_callback_base() or "", route_name, route, home)
     try:
         await _send(session, "events/unsubscribe",
                     {"name": args["name"], "arguments": arguments, "delivery": {"url": url}})
@@ -400,7 +420,7 @@ async def _unsubscribe_event(session, args: dict, server_name: str) -> dict:
         # NotFound means the server already dropped it; anything else is reported but the route still goes.
         if error["code"] != _NOT_FOUND:
             logger.warning("MCP server '%s': events/unsubscribe for %s failed: %s", server_name, route_name, error)
-    await asyncio.to_thread(_write_route, route_name, None)
+    await asyncio.to_thread(_write_route, home, route_name, None)
     return {"unsubscribed": {"name": args["name"], "arguments": arguments}}
 
 

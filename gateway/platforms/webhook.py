@@ -25,6 +25,7 @@ from collections import deque
 from datetime import datetime, timezone, UTC
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 try:
@@ -220,7 +221,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._global_secret: str = extra.get("secret", "")
         self._static_routes: dict[str, dict] = extra.get("routes", {})
         self._dynamic_routes: dict[str, dict] = {}
-        self._dynamic_routes_stat: Optional[tuple] = None
+        # Store home of each dynamic route; per store home, its stat identity and last good routes.
+        self._dynamic_route_homes: dict[str, Path] = {}
+        self._route_stores: dict[Path, tuple[Optional[tuple], dict[str, dict]]] = {}
         self._routes: dict[str, dict] = dict(self._static_routes)
         self._runner = None
         self._v1_signature_warned: set[str] = set()  # routes already warned about legacy V1 (once per route)
@@ -440,53 +443,80 @@ class WebhookAdapter(BasePlatformAdapter):
             return False
         return True
 
-    def _reload_dynamic_routes(self) -> None:
-        """Reload agent-created subscriptions when the file's stat identity changes.
+    def _served_route_stores(self) -> list[tuple[Path, Optional[str]]]:
+        """``(home, profile)`` of every dynamic route store. Profile None: the store's routes are bound by
+        their ``profile`` field (this gateway's own home, or the default root under multiplexing, never a
+        named launcher's). A named profile: every route in its store belongs to it and is served under
+        its ``/p/<profile>/`` prefix."""
+        if not getattr(getattr(self.gateway_runner, "config", None), "multiplex_profiles", False):
+            from hermes_constants import get_hermes_home
+            return [(get_hermes_home(), None)]
+        from hermes_cli.profiles import profiles_to_serve
+        return [(home, None if name == "default" else name) for name, home in profiles_to_serve(multiplex=True)]
+
+    def _reload_route_store(self, home: Path) -> bool:
+        """Re-read one store when its stat identity changed; True when its routes changed.
 
         Runs on every POST before auth, so it never takes the CLI writer lock: writers publish via
         atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
         ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
         """
-        from hermes_constants import get_hermes_home
         from utils import file_cache_version
-        subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
+        subs_path = home / _DYNAMIC_ROUTES_FILENAME
+        stat, routes = self._route_stores.setdefault(home, (None, {}))
         try:
             stat_key = file_cache_version(subs_path)
         except FileNotFoundError:
-            if self._dynamic_routes:
-                self._dynamic_routes, self._routes = {}, dict(self._static_routes)
-                logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
-            self._dynamic_routes_stat = None
-            return
+            self._route_stores[home] = (None, {})
+            return bool(routes)
         except OSError as e:
             logger.error("[webhook] Failed to read dynamic routes: %s", e)
-            return
-        if stat_key == self._dynamic_routes_stat:
-            return  # No change
+            return False
+        if stat_key == stat:
+            return False  # No change
         try:
             data = json.loads(subs_path.read_text(encoding="utf-8-sig"))
         except ValueError as e:
             # Keep the last good snapshot, and remember this version so it is parsed once, not per POST.
-            self._dynamic_routes_stat = stat_key
+            self._route_stores[home] = (stat_key, routes)
             logger.error("[webhook] Failed to parse dynamic routes: %s", e)
-            return
+            return False
         except OSError as e:
             logger.error("[webhook] Failed to read dynamic routes: %s", e)
-            return
+            return False
         if not isinstance(data, dict):
-            self._dynamic_routes_stat = stat_key  # keep the last good snapshot; parse this version once
+            self._route_stores[home] = (stat_key, routes)  # keep the last good snapshot; parse this version once
+            return False
+        self._route_stores[home] = (stat_key, {  # static routes take precedence
+            k: v for k, v in data.items()
+            if isinstance(v, dict) and k not in self._static_routes and self._dynamic_route_allowed(k, v)})
+        return True
+
+    def _reload_dynamic_routes(self) -> None:
+        """Reload agent-created subscriptions from every served store (``_served_route_stores``).
+
+        A route in a served profile's store is bound to that profile; one whose ``profile`` field names
+        another profile is not served. Static routes, then the launch store, win a name clash.
+        """
+        stores = self._served_route_stores()
+        regrouped = [home for home, _ in stores] != list(self._route_stores)
+        reloaded = [self._reload_route_store(home) for home, _ in stores]  # every store, no short-circuit
+        if not (any(reloaded) or regrouped):
             return
-        try:
-            self._dynamic_routes = {  # static routes take precedence
-                k: v for k, v in data.items()
-                if isinstance(v, dict) and k not in self._static_routes and self._dynamic_route_allowed(k, v)
-            }
-            self._routes = {**self._dynamic_routes, **self._static_routes}
-            self._dynamic_routes_stat = stat_key
-            logger.info("[webhook] Reloaded %d dynamic route(s): %s", len(self._dynamic_routes),
-                        ", ".join(self._dynamic_routes.keys()) or "(none)")
-        except Exception as e:
-            logger.error("[webhook] Failed to reload dynamic routes: %s", e)
+        self._route_stores = {home: self._route_stores[home] for home, _ in stores}
+        dynamic: dict[str, dict] = {}
+        homes: dict[str, Path] = {}
+        for home, profile in reversed(stores):
+            for name, route in self._route_stores[home][1].items():
+                if profile is not None:
+                    if route.get("profile", "default") not in ("default", profile):
+                        continue
+                    route = {**route, "profile": profile}
+                dynamic[name], homes[name] = route, home
+        if dynamic != self._dynamic_routes:
+            logger.info("[webhook] Reloaded %d dynamic route(s): %s", len(dynamic), ", ".join(dynamic) or "(none)")
+        self._dynamic_routes, self._dynamic_route_homes = dynamic, homes
+        self._routes = {**self._dynamic_routes, **self._static_routes}
 
     async def _handle_profile_ingress(self, request: web.Request) -> web.StreamResponse:
         profile = self._resolve_request_profile(request)
@@ -672,6 +702,7 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         route_name, route_config, profile, error_response = self._resolve_route(request)
+        home = self._dynamic_route_homes.get(route_name)  # read with the lookup: a reload may drop it later
         if error_response is None:
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is not None:
@@ -692,7 +723,7 @@ class WebhookAdapter(BasePlatformAdapter):
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
-        mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
+        mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile, home)
         if mcp_control is not None:
             return mcp_control
         delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id

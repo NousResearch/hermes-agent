@@ -2,11 +2,13 @@
 ``mcp_event`` block). The endpoint-verification echo and the ``terminated`` / ``gap`` control
 envelopes are answered here without an agent run; an event occurrence continues through the normal
 route pipeline, keyed for idempotency by its ``eventId``. Signatures (Standard Webhooks, ``whsec_``)
-are already verified by the adapter before any of this runs."""
+are already verified by the adapter before any of this runs. Route and subscription state are read and
+written in the home of the store the route was loaded from (``WebhookAdapter._dynamic_route_homes``)."""
 
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -54,21 +56,19 @@ def mcp_event_delivery_id(route_config: dict, payload: Any) -> Optional[str]:
     return f"mcp-event:{event_id}" if isinstance(event_id, str) and event_id else None
 
 
-def _store_cursor(route_name: str, cursor: str) -> None:
+def _store_cursor(home: Path, route_name: str, cursor: str) -> None:
     # Subscription state lives beside the route, never in it: an admitted run's reply is checked against
     # a digest of the route config, so a cursor written there would strand every run still in flight.
     from tools.mcp_tool_events import store_cursor
-    store_cursor(route_name, cursor)
+    store_cursor(home, route_name, cursor)
 
 
-def _remove_route(route_name: str) -> None:
-    from hermes_cli.webhook import _mutate_subscriptions
-    from tools.mcp_tool_events import drop_state
-    _mutate_subscriptions(lambda subscriptions: subscriptions.pop(route_name, None))
-    drop_state(route_name)
+def _remove_route(home: Path, route_name: str) -> None:
+    from tools.mcp_tool_events import _write_route
+    _write_route(home, route_name, None)
 
 
-async def _verification(adapter, route_name: str, route_config: dict, payload: dict, profile) -> Any:
+async def _verification(adapter, route_name: str, route_config: dict, payload: dict, profile, home: Path) -> Any:
     challenge = payload.get("challenge")
     if not isinstance(challenge, str) or not challenge or len(challenge) > _MAX_CHALLENGE_CHARS:
         return _json({"error": "Invalid verification challenge"}, status=400)
@@ -76,10 +76,10 @@ async def _verification(adapter, route_name: str, route_config: dict, payload: d
     return _json({"challenge": challenge})
 
 
-async def _terminated(adapter, route_name: str, route_config: dict, payload: dict, profile) -> Any:
+async def _terminated(adapter, route_name: str, route_config: dict, payload: dict, profile, home: Path) -> Any:
     event = _mcp_event(route_config) or {}
     error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-    await asyncio.to_thread(_remove_route, route_name)
+    await asyncio.to_thread(_remove_route, home, route_name)
     logger.warning("[webhook] MCP server '%s' ended event subscription %s (%s): %s", event.get("server"),
                    route_name, event.get("name"), error)
     if route_config.get("deliver", "log") != "log":
@@ -91,10 +91,10 @@ async def _terminated(adapter, route_name: str, route_config: dict, payload: dic
     return _json({"status": "terminated"})
 
 
-async def _gap(adapter, route_name: str, route_config: dict, payload: dict, profile) -> Any:
+async def _gap(adapter, route_name: str, route_config: dict, payload: dict, profile, home: Path) -> Any:
     cursor = payload.get("cursor")
     if isinstance(cursor, str) and cursor:
-        await asyncio.to_thread(_store_cursor, route_name, cursor)
+        await asyncio.to_thread(_store_cursor, home, route_name, cursor)
     logger.warning("[webhook] MCP event route %s: the server skipped events (gap); resuming from a fresh cursor",
                    route_name)
     return _json({"status": "gap"})
@@ -104,7 +104,7 @@ _CONTROL_HANDLERS = {"verification": _verification, "terminated": _terminated, "
 
 
 async def handle_mcp_event_control(adapter, route_name: str, route_config: dict, payload: Any,
-                                   profile) -> Any:
+                                   profile, home: Path) -> Any:
     """The response for a control envelope on an MCP event route; None lets the delivery continue
     as an event occurrence (whose replay cursor, when the server sends one, is remembered first)."""
     if _mcp_event(route_config) is None or not isinstance(payload, dict):
@@ -112,7 +112,7 @@ async def handle_mcp_event_control(adapter, route_name: str, route_config: dict,
     kind = payload.get("type")
     handler = _CONTROL_HANDLERS.get(kind) if isinstance(kind, str) else None
     if handler is not None:
-        return await handler(adapter, route_name, route_config, payload, profile)
+        return await handler(adapter, route_name, route_config, payload, profile, home)
     if "type" in payload:
         # The sketch: a body with a top-level ``type`` is a control envelope. Acknowledge one this client
         # does not know (a later revision's) so the server stops retrying it; it never starts a run.
@@ -120,5 +120,5 @@ async def handle_mcp_event_control(adapter, route_name: str, route_config: dict,
         return _json({"status": "ignored", "type": kind if isinstance(kind, str) else None})
     cursor = payload.get("cursor")
     if isinstance(cursor, str) and cursor:
-        await asyncio.to_thread(_store_cursor, route_name, cursor)
+        await asyncio.to_thread(_store_cursor, home, route_name, cursor)
     return None

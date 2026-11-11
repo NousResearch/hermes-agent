@@ -451,9 +451,9 @@ using the default listener's existing credentials.
   way: `hermes webhook subscribe <name> --route-profile coder` writes
   `profile: coder` into the default gateway's `webhook_subscriptions.json` and
   prints the `/p/coder/webhooks/<name>` URL (`hermes webhook ls` shows the
-  binding). Use `--route-profile`, not the global `-p coder`: `-p` would write
-  the subscription into coder's own subscriptions file, which the default
-  gateway's webhook adapter never reads.
+  binding). The global `-p coder` reaches the same URL another way: it writes
+  the subscription into coder's own subscriptions file, which a multiplexed
+  gateway also serves at `/p/coder/webhooks/<name>`.
 - Delivery follows the same binding. A `profile: coder` route's reply (or
   `deliver_only` message) goes out through **coder's** adapter for the
   `deliver` platform, falls back to **coder's** home channel when

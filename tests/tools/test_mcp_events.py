@@ -143,7 +143,7 @@ class TestSubscribe:
         assert list(_routes(home).values()) == [first]  # identical: in-flight runs keep their route digest
 
     def test_a_fresh_subscription_ignores_state_left_by_a_removed_route(self, home):
-        name = events._route_name("ambush", "feed.emission.created", ARGS)  # e.g. after `hermes webhook remove`
+        name = events._route_name(home, "ambush", "feed.emission.created", ARGS)  # e.g. after `hermes webhook remove`
         (home / "mcp_event_subscriptions.json").write_text(json.dumps({name: {"cursor": "stale"}}))
         session = FakeSession(_grant())
         _subscribe(session)
@@ -215,13 +215,13 @@ class TestRefresh:
     def test_a_fresh_connection_resubscribes_every_route(self, home):
         _subscribe(FakeSession(_grant()))
         session = FakeSession(_grant(seconds=3600))
-        asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
+        asyncio.run(events.refresh_server_subscriptions(_server(session), home, force=True))
         assert [s["method"] for s in session.sent] == ["events/subscribe"]
 
     def test_a_routine_pass_skips_routes_that_are_not_due(self, home):
         _subscribe(FakeSession(_grant()))
         session = FakeSession()
-        next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), force=False))
+        next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), home, force=False))
         assert session.sent == [] and next_due > time.time()
 
     @pytest.mark.parametrize("code", [-32024, -32023, -32602, -32026],
@@ -229,7 +229,7 @@ class TestRefresh:
     def test_a_refusal_that_cannot_change_ends_the_subscription(self, home, code):
         _subscribe(FakeSession(_grant()))
         session = FakeSession(MCPError(code, "refused"))
-        asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
+        asyncio.run(events.refresh_server_subscriptions(_server(session), home, force=True))
         assert _routes(home) == {}
 
     def test_a_failing_refresh_backs_off(self, home):
@@ -238,14 +238,14 @@ class TestRefresh:
         delays = []
         for _ in range(3):
             session = FakeSession(MCPError(-32027, "CallbackEndpointError", {"reason": "timeout"}))
-            next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), force=True, failures=failures))
+            next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), home, force=True, failures=failures))
             delays.append(next_due - time.time())
         assert [round(delay / events._REFRESH_MIN_SLEEP_S) for delay in delays] == [1, 2, 4]
         state = _state(home)  # the grant has run out, so only the back-off holds the next attempt
         next(iter(state.values())).update(granted_at=time.time() - 7200, refresh_before=_grant(-3600)["refreshBefore"])
         (home / "mcp_event_subscriptions.json").write_text(json.dumps(state))
         session = FakeSession()
-        next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), force=False, failures=failures))
+        next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), home, force=False, failures=failures))
         assert session.sent == [] and 100 < next_due - time.time() <= 4 * events._REFRESH_MIN_SLEEP_S
 
     def test_a_disabled_route_is_left_to_lapse(self, home):
@@ -254,7 +254,7 @@ class TestRefresh:
         next(iter(data.values()))["enabled"] = False
         (home / "webhook_subscriptions.json").write_text(json.dumps(data))
         session = FakeSession()
-        asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
+        asyncio.run(events.refresh_server_subscriptions(_server(session), home, force=True))
         assert session.sent == []
 
     def test_a_route_removed_during_the_refresh_is_released(self, home):
@@ -268,7 +268,7 @@ class TestRefresh:
                 return reply
 
         session = RacingSession(_grant(), {})
-        asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
+        asyncio.run(events.refresh_server_subscriptions(_server(session), home, force=True))
         assert [sent["method"] for sent in session.sent] == ["events/subscribe", "events/unsubscribe"]
         assert session.sent[1]["params"]["delivery"] == {"url": session.sent[0]["params"]["delivery"]["url"]}
         assert _routes(home) == {}
@@ -276,13 +276,13 @@ class TestRefresh:
     def test_a_new_subscription_wakes_the_refresh_loop(self, home, monkeypatch):
         passes = []
 
-        async def recording_pass(server, *, force, failures=None):
+        async def recording_pass(server, home, *, force, failures=None):
             passes.append(force)
             return float("inf")  # nothing due: without a wake-up the loop sleeps for an hour
         monkeypatch.setattr(events, "refresh_server_subscriptions", recording_pass)
 
         async def scenario():
-            loop = asyncio.create_task(events.run_refresh_loop(_server(FakeSession())))
+            loop = asyncio.create_task(events.run_refresh_loop(_server(FakeSession()), home))
             await async_wait_until(lambda: passes == [True], what="the first pass")
             await events._subscribe_event(FakeSession(_grant(seconds=600)), {
                 "name": "feed.emission.created", "arguments": ARGS}, "ambush")
@@ -301,7 +301,7 @@ class TestRefresh:
         async def scenario():
             server._rpc_lock = ObservedLock()
             async with server._rpc_lock:  # an unsubscribe holds the session...
-                refresh = asyncio.create_task(events.refresh_server_subscriptions(server, force=True))
+                refresh = asyncio.create_task(events.refresh_server_subscriptions(server, home, force=True))
                 await async_wait_until(lambda: server._rpc_lock.contended, what="refresh queued on the session")
                 (home / "webhook_subscriptions.json").write_text("{}")  # ...and drops the route
             await refresh

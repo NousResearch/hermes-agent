@@ -10,7 +10,7 @@ import time
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from hermes_constants import display_hermes_home
 from utils import atomic_json_write
@@ -28,29 +28,32 @@ class SubscriptionMutationConflict(RuntimeError):
     """The route changed after a caller took the snapshot it intended to replace."""
 
 
-def _subscriptions_path() -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / _SUBSCRIPTIONS_FILENAME
+def _subscriptions_path(home: Optional[Path] = None) -> Path:
+    """The route store of *home* (a profile's own routes); the active profile's when omitted."""
+    if home is None:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+    return home / _SUBSCRIPTIONS_FILENAME
 
 
-def _subscriptions_lock_path() -> Path:
-    return _subscriptions_path().with_name(_SUBSCRIPTIONS_LOCK_FILENAME)
+def _subscriptions_lock_path(home: Optional[Path] = None) -> Path:
+    return _subscriptions_path(home).with_name(_SUBSCRIPTIONS_LOCK_FILENAME)
 
 
 @contextmanager
-def _subscriptions_lock():
+def _subscriptions_lock(home: Optional[Path] = None):
     """Serialize subscription snapshots and mutations across threads and processes."""
     from hermes_cli.active_sessions import _FileLock
 
     with _SUBSCRIPTIONS_THREAD_LOCK:
-        with _FileLock(_subscriptions_lock_path()):
+        with _FileLock(_subscriptions_lock_path(home)):
             yield
 
 
-def _load_subscriptions_unlocked() -> dict[str, dict]:
+def _load_subscriptions_unlocked(home: Optional[Path] = None) -> dict[str, dict]:
     """Read one complete store snapshot; unreadable or malformed files read as empty."""
     try:
-        raw = _subscriptions_path().read_bytes()
+        raw = _subscriptions_path(home).read_bytes()
     except OSError:
         return {}
     try:
@@ -60,24 +63,24 @@ def _load_subscriptions_unlocked() -> dict[str, dict]:
     return data if isinstance(data, dict) else {}
 
 
-def _load_subscriptions() -> dict[str, dict]:
+def _load_subscriptions(home: Optional[Path] = None) -> dict[str, dict]:
     """Lock-free read: writers publish by atomic rename, so a reader always sees one whole
     snapshot, and read-only homes (no lock file can be created) keep working."""
-    return _load_subscriptions_unlocked()
+    return _load_subscriptions_unlocked(home)
 
 
-def _save_subscriptions_unlocked(subs: dict[str, dict]) -> None:
+def _save_subscriptions_unlocked(subs: dict[str, dict], home: Optional[Path] = None) -> None:
     # The file holds per-route HMAC secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
     # rename (no umask window) and re-asserts the mode on the destination afterwards.
-    atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
+    atomic_json_write(_subscriptions_path(home), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
 
 
-def _mutate_subscriptions(mutate: Callable[[dict[str, dict]], Any]) -> Any:
+def _mutate_subscriptions(mutate: Callable[[dict[str, dict]], Any], home: Optional[Path] = None) -> Any:
     """Lock, re-read, mutate and atomically publish one complete store snapshot."""
-    with _subscriptions_lock():
-        subscriptions = _load_subscriptions_unlocked()
+    with _subscriptions_lock(home):
+        subscriptions = _load_subscriptions_unlocked(home)
         result = mutate(subscriptions)
-        _save_subscriptions_unlocked(subscriptions)
+        _save_subscriptions_unlocked(subscriptions, home)
         return result
 
 
@@ -129,10 +132,28 @@ def _get_webhook_base_url() -> str:
     return f"http://{display_host}:{wh.get('port', 8644)}"
 
 
-def _route_url(name: str, route: dict) -> str:
+def store_profile(home: Path) -> Optional[str]:
+    """The named profile whose store *home* holds; None for the default home (or an unnamed custom
+    one), whose routes the listener serves without a ``/p/<profile>/`` prefix."""
+    from hermes_constants import profile_name_for_home
+    name = profile_name_for_home(home)
+    return None if name in (None, "default") else name
+
+
+def route_path(name: str, route: dict, home: Path) -> str:
+    """The listener path of route *name* in *home*'s store. A route's ``profile`` binds it; the
+    default binding means the store's own profile, which a multiplexed listener serves under
+    ``/p/<profile>/`` (a standalone gateway answers its own prefix too)."""
     profile = route.get("profile", "default")
+    if profile == "default":
+        profile = store_profile(home) or "default"
     prefix = f"/p/{profile}" if profile != "default" else ""
-    return f"{_get_webhook_base_url()}{prefix}/webhooks/{name}"
+    return f"{prefix}/webhooks/{name}"
+
+
+def _route_url(name: str, route: dict) -> str:
+    from hermes_constants import get_hermes_home
+    return f"{_get_webhook_base_url()}{route_path(name, route, get_hermes_home())}"
 
 
 def _setup_hint() -> str:

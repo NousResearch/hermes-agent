@@ -138,6 +138,7 @@ async def clear_pending_pairing(profile: Optional[str] = None):
 
 
 def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> dict[str, Any]:
+    from hermes_cli.webhook import route_path
     return {
         "name": name,
         "description": route.get("description", ""),
@@ -148,7 +149,7 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
         "script": route.get("script", ""),
         "skills": list(route.get("skills") or []),
         "created_at": route.get("created_at"),
-        "url": f"{base_url}/webhooks/{name}",
+        "url": f"{base_url}{route_path(name, route, get_hermes_home())}",
         "secret_set": bool(route.get("secret")),
         # Default-enabled; only an explicit enabled:false turns a route off.
         "enabled": route.get("enabled", True) is not False,

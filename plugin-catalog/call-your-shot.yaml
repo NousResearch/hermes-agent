@@ -1,0 +1,21 @@
+name: call-your-shot
+version: "0.1.0"
+repo: https://github.com/chadius-maximus/call-your-shot
+sha: ad40dce864790e472e258228bc31a9ba0d34f4b3
+description: "The agent calls its shot before a multi-step task: how many tool calls and how many minutes it will take. Hooks count the real tool calls and time, score the estimate 0 to 100, and /shots or hermes shots shows predicted against actual. Each new call_shot result tells the agent its own record (for example that actual time came to 0.3x its estimates) with a calibrated figure. Disclosure — no network and no model calls of its own; stores the task label (the agent's, or the first 60 characters of your message), session id, model name and the predicted and measured numbers in an unencrypted SQLite file under HERMES_HOME/plugin-data/call-your-shot/; adds a system prompt section of about 500 characters to every session and one line of context on the turn after a shot settles."
+maintainer: chadius-maximus
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/chadius-maximus/call-your-shot#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - call_shot
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

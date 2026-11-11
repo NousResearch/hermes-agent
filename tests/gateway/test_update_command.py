@@ -102,14 +102,11 @@ class TestHandleUpdateCommand:
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
+             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
@@ -136,9 +133,6 @@ class TestHandleUpdateCommand:
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         (fake_root / ".git").mkdir()
-        (fake_root / "gateway").mkdir()
-        (fake_root / "gateway" / "run.py").touch()
-        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
@@ -152,7 +146,7 @@ class TestHandleUpdateCommand:
             return None
 
         with patch("gateway.run._hermes_home", hermes_home), \
-             patch("gateway.run.__file__", fake_file), \
+             patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
              patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):

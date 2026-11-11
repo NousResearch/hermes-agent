@@ -6932,7 +6932,9 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     with the (size-capped) body text appended to ``error_prefix``."""
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
-        return None, send_error(f"{error_prefix} ({resp.status}): {body}")
+        # A 4xx (429 included) is Discord refusing the request: nothing was posted. Every caller that
+        # returns this error does so before any message of the send landed. A 5xx stays unmarked.
+        return None, send_error(f"{error_prefix} ({resp.status}): {body}", nothing_sent=400 <= resp.status < 500)
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
 

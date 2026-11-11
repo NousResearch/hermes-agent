@@ -1,0 +1,33 @@
+name: eselsbruecke
+title: Eselsbrücke
+repo: https://github.com/studioluftbruecke/hermes-eselsbruecke
+sha: 9a67182b7d03595680c52340c5d105541458a839
+description: >-
+  A helper toolbox for Hermes with tools you switch on and off: a today pad, a pomodoro, a billable
+  time log, a formatter, a colour picker and small tools, which your agent can call for exact
+  answers. Disclosure: no network calls beyond your own Hermes backend, local files only, an
+  optional per-minute alert job (off by default), no credentials, no telemetry.
+maintainer: studioluftbruecke
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/studioluftbruecke/hermes-eselsbruecke#readme
+version: "0.2.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "With Hermes on a server, install the plugin on the Desktop computer too, on the same version: Desktop loads the Eselsbrücke page from its own computer."
+capabilities:
+  provides_tools:
+    - eselsbruecke_toolbox
+    - eselsbruecke_pad
+    - eselsbruecke_timer
+    - eselsbruecke_timelog
+    - eselsbruecke_calc
+    - eselsbruecke_format
+    - eselsbruecke_convert
+    - eselsbruecke_text
+    - eselsbruecke_generate
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

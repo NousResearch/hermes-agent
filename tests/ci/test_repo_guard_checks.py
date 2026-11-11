@@ -172,6 +172,12 @@ def test_supply_chain_scan_passes_a_moved_file_whose_old_path_keeps_a_forwarding
     assert _scan_pr(repo, step, base, {"new/pkg/mod.py": module, "pkg/mod.py": FORWARD}) == "false"
 
 
+def test_supply_chain_scan_passes_a_move_into_a_folder_git_quotes(repo, step):
+    module, _ = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    assert _scan_pr(repo, step, base, {"n\u00e9w/pkg/mod.py": module, "pkg/mod.py": FORWARD}) == "false"
+
+
 def test_supply_chain_scan_flags_a_payload_line_added_to_a_moved_or_new_file(repo, step):
     module, new_payload = _module_with_payload()
     base = commit(repo, {"pkg/mod.py": module})
@@ -192,7 +198,7 @@ def test_supply_chain_scan_flags_a_payload_line_copied_from_a_file_that_keeps_it
 def test_supply_chain_scan_flags_the_second_copy_of_a_moved_file(repo, step):
     module, _ = _module_with_payload()
     base = commit(repo, {"pkg/mod.py": module})
-    twice = {"new/a.py": module, "new/b.py": module, "pkg/mod.py": FORWARD}
+    twice = {"new/a/mod.py": module, "new/b/mod.py": module, "pkg/mod.py": FORWARD}
     assert _scan_pr(repo, step, base, twice) == "true"
 
 

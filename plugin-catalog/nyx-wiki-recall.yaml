@@ -3,43 +3,7 @@ title: NyxWikiRecall
 repo: https://github.com/blacksmithFF/NyxWikiRecall
 sha: 7d8d26378d9da57e0eaae8016baa6fc03f9c6f01
 version: "0.1.0"
-description: >-
-  Attach short wiki glimpses chosen by a decision model, and write a daily
-  Markdown transcript of every turn. A local Markdown wiki (starter layout
-  shipped) is scored per message through OpenRouter's Decisions API; matching
-  glimpses are injected before the model answers, and wiki_read opens the full
-  article. Transcripts are written by the plugin itself into
-  HERMES_HOME/plugin-data/nyx-wiki-recall/ with no extra setup (transcript = yes
-  and finalize = yes are the shipped values). Each day runs from finalize.after
-  to finalize.after (default 02:00). Scheduled (cron) jobs are recorded under a
-  Scheduled job heading; only subagent turns are skipped by default. A day is
-  finished at finalize.after the next morning. The files are what a wiki is
-  built from. Ships Clotho's wiki-archivist skill. Default
-  provider=no runs as a hook beside any memory provider; provider=yes can serve
-  as Hermes's memory provider when memory.provider also says so. Disclosure —
-  for each message that passes the skip rules, HTTPS POSTs go to
-  openrouter.ai/api/alpha/decisions (decisions.url, default that URL) with
-  OPENROUTER_API_KEY (via agent.secret_scope.get_secret), carrying the recent
-  conversation trimmed to message.chars (default 20,000 characters) and the
-  titles, paths and glimpses of the wiki folders and pages being asked about
-  (up to three requests per message, within budget.seconds); nothing else is
-  sent anywhere and there is no telemetry. Reads the wiki folder (wiki_path,
-  outside the plugin data dir), Hermes config read-only (this plugin's settings
-  and memory.provider), and the gateway-bound HERMES_SESSION_* / HERMES_CRON_SESSION
-  values via gateway.session_context.get_session_env (the documented session
-  identity path; falls back if missing). In memory-provider mode only, when the
-  hook left no lookup, also opens HERMES_HOME/state.db read-only for the last
-  40 messages of the current session. Writes only under
-  HERMES_HOME/plugin-data/nyx-wiki-recall/ (or transcript.folder):
-  journal/YYYY-MM-DD.jsonl, transcripts/*-transcript.md, transcriptIndex.md,
-  suggestions/YYYY-MM-DD.jsonl, finalized.json, and short-lived lock files.
-  Deletes nothing by default; with keep.days > 0, only its own finished
-  journal/ and suggestions/ day files older than that many days. One
-  day-finishing background thread per Hermes process (wakes every
-  finalize.check.minutes, default 10; finalize.after default 02:00) and one
-  short-lived thread that rewrites today's transcript after a reply. Does not
-  write Hermes's config or any other Hermes file; runs no shell commands; stores
-  no credentials.
+description: "Attach short wiki glimpses chosen by a decision model, and write a daily Markdown transcript of every turn. A local Markdown wiki (starter layout shipped) is scored per message through OpenRouter's Decisions API; matching glimpses are injected before the model answers, and wiki_read opens the full article. Transcripts are written by the plugin itself into HERMES_HOME/plugin-data/nyx-wiki-recall/ with no extra setup (transcript = yes and finalize = yes are the shipped values). Each day runs from finalize.after to finalize.after (default 02:00). Scheduled (cron) jobs are recorded under a Scheduled job heading; only subagent turns are skipped by default. A day is finished at finalize.after the next morning. The files are what a wiki is built from. Ships Clotho's wiki-archivist skill. Default provider=no runs as a hook beside any memory provider; provider=yes can serve as Hermes's memory provider when memory.provider also says so. Disclosure — for each message that passes the skip rules (not empty, not a slash command; cron turns skipped by default), HTTPS POSTs go to openrouter.ai/api/alpha/decisions (decisions.url, default that URL; model typesafe/jev-1.13) with OPENROUTER_API_KEY (via agent.secret_scope.get_secret), carrying the recent conversation (context.turns, default 2) trimmed to message.chars (default 20,000 characters) and the titles, paths and glimpses of the wiki folders and pages being asked about (up to three requests per message, within budget.seconds); nothing else is sent anywhere and there is no telemetry. Reads the wiki folder (wiki_path), Hermes config read-only, and the gateway-bound HERMES_SESSION_* values via gateway.session_context.get_session_env; in memory-provider mode only, also opens HERMES_HOME/state.db read-only for the last 40 messages of the current session. Writes a journal and daily Markdown transcript of every turn (user messages, replies and short tool-call summaries such as terminal commands and file paths, after pattern-based secret redaction, with default file permissions) only under HERMES_HOME/plugin-data/nyx-wiki-recall/ (or transcript.folder), plus suggestions, finalized.json and lock files. Deletes nothing by default; with keep.days > 0, only its own finished journal/ and suggestions/ day files. Runs one day-finishing background thread per Hermes process and one short-lived transcript thread after each reply; runs no shell commands and stores no credentials."
 maintainer: blacksmithFF
 tier: community
 category: memory

@@ -3,7 +3,8 @@
 from typing import Any, Optional
 
 from gateway.platforms.event import MessageEvent
-from plugins.platforms.telegram.telegram_media_group import item_notes
+from gateway.platforms.helpers import caption_is_command
+from plugins.platforms.telegram.telegram_media_group import INLINED_TEXT_ATTR, inlined_texts, item_notes
 
 
 def pad_inline_flags(event: MessageEvent) -> list[Optional[bool]]:
@@ -80,4 +81,23 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
         existing.text = merge_caption(existing.text, caption)
     for note in notes:
         existing.text = f"{existing.text}\n\n{note}" if existing.text else note
+    if blocks := inlined_texts(existing) + inlined_texts(event):
+        existing.__dict__[INLINED_TEXT_ATTR] = blocks
+        drop_inlined_text_under_command(existing)
     return key
+
+
+def drop_inlined_text_under_command(event: MessageEvent) -> None:
+    """An album is judged by its ONE caption, which only one item carries: its uncaptioned siblings
+    inlined their text, which then became the command's arguments (``/goal`` on item 1) or hid the
+    command (``/goal`` on a later item). Once the merged caption is a command, take that text back
+    out; the files stay attached and the agent is told to read them."""
+    text = event.text or ""
+    for block in inlined_texts(event):  # _merge_caption strips, so a body's trailing newline may be gone
+        cut = next((c for c in (f"{block}\n\n", block, block.strip()) if c and c in text), "")
+        text = text.replace(cut, "", 1) if cut else text
+    if not caption_is_command(text.strip()):
+        return
+    event.text = text.strip()
+    event.media_text_inlined = [False if flag else flag for flag in pad_inline_flags(event)]
+    event.__dict__.pop(INLINED_TEXT_ATTR, None)

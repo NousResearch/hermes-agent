@@ -29,6 +29,22 @@ def add_item_note(event: Any, note: str) -> None:
 def item_notes(event: Any) -> list[str]:
     return list(getattr(event, ITEM_NOTES_ATTR, None) or [])
 
+
+# Private event attribute: the ``[Content of …]`` blocks inlined into this event's text, so an album
+# merge can take them back out once the album's caption turns out to be a command.
+INLINED_TEXT_ATTR = "_telegram_inlined_text"
+
+
+def inline_item_text(event: Any, injection: str) -> None:
+    """Prepend a document's text to the item's caption and flag it inlined (``media_text_inlined``)."""
+    event.text = f"{injection}\n\n{event.text}" if event.text else injection
+    event.media_text_inlined = [True]
+    event.__dict__.setdefault(INLINED_TEXT_ATTR, []).append(injection)
+
+
+def inlined_texts(event: Any) -> list[str]:
+    return list(getattr(event, INLINED_TEXT_ATTR, None) or [])
+
 # Upper bound on how long a due flush waits for in-flight siblings before sending what it has.
 MEDIA_GROUP_MAX_WAIT_SECONDS = 8.0
 _IN_FLIGHT_POLL_SECONDS = 0.05

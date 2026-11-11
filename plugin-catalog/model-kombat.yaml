@@ -11,7 +11,7 @@
 name: model-kombat
 repo: https://github.com/DarkeTech/model-kombat
 # One line to change at PR time: replace these 40 zeros with the submitted 40-char commit SHA.
-sha: "91fa86a4befb89dd74985220725c6fe5780758e2"
+sha: "2a847b02ecb06f252e7d81bbdda3db766ba1e640"
 title: "Model Kombat"
 description: "Head-to-head model evaluation: scout a task or kanban card into lanes, build a deterministic fight card (Warm-up 1pt, Main Event 2pt, Championship 3pt, sudden death) at standard, hard or gauntlet intensity, fight two models on identical prompts, and score mechanically — executed code, exact counts, numeric tolerances, phrase groups, JSON leaf equality, SQLite rows — with a per-lane Elo ladder, live arcade pane and kanban recommendation badges, and a measured best-value call ('equal quality — X is 18x cheaper and 2.8x faster') when two strong models tie; a local task_stats.json remembers which tasks actually split the two models and demotes saturated ones. Disclosure — network: no third-party calls, fights go through the host LLM facade and the dashboard API is local and read-only; LLM spend: two model calls per task, capped per pure fight by max_fight_cost_usd and max_fight_tokens (agentic worker sessions are billed separately and not capped); cost estimation: the shipped prices.json and the model_prices setting are local price data used to ESTIMATE cost, unknown prices show n/a and never $0; subprocess/code execution: off by default, and when enabled model-written Python runs in a resource-limited subprocess as your user — defense-in-depth, not a security sandbox; kanban writes: creates unassigned display cards on a dedicated model-kombat board through the host terminal tool, never dispatched; file writes: reports, history, exports and task_stats.json under the plugin data dir only; desktop plugin and read-only dashboard API included; no telemetry; never reads credentials."
 maintainer: DarkeTech
@@ -23,15 +23,15 @@ version: "0.7.1"
 platforms: []
 
 # Banner is 1200x600 (2:1), served from raw.githubusercontent.com pinned to the sha.
-image: "https://raw.githubusercontent.com/DarkeTech/model-kombat/91fa86a4befb89dd74985220725c6fe5780758e2/docs/banner.png"
+image: "https://raw.githubusercontent.com/DarkeTech/model-kombat/2a847b02ecb06f252e7d81bbdda3db766ba1e640/docs/banner.png"
 
 # Up to 6 GitHub-hosted screenshots, each pinned to the same sha.
 screenshots:
-  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/91fa86a4befb89dd74985220725c6fe5780758e2/docs/previews/arena_mid.png"
-  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/91fa86a4befb89dd74985220725c6fe5780758e2/docs/previews/arena_draw_edge.png"
-  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/91fa86a4befb89dd74985220725c6fe5780758e2/docs/previews/arena_sudden_death.png"
-  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/91fa86a4befb89dd74985220725c6fe5780758e2/docs/previews/arena_wide.png"
-  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/91fa86a4befb89dd74985220725c6fe5780758e2/docs/previews/arena_ko.png"
+  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/2a847b02ecb06f252e7d81bbdda3db766ba1e640/docs/previews/arena_mid.png"
+  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/2a847b02ecb06f252e7d81bbdda3db766ba1e640/docs/previews/arena_draw_edge.png"
+  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/2a847b02ecb06f252e7d81bbdda3db766ba1e640/docs/previews/arena_sudden_death.png"
+  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/2a847b02ecb06f252e7d81bbdda3db766ba1e640/docs/previews/arena_wide.png"
+  - "https://raw.githubusercontent.com/DarkeTech/model-kombat/2a847b02ecb06f252e7d81bbdda3db766ba1e640/docs/previews/arena_ko.png"
 
 capabilities:
   provides_tools:

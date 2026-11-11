@@ -522,12 +522,15 @@ async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = Non
     disables it. On a match, the clips to attach; the turn reuses their transcripts, one STT call
     per clip. Otherwise ``[]``, and the clips fetched only for this check are deleted (never those
     in *keep*, which another owner still references)."""
-    from gateway.run_inbound_transcription import remember_gate_transcript, transcribe_one_clip
+    from gateway.run_inbound_transcription import (remember_gate_transcript, stt_enabled_for_turn,
+                                                   transcribe_one_clip)
     results: dict = {}
     try:
         async with _gate_stt_scope(adapter, source):
             from tools.transcription_tools import is_stt_enabled
-            for path in paths if await asyncio.to_thread(is_stt_enabled) else ():
+            enabled = stt_enabled_for_turn(getattr(adapter, "gateway_runner", None)) \
+                and await asyncio.to_thread(is_stt_enabled)
+            for path in paths if enabled else ():
                 try:
                     results[path] = await transcribe_one_clip(path)
                 except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash

@@ -270,3 +270,19 @@ async def test_photon_gate_stt_never_holds_the_inbound_reader(tmp_path, monkeypa
                 break
             await asyncio.sleep(0.02)
     assert seen == ["s1", "v1", "t1"]
+
+
+@pytest.mark.asyncio
+async def test_the_gate_honours_the_runners_stt_setting(tmp_path, monkeypatch):
+    """Legacy ``gateway.json`` ``stt_enabled: false`` turns STT off for the turn
+    (``GatewayConfig.stt_enabled``); the gate reads that same value, so the note is never sent to STT."""
+    import re
+    from gateway.platforms.helpers import spoken_mention_clips
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    clip = tmp_path / "gate.ogg"
+    clip.write_bytes(OGG)
+    adapter = SimpleNamespace(gateway_runner=SimpleNamespace(config=SimpleNamespace(stt_enabled=False)))
+    transcribe, calls = _stt("hermes, what is on today")
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], adapter=adapter) == []
+    assert calls == []

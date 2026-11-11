@@ -312,8 +312,9 @@
 }
 
 .portal-agent-sessions {
-  margin-top: 0.375rem;
-  padding-bottom: 0.375rem;
+  margin-inline-start: 1.75rem;
+  border-inline-start: 1px solid color-mix(in srgb, var(--ui-base) 20%, transparent);
+  padding-inline-start: calc(1.75rem - 1px);
 }
 
 .portal-agent-sessions:not(:has([data-session-key])) {
@@ -321,6 +322,8 @@
 }
 
 .portal-agent-sessions [data-session-key] {
+  /* Extend the hit target past the guide without moving the indented title. */
+  margin-inline-start: -3.5rem;
   border-radius: 0.25rem;
 }
 
@@ -334,7 +337,7 @@
 }
 
 .portal-agent-sessions [data-session-key] > button:first-child {
-  padding-inline: 0.75rem 0.5rem;
+  padding-inline: 3.5rem 0.5rem;
 }
 
 .portal-agent-sessions [data-session-key] > button:not(:first-child) {

@@ -94,7 +94,10 @@ never invent team names, sharing counts, or connection state.
 The agent name/avatar opens that owner's canonical chat without a redundant
 child row. Its menu offers **New chat with this agent**, **Open agent**, and
 **Hide from chat list**. Collapse remains a separate keyboard/touch control.
-Nested sessions retain full-width hover/click targets and inset titles.
+Nested sessions have a 1px, 20% neutral indentation guide centered beneath the
+agent avatar, spanning the first through last session row. Session titles align
+with the agent name; hover/click targets still span the full agent-card width,
+including the guide gutter. Empty and collapsed agents have no dangling guide.
 Screen is a tool rather than a conversation: use **Open Screen** in the command
 palette for the focused owner; classic/Bot Mode entry points remain available.
 

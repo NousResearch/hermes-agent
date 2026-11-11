@@ -1,1 +1,1 @@
-with open("/opt/data/profiles/unitalk-ai/cache/scratch/generate-unitalk-assets.py") as f: script_str = f.read()
+real_script_text

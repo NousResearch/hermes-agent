@@ -20,9 +20,13 @@ Frontmatter:
   the description contains a colon, wrap the whole value in double quotes.
   This is the most-violated rule and it is NOT cosmetic: the system-prompt
   skill index truncates the description to 60 chars and loads it every
-  session, so anything past char 60 is silently cut and never routes. After
-  you write the description, COUNT the characters; if it is over 60, cut it
-  down before saving — do not ship a sentence and hope.
+  session, so anything past char 60 is silently cut and never routes. You
+  cannot count characters by looking at the sentence — verify the length
+  through the `terminal` tool BEFORE building the skill_manage call:
+    python3 -c 'import sys; print(len(sys.argv[1]))' '<description>'
+  If the result is over 60, shorten and re-run until it is not. Never
+  compose the full SKILL.md content until the description has passed.
+  Target 6-8 words; the limit is the hard ceiling, not the goal.
     Good (<=60): `Search arXiv papers by keyword, author, or ID.`
     Bad (123):   `A comprehensive skill that lets the agent search arXiv for
                   academic papers using keywords, authors, and categories.`

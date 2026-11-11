@@ -1,8 +1,8 @@
 name: hermes-vnc
 repo: https://github.com/YAN-XBT/hermes-vnc
-sha: cd166561e02f65c82bd14e10e82b3562218d491a
+sha: e9b12a4d274aad5535b3072ed17965f703c2211b
 title: Hermes VNC
-version: "0.2.1"
+version: "0.2.2"
 description: "Computer-use backend that drives any machine reachable over VNC (RFB): the stock computer_use tool captures the remote screen and moves that machine's mouse and keyboard, so the agent can work on a second computer, a lab box or a cloud desktop with no Hermes process running on it. Select it with computer_use.backend: hermes-vnc and point computer_use.vnc.host at the target. VNC carries pixels only, so the backend runs in the screenshot lane: capture returns a PNG and no accessibility elements, and element-addressed actions (list_apps, focus_app, set_value, click-by-element) report unsupported_action instead of guessing. capture_max_width downscales each capture — vision tokens scale with the image's area, so this is the one setting that changes what a screenshot costs (measured 1920 -> 786 estimated tokens at 1024 wide on a 1600x900 desktop). It also ships an optional desktop pane that shows the remote screen while the agent works — off by default, a viewer that opens its own read-only connection and never sends input. Disclosure — connects only to the VNC server you configure (host and port) and sends it screenshots and input; the one credential is the VNC password, read from the variable named by password_env through Hermes's secret scope and never written or logged; no shell, no files read or written, no telemetry; one daemon thread runs Twisted's reactor, started on first connect and deliberately never stopped because the reactor is process-wide and cannot be restarted; one pinned dependency (vncdotool>=1.2,<2)."
 maintainer: YAN-XBT
 tier: community
@@ -13,7 +13,7 @@ platforms:
   - linux
   - macos
   - windows
-image: https://raw.githubusercontent.com/YAN-XBT/hermes-vnc/cd166561e02f65c82bd14e10e82b3562218d491a/assets/banner.jpg
+image: https://raw.githubusercontent.com/YAN-XBT/hermes-vnc/e9b12a4d274aad5535b3072ed17965f703c2211b/assets/banner.jpg
 known_issues:
   - "Needs a VNC server on the machine you want to drive (TightVNC, UltraVNC, TigerVNC, x11vnc, macOS Screen Sharing, or a cloud VM's VNC endpoint). Nothing is installed on the target beyond that."
   - "Enable the plugin, do not just install it: python_dependencies are installed by `hermes plugins enable hermes-vnc`, and enabling builds a new pm environment that an already-running gateway or CLI does not switch to. Install, enable, then restart the host — otherwise the tool reports vncdotool is not installed even though the environment now has it."

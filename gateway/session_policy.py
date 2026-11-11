@@ -189,7 +189,7 @@ class LocalSessionPolicy:
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
             from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
-            recovered = recover_config_secrets(authority, self)
+            recovered = recover_config_secrets(authority, self, skip=self.followed_sections if live else None)
             for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
@@ -252,7 +252,7 @@ class LocalSessionPolicy:
             return FOLLOW_MODEL_SECTIONS
         return FOLLOW_SECTIONS if self.follows_profile else ()
 
-    def read_profile(self, authority):
+    def read_profile(self, authority, *, for_turn=False):
         """The owning profile's current config for a following session, else None; inside this policy's
         turn scope, the turn's one read."""
         if authority is None or not self.followed_sections:
@@ -260,6 +260,10 @@ class LocalSessionPolicy:
         held = _TURN_PROFILE.get()
         if held is not None and held[0] == self:
             return held[1]
+        # Room creation and history use the stored policy. Only execution
+        # resolves a new model route from the owning profile.
+        if self.source == 'bot_room' and not for_turn:
+            return None
         return profile_config(authority)
 
     def current_toolsets(self, config):
@@ -1136,13 +1140,14 @@ def policy_scope(policy, *, authority=None, home=None):
     from agent.runtime_scope import bind_terminal_policy
     from tools.terminal_scope import reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
+    live = policy.read_profile(authority, for_turn=True)
     if policy.config_secret_ref is not None:
         from gateway.session_policy_credentials import recover_config_secrets
-        for path, value in recover_config_secrets(authority, policy).items():
+        for path, value in recover_config_secrets(authority, policy, skip=policy.followed_sections if live else None).items():
             if path[0] is None:
                 terminal[path[1]] = value
     # A following session's turn reads its profile once; every resolution in the turn uses that read.
-    profile_token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    profile_token = _TURN_PROFILE.set((policy, live))
     active = policy
     if policy.follows_profile:
         from dataclasses import replace

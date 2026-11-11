@@ -12,7 +12,7 @@ phases), ... Module-level helpers live in topical siblings that `cli.py` re-expo
 `cli_config_load.py` (defaults + YAML merge, env mirroring), `cli_render.py` (ANSI/skin colours,
 light mode, markdown, `_cprint`, panel wrap), `cli_terminal_input.py` (file drops, paste/Enter-key
 sequences, CPR guards), `cli_shutdown.py` (exit watchdog, cleanup steps, one-shot finalize),
-`cli_single_query.py` (`-q` runner, exit codes, kanban loops), `cli_auto_maintenance.py` (state-db/checkpoint maintenance).
+`cli_single_query.py` (`-q` runner, exit codes, kanban loops).
 Moved bodies late-bind cli-level names via `from cli import ...` at call time, so patch seams on the
 `cli` facade still intercept them; mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
 `_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `cli.py`. **Rich** renders banner/panels; **prompt_toolkit**

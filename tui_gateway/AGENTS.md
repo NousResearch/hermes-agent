@@ -34,7 +34,7 @@ handlers only with a full interactive grant (`ws_legacy_fallback.py`). Client→
 is the facade with the method/event catalog; methods live in `methods_*.py` siblings (`methods_config`,
 `methods_complete`, `methods_browser`, `methods_bot_relay`, ...), event publishing in
 `event_publisher.py` / `event_replay.py`, server→client requests in `server_requests.py` (`send()` blocks
-the agent thread until the response frame with the same `srq-<n>` id arrives; `cancel*` withdraws with a
+the agent thread until the response frame with the same `srq-<12 hex>` id arrives; `cancel*` withdraws with a
 `request.cancel` event; `open_requests(sid)` is what `session.resume` / `session.events.since` replay so a
 reconnecting client re-renders the still-open questions). A client says once per connection that it
 answers them (`client.capabilities {server_requests: true}`, sent by the shared channel on `gateway.ready`);

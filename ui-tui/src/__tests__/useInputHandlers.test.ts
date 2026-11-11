@@ -7,6 +7,7 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  isQueueRetryKey,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
   shouldDetachEditedHistoryInput,
@@ -239,5 +240,18 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().vaultCode).toBeNull()
     expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
     expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+})
+
+describe('isQueueRetryKey — Alt+K retries a retained input, Ctrl+K stays kill-to-end', () => {
+  it('matches Alt+K (meta) in either case', () => {
+    expect(isQueueRetryKey({ ctrl: false, meta: true }, 'k')).toBe(true)
+    expect(isQueueRetryKey({ ctrl: false, meta: true }, 'K')).toBe(true)
+  })
+
+  it('does not match Ctrl+K, plain k or Alt+other', () => {
+    expect(isQueueRetryKey({ ctrl: true, meta: false }, 'k')).toBe(false)
+    expect(isQueueRetryKey({ ctrl: false, meta: false }, 'k')).toBe(false)
+    expect(isQueueRetryKey({ ctrl: false, meta: true }, 'j')).toBe(false)
   })
 })

@@ -398,3 +398,84 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     assert snapshot is not None
     assert refresh_hints == ["pool-B-revoked"]
     assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]
+
+
+# ── Anthropic: 401 on an expired pool token → refresh once via the pool, then retry ──
+
+_ANTHROPIC_PAYLOAD = {"five_hour": {"utilization": 0.5, "resets_at": "2026-10-11T23:00:00+00:00"},
+                      "seven_day": {"utilization": 0.71, "resets_at": "2026-10-14T05:00:00+00:00"}}
+
+
+def _http_401():
+    request = httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage")
+    return httpx.HTTPStatusError("401", request=request, response=httpx.Response(401, request=request))
+
+
+class _FakeAnthropicPool:
+    def __init__(self, refreshed_token):
+        self.refreshed_token = refreshed_token
+        self.hints = []
+
+    def try_refresh_matching(self, api_key_hint=None, credential_id=None):
+        self.hints.append(api_key_hint)
+        if self.refreshed_token is None:
+            return None
+        return SimpleNamespace(runtime_api_key=self.refreshed_token, access_token=self.refreshed_token)
+
+
+def _patch_anthropic(monkeypatch, *, stored, pool, accept):
+    seen = []
+
+    def fake_get_json(url, headers, *, timeout):
+        token = headers["Authorization"].removeprefix("Bearer ")
+        seen.append(token)
+        if token != accept:
+            raise _http_401()
+        return _ANTHROPIC_PAYLOAD
+
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda **_: stored)
+    monkeypatch.setattr(account_usage, "_get_json", fake_get_json)
+    monkeypatch.setattr(account_usage, "_load_anthropic_pool", lambda: pool)
+    return seen
+
+
+def test_anthropic_usage_refreshes_expired_pool_token_on_401(monkeypatch):
+    pool = _FakeAnthropicPool("sk-ant-oat01-fresh")
+    seen = _patch_anthropic(monkeypatch, stored="sk-ant-oat01-stale", pool=pool, accept="sk-ant-oat01-fresh")
+
+    snapshot = account_usage._fetch_anthropic_account_usage()
+
+    assert seen == ["sk-ant-oat01-stale", "sk-ant-oat01-fresh"]
+    assert pool.hints == ["sk-ant-oat01-stale"]  # refresh targets exactly the entry that failed
+    assert [w.label for w in snapshot.windows][:2] == ["Current session", "Current week"]
+    assert snapshot.unavailable_reason is None
+
+
+def test_anthropic_usage_401_without_refreshable_entry_reraises(monkeypatch):
+    pool = _FakeAnthropicPool(None)
+    seen = _patch_anthropic(monkeypatch, stored="sk-ant-oat01-stale", pool=pool, accept="never")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        account_usage._fetch_anthropic_account_usage()
+    assert seen == ["sk-ant-oat01-stale"]  # no blind retry with the same dead token
+
+
+def test_anthropic_usage_retries_at_most_once(monkeypatch):
+    pool = _FakeAnthropicPool("sk-ant-oat01-also-rejected")
+    seen = _patch_anthropic(monkeypatch, stored="sk-ant-oat01-stale", pool=pool, accept="never")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        account_usage._fetch_anthropic_account_usage()
+    assert seen == ["sk-ant-oat01-stale", "sk-ant-oat01-also-rejected"]
+    assert len(pool.hints) == 1
+
+
+def test_anthropic_usage_explicit_key_is_never_refreshed_here(monkeypatch):
+    # A live agent's explicit credential is owned by its own refresh path; usage must not rotate it.
+    pool = _FakeAnthropicPool("sk-ant-oat01-fresh")
+    seen = _patch_anthropic(monkeypatch, stored="unused", pool=pool, accept="never")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        account_usage._fetch_anthropic_account_usage(api_key="sk-ant-oat01-explicit")
+    assert seen == ["sk-ant-oat01-explicit"]
+    assert pool.hints == []

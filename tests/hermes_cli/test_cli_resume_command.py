@@ -166,6 +166,23 @@ class TestPendingResumeNumberedSelection:
         assert cli_obj._pending_resume_sessions == sessions
 
 
+    @pytest.mark.parametrize("picked,cancelled", [(None, True), ("", False)])
+    def test_bare_resume_on_tty_distinguishes_cancel_from_no_sessions(self, picked, cancelled):
+        cli_obj = _make_cli()
+        cli_obj._show_recent_sessions = MagicMock(return_value=False)
+
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            patch("sys.stdout.isatty", return_value=True),
+            patch("hermes_cli.sessions_cmd_browse.pick_interactive_session", return_value=picked),
+            patch("cli._cprint") as cprint,
+        ):
+            cli_obj._handle_resume_command("/resume")
+
+        printed = " ".join(str(c.args[0]) for c in cprint.call_args_list)
+        assert ("Cancelled." in printed) is cancelled
+        cli_obj._show_recent_sessions.assert_called_once() if not cancelled else cli_obj._show_recent_sessions.assert_not_called()
+
     def test_pending_number_resumes_selected_session(self):
         cli_obj = _make_cli()
         sessions = [

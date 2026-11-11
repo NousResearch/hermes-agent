@@ -85,6 +85,27 @@ class TestResolveInteractiveResume:
 
         assert exc.value.code == 0
 
+    def test_cancel_says_cancelled(self, monkeypatch, capsys, fake_session_db, picker):
+        _tty(monkeypatch, True)
+        picker.answer = None
+
+        with pytest.raises(SystemExit):
+            resolve_interactive_resume(SimpleNamespace(resume=True), use_tui=False)
+
+        assert "Cancelled." in capsys.readouterr().out
+
+    def test_no_sessions_reports_none_found_and_exits_one(self, monkeypatch, capsys, fake_session_db, picker):
+        _tty(monkeypatch, True)
+        picker.answer = ""
+
+        with pytest.raises(SystemExit) as exc:
+            resolve_interactive_resume(SimpleNamespace(resume=True), use_tui=False)
+
+        out = capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "No previous sessions found" in out
+        assert "Cancelled." not in out
+
     def test_non_tty_errors_without_opening_picker(self, monkeypatch, capsys, fake_session_db, picker):
         _tty(monkeypatch, False)
 
@@ -144,6 +165,18 @@ class TestResolveSessionNameOrSearch:
 
         assert exc.value.code == 0
 
+    def test_no_sessions_reports_none_found(self, monkeypatch, capsys, fake_session_db, picker):
+        _tty(monkeypatch, True)
+        picker.answer = ""
+
+        with pytest.raises(SystemExit) as exc:
+            resolve_session_name_or_search(SimpleNamespace(resume="x"), "x", use_tui=False, resolve_fn=lambda v: None)
+
+        out = capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "No previous sessions found" in out
+        assert "Cancelled." not in out
+
     @pytest.mark.parametrize("is_tty,use_tui", [(False, False), (True, True)])
     def test_no_match_without_picker_passes_raw_value(self, monkeypatch, fake_session_db, picker, is_tty, use_tui):
         _tty(monkeypatch, is_tty)
@@ -185,18 +218,18 @@ class TestPickInteractiveSession:
         assert seen["browse"] == (sessions, db, "bot")
         assert seen["list_kwargs"] == {"exclude_sources": ["tool"], "limit": 500}
 
-    def test_no_sessions_returns_none_without_browser(self, monkeypatch):
+    def test_no_sessions_returns_empty_string_without_browser(self, monkeypatch):
         from hermes_cli.sessions_cmd_browse import pick_interactive_session
 
         seen = self._stub(monkeypatch, [])
 
-        assert pick_interactive_session(object()) is None
+        assert pick_interactive_session(object()) == ""
         assert "browse" not in seen
 
-    def test_no_db_returns_none(self):
+    def test_no_db_returns_empty_string(self):
         from hermes_cli.sessions_cmd_browse import pick_interactive_session
 
-        assert pick_interactive_session(None) is None
+        assert pick_interactive_session(None) == ""
 
 
 class TestSessionsCompletions:

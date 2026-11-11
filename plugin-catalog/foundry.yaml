@@ -1,6 +1,6 @@
 name: foundry
 repo: https://github.com/aks-cmyk/foundry-for-new-creators
-sha: ec3b928084683dd4d32ecc392cd6c6a72ea5cc39
+sha: 134692fa1be981972cccbf9bd32f3ed681b9c476
 subdir: "foundry"
 description: "Foundry — five creator bots sharing one memory ledger: research, draft, score, and price your work. Say 'foundry start' — a short interview sets up your brand. Approval is disabled — no trusted human review channel yet; nothing auto-posts."
 maintainer: Amit Srivastava
@@ -9,7 +9,7 @@ category: tools
 requires_hermes: ">=0.21.5"
 docs_url: ""
 version: "0.1.0"
-image: "https://raw.githubusercontent.com/aks-cmyk/foundry-for-new-creators/ec3b928084683dd4d32ecc392cd6c6a72ea5cc39/foundry/assets/logo-constellation-light.png"
+image: "https://raw.githubusercontent.com/aks-cmyk/foundry-for-new-creators/134692fa1be981972cccbf9bd32f3ed681b9c476/foundry/assets/logo-constellation-light.png"
 screenshots: []
 readme: true
 platforms: []

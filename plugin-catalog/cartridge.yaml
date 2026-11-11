@@ -1,6 +1,6 @@
 name: cartridge
 repo: https://github.com/Frazzlesprite/hermes-cartridge
-sha: "4d4bbf29fe6f5e00695aa4d20d895539d2b90193"
+sha: "e889a08fdb24b830881343440cecbaf77986db50"
 subdir: ""
 title: Cartridge
 description: 'A handheld ROM emulator pane that plays the user''s own .gb/.gbc files while the agent works,
@@ -14,10 +14,10 @@ version: "0.1.0"
 docs_url: https://github.com/Frazzlesprite/hermes-cartridge#readme
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/4d4bbf29fe6f5e00695aa4d20d895539d2b90193/docs/shots/playing.png
-  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/4d4bbf29fe6f5e00695aa4d20d895539d2b90193/docs/shots/ask.png
-  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/4d4bbf29fe6f5e00695aa4d20d895539d2b90193/docs/shots/approval.png
-  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/4d4bbf29fe6f5e00695aa4d20d895539d2b90193/docs/shots/resumed.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/e889a08fdb24b830881343440cecbaf77986db50/docs/shots/playing.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/e889a08fdb24b830881343440cecbaf77986db50/docs/shots/ask.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/e889a08fdb24b830881343440cecbaf77986db50/docs/shots/approval.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-cartridge/e889a08fdb24b830881343440cecbaf77986db50/docs/shots/resumed.png
 platforms: [windows, macos, linux]
 capabilities:
   provides_tools: []

@@ -47,17 +47,33 @@ async def _build_profile_authority(runner, name, home, *, register):
     with _profile_runtime_scope(home, hydrate_secrets=False):
         if db is None:
             raise RuntimeError(_store_open_failure(runner, home))
-        if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
+        if not await asyncio.to_thread(Path(db.db_path).samefile, home / 'state.db'):
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
+        # File identity admits a linked store, so two homes linking one file would both pass;
+        # a second authority's epoch would then stale the first one's admissions.
+        sharer = await asyncio.to_thread(_store_sharer, registry, db)
+        if sharer is not None:
+            raise RuntimeError(f'session authority database of {home} is already served for {sharer.profile_id}')
         registry.add(home, None, name=name)
         try:
             authority = await initialize_session_authority(
-                runner, profile_id=str(home), instance_id=instance_id, db=db, register=register)
+                runner, profile_id=str(home), instance_id=instance_id, db=db, register=register, home=home)
         except BaseException:
             registry.remove(home)
             raise
     registry.replace(home, authority)
     return authority
+
+
+def _store_sharer(registry, db):
+    """A built authority already serving *db*'s file, else None."""
+    for other in registry:
+        try:
+            if Path(other.db.db_path).samefile(db.db_path):
+                return other
+        except OSError:
+            continue
+    return None
 
 
 def open_profile_store(runner, home):

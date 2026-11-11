@@ -189,12 +189,29 @@ def served_profile_name(home) -> str:
     return profile_name_for_home(home) or 'default'
 
 
+def authority_home(authority) -> Path:
+    """The profile home owning this authority's store.
+
+    The gateway's per-profile build records the reserved home on the authority, and that wins:
+    the runner opens every store through ``hermes_state_registry.acquire``, which resolves the
+    path, so for a ``state.db`` symlinked outside its home (#145075) ``db.db_path`` is already
+    the link TARGET and no path arithmetic on it recovers the home. Scoping there sent cron runs
+    to a directory with no ``.env`` and no ``skills/``. Authorities built elsewhere (one store,
+    no reservation) fall back to the store's own directory. May touch the disk: async callers
+    run it off the loop.
+    """
+    home = getattr(authority, 'home', None)
+    if home is not None:
+        return Path(home)
+    return Path(authority.db.db_path).parent.resolve()
+
+
 def authority_for_home(runner, home):
     """Explicit per-home lookup for callers that already know the routed home."""
     registry = getattr(runner, 'session_authorities', None)
     if registry is None:
         authority = getattr(runner, 'session_authority', None)
-        if authority is not None and Path(authority.db.db_path).resolve().parent == Path(home).resolve():
+        if authority is not None and authority_home(authority) == Path(home).resolve():
             return authority
         return None
     return registry.for_home(home)

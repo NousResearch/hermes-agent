@@ -1,8 +1,8 @@
 name: hermes-manas-aegis
 title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
-sha: d4879475b03f33f50ef618d88272fd54ea85986a
-version: "2.6.5"
+sha: ea1be1c103de0f5dedf6b6993855e17da49cca95
+version: "2.6.6"
 description: >-
   [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
   pattern-based pre-tool checks that can block or rewrite some risky tool
@@ -81,6 +81,25 @@ description: >-
   including regression tests locking item 7 in); hermes plugins
   validate fully green (14/14 checks, security scan safe); live
   load test 33/33 through the real PluginManager.
+  v2.6.6 addresses the maintainer's second review (teknium1,
+  CHANGES_REQUESTED on the v2.6.4 pin): settings are now read through
+  the public ctx.get_config reader (the old getattr(ctx, "config", {})
+  never worked — the context has no config attribute), so
+  auto_launch_hud_server: false really keeps the HUD server and its
+  threat-intel thread from starting and a custom hud_port flows to the
+  server and the Desktop page; the 8 KB scan cap now also covers the
+  per-segment pass and the XSS scrubber, and the open regex
+  quantifiers are bounded exactly as reviewed; the three hardcoded
+  Path.home()/".hermes" sites now use hermes_constants.get_hermes_home()
+  (guarded import with a home fallback) so the integrity monitor, the
+  full scan and the arena decoy follow the active profile, and the
+  full scan no longer walks into profiles/; the full scan skips
+  webhook_subscriptions.json, anything under mcp-tokens/, and
+  auth.json.bak / .env.bak / config.yaml.bak. Tests: 115/115 unit +
+  contract (104 + 11 new, including regression tests locking all four
+  items in); hermes plugins validate fully green (14/14 checks,
+  security scan safe); live load test 33/33 through the real
+  PluginManager.
   Serves a loopback-only HUD (http://127.0.0.1:18777) shown via a SandboxedFrame in
   the Desktop Manas Aegis tab; writes redacted interception telemetry
   (manas_telemetry.json, live file + append-only archive, unlimited) and a

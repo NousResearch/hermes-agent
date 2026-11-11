@@ -58,11 +58,11 @@ export function isConnectionRefusedError(error: unknown): boolean {
 }
 
 export const REMOTE_SESSION_EXPIRED_MESSAGE =
-  'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+  'Your remote gateway session has expired. Open Settings → Machines and click "Sign in" again.'
 
 export const REMOTE_UNSIGNED_OAUTH_MESSAGE =
   'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
-  'Open Settings → Gateway and click "Sign in", or switch back to Local.'
+  'Open Settings → Machines and click "Sign in", or switch back to Local.'
 
 /**
  * True for HTTP 502/503/504 from the backend — a server-side fault, not a
@@ -152,7 +152,7 @@ export function makeNousCloudBackendDownError(baseUrl: string, error: unknown): 
     `Nous Cloud agent ${hostname} is down ` +
       `(HTTP ${serverError.statusCode}: server-side fault). ` +
       'Check https://portal.nousresearch.com for backend status, ' +
-      'or switch to Local mode in Settings → Gateway. ' +
+      'or switch to Local mode in Settings → Machines. ' +
       'You can also reach out on Discord at discord.gg/NousResearch ' +
       'for immediate assistance. ' +
       `Original detail: ${detail}`

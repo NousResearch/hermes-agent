@@ -192,7 +192,7 @@ export async function runNativeLogin(
         fail(
           new Error(
             'Native sign-in timed out. The browser window may not have completed ' +
-              'sign-in; open Settings → Gateway and try again.'
+              'sign-in; open Settings → Machines and try again.'
           )
         )
       }, timeoutMs)

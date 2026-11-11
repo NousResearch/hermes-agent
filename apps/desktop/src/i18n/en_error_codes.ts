@@ -129,7 +129,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   SESSION_OWNER_UNCONFIRMED: {
     title: 'Your message may already be queued',
-    body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
+    body: 'Hermes did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
   },
   agent_init_failed: {
     title: "Couldn't start this chat",

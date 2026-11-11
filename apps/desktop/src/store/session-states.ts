@@ -41,6 +41,7 @@ import { readJson, writeJson } from '@/lib/storage'
 import { notifyError } from '@/store/notifications'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropAgentSidebarPreferences, migrateAgentSidebarPreferences } from './agent-sidebar-preferences'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
@@ -1960,7 +1961,7 @@ export function canOpenSessionOwner(storedSessionId: string, owner?: SessionProf
   }
 
   let current = tile
-    ? tile.ownerRoute ?? runtimeSessionOwner(tile.runtimeId)
+    ? (tile.ownerRoute ?? runtimeSessionOwner(tile.runtimeId))
     : runtimeSessionOwner($activeSessionId.get())
 
   current ??= getSessionOwnerHint(storedSessionId)
@@ -1976,17 +1977,24 @@ export function canOpenSessionOwner(storedSessionId: string, owner?: SessionProf
 
   // A bare profile can retain the native-primary compatibility route, but it
   // is not proof that a newly selected remote gateway owns this open surface.
-  const route = typeof current === 'string'
-    ? { connectionId: ambientOwnerConnectionId() === 'local' ? 'local' : undefined, profile: current }
-    : current
+  const route =
+    typeof current === 'string'
+      ? { connectionId: ambientOwnerConnectionId() === 'local' ? 'local' : undefined, profile: current }
+      : current
 
-  if (route?.connectionId === owner.connectionId && normalizeProfileKey(route.profile) === normalizeProfileKey(owner.profile)) {
+  if (
+    route?.connectionId === owner.connectionId &&
+    normalizeProfileKey(route.profile) === normalizeProfileKey(owner.profile)
+  ) {
     return true
   }
 
-  notifyError(new Error(
-    `Cannot open ${owner.connectionId}/${owner.profile}: session ${storedSessionId} is already open on ${route?.connectionId ?? 'an unresolved gateway'}/${route?.profile ?? 'unknown profile'}. Close that chat first, or open the requested chat in a new window.`
-  ), 'Could not open chat')
+  notifyError(
+    new Error(
+      `Cannot open ${owner.connectionId}/${owner.profile}: session ${storedSessionId} is already open on ${route?.connectionId ?? 'an unresolved gateway'}/${route?.profile ?? 'unknown profile'}. Close that chat first, or open the requested chat in a new window.`
+    ),
+    'Could not open chat'
+  )
 
   return false
 }
@@ -2702,6 +2710,10 @@ export function dropTilesForProfile(
   // connection scope so deletion cannot erase same-named local tabs instead.
   const ambientConnection = tileConnectionId || LOCAL_CONNECTION_ID
   const removedScope = backendScopeKey(route ? routeConnection : ambientConnection, routeProfile || name)
+  dropAgentSidebarPreferences({
+    connectionId: route ? routeConnection || null : ambientConnection,
+    profile: routeTarget || routeProfile || name
+  })
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
     if (!owner) {
@@ -2773,7 +2785,10 @@ export function dropTilesForProfile(
   persistTiles()
   // The rail is a profile-keyed family too (a later same-named profile must not inherit the tabs).
   // F4: the cookie jar lives in LOCAL userData — clear it only for a LOCAL delete, never a remote one.
-  dropPreviewTabsForProfile(name, (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
+  dropPreviewTabsForProfile(
+    name,
+    (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID
+  )
   dropBrowserProfilePrefs(name, route?.connectionId?.trim() || undefined)
 }
 
@@ -2842,6 +2857,7 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)
   migrateBrowserProfilePrefs(from, to)
+  migrateAgentSidebarPreferences({ connectionId: null, profile: from }, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

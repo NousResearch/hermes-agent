@@ -4,7 +4,7 @@ import type { TranslationOverrides } from './define-locale'
 export const zhPluginUpdate = {
   updateToPin: (sha: string) => `更新到 ${sha}`,
   updateFailed: (name: string) => `无法更新 ${name}`,
-  updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
+  updated: (name: string) => `${name} 已更新到当前目录固定提交。重启 Hermes 后生效。`,
   folderAccess: {
     title: '文件夹访问',
     hint: (name: string) => `${name} 可以读取和修改这些文件夹中的文件。撤销后立即生效。`,

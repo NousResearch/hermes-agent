@@ -12,6 +12,14 @@ import { SidebarProvider } from '@/components/ui/sidebar'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
+import {
+  $hiddenSidebarAgents,
+  $hiddenSidebarAgentsExpanded,
+  $sidebarAgentExpanded,
+  $sidebarAgentScroll,
+  agentSidebarKey,
+  setSidebarAgentHidden
+} from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $pinnedSessionIds, $sidebarPinsOpen, $sidebarRecentsOpen } from '@/store/layout'
@@ -67,33 +75,37 @@ describe('Portal sidebar', () => {
   function mount(overrides: Partial<ComponentProps<typeof PortalSidebar>> = {}) {
     return render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <MemoryRouter>
-        <RootTooltipProvider>
-          <SidebarProvider>
-            <Sidebar
-              currentView="chat"
-              onArchiveSession={noop}
-              onBranchSession={noop}
-              onDeleteSession={noop}
-              onLoadMoreSessions={noop}
-              onManageCronJob={noop}
-              onNavigate={navigate}
-              onNewSessionInWorkspace={noop}
-              onNewSessionSplit={noop}
-              onResumeSession={resume}
-              onRetrySessions={noop}
-              onTriggerCronJob={async () => {}}
-              {...overrides}
-            />
-            <Route />
-          </SidebarProvider>
-        </RootTooltipProvider>
-      </MemoryRouter>
+        <MemoryRouter>
+          <RootTooltipProvider>
+            <SidebarProvider>
+              <Sidebar
+                currentView="chat"
+                onArchiveSession={noop}
+                onBranchSession={noop}
+                onDeleteSession={noop}
+                onLoadMoreSessions={noop}
+                onManageCronJob={noop}
+                onNavigate={navigate}
+                onNewSessionInWorkspace={noop}
+                onNewSessionSplit={noop}
+                onResumeSession={resume}
+                onRetrySessions={noop}
+                onTriggerCronJob={async () => {}}
+                {...overrides}
+              />
+              <Route />
+            </SidebarProvider>
+          </RootTooltipProvider>
+        </MemoryRouter>
       </QueryClientProvider>
     )
   }
 
   beforeEach(() => {
+    $hiddenSidebarAgents.set([])
+    $hiddenSidebarAgentsExpanded.set(false)
+    $sidebarAgentExpanded.set({})
+    $sidebarAgentScroll.set(0)
     setSimplifiedAgentMode(true)
     $apiRequestScope.set({ connectionId: null, profile: null })
     $gatewayState.set('idle')
@@ -143,20 +155,31 @@ describe('Portal sidebar', () => {
     $pendingBotOpen.set(null)
     $fleetRoster.set(null)
   })
+  it('highlights the focused chat owner without switching the ambient agent', () => {
+    $activeGatewayProfile.set('default')
+    $selectedStoredSessionId.set('pinned')
+    mount()
+    const research = screen.getByRole('group', { name: /^Research ·/ })
+    const defaultAgent = screen.getByRole('group', { name: /^default ·/ })
+    expect(research.getAttribute('aria-current')).toBe('true')
+    expect(defaultAgent.hasAttribute('aria-current')).toBe(false)
+
+    act(() => $selectedStoredSessionId.set('regular'))
+    expect(defaultAgent.getAttribute('aria-current')).toBe('true')
+    expect(research.hasAttribute('aria-current')).toBe(false)
+    expect($activeGatewayProfile.get()).toBe('default')
+  })
+
   it('keeps server-pinned chats reachable and resumes the exact session', () => {
     mount()
     expect(screen.getAllByText('Pinned plan')).toHaveLength(2)
 
-    const research = screen
-      .getByRole('button', { name: /Agent settings: Research/ })
-      .closest('[role=group]') as HTMLElement
+    const research = screen.getByRole('group', { name: /^Research ·/ })
 
     fireEvent.click(within(research).getByText('Pinned plan'))
     expect(resume).toHaveBeenCalledWith('pinned', expect.objectContaining({ profile: 'research' }))
 
-    const agentGroup = screen
-      .getByRole('button', { name: /Agent settings: default/ })
-      .closest('[role=group]') as HTMLElement
+    const agentGroup = screen.getByRole('group', { name: /^default ·/ })
 
     expect(within(agentGroup).getAllByRole('button', { name: 'default' })).toHaveLength(1)
     expect(within(research).getAllByRole('button', { name: 'Research' })).toHaveLength(1)
@@ -168,6 +191,52 @@ describe('Portal sidebar', () => {
     fireEvent.click(screen.getByText('Regular chat'))
     expect(resume).toHaveBeenCalledWith('regular', expect.objectContaining({ profile: 'default' }))
   })
+  it('hides only the chosen machine’s agent, preserves its chats in search, and restores it after remount', async () => {
+    vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({ results: [] })
+    $sessions.set([
+      makeSessionInfo({ id: 'a', title: 'Alpha notes', profile: 'research', connection_id: 'alpha', pinned: true }),
+      makeSessionInfo({ id: 'b', title: 'Beta notes', profile: 'research', connection_id: 'beta' })
+    ])
+    $profiles.set([])
+    const original = $sessions.get()
+    const view = mount()
+    fireEvent.keyDown(
+      within(screen.getByRole('group', { name: /^research · alpha$/i })).getByRole('button', {
+        name: /^Agent actions:/
+      }),
+      { key: 'Enter' }
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Hide from chat list/ }))
+    expect($hiddenSidebarAgents.get()).toEqual([agentSidebarKey({ connectionId: 'alpha', profile: 'research' })])
+    expect(screen.queryByText('Alpha notes')).toBeNull()
+    expect(screen.getByText('Beta notes')).toBeTruthy()
+    expect($sessions.get()).toBe(original)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Alpha notes' } })
+    fireEvent.click(screen.getAllByText('Alpha notes')[0])
+    expect(resume).toHaveBeenCalledWith('a', expect.objectContaining({ connection_id: 'alpha', profile: 'research' }))
+    view.unmount()
+    mount()
+    expect(screen.queryByText('Alpha notes')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Hidden agents/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Show: research · alpha$/i }))
+    expect(screen.getAllByText('Alpha notes')).toHaveLength(2)
+    expect($hiddenSidebarAgents.get()).toEqual([])
+    expect($sessions.get()).toBe(original)
+  })
+
+  it('retains agent expansion across navigation remounts and hide/show', () => {
+    const view = mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse: Research' }))
+    expect(within(screen.getByRole('group', { name: /^Research ·/ })).queryByText('Pinned plan')).toBeNull()
+    view.unmount()
+    mount()
+    expect(screen.getByRole('button', { name: 'Expand: Research' }).getAttribute('aria-expanded')).toBe('false')
+    expect(within(screen.getByRole('group', { name: /^Research ·/ })).queryByText('Pinned plan')).toBeNull()
+    act(() => setSidebarAgentHidden({ connectionId: null, profile: 'research' }, true))
+    fireEvent.click(screen.getByRole('button', { name: /Hidden agents/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Show: Research/ }))
+    expect(screen.getByRole('button', { name: 'Expand: Research' }).getAttribute('aria-expanded')).toBe('false')
+  })
   it('shows Portal pin guidance only for a settled empty list, not loading, errors, or filtering', () => {
     vi.spyOn(apiClient, 'hermesApi').mockImplementation(() => new Promise(() => {}))
     $sessions.set([makeSessionInfo({ id: 'regular', title: 'Regular chat', profile: 'default' })])
@@ -176,7 +245,10 @@ describe('Portal sidebar', () => {
     expect(guidance()).not.toBeNull()
     act(() => $sessionsLoading.set(true))
     expect(guidance()).toBeNull()
-    act(() => { $sessionsLoading.set(false); $sessionsLoadError.set(true) })
+    act(() => {
+      $sessionsLoading.set(false)
+      $sessionsLoadError.set(true)
+    })
     expect(guidance()).toBeNull()
     act(() => $sessionsLoadError.set(false))
     fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'missing' } })
@@ -198,7 +270,11 @@ describe('Portal sidebar', () => {
     expect(screen.getByTestId('route').textContent).toBe('')
     act(() => {
       $selectedStoredSessionId.set('canonical-tip')
-      $openBotChat.set({ key: 'legacy::research', openedRegistryId: 'canonical-root', openedSessionId: 'canonical-tip' })
+      $openBotChat.set({
+        key: 'legacy::research',
+        openedRegistryId: 'canonical-root',
+        openedSessionId: 'canonical-tip'
+      })
     })
     expect(agent.getAttribute('aria-current')).toBe('page')
     act(() => $selectedStoredSessionId.set('side-chat'))
@@ -206,7 +282,11 @@ describe('Portal sidebar', () => {
   })
   it('opens the clicked agent settings, including agents with no chats', async () => {
     mount()
-    fireEvent.click(screen.getByRole('button', { name: /Agent settings: Research/ }))
+    fireEvent.keyDown(
+      within(screen.getByRole('group', { name: /^Research ·/ })).getByRole('button', { name: /^Agent actions:/ }),
+      { key: 'Enter' }
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open agent' }))
     await waitFor(() => expect($settingsScopeProfile.get()).toBe('research'))
     await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('?agentProfile=research'))
     expect(openRosterBot).not.toHaveBeenCalled()
@@ -262,12 +342,8 @@ describe('Portal sidebar', () => {
       ]
     })
     mount()
-    const agents = screen.getAllByRole('button', { name: /Agent settings: research/ })
-    expect(agents).toHaveLength(2)
-    expect(agents[0].getAttribute('aria-label')).toContain('Alpha')
-    expect(agents[1].getAttribute('aria-label')).toContain('Beta')
-    const alpha = within(agents[0].closest('[role=group]') as HTMLElement)
-    const beta = within(agents[1].closest('[role=group]') as HTMLElement)
+    const alpha = within(screen.getByRole('group', { name: 'research · Alpha' }))
+    const beta = within(screen.getByRole('group', { name: 'research · Beta' }))
     expect(alpha.getByText('Alpha chat')).toBeTruthy()
     expect(alpha.queryByText('Beta chat')).toBeNull()
     expect(beta.getByText('Beta chat')).toBeTruthy()
@@ -301,42 +377,60 @@ describe('Portal sidebar', () => {
     $apiRequestScope.set({ connectionId: 'local', profile: 'default' })
     vi.spyOn(apiClient, 'hermesApi').mockImplementation(request => {
       if (request.path.includes('/api/profiles/sessions/sidebar')) {
-        return (switched ? pending.promise : Promise.resolve({
-          recents: { sessions: [local] }, cron: { sessions: [] }, messaging: { sessions: [] }
-        })) as never
+        return (
+          switched
+            ? pending.promise
+            : Promise.resolve({
+                recents: { sessions: [local] },
+                cron: { sessions: [] },
+                messaging: { sessions: [] }
+              })
+        ) as never
       }
 
       return Promise.resolve([]) as never
     })
     const actions = renderHook(() => useSessionListActions({ profileScope: ALL_PROFILES }))
-    await act(async () => { await actions.result.current.refreshSessions() })
+    await act(async () => {
+      await actions.result.current.refreshSessions()
+    })
     mount()
     switched = true
     act(() => $apiRequestScope.set({ connectionId: 'remote-b', profile: 'default' }))
     let refresh!: Promise<void>
-    act(() => { refresh = actions.result.current.refreshSessions() })
+    act(() => {
+      refresh = actions.result.current.refreshSessions()
+    })
     fireEvent.click(screen.getByText('Cached local'))
     expect(resume).toHaveBeenCalledWith('cached', expect.objectContaining({ connection_id: 'local' }))
     fireEvent.keyDown(screen.getByRole('button', { name: 'Session actions: Cached local' }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('menuitem', { name: /^Pin$/ }))
-    await waitFor(() => expect(mutate).toHaveBeenCalledWith(
-      'cached', 'PATCH', { pinned: true }, { connectionId: 'local', profile: 'default' }
-    ))
+    await waitFor(() =>
+      expect(mutate).toHaveBeenCalledWith(
+        'cached',
+        'PATCH',
+        { pinned: true },
+        { connectionId: 'local', profile: 'default' }
+      )
+    )
     await act(async () => {
       pending.resolve({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
       await refresh
     })
   })
 
-  it.each<Record<string, number>>([{}, { 'all:telegram': 160 }])('loads real messaging sources with totals %j', async totals => {
-    $messagingTruncated.set(true)
-    $messagingSessions.set([makeSessionInfo({ id: 'tg', source: 'telegram' })])
-    $messagingPlatformTotals.set(totals)
-    const loadMessaging = vi.fn()
-    mount({ onLoadMoreMessaging: loadMessaging })
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
-    await waitFor(() => expect(loadMessaging).toHaveBeenCalledWith('telegram'))
-  })
+  it.each<Record<string, number>>([{}, { 'all:telegram': 160 }])(
+    'loads real messaging sources with totals %j',
+    async totals => {
+      $messagingTruncated.set(true)
+      $messagingSessions.set([makeSessionInfo({ id: 'tg', source: 'telegram' })])
+      $messagingPlatformTotals.set(totals)
+      const loadMessaging = vi.fn()
+      mount({ onLoadMoreMessaging: loadMessaging })
+      fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
+      await waitFor(() => expect(loadMessaging).toHaveBeenCalledWith('telegram'))
+    }
+  )
 
   it('pages messaging through the real totals writer without sending composite keys as sources', async () => {
     const telegram = makeSessionInfo({ id: 'tg', source: 'telegram', connection_id: 'local' })
@@ -350,7 +444,9 @@ describe('Portal sidebar', () => {
     await waitFor(() => expect($messagingPlatformTotals.get()).toEqual({ 'all:telegram': 160 }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' }).hasAttribute('disabled')).toBe(false))
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
-    await waitFor(() => expect(request.mock.calls.filter(([call]) => call.path.includes('/api/profiles/sessions?'))).toHaveLength(2))
+    await waitFor(() =>
+      expect(request.mock.calls.filter(([call]) => call.path.includes('/api/profiles/sessions?'))).toHaveLength(2)
+    )
 
     for (const [call] of request.mock.calls.filter(([call]) => call.path.includes('/api/profiles/sessions?'))) {
       expect(new URL(call.path, 'https://example.test').searchParams.get('source')).toBe('telegram')
@@ -361,9 +457,13 @@ describe('Portal sidebar', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
-  it('starts a separate chat from an agent row without opening its canonical chat or settings', () => {
+  it('starts a separate chat from an agent row without opening its canonical chat or settings', async () => {
     mount()
-    fireEvent.click(screen.getByRole('button', { name: 'New session in Research' }))
+    fireEvent.keyDown(
+      within(screen.getByRole('group', { name: /^Research ·/ })).getByRole('button', { name: /^Agent actions:/ }),
+      { key: 'Enter' }
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New chat with this agent' }))
     expect(newSessionInProfile).toHaveBeenCalledWith('research')
     expect(screen.getByTestId('route').textContent).toBe('')
     expect(openRosterBot).not.toHaveBeenCalled()
@@ -375,9 +475,7 @@ describe('Portal sidebar', () => {
     try {
       mount()
 
-      const research = screen
-        .getByRole('button', { name: /Agent settings: Research/ })
-        .closest('[role=group]') as HTMLElement
+      const research = screen.getByRole('group', { name: /^Research ·/ })
 
       fireEvent.keyDown(within(research).getByRole('button', { name: /^Session actions:/ }), { key: 'Enter' })
       fireEvent.click(await screen.findByRole('menuitem', { name: /Unpin/ }))
@@ -421,9 +519,7 @@ describe('Portal sidebar', () => {
       ])
       mount()
 
-      const research = screen
-        .getByRole('button', { name: /Agent settings: Research/ })
-        .closest('[role=group]') as HTMLElement
+      const research = screen.getByRole('group', { name: /^Research ·/ })
 
       expect(within(research).getByText('5h')).toBeTruthy()
       expect(within(research).getByText('1d')).toBeTruthy()
@@ -528,20 +624,32 @@ describe('Portal sidebar', () => {
     $sessionTiles.set([])
     $fleetRoster.set({
       sources: [{ connectionId: 'remote-b', kind: 'remote', label: 'Beta', reachable: true }],
-      agents: [{ connectionId: 'remote-b', connectionKind: 'remote', connectionLabel: 'Beta', profile: 'research', handle: 'research' }]
+      agents: [
+        {
+          connectionId: 'remote-b',
+          connectionKind: 'remote',
+          connectionLabel: 'Beta',
+          profile: 'research',
+          handle: 'research'
+        }
+      ]
     })
     vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({
-      results: [{ session_id: 'search-only-remote', title: 'Remote search result', snippet: 'remote', session_started: 1 }]
+      results: [
+        { session_id: 'search-only-remote', title: 'Remote search result', snippet: 'remote', session_started: 1 }
+      ]
     })
     mount()
     fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'remote' } })
     fireEvent.click(await screen.findByText('Remote search result'), { ctrlKey: true })
     expect($sessions.get().some(row => row.id === 'search-only-remote')).toBe(false)
-    expect($sessionTiles.get()).toMatchObject([{
-      storedSessionId: 'search-only-remote',
-      ownerRoute: { connectionId: 'remote-b', profile: 'research' },
-      workspaceMode: 'sessions'
-    }])
+    expect($sessionTiles.get()).toMatchObject([
+      {
+        storedSessionId: 'search-only-remote',
+        ownerRoute: { connectionId: 'remote-b', profile: 'research' },
+        workspaceMode: 'sessions'
+      }
+    ])
   })
 
   it('shows loading rather than no matches while a search is pending', () => {
@@ -594,9 +702,7 @@ describe('Portal sidebar', () => {
       fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'older' } })
       await screen.findByText('Older plan')
 
-      const research = screen
-        .getByRole('button', { name: /Agent settings: Research/ })
-        .closest('[role=group]') as HTMLElement
+      const research = screen.getByRole('group', { name: /^Research ·/ })
 
       fireEvent.keyDown(within(research).getByRole('button', { name: /^Session actions:/ }), { key: 'Enter' })
       fireEvent.click(await screen.findByRole('menuitem', { name: /^Pin$/ }))
@@ -634,9 +740,7 @@ describe('Portal sidebar', () => {
     mount()
     const pins = within(screen.getByRole('region', { name: 'Pinned' }))
 
-    const agent = within(
-      screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
-    )
+    const agent = within(screen.getByRole('group', { name: /^Research ·/ }))
 
     expect(pins.getAllByText(/^Saved /)).toHaveLength(9)
     expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
@@ -660,9 +764,7 @@ describe('Portal sidebar', () => {
     ])
     mount()
 
-    const agent = within(
-      screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
-    )
+    const agent = within(screen.getByRole('group', { name: /^Research ·/ }))
 
     const titles = () => agent.getAllByText(/^(Newest|Pinned newer|Pinned older|Oldest)$/).map(row => row.textContent)
     expect(titles()).toEqual(['Pinned newer', 'Pinned older', 'Newest', 'Oldest'])

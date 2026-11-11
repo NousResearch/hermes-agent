@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const zhClarify: Partial<ClarifyCopy> = {
   notReady: '澄清请求尚未就绪',
-  gatewayDisconnected: 'Hermes 网关未连接',
+  gatewayDisconnected: '机器未连接',
   sendFailed: '无法发送澄清响应',
   loadingQuestion: '正在加载问题…',
   other: '其他 (输入你的答案)',

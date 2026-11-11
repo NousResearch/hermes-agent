@@ -25,8 +25,8 @@
  *
  * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; the group locale
  * tables cover all nine registered locales. Missing legacy keys still
- * resolve through this plugin's English bundle. Agent and schedule copy follows
- * core terminology; gateway names and technical identifiers stay unchanged.
+ * resolve through this plugin's English bundle. Machine, agent, and schedule copy
+ * follows core terminology; technical gateway terms and identifiers stay unchanged.
  */
 
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
@@ -49,7 +49,7 @@ const en: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.en,
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES.en,
   editor: {
-    fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
+    fullConfigHint: 'Full configuration needs a newer Hermes version (update Hermes, then restart it).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
     editSoul: 'SOUL.md (persona + agent-messaging protocol)',
     remoteCapabilitiesHint:
@@ -62,7 +62,7 @@ const en: BotsMessages = {
     backToDropdowns: '← Back to dropdowns',
     inheritLaunch: 'Inherit (launch agent)',
     enterManually: '✏️ Enter manually…',
-    gatewayDefault: 'gateway default',
+    gatewayDefault: 'machine default',
     modelNameExample: 'e.g. model name',
     modelSwitchFailed: 'Model switch failed',
     newDescription: 'A named teammate with its own memory, skills, and chat. It can message your other agents.',
@@ -89,7 +89,7 @@ const en: BotsMessages = {
     nameTakenHint: 'That name is taken — pick another before configuring capabilities.',
     nameFirstHint: 'Name the agent first — a draft agent is created when you open this tab (discarded if you cancel).',
     newerDesktop: 'Skills need a newer Hermes Desktop.',
-    newerGateway: 'Capability catalog needs a newer gateway (restart it after updating Hermes).',
+    newerGateway: 'Capability catalog needs a newer Hermes version (update Hermes, then restart it).',
     emptySkillsHint: '“Create empty” is checked — no bundled skills will be installed.',
     defaultToolsHint: 'Leaving all (or none) checked keeps the default toolset behavior.',
     catalog: 'catalog',
@@ -105,7 +105,7 @@ const en: BotsMessages = {
     lockedHint: 'Face locked — renaming won’t change it.',
     unlockedHint: 'Face follows the name.',
     noImageModel:
-      'No image model available. If you just enabled one (or updated Hermes), restart the gateway: Ctrl+K → "Restart gateway".',
+      'No image model available. If you just enabled one (or updated Hermes), restart Hermes: Ctrl+K → "Restart Hermes".',
     checkingImage: 'Checking image backend…',
     chooseImage: 'Choose an image…',
     editDescription: (name, profile) => `Appearance and role for ${name} (${profile}).`,
@@ -149,16 +149,16 @@ const en: BotsMessages = {
     activeNow: 'Active now',
     recentlyActive: 'Recently active',
     older: 'Older',
-    gatewayRemoved: 'Gateway removed',
+    gatewayRemoved: 'Machine removed',
     onDemand: 'On demand',
     ready: 'Ready',
     statusUnknown: 'Status unknown',
     unavailable: 'Unavailable',
     retryNow: 'Retry now',
     rosterUnavailable: reason =>
-      `Roster unavailable: ${reason}. If your gateway predates profiles.list, update Hermes and restart the gateway.`,
+      `Roster unavailable: ${reason}. If your Hermes version predates profiles.list, update Hermes and restart it.`,
     waitingForGateway:
-      'Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)'
+      'Waiting for the machine connection… (remote machines can take a few seconds; retries automatically)'
   },
   sections: {
     newSection: 'New section',
@@ -229,7 +229,7 @@ const en: BotsMessages = {
     openUnreachableMessage: 'Check it is online and try again.',
     openChatFailedTitle: botName => `Could not open ${botName}’s chat`,
     openChatFailedMessage: 'Try again.',
-    openGateways: 'Open Gateways',
+    openGateways: 'Open Machines',
     chatEmpty: 'Say something to get started.',
     kickoff: 'Hey, tell me about yourself!'
   },
@@ -344,7 +344,7 @@ const en: BotsMessages = {
     authenticated: name => `${name} authenticated`,
     testFailed: 'Server test failed after setup',
     completeSignIn: 'Complete sign-in in your browser...',
-    needsSetup: keys => `needs setup (${keys}) — restart the gateway to enable in-app setup`,
+    needsSetup: keys => `needs setup (${keys}) — restart Hermes to enable in-app setup`,
     setUpDone: 'set up ✓',
     saveTest: 'Save & test',
     authorizing: 'Authorizing…',
@@ -361,15 +361,15 @@ const en: BotsMessages = {
     title: 'Screen',
     menu: 'Open Screen',
     unsupportedTitle: 'No agent screen on this host',
-    unsupportedBody: 'Agent screens run on Linux gateway hosts. This agent uses the host\u2019s own display.',
+    unsupportedBody: 'Agent screens run on Linux machines. This agent uses the machine\u2019s own display.',
     notInstalledTitle: 'Screen packages missing',
-    notInstalledBody: 'The gateway host needs TigerVNC and the Xfce core to give this agent a screen. Run on the host:',
-    installHint: 'Runs on the gateway host as the user Hermes runs as; sudo is asked for once, through Hermes.',
+    notInstalledBody: 'The machine needs TigerVNC and the Xfce core to give this agent a screen. Run on the machine:',
+    installHint: 'Runs on the machine as the user Hermes runs as; sudo is asked for once, through Hermes.',
     install: 'Install on host',
     installing: 'Installing…',
     installCancelled: 'Install cancelled: no sudo password was provided.',
     installFailed: 'Install failed. Read the log above, or run the command on the host yourself.',
-    noPackageManager: 'No supported package manager (apt, dnf, pacman) was found on the gateway host.',
+    noPackageManager: 'No supported package manager (apt, dnf, pacman) was found on the machine.',
     portalTitle: 'Screen',
     portalOpen: 'Open',
     heroStopped: 'Screen is off',
@@ -416,7 +416,8 @@ const en: BotsMessages = {
     otherControls: 'Another viewer is in control',
     agentControls: 'Agent is in control',
     controlTaken: 'Another viewer took control. Watching only.',
-    needsHttps: 'Agent screens need a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to view this one.'
+    needsHttps:
+      'Agent screens need a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to view this one.'
   },
   cron: {
     untitled: 'Untitled schedule',
@@ -488,7 +489,8 @@ const ja: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.ja,
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ja,
   editor: {
-    fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
+    fullConfigHint:
+      'すべての設定を使うには新しいバージョンの Hermes が必要です（Hermes を更新して再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
     editSoul: 'SOUL.md（人格 + エージェント間メッセージプロトコル）',
     remoteCapabilitiesHint:
@@ -501,7 +503,7 @@ const ja: BotsMessages = {
     backToDropdowns: '← 選択リストに戻る',
     inheritLaunch: '継承（起動エージェント）',
     enterManually: '✏️ 手動入力…',
-    gatewayDefault: 'ゲートウェイの既定値',
+    gatewayDefault: 'マシンの既定値',
     modelNameExample: '例：モデル名',
     modelSwitchFailed: 'モデルの切り替えに失敗しました',
     newDescription:
@@ -530,7 +532,7 @@ const ja: BotsMessages = {
     nameFirstHint:
       '先にエージェントに名前を付けてください。このタブを開くと下書きエージェントが作成されます（キャンセルすると破棄されます）。',
     newerDesktop: 'スキルには新しい Hermes Desktop が必要です。',
-    newerGateway: '機能カタログには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
+    newerGateway: '機能カタログには新しいバージョンの Hermes が必要です（Hermes を更新して再起動してください）。',
     emptySkillsHint: '「空のエージェントを作成」が選択されているため、同梱スキルはインストールされません。',
     defaultToolsHint: 'すべて選択するか、何も選択しない場合は、既定のツールセット動作を維持します。',
     catalog: 'カタログ',
@@ -546,7 +548,7 @@ const ja: BotsMessages = {
     lockedHint: '顔を固定しました。名前を変えても変化しません。',
     unlockedHint: '顔は名前に合わせて変わります。',
     noImageModel:
-      '画像モデルがありません。有効にした直後や Hermes 更新後の場合は、Ctrl+K →「ゲートウェイを再起動」で再起動してください。',
+      '画像モデルがありません。有効にした直後や Hermes 更新後の場合は、Ctrl+K →「Hermes を再起動」で Hermes を再起動してください。',
     checkingImage: '画像バックエンドを確認中…',
     chooseImage: '画像を選択…',
     editDescription: (name, profile) => `${name}（${profile}）の外観と役割。`,
@@ -590,15 +592,16 @@ const ja: BotsMessages = {
     activeNow: '現在アクティブ',
     recentlyActive: '最近アクティブ',
     older: '以前',
-    gatewayRemoved: 'ゲートウェイが削除されました',
+    gatewayRemoved: 'マシンが削除されました',
     onDemand: 'オンデマンド',
     ready: '準備完了',
     statusUnknown: '状態不明',
     unavailable: '利用できません',
     retryNow: '今すぐ再試行',
     rosterUnavailable: reason =>
-      `名簿を取得できません: ${reason}。ゲートウェイが profiles.list より前の場合は、Hermes を更新してゲートウェイを再起動してください。`,
-    waitingForGateway: 'ゲートウェイ接続を待っています…（リモートは数秒かかることがあります。自動で再試行します）'
+      `名簿を取得できません: ${reason}。Hermes のバージョンが profiles.list に対応していない場合は、Hermes を更新して再起動してください。`,
+    waitingForGateway:
+      'マシンへの接続を待っています…（リモートマシンへの接続には数秒かかることがあります。自動で再試行します）'
   },
   sections: {
     newSection: '新しいセクション',
@@ -639,7 +642,8 @@ const ja: BotsMessages = {
     unpinnedToast: name => `${name}のピン留めを解除しました`,
     hide: '非表示',
     unhide: '再表示',
-    hiddenToast: name => `${name}を非表示にしました — エージェントヘッダーの目のボタンで非表示のエージェントを表示できます`,
+    hiddenToast: name =>
+      `${name}を非表示にしました — エージェントヘッダーの目のボタンで非表示のエージェントを表示できます`,
     unhiddenToast: name => `${name}が一覧に戻りました`,
     groupsMenu: groups => `グループ: ${groups}…`,
     manageGroups: 'グループを管理…',
@@ -669,7 +673,7 @@ const ja: BotsMessages = {
     openUnreachableMessage: 'オンラインか確認して、もう一度お試しください。',
     openChatFailedTitle: botName => `${botName} のチャットを開けませんでした`,
     openChatFailedMessage: 'もう一度お試しください。',
-    openGateways: 'ゲートウェイを開く',
+    openGateways: 'マシンを開く',
     chatEmpty: '何か書いて始めましょう。',
     kickoff: 'こんにちは、自己紹介をしてください！'
   },
@@ -712,8 +716,10 @@ const ja: BotsMessages = {
     compressing: (member: string) => `${member} のグループチャット履歴を圧縮中…`,
     compressDone: (member: string, compressed: number, detail: string) =>
       `${member} のグループチャットセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} に圧縮する履歴はありません — グループチャットセッションがまだありません`,
-    compressFailed: (member: string, error: string) => `${member} のグループチャット履歴を圧縮できませんでした: ${error}`,
+    compressNothing: (member: string) =>
+      `${member} に圧縮する履歴はありません — グループチャットセッションがまだありません`,
+    compressFailed: (member: string, error: string) =>
+      `${member} のグループチャット履歴を圧縮できませんでした: ${error}`,
     searchToAdd: '追加するエージェントを検索',
     searchToAddPlaceholder: '追加するエージェントを検索…',
     removeFromSelection: '選択から外す',
@@ -784,7 +790,7 @@ const ja: BotsMessages = {
     authenticated: name => `${name} の認証が完了しました`,
     testFailed: '設定後のサーバーテストに失敗しました',
     completeSignIn: 'ブラウザーでサインインを完了してください…',
-    needsSetup: keys => `設定が必要（${keys}）— アプリ内で設定するにはゲートウェイを再起動してください`,
+    needsSetup: keys => `設定が必要（${keys}）— アプリ内で設定するには Hermes を再起動してください`,
     setUpDone: '設定済み ✓',
     saveTest: '保存してテスト',
     authorizing: '認証中…',
@@ -802,17 +808,16 @@ const ja: BotsMessages = {
     menu: '画面を開く',
     unsupportedTitle: 'このホストにはエージェント画面がありません',
     unsupportedBody:
-      'エージェント画面は Linux のゲートウェイホストで動作します。このエージェントはホスト自身のディスプレイを使います。',
+      'エージェント画面は Linux マシンで動作します。このエージェントはマシン自身のディスプレイを使います。',
     notInstalledTitle: '画面パッケージが不足しています',
-    notInstalledBody:
-      'このエージェントに画面を与えるには、ゲートウェイホストに TigerVNC と Xfce コアが必要です。ホストで実行:',
+    notInstalledBody: 'このエージェントに画面を与えるには、マシンに TigerVNC と Xfce コアが必要です。マシンで実行:',
     installHint:
-      'Hermes を実行しているユーザーとしてゲートウェイホスト上で実行されます。sudo は Hermes 経由で一度だけ求められます。',
+      'Hermes を実行しているユーザーとしてマシン上で実行されます。sudo は Hermes 経由で一度だけ求められます。',
     install: 'ホストにインストール',
     installing: 'インストール中…',
     installCancelled: 'インストールを中止しました: sudo パスワードが入力されませんでした。',
     installFailed: 'インストールに失敗しました。上のログを確認するか、ホストでコマンドを直接実行してください。',
-    noPackageManager: 'ゲートウェイホストに対応するパッケージマネージャー (apt, dnf, pacman) が見つかりません。',
+    noPackageManager: 'マシンに対応するパッケージマネージャー (apt, dnf, pacman) が見つかりません。',
     portalTitle: 'スクリーン',
     portalOpen: '開く',
     heroStopped: '画面は停止中',
@@ -859,7 +864,8 @@ const ja: BotsMessages = {
     otherControls: '別のビューアが操作中',
     agentControls: 'エージェントが操作中',
     controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。',
-    needsHttps: 'エージェントの画面には安全な接続が必要です。表示するには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。'
+    needsHttps:
+      'エージェントの画面には安全な接続が必要です。表示するには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。'
   },
   cron: {
     untitled: '無題のスケジュール',
@@ -931,7 +937,7 @@ const zh: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.zh,
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES.zh,
   editor: {
-    fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
+    fullConfigHint: '完整配置需要更新版本的 Hermes（请更新 Hermes，然后重启 Hermes）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
     editSoul: 'SOUL.md（人格 + 智能体消息协议）',
     remoteCapabilitiesHint: '远程功能需要更新桌面应用。模型和 SOUL 的更改会在保存后生效。',
@@ -943,7 +949,7 @@ const zh: BotsMessages = {
     backToDropdowns: '← 返回下拉选项',
     inheritLaunch: '继承（启动智能体）',
     enterManually: '✏️ 手动输入…',
-    gatewayDefault: '网关默认值',
+    gatewayDefault: '机器默认值',
     modelNameExample: '例如：模型名称',
     modelSwitchFailed: '模型切换失败',
     newDescription: '拥有独立记忆、技能和聊天的具名队友，可以与你的其他智能体互发消息。',
@@ -969,7 +975,7 @@ const zh: BotsMessages = {
     nameTakenHint: '此名称已被占用，请先选择其他名称再配置能力。',
     nameFirstHint: '请先为智能体命名，打开此标签页时将创建草稿智能体（取消时会丢弃）。',
     newerDesktop: '技能功能需要更新的 Hermes Desktop。',
-    newerGateway: '能力目录需要更新的网关（更新 Hermes 后请重启网关）。',
+    newerGateway: '能力目录需要更新版本的 Hermes（请更新 Hermes，然后重启 Hermes）。',
     emptySkillsHint: '已勾选“创建空配置”，不会安装内置技能。',
     defaultToolsHint: '全部勾选或全部不选将保留默认工具集行为。',
     catalog: '目录',
@@ -984,7 +990,7 @@ const zh: BotsMessages = {
     lockFace: '锁定外观',
     lockedHint: '外观已锁定，重命名不会改变外观。',
     unlockedHint: '外观随名称变化。',
-    noImageModel: '没有可用的图像模型。如果刚启用模型或更新了 Hermes，请重启网关：Ctrl+K →“重启网关”。',
+    noImageModel: '没有可用的图像模型。如果刚启用模型或更新了 Hermes，请重启 Hermes：Ctrl+K →“重启 Hermes”。',
     checkingImage: '正在检查图像后端…',
     chooseImage: '选择图像…',
     editDescription: (name, profile) => `${name}（${profile}）的外观和职责。`,
@@ -1027,14 +1033,14 @@ const zh: BotsMessages = {
     activeNow: '正在活动',
     recentlyActive: '最近活跃',
     older: '更早',
-    gatewayRemoved: '网关已移除',
+    gatewayRemoved: '机器已移除',
     onDemand: '按需',
     ready: '就绪',
     statusUnknown: '状态未知',
     unavailable: '不可用',
     retryNow: '立即重试',
-    rosterUnavailable: reason => `无法获取名单：${reason}。如果网关早于 profiles.list，请更新 Hermes 并重启网关。`,
-    waitingForGateway: '正在等待网关连接…（远程网关可能需要几秒；会自动重试）'
+    rosterUnavailable: reason => `无法获取名单：${reason}。如果 Hermes 版本不支持 profiles.list，请更新并重启 Hermes。`,
+    waitingForGateway: '正在等待连接到机器…（远程机器可能需要几秒；会自动重试）'
   },
   sections: {
     newSection: '新建分区',
@@ -1102,7 +1108,7 @@ const zh: BotsMessages = {
     openUnreachableMessage: '请确认它在线后重试。',
     openChatFailedTitle: botName => `无法打开 ${botName} 的聊天`,
     openChatFailedMessage: '请重试。',
-    openGateways: '打开网关',
+    openGateways: '打开机器',
     chatEmpty: '说点什么开始吧。',
     kickoff: '你好，介绍一下你自己吧！'
   },
@@ -1214,7 +1220,7 @@ const zh: BotsMessages = {
     authenticated: name => `${name} 已验证身份`,
     testFailed: '配置后的服务器测试失败',
     completeSignIn: '请在浏览器中完成登录…',
-    needsSetup: keys => `需要设置（${keys}）— 重启网关以启用应用内设置`,
+    needsSetup: keys => `需要设置（${keys}）— 重启 Hermes 以启用应用内设置`,
     setUpDone: '已设置 ✓',
     saveTest: '保存并测试',
     authorizing: '正在授权…',
@@ -1231,15 +1237,15 @@ const zh: BotsMessages = {
     title: '屏幕',
     menu: '打开屏幕',
     unsupportedTitle: '此主机没有智能体屏幕',
-    unsupportedBody: '智能体屏幕在 Linux 网关主机上运行。此智能体使用主机自身的显示器。',
+    unsupportedBody: '智能体屏幕在 Linux 机器上运行。此智能体使用机器自身的显示器。',
     notInstalledTitle: '缺少屏幕软件包',
-    notInstalledBody: '网关主机需要 TigerVNC 和 Xfce 核心组件才能为此智能体提供屏幕。在主机上运行:',
-    installHint: '在网关主机上以运行 Hermes 的用户身份执行；sudo 只会通过 Hermes 询问一次。',
+    notInstalledBody: '机器需要 TigerVNC 和 Xfce 核心组件才能为此智能体提供屏幕。在机器上运行:',
+    installHint: '在机器上以运行 Hermes 的用户身份执行；sudo 只会通过 Hermes 询问一次。',
     install: '安装到主机',
     installing: '正在安装…',
     installCancelled: '安装已取消：未提供 sudo 密码。',
     installFailed: '安装失败。请查看上方日志，或在主机上手动运行该命令。',
-    noPackageManager: '网关主机上未找到受支持的包管理器（apt、dnf、pacman）。',
+    noPackageManager: '机器上未找到受支持的包管理器（apt、dnf、pacman）。',
     portalTitle: '屏幕',
     portalOpen: '打开',
     heroStopped: '屏幕已关闭',
@@ -1357,7 +1363,7 @@ const zhHant: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
   crossGateway: CROSS_GATEWAY_GROUP_LOCALES['zh-hant'],
   editor: {
-    fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
+    fullConfigHint: '完整設定需要更新版本的 Hermes（請更新 Hermes，然後重新啟動 Hermes）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
     editSoul: 'SOUL.md（人格 + 智慧體訊息協定）',
     remoteCapabilitiesHint: '遠端功能需要更新桌面應用程式。模型和 SOUL 的變更會在儲存後生效。',
@@ -1369,7 +1375,7 @@ const zhHant: BotsMessages = {
     backToDropdowns: '← 返回下拉選項',
     inheritLaunch: '繼承（啟動智慧體）',
     enterManually: '✏️ 手動輸入…',
-    gatewayDefault: '閘道預設值',
+    gatewayDefault: '機器預設值',
     modelNameExample: '例如：模型名稱',
     modelSwitchFailed: '模型切換失敗',
     newDescription: '擁有獨立記憶、技能和聊天的具名隊友，可以與你的其他智慧體互傳訊息。',
@@ -1395,7 +1401,7 @@ const zhHant: BotsMessages = {
     nameTakenHint: '此名稱已被使用，請先選擇其他名稱再設定功能。',
     nameFirstHint: '請先為智慧體命名，開啟此分頁時將建立草稿智慧體（取消時會捨棄）。',
     newerDesktop: '技能功能需要更新的 Hermes Desktop。',
-    newerGateway: '功能目錄需要更新的閘道（更新 Hermes 後請重新啟動閘道）。',
+    newerGateway: '功能目錄需要更新版本的 Hermes（請更新 Hermes，然後重新啟動 Hermes）。',
     emptySkillsHint: '已勾選「建立空白設定」，不會安裝內建技能。',
     defaultToolsHint: '全部勾選或全部不選將保留預設工具集行為。',
     catalog: '目錄',
@@ -1410,7 +1416,7 @@ const zhHant: BotsMessages = {
     lockFace: '鎖定外觀',
     lockedHint: '外觀已鎖定，重新命名不會改變外觀。',
     unlockedHint: '外觀隨名稱變化。',
-    noImageModel: '沒有可用的影像模型。如果剛啟用模型或更新了 Hermes，請重新啟動閘道：Ctrl+K →「重新啟動閘道」。',
+    noImageModel: '沒有可用的影像模型。如果剛啟用模型或更新了 Hermes，請重新啟動 Hermes：Ctrl+K →「重新啟動 Hermes」。',
     checkingImage: '正在檢查影像後端…',
     chooseImage: '選擇影像…',
     editDescription: (name, profile) => `${name}（${profile}）的外觀和職責。`,
@@ -1453,14 +1459,15 @@ const zhHant: BotsMessages = {
     activeNow: '目前活躍',
     recentlyActive: '最近活躍',
     older: '更早',
-    gatewayRemoved: '閘道已移除',
+    gatewayRemoved: '機器已移除',
     onDemand: '隨需',
     ready: '就緒',
     statusUnknown: '狀態未知',
     unavailable: '不可用',
     retryNow: '立即重試',
-    rosterUnavailable: reason => `無法取得名單：${reason}。如果閘道早於 profiles.list，請更新 Hermes 並重新啟動閘道。`,
-    waitingForGateway: '正在等待閘道連線…（遠端閘道可能需要幾秒；會自動重試）'
+    rosterUnavailable: reason =>
+      `無法取得名單：${reason}。如果 Hermes 版本不支援 profiles.list，請更新並重新啟動 Hermes。`,
+    waitingForGateway: '正在等待連線至機器…（遠端機器可能需要幾秒；會自動重試）'
   },
   sections: {
     newSection: '新增分區',
@@ -1528,7 +1535,7 @@ const zhHant: BotsMessages = {
     openUnreachableMessage: '請確認它在線上後再試一次。',
     openChatFailedTitle: botName => `無法開啟 ${botName} 的聊天`,
     openChatFailedMessage: '請再試一次。',
-    openGateways: '開啟閘道',
+    openGateways: '開啟機器',
     chatEmpty: '說點什麼開始吧。',
     kickoff: '你好，介紹一下你自己吧！'
   },
@@ -1640,7 +1647,7 @@ const zhHant: BotsMessages = {
     authenticated: name => `${name} 已驗證身分`,
     testFailed: '設定後的伺服器測試失敗',
     completeSignIn: '請在瀏覽器中完成登入…',
-    needsSetup: keys => `需要設定（${keys}）— 重新啟動閘道以啟用應用程式內設定`,
+    needsSetup: keys => `需要設定（${keys}）— 重新啟動 Hermes 以啟用應用程式內設定`,
     setUpDone: '已設定 ✓',
     saveTest: '儲存並測試',
     authorizing: '正在授權…',
@@ -1657,15 +1664,15 @@ const zhHant: BotsMessages = {
     title: '螢幕',
     menu: '開啟螢幕',
     unsupportedTitle: '此主機沒有智慧體螢幕',
-    unsupportedBody: '智慧體螢幕在 Linux 閘道主機上執行。此智慧體使用主機自身的顯示器。',
+    unsupportedBody: '智慧體螢幕在 Linux 機器上執行。此智慧體使用機器自身的顯示器。',
     notInstalledTitle: '缺少螢幕套件',
-    notInstalledBody: '閘道主機需要 TigerVNC 與 Xfce 核心元件才能為此智慧體提供螢幕。在主機上執行:',
-    installHint: '在閘道主機上以執行 Hermes 的使用者身分執行；sudo 只會透過 Hermes 詢問一次。',
+    notInstalledBody: '機器需要 TigerVNC 與 Xfce 核心元件才能為此智慧體提供螢幕。在機器上執行:',
+    installHint: '在機器上以執行 Hermes 的使用者身分執行；sudo 只會透過 Hermes 詢問一次。',
     install: '安裝到主機',
     installing: '安裝中…',
     installCancelled: '安裝已取消：未提供 sudo 密碼。',
     installFailed: '安裝失敗。請查看上方日誌，或在主機上手動執行該指令。',
-    noPackageManager: '閘道主機上找不到受支援的套件管理器（apt、dnf、pacman）。',
+    noPackageManager: '機器上找不到受支援的套件管理器（apt、dnf、pacman）。',
     portalTitle: '螢幕',
     portalOpen: '開啟',
     heroStopped: '螢幕已關閉',

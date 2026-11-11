@@ -24,24 +24,24 @@ export const frDesktopCommands = {
   configHeader: 'Configuration (affichage, approbations, collage et voix ; le reste n’est pas affiché) :',
   configDefaults: '(valeurs par défaut)',
   configFooter:
-    'Modifiez les réglages dans Réglages, ou éditez config.yaml avec `hermes config edit` sur l’hôte de la passerelle.',
+    'Modifiez les réglages dans Réglages, ou éditez config.yaml avec `hermes config edit` sur l’ordinateur connecté.',
   historyHeader: (count: string) => `Historique de la conversation (${count} messages) :`,
   historyEmpty: 'Aucun message pour l’instant.',
   historyYou: 'Vous',
   historyHermes: 'Agent',
   saveUsage: 'utilisation : /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
-    'Non enregistré : cette passerelle ne peut pas exporter de copie expurgée, nommée ou autre que JSON. Mettez à jour la passerelle, ou lancez /save sans option pour écrire le JSON brut sur l’hôte de la passerelle.',
-  savedOnHost: (path: string) => `Enregistré sur l’hôte de la passerelle : ${path}`,
+    'Non enregistré : Hermes sur cet ordinateur ne peut pas exporter de copie expurgée, nommée ou autre que JSON. Mettez à jour Hermes, ou lancez /save sans option pour écrire le JSON brut sur l’ordinateur connecté.',
+  savedOnHost: (path: string) => `Enregistré sur l’ordinateur connecté : ${path}`,
   unknownPath: '(chemin inconnu)',
   saveUnsupported: 'erreur : cette version de l’application ne peut pas enregistrer de fichiers',
   saveDialogTitle: 'Enregistrer la conversation',
   savedTo: (path: string) => `Conversation enregistrée dans ${path}`,
   saveCancelled: 'Non enregistré (annulé).',
   exportRemote:
-    '/export empaquette un agent depuis l’hôte de la passerelle, qui n’est pas cette machine. Lancez `hermes profile export` sur cet hôte.',
+    '/export empaquette un agent depuis l’ordinateur connecté, qui n’est pas cet appareil. Lancez `hermes profile export` sur cet ordinateur.',
   importRemote:
-    '/import installe un agent sur l’hôte de la passerelle, qui n’est pas cette machine. Lancez `hermes profile import <archive>` sur cet hôte.',
+    '/import installe un agent sur l’ordinateur connecté, qui n’est pas cet appareil. Lancez `hermes profile import <archive>` sur cet ordinateur.',
   timestampsUsage: 'utilisation : /timestamps [on|off|status]',
   timestampsOn: 'Horodatage : activé (cette fenêtre ; définissez display.timestamps dans config.yaml pour le garder)',
   timestampsOff:

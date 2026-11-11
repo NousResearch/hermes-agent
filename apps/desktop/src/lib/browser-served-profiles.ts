@@ -19,7 +19,7 @@ const profileKey = (profile?: null | string) => profile?.trim() || 'default'
  */
 export class UnservedProfileError extends Error {
   constructor(readonly profile: string) {
-    super(`This gateway does not serve profile "${profile}", so this tab cannot open it.`)
+    super(`This machine does not serve agent "${profile}", so this tab cannot open it.`)
     this.name = 'UnservedProfileError'
   }
 }

@@ -1,11 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useMemo, useState } from 'react'
+import { type ComponentProps, type SetStateAction, useMemo, useState } from 'react'
 
 import { mutateSessionHttp } from '@/api/sessions'
 import { type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { MESSAGING_SESSION_SOURCE_IDS, normalizeSessionSource } from '@/lib/session-source'
+import { $hiddenSidebarAgents, $sidebarAgentExpanded, agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $pinnedSessionIds } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $sessionListProfileScope, messagingTotalsKey, sidebarProfileForScope } from '@/store/profile'
@@ -51,16 +52,31 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const messagingTruncated = useStore($messagingTruncated)
   const messagingTotals = useStore($messagingPlatformTotals)
   const messagingProfile = sidebarProfileForScope(useStore($sessionListProfileScope))
-  const pageableMessaging = useMemo(() => MESSAGING_SESSION_SOURCE_IDS.filter(platform => {
-    const loaded = messaging.filter(row =>
-      normalizeSessionSource(row.source) === platform &&
-      (messagingProfile === 'all' || (row.profile || 'default') === messagingProfile)
-    ).length
-    const total = messagingTotals[messagingTotalsKey(messagingProfile, platform)]
-    return loaded > 0 && (total === undefined ? messagingTruncated : loaded < total)
-  }), [messaging, messagingProfile, messagingTotals, messagingTruncated])
+
+  const pageableMessaging = useMemo(
+    () =>
+      MESSAGING_SESSION_SOURCE_IDS.filter(platform => {
+        const loaded = messaging.filter(
+          row =>
+            normalizeSessionSource(row.source) === platform &&
+            (messagingProfile === 'all' || (row.profile || 'default') === messagingProfile)
+        ).length
+
+        const total = messagingTotals[messagingTotalsKey(messagingProfile, platform)]
+
+        return loaded > 0 && (total === undefined ? messagingTruncated : loaded < total)
+      }),
+    [messaging, messagingProfile, messagingTotals, messagingTruncated]
+  )
+
   const [query, setQuery] = useState('')
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const expanded = useStore($sidebarAgentExpanded)
+  const hiddenAgents = useStore($hiddenSidebarAgents)
+
+  const setExpanded = (value: SetStateAction<Record<string, boolean>>) => {
+    $sidebarAgentExpanded.set(typeof value === 'function' ? value($sidebarAgentExpanded.get()) : value)
+  }
+
   const [revealSession, setRevealSession] = useState<{ key: string } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -68,8 +84,10 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
     () =>
       [
         ...new Map(
-          [...pinWrites.rows, ...cron, ...messaging, ...sessions]
-            .map(row => [sessionRowKey(row, sessionPinId(row)), row])
+          [...pinWrites.rows, ...cron, ...messaging, ...sessions].map(row => [
+            sessionRowKey(row, sessionPinId(row)),
+            row
+          ])
         ).values()
       ]
         .filter(row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row)))
@@ -135,9 +153,7 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
     try {
       await Promise.all([
         props.onLoadMoreSessions(),
-        ...(props.onLoadMoreMessaging
-          ? pageableMessaging.map(platform => props.onLoadMoreMessaging!(platform))
-          : [])
+        ...(props.onLoadMoreMessaging ? pageableMessaging.map(platform => props.onLoadMoreMessaging!(platform)) : [])
       ])
     } catch (error) {
       notifyError(error, t.errors.genericFailure)
@@ -153,7 +169,7 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
       setExpanded(current => ({
         ...current,
         [JSON.stringify(['gateway', owner])]: true,
-        [JSON.stringify([owner, row.profile || 'default'])]: true
+        [agentSidebarKey({ connectionId: owner, profile: row.profile || 'default' })]: true
       }))
     }
 
@@ -177,7 +193,17 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
     loadingMore,
     loadMore,
     resumePinned,
-    pinned: pinned.filter(matches),
+    pinned: pinned.filter(
+      row =>
+        matches(row) &&
+        (query.trim() ||
+          !hiddenAgents.includes(
+            agentSidebarKey({
+              connectionId: row.connection_id || owner,
+              profile: row.profile || 'default'
+            })
+          ))
+    ),
     hasMore: Object.values(truncated).some(Boolean) || Boolean(pageableMessaging.length && props.onLoadMoreMessaging)
   }
 }

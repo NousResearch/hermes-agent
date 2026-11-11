@@ -6,7 +6,7 @@ export const esBoot = {
     ready: 'Hermes Desktop está listo',
     desktopBootFailedWithMessage: message => `Falló el arranque del escritorio: ${message}`,
     steps: {
-      connectingGateway: 'Conectando el gateway de escritorio en vivo',
+      connectingGateway: 'Conectando con la máquina',
       loadingSettings: 'Cargando la configuración de Hermes',
       loadingSessions: 'Cargando sesiones recientes',
       retryingRemoteBackend: 'Reconectando al backend remoto de Hermes…',
@@ -44,23 +44,23 @@ export const esBoot = {
       description:
         'El servicio en segundo plano de Hermes no arrancó. Prueba uno de los pasos de recuperación de abajo. Nada de esto elimina tus chats ni tus ajustes.',
       details: 'Detalles',
-      remoteTitle: 'Se requiere iniciar sesión en el gateway remoto',
+      remoteTitle: 'Se requiere iniciar sesión en la máquina remota',
       remoteDescription:
-        'Tu sesión del gateway remoto caducó. Inicia sesión de nuevo para reconectar. Esto no elimina tus chats ni tu configuración.',
+        'Tu sesión de la máquina remota caducó. Inicia sesión de nuevo para reconectar. Esto no elimina tus chats ni tu configuración.',
       retry: 'Reintentar',
       repairInstall: 'Reparar instalación',
-      useLocalGateway: 'Usar gateway local',
-      gatewaySettings: 'Configuración del gateway',
+      useLocalGateway: 'Usar máquina local',
+      gatewaySettings: 'Configuración de la máquina',
       back: 'Atrás',
       openLogs: 'Abrir registros',
       repairHint: 'La reparación vuelve a ejecutar el instalador y puede tardar unos minutos en una máquina nueva.',
       remoteSignInHint: signInLabel =>
-        `Cierra la sesión guardada del navegador remoto y abre ${signInLabel}. Usa el gateway local para cambiar al backend incluido.`,
+        `Cierra la sesión guardada del navegador remoto y abre ${signInLabel}. Usa la máquina local para cambiar al backend incluido.`,
       signOutAndSignIn: 'Cerrar sesión e iniciar sesión',
-      remoteFailureHint: 'Revisa la URL e inicia sesión en Configuración del gateway, o cambia al gateway local.',
+      remoteFailureHint: 'Revisa la URL e inicia sesión en Configuración de la máquina, o cambia a la máquina local.',
       cloudDownTitle: 'El agente de Nous Cloud no está disponible',
       cloudDownDescription:
-        'El agente en la nube administrado por Nous al que se conecta este gateway devuelve un error de servidor. No se puede reiniciar desde aquí: revisa su estado, cambia al gateway local o pide ayuda.',
+        'El agente en la nube administrado por Nous al que se conecta esta app devuelve un error de servidor. No se puede reiniciar desde aquí: revisa su estado, cambia a la máquina local o pide ayuda.',
       cloudDownHint:
         'Los botones de abajo abren el Nous Portal (estado y controles de la instancia) y nuestro Discord para obtener ayuda.',
       cloudDownCheckPortal: 'Ver el estado en el Portal',
@@ -68,11 +68,11 @@ export const esBoot = {
       hideRecentLogs: 'Ocultar registros recientes',
       showRecentLogs: 'Mostrar registros recientes',
       signedInTitle: 'Sesión iniciada',
-      signedInMessage: 'Reconectando con el gateway remoto…',
+      signedInMessage: 'Reconectando con la máquina remota…',
       signInIncompleteTitle: 'Inicio de sesión incompleto',
       signInIncompleteMessage: 'La ventana de inicio de sesión se cerró antes de que terminara la autenticación.',
       signInFailed: 'No se pudo iniciar sesión',
-      signInToRemoteGateway: 'Iniciar sesión en el gateway remoto',
+      signInToRemoteGateway: 'Iniciar sesión en la máquina remota',
       signInWithProvider: provider => `Iniciar sesión con ${provider}`,
       identityProvider: 'tu proveedor de identidad'
     },

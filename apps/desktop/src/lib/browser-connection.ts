@@ -356,7 +356,7 @@ export function createBrowserConnectionBridge({
           return {
             baseUrl: remoteUrl,
             connected: false,
-            error: 'Signing in to another gateway is not available here.',
+            error: 'Signing in to another machine is not available here.',
             ok: false
           }
         }
@@ -375,7 +375,7 @@ export function createBrowserConnectionBridge({
       if (remoteUrl && new URL(remoteUrl, window.location.origin).origin !== window.location.origin) {
         return relays
           ? signOutSavedConnection(api, relays, remoteUrl)
-          : { connected: false, error: 'Only this gateway can be signed out here.', ok: false }
+          : { connected: false, error: 'Only this machine can be signed out here.', ok: false }
       }
 
       const response = await fetch(endpointUrl('/auth/logout', bootstrap.basePath), {
@@ -421,7 +421,7 @@ export function createBrowserConnectionBridge({
         ? { baseUrl: own, ok: true, reachable: true, version: null }
         : {
             baseUrl: payload.remoteUrl,
-            error: 'Save this connection, then use Test on its row: the Webapp tests it through this gateway.',
+            error: 'Save this connection, then use Test on its row: the web app tests it through this machine.',
             ok: false
           }
     }

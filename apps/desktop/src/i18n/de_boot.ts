@@ -6,7 +6,7 @@ export const deBoot = {
     ready: 'Hermes Desktop ist bereit',
     desktopBootFailedWithMessage: message => `Desktop-Start fehlgeschlagen: ${message}`,
     steps: {
-      connectingGateway: 'Live-Desktop-Gateway wird verbunden',
+      connectingGateway: 'Verbindung zum Rechner wird hergestellt',
       loadingSettings: 'Hermes-Einstellungen werden geladen',
       loadingSessions: 'Letzte Sessions werden geladen',
       retryingRemoteBackend: 'Wird mit dem Remote-Hermes-Backend neu verbunden…',
@@ -20,12 +20,12 @@ export const deBoot = {
       restartHermes: 'Hermes neu starten',
       openLogs: 'Logs öffnen',
       desktopBootFailed: 'Desktop-Start fehlgeschlagen',
-      gatewayConnectionLost: 'Verbindung zum Gateway verloren',
+      gatewayConnectionLost: 'Verbindung zum Rechner verloren',
       gatewayConnectionLostDetail:
-        'Im Hintergrund wird weiterhin versucht, die Verbindung herzustellen. Sie können weiterlesen und weiterschreiben – öffnen Sie die Gateway-Einstellungen, falls das anhält.',
+        'Im Hintergrund wird weiterhin versucht, die Verbindung herzustellen. Sie können weiterlesen und weiterschreiben – öffnen Sie die Rechnereinstellungen, falls das anhält.',
       reconnectNow: 'Jetzt neu verbinden',
       connectionSettings: 'Verbindungseinstellungen',
-      gatewaySignInRequired: 'Gateway-Sign-in erforderlich',
+      gatewaySignInRequired: 'Anmeldung am Rechner erforderlich',
       gatewaySignInRequiredDetail:
         'Melden Sie sich erneut an, um die Verbindung wiederherzustellen. Ihre Chats und Einstellungen sind sicher.',
       signInAgain: 'Erneut anmelden',
@@ -43,27 +43,27 @@ export const deBoot = {
     failure: {
       title: 'Hermes konnte nicht gestartet werden',
       description:
-        'Das Hintergrund-Gateway ist nicht gestartet. Probieren Sie einen der Wiederherstellungsschritte unten. Keiner davon löscht Ihre Chats oder Einstellungen.',
+        'Der Hintergrunddienst von Hermes ist nicht gestartet. Probieren Sie einen der Wiederherstellungsschritte unten. Keiner davon löscht Ihre Chats oder Einstellungen.',
       details: 'Details',
-      remoteTitle: 'Remote-Gateway-Sign-in erforderlich',
+      remoteTitle: 'Anmeldung am Remote-Rechner erforderlich',
       remoteDescription:
-        'Ihre Remote-Gateway-Session ist abgelaufen. Melden Sie sich erneut an, um die Verbindung wiederherzustellen. Keiner dieser Schritte löscht Ihre Chats oder Einstellungen.',
+        'Ihre Session auf dem Remote-Rechner ist abgelaufen. Melden Sie sich erneut an, um die Verbindung wiederherzustellen. Keiner dieser Schritte löscht Ihre Chats oder Einstellungen.',
       retry: 'Erneut versuchen',
       repairInstall: 'Installation reparieren',
-      useLocalGateway: 'Lokales Gateway verwenden',
-      gatewaySettings: 'Gateway-Einstellungen',
+      useLocalGateway: 'Lokalen Rechner verwenden',
+      gatewaySettings: 'Rechnereinstellungen',
       back: 'Zurück',
       openLogs: 'Logs öffnen',
       repairHint:
         'Die Reparatur führt den Installer erneut aus und kann auf einem frischen Computer ein paar Minuten dauern.',
       remoteSignInHint: signInLabel =>
-        `Meldet Sie von der gespeicherten Remote-Browser-Session ab und öffnet dann ${signInLabel}. Verwenden Sie das lokale Gateway, um stattdessen zum integrierten Backend zu wechseln.`,
+        `Meldet Sie von der gespeicherten Remote-Browser-Session ab und öffnet dann ${signInLabel}. Verwenden Sie den lokalen Rechner, um stattdessen zum integrierten Backend zu wechseln.`,
       signOutAndSignIn: 'Abmelden & anmelden',
       remoteFailureHint:
-        'Überprüfen Sie die Gateway-URL und die Anmeldung in den Gateway-Einstellungen, oder wechseln Sie zum lokalen Gateway.',
+        'Überprüfen Sie die Rechner-URL und die Anmeldung in den Rechnereinstellungen, oder wechseln Sie zum lokalen Rechner.',
       cloudDownTitle: 'Nous Cloud Agent ist down',
       cloudDownDescription:
-        'Der von Nous verwaltete Cloud-Agent, mit dem sich dieses Gateway verbindet, meldet einen Serverfehler. Er kann von hier aus nicht neu gestartet werden – prüfen Sie seinen Status, wechseln Sie zum lokalen Gateway oder wenden Sie sich an den Support.',
+        'Der von Nous verwaltete Cloud-Agent, mit dem sich diese App verbindet, meldet einen Serverfehler. Er kann von hier aus nicht neu gestartet werden – prüfen Sie seinen Status, wechseln Sie zum lokalen Rechner oder wenden Sie sich an den Support.',
       cloudDownHint:
         'Die Schaltflächen unten öffnen das Nous Portal (Instanzstatus und Steuerung) und unseren Discord für Support.',
       cloudDownCheckPortal: 'Portal-Status prüfen',
@@ -71,11 +71,11 @@ export const deBoot = {
       hideRecentLogs: 'Neueste Logs ausblenden',
       showRecentLogs: 'Neueste Logs anzeigen',
       signedInTitle: 'Angemeldet',
-      signedInMessage: 'Wird mit dem Remote-Gateway neu verbunden…',
+      signedInMessage: 'Wird mit dem Remote-Rechner neu verbunden…',
       signInIncompleteTitle: 'Sign-in unvollständig',
       signInIncompleteMessage: 'Das Anmeldefenster wurde geschlossen, bevor die Authentifizierung abgeschlossen war.',
       signInFailed: 'Sign-in fehlgeschlagen',
-      signInToRemoteGateway: 'Beim Remote-Gateway anmelden',
+      signInToRemoteGateway: 'Am Remote-Rechner anmelden',
       signInWithProvider: provider => `Mit ${provider} anmelden`,
       identityProvider: 'Ihr Identity-Provider'
     },

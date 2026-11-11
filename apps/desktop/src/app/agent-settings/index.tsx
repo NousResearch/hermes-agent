@@ -22,6 +22,7 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $activeGatewayProfile, $profileColors, $profiles, ensureGatewayProfile } from '@/store/profile'
+import { $gatewayState } from '@/store/session'
 import { setSettingsScope } from '@/store/settings-scope'
 import type { HermesConfigRecord, ProfileInfo } from '@/types/hermes'
 
@@ -38,6 +39,7 @@ import { getNested, toolNames } from '../settings/helpers'
 import { settingsScopeLabel } from '../settings/profile-scope'
 import type { SettingsPageProps } from '../settings/types'
 
+import { AgentChannelWarnings } from './channel-warning'
 import { useAgentSettingsCopy } from './copy'
 import {
   agentSettingsKey,
@@ -48,7 +50,7 @@ import {
 } from './data'
 import { AgentNavigation } from './directory'
 import { AgentHistory } from './history'
-import { NewAgentButton } from './new-agent-button'
+import { AgentOverviewActions } from './overview-actions'
 import { RoutineDialog } from './routine-dialog'
 import { AgentSettingsEditor } from './settings-editor'
 
@@ -172,6 +174,7 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentMan
   const { t } = useI18n()
   const c = useAgentSettingsCopy()
   const colors = useStore($profileColors)
+  const machineState = useStore($gatewayState)
   const label = profile ? settingsScopeLabel(profile) : owner.profile
 
   return (
@@ -179,19 +182,29 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentMan
       <FigmaAgentIcon
         className="agent-management-avatar"
         color={resolveProfileColor(owner.profile, colors)}
-        variant="subtle"
+        variant="outline"
       />
       <div className="agent-management-identity">
         <h1>{label}</h1>
         <div className="agent-management-meta">
-          <span>{gateway}</span>
-          {profile?.path && <span className="truncate">{profile.path}</span>}
+          <span className="agent-management-machine">
+            <span
+              aria-label={machineState === 'open' ? c.connected : c.disconnected}
+              className="portal-machine-state"
+              data-connected={machineState === 'open'}
+              role="img"
+            />
+            {gateway}
+          </span>
+          {profile?.path && <span className="truncate font-mono">{profile.path}</span>}
           {profile?.is_default && <span className="agent-management-default">{t.profiles.defaultBadge}</span>}
         </div>
       </div>
       <div className="agent-management-actions">
-        <NewAgentButton owner={owner} />
-        <Button onClick={onOpenChat}>{c.openChat}</Button>
+        <Button className="min-h-10" onClick={onOpenChat} size="lg">
+          {c.openChat}
+        </Button>
+        <AgentOverviewActions owner={owner} profile={profile} />
       </div>
     </header>
   )
@@ -331,7 +344,7 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
   return (
     <Panel contentClassName="agent-management" onClose={props.onClose}>
       <AgentNavigation connectionId={connectionId} profile={owner.profile} />
-      <AgentManagementHeader gateway={gateway} onOpenChat={openChat} owner={owner} profile={profile} />
+      <AgentManagementHeader gateway={gateway} onOpenChat={openChat} owner={editorOwner} profile={profile} />
       <nav aria-label={t.simplifiedAgents.settings} className="agent-management-tabs">
         {(
           [
@@ -374,6 +387,7 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
               </Button>
             </div>
           )}
+          <AgentChannelWarnings messaging={messaging.data} />
           <div className="agent-overview-grid">
             <div className="agent-overview-column">
               <AgentInstructions content={soul.data?.content} path={profile?.path} />
@@ -512,7 +526,19 @@ function AgentChannels({ messaging, onOpen, children }: AgentChannelsProps) {
         .filter(platform => platform.id === 'telegram' || platform.id === 'discord' || platform.configured)
         .map(platform => (
           <SettingRow
-            detail={platform.state === 'connected' ? c.connected : platform.configured ? c.configured : c.disconnected}
+            detail={
+              platform.state === 'connected' ? (
+                c.connected
+              ) : platform.configured &&
+                platform.enabled &&
+                ['disconnected', 'error', 'failed'].includes(platform.state ?? '') ? (
+                <span className="agent-channel-disconnected">● {c.disconnected}</span>
+              ) : platform.configured ? (
+                c.configured
+              ) : (
+                c.disconnected
+              )
+            }
             key={platform.id}
             onClick={onOpen}
             title={platform.name}

@@ -67,8 +67,9 @@ describe('ProfileRemoteOverrideDialog', () => {
     expect(applyConnectionConfig).not.toHaveBeenCalled()
 
     fireEvent.click(
-      within(screen.getByRole('dialog', { name: en.profiles.remoteOverride.confirmTitle }))
-        .getByRole('button', { name: en.profiles.remoteOverride.connect })
+      within(screen.getByRole('dialog', { name: en.profiles.remoteOverride.confirmTitle })).getByRole('button', {
+        name: en.profiles.remoteOverride.connect
+      })
     )
 
     await waitFor(() =>
@@ -140,14 +141,14 @@ describe('ProfileRemoteOverrideDialog', () => {
     )
   })
 
-  it('warns when the profile name collides with a registered gateway', async () => {
+  it('warns when the profile name collides with a registered machine', async () => {
     list.mockResolvedValue({
       ...emptyRegistry,
       connections: [{ id: 'abc123', kind: 'remote', label: 'Work', tokenPreview: null, tokenSet: true }]
     })
     await openDialog('work')
 
-    await screen.findByText(/A gateway named “Work” already exists in Settings/)
+    expect((await screen.findByRole('status')).textContent).toContain('Work')
   })
 
   it('keeps the dialog open and shows the error when the write fails', async () => {

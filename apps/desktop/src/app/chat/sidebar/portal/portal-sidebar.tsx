@@ -94,22 +94,26 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
         <div className="portal-sidebar-sections">
           <SimplifiedPinnedSessions
             {...shared}
-            emptyState={!loading && !error && !search.pending && !search.failed && !query.trim() && <PortalPinnedEmpty />}
+            emptyState={
+              !loading && !error && !search.pending && !search.failed && !query.trim() && <PortalPinnedEmpty />
+            }
             onResumeSession={resumePinned}
             sessions={pinned}
           />
           <PortalGroupChats query={query} />
           <SimplifiedAgentList
             agents={agents}
+            allSessions={all}
             expanded={expanded}
+            onResumeSession={shared.onResumeSession}
             onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
+            query={query}
             renderSessions={sessions => (
               <div className="portal-agent-sessions">
                 <SimplifiedSessionList {...shared} sessions={sessions} />
               </div>
             )}
             revealSession={revealSession}
-            searching={Boolean(query.trim())}
           />
         </div>
         {loading && rows.length === 0 && <SidebarSessionSkeletons />}

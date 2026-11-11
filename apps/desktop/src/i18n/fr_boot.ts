@@ -6,7 +6,7 @@ export const frBoot = {
     ready: 'Hermes Desktop est prêt',
     desktopBootFailedWithMessage: message => `Échec du démarrage : ${message}`,
     steps: {
-      connectingGateway: 'Connexion au gateway desktop',
+      connectingGateway: 'Connexion à l’ordinateur',
       loadingSettings: 'Chargement des paramètres Hermes',
       loadingSessions: 'Chargement des sessions récentes',
       retryingRemoteBackend: 'Reconnexion au backend Hermes distant…',
@@ -20,12 +20,12 @@ export const frBoot = {
       restartHermes: 'Redémarrer Hermes',
       openLogs: 'Ouvrir les journaux',
       desktopBootFailed: 'Échec du démarrage',
-      gatewayConnectionLost: 'Connexion au gateway perdue',
+      gatewayConnectionLost: 'Connexion à l’ordinateur perdue',
       gatewayConnectionLostDetail:
-        'Nouvelle tentative en arrière-plan. Vous pouvez continuer à lire et rédiger — ouvrez les paramètres du gateway si le problème persiste.',
+        'Nouvelle tentative en arrière-plan. Vous pouvez continuer à lire et rédiger — ouvrez les paramètres de l’ordinateur si le problème persiste.',
       reconnectNow: 'Se reconnecter maintenant',
       connectionSettings: 'Paramètres de connexion',
-      gatewaySignInRequired: 'Connexion au gateway requise',
+      gatewaySignInRequired: 'Authentification sur l’ordinateur requise',
       gatewaySignInRequiredDetail:
         'Reconnectez-vous pour rétablir la connexion. Vos conversations et paramètres sont en sécurité.',
       signInAgain: 'Se reconnecter',
@@ -43,26 +43,26 @@ export const frBoot = {
     failure: {
       title: "Hermes n'a pas pu démarrer",
       description:
-        "Le gateway en arrière-plan n'a pas pu se lancer. Essayez l'une des étapes de récupération ci-dessous. Rien ici ne supprime vos conversations ou paramètres.",
+        "Le service en arrière-plan de Hermes n'a pas pu se lancer. Essayez l'une des étapes de récupération ci-dessous. Rien ici ne supprime vos conversations ou paramètres.",
       details: 'Détails',
-      remoteTitle: 'Connexion au gateway distante requise',
+      remoteTitle: 'Authentification sur l’ordinateur distant requise',
       remoteDescription:
-        'Votre session de gateway distante a expiré. Connectez-vous à nouveau pour vous reconnecter. Rien ici ne supprime vos conversations ou paramètres.',
+        'Votre session sur l’ordinateur distant a expiré. Connectez-vous à nouveau pour vous reconnecter. Rien ici ne supprime vos conversations ou paramètres.',
       retry: 'Réessayer',
       repairInstall: "Réparer l'installation",
-      useLocalGateway: 'Utiliser le gateway local',
-      gatewaySettings: 'Paramètres du gateway',
+      useLocalGateway: 'Utiliser l’ordinateur local',
+      gatewaySettings: 'Paramètres de l’ordinateur',
       back: 'Retour',
       openLogs: 'Ouvrir les journaux',
       repairHint: "La réparation relance l'installateur et peut prendre quelques minutes sur une machine neuve.",
       remoteSignInHint: signInLabel =>
-        `Déconnecte la session navigateur distante enregistrée, puis ouvre ${signInLabel}. Utilisez le gateway local pour passer au backend intégré.`,
+        `Déconnecte la session navigateur distante enregistrée, puis ouvre ${signInLabel}. Utilisez l’ordinateur local pour passer au backend intégré.`,
       signOutAndSignIn: 'Se déconnecter et se reconnecter',
       remoteFailureHint:
-        "Vérifiez l'URL du gateway et la connexion dans les paramètres du gateway, ou passez au gateway local.",
+        'Vérifiez l’URL et l’authentification dans les paramètres de l’ordinateur, ou passez à l’ordinateur local.',
       cloudDownTitle: "L'agent Nous Cloud est indisponible",
       cloudDownDescription:
-        "L'agent cloud géré par Nous auquel ce gateway se connecte renvoie une erreur serveur. Il ne peut pas être redémarré depuis ici — vérifiez son état, passez au gateway local ou contactez l'assistance.",
+        "L'agent cloud géré par Nous auquel cette application se connecte renvoie une erreur serveur. Il ne peut pas être redémarré depuis ici — vérifiez son état, passez à l’ordinateur local ou contactez l'assistance.",
       cloudDownHint:
         "Les boutons ci-dessous ouvrent le portail Nous, pour consulter et contrôler l'instance, ainsi que notre Discord pour obtenir de l'aide.",
       cloudDownCheckPortal: "Vérifier l'état sur le portail",
@@ -70,11 +70,11 @@ export const frBoot = {
       hideRecentLogs: 'Masquer les journaux récents',
       showRecentLogs: 'Afficher les journaux récents',
       signedInTitle: 'Connecté',
-      signedInMessage: 'Reconnexion au gateway distante…',
+      signedInMessage: 'Reconnexion à l’ordinateur distant…',
       signInIncompleteTitle: 'Connexion incomplète',
       signInIncompleteMessage: "La fenêtre de connexion s'est fermée avant la fin de l'authentification.",
       signInFailed: 'Échec de la connexion',
-      signInToRemoteGateway: 'Se connecter au gateway distante',
+      signInToRemoteGateway: 'Se connecter à l’ordinateur distant',
       signInWithProvider: provider => `Se connecter avec ${provider}`,
       identityProvider: "votre fournisseur d'identité"
     },

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { $apiRequestScope } from '@/api/client'
 import { $workspaceIsPage } from '@/app/routes'
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
+import { en } from '@/i18n/en'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import {
   $cronSessions,
@@ -116,7 +117,7 @@ it('mounts status polling on demand and retains plugin, menu and action controls
           { id: 'plugin', render: () => <button type="button">Plugin status</button> },
           {
             id: 'gateway',
-            label: 'Gateway',
+            label: en.shell.gatewayMenu.gateway,
             variant: 'menu',
             menuItems: [{ id: 'logs', label: 'Logs', onSelect: run }]
           }
@@ -138,7 +139,7 @@ it('mounts status polling on demand and retains plugin, menu and action controls
   expect(screen.getByRole('button', { name: 'Plugin status' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Command Center' }), { shiftKey: true })
   expect(run).toHaveBeenCalledWith({ shiftKey: true })
-  fireEvent.keyDown(screen.getByRole('button', { name: 'Gateway' }), { key: 'Enter' })
+  fireEvent.keyDown(screen.getByRole('button', { name: en.shell.gatewayMenu.gateway }), { key: 'Enter' })
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Logs' }))
   expect(run).toHaveBeenCalledTimes(2)
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })

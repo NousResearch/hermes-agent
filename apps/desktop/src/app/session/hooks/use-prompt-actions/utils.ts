@@ -300,7 +300,8 @@ export function isSessionBusyError(error: unknown): boolean {
 
 /** A busy refusal because another writer holds the compression lock (`field: 'compression'`). */
 export function isCompressionBusyError(error: unknown): boolean {
-  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+  const data =
+    error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
 
   return data?.reason === 'session_busy' && data.field === 'compression'
 }
@@ -309,7 +310,8 @@ export function isCompressionBusyError(error: unknown): boolean {
  *  with another payload (hermes_state_runtime.ADMITTED_REQUEST_CONFLICT): the send was delivered.
  *  Every other `admission_conflict` (route, binding, lineage) names no such field and stays an error. */
 export function isAdmittedSubmissionConflict(error: unknown): boolean {
-  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+  const data =
+    error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
 
   return data?.reason === 'admission_conflict' && data.field === 'request_id'
 }
@@ -559,7 +561,7 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
 // with a raw "file is too large (N bytes; limit M bytes)" string when over
 // cap. In remote mode every attachment's bytes go through that read, so a big
 // file surfaces that internal message verbatim in the failure toast. Translate
-// it into a friendly "too large to upload to the remote gateway" line, parsing
+// it into a friendly "too large to upload to the remote machine" line, parsing
 // the limit out of the message so it tracks the real cap. Non-cap errors pass
 // through unchanged.
 export function friendlyRemoteAttachError(err: unknown, label: string): Error {
@@ -572,7 +574,7 @@ export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   const limitBytes = Number(message.match(/limit (\d+) bytes/)?.[1])
   const cap = Number.isFinite(limitBytes) && limitBytes > 0 ? ` (max ${Math.floor(limitBytes / (1024 * 1024))} MB)` : ''
 
-  return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
+  return new Error(`${label} is too large to upload to the remote machine${cap}.`)
 }
 
 export function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {

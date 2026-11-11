@@ -18,7 +18,7 @@ export const enUpdateChannel: UpdateChannelCopy = {
   rollbackBody: (v: string) =>
     `This build is newer than the stable release ${v}. Installing it moves Hermes back to that release.`,
   heldBody: (v: string) =>
-    `This build is newer than stable release ${v}. Your sessions already use a gateway runtime that ${v} cannot open, so Hermes stays on this build until a newer stable release ships.`,
+    `This build is newer than stable release ${v}. Your sessions already use a Hermes runtime that ${v} cannot open, so Hermes stays on this build until a newer stable release ships.`,
   rollbackAction: (v: string) => `Roll back to ${v}`,
   allChanges: 'See all changes'
 }

@@ -4,12 +4,13 @@ import { zhHantPluginUpdateAll } from './zh-hant_plugin_update_all'
 
 export const zhHantCapabilities = {
   skills: {
-    inventoryScopeHint: '下方的安裝項目和帳戶屬於所選智慧體及閘道，並非所有智慧體。啟用狀態和覆寫設定在智慧體設定中管理。',
+    inventoryScopeHint:
+      '下方的安裝項目和帳戶屬於所選智慧體及機器，並非所有智慧體。啟用狀態和覆寫設定在智慧體設定中管理。',
     agentScopeHint: '變更僅適用於此智慧體。現有對話會保留目前的工具。',
     toolSecretsHint: '此智慧體的 API 金鑰、端點和供應商。憑證不會與其他智慧體共用。',
     openAgentSettings: '智慧體設定',
     openToolLibrary: '瀏覽工具庫',
-    remotePluginHint: '在此智慧體所屬的閘道上開啟它以管理外掛。外掛安裝使用已連線的閘道。',
+    remotePluginHint: '在此智慧體所屬的機器上開啟它以管理外掛。外掛安裝使用已連線的機器。',
     showAllToolsets: (count: number) => `顯示全部 ${count} 項`,
     plugins: {
       ...zhHantPluginPreviewAccess,

@@ -5,7 +5,7 @@ export const deFirstRun: FirstRunCopy = {
     title: 'Hermes einrichten',
     resume: 'Einrichtung fortsetzen',
     upgradeRequired:
-      'Dieses Gateway benötigt ein Update für die Einrichtung ohne Sitzung. Führen Sie auf seinem Host hermes update aus, starten Sie das Gateway neu und versuchen Sie es erneut. Ihre Chats bleiben unverändert.',
+      'Hermes auf diesem Rechner benötigt ein Update für die Einrichtung ohne Sitzung. Führen Sie auf dem Rechner hermes update aus, starten Sie Hermes neu und versuchen Sie es erneut. Ihre Chats bleiben unverändert.',
     intro:
       'Ein paar optionale Einstellungen, dann Ihr normaler Chat. Die Einrichtung erstellt niemals eine Unterhaltung.',
     appearance: 'Darstellung',

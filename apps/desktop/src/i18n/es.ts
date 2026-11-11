@@ -34,7 +34,7 @@ export const esOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['es'],
   gatewayGroupOpen: {
     opening: 'Abriendo el chat de grupo…',
-    lookupFailed: 'No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.',
+    lookupFailed: 'No se pudo encontrar este grupo en la máquina. Inténtalo de nuevo.',
     missing: 'Este chat de grupo ya no existe.'
   },
   sharedMetrics: esSharedMetrics,
@@ -453,7 +453,7 @@ export const esOverrides = {
       diskFull: 'Disco lleno — libera espacio y vuelve a intentarlo.',
       storageFailure: 'Hermes no pudo guardar en su carpeta de datos. Abre Mantenimiento para comprobarla y repararla.',
       gatewayAuthFailed:
-        'Este Hermes ya no acepta tu inicio de sesión guardado. Abre Gateways y vuelve a iniciar sesión (o pega un nuevo token de acceso) e inténtalo otra vez.',
+        'Este Hermes ya no acepta tu inicio de sesión guardado. Abre Máquinas y vuelve a iniciar sesión (o pega un nuevo token de acceso) e inténtalo otra vez.',
       methodNotAllowed:
         'El servicio en segundo plano de Hermes no está sincronizado con la app, probablemente tras una actualización. Reinícialo para solucionarlo.',
       microphonePermission: 'Se denegó el permiso del micrófono.',
@@ -468,7 +468,7 @@ export const esOverrides = {
     actions: {
       restartHermes: 'Reiniciar Hermes',
       openKeys: 'Abrir Claves',
-      openGateways: 'Abrir Gateways',
+      openGateways: 'Abrir Máquinas',
       openMaintenance: 'Abrir Mantenimiento'
     },
     voice: {
@@ -520,7 +520,7 @@ export const esOverrides = {
   sendDiagnostics: {
     title: 'Enviar diagnóstico a Nous',
     privacyNotice:
-      'Esto sube un paquete de depuración a un almacenamiento interno de Nous (no a un sitio público). Incluye información del sistema (SO, versiones, proveedor y qué claves API están configuradas, nunca las claves en sí) y los registros completos del agente, del gateway y de la app de escritorio (hasta 512 KB cada uno), que probablemente contengan contenido de conversaciones, salidas de herramientas y rutas de archivos. Los secretos se ocultan antes de subirlo. Solo el personal de Nous y los moderadores autorizados de Discord pueden ver el paquete, que se elimina automáticamente a los 14 días.',
+      'Esto sube un paquete de depuración a un almacenamiento interno de Nous (no a un sitio público). Incluye información del sistema (SO, versiones, proveedor y qué claves API están configuradas, nunca las claves en sí) y los registros completos del agente, del servicio Hermes y de la app de escritorio (hasta 512 KB cada uno), que probablemente contengan contenido de conversaciones, salidas de herramientas y rutas de archivos. Los secretos se ocultan antes de subirlo. Solo el personal de Nous y los moderadores autorizados de Discord pueden ver el paquete, que se elimina automáticamente a los 14 días.',
     upload: 'Subir',
     uploading: 'Subiendo…',
     cancel: 'Cancelar',
@@ -729,7 +729,7 @@ export const esOverrides = {
       advancedOutput: 'Límites de salida',
       advancedDelegation: 'Subagentes',
       advancedDesktop: 'Escritorio e inicio',
-      gatewayConnection: 'Gateway principal',
+      gatewayConnection: 'Máquina principal',
       gatewayDevices: 'Conexiones guardadas',
       gatewayManagedUpdates: 'Actualizaciones remotas',
       gatewayManagedUpdatesUnavailable:
@@ -772,7 +772,7 @@ export const esOverrides = {
       providerApiKeys: 'Claves API',
       providerCustomEndpoints: 'Endpoints personalizados',
       providerLocalModels: 'Modelos locales',
-      gateway: 'Gateway',
+      gateway: desktopTerms.es.machines,
       apiKeys: 'Herramientas y claves',
       keybinds: 'Atajos de teclado',
       keysTools: 'Herramientas',
@@ -970,7 +970,7 @@ export const esOverrides = {
     searchPlaceholder: {
       about: 'Acerca de Hermes Desktop',
       config: 'Buscar configuración...',
-      gateway: 'Conexión del gateway...',
+      gateway: 'Conexión de la máquina...',
       keys: 'Buscar claves API...',
       mcp: 'Buscar servidores MCP...',
       sessions: 'Buscar sesiones archivadas...'
@@ -1630,15 +1630,15 @@ export const esOverrides = {
       clear: 'Limpiar'
     },
     connections: {
-      title: 'Gateways registrados',
+      title: 'Máquinas registradas',
       intro:
-        'Gestiona este dispositivo y cada gateway de Hermes al que puede llegar mediante conexiones remotas, SSH o Cloud.',
+        'Gestiona este dispositivo y cada máquina con Hermes a la que puede llegar mediante conexiones remotas, SSH o Cloud.',
       stagedNote:
-        'Todos los gateways permanecen conectados. Los agentes, chats, mensajería y programaciones se quedan con su gateway, y Sesiones puede mostrarlos todos a la vez.',
-      launchModeTitle: 'Al iniciar, volver a Sesiones en el último gateway usado',
-      launchModeDesc: 'Si está desactivado, Sesiones se abre en el gateway principal.',
-      searchPlaceholder: 'Buscar gateways…',
-      noSearchResults: 'Ningún gateway coincide con tu búsqueda.',
+        'Todas las máquinas permanecen conectadas. Los agentes, chats, mensajería y programaciones se quedan en su máquina, y Sesiones puede mostrarlos todos a la vez.',
+      launchModeTitle: 'Al iniciar, volver a Sesiones en la última máquina usada',
+      launchModeDesc: 'Si está desactivado, Sesiones se abre en la máquina principal.',
+      searchPlaceholder: 'Buscar máquinas…',
+      noSearchResults: 'Ninguna máquina coincide con tu búsqueda.',
       loadFailed: 'No se pudieron cargar las conexiones',
       currentPill: 'Actual',
       primaryPill: 'Principal',
@@ -1661,28 +1661,28 @@ export const esOverrides = {
       updateAllFailed: 'Falló el envío de actualizaciones',
       updateSkippedCloud: 'Administrado por Hermes Cloud',
       kindLocal: 'Local',
-      kindRemote: 'Gateway remoto',
+      kindRemote: 'Máquina remota',
       kindCloud: 'Hermes Cloud',
       kindSsh: 'SSH',
       kindLocalDesc: 'El entorno de ejecución de Hermes administrado por esta app.',
-      kindRemoteDesc: 'Un gateway de Hermes accesible por HTTP(S): LAN, Tailscale o internet.',
+      kindRemoteDesc: 'Una máquina con Hermes accesible por HTTP(S): LAN, Tailscale o internet.',
       kindCloudDesc: 'Una instancia alojada detectada a través de tu cuenta de Hermes Cloud.',
       kindSshDesc: 'Una instalación de Hermes accesible por SSH.',
       labelTitle: 'Nombre',
       labelDesc:
         'Obligatorio. Se muestra en todos los lugares donde aparece esta instancia; debe ser único (p. ej., “Homelab”, “Portátil del trabajo”).',
       labelPlaceholder: 'Homelab',
-      urlTitle: 'URL del gateway',
+      urlTitle: 'URL de la máquina',
       sshHostTitle: 'Host SSH',
-      headersTitle: 'Encabezados adicionales del gateway',
+      headersTitle: 'Encabezados de conexión adicionales',
       headersDesc:
-        'Se envían con cada solicitud HTTP y WebSocket a este gateway, para proxies de acceso como Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Los valores se guardan cifrados. Se ignoran los encabezados que gestiona Hermes (Authorization, Cookie, Host…).',
+        'Se envían con cada solicitud HTTP y WebSocket a esta máquina, para proxies de acceso como Cloudflare Access (CF-Access-Client-Id / CF-Access-Client-Secret). Los valores se guardan cifrados. Se ignoran los encabezados que gestiona Hermes (Authorization, Cookie, Host…).',
       headerValuePlaceholder: 'Valor',
       headerValueSaved: 'Guardado: déjalo en blanco para conservarlo',
       headerAdd: 'Añadir encabezado',
       headerRemove: 'Quitar',
       duplicateLocal: 'Esta app ya administra una conexión local; solo puede haber una.',
-      duplicateUrl: (label: string) => `Ya existe una conexión a la URL de este gateway (“${label}”).`,
+      duplicateUrl: (label: string) => `Ya existe una conexión a la URL de esta máquina (“${label}”).`,
       duplicateSsh: (label: string) => `Ya existe una conexión a este host SSH (“${label}”).`,
       sameBackendHint: (label: string) => `Mismo backend que “${label}”`,
       localAddHint: 'Local no está disponible: la conexión local administrada ya existe (solo puede haber una).',
@@ -1712,9 +1712,9 @@ export const esOverrides = {
       scopeNotRestored: (profile: string, error: string) => `No se restauró el agente “${profile}”: ${error}`
     },
     gateway: {
-      loading: 'Cargando ajustes del gateway...',
+      loading: 'Cargando ajustes de la máquina...',
       ...esGatewayHost,
-      title: 'Conexión del gateway',
+      title: 'Conexión de la máquina',
       envOverride: 'anulación de entorno',
       intro:
         'Local por predeterminado. Usa remoto cuando esta app deba controlar un backend de Hermes en otro lugar. Anulaciones por agente a continuación.',
@@ -1722,13 +1722,13 @@ export const esOverrides = {
       envOverrideDesc:
         'Un ajuste de inicio externo a la app eligió esta conexión, así que las opciones de abajo son de solo lectura. Reinicia Hermes sin ese ajuste (o pregunta a quien lo configuró) para cambiarla aquí.',
       modeTitle: 'Modo de conexión',
-      localTitle: 'Gateway local',
+      localTitle: 'Máquina local',
       localDesc:
         'Inicia un backend privado de Hermes en localhost. Es el valor predeterminado y funciona sin conexión.',
-      remoteTitle: 'Gateway remoto',
+      remoteTitle: 'Máquina remota',
       remoteDesc: 'Conecta esta shell de escritorio a un backend remoto de Hermes.',
       remoteAuthHint:
-        'Los gateways alojados usan OAuth o usuario y contraseña; los autohospedados pueden usar un token de sesión.',
+        'Las máquinas alojadas usan OAuth o usuario y contraseña; las autoalojadas pueden usar un token de sesión.',
       cloudTitle: 'Hermes Cloud',
       cloudDesc:
         'Inicia sesión una vez en Hermes Cloud y elige uno de los agentes de tu cuenta; no tienes que pegar ninguna URL.',
@@ -1750,10 +1750,10 @@ export const esOverrides = {
       },
       cloudRefresh: 'Actualizar',
       cloudConnect: 'Conectar',
-      cloudSavedTitle: 'Gateways de Cloud guardados',
+      cloudSavedTitle: 'Máquinas de Cloud guardadas',
       cloudSavedDesc:
-        'Usa un gateway guardado sin cambiar el predeterminado. Inicia sesión abajo para añadir instancias. Gestiona los nombres y el inicio de sesión en la lista de conexiones guardadas.',
-      cloudUseSaved: 'Usar gateway',
+        'Usa una máquina guardada sin cambiar la predeterminada. Inicia sesión abajo para añadir instancias. Gestiona los nombres y el inicio de sesión en la lista de conexiones guardadas.',
+      cloudUseSaved: 'Usar máquina',
       cloudActive: 'Activo en esta ventana',
       cloudConnecting: 'Conectando…',
       cloudDiscoverFailed: 'No se pudieron cargar tus agentes de Hermes Cloud',
@@ -1768,7 +1768,7 @@ export const esOverrides = {
       cloudStatusLabel: status => `Estado: ${status}`,
       remoteUrlTitle: 'URL remota',
       remoteUrlDesc: 'URL base del backend del dashboard remoto. Se admiten prefijos de ruta, por ejemplo /hermes.',
-      probing: 'Comprobando cómo se autentica este gateway…',
+      probing: 'Comprobando cómo se autentica esta máquina…',
       probeError:
         'Hermes no puede llegar a esa dirección. Comprueba la URL y que el otro equipo esté ejecutando Hermes; las opciones de inicio de sesión aparecen cuando responde.',
       signedIn: 'Sesión iniciada',
@@ -1777,16 +1777,16 @@ export const esOverrides = {
       signInWith: provider => `Iniciar sesión con ${provider}`,
       authTitle: 'Autenticación',
       authSignedInPassword:
-        'Este gateway usa usuario y contraseña. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
-      authSignedInOauth: 'Este gateway usa OAuth. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
-      authNeedsPassword: 'Este gateway usa usuario y contraseña. Inicia sesión para autorizar esta app de escritorio.',
-      authNeedsOauth: provider => `Este gateway usa OAuth. Inicia sesión con ${provider} para autorizar esta app.`,
+        'Esta máquina usa usuario y contraseña. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
+      authSignedInOauth: 'Esta máquina usa OAuth. Ya iniciaste sesión; la sesión se actualiza automáticamente.',
+      authNeedsPassword: 'Esta máquina usa usuario y contraseña. Inicia sesión para autorizar esta app de escritorio.',
+      authNeedsOauth: provider => `Esta máquina usa OAuth. Inicia sesión con ${provider} para autorizar esta app.`,
       tokenTitle: 'Token de sesión',
       tokenDesc: 'Token de sesión del dashboard usado para REST y WebSocket. Déjalo vacío para conservar el guardado.',
       existingToken: value => `Token existente ${value}`,
       savedToken: 'guardado',
       pasteSessionToken: 'Pegar token de sesión',
-      plainTextConfirmTitle: '¿Guardar el token de la puerta de enlace en texto plano?',
+      plainTextConfirmTitle: '¿Guardar el token de conexión en texto plano?',
       plainTextConfirmDesc:
         'No se encontró ningún servicio de llavero del sistema en este equipo, así que el token se guardaría sin cifrar en el archivo de ajustes de conexión de la app, legible por cualquier proceso que se ejecute con este usuario. Instala o activa el llavero del sistema (GNOME Keyring o KWallet en Linux) para guardarlo cifrado.',
       plainTextConfirmAction: 'Guardar como texto plano',
@@ -1795,34 +1795,34 @@ export const esOverrides = {
         'El almacenamiento seguro no está disponible, así que el token guardado está sin cifrar en el archivo de ajustes de conexión de la app en este equipo. Instala o activa el llavero del sistema (GNOME Keyring o KWallet en Linux) para cifrarlo.',
       keychainEncryptionTitle: 'Cifrar los secretos guardados con el llavero del sistema',
       keychainEncryptionDesc:
-        'Desactivado por defecto. Si está activado, los tokens del gateway y las credenciales de inicio de sesión se cifran con el llavero del sistema (Acceso a Llaveros, GNOME Keyring o DPAPI de Windows); es posible que el sistema te pida permiso o una contraseña. Si está desactivado, se guardan como archivos normales que solo tu cuenta de usuario puede leer.',
+        'Desactivado por defecto. Si está activado, los tokens de conexión y las credenciales de inicio de sesión se cifran con el llavero del sistema (Acceso a Llaveros, GNOME Keyring o DPAPI de Windows); es posible que el sistema te pida permiso o una contraseña. Si está desactivado, se guardan como archivos normales que solo tu cuenta de usuario puede leer.',
       keychainEncryptionFailed: 'No se pudo cambiar el cifrado de secretos',
       testRemote: 'Probar remoto',
       saveForRestart: 'Guardar para el próximo reinicio',
       saveAndReconnect: 'Guardar y reconectar',
       diagnostics: 'Diagnóstico',
-      diagnosticsDesc: 'Muestra desktop.log en tu gestor de archivos; útil cuando el gateway no arranca.',
+      diagnosticsDesc: 'Muestra desktop.log en tu gestor de archivos; útil cuando Hermes no arranca.',
       openLogs: 'Abrir registros',
-      incompleteTitle: 'Gateway remoto incompleto',
+      incompleteTitle: 'Configuración de la máquina remota incompleta',
       incompleteSignIn: 'Introduce una URL remota e inicia sesión antes de cambiar a remoto.',
       incompleteToken: 'Introduce una URL remota y un token de sesión antes de cambiar a remoto.',
       incompleteSignInTest: 'Introduce una URL remota e inicia sesión antes de probar.',
       incompleteTokenTest: 'Introduce una URL remota y un token de sesión antes de probar.',
       enterUrlFirst: 'Introduce primero una URL remota.',
-      restartingTitle: 'Reiniciando conexión del gateway',
-      savedTitle: 'Ajustes del gateway guardados',
+      restartingTitle: 'Restableciendo la conexión con la máquina',
+      savedTitle: 'Ajustes de la máquina guardados',
       restartingMessage: 'Hermes Desktop se reconectará con los ajustes guardados.',
       savedMessage: 'Guardado para el próximo reinicio.',
       connectedTo: (baseUrl, version) => `Conectado a ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
-      reachableTitle: 'Gateway remoto accesible',
+      reachableTitle: 'Máquina remota accesible',
       signedOutTitle: 'Sesión cerrada',
-      signedOutMessage: 'Se borró la sesión del gateway remoto.',
-      failedLoad: 'No se pudieron cargar los ajustes del gateway',
+      signedOutMessage: 'Se borró la sesión de la máquina remota.',
+      failedLoad: 'No se pudieron cargar los ajustes de la máquina',
       signInFailed: 'No se pudo iniciar sesión',
       signOutFailed: 'No se pudo cerrar sesión',
-      testFailed: 'Falló la prueba del gateway remoto',
-      applyFailed: 'No se pudieron aplicar los ajustes del gateway',
-      saveFailed: 'No se pudieron guardar los ajustes del gateway',
+      testFailed: 'Falló la prueba de conexión con la máquina remota',
+      applyFailed: 'No se pudieron aplicar los ajustes de la máquina',
+      saveFailed: 'No se pudieron guardar los ajustes de la máquina',
       sshTitle: 'Conectar por SSH',
       sshDesc:
         'Hermes se inicia en el equipo remoto mediante SSH y se conecta a esta app a través de un túnel; no tienes que iniciar ni exponer nada por tu cuenta. Requiere acceso SSH mediante claves que ya funcione con el host.',
@@ -2154,10 +2154,10 @@ export const esOverrides = {
           messageBySelf: 'Detuviste el gasto remoto para este terminal.'
         },
         remoteSpendingReconnect: (who: string) =>
-          `${who} Vuelve a conectarte desde Configuración -> Gateway para autorizar de nuevo este dispositivo.`,
+          `${who} Vuelve a conectarte desde Configuración -> Máquinas para autorizar de nuevo este dispositivo.`,
         sessionRevoked: {
           title: 'Sesión cerrada',
-          message: 'Se cerró tu sesión. Vuelve a iniciar sesión desde Configuración → Gateway.'
+          message: 'Se cerró tu sesión. Vuelve a iniciar sesión desde Configuración → Máquinas.'
         },
         cliBillingDisabled: {
           title: 'El gasto remoto está desactivado',
@@ -2218,7 +2218,7 @@ export const esOverrides = {
         },
         transport: {
           title: 'Falló la conexión de facturación',
-          message: 'La solicitud de facturación falló antes de llegar al gateway.'
+          message: 'La solicitud de facturación falló antes de llegar a la máquina.'
         },
         default: {
           title: 'Falló la solicitud de facturación',
@@ -2420,7 +2420,7 @@ export const esOverrides = {
   },
   skills: {
     inventoryScopeHint:
-      'Las instalaciones y cuentas de abajo pertenecen al agente y gateway seleccionados, no a todos los agentes. La activación y las personalizaciones se gestionan en los ajustes del agente.',
+      'Las instalaciones y cuentas de abajo pertenecen al agente y a la máquina seleccionados, no a todos los agentes. La activación y las personalizaciones se gestionan en los ajustes del agente.',
     agentScopeHint:
       'Los cambios solo se aplican a este agente. Las conversaciones existentes conservan sus herramientas actuales.',
     toolSecretsHint:
@@ -2428,7 +2428,7 @@ export const esOverrides = {
     openAgentSettings: 'Ajustes del agente',
     openToolLibrary: 'Explorar la biblioteca de herramientas',
     remotePluginHint:
-      'Abre este agente en su gateway para gestionar sus plugins. La instalación de plugins usa el gateway conectado.',
+      'Abre este agente en su máquina para gestionar sus plugins. La instalación de plugins usa la máquina conectada.',
     showAllToolsets: (count: number) => `Mostrar los ${count}`,
     tabSkills: 'Skills',
     tabToolsets: 'Conjuntos de herramientas',
@@ -2493,8 +2493,7 @@ export const esOverrides = {
     tabPlugins: 'Plugins',
     plugins: {
       agentTitle: 'Plugins del agente',
-      agentBlurb:
-        'Amplían el agente seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar el gateway.',
+      agentBlurb: 'Amplían el agente seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar Hermes.',
       pageBlurb: 'Un plugin puede ampliar esta app, el agente o ambos; cada mitad tiene su propio interruptor.',
       halfDesktop: 'Escritorio',
       halfDesktopHint: 'esta app, igual para todos los agentes',
@@ -2553,7 +2552,7 @@ export const esOverrides = {
       uninstallConfirmBody: (name: string, profile: string) =>
         `Esto elimina los archivos del plugin del agente ${profile}. Cualquier mitad de escritorio que incluyera se quita con él. Puedes reinstalarlo desde el catálogo o desde Git cuando quieras.`,
       uninstallFailed: (name: string) => `No se pudo desinstalar ${name}`,
-      uninstalled: (name: string) => `${name} desinstalado. Reinicia el gateway para descargarlo.`,
+      uninstalled: (name: string) => `${name} desinstalado. Reinicia Hermes para descargarlo.`,
       uninstallDesktopTip: (name: string) => `Desinstalar ${name} de esta app`,
       uninstallDesktopConfirmBody: (name: string) =>
         `Esto elimina ${name} de la carpeta desktop-plugins de este equipo y lo descarga ahora. Puedes reinstalarlo desde Git o volver a poner la carpeta cuando quieras.`,
@@ -2820,7 +2819,7 @@ export const esOverrides = {
       },
       system: {
         title: 'Panel del sistema',
-        detail: 'Estado del gateway, registros, reinicio/actualización'
+        detail: 'Estado de Hermes, registros, reinicio/actualización'
       },
       usage: {
         title: 'Panel de uso',
@@ -2837,18 +2836,17 @@ export const esOverrides = {
     exportSession: 'Exportar sesión',
     deleteSession: 'Eliminar sesión',
     noSessions: 'Aún no hay sesiones.',
-    gatewayRunning: 'Gateway de mensajería en ejecución',
-    gatewayStopped: 'Gateway de mensajería detenido',
+    gatewayRunning: 'Mensajería en ejecución',
+    gatewayStopped: 'Mensajería detenida',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Sesiones activas ${count}`,
-    restartGateway: 'Reiniciar gateway',
+    restartGateway: 'Reiniciar Hermes',
     openBrowser: 'Alternar navegador',
     toggleBrowser: 'Alternar navegador',
-    gatewayRestartFailed: 'No se pudo reiniciar el gateway.',
-    sharedGatewayRestartTitle: '¿Reiniciar el gateway compartido?',
+    gatewayRestartFailed: 'No se pudo reiniciar Hermes.',
+    sharedGatewayRestartTitle: '¿Reiniciar Hermes para todos los agentes?',
     sharedGatewayRestartDescription: (bots: string) => `Todos los agentes de este dispositivo se reconectan: ${bots}`,
     sharedGatewayRestartConfirm: 'Reiniciar todo',
-    sharedGatewayRestarted: (count: number) =>
-      `Gateway compartido reiniciado (${count} ${count === 1 ? 'agente' : 'agentes'})`,
+    sharedGatewayRestarted: (count: number) => `Hermes reiniciado (${count} ${count === 1 ? 'agente' : 'agentes'})`,
     updateHermes: 'Actualizar Hermes',
     reloadWindow: 'Recargar ventana',
     actionRunning: 'en ejecución',
@@ -2938,19 +2936,19 @@ export const esOverrides = {
       connecting: 'Conectando',
       disabled: 'Deshabilitado',
       fatal: 'Error',
-      gateway_stopped: 'Gateway de mensajería detenido',
+      gateway_stopped: 'Mensajería detenida',
       not_configured: 'Necesita configuración',
       pending_restart: 'Reinicio necesario',
       retrying: 'Reintentando',
       startup_failed: 'Falló el inicio'
     },
     unknown: 'Desconocido',
-    hintPendingRestart: 'Reinicia el gateway desde la barra de estado para aplicar este cambio.',
-    sharedListenerUrl: 'Servido en el listener del gateway compartido en',
-    hintGatewayStopped: 'Inicia el gateway desde la barra de estado para conectar.',
+    hintPendingRestart: 'Reinicia Hermes desde la barra de estado para aplicar este cambio.',
+    sharedListenerUrl: 'Servido en el punto de escucha compartido de Hermes en',
+    hintGatewayStopped: 'Inicia Hermes desde la barra de estado para conectar.',
     credentialsSet: 'Credenciales definidas',
     needsSetup: 'Necesita configuración',
-    gatewayStopped: 'Gateway de mensajería detenido',
+    gatewayStopped: 'Mensajería detenida',
     getCredentials: 'Obtener credenciales',
     openSetupGuide: 'Abrir guía de configuración',
     required: 'Obligatorio',
@@ -2974,11 +2972,11 @@ export const esOverrides = {
     disableAria: name => `Desactivar ${name}`,
     platformEnabled: name => `${name} activado`,
     platformDisabled: name => `${name} desactivado`,
-    restartToApply: 'Reinicia el gateway para que este cambio surta efecto.',
+    restartToApply: 'Reinicia Hermes para que este cambio surta efecto.',
     setupSaved: name => `Configuración de ${name} guardada`,
-    restartToReconnect: 'Reinicia el gateway para reconectar con las credenciales nuevas.',
-    appliedLive: 'Aplicado al gateway en ejecución.',
-    connectingLive: 'El gateway en ejecución se está conectando con las credenciales nuevas.',
+    restartToReconnect: 'Reinicia Hermes para reconectar con las credenciales nuevas.',
+    appliedLive: 'Aplicado a Hermes en ejecución.',
+    connectingLive: 'Hermes se está conectando con las credenciales nuevas.',
     keyCleared: key => `${key} limpiado`,
     setupUpdated: name => `La configuración de ${name} se actualizó.`,
     failedUpdate: name => `No se pudo actualizar ${name}`,
@@ -3002,7 +3000,7 @@ export const esOverrides = {
     failedRevoke: name => `No se pudo revocar a ${name}`,
     pairingLockedOut: 'Demasiados fallos de aprobación — esta plataforma está bloqueada. Inténtalo de nuevo más tarde.',
     waitingSince: minutes => (minutes < 1 ? 'justo ahora' : `hace ${minutes}m`),
-    restartNeeded: 'Guardado. Reinicia el gateway de mensajería para que la nueva configuración surta efecto.',
+    restartNeeded: 'Guardado. Reinicia Hermes para que la nueva configuración surta efecto.',
     restartNow: 'Reiniciar ahora',
     restarting: 'Reiniciando…',
     restartFailedManual: 'Hermes no pudo reiniciarse para aplicar tu configuración de mensajería',
@@ -3033,7 +3031,7 @@ export const esOverrides = {
       qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
       managed: 'Gestionado por Team Gateway',
       managedNote: (platform: string) =>
-        `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+        `Team Gateway gestiona la mensajería en esta instancia, así que Hermes desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno de Hermes (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
       managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
       openPortal: 'Vincular cuentas en Nous Portal',
       noNewAccount: (platform: string) =>
@@ -3068,8 +3066,8 @@ export const esOverrides = {
       pairingExpired:
         'La vinculación con Telegram caducó. Inicia una nueva configuración por QR para volver a intentarlo.',
       stillWaiting: (detail: string) => `Seguimos esperando a Telegram. Reintentando tras: ${detail}`,
-      savedRestarting: 'Telegram guardado; reiniciando el gateway…',
-      savedRestartFailed: (detail: string) => `Telegram guardado; falló el reinicio del gateway${detail}`
+      savedRestarting: 'Telegram guardado; reiniciando Hermes…',
+      savedRestartFailed: (detail: string) => `Telegram guardado; falló el reinicio de Hermes${detail}`
     },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
@@ -3205,7 +3203,7 @@ export const esOverrides = {
     empty: 'Aún no hay suscripciones de webhook.',
     disabledTitle: 'Receptor de webhooks desactivado',
     disabledBody:
-      'Los webhooks tienen su propia plataforma de gateway. Actívalos aquí para aceptar eventos HTTP entrantes; los canales de chat solo son necesarios cuando una suscripción entrega contenido a Telegram, Discord, Slack u otro canal.',
+      'Los webhooks tienen su propia plataforma de Hermes. Actívalos aquí para aceptar eventos HTTP entrantes; los canales de chat solo son necesarios cuando una suscripción entrega contenido a Telegram, Discord, Slack u otro canal.',
     enable: 'Activar webhooks',
     enabling: 'Activando…',
     enabled: name => `Activado: "${name}"`,
@@ -3221,13 +3219,13 @@ export const esOverrides = {
     deleteFailed: name => `No se pudo eliminar "${name}"`,
     toggleFailed: (name, enabled) => `No se pudo ${enabled ? 'activar' : 'desactivar'} "${name}"`,
     newSubscription: 'Nueva suscripción',
-    restarting: 'Reiniciando el gateway…',
+    restarting: 'Reiniciando Hermes…',
     restartNeeded:
-      'Los webhooks están activados, pero el gateway todavía debe reiniciarse para que el receptor pueda ponerse en línea.',
-    restartGateway: 'Reiniciar gateway',
+      'Los webhooks están activados, pero Hermes todavía debe reiniciarse para que el receptor pueda ponerse en línea.',
+    restartGateway: 'Reiniciar Hermes',
     restartingGateway: 'Reiniciando…',
-    restartFailed: detail => `Falló el reinicio del gateway${detail}`,
-    enabledRestarting: 'Webhooks activados; reiniciando el gateway…',
+    restartFailed: detail => `Falló el reinicio de Hermes${detail}`,
+    enabledRestarting: 'Webhooks activados; reiniciando Hermes…',
     all: '(todos)',
     deliverOnly: 'solo entrega',
     createdTitle: 'Suscripción creada',
@@ -3285,9 +3283,9 @@ export const esOverrides = {
     switchToConnection: name => `Cambiar a ${name}`,
     switchConnectionFailed: name => `No se pudo conectar a ${name}`,
     manageProfiles: 'Gestionar agentes...',
-    connectGateway: 'Gestionar gateways…',
+    connectGateway: 'Gestionar máquinas…',
     fleet: {
-      allOnGateway: 'Todos los agentes de este gateway',
+      allOnGateway: 'Todos los agentes de esta máquina',
       gateway: (gateway: string) => `Agentes en ${gateway}`,
       gatewayUnreachable: (gateway: string) => `${gateway} · inaccesible`,
       onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
@@ -3321,7 +3319,7 @@ export const esOverrides = {
       plainTextOptIn:
         'Este equipo no tiene almacenamiento seguro de claves, así que el token se guardaría sin cifrar en el disco. Guardarlo de todos modos.',
       collisionWarning: (label: string) =>
-        `Ya existe un gateway llamado “${label}” en Configuración. Esta conexión del agente es independiente y no lo cambiará.`,
+        `Ya existe una máquina llamada “${label}” en Configuración. Esta conexión del agente es independiente y no la cambiará.`,
       confirmTitle: '¿Conectar este agente a un host remoto?',
       confirmNote: (profile: string, host: string) =>
         `Los chats nuevos de ${profile} se ejecutarán en ${host}. Ese equipo ejecutará comandos y leerá archivos allí, no en este. Conéctate solo a un host de confianza.`,
@@ -3524,7 +3522,8 @@ export const esOverrides = {
     failedSave: 'No se pudo guardar la programación',
     editTitle: 'Editar programación',
     createTitle: 'Nueva programación',
-    editDesc: 'Actualiza la frecuencia, las instrucciones o el destino. Los cambios se aplican en la próxima ejecución.',
+    editDesc:
+      'Actualiza la frecuencia, las instrucciones o el destino. Los cambios se aplican en la próxima ejecución.',
     createDesc:
       'Ejecuta instrucciones automáticamente cuando elijas. Usa sintaxis cron o una frase como "cada 15 minutos".',
     nameLabel: 'Nombre',
@@ -3657,10 +3656,10 @@ export const esOverrides = {
       noPR: 'Sin PR'
     },
     gatewayGroups: {
-      grouping: 'Gateway y agente',
+      grouping: 'Máquina y agente',
       rename: 'Renombrar grupo',
       aliasLabel: 'Nombre visible',
-      aliasHint: 'Solo el nombre visible; los nombres del gateway y del agente no cambian.',
+      aliasHint: 'Solo el nombre visible; los nombres de la máquina y del agente no cambian.',
       resetName: 'Restablecer nombre',
       moveUp: 'Subir',
       moveDown: 'Bajar',
@@ -3912,7 +3911,7 @@ export const esOverrides = {
         'Mostrar el uso de tokens y los límites de frecuencia; `reset` canjea un restablecimiento de límite de Codex acumulado',
       '/subscription': 'Ver tu plan de Nous y cambiarlo en el navegador',
       '/topup': 'Mostrar tu saldo de Nous y gestionar la facturación en el portal',
-      '/platform': 'Pausar, reanudar o listar una plataforma del gateway que falla',
+      '/platform': 'Pausar, reanudar o listar una plataforma de mensajería que falla',
       '/version': 'Mostrar la versión de Hermes Agent',
       '/debug': 'Subir un informe de depuración (información del sistema + registros) y obtener enlaces para compartir',
       '/model': 'Cambiar el modelo de esta sesión'
@@ -3956,7 +3955,7 @@ export const esOverrides = {
     queueCancelFailed: 'No se pudo quitar el turno en cola',
     queueLostDiscard: 'Descartar',
     queueLostDiscardTip:
-      'El gateway se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
+      'Hermes se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
     queueDroppedTitle: 'Entrada en cola descartada',
@@ -4344,7 +4343,7 @@ export const esOverrides = {
     retryAfterRun: 'Ya lo ejecuté -- reintentar',
     setupChoiceTitle: 'Configurar Hermes Desktop',
     setupChoiceDesc:
-      'Conecta esta app con un gateway de Hermes que ya esté en ejecución o instala Hermes localmente en este equipo.',
+      'Conecta esta app con una máquina que ya ejecute Hermes o instala Hermes localmente en este equipo.',
     connectExistingTitle: 'Conectar con un Hermes existente',
     connectExistingShort: 'Conectar existente',
     connectExistingDesc:
@@ -4354,28 +4353,28 @@ export const esOverrides = {
     localStartUnavailable: 'No se pudo iniciar la instalación local. Reinicia Hermes Desktop e inténtalo de nuevo.',
     remoteSetupTitle: 'Conectar con un Hermes existente',
     remoteSetupDesc:
-      'Introduce la URL de tu gateway. Hermes Desktop detectará si necesita un token o iniciar sesión en el navegador.',
-    remoteUrlTitle: 'URL del gateway',
-    remoteUrlDesc: 'Usa la URL base del gateway de Hermes e incluye https:// si es remoto.',
+      'Introduce la URL de tu máquina. Hermes Desktop detectará si necesita un token o iniciar sesión en el navegador.',
+    remoteUrlTitle: 'URL de la máquina',
+    remoteUrlDesc: 'Usa la URL base de Hermes en la máquina e incluye https:// si es remota.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
-    probing: 'Detectando la autenticación del gateway…',
+    probing: 'Detectando la autenticación de la máquina…',
     probeError:
       'Hermes no puede llegar a esa dirección. Comprueba la URL y que el otro equipo esté ejecutando Hermes; las opciones de inicio de sesión aparecen cuando responde.',
     probeErrorDetails: 'Detalles',
     identityProvider: 'tu proveedor de identidad',
     authTitle: 'Autenticación',
-    authNeedsOauth: provider => `Inicia sesión con ${provider} antes de probar este gateway.`,
+    authNeedsOauth: provider => `Inicia sesión con ${provider} antes de probar la conexión con esta máquina.`,
     authSignedIn: 'Inicio de sesión en el navegador completado.',
     connected: 'Conectado',
     signIn: 'Iniciar sesión',
     signInWith: provider => `Iniciar sesión con ${provider}`,
-    enterUrlFirst: 'Introduce primero la URL de un gateway.',
+    enterUrlFirst: 'Introduce primero la URL de una máquina.',
     signInIncomplete: 'La ventana de inicio de sesión se cerró antes de completar la autenticación.',
     tokenTitle: 'Token de sesión',
-    tokenDesc: 'Pega el token de sesión del archivo .env del gateway remoto.',
+    tokenDesc: 'Pega el token de sesión del archivo .env de Hermes en la máquina remota.',
     pasteSessionToken: 'Pegar token de sesión',
-    incompleteSignInTest: 'Inicia sesión antes de probar este gateway protegido con OAuth.',
-    incompleteTokenTest: 'Introduce un token de sesión antes de probar este gateway.',
+    incompleteSignInTest: 'Inicia sesión antes de probar la conexión protegida con OAuth a esta máquina.',
+    incompleteTokenTest: 'Introduce un token de sesión antes de probar la conexión con esta máquina.',
     testConnection: 'Probar conexión',
     testSucceeded: (baseUrl, version) => `Conectado a ${baseUrl}${version ? ` (${version})` : ''}.`,
     applyRemote: 'Aplicar y reconectar',
@@ -4560,7 +4559,7 @@ export const esOverrides = {
     gatewayMenu: {
       connectionLabel: 'Conexión',
       inferenceLabel: 'Inferencia',
-      gateway: 'Gateway',
+      gateway: 'Máquina',
       connected: 'Conectado',
       connecting: 'Conectando',
       offline: 'Sin conexión',
@@ -4568,7 +4567,7 @@ export const esOverrides = {
       inferenceNotReady: 'Inferencia no lista',
       checkingInference: 'Comprobando inferencia',
       disconnected: 'Desconectado',
-      reconnectGateway: 'Reconectar gateway',
+      reconnectGateway: 'Reconectar máquina',
       openSystem: 'Abrir panel del sistema',
       connection: label => `Conexión: ${label}`,
       recentActivity: 'Actividad reciente',
@@ -4607,15 +4606,15 @@ export const esOverrides = {
       openCommandCenter: 'Abrir Centro de comandos',
       showTerminal: 'Mostrar terminal',
       hideTerminal: 'Ocultar terminal',
-      gateway: 'Gateway',
-      gatewayReady: 'listo',
+      gateway: 'Máquina',
+      gatewayReady: 'lista',
       gatewayNeedsSetup: 'necesita configuración',
       gatewayUnavailable: 'inferencia no disponible',
       gatewayChecking: 'comprobando',
       gatewayConnecting: 'conectando',
       gatewayOffline: 'sin conexión',
-      gatewayRestarting: 'reiniciando…',
-      gatewayTitle: 'Puerta de enlace',
+      gatewayRestarting: 'reiniciando Hermes…',
+      gatewayTitle: 'Máquina',
       customizeTitle: 'Mostrar en la barra de estado',
       hideStatusbar: 'Ocultar barra de estado',
       resetStatusbar: 'Restablecer a valores predeterminados',
@@ -4740,11 +4739,11 @@ export const esOverrides = {
     terminalCloseOthers: 'Cerrar las demás',
     terminalCloseAll: 'Cerrar todo',
     terminalNewOn: 'Nueva terminal en…',
-    terminalGatewayRemoved: 'Gateway eliminado',
+    terminalGatewayRemoved: 'Máquina eliminada',
     terminalGatewayRemovedBody:
-      'Se eliminó el gateway donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
+      'Se eliminó la máquina donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
     terminalGatewayNoShellBody:
-      'Este gateway no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
+      'Esta máquina no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
     terminalDisconnectedBody:
       'Terminal desconectada. Pulsa Intro para iniciar una nueva shell; el historial se conserva.',
     addToChat: 'Añadir al chat'
@@ -5417,7 +5416,7 @@ export const esOverrides = {
       'Revisa el comando antes de introducir tu contraseña de sudo. La contraseña se envía al agente que lo ejecuta y se guarda en caché durante esta sesión.',
     sudoCommandUnavailable: 'Este agente no indicó el comando. Cancela si no puedes verificarlo en la conversación.',
     sudoInstallDesc:
-      'Hermes necesita tu contraseña de sudo para instalar los paquetes de la pantalla del agente (TigerVNC + Xfce) en el host del gateway. Solo se envía a ese host.',
+      'Hermes necesita tu contraseña de sudo para instalar los paquetes de la pantalla del agente (TigerVNC + Xfce) en la máquina conectada. Solo se envía a esa máquina.',
     sudoPlaceholder: 'contraseña sudo',
     secretTitle: 'Se requiere un secreto',
     secretDesc: 'Hermes necesita una credencial para continuar.',
@@ -5483,7 +5482,7 @@ export const esOverrides = {
       'Este chat está abierto como transcripción de solo lectura: el envío está desactivado.',
     resumeStrandedTitle: 'No se pudo cargar esta sesión',
     resumeStrandedBody:
-      'No se pudo conectar con esta sesión y se agotaron los reintentos automáticos. Comprueba que el gateway esté en ejecución y vuelve a intentarlo.',
+      'No se pudo conectar con esta sesión y se agotaron los reintentos automáticos. Comprueba que Hermes esté en ejecución en la máquina y vuelve a intentarlo.',
     poolSlotTimeoutBody:
       'Hay demasiados agentes en ejecución a la vez para el límite de este equipo. Sube el límite en Configuración → Avanzado o espera a que termine uno y reinténtalo.',
     poolSlotTimeoutOpenSettings: 'Abrir configuración avanzada',

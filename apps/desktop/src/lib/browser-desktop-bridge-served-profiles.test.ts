@@ -71,8 +71,12 @@ describe('profiles the serving gateway does not serve', () => {
     ])
 
     const roster = await desktop.getAgentRoster?.()
-    expect(roster?.sources).toEqual([expect.objectContaining({ connectionId: 'local', kind: 'local', reachable: true })])
-    expect(roster?.agents.find(agent => agent.profile === 'research')).toEqual(expect.not.objectContaining({ reachable: false }))
+    expect(roster?.sources).toEqual([
+      expect.objectContaining({ connectionId: 'local', kind: 'local', reachable: true })
+    ])
+    expect(roster?.agents.find(agent => agent.profile === 'research')).toEqual(
+      expect.not.objectContaining({ reachable: false })
+    )
     expect(roster?.agents.find(agent => agent.profile === 'solo')).toMatchObject({
       connectionId: 'local',
       profile: 'solo',
@@ -99,7 +103,9 @@ describe('profiles the serving gateway does not serve', () => {
     ])
 
     const roster = await desktop.getAgentRoster?.()
-    expect(roster?.agents.find(agent => agent.profile === 'research')).toEqual(expect.not.objectContaining({ reachable: false }))
+    expect(roster?.agents.find(agent => agent.profile === 'research')).toEqual(
+      expect.not.objectContaining({ reachable: false })
+    )
     expect(roster?.agents.find(agent => agent.profile === 'default')?.reachable).toBe(false)
     await expect(desktop.getConnection('default')).resolves.toMatchObject({ sharedPrimary: false })
     await expect(desktop.getConnectionFor?.({ connectionId: 'local', profile: 'default' })).resolves.toMatchObject({
@@ -124,19 +130,27 @@ describe('profiles the serving gateway does not serve', () => {
   })
 
   it('refuses a dial to one with the reason, before minting a ticket the gateway would reject', async () => {
-    const fetchMock = stubGateway({ profiles: ['default', 'research', 'solo'], status: reports(['default', 'research']) })
+    const fetchMock = stubGateway({
+      profiles: ['default', 'research', 'solo'],
+      status: reports(['default', 'research'])
+    })
+
     const desktop = installServedBridge()
     await desktop.getProfileRoutes?.(['solo'])
 
-    const refusal = 'This gateway does not serve profile "solo", so this tab cannot open it.'
-    await expect(resolveDesktopGatewayWsUrl(desktop, await desktop.getConnection('solo'))).rejects.toThrow(refusal)
+    await expect(resolveDesktopGatewayWsUrl(desktop, await desktop.getConnection('solo'))).rejects.toMatchObject({
+      name: 'UnservedProfileError',
+      profile: 'solo'
+    })
     await expect(
       resolveDesktopGatewayWsUrl(desktop, await desktop.getConnectionFor!({ connectionId: 'local', profile: 'solo' }))
-    ).rejects.toThrow(refusal)
+    ).rejects.toMatchObject({ name: 'UnservedProfileError', profile: 'solo' })
     expect(callsTo(fetchMock, '/api/webapp/socket-ticket')).toBe(0)
 
     // The tab's own socket and a served profile still mint their tickets.
-    await expect(resolveDesktopGatewayWsUrl(desktop, await desktop.getConnection())).resolves.toContain('ticket=one-use')
+    await expect(resolveDesktopGatewayWsUrl(desktop, await desktop.getConnection())).resolves.toContain(
+      'ticket=one-use'
+    )
     await expect(desktop.getGatewayWsUrl('research')).resolves.toMatchObject({ ok: true })
     expect(callsTo(fetchMock, '/api/webapp/socket-ticket')).toBe(2)
   })
@@ -151,8 +165,14 @@ describe('profiles the serving gateway does not serve', () => {
     // Served now, but the cached set predates that: the URL answers from the cache and fetches nothing.
     gateway.profiles = [...gateway.profiles, 'fresh']
     gateway.status = reports(['default', 'fresh'])
-    await expect(desktop.getGatewayWsUrl('fresh')).rejects.toThrow('does not serve profile "fresh"')
-    await expect(desktop.getGatewayWsUrl('solo')).rejects.toThrow('does not serve profile "solo"')
+    await expect(desktop.getGatewayWsUrl('fresh')).rejects.toMatchObject({
+      name: 'UnservedProfileError',
+      profile: 'fresh'
+    })
+    await expect(desktop.getGatewayWsUrl('solo')).rejects.toMatchObject({
+      name: 'UnservedProfileError',
+      profile: 'solo'
+    })
     expect(fetchMock).toHaveBeenCalledTimes(reads)
   })
 })
@@ -234,7 +254,11 @@ describe('the served set read', () => {
   })
 
   it('is one /api/profiles read for concurrent inventory reads, as both mounted pickers make on one refresh', async () => {
-    const fetchMock = stubGateway({ profiles: ['default', 'research', 'solo'], status: reports(['default', 'research']) })
+    const fetchMock = stubGateway({
+      profiles: ['default', 'research', 'solo'],
+      status: reports(['default', 'research'])
+    })
+
     const desktop = installServedBridge()
 
     const [rail, statusbar] = await Promise.all([desktop.getAgentRoster?.(), desktop.getAgentRoster?.()])

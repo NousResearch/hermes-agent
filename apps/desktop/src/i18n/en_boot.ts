@@ -6,7 +6,7 @@ export const enBoot = {
     ready: 'Hermes Desktop is ready',
     desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
     steps: {
-      connectingGateway: 'Connecting live desktop gateway',
+      connectingGateway: 'Connecting to the machine',
       loadingSettings: 'Loading Hermes settings',
       loadingSessions: 'Loading recent sessions',
       retryingRemoteBackend: 'Reconnecting to the remote Hermes backend…',
@@ -46,15 +46,15 @@ export const enBoot = {
       description:
         "Hermes' background service didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
       details: 'Details',
-      remoteTitle: 'Remote gateway sign-in required',
+      remoteTitle: 'Remote machine sign-in required',
       remoteDescription:
-        'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
+        'Your remote machine session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
       webappTitle: 'Sign in to Hermes',
       webappDescription: 'Run hermes webapp on this computer to sign this browser in.',
       retry: 'Retry',
       repairInstall: 'Repair install',
-      useLocalGateway: 'Use local gateway',
-      gatewaySettings: 'Gateway settings',
+      useLocalGateway: 'Use local machine',
+      gatewaySettings: 'Machine settings',
       back: 'Back',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
@@ -62,12 +62,12 @@ export const enBoot = {
         'This bundled install can’t repair itself from inside the app — reinstall the app to restore its backend.',
       reinstallApp: 'Reinstall the app',
       remoteSignInHint: signInLabel =>
-        `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local gateway to switch to the bundled backend instead.`,
+        `Signs out of the saved remote browser session, then opens ${signInLabel}. Use local machine to switch to the bundled backend instead.`,
       signOutAndSignIn: 'Sign out & sign in',
-      remoteFailureHint: 'Check the gateway URL and sign-in under Gateway settings, or switch to the local gateway.',
+      remoteFailureHint: 'Check the machine URL and sign-in under Machine settings, or switch to the local machine.',
       cloudDownTitle: 'Nous Cloud agent is down',
       cloudDownDescription:
-        'The Nous-managed cloud agent this gateway connects to is returning a server error. It cannot be restarted from here — check its status, switch to the local gateway, or get support.',
+        'The Nous-managed cloud agent you are connected to is returning a server error. It cannot be restarted from here — check its status, switch to the local machine, or get support.',
       cloudDownHint:
         'The buttons below open the Nous Portal (instance status and controls) and our Discord for support.',
       cloudDownCheckPortal: 'Check Portal status',
@@ -75,11 +75,11 @@ export const enBoot = {
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',
       signedInTitle: 'Signed in',
-      signedInMessage: 'Reconnecting to the remote gateway…',
+      signedInMessage: 'Reconnecting to the remote machine…',
       signInIncompleteTitle: 'Sign-in incomplete',
       signInIncompleteMessage: 'The login window closed before authentication finished.',
       signInFailed: 'Sign-in failed',
-      signInToRemoteGateway: 'Sign in to remote gateway',
+      signInToRemoteGateway: 'Sign in to remote machine',
       signInWithProvider: provider => `Sign in with ${provider}`,
       identityProvider: 'your identity provider'
     },

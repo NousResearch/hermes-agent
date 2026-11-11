@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { isBrowserHostedDesktop } from '@/lib/platform'
@@ -58,18 +57,23 @@ export function SimplifiedGatewayHeader({
         'flex min-h-8.5 items-center gap-2 rounded-sm px-2 py-1.5 text-xs',
         selected && 'bg-(--chrome-action-hover)'
       )}
+      data-connected={connected}
       data-slot="gateway-heading"
       role="group"
     >
       {onToggle && (
         <Tip label={toggleLabel}>
           <Button aria-expanded={open} aria-label={toggleLabel} onClick={onToggle} size="icon-xs" variant="grip">
-            <Codicon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+            <span aria-label={status} className="portal-machine-state" data-connected={connected} role="img" />
           </Button>
         </Tip>
       )}
+      {!onToggle && <span aria-label={status} className="portal-machine-state" data-connected={connected} role="img" />}
       <span className="min-w-0 flex-1">
-        <span className="block truncate font-medium text-(--ui-text-primary)" title={address ? `${label} · ${address}` : label}>
+        <span
+          className="block truncate font-medium text-(--ui-text-primary)"
+          title={address ? `${label} · ${address}` : label}
+        >
           {label}
         </span>
       </span>
@@ -79,8 +83,7 @@ export function SimplifiedGatewayHeader({
           connected ? 'text-green-600 dark:text-green-400' : 'text-(--ui-text-tertiary)'
         )}
       >
-        <span aria-hidden className="size-1.5 rounded-full bg-current" />
-        {status}
+        {connected ? registered?.org || status : status}
       </span>
     </div>
   )

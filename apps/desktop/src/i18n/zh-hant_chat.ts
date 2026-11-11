@@ -127,7 +127,7 @@ export const zhHantChat = {
       '/usage': '顯示 Token 用量與速率限制；`reset` 可兌換保留的 Codex 限額重設',
       '/subscription': '檢視你的 Nous 方案，並在瀏覽器中變更',
       '/topup': '顯示你的 Nous 餘額，並在 Portal 管理帳務',
-      '/platform': '暫停、恢復或列出故障的閘道平台',
+      '/platform': '暫停、恢復或列出故障的訊息平台',
       '/version': '顯示 Hermes Agent 版本',
       '/debug': '上傳偵錯報告（系統資訊與記錄），並取得可分享連結',
       '/model': '切換此工作階段的模型'
@@ -371,14 +371,14 @@ export const zhHantChat = {
   },
 
   prompts: {
-    gatewayDisconnected: 'Hermes 閘道未連線',
+    gatewayDisconnected: '機器未連線',
     sudoSendFailed: '無法傳送 sudo 密碼',
     secretSendFailed: '無法傳送密鑰',
     sudoTitle: '管理員密碼',
     sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的智慧體，並在本次工作階段中快取。',
     sudoCommandUnavailable: '此智慧體未提供指令。如果無法在對話中確認，請取消。',
     sudoInstallDesc:
-      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝智慧體畫面套件（TigerVNC + Xfce）。它只會傳送到該主機。',
+      'Hermes 需要您的 sudo 密碼，以在連線的機器上安裝智慧體畫面套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',
@@ -443,7 +443,7 @@ export const zhHantChat = {
       '尚無已連線的後端認領這個較早的對話，因此它以唯讀逐字稿方式開啟。歷史紀錄完好；在有後端認領之前無法傳送訊息。',
     readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
     resumeStrandedTitle: '無法載入此工作階段',
-    resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
+    resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認 Hermes 正在執行，然後重試。',
     poolSlotTimeoutBody:
       '所有本機智慧體後端插槽目前都在使用中。請在「設定」→「進階」中增加預熱智慧體後端數量，或等待閒置後端被移除後重試。',
     poolSlotTimeoutOpenSettings: '開啟進階設定',
@@ -502,7 +502,7 @@ export const zhHantChat = {
       success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,
       systemNote: platform => `↻ 已移交到 ${platform} — 隨時可在此處恢復。`,
       failed: error => `移交失敗：${error}`,
-      timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
+      timedOut: '等待 Hermes 逾時。`hermes gateway` 是否正在執行？'
     }
   },
 

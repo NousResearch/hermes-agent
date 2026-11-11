@@ -11,6 +11,6 @@ export const jaPluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllFailed: 'プラグインを更新できませんでした',
   autoUpdate: '自動更新',
   autoUpdateTip: (hours: number) =>
-    `ゲートウェイの確認時（${hours} 時間ごと）にプラグインの更新を自動で適用します。更新されたコードは新しいセッションで読み込まれます。`,
+    `Hermes の確認時（${hours} 時間ごと）にプラグインの更新を自動で適用します。更新されたコードは新しいセッションで読み込まれます。`,
   autoUpdateFailed: 'プラグインの自動更新を変更できませんでした'
 }

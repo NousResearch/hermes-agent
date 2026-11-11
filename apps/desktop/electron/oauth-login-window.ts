@@ -115,7 +115,7 @@ export function startOauthLoginWindow<S>(
     try {
       win = deps.createWindow({
         session,
-        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
+        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes',
         // Silent windows start hidden: the auto-SSO chain normally finishes
         // in well under a second and never needs to be seen.
         show: !silent && !hiddenRecovery

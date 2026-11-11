@@ -138,8 +138,7 @@ export const arAssistant = {
         },
         truncated: {
           title: 'انقطع الرد قبل اكتماله',
-          body: (_provider, model) =>
-            `توقف ${model || 'النموذج'} قبل أن يُنهي ردّه. اختر «متابعة» ليكمل من حيث توقف.`
+          body: (_provider, model) => `توقف ${model || 'النموذج'} قبل أن يُنهي ردّه. اختر «متابعة» ليكمل من حيث توقف.`
         },
         invalid_response: {
           title: 'تعذّرت قراءة الرد',
@@ -285,7 +284,7 @@ export const arAssistant = {
       attachingFile: 'جار إرفاق الملف'
     },
     approval: {
-      gatewayDisconnected: 'البوابة غير متصلة',
+      gatewayDisconnected: 'الجهاز غير متصل',
       sendFailed: 'فشل الإرسال',
       run: 'تشغيل',
       command: 'الأمر',
@@ -300,7 +299,7 @@ export const arAssistant = {
     },
     clarify: {
       notReady: 'غير جاهز',
-      gatewayDisconnected: 'البوابة غير متصلة',
+      gatewayDisconnected: 'الجهاز غير متصل',
       sendFailed: 'فشل الإرسال',
       loadingQuestion: 'جار تحميل السؤال...',
       other: 'غير ذلك',

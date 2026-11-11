@@ -5,7 +5,7 @@ export const zhFirstRun: FirstRunCopy = {
     title: '设置 Hermes',
     resume: '继续设置',
     upgradeRequired:
-      '此网关需要更新才能进行无会话设置。请在其主机上运行 hermes update，重启网关，然后重试。你的聊天保持不变。',
+      '此机器上的 Hermes 需要更新才能进行无会话设置。请在该机器上运行 hermes update，重启 Hermes，然后重试。你的聊天保持不变。',
     intro: '完成几项可选偏好设置后，即可正常聊天。设置过程不会创建对话。',
     appearance: '外观',
     model: '选择模型',

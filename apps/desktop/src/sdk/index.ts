@@ -1113,7 +1113,7 @@ export const host = {
           // (explicit): a synthesized local route is never in getProfileRoutes,
           // so checking it would spuriously abort a local bot's hydration retry.
           if (explicitRoute && !(await pluginRouteStillRegistered(explicitRoute))) {
-            throw new Error(`The ${targetProfile} gateway is no longer available.`)
+            throw new Error(`The machine running ${targetProfile} is no longer available.`)
           }
 
           // Logged per attempt so a support bundle shows the retry happened at

@@ -17,9 +17,9 @@ import { zhHantSettings } from './zh-hant_settings'
 export const zhHantOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['zh-hant'],
   gatewayGroupOpen: {
-    opening: "正在開啟群組聊天…",
-    lookupFailed: "無法在閘道上查找此群組，請重試。",
-    missing: "此群組聊天已不存在。"
+    opening: '正在開啟群組聊天…',
+    lookupFailed: '無法在機器上查找此群組，請重試。',
+    missing: '此群組聊天已不存在。'
   },
 
   catalog: {
@@ -181,7 +181,7 @@ export const zhHantOverrides = {
     restoreImageDraft: '還原圖片草稿',
     queueCancelFailed: '無法移除排隊的回合',
     queueLostDiscard: '捨棄',
-    queueLostDiscardTip: '閘道在該回合進行中重新啟動，無法完成。捨棄後其後的排隊回合將繼續執行。'
+    queueLostDiscardTip: 'Hermes 在該回合進行中重新啟動，無法完成。捨棄後其後的排隊回合將繼續執行。'
   },
   statusStack: zhHantChat.statusStack,
   updates: zhHantBoot.updates,

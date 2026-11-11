@@ -17,7 +17,7 @@ export const deUpdateChannel = {
   rollbackBody: (v: string) =>
     `Dieser Build ist neuer als das stabile Release ${v}. Die Installation setzt Hermes auf dieses Release zurück.`,
   heldBody: (v: string) =>
-    `Dieser Build ist neuer als das stabile Release ${v}, und deine Sitzungen nutzen bereits seine Gateway-Laufzeit, die ${v} nicht öffnen kann. Hermes bleibt bei diesem Build, bis ein neueres stabiles Release erscheint.`,
+    `Dieser Build ist neuer als das stabile Release ${v}, und deine Sitzungen nutzen bereits seine Hermes-Laufzeit, die ${v} nicht öffnen kann. Hermes bleibt bei diesem Build, bis ein neueres stabiles Release erscheint.`,
   rollbackAction: (v: string) => `Zurück auf ${v}`,
   allChanges: 'Alle Änderungen ansehen'
 }

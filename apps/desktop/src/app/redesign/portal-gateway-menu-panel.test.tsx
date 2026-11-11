@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import { getLogs } from '@/hermes'
+import { en } from '@/i18n/en'
 import { $interfaceMode } from '@/store/interface-mode'
 
 const mocks = vi.hoisted(() => ({
@@ -69,7 +70,7 @@ describe('GatewayMenuPanel reconnect action', () => {
 
     renderPanel('closed')
 
-    const reconnect = screen.getByRole('button', { name: 'Reconnect gateway' })
+    const reconnect = screen.getByRole('button', { name: en.shell.gatewayMenu.reconnectGateway })
     fireEvent.click(reconnect)
     fireEvent.click(reconnect)
 
@@ -83,7 +84,7 @@ describe('GatewayMenuPanel reconnect action', () => {
     renderPanel('open')
     await act(async () => undefined)
 
-    const reconnect = screen.getByRole('button', { name: 'Reconnect gateway' })
+    const reconnect = screen.getByRole('button', { name: en.shell.gatewayMenu.reconnectGateway })
     await act(async () => fireEvent.click(reconnect))
     expect(mocks.reconnectGateway).toHaveBeenCalledOnce()
   })
@@ -92,7 +93,7 @@ describe('GatewayMenuPanel reconnect action', () => {
     $interfaceMode.set('simple')
     renderPanel('open')
     expect(getLogs).not.toHaveBeenCalled()
-    expect(screen.queryByRole('button', { name: 'Restart gateway' })).toBeNull()
+    expect(screen.queryByRole('button', { name: en.commandCenter.restartGateway })).toBeNull()
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Recent activity' })))
     expect(getLogs).toHaveBeenCalledOnce()
     expect(screen.getByRole('button', { name: 'Recent activity' }).getAttribute('aria-expanded')).toBe('true')

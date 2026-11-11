@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
@@ -8,7 +9,7 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { CANONICAL_CHAT_TITLE } from '@/plugins/hermes-bots/canonical-chat'
-import { botRosterKey } from '@/plugins/hermes-bots/data'
+import { $lastRoster, botRosterKey } from '@/plugins/hermes-bots/data'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { botWorkspaceOwnerKey } from '@/plugins/hermes-bots/routing'
 import type { RosterRow } from '@/plugins/hermes-bots/types'
@@ -19,12 +20,20 @@ import { $sessionTiles } from '@/store/session-states'
 
 import type { SimplifiedAgent } from './use-simplified-agents'
 
-export function SimplifiedBotChatRow({ agent }: { agent: SimplifiedAgent }) {
+interface SimplifiedBotChatRowProps {
+  agent: SimplifiedAgent
+  appearance?: 'card' | 'hidden'
+  summary?: ReactNode
+  onOpen?: () => void
+}
+
+export function SimplifiedBotChatRow({ agent, appearance = 'card', summary, onOpen }: SimplifiedBotChatRowProps) {
   const opened = useStore($openBotChat)
   const pending = useStore($pendingBotOpen)
   const focused = useStore($focusedStoredSessionId)
   const tiles = useStore($sessionTiles)
   const colors = useStore($profileColors)
+  const roster = useStore($lastRoster)
 
   const bot: RosterRow = {
     name: agent.profile,
@@ -36,6 +45,7 @@ export function SimplifiedBotChatRow({ agent }: { agent: SimplifiedAgent }) {
   }
 
   const key = botRosterKey(bot)
+  const description = roster.find(row => botRosterKey(row) === key)?.description
   const loading = pending?.key === key
 
   const tile = tiles.find(item => item.storedSessionId === focused)
@@ -53,23 +63,39 @@ export function SimplifiedBotChatRow({ agent }: { agent: SimplifiedAgent }) {
         aria-busy={loading || undefined}
         aria-current={selected ? 'page' : undefined}
         className={cn(
-          'portal-agent-chat flex min-h-8.5 w-full min-w-0 items-center gap-2 rounded-sm px-2 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring',
+          'portal-agent-chat flex min-w-0 flex-1 items-center text-left focus-visible:outline-2 focus-visible:outline-ring',
           selected && 'bg-(--chrome-action-hover)'
         )}
+        data-appearance={appearance}
         disabled={loading}
         onClick={() => {
           recordIaAction('ia.session.opened_agent')
-          void openRosterBot(bot)
+
+          if (onOpen) {
+            onOpen()
+          } else {
+            void openRosterBot(bot)
+          }
         }}
       >
-        {loading ? (
-          <span className="grid size-5 shrink-0 place-items-center">
-            <Codicon className="animate-spin" name="loading" />
-          </span>
-        ) : (
-          <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} />
-        )}
-        <span className="min-w-0 truncate">{agent.label}</span>
+        {appearance !== 'hidden' &&
+          (loading ? (
+            <span className="portal-agent-avatar grid shrink-0 place-items-center">
+              <Codicon className="animate-spin" name="loading" />
+            </span>
+          ) : (
+            <FigmaAgentIcon
+              className="portal-agent-avatar"
+              color={resolveProfileColor(agent.profile, colors)}
+              variant="outline"
+            />
+          ))}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{agent.label}</span>
+          {(summary || (appearance === 'card' && description)) && (
+            <span className="portal-agent-subtitle block truncate">{summary || description}</span>
+          )}
+        </span>
       </RowButton>
     </Tip>
   )

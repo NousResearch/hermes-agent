@@ -23,25 +23,24 @@ export const esDesktopCommands = {
   processesHeader: (count: string) => `Procesos en segundo plano (${count}):`,
   configHeader: 'Configuración (pantalla, aprobaciones, pegado y voz; no se muestra nada más):',
   configDefaults: '(valores predeterminados)',
-  configFooter:
-    'Cambia los ajustes en Ajustes, o edita config.yaml con `hermes config edit` en el host de la pasarela.',
+  configFooter: 'Cambia los ajustes en Ajustes, o edita config.yaml con `hermes config edit` en la máquina conectada.',
   historyHeader: (count: string) => `Historial de la conversación (${count} mensajes):`,
   historyEmpty: 'Todavía no hay mensajes.',
   historyYou: 'Tú',
   historyHermes: 'Hermes',
   saveUsage: 'uso: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
-    'No guardado: esta pasarela no puede exportar una copia censurada, con nombre o que no sea JSON. Actualiza la pasarela o ejecuta /save sin opciones para escribir el JSON sin procesar en el host de la pasarela.',
-  savedOnHost: (path: string) => `Guardado en el host de la pasarela: ${path}`,
+    'No guardado: Hermes en esta máquina no puede exportar una copia censurada, con nombre o que no sea JSON. Actualiza Hermes o ejecuta /save sin opciones para escribir el JSON sin procesar en la máquina conectada.',
+  savedOnHost: (path: string) => `Guardado en la máquina conectada: ${path}`,
   unknownPath: '(ruta desconocida)',
   saveUnsupported: 'error: esta versión de escritorio no puede guardar archivos',
   saveDialogTitle: 'Guardar conversación',
   savedTo: (path: string) => `Conversación guardada en ${path}`,
   saveCancelled: 'No guardado (cancelado).',
   exportRemote:
-    '/export empaqueta un agente desde el host de la pasarela, que no es este equipo. Ejecuta `hermes profile export` en ese host.',
+    '/export empaqueta un agente desde la máquina conectada, que no es este equipo. Ejecuta `hermes profile export` en esa máquina.',
   importRemote:
-    '/import instala un agente en el host de la pasarela, que no es este equipo. Ejecuta `hermes profile import <archive>` en ese host.',
+    '/import instala un agente en la máquina conectada, que no es este equipo. Ejecuta `hermes profile import <archive>` en esa máquina.',
   timestampsUsage: 'uso: /timestamps [on|off|status]',
   timestampsOn:
     'Marcas de tiempo: activadas (esta ventana; configura display.timestamps en config.yaml para conservarlo)',

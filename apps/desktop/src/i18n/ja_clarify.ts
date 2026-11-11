@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const jaClarify: Partial<ClarifyCopy> = {
   notReady: '明確化リクエストはまだ準備できていません',
-  gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
+  gatewayDisconnected: 'マシンに接続されていません',
   sendFailed: '明確化応答を送信できませんでした',
   loadingQuestion: '質問を読み込み中…',
   other: 'その他（回答を入力）',

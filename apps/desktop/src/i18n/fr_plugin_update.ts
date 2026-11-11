@@ -4,7 +4,8 @@ import type { PluginUpdateTranslations } from './types_plugin_update'
 export const frPluginUpdate: PluginUpdateTranslations = {
   folderAccess: {
     title: 'Accès aux dossiers',
-    hint: (name: string) => `${name} peut lire et modifier les fichiers de ces dossiers. Une révocation prend effet immédiatement.`,
+    hint: (name: string) =>
+      `${name} peut lire et modifier les fichiers de ces dossiers. Une révocation prend effet immédiatement.`,
     revoke: 'Révoquer',
     revokeLabel: (path: string) => `Révoquer l’accès à ${path}`,
     revoked: (name: string, path: string) => `${name} ne peut plus utiliser ${path}.`,
@@ -18,7 +19,7 @@ export const frPluginUpdate: PluginUpdateTranslations = {
   updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,
   updateFailed: (name: string) => `Impossible de mettre à jour ${name}`,
   updated: (name: string) =>
-    `${name} mis à jour vers l’épinglage actuel du catalogue. Redémarrez le gateway pour l’appliquer.`,
+    `${name} mis à jour vers l’épinglage actuel du catalogue. Redémarrez Hermes pour l’appliquer.`,
   updateConsentTitle: (name: string) => `${name} demande davantage`,
   updateConsentBody: (name: string, sha: string) =>
     `Le nouvel épinglage de ${name} dans le catalogue (${sha}) ajoute des surfaces que la version installée n’a pas. Appliquez-le uniquement si vous leur faites confiance :`,
@@ -30,5 +31,5 @@ export const frPluginUpdate: PluginUpdateTranslations = {
   updateScanConfirm: 'Mettre à jour quand même',
   updateScanBlocked: (name: string) =>
     `L’analyse de sécurité a bloqué la mise à jour de ${name} (verdict « dangereux »). Impossible de passer outre.`,
-  updatedGit: (name: string) => `${name} a été mis à jour vers le dernier commit.`,
+  updatedGit: (name: string) => `${name} a été mis à jour vers le dernier commit.`
 }

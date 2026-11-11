@@ -4,15 +4,11 @@ import { useNavigate } from 'react-router'
 
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { FadeScroll } from '@/components/ui/fade-scroll'
-import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { $sidebarAgentScroll } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
-import { recordAction } from '@/store/desktop-metrics'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { recordIaAction } from '@/store/ia-metrics'
 import { notifyError } from '@/store/notifications'
@@ -20,37 +16,29 @@ import { $activeGatewayProfile, ensureGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import { setSettingsScope } from '@/store/settings-scope'
 
-import { SimplifiedBotChatRow } from './simplified-bot-chat-row'
-import { SimplifiedGatewayHeader } from './simplified-gateway-header'
-import { startSimplifiedAgentSession } from './simplified-new-session-model'
+import { PortalAgentGroups } from './portal/portal-agent-groups'
 import { useFleetRoster } from './use-fleet-roster'
 import type { SimplifiedAgent, useSimplifiedAgents } from './use-simplified-agents'
 
-export function SimplifiedAgentList({
-  agents,
-  expanded,
-  onToggle,
-  renderSessions,
-  revealSession,
-  searching = false
-}: {
-  searching?: boolean
+interface SimplifiedAgentListProps {
+  query: string
   revealSession?: { key: string } | null
   agents: ReturnType<typeof useSimplifiedAgents>
+  allSessions: SessionInfo[]
   expanded: Record<string, boolean>
   onToggle: (id: string, open: boolean) => void
+  onResumeSession: (id: string, row?: SessionInfo) => void
   renderSessions: (sessions: SessionInfo[], agent: SimplifiedAgent) => ReactNode
-}) {
+}
+
+function useOpenAgent(owner: string | null) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const registry = useStore($connectionsRegistry)
   const activeConnection = useStore($activeConnectionId)
-  const activeProfile = useStore($activeGatewayProfile)
   const [pending, setPending] = useState<string | null>(null)
-  useFleetRoster(true)
-  const { agents: sorted, owner, sessionsByAgent } = agents
 
-  async function openAgent(agent: (typeof sorted)[number]) {
+  async function openAgent(agent: SimplifiedAgent) {
     const state =
       agent.connectionId === (activeConnection ?? owner)
         ? $gatewayState.get()
@@ -60,13 +48,14 @@ export function SimplifiedAgentList({
       recordIaAction('ia.gateway.offline_agent')
     }
 
+    const profile = agent.targetProfile || agent.profile
     setPending(agent.id)
 
     try {
       if (agent.connectionId && registry?.connections.some(connection => connection.id === agent.connectionId)) {
-        await selectConnection(agent.connectionId, { profile: agent.profile })
+        await selectConnection(agent.connectionId, { profile })
 
-        if ($activeConnectionId.get() !== agent.connectionId || $activeGatewayProfile.get() !== agent.profile) {
+        if ($activeConnectionId.get() !== agent.connectionId || $activeGatewayProfile.get() !== profile) {
           return
         }
       } else {
@@ -74,13 +63,16 @@ export function SimplifiedAgentList({
           throw new Error(t.profiles.fleet.gatewayUnreachable(agent.gateway))
         }
 
-        await ensureGatewayProfile(agent.profile)
+        await ensureGatewayProfile(profile)
       }
 
-      setSettingsScope(agent.profile)
-      const params = new URLSearchParams({ agentProfile: agent.profile })
+      setSettingsScope(profile)
+      const params = new URLSearchParams({ agentProfile: profile })
 
-      if (agent.connectionId) {params.set('connection', agent.connectionId)}
+      if (agent.connectionId) {
+        params.set('connection', agent.connectionId)
+      }
+
       navigate(`${SETTINGS_ROUTE}?${params}`)
     } catch (error) {
       notifyError(error, t.errors.genericFailure)
@@ -89,7 +81,26 @@ export function SimplifiedAgentList({
     }
   }
 
+  return { openAgent, pending }
+}
+
+function useAgentScroll({ agents, allSessions, revealSession }: SimplifiedAgentListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const initialScroll = useRef($sidebarAgentScroll.get())
+  const restored = useRef(false)
+
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+
+    if (!scroller || restored.current) {
+      return
+    }
+
+    scroller.scrollTop = initialScroll.current
+    // Roster/session loading can temporarily make the list shorter than its saved position.
+    restored.current = scroller.scrollHeight - scroller.clientHeight >= initialScroll.current
+  }, [agents.agents.length, allSessions.length])
+
   useLayoutEffect(() => {
     const scroller = scrollRef.current
 
@@ -105,10 +116,10 @@ export function SimplifiedAgentList({
       return
     }
 
+    restored.current = true
     const viewport = scroller.getBoundingClientRect()
     const bounds = row.getBoundingClientRect()
 
-    // Leave the revealed row clear of this list's min(2.5rem, 25%) edge fades.
     const inset = Math.min(
       parseFloat(getComputedStyle(document.documentElement).fontSize) * 2.5 || 40,
       scroller.clientHeight / 4
@@ -123,103 +134,57 @@ export function SimplifiedAgentList({
     }
   }, [revealSession])
 
-  const gateways = [...new Set(sorted.map(agent => agent.connectionId))]
-  const isOpen = (id: string) => searching || (expanded[id] ?? true)
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+
+    if (!scroller) {
+      return
+    }
+
+    const save = () => {
+      if (restored.current) {
+        $sidebarAgentScroll.set(scroller.scrollTop)
+      }
+    }
+
+    const takeControl = () => {
+      restored.current = true
+    }
+
+    scroller.addEventListener('scroll', save, { passive: true })
+    scroller.addEventListener('wheel', takeControl, { passive: true })
+    scroller.addEventListener('touchstart', takeControl, { passive: true })
+    scroller.addEventListener('keydown', takeControl)
+
+    return () => {
+      save()
+      scroller.removeEventListener('scroll', save)
+      scroller.removeEventListener('wheel', takeControl)
+      scroller.removeEventListener('touchstart', takeControl)
+      scroller.removeEventListener('keydown', takeControl)
+    }
+  }, [])
+
+  return scrollRef
+}
+
+/** Mounted only by the redesigned sidebar; hiding never changes the source roster or session stores. */
+export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
+  const { t } = useI18n()
+  const { openAgent, pending } = useOpenAgent(props.agents.owner)
+  const scroll = useAgentScroll(props)
+  useFleetRoster(true)
 
   return (
-    <section aria-label={t.simplifiedAgents.agents} className="flex min-h-24 flex-[2_1_0%] flex-col gap-1" data-slot="agent-section">
+    <section
+      aria-label={t.simplifiedAgents.agents}
+      className="flex min-h-24 flex-[2_1_0%] flex-col gap-1"
+      data-slot="agent-section"
+    >
       <SidebarPanelLabel className="shrink-0 px-2 py-2 [&>span:first-child]:mx-1" data-slot="sidebar-section-label">
         {t.simplifiedAgents.agents}
       </SidebarPanelLabel>
-      <FadeScroll className="min-h-0" fade="min(2.5rem, 25%)" maxHeight="none" ref={scrollRef}>
-        {gateways.map(connectionId => {
-          const group = sorted.filter(agent => agent.connectionId === connectionId)
-          const gatewayId = JSON.stringify(['gateway', connectionId])
-          const open = gateways.length === 1 || isOpen(gatewayId)
-          const selected = connectionId === (activeConnection ?? owner)
-
-          return (
-            <div className="shrink-0" data-slot="gateway-group" key={gatewayId}>
-              <SimplifiedGatewayHeader
-                connectionId={connectionId}
-                fallbackLabel={group[0].gateway}
-                onToggle={
-                  gateways.length > 1
-                    ? () => {
-                        recordIaAction(open ? 'ia.section.gateway_collapsed' : 'ia.section.gateway_expanded')
-                        onToggle(gatewayId, open)
-                      }
-                    : undefined
-                }
-                open={open}
-                selected={selected}
-              />
-              {open &&
-                group.map(agent => {
-                  const agentOpen = group.length === 1 || isOpen(agent.id)
-                  const toggleLabel = `${agentOpen ? t.common.collapse : t.common.expand}: ${agent.label}`
-
-                  return (
-                    <div aria-label={`${agent.label} · ${agent.gateway}`} data-slot="agent-group" key={agent.id} role="group">
-                      <div
-                        className="grid min-h-8.5 grid-cols-[minmax(0,1fr)_1.5rem_1.5rem_1.5rem] items-center gap-1 px-2"
-                        data-active-agent={selected && agent.profile === activeProfile ? '' : undefined}
-                        data-slot="agent-heading"
-                      >
-                        <SimplifiedBotChatRow agent={agent} />
-                        {group.length > 1 ? (
-                          <Tip label={toggleLabel}>
-                            <Button
-                              aria-expanded={agentOpen}
-                              aria-label={toggleLabel}
-                              onClick={() => {
-                                recordIaAction(agentOpen ? 'ia.section.agent_collapsed' : 'ia.section.agent_expanded')
-                                onToggle(agent.id, agentOpen)
-                              }}
-                              size="icon-xs"
-                              variant="grip"
-                            >
-                              <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-                            </Button>
-                          </Tip>
-                        ) : (
-                          <span aria-hidden />
-                        )}
-                        <Tip label={t.sidebar.newSessionIn(agent.label)}>
-                          <Button
-                            aria-label={t.sidebar.newSessionIn(agent.label)}
-                            onClick={() => {
-                              recordAction('session.new', 'click')
-                              recordIaAction('ia.new_session.agent_row')
-                              startSimplifiedAgentSession(agent)
-                            }}
-                            size="icon-xs"
-                            variant="ghost"
-                          >
-                            <Codicon name="edit" size={14} />
-                          </Button>
-                        </Tip>
-                        <Tip label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}>
-                          <Button
-                            aria-busy={pending === agent.id || undefined}
-                            aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
-                            disabled={pending !== null}
-                            onClick={() => void openAgent(agent)}
-                            size="icon-xs"
-                            variant="ghost"
-                          >
-                            <Codicon name="gear" size={14} />
-                          </Button>
-                        </Tip>
-                      </div>
-                      {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [], agent)}
-                    </div>
-                  )
-                })}
-            </div>
-          )
-        })}
-      </FadeScroll>
+      <PortalAgentGroups {...props} onOpenAgent={agent => void openAgent(agent)} pending={pending} scrollRef={scroll} />
     </section>
   )
 }

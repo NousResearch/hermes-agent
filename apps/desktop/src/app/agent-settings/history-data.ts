@@ -110,7 +110,7 @@ export async function getHistoryPage(
   }
 
   if (!Number.isFinite(page.total) || page.offset !== offset || page.limit <= 0) {
-    throw new Error('History pagination unavailable; update the gateway and retry')
+    throw new Error('History pagination unavailable; update Hermes and retry')
   }
 
   return page

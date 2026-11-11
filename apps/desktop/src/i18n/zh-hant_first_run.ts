@@ -5,7 +5,7 @@ export const zhHantFirstRun: FirstRunCopy = {
     title: '設定 Hermes',
     resume: '繼續設定',
     upgradeRequired:
-      '此閘道需要更新才能進行無工作階段設定。請在其主機上執行 hermes update，重新啟動閘道，然後重試。你的聊天保持不變。',
+      '此機器上的 Hermes 需要更新才能進行無工作階段設定。請在該機器上執行 hermes update，重新啟動 Hermes，然後重試。你的聊天保持不變。',
     intro: '完成幾項可選的偏好設定後，即可正常聊天。設定過程不會建立對話。',
     appearance: '外觀',
     model: '選擇模型',

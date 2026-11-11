@@ -86,7 +86,7 @@ export function renderRosterContent({
         <div className="grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)">
           <div>
             {gatewayUp
-              ? b.roster.rosterUnavailable(error instanceof Error ? error.message : 'gateway error')
+              ? b.roster.rosterUnavailable(error instanceof Error ? error.message : 'machine connection error')
               : b.roster.waitingForGateway}
           </div>
           <Button className="justify-self-start" onClick={() => void refetch()} size="sm" variant="secondary">

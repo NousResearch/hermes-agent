@@ -5,7 +5,7 @@ export const enFirstRun: FirstRunCopy = {
     title: 'Set up your agent',
     resume: 'Resume setup',
     upgradeRequired:
-      'This gateway needs an update for sessionless setup. On its host, run hermes update, restart the gateway, then retry. Your chats are unchanged.',
+      'Hermes on this machine needs an update for sessionless setup. On that machine, run hermes update, restart Hermes, then retry. Your chats are unchanged.',
     intro: 'A few optional preferences, then your normal chat. Setup never creates a conversation.',
     appearance: 'Appearance',
     model: 'Choose a model',

@@ -15,7 +15,7 @@ export const zhUpdateChannel = {
   rollbackTitle: (v: string) => `回退到稳定版 ${v}`,
   rollbackBody: (v: string) => `当前构建比稳定版 ${v} 更新。安装后 Hermes 将回退到该版本。`,
   heldBody: (v: string) =>
-    `此版本比稳定版 ${v} 更新，且你的会话已在使用 ${v} 无法打开的网关运行时。在更新的稳定版发布前，Hermes 将保持当前版本。`,
+    `此版本比稳定版 ${v} 更新，且你的会话已在使用 ${v} 无法打开的 Hermes 运行时。在更新的稳定版发布前，Hermes 将保持当前版本。`,
   rollbackAction: (v: string) => `回退到 ${v}`,
   allChanges: '查看全部更改'
 }

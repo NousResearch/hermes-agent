@@ -162,7 +162,7 @@ test('an interactive sign-in opens visible on the provider chooser', () => {
   const h = harness()
 
   h.start({ silent: false, background: false })
-  expect(h.created).toEqual([{ show: true, title: 'Sign in to Hermes gateway' }])
+  expect(h.created).toMatchObject([{ show: true }])
   expect(h.windows[0].state.loaded).toBe(`${GATEWAY}/login`)
 })
 

@@ -110,7 +110,7 @@ export const arCommandCenter = {
       },
       system: {
         title: 'لوحة النظام',
-        detail: 'حالة البوابة والسجلات وإعادة التشغيل/التحديث'
+        detail: 'حالة Hermes والسجلات وإعادة التشغيل/التحديث'
       },
       usage: {
         title: 'لوحة الاستخدام',
@@ -127,17 +127,17 @@ export const arCommandCenter = {
     exportSession: 'تصدير الجلسة',
     deleteSession: 'حذف الجلسة',
     noSessions: 'لا توجد جلسات',
-    gatewayRunning: 'البوابة تعمل',
-    gatewayStopped: 'البوابة متوقفة',
+    gatewayRunning: 'المراسلة تعمل',
+    gatewayStopped: 'المراسلة متوقفة',
     hermesActiveSessions: (version, count) => `Hermes ${version} لديه ${count} جلسة نشطة`,
-    restartGateway: 'إعادة تشغيل البوابة',
+    restartGateway: 'إعادة تشغيل Hermes',
     openBrowser: 'تبديل المتصفح',
     toggleBrowser: 'تبديل المتصفح',
-    gatewayRestartFailed: 'فشل إعادة تشغيل البوابة.',
-    sharedGatewayRestartTitle: 'إعادة تشغيل البوابة المشتركة؟',
+    gatewayRestartFailed: 'فشل إعادة تشغيل Hermes.',
+    sharedGatewayRestartTitle: 'إعادة تشغيل Hermes المشترك؟',
     sharedGatewayRestartDescription: bots => `تتم إعادة اتصال جميع الوكلاء على هذا الجهاز: ${bots}`,
     sharedGatewayRestartConfirm: 'إعادة تشغيل الكل',
-    sharedGatewayRestarted: count => `تمت إعادة تشغيل البوابة المشتركة (عدد الوكلاء: ${count})`,
+    sharedGatewayRestarted: count => `تمت إعادة تشغيل Hermes المشترك (عدد الوكلاء: ${count})`,
     updateHermes: 'تحديث Hermes',
     reloadWindow: 'إعادة تحميل النافذة',
     actionRunning: 'الإجراء قيد التشغيل',
@@ -183,24 +183,25 @@ export const arCommandCenter = {
       connecting: 'جار الاتصال',
       disabled: 'معطّل',
       fatal: 'خطأ',
-      gateway_stopped: 'تم إيقاف بوابة المراسلة',
+      gateway_stopped: 'المراسلة متوقفة',
       not_configured: 'يحتاج إعدادا',
       pending_restart: 'يلزم إعادة التشغيل',
       retrying: 'جار إعادة المحاولة',
       startup_failed: 'فشل بدء التشغيل'
     },
     unknown: 'غير معروف',
-    hintPendingRestart: 'تحتاج إعادة تشغيل لتطبيق التغييرات.',
-    sharedListenerUrl: 'يُخدم عبر مستمع البوابة المشتركة على',
-    hintGatewayStopped: 'البوابة متوقفة.',
-    restartNeeded: 'تم الحفظ. أعد تشغيل بوابة المراسلة لتطبيق الإعدادات الجديدة.',
+    hintPendingRestart: 'أعد تشغيل Hermes لتطبيق التغييرات.',
+    sharedListenerUrl: 'يُخدم عبر مستمع Hermes المشترك على',
+    hintGatewayStopped: 'المراسلة متوقفة.',
+    restartNeeded: 'تم الحفظ. أعد تشغيل Hermes لتطبيق الإعدادات الجديدة.',
     restartNow: 'إعادة التشغيل الآن',
     restarting: 'جارٍ إعادة التشغيل…',
-    restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
+    restartFailedManual: 'فشلت إعادة تشغيل Hermes — أعد تشغيله يدويًا وتحقق من سجلات Hermes.',
     relayLink: {
       title: 'Team Gateway',
       badge: 'لا حاجة لرمز بوت',
-      intro: (platform: string) => `يصل ${platform} إلى هذا الوكيل عبر بوت Hermes المشترك. اربط حسابك في ${platform} ثم راسل البوت للتحدث مع وكيلك.`,
+      intro: (platform: string) =>
+        `يصل ${platform} إلى هذا الوكيل عبر بوت Hermes المشترك. اربط حسابك في ${platform} ثم راسل البوت للتحدث مع وكيلك.`,
       link: (platform: string) => `ربط ${platform}`,
       linkAnother: (platform: string) => `ربط حساب ${platform} آخر`,
       linkedAccounts: 'الحسابات المرتبطة',
@@ -218,10 +219,12 @@ export const arCommandCenter = {
       refused: (platform: string) => `رفض ${platform} الربط. احصل على رمز جديد وحاول مرة أخرى.`,
       qrAlt: (platform: string) => `رمز QR لبوت ${platform} المشترك`,
       managed: 'تتم إدارته عبر Team Gateway',
-      managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`,
+      managedNote: (platform: string) =>
+        `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف Hermes الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة Hermes (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`,
       managedIntro: 'تُربط حسابات هذا الوكيل من Nous Portal.',
       openPortal: 'اربط الحسابات في Nous Portal',
-      noNewAccount: (platform: string) => `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
+      noNewAccount: (platform: string) =>
+        `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
     },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',
@@ -248,12 +251,12 @@ export const arCommandCenter = {
       applying: 'جارٍ الحفظ…',
       pairingExpired: 'انتهت صلاحية اقتران Telegram. ابدأ إعداد QR جديدًا.',
       stillWaiting: detail => `ما زلنا ننتظر Telegram. إعادة المحاولة بعد: ${detail}`,
-      savedRestarting: 'تم حفظ Telegram؛ تجري إعادة تشغيل البوابة…',
-      savedRestartFailed: detail => `تم حفظ Telegram؛ فشلت إعادة تشغيل البوابة${detail}`
+      savedRestarting: 'تم حفظ Telegram؛ تجري إعادة تشغيل Hermes…',
+      savedRestartFailed: detail => `تم حفظ Telegram؛ فشلت إعادة تشغيل Hermes${detail}`
     },
     credentialsSet: 'بيانات الاعتماد مضبوطة',
     needsSetup: 'يحتاج إعدادا',
-    gatewayStopped: 'البوابة متوقفة',
+    gatewayStopped: 'المراسلة متوقفة',
     getCredentials: 'الحصول على بيانات الاعتماد',
     openSetupGuide: 'فتح دليل الإعداد',
     required: 'مطلوب',
@@ -276,11 +279,11 @@ export const arCommandCenter = {
     disableAria: name => `تعطيل ${name}`,
     platformEnabled: name => `تم تفعيل ${name}`,
     platformDisabled: name => `تم تعطيل ${name}`,
-    restartToApply: 'أعد التشغيل لتطبيق التغييرات.',
+    restartToApply: 'أعد تشغيل Hermes لتطبيق التغييرات.',
     setupSaved: name => `تم حفظ إعداد ${name}`,
-    restartToReconnect: 'أعد التشغيل لإعادة الاتصال.',
-    appliedLive: 'تم التطبيق على البوابة قيد التشغيل.',
-    connectingLive: 'البوابة قيد التشغيل تتصل باستخدام بيانات الاعتماد الجديدة.',
+    restartToReconnect: 'أعد تشغيل Hermes لإعادة الاتصال.',
+    appliedLive: 'تم التطبيق على Hermes قيد التشغيل.',
+    connectingLive: 'يتصل Hermes قيد التشغيل باستخدام بيانات الاعتماد الجديدة.',
     keyCleared: key => `تم مسح ${key}`,
     setupUpdated: name => `تم تحديث إعداد ${name}`,
     failedUpdate: name => `فشل تحديث ${name}`,
@@ -435,7 +438,7 @@ export const arCommandCenter = {
     switchConnectionFailed: name => `تعذّر الاتصال بـ ${name}`,
     manageProfiles: 'إدارة الوكلاء',
     fleet: {
-      allOnGateway: 'كل الوكلاء على هذه البوابة',
+      allOnGateway: 'كل الوكلاء على هذا الجهاز',
       gateway: gateway => `الوكلاء على ${gateway}`,
       localDevice: 'هذا الجهاز (خلفية محلية — تثبّت Hermes إن كان مفقودًا، وإلا تفتح جلسة جديدة)',
       installDeviceTitle: 'تثبيت Hermes على هذا الجهاز؟',
@@ -457,7 +460,7 @@ export const arCommandCenter = {
       plainTextOptIn:
         'لا يتوفر تخزين مفاتيح آمن على هذا الجهاز، لذا سيُحفظ الرمز على القرص دون تشفير. احفظه على أي حال.',
       collisionWarning: (label: string) =>
-        `توجد بوابة باسم «${label}» في الإعدادات بالفعل. اتصال هذا الوكيل منفصل ولن يغيّرها.`,
+        `يوجد جهاز باسم «${label}» في الإعدادات بالفعل. اتصال هذا الوكيل منفصل ولن يغيّره.`,
       confirmTitle: 'ربط هذا الوكيل بمضيف بعيد؟',
       confirmNote: (profile: string, host: string) =>
         `ستعمل المحادثات الجديدة في ${profile} على ${host}. سيقوم ذلك الجهاز بتنفيذ الأوامر وقراءة الملفات هناك، وليس هنا. اتصل فقط بمضيف تثق به.`,
@@ -504,8 +507,7 @@ export const arCommandCenter = {
     soulMissing:
       'لا يوجد ملف SOUL.md لهذا الوكيل بعد. أضف التعليمات أدناه واحفظ لإنشائه. تُدار إعدادات الشخصية في config.yaml بشكل منفصل.',
     soulOptional: 'اختياري',
-    soulPlaceholder: mode =>
-      `تعليمات هذا الوكيل وشخصيته.\nاتركه فارغا للإبقاء على افتراضي ${mode}.`,
+    soulPlaceholder: mode => `تعليمات هذا الوكيل وشخصيته.\nاتركه فارغا للإبقاء على افتراضي ${mode}.`,
     soulPlaceholderCloned: 'مستنسخ',
     soulPlaceholderEmpty: 'فارغ',
     unsavedChanges: 'تغييرات غير محفوظة',

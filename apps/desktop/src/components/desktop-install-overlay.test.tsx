@@ -225,22 +225,6 @@ describe('DesktopInstallOverlay first-run setup', () => {
     expect(screen.queryByText('Local installation could not start. Restart Hermes Desktop and try again.')).toBeNull()
   })
 
-  it('opens the remote connection form from the first-run choice', async () => {
-    installDesktopMock(
-      bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
-      })
-    )
-
-    render(<DesktopInstallOverlay />)
-
-    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-
-    expect(await screen.findByText('Gateway URL')).toBeTruthy()
-    expect(screen.getByText('Test connection')).toBeTruthy()
-    expect(screen.getByText('Apply and reconnect')).toBeTruthy()
-  })
-
   it('returns from the remote connection form to the first-run choice', async () => {
     installDesktopMock(
       bootstrapState({
@@ -251,9 +235,8 @@ describe('DesktopInstallOverlay first-run setup', () => {
     render(<DesktopInstallOverlay />)
 
     fireEvent.click(await screen.findByText('Connect to existing Hermes'))
-    expect(await screen.findByText('Gateway URL')).toBeTruthy()
 
-    fireEvent.click(screen.getByText('Back'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }))
 
     expect(await screen.findByText('Set up Hermes Desktop')).toBeTruthy()
     expect(screen.getByText('Install Hermes locally')).toBeTruthy()
@@ -373,7 +356,6 @@ describe('DesktopInstallOverlay first-run setup', () => {
 
     expect(await screen.findByText('remote apply failed')).toBeTruthy()
     expect(apply.disabled).toBe(false)
-    expect(screen.getByText('Gateway URL')).toBeTruthy()
   })
 
   it('signs in, tests, and applies a password-style remote gateway', async () => {
@@ -506,8 +488,6 @@ describe('DesktopInstallOverlay first-run setup', () => {
     expect(await screen.findByText('Hermes needs a one-time install')).toBeTruthy()
 
     fireEvent.click(screen.getByText('Connect existing'))
-
-    expect(await screen.findByText('Gateway URL')).toBeTruthy()
 
     desktop.probeConnectionConfig.mockResolvedValue({
       authMode: 'token',

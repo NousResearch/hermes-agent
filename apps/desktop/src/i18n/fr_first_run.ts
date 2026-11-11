@@ -5,7 +5,7 @@ export const frFirstRun: FirstRunCopy = {
     title: 'Configurer Hermes',
     resume: 'Reprendre la configuration',
     upgradeRequired:
-      'Cette passerelle doit être mise à jour pour la configuration sans session. Sur son hôte, exécutez hermes update, redémarrez la passerelle, puis réessayez. Vos conversations restent inchangées.',
+      'Hermes sur cet ordinateur doit être mis à jour pour la configuration sans session. Sur cet ordinateur, exécutez hermes update, redémarrez Hermes, puis réessayez. Vos conversations restent inchangées.',
     intro:
       'Quelques préférences facultatives, puis votre chat habituel. La configuration ne crée jamais de conversation.',
     appearance: 'Apparence',

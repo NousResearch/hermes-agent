@@ -429,7 +429,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   },
   {
     icon: Globe,
-    // The Connections registry merged into the unified Gateways page.
+    // The Connections registry merged into the unified Machines page.
     keywords: [
       'connection',
       'connections',
@@ -439,7 +439,9 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
       'instances',
       'ssh',
       'cloud',
-      'add gateway',
+      'machine',
+      'machines',
+      'add machine',
       'registry'
     ],
     labelKey: 'gateway',
@@ -945,7 +947,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           {
             icon: RefreshCw,
             id: 'cc-restart-gateway',
-            keywords: ['gateway', 'restart', 'messaging', 'reconnect', 'system'],
+            keywords: ['machine', 'hermes', 'gateway', 'restart', 'messaging', 'reconnect', 'system'],
             label: cc.restartGateway,
             run: () => void runGatewayRestart()
           },

@@ -60,7 +60,10 @@ export function installBrowserDesktopBridge(): boolean {
   // This machine's saved gateway connections (the list native Desktop keeps): each other gateway's
   // requests ride `/api/relay/<id>` on this origin (browser-saved-connections.ts). A host that does
   // not serve the list (the standalone dashboard) reaches only its own origin.
-  const relays: BrowserSavedConnections | null = savedConnectionsServed() ? createBrowserSavedConnections({ api, bootstrap }) : null
+  const relays: BrowserSavedConnections | null = savedConnectionsServed()
+    ? createBrowserSavedConnections({ api, bootstrap })
+    : null
+
   const bootstrapFor = (connectionId?: null | string) => relays?.bootstrapFor(connectionId) ?? bootstrap
   const activeConnectionId = () => $connection.get()?.connectionId ?? LOCAL_CONNECTION_ID
 
@@ -183,7 +186,7 @@ export function installBrowserDesktopBridge(): boolean {
     openSessionWindow: async (sessionId, opts) => {
       // A window boots on this page's gateway, which does not hold another gateway's chats.
       if (opts?.connectionId && opts.connectionId !== LOCAL_CONNECTION_ID) {
-        return { error: 'A chat on another gateway opens in this tab, not in a new window.', ok: false }
+        return { error: 'A chat on another machine opens in this tab, not in a new window.', ok: false }
       }
 
       const target = sessionWindowTarget(window.location.href, sessionId, opts)

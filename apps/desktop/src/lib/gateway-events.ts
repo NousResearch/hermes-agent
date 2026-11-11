@@ -257,7 +257,7 @@ export function buildGatewayLogItems(lines: readonly string[]): readonly Statusb
         className: 'text-muted-foreground',
         disabled: true,
         id: 'gateway-log-empty',
-        label: 'No recent gateway log lines'
+        label: 'No recent Hermes service log lines'
       }
     ]
   }

@@ -9,7 +9,7 @@ import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 export interface RemoteReauth {
   url: string
   // True when every advertised provider is username/password — drives the
-  // button copy ("Sign in to remote gateway" vs "Sign in with <provider>"),
+  // button copy ("Sign in to remote machine" vs "Sign in with <provider>"),
   // mirroring the gateway-settings page. Probe is best-effort.
   isPassword: boolean
   providerLabel: string
@@ -23,13 +23,13 @@ interface SignInCopy {
 
 const DEFAULT_SIGN_IN_COPY: SignInCopy = {
   identityProvider: 'your identity provider',
-  remoteGateway: 'Sign in to remote gateway',
+  remoteGateway: 'Sign in to remote machine',
   withProvider: provider => `Sign in with ${provider}`
 }
 
 // True when the app is pointed at a remote/cloud backend (either resolves to a
 // remote URL). Any boot failure in this shape is fixable from Settings →
-// Gateway (edit URL / token / sign in) — the local Retry/Repair buttons target
+// Machines (edit URL / token / sign in) — the local Retry/Repair buttons target
 // the bundled backend and can't help. Drives the escape-hatch emphasis.
 export function isRemoteConfig(config: DesktopConnectionConfig | null | undefined): boolean {
   if (!config) {

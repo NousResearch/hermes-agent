@@ -7642,7 +7642,7 @@ async function discoverCloudAgents(org?: string) {
 
   if (!(await hasLivePortalSession())) {
     const err = new Error(
-      'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
+      'You are not signed in to Hermes Cloud. Open Settings → Machines, choose Hermes Cloud, and sign in.'
     ) as any
 
     err.needsCloudLogin = true
@@ -7693,7 +7693,7 @@ async function discoverCloudAgents(org?: string) {
       // recover it) — surface it as a re-login, not a generic failure.
       if (error && error.statusCode === 401) {
         const err = new Error(
-          'Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.'
+          'Your Hermes Cloud session has expired. Open Settings → Machines and sign in again.'
         ) as any
 
         err.needsCloudLogin = true
@@ -8935,8 +8935,8 @@ async function buildRemoteConnection(
 
   if (!token) {
     throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
-        'Open Settings → Gateway and save a token, or switch back to Local.'
+      'A remote Hermes machine is selected, but no session token is saved. ' +
+        'Open Settings → Machines and save a token, or switch back to Local.'
     )
   }
 

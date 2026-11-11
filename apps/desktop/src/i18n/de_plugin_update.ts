@@ -18,7 +18,7 @@ export const dePluginUpdate: PluginUpdateTranslations = {
   updateToPin: sha => `Auf ${sha} aktualisieren`,
   updateFailed: name => `${name} konnte nicht aktualisiert werden`,
   updated: name =>
-    `${name} wurde auf den aktuellen Katalog-Pin aktualisiert. Starten Sie das Gateway neu, damit es wirksam wird.`,
+    `${name} wurde auf den aktuellen Katalog-Pin aktualisiert. Starten Sie Hermes neu, damit es wirksam wird.`,
   updateConsentTitle: (name: string) => `${name} fordert mehr an`,
   updateConsentBody: (name: string, sha: string) =>
     `Der neue Katalog-Pin von ${name} (${sha}) fügt Oberflächen hinzu, die die installierte Version nicht hat. Wenden Sie ihn nur an, wenn Sie ihnen vertrauen:`,
@@ -30,5 +30,5 @@ export const dePluginUpdate: PluginUpdateTranslations = {
   updateScanConfirm: 'Trotzdem aktualisieren',
   updateScanBlocked: name =>
     `Die Sicherheitsprüfung hat das Update von ${name} blockiert (Urteil „gefährlich“). Das lässt sich nicht übergehen.`,
-  updatedGit: name => `${name} wurde auf den neuesten Commit aktualisiert.`,
+  updatedGit: name => `${name} wurde auf den neuesten Commit aktualisiert.`
 }

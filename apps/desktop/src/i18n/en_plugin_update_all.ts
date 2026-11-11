@@ -11,6 +11,6 @@ export const enPluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllFailed: 'Could not update plugins',
   autoUpdate: 'Auto-update',
   autoUpdateTip: (hours: number) =>
-    `Apply plugin updates automatically when the gateway checks (every ${hours} h). Updated code loads in new sessions.`,
+    `Apply plugin updates automatically when Hermes checks (every ${hours} h). Updated code loads in new sessions.`,
   autoUpdateFailed: 'Could not change plugin auto-update'
 }

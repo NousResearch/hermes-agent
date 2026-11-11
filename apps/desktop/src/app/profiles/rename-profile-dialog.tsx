@@ -17,6 +17,7 @@ import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
+import { migrateAgentSidebarPreferences } from '@/store/agent-sidebar-preferences'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { migrateTilesForProfile } from '@/store/session-states'
 
@@ -102,6 +103,8 @@ export function RenameProfileDialog({
       // dials a backend that no longer exists (#111868).
       if (!isDefault && scope == null) {
         migrateTilesForProfile(currentName, trimmed)
+      } else if (!isDefault && scope && typeof scope === 'object') {
+        migrateAgentSidebarPreferences({ connectionId: scope.connectionId ?? null, profile: currentName }, trimmed)
       }
 
       await onRenamed?.(trimmed)

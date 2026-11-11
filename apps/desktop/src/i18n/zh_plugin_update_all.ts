@@ -10,6 +10,6 @@ export const zhPluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllNone: '所有插件均已是最新',
   updateAllFailed: '无法更新插件',
   autoUpdate: '自动更新',
-  autoUpdateTip: (hours: number) => `网关检查时（每 ${hours} 小时）自动应用插件更新。更新后的代码在新会话中加载。`,
+  autoUpdateTip: (hours: number) => `Hermes 检查时（每 ${hours} 小时）自动应用插件更新。更新后的代码在新会话中加载。`,
   autoUpdateFailed: '无法更改插件自动更新'
 }

@@ -158,8 +158,7 @@ export const zhHantAssistant = {
         },
         truncated: {
           title: '回覆被截斷',
-          body: (_provider, model) =>
-            `${model || '模型'}的回覆在完成前中斷了。按「繼續」即可從中斷處接續。`
+          body: (_provider, model) => `${model || '模型'}的回覆在完成前中斷了。按「繼續」即可從中斷處接續。`
         },
         invalid_response: {
           title: '無法讀取回覆',
@@ -291,7 +290,7 @@ export const zhHantAssistant = {
       attachingFile: '正在附加…'
     },
     approval: {
-      gatewayDisconnected: 'Hermes 閘道未連線',
+      gatewayDisconnected: '機器未連線',
       sendFailed: '無法傳送核准回應',
       run: '執行',
       command: '指令',
@@ -307,7 +306,7 @@ export const zhHantAssistant = {
     },
     clarify: {
       notReady: '澄清請求尚未就緒',
-      gatewayDisconnected: 'Hermes 閘道未連線',
+      gatewayDisconnected: '機器未連線',
       sendFailed: '無法傳送澄清回應',
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',

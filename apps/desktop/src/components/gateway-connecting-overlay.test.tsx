@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -63,7 +64,11 @@ const isConnectingShown = () =>
   screen.queryAllByText((_, el) => /^CONN[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
 
 const isRecoveryShown = () =>
-  Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
+  Boolean(
+    screen.queryByText(en.boot.failure.useLocalGateway) ||
+    screen.queryByText(/retry/i) ||
+    screen.queryByText(/sign in/i)
+  )
 
 describe('connecting overlay vs recovery surface', () => {
   it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', async () => {
@@ -174,7 +179,7 @@ describe('connecting overlay vs recovery surface', () => {
 
     // Escape hatch is reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
-    expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.boot.failure.gatewaySettings })).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
   })
 })

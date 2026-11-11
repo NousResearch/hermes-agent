@@ -11,6 +11,6 @@ export const zhHantPluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllFailed: '無法更新外掛',
   autoUpdate: '自動更新',
   autoUpdateTip: (hours: number) =>
-    `閘道檢查時（每 ${hours} 小時）自動套用外掛更新。更新後的程式碼會在新工作階段中載入。`,
+    `Hermes 檢查時（每 ${hours} 小時）自動套用外掛更新。更新後的程式碼會在新工作階段中載入。`,
   autoUpdateFailed: '無法變更外掛自動更新'
 }

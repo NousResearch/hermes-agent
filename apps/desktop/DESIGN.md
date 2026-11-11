@@ -79,24 +79,38 @@ Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
 
-The redesigned Sessions sidebar groups the active gateway and its agents in
-one rounded, neutral-tinted surface: a stronger header above a subtler body.
-The active agent name uses the primary foreground; other names use secondary
-foreground. Agent emphasis is scoped to the active connection and profile, not
-the display name. The group uses the finished Desktop 10 Figma hierarchy
-(`147:7470`): 20px agent tiles, names and session titles aligned 38px from the
-group edge, and a guide 20px from that edge. The robot is the exported Figma
-vector, not a replacement codicon; each profile retains its chosen tile color.
-Agent hover and keyboard focus use one edge-to-edge row highlight spanning
-the gateway box; embedded actions stay transparent and independently clickable.
-Nested chat-session rows also highlight and accept clicks across the gateway
-width, while keeping titles aligned with the session guide's original inset.
+The crowded-agent screenshots supersede the older boxed-machine sidebar
+(`147:7470`). Each machine has a plain heading with a leading connection dot
+and real connection context/status. A 2px green guide contains separate agent
+cards: 54px rows, 32px rounded antenna-outline avatars, a subtle agent-color
+fill, and a persistent vertical action ellipsis. The selected owner gets a
+15% brand-blue fill. Names and descriptions use actual owner metadata; never
+invent team names, sharing counts, or connection state.
 
-The agent name/avatar opens that owner's canonical **Bot Chat** (profile plus
-exact title), without a redundant child row. Collapse, new session, and agent
-settings remain separate controls, visible on hover/focus and touch. Screen is
-a tool rather than a conversation: use **Open Screen** in the command palette
-for the focused owner; classic/Bot Mode entry points remain available.
+The agent name/avatar opens that owner's canonical chat without a redundant
+child row. Its menu offers **New chat with this agent**, **Open agent**, and
+**Hide from chat list**. Collapse remains a separate keyboard/touch control.
+Nested sessions retain full-width hover/click targets and inset titles.
+Screen is a tool rather than a conversation: use **Open Screen** in the command
+palette for the focused owner; classic/Bot Mode entry points remain available.
+
+**Hidden agents** stays outside the agent list's scroll viewport so its count
+and attention dot remain reachable in crowded installations. Its expanded rows
+have their own bounded scroll area. **Show** restores an agent; a row needing
+attention opens the source conversation when its owner-qualified route is known.
+Hiding affects presentation only: chats remain searchable, work and notifications
+continue, and the current conversation is not closed or replaced. Hidden agents'
+pinned rows disappear from the ordinary list but remain available in search.
+Visibility and expansion persist by `(connectionId, targetProfile)`; local/null
+owners normalize identically. Renaming migrates preferences and deletion clears
+them. Scroll position and the Hidden agents disclosure survive navigation/reload.
+
+Attention priority is approval, input, failure, running, then unread. Use existing
+owned runtime/session signals and owner-tagged schedule snapshots, not guessed
+state or extra polling. Same-name agents and colliding session IDs on different
+machines must not borrow each other's signals. Display elapsed time only when
+the source supplies a real timestamp. An unobserved remote failure cannot be
+inferred from a reachable roster entry.
 
 Finished settings and management frames use bundled, OFL-licensed Oswald for
 display headings and Mona Sans for body text. The Figma trial navigation font
@@ -112,15 +126,24 @@ History, and Settings tabs. Settings has its own grouped, agent-only navigation:
 184px navigation, 32px gap, and a 584px body at full width. Model selection,
 fallbacks, and collapsed Advanced controls share one page; provider setup stays
 available inside the model picker. Reuse the existing editors and save paths.
+The overview header uses a 40px light Mona Sans title and the outline avatar.
+**Open chat** sits beside the action menu: duplicate, set default, hide/show in
+the chat list, copy the actual profile path, and a hint directing deletion to
+Settings → General. Menu rows have 44px targets. Disconnection warnings reflect
+configured, enabled channels with a real disconnected/error/failed status.
+Overview cards use 1.25:1 columns with a 32px gap, 16px section-title spacing,
+50px rows, and 6px corners; narrow layouts collapse to one column.
 Global desktop settings remain available outside the agent editor. New agent
-opens creation directly on the captured gateway rather than another management page.
+opens creation directly on the captured machine rather than another management page.
 
-User-facing identity copy uses **Agent / Agents**; scheduled automation uses
-**Schedule / Schedules**. Shared screens use these names in both layouts. Gateway
-terminology is unchanged pending a separate naming decision. Navigation, page
-headings, and plugin surfaces reuse `profiles.title` and `cron.title`; their nouns
-come from `src/i18n/desktop-terms.ts` for all nine bundled locales. Reuse the
-existing catalog actions and descriptions rather than introducing local synonyms.
+User-facing identities are **Machine / Machines** and **Agent / Agents**;
+scheduled automation is **Schedule / Schedules** in both layouts. Navigation,
+page headings, and plugin surfaces reuse `settings.connections.title`,
+`profiles.title`, and `cron.title`; their nouns come from
+`src/i18n/desktop-terms.ts` for all nine bundled locales. Service operations say
+**Restart Hermes**, not “restart the machine,” which would imply rebooting the
+computer. Reuse existing catalog actions and descriptions rather than introducing
+local synonyms. Team Gateway and Tool Gateway remain product names.
 Actual Telegram/Discord bots, browser profiles, and user-authored names retain
 their meanings. Protocol fields, `/profiles` and `/cron` routes, CLI commands,
 cron expressions, plugin IDs, and the exact stored `Bot Chat` title are technical
@@ -170,7 +193,8 @@ accent-tinted greys. Global settings cards use 5% fill and 5% borders with 8px
 corners; agent settings cards use 2% fill, 5% borders, and 4px corners. Agent
 and settings-navigation selection uses neutral 5% fill and a 0.5px neutral
 5% inset stroke with 3px corners. Brand-blue selection remains on the global
-rail. Agent-management tiles stay translucent; conversation-sidebar tiles stay solid.
+rail. Agent-management navigation tiles stay translucent; the new conversation
+cards and overview header use the outline avatar with a subtle owner-color tile.
 The global rail tracks the owning agent even inside its settings editor.
 Shared rail/sidebar geometry lives at the document root while the redesign is
 enabled. Sibling route overlays reserve the rail with logical inline offsets
@@ -178,9 +202,6 @@ in both LTR and RTL layouts.
 Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 10% fills.
 
-The designer-requested quieter gateway group deliberately reduces the
-older sidebar reference's 5% body plus 7% header to 3% plus 4%, preserving
-the brighter header, primary selected-agent name, and 20% session guide.
 Session rows retain their full-width hover fill. The trailing status dot yields
 its exact position to the action ellipsis on hover, keyboard focus, or an open
 menu; the timestamp does not disappear or move. Touch exposes the action directly.
@@ -188,8 +209,9 @@ The Hermes Portal theme uses neutral dark greys; custom theme choices and
 classic semantic styling remain available.
 
 The **Redesigned interface** preference gates the setup guide, catalog/agent
-controls, composer layout, and gateway menu as well as the shell. Turning it
-off restores classic onboarding and controls without migrating conversations.
+controls, composer layout, machine menu, and hidden-agent presentation as well as
+the shell. Turning it off restores classic onboarding and all classic agent rows
+without migrating conversations or destroying the redesign's saved visibility.
 
 Redesigned setup is a sessionless preferences/model guide. It resumes from
 root `onboarding.run` / `onboarding.step`, retains a working provider, and offers

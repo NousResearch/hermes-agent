@@ -11,6 +11,6 @@ export const dePluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllFailed: 'Plugins konnten nicht aktualisiert werden',
   autoUpdate: 'Automatisch aktualisieren',
   autoUpdateTip: (hours: number) =>
-    `Plugin-Updates automatisch anwenden, wenn das Gateway prüft (alle ${hours} h). Neuer Code wird in neuen Sitzungen geladen.`,
+    `Plugin-Updates automatisch anwenden, wenn Hermes prüft (alle ${hours} h). Neuer Code wird in neuen Sitzungen geladen.`,
   autoUpdateFailed: 'Automatische Plugin-Updates konnten nicht geändert werden'
 }

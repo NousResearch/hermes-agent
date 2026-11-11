@@ -11,6 +11,6 @@ export const arPluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllFailed: 'تعذّر تحديث الإضافات',
   autoUpdate: 'التحديث التلقائي',
   autoUpdateTip: (hours: number) =>
-    `تطبيق تحديثات الإضافات تلقائيًا عندما تفحصها البوابة (كل ${hours} ساعة). تُحمَّل الشيفرة المحدّثة في الجلسات الجديدة.`,
+    `تطبيق تحديثات الإضافات تلقائيًا عندما يفحصها Hermes (كل ${hours} ساعة). تُحمَّل الشيفرة المحدّثة في الجلسات الجديدة.`,
   autoUpdateFailed: 'تعذّر تغيير التحديث التلقائي للإضافات'
 }

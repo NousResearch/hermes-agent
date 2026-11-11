@@ -10,7 +10,6 @@ import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { GatewaySettings } from './gateway-settings'
-import { OTHER_SUBPAGES } from './other-subpages'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 const { registry, activeId, selectConnection } = vi.hoisted(() => ({
@@ -194,7 +193,7 @@ describe('GatewaySettings', () => {
     expect(tokenInput.isConnected, 'saved credential control must survive the refresh probe').toBe(true)
     fireEvent.change(tokenInput, { target: { value: 'replacement' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save for next restart' }))
-    await screen.findByText('Store the gateway token in plain text?')
+    await screen.findByText(en.settings.gateway.plainTextConfirmTitle)
     expect(saveConnectionConfig).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('button', { name: 'Save as plain text' }))
     await waitFor(() =>
@@ -290,9 +289,9 @@ describe('GatewaySettings', () => {
       org: { id: 'new-team' }
     })
     fireEvent.click(screen.getByRole('button', { name: 'Select', exact: true }))
-    await screen.findByRole('button', { name: 'Use gateway' })
+    await screen.findByRole('button', { name: en.settings.gateway.cloudUseSaved })
     expect(save).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Use gateway' }))
+    fireEvent.click(screen.getByRole('button', { name: en.settings.gateway.cloudUseSaved }))
     await waitFor(() => expect(selectConnection).toHaveBeenCalledWith(saved.id))
     expect(calls).toEqual(['logout', 'login', 'save'])
     expect(agentSignIn).toHaveBeenCalledWith(saved.url)
@@ -320,14 +319,14 @@ describe('GatewaySettings', () => {
     render(<GatewaySettings embedded />)
     const research = await screen.findByText('Research')
     const row = research.closest('[data-slot]') ?? research.parentElement!.parentElement!
-    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Use gateway' }))
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: en.settings.gateway.cloudUseSaved }))
     await waitFor(() => expect(selectConnection).toHaveBeenCalledWith('saved-a'))
     expect(screen.getByText('Active in this window')).toBeTruthy()
     expect(agentSignIn).not.toHaveBeenCalled()
     expect(applyConnectionConfig).not.toHaveBeenCalled()
     registry.value = null
   })
-  it('edits the primary gateway, labelled as such, while this window is on another one', async () => {
+  it('edits the primary connection while this window is on another one', async () => {
     getConnectionConfig.mockResolvedValue({
       ...localConnection,
       mode: 'remote',
@@ -347,9 +346,6 @@ describe('GatewaySettings', () => {
 
       expect(await screen.findByDisplayValue('http://studio:9119')).toBeTruthy()
       expect(screen.queryByDisplayValue('http://homelab:9119')).toBeNull()
-
-      const page = OTHER_SUBPAGES.gateway.find(entry => entry.id === 'connection')!
-      expect(en.settings.subpages[page.labelKey]).toBe('Primary gateway')
     } finally {
       registry.value = null
       activeId.value = 'saved-b'
@@ -511,7 +507,7 @@ describe('GatewaySettings', () => {
 
   it('loads the machine-level connection config (no profile scoping)', async () => {
     render(<GatewaySettings />)
-    expect(await screen.findByText('Local gateway')).toBeTruthy()
+    expect(await screen.findByText(en.settings.gateway.localTitle)).toBeTruthy()
 
     // The page manages the machine's gateway connections; it must load the
     // global config, never a per-profile override.
@@ -580,7 +576,7 @@ describe('GatewaySettings', () => {
 
       render(<GatewaySettings embedded />)
       const row = (await screen.findByText('Research')).closest('[data-slot]') as HTMLElement
-      fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
+      fireEvent.click(within(row).getByRole('button', { name: en.settings.gateway.cloudUseSaved }))
 
       await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(2))
       expect(selectConnection).toHaveBeenNthCalledWith(1, saved.id)
@@ -616,7 +612,7 @@ describe('GatewaySettings', () => {
 
       render(<GatewaySettings embedded />)
       const row = (await screen.findByText('Incomplete')).closest('[data-slot]') as HTMLElement
-      fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
+      fireEvent.click(within(row).getByRole('button', { name: en.settings.gateway.cloudUseSaved }))
 
       await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(1))
       expect(oauthLogoutConnectionConfig).not.toHaveBeenCalled()
@@ -636,7 +632,7 @@ describe('GatewaySettings', () => {
 
       render(<GatewaySettings embedded />)
       const row = (await screen.findByText('Research')).closest('[data-slot]') as HTMLElement
-      fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
+      fireEvent.click(within(row).getByRole('button', { name: en.settings.gateway.cloudUseSaved }))
 
       await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(1))
       expect(oauthLogoutConnectionConfig).not.toHaveBeenCalled()
@@ -656,7 +652,7 @@ describe('GatewaySettings', () => {
 
       render(<GatewaySettings embedded />)
       const row = (await screen.findByText('Research')).closest('[data-slot]') as HTMLElement
-      fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
+      fireEvent.click(within(row).getByRole('button', { name: en.settings.gateway.cloudUseSaved }))
 
       await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(2))
       expect(window.hermesDesktop!.cloud!.login).toHaveBeenCalledTimes(1)

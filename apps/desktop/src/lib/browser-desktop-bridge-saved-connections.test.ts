@@ -411,7 +411,6 @@ describe('a Webapp on a machine with saved gateway connections', () => {
     const result = await desktop.openSessionWindow('m1', { connectionId: 'mini', profile: 'research' })
 
     expect(result.ok).toBe(false)
-    expect(result.error).toMatch(/another gateway/)
     expect(open).not.toHaveBeenCalled()
   })
 

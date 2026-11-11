@@ -11,6 +11,6 @@ export const frPluginUpdateAll: PluginUpdateAllTranslations = {
   updateAllFailed: 'Impossible de mettre à jour les plugins',
   autoUpdate: 'Mise à jour automatique',
   autoUpdateTip: (hours: number) =>
-    `Appliquer automatiquement les mises à jour des plugins lors de la vérification du gateway (toutes les ${hours} h). Le nouveau code se charge dans les nouvelles sessions.`,
+    `Appliquer automatiquement les mises à jour des plugins lors de la vérification par Hermes (toutes les ${hours} h). Le nouveau code se charge dans les nouvelles sessions.`,
   autoUpdateFailed: 'Impossible de modifier la mise à jour automatique des plugins'
 }

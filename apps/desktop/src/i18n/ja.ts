@@ -34,7 +34,7 @@ export const jaOverrides = {
   simplifiedAgents: simplifiedAgentsCopy['ja'],
   gatewayGroupOpen: {
     opening: 'グループチャットを開いています…',
-    lookupFailed: 'ゲートウェイでこのグループを検索できませんでした。もう一度お試しください。',
+    lookupFailed: 'マシンでこのグループを検索できませんでした。もう一度お試しください。',
     missing: 'このグループチャットはもう存在しません。'
   },
   catalog: jaCatalog,
@@ -154,7 +154,7 @@ export const jaOverrides = {
       elevenLabsNeedsKey: 'ElevenLabs STT には ELEVENLABS_API_KEY が必要です。',
       elevenLabsRejectedKey: 'ElevenLabs が API キーを拒否しました (401)。',
       diskFull: 'ディスク容量不足です — 空きを作ってからもう一度お試しください。',
-      gatewayAuthFailed: 'ゲートウェイ認証に失敗しました — API_SERVER_KEY を確認してください。',
+      gatewayAuthFailed: 'マシン認証に失敗しました — API_SERVER_KEY を確認してください。',
       methodNotAllowed:
         'デスクトップバックエンドがそのリクエストを拒否しました (405 Method Not Allowed)。Hermes Desktop を再起動してください。',
       microphonePermission: 'マイクのアクセス許可が拒否されました。',
@@ -207,7 +207,7 @@ export const jaOverrides = {
   sendDiagnostics: {
     title: 'Nous に診断情報を送信',
     privacyNotice:
-      'デバッグバンドルを Nous 内部ストレージにアップロードします（公開ペーストではありません）。システム情報（OS、バージョン、プロバイダー、設定済み API キーの種類 — キー自体は含まれません）と、エージェント/ゲートウェイ/デスクトップの完全なログ（各最大 512 KB。会話内容、ツール出力、ファイルパスを含む可能性が高い）が含まれます。シークレットはアップロード前にマスクされます。閲覧できるのは Nous スタッフと許可された Discord モデレーターのみで、14 日後に自動削除されます。',
+      'デバッグバンドルを Nous 内部ストレージにアップロードします（公開ペーストではありません）。システム情報（OS、バージョン、プロバイダー、設定済み API キーの種類 — キー自体は含まれません）と、エージェント/Hermes サービス/デスクトップの完全なログ（各最大 512 KB。会話内容、ツール出力、ファイルパスを含む可能性が高い）が含まれます。シークレットはアップロード前にマスクされます。閲覧できるのは Nous スタッフと許可された Discord モデレーターのみで、14 日後に自動削除されます。',
     upload: 'アップロード',
     uploading: 'アップロード中…',
     cancel: 'キャンセル',
@@ -350,7 +350,7 @@ export const jaOverrides = {
       advancedOutput: '出力の制限',
       advancedDelegation: 'サブエージェント',
       advancedDesktop: 'デスクトップと起動',
-      gatewayConnection: 'プライマリゲートウェイ',
+      gatewayConnection: 'プライマリマシン',
       gatewayDevices: '保存済みの接続',
       gatewayManagedUpdates: 'リモート更新',
       gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',
@@ -384,7 +384,7 @@ export const jaOverrides = {
       providerApiKeys: 'API キー',
       providerCustomEndpoints: 'カスタムエンドポイント',
       providerLocalModels: 'ローカルモデル',
-      gateway: 'ゲートウェイ',
+      gateway: desktopTerms.ja.machines,
       apiKeys: 'ツールとキー',
       keybinds: 'キーボードショートカット',
       keysTools: 'ツール',
@@ -488,7 +488,7 @@ export const jaOverrides = {
     searchPlaceholder: {
       about: 'Hermes Desktop について',
       config: '設定を検索…',
-      gateway: 'ゲートウェイ接続…',
+      gateway: 'マシン接続…',
       keys: 'API キーを検索…',
       mcp: 'MCP サーバーを検索…',
       sessions: 'アーカイブ済みセッションを検索…'
@@ -1006,46 +1006,45 @@ export const jaOverrides = {
       clear: 'クリア'
     },
     gateway: {
-      loading: 'ゲートウェイ設定を読み込み中...',
+      loading: 'マシン設定を読み込み中...',
       ...jaGatewayHost,
-      title: 'ゲートウェイ接続',
+      title: 'マシン接続',
       envOverride: 'env オーバーライド',
       intro:
-        'Hermes Desktop はデフォルトで独自のローカルゲートウェイを起動します。別のマシンや信頼できるプロキシの背後で既に動作している Hermes バックエンドをこのアプリで制御する場合は、リモートゲートウェイを使用してください。ゲートウェイ接続はマシン単位の設定で、エージェントは接続したゲートウェイから検出されます。',
+        'Hermes Desktop はデフォルトでこのマシン上の Hermes に接続します。別のマシンや信頼できるプロキシの背後で動作する Hermes を使用する場合は、リモートマシンに接続してください。マシンへの接続はこの端末の設定として保存され、エージェントは接続先のマシンから検出されます。',
       envOverrideTitle: '環境変数がこのデスクトップセッションを制御しています。',
       envOverrideDesc:
         '保存された設定を使用するには HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN の設定を解除してください。',
-      localTitle: 'ローカルゲートウェイ',
+      localTitle: 'ローカルマシン',
       localDesc:
         'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',
-      remoteTitle: 'リモートゲートウェイ',
+      remoteTitle: 'リモートマシン',
       remoteDesc:
-        'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型ゲートウェイは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',
+        'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型マシンは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',
       remoteUrlTitle: 'リモート URL',
       remoteUrlDesc:
         'リモートダッシュボードバックエンドのベース URL。/hermes などのパスプレフィックスもサポートしています。',
-      probing: 'このゲートウェイの認証方法を確認中…',
-      probeError: 'このゲートウェイにまだ到達できません。URL を確認してください。応答後に認証方法が表示されます。',
+      probing: 'このマシンの認証方法を確認中…',
+      probeError: 'このマシンにまだ到達できません。URL を確認してください。応答後に認証方法が表示されます。',
       signedIn: 'サインイン済み',
       signIn: 'サインイン',
       signOut: 'サインアウト',
       signInWith: provider => `${provider} でサインイン`,
       authTitle: '認証',
       authSignedInPassword:
-        'このゲートウェイはユーザー名とパスワードを使用します。サインイン済みです。セッションは自動的に更新されます。',
-      authSignedInOauth:
-        'このゲートウェイは OAuth を使用します。サインイン済みです。セッションは自動的に更新されます。',
+        'このマシンはユーザー名とパスワードを使用します。サインイン済みです。セッションは自動的に更新されます。',
+      authSignedInOauth: 'このマシンは OAuth を使用します。サインイン済みです。セッションは自動的に更新されます。',
       authNeedsPassword:
-        'このゲートウェイはユーザー名とパスワードを使用します。このデスクトップアプリを承認するにはサインインしてください。',
+        'このマシンはユーザー名とパスワードを使用します。このデスクトップアプリを承認するにはサインインしてください。',
       authNeedsOauth: provider =>
-        `このゲートウェイは OAuth を使用します。このデスクトップアプリを承認するには ${provider} でサインインしてください。`,
+        `このマシンは OAuth を使用します。このデスクトップアプリを承認するには ${provider} でサインインしてください。`,
       tokenTitle: 'セッショントークン',
       tokenDesc:
         'REST および WebSocket アクセスに使用するダッシュボードセッショントークン。保存済みトークンを維持するには空欄にしてください。',
       existingToken: value => `既存のトークン ${value}`,
       savedToken: '保存済み',
       pasteSessionToken: 'セッショントークンを貼り付け',
-      plainTextConfirmTitle: 'ゲートウェイトークンを平文で保存しますか？',
+      plainTextConfirmTitle: 'マシントークンを平文で保存しますか？',
       plainTextConfirmDesc:
         'このマシンで OS のキーリングサービスが見つからなかったため、トークンはアプリの接続設定ファイルに暗号化されずに保存され、このユーザーとして実行される任意のプロセスから読み取れる状態になります。暗号化して保存するには、システムのキーチェーン（Linux では GNOME Keyring または KWallet）をインストールまたは有効化してください。',
       plainTextConfirmAction: '平文で保存',
@@ -1054,34 +1053,34 @@ export const jaOverrides = {
         'セキュアストレージが利用できないため、保存済みのトークンはこのマシンのアプリの接続設定ファイルに暗号化されずに保存されています。暗号化するには、システムのキーチェーン（Linux では GNOME Keyring または KWallet）をインストールまたは有効化してください。',
       keychainEncryptionTitle: 'OS キーチェーンで保存済みのシークレットを暗号化',
       keychainEncryptionDesc:
-        'デフォルトはオフです。オンにすると、ゲートウェイのトークンとサインイン資格情報がシステムのキーチェーン（Keychain Access、GNOME Keyring、Windows DPAPI）で暗号化されます。システムから許可やパスワードを求められる場合があります。オフの場合は、現在のユーザーのみが読める通常ファイルとして保存されます。',
+        'デフォルトはオフです。オンにすると、マシンのトークンとサインイン資格情報がシステムのキーチェーン（Keychain Access、GNOME Keyring、Windows DPAPI）で暗号化されます。システムから許可やパスワードを求められる場合があります。オフの場合は、現在のユーザーのみが読める通常ファイルとして保存されます。',
       keychainEncryptionFailed: 'シークレット暗号化の設定を変更できませんでした',
       testRemote: 'リモートをテスト',
       saveForRestart: '次回起動時のために保存',
       saveAndReconnect: '保存して再接続',
       diagnostics: '診断',
-      diagnosticsDesc: 'ファイルマネージャーで desktop.log を表示します。ゲートウェイの起動に失敗した際に役立ちます。',
+      diagnosticsDesc: 'ファイルマネージャーで desktop.log を表示します。Hermes の起動に失敗した際に役立ちます。',
       openLogs: 'ログを開く',
-      incompleteTitle: 'リモートゲートウェイの設定が不完全です',
+      incompleteTitle: 'リモートマシンの設定が不完全です',
       incompleteSignIn: 'リモートに切り替える前にリモート URL を入力してサインインしてください。',
       incompleteToken: 'リモートに切り替える前にリモート URL とセッショントークンを入力してください。',
       incompleteSignInTest: 'テストする前にリモート URL を入力してサインインしてください。',
       incompleteTokenTest: 'テストする前にリモート URL とセッショントークンを入力してください。',
       enterUrlFirst: '最初にリモート URL を入力してください。',
-      restartingTitle: 'ゲートウェイ接続を再起動中',
-      savedTitle: 'ゲートウェイ設定を保存しました',
+      restartingTitle: 'マシンに再接続中',
+      savedTitle: 'マシン設定を保存しました',
       restartingMessage: 'Hermes Desktop は保存された設定を使用して再接続します。',
       savedMessage: '次回起動時に保存されます。',
       connectedTo: (baseUrl, version) => `${baseUrl}${version ? ` · Hermes ${version}` : ''} に接続しました`,
-      reachableTitle: 'リモートゲートウェイに到達可能',
+      reachableTitle: 'リモートマシンに到達可能',
       signedOutTitle: 'サインアウトしました',
-      signedOutMessage: 'リモートゲートウェイセッションをクリアしました。',
-      failedLoad: 'ゲートウェイ設定の読み込みに失敗しました',
+      signedOutMessage: 'リモートマシンセッションをクリアしました。',
+      failedLoad: 'マシン設定の読み込みに失敗しました',
       signInFailed: 'サインインに失敗しました',
       signOutFailed: 'サインアウトに失敗しました',
-      testFailed: 'リモートゲートウェイのテストに失敗しました',
-      applyFailed: 'ゲートウェイ設定を適用できませんでした',
-      saveFailed: 'ゲートウェイ設定を保存できませんでした',
+      testFailed: 'リモートマシンのテストに失敗しました',
+      applyFailed: 'マシン設定を適用できませんでした',
+      saveFailed: 'マシン設定を保存できませんでした',
       sshTitle: 'SSH で接続',
       sshDesc:
         'Hermes は SSH 経由でリモート上に起動され、このアプリにトンネルされます。リモート側で何かを起動・公開する必要はありません。ホストへの鍵ベースの SSH アクセスが前提です。',
@@ -1344,14 +1343,14 @@ export const jaOverrides = {
   skillDeepLink: jaSkillDeepLink,
   skills: {
     inventoryScopeHint:
-      '以下のインストール内容とアカウントは、選択したエージェントとゲートウェイに属し、すべてのエージェントで共有されるものではありません。有効化と個別設定はエージェント設定で管理します。',
+      '以下のインストール内容とアカウントは、選択したエージェントとマシンに属し、すべてのエージェントで共有されるものではありません。有効化と個別設定はエージェント設定で管理します。',
     agentScopeHint: '変更はこのエージェントにのみ適用されます。既存の会話では現在のツールが維持されます。',
     toolSecretsHint:
       'このエージェントの API キー、エンドポイント、プロバイダー。認証情報は他のエージェントと共有されません。',
     openAgentSettings: 'エージェント設定',
     openToolLibrary: 'ツールライブラリを見る',
     remotePluginHint:
-      'プラグインを管理するには、このエージェントをそのゲートウェイで開いてください。プラグインのインストールには接続中のゲートウェイを使用します。',
+      'プラグインを管理するには、このエージェントをそのマシンで開いてください。プラグインのインストールには接続中のマシンを使用します。',
     showAllToolsets: (count: number) => `全 ${count} 件を表示`,
     plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {
@@ -1566,7 +1565,7 @@ export const jaOverrides = {
     },
     sectionEntries: {
       sessions: { title: 'セッションパネル', detail: 'セッションの検索、ピン留め、管理' },
-      system: { title: 'システムパネル', detail: 'ゲートウェイのステータス、ログ、再起動/更新' },
+      system: { title: 'システムパネル', detail: 'Hermes のステータス、ログ、再起動/更新' },
       usage: { title: '使用状況パネル', detail: 'トークン、コスト、スキルの活動' }
     },
     providerNavigate: 'ナビゲート',
@@ -1579,16 +1578,16 @@ export const jaOverrides = {
     exportSession: 'セッションをエクスポート',
     deleteSession: 'セッションを削除',
     noSessions: 'セッションはまだありません。',
-    gatewayRunning: 'メッセージングゲートウェイが実行中',
-    gatewayStopped: 'メッセージングゲートウェイが停止中',
+    gatewayRunning: 'メッセージングが実行中',
+    gatewayStopped: 'メッセージングが停止中',
     hermesActiveSessions: (version, count) => `Hermes ${version} · アクティブセッション ${count}`,
-    restartGateway: 'ゲートウェイを再起動',
+    restartGateway: 'Hermes を再起動',
     openBrowser: 'ブラウザを開く',
-    gatewayRestartFailed: 'ゲートウェイの再起動に失敗しました。',
-    sharedGatewayRestartTitle: '共有ゲートウェイを再起動しますか？',
+    gatewayRestartFailed: 'Hermes の再起動に失敗しました。',
+    sharedGatewayRestartTitle: '共有 Hermes を再起動しますか？',
     sharedGatewayRestartDescription: bots => `このデバイス上のすべてのエージェントが再接続します: ${bots}`,
     sharedGatewayRestartConfirm: 'すべて再起動',
-    sharedGatewayRestarted: count => `共有ゲートウェイを再起動しました（エージェント ${count} 件）`,
+    sharedGatewayRestarted: count => `共有 Hermes を再起動しました（エージェント ${count} 件）`,
     updateHermes: 'Hermes を更新',
     reloadWindow: 'ウィンドウを再読み込み',
     actionRunning: '実行中',
@@ -1635,20 +1634,20 @@ export const jaOverrides = {
       connecting: '接続中',
       disabled: '無効',
       fatal: 'エラー',
-      gateway_stopped: 'メッセージングゲートウェイが停止中',
+      gateway_stopped: 'メッセージングが停止中',
       not_configured: '設定が必要',
       pending_restart: '再起動が必要',
       retrying: '再試行中',
       startup_failed: '起動失敗'
     },
     unknown: '不明',
-    hintPendingRestart: 'この変更を適用するにはステータスバーからゲートウェイを再起動してください。',
-    sharedListenerUrl: '共有ゲートウェイのリスナーで提供中:',
-    hintGatewayStopped: 'ステータスバーからゲートウェイを起動して接続してください。',
-    restartNeeded: '保存しました。新しい設定を反映するにはメッセージングゲートウェイを再起動してください。',
+    hintPendingRestart: 'この変更を適用するにはステータスバーから Hermes を再起動してください。',
+    sharedListenerUrl: '共有 Hermes のリスナーで提供中:',
+    hintGatewayStopped: 'ステータスバーから Hermes を起動して接続してください。',
+    restartNeeded: '保存しました。新しい設定を反映するには Hermes を再起動してください。',
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',
-    restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    restartFailedManual: 'Hermes の再起動に失敗しました。手動で再起動し、Hermes のログを確認してください。',
     relayLink: {
       title: 'Team Gateway',
       badge: 'ボットトークン不要',
@@ -1674,7 +1673,7 @@ export const jaOverrides = {
       qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
       managed: 'Team Gateway が管理',
       managedNote: (platform: string) =>
-        `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
+        `このインスタンスではメッセージを Team Gateway が扱うため、Hermes は起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、Hermes の環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
       managedIntro: 'このエージェントのアカウントは Nous Portal からリンクします。',
       openPortal: 'Nous Portal でアカウントをリンク',
       noNewAccount: (platform: string) =>
@@ -1707,12 +1706,12 @@ export const jaOverrides = {
       applying: '保存中…',
       pairingExpired: 'Telegram のペアリングが期限切れです。新しい QR セットアップを開始してください。',
       stillWaiting: detail => `Telegram を待機中。エラー後に再試行: ${detail}`,
-      savedRestarting: 'Telegram を保存しました。ゲートウェイを再起動中…',
-      savedRestartFailed: detail => `Telegram を保存しましたが、ゲートウェイの再起動に失敗しました${detail}`
+      savedRestarting: 'Telegram を保存しました。Hermes を再起動中…',
+      savedRestartFailed: detail => `Telegram を保存しましたが、Hermes の再起動に失敗しました${detail}`
     },
     credentialsSet: '認証情報を設定しました',
     needsSetup: '設定が必要',
-    gatewayStopped: 'メッセージングゲートウェイが停止中',
+    gatewayStopped: 'メッセージングが停止中',
     getCredentials: '認証情報を取得',
     openSetupGuide: 'セットアップガイドを開く',
     required: '必須',
@@ -1736,11 +1735,11 @@ export const jaOverrides = {
     disableAria: name => `${name} を無効にする`,
     platformEnabled: name => `${name} を有効にしました`,
     platformDisabled: name => `${name} を無効にしました`,
-    restartToApply: 'この変更はゲートウェイの再起動後に有効になります。',
+    restartToApply: 'この変更は Hermes の再起動後に有効になります。',
     setupSaved: name => `${name} の設定を保存しました`,
-    restartToReconnect: '新しい認証情報はゲートウェイの再起動後に有効になります。',
-    appliedLive: '実行中のゲートウェイに適用されました。',
-    connectingLive: '実行中のゲートウェイが新しい認証情報で接続しています。',
+    restartToReconnect: '新しい認証情報は Hermes の再起動後に有効になります。',
+    appliedLive: '実行中の Hermes に適用されました。',
+    connectingLive: '実行中の Hermes が新しい認証情報で接続しています。',
     keyCleared: key => `${key} をクリアしました`,
     setupUpdated: name => `${name} の設定が更新されました。`,
     failedUpdate: name => `${name} の更新に失敗しました`,
@@ -1785,7 +1784,10 @@ export const jaOverrides = {
       MATTERMOST_ALLOW_ALL_USERS: { label: 'すべての Mattermost ユーザーを許可' },
       MATTERMOST_HOME_CHANNEL: { label: 'ホームチャンネル' },
       QQ_ALLOW_ALL_USERS: { label: 'すべての QQ ユーザーを許可' },
-      QQBOT_HOME_CHANNEL: { label: 'QQ ホームチャンネル', help: 'スケジュールの実行結果を配信するデフォルトのチャンネルまたはグループ。' },
+      QQBOT_HOME_CHANNEL: {
+        label: 'QQ ホームチャンネル',
+        help: 'スケジュールの実行結果を配信するデフォルトのチャンネルまたはグループ。'
+      },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ ホームチャンネル名' },
       SLACK_BOT_TOKEN: {
         label: 'Slack ボットトークン',
@@ -1883,7 +1885,7 @@ export const jaOverrides = {
       plainTextOptIn:
         'このパソコンには安全な鍵ストレージがないため、トークンは暗号化されずにディスクへ保存されます。それでも保存する。',
       collisionWarning: (label: string) =>
-        `「${label}」という名前のゲートウェイが設定に既に存在します。このエージェントの接続は別物であり、それを変更しません。`,
+        `「${label}」という名前のマシンが設定に既に存在します。このエージェントの接続は別物であり、それを変更しません。`,
       confirmTitle: 'このエージェントをリモートホストに接続しますか？',
       confirmNote: (profile: string, host: string) =>
         `${profile} の新しいチャットは ${host} で実行されます。コマンドの実行やファイルの読み取りはこのパソコンではなくそのコンピュータで行われます。信頼できるホストにのみ接続してください。`,
@@ -2045,8 +2047,7 @@ export const jaOverrides = {
     topOfHour: '毎時 0 分',
     everyHourAt: minute => `毎時 :${minute} に`,
     newCron: '新しいスケジュール',
-    emptyDescNew:
-      'スケジュールを設定すると、エージェントがプロンプトを自動実行し、選択した宛先に結果を送信します。',
+    emptyDescNew: 'スケジュールを設定すると、エージェントがプロンプトを自動実行し、選択した宛先に結果を送信します。',
     emptyDescSearch: '検索キーワードを広げてください。',
     emptyTitleNew: 'スケジュールがまだありません',
     emptyTitleSearch: '一致なし',
@@ -2217,10 +2218,10 @@ export const jaOverrides = {
       noPR: 'PRなし'
     },
     gatewayGroups: {
-      grouping: 'ゲートウェイとエージェント',
+      grouping: 'マシンとエージェント',
       rename: 'グループ名を変更',
       aliasLabel: '表示名',
-      aliasHint: '表示名のみ変更します。ゲートウェイ名とエージェント名は変わりません。',
+      aliasHint: '表示名のみ変更します。マシン名とエージェント名は変わりません。',
       resetName: '名前をリセット',
       moveUp: '上に移動',
       moveDown: '下に移動',
@@ -2446,7 +2447,7 @@ export const jaOverrides = {
       '/usage': 'このセッションのトークン使用量を表示',
       '/subscription': 'Nous のプランを確認し、ブラウザーで変更',
       '/topup': 'Nous の残高を表示し、請求を管理',
-      '/platform': '問題のあるゲートウェイプラットフォームを一時停止、再開、一覧表示',
+      '/platform': '問題のあるメッセージングプラットフォームを一時停止、再開、一覧表示',
       '/version': 'Hermes Agent のバージョンを表示',
       '/debug': 'デバッグレポートを作成',
       '/model': 'このセッションのモデルを切り替え'
@@ -2487,7 +2488,7 @@ export const jaOverrides = {
     queueCancelFailed: 'キュー内のターンを削除できませんでした',
     queueLostDiscard: '破棄',
     queueLostDiscardTip:
-      'ターン中にゲートウェイが再起動したため完了できません。破棄すると後続のキュー済みターンが実行されます。',
+      'ターン中に Hermes が再起動したため完了できません。破棄すると後続のキュー済みターンが実行されます。',
     queueResume: '再開',
     queueResumeTip: '停止により一時停止中 — キュー済みターンの送信を再開します',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
@@ -2850,7 +2851,7 @@ export const jaOverrides = {
     retryAfterRun: '実行しました — 再試行',
     setupChoiceTitle: 'Hermes Desktop をセットアップ',
     setupChoiceDesc:
-      'すでに実行している Hermes ゲートウェイに接続するか、このコンピューターに Hermes をローカルインストールします。',
+      'Hermes がすでに動作しているマシンに接続するか、このコンピューターに Hermes をローカルインストールします。',
     connectExistingTitle: '既存の Hermes に接続',
     connectExistingShort: '既存環境に接続',
     connectExistingDesc:
@@ -2861,26 +2862,26 @@ export const jaOverrides = {
       'ローカルインストールを開始できません。Hermes Desktop を再起動して、もう一度お試しください。',
     remoteSetupTitle: '既存の Hermes に接続',
     remoteSetupDesc:
-      'ゲートウェイ URL を入力してください。Hermes Desktop がトークンとブラウザーサインインのどちらが必要かを検出します。',
-    remoteUrlTitle: 'ゲートウェイ URL',
-    remoteUrlDesc: 'Hermes ゲートウェイのベース URL を使用します。リモートの場合は https:// を含めてください。',
+      'マシン URL を入力してください。Hermes Desktop がトークンとブラウザーサインインのどちらが必要かを検出します。',
+    remoteUrlTitle: 'マシン URL',
+    remoteUrlDesc: 'Hermes マシンのベース URL を使用します。リモートの場合は https:// を含めてください。',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
-    probing: 'ゲートウェイ認証方式を検出中...',
-    probeError: 'その Hermes ゲートウェイに到達できませんでした。',
+    probing: 'マシン認証方式を検出中...',
+    probeError: 'その Hermes マシンに到達できませんでした。',
     identityProvider: 'ID プロバイダー',
     authTitle: '認証',
-    authNeedsOauth: provider => `このゲートウェイをテストする前に ${provider} でサインインしてください。`,
+    authNeedsOauth: provider => `このマシンをテストする前に ${provider} でサインインしてください。`,
     authSignedIn: 'ブラウザーサインインが完了しました。',
     connected: '接続済み',
     signIn: 'サインイン',
     signInWith: provider => `${provider} でサインイン`,
-    enterUrlFirst: '先にゲートウェイ URL を入力してください。',
+    enterUrlFirst: '先にマシン URL を入力してください。',
     signInIncomplete: '認証が完了する前にサインインウィンドウが閉じられました。',
     tokenTitle: 'セッショントークン',
-    tokenDesc: 'リモートゲートウェイの .env ファイルからセッショントークンを貼り付けます。',
+    tokenDesc: 'リモートマシンの .env ファイルからセッショントークンを貼り付けます。',
     pasteSessionToken: 'セッショントークンを貼り付け',
-    incompleteSignInTest: 'OAuth で保護されたこのゲートウェイをテストする前にサインインしてください。',
-    incompleteTokenTest: 'このゲートウェイをテストする前にセッショントークンを入力してください。',
+    incompleteSignInTest: 'OAuth で保護されたこのマシンをテストする前にサインインしてください。',
+    incompleteTokenTest: 'このマシンをテストする前にセッショントークンを入力してください。',
     testConnection: '接続をテスト',
     testSucceeded: (baseUrl, version) => `${baseUrl}${version ? ` (${version})` : ''} に接続しました。`,
     applyRemote: '適用して再接続',
@@ -2995,7 +2996,7 @@ export const jaOverrides = {
     gatewayMenu: {
       connectionLabel: '接続',
       inferenceLabel: '推論',
-      gateway: 'ゲートウェイ',
+      gateway: 'マシン',
       connected: '接続済み',
       connecting: '接続中',
       offline: 'オフライン',
@@ -3003,7 +3004,7 @@ export const jaOverrides = {
       inferenceNotReady: '推論準備未完了',
       checkingInference: '推論を確認中',
       disconnected: '切断済み',
-      reconnectGateway: 'ゲートウェイに再接続',
+      reconnectGateway: 'マシンに再接続',
       openSystem: 'システムパネルを開く',
       connection: label => `接続: ${label}`,
       recentActivity: '最近のアクティビティ',
@@ -3042,7 +3043,7 @@ export const jaOverrides = {
       openCommandCenter: 'コマンドセンターを開く',
       showTerminal: 'ターミナルを表示',
       hideTerminal: 'ターミナルを非表示',
-      gateway: 'ゲートウェイ',
+      gateway: 'マシン',
       backend: 'バックエンド',
       messagingStopped: 'メッセージング停止',
       messagingDegraded: name => `${name} 停止`,
@@ -3053,7 +3054,7 @@ export const jaOverrides = {
       gatewayConnecting: '接続中',
       gatewayOffline: 'オフライン',
       gatewayRestarting: '再起動中…',
-      gatewayTitle: 'ゲートウェイ',
+      gatewayTitle: 'マシン',
       agents: 'エージェント',
       closeAgents: 'エージェントを閉じる',
       openAgents: 'エージェントを開く',
@@ -3163,11 +3164,11 @@ export const jaOverrides = {
     terminalCloseOthers: '他を閉じる',
     terminalCloseAll: 'すべて閉じる',
     terminalNewOn: '新しいターミナルを開く場所…',
-    terminalGatewayRemoved: '削除されたゲートウェイ',
+    terminalGatewayRemoved: '削除されたマシン',
     terminalGatewayRemovedBody:
-      'このターミナルが動作していたゲートウェイは削除されたため、再度開けません。このタブを閉じてください。',
+      'このターミナルが動作していたマシンは削除されたため、再度開けません。このタブを閉じてください。',
     terminalGatewayNoShellBody:
-      'このゲートウェイにはシェルアクセスがないため、このターミナルは再度開けません。このタブを閉じてください。',
+      'このマシンにはシェルアクセスがないため、このターミナルは再度開けません。このタブを閉じてください。',
     terminalDisconnectedBody:
       'ターミナルが切断されました。Enter キーで新しいシェルを開始します。スクロールバックは保持されます。',
     addToChat: 'チャットに追加'
@@ -3496,7 +3497,7 @@ export const jaOverrides = {
       attachingFile: '添付中…'
     },
     approval: {
-      gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
+      gatewayDisconnected: 'マシンに接続されていません',
       sendFailed: '承認応答を送信できませんでした',
       run: '実行',
       command: 'コマンド',
@@ -3636,7 +3637,7 @@ export const jaOverrides = {
   },
 
   prompts: {
-    gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
+    gatewayDisconnected: 'マシンに接続されていません',
     sudoSendFailed: 'sudo パスワードを送信できませんでした',
     secretSendFailed: 'シークレットを送信できませんでした',
     sudoTitle: '管理者パスワード',
@@ -3645,7 +3646,7 @@ export const jaOverrides = {
     sudoCommandUnavailable:
       'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
     sudoInstallDesc:
-      'エージェント画面のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
+      'エージェント画面のパッケージ（TigerVNC + Xfce）を接続先のマシンにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
@@ -3714,7 +3715,7 @@ export const jaOverrides = {
     readOnlyTranscriptSendBlocked: 'このチャットは読み取り専用トランスクリプトとして開いています。送信は無効です。',
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
     resumeStrandedBody:
-      'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+      'このセッションへの接続に失敗し、自動再試行も停止しました。Hermes が実行中か確認してから、もう一度お試しください。',
     poolSlotTimeoutBody:
       'すべてのローカルエージェントのバックエンドスロットが使用中です。「設定」→「詳細設定」で待機状態に保つエージェントのバックエンド数を増やすか、アイドル状態のバックエンドが解放された後に再試行してください。',
     poolSlotTimeoutOpenSettings: '詳細設定を開く',
@@ -3774,7 +3775,7 @@ export const jaOverrides = {
       success: platform => `${platform} に引き継ぎました。いつでもここで再開できます。`,
       systemNote: platform => `↻ ${platform} に引き継ぎました — いつでもここで再開できます。`,
       failed: error => `引き継ぎに失敗しました: ${error}`,
-      timedOut: 'ゲートウェイの待機がタイムアウトしました。`hermes gateway` は起動していますか？'
+      timedOut: 'Hermes の待機がタイムアウトしました。`hermes gateway` は起動していますか？'
     }
   },
 

@@ -42,7 +42,7 @@ Console errors and "possibly blank" warnings printed by shoot.mjs are FAILs unti
 > and a sticky table head appears to overlap row 1. Both look exactly like layout bugs and neither is.
 > Judge fixed and sticky elements from the viewport frames only.
 
-**Interaction smoke-test** (when the page has interactive elements — nav, forms, tabs, mute toggle): drive the real page with playwright (`playwright-cli` skill, or a short script on the same playwright install shoot.mjs uses): click every nav link (lands on the right anchor, header doesn't cover the target), open/close the mobile menu, submit the form empty (inline error appears, nothing explodes), toggle sound if present, tab through the page once (focus visible and in order, ESC closes overlays). Any interaction that throws or dead-ends is a FAIL. Static pages skip this.
+**Interaction smoke-test** (when the page has interactive elements — nav, forms, tabs, mute toggle): drive the real page with playwright (`npx playwright` or a short script on the same playwright install shoot.mjs uses): click every nav link (lands on the right anchor, header doesn't cover the target), open/close the mobile menu, submit the form empty (inline error appears, nothing explodes), toggle sound if present, tab through the page once (focus visible and in order, ESC closes overlays). Any interaction that throws or dead-ends is a FAIL. Static pages skip this.
 
 ## 2.5 Motion / perf / audio QA (direct register — screenshots are blind to time)
 

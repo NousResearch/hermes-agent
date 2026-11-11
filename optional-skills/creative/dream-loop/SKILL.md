@@ -124,7 +124,7 @@ don't settle for basic procedural elements and flat surfaces unless the art
 style calls for it. Write intermediate files/plans to `.dream-loop/`.
 
 - If Blender is installed and the concept involves 3D assets, prefer modeling
-  in Blender (see the `blender-3d-automation` skill). For complex assets,
+  in Blender (see the `blender` plugin in the plugin catalog). For complex assets,
   delegate to subagents via `delegate_task`.
 - If the user allows external assets, prefer them over modeling unless the
   asset is simple. If unspecified, assume NO external assets from the web.

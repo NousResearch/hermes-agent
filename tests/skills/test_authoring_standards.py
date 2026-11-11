@@ -122,6 +122,39 @@ def test_related_skills_resolve(p):
     if dangling and not _grandfathered(p, "related"):
         pytest.fail(f"{_rel(p)}: dangling related_skills: {dangling}")
 
+# An instruction the agent follows verbatim ("load the `x` skill", ``skill_view("x")``) must name a
+# skill that ships; historical credit ("supersedes the old `x` skill") is prose and stays allowed.
+_SKILL_VIEW_CALL = re.compile(
+    r"skill_view\(\s*(?:name\s*=\s*)?[\"']([\w:-]+)[\"'](?:\s*,\s*file_path\s*=\s*[\"']([^\"']+)[\"'])?")
+_SKILL_INSTRUCTION = re.compile(
+    r"\b(?:[Ll]oad|[Ss]ee|[Uu]se|[Pp]air with|[Rr]oute to|[Pp]refer|[Ff]rom|[Pp]aired with|[Cc]reated by)"
+    r"(?: the)? `([a-z0-9][\w-]*)` (?:skill|workflow)\b")
+
+
+def _skill_dirs_by_name():
+    dirs = {p.parent.name: p.parent for p in _skill_paths()}
+    dirs.update({p.parent.name: p.parent for p in REPO.glob("plugins/**/SKILL.md")})
+    return dirs
+
+
+def test_skill_instructions_resolve():
+    dirs = _skill_dirs_by_name()
+    dangling = []
+    for skill_dir in sorted(set(dirs.values())):
+        for md in sorted(skill_dir.rglob("*.md")):
+            text = md.read_text(encoding="utf-8", errors="replace")
+            where = md.relative_to(REPO)
+            for name, file_path in _SKILL_VIEW_CALL.findall(text):
+                target = dirs.get(name.rsplit(":", 1)[-1])
+                if target is None:
+                    dangling.append(f"{where}: skill_view({name!r}) names no shipped skill")
+                elif file_path and not any(c in file_path for c in "<*…") and "..." not in file_path and not (target / file_path).exists():
+                    dangling.append(f"{where}: skill_view({name!r}, file_path={file_path!r}) has no such file")
+            dangling += [f"{where}: `{name}` skill does not ship"
+                         for name in _SKILL_INSTRUCTION.findall(text) if name not in dirs]
+    assert not dangling, "dangling skill references:\n" + "\n".join(sorted(set(dangling)))
+
+
 @pytest.mark.parametrize("p", _params())
 def test_no_machine_local_paths(p):
     _, content = _frontmatter(p)

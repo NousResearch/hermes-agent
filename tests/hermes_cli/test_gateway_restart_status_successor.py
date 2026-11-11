@@ -24,8 +24,9 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-# The replacement gateway: wait for the old one to hand over (when a port is given), take the
-# home's gateway runtime lock as a starting gateway does, then read each named action's status.
+# The replacement gateway: wait for the old one to hand over (when a port is given), claim the
+# home's gateway runtime lock, pid file and host role through the gateway's own startup step, then
+# read each named action's status. The host role lives in the per-test lock dir conftest pins.
 _REPLACEMENT = r"""
 import json, os, socket, sys
 home, out, port, names = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
@@ -34,8 +35,9 @@ if port:
     with socket.create_connection(("127.0.0.1", port), timeout=60) as go:
         go.settimeout(60)
         go.recv(1)
-from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
-if not acquire_gateway_runtime_lock():
+from gateway.run_bootstrap import _start_gateway_claim_pid_file
+from gateway.status import release_gateway_runtime_lock
+if not _start_gateway_claim_pid_file():
     sys.exit(5)
 try:
     from starlette.testclient import TestClient
@@ -257,9 +259,7 @@ def test_a_new_restart_supersedes_the_record_of_an_older_one(client, home, old_g
 
     seen = _run_replacement(home, tmp_path / "replacement.json")
 
-    answer = _answer(seen["answers"]["gateway-restart"][1])
-    assert answer["pid"] != older
-    assert answer in (NEVER_STARTED, {"pid": newer, "running": False, "exit_code": 0})
+    assert _answer(seen["answers"]["gateway-restart"][1]) == {"pid": newer, "running": False, "exit_code": 0}
 
 
 def test_a_failed_restart_is_reported_failed_and_never_later_certified(
@@ -277,15 +277,21 @@ def test_a_failed_restart_is_reported_failed_and_never_later_certified(
     assert _answer(seen["answers"]["gateway-restart"][1]) == NEVER_STARTED
 
 
-@pytest.mark.parametrize("damage", ["not json {", "corrupt-shape", "directory"])
+@pytest.mark.parametrize("damage", ["missing", "not json {", "corrupt-shape", "directory", "unreadable",
+                                    "too deep"])
 def test_an_unreadable_record_degrades_to_the_base_answer(client, home, old_gateway, tmp_path, damage):
-    """A missing, unreadable or corrupt record never raises or answers 500."""
+    """A missing, unreadable or corrupt record never fails a gateway's startup, and its status
+    read answers 200 with the base answer."""
     record = home / "logs" / "gateway-restart.record.json"
     record.parent.mkdir(parents=True, exist_ok=True)
     if damage == "directory":
         record.mkdir()
-    else:
-        record.write_text(damage if damage != "corrupt-shape" else json.dumps({"action": "x"}), encoding="utf-8")
+    elif damage == "unreadable":
+        record.write_text(json.dumps({"action": [1, 1]}), encoding="utf-8")
+        record.chmod(0)
+    elif damage != "missing":
+        text = {"corrupt-shape": json.dumps({"action": "x"}), "too deep": "[" * 100_000 + "]" * 100_000}
+        record.write_text(text.get(damage, damage), encoding="utf-8")
     old_gateway()
 
     seen = _run_replacement(home, tmp_path / "replacement.json")
@@ -322,3 +328,77 @@ def test_a_record_with_unrepresentable_values_degrades_to_the_base_answer(client
         record.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
 
     assert _status(client) == NEVER_STARTED
+
+
+# --- The replacement binds the record when it starts, not when a client polls. ---
+
+
+def _record(home: Path) -> Path:
+    return home / "logs" / "gateway-restart.record.json"
+
+
+@pytest.mark.parametrize("shape", ["the child became the gateway", "a service manager started it"])
+def test_an_unpolled_replacement_leaves_no_restart_for_a_later_gateway(
+        client, home, old_gateway, restart_child, tmp_path, shape):
+    """The gateway that replaced the spawner exits without any client polling it; the next gateway
+    (started inside the window by other means) does not describe the restart and never reports
+    the old action's pid as a finished restart."""
+    if shape == "the child became the gateway":
+        handover = Handover()
+        restart_child["argv"] = ["-c", _REPLACEMENT, str(home), str(tmp_path / "first.json"), str(handover.port)]
+        _restart(client)
+        old_gateway()
+        handover.go()
+        assert _wait_for_child() == 0
+    else:
+        restart_child["argv"] = ["-c", "pass"]
+        _restart(client)
+        assert _wait_for_child() == 0
+        old_gateway()
+        subprocess.run([sys.executable, "-c", _REPLACEMENT, str(home), str(tmp_path / "first.json"), "0"],
+                       check=True, timeout=_CHILD_TIMEOUT, env={**os.environ, "HERMES_HOME": str(home)},
+                       cwd=str(Path(__file__).resolve().parents[2]))
+    assert json.loads((tmp_path / "first.json").read_text(encoding="utf-8"))["answers"] == {}
+
+    later = _run_replacement(home, tmp_path / "later.json")
+
+    assert _answer(later["answers"]["gateway-restart"][1]) == NEVER_STARTED
+
+
+# A separate dashboard process (no gateway lock): run the app's startup, read the status, and run
+# the gateway's startup step for the record as well, then report the answer.
+_DASHBOARD = r"""
+import json, os, sys
+home, out = sys.argv[1], sys.argv[2]
+os.environ["HERMES_HOME"] = home
+from starlette.testclient import TestClient
+from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+import hermes_cli.web_server_gateway as gw
+with TestClient(app) as client:
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    response = client.get("/api/actions/gateway-restart/status?lines=1")
+getattr(gw, "bind_restart_record", lambda: None)()
+with open(out, "w", encoding="utf-8") as handle:
+    json.dump([response.status_code, response.json()], handle)
+"""
+
+
+def test_a_separate_dashboard_never_touches_the_record_at_startup(client, home, old_gateway, restart_child, tmp_path):
+    """A dashboard holds no gateway lock: its app startup, its status read and the gateway's
+    startup step leave a record the home's gateway wrote exactly as it was, and it answers as on
+    the base."""
+    restart_child["argv"] = ["-c", "pass"]
+    _restart(client)
+    assert _wait_for_child() == 0
+    old_gateway()
+    before = _record(home).read_bytes(), _record(home).stat()
+
+    out = tmp_path / "dashboard.json"
+    subprocess.run([sys.executable, "-c", _DASHBOARD, str(home), str(out)], check=True, timeout=_CHILD_TIMEOUT,
+                   env={**os.environ, "HERMES_HOME": str(home)}, cwd=str(Path(__file__).resolve().parents[2]))
+
+    status_code, body = json.loads(out.read_text(encoding="utf-8"))
+    assert (status_code, _answer(body)) == (200, NEVER_STARTED)
+    after = _record(home).read_bytes(), _record(home).stat()
+    assert after[0] == before[0]
+    assert (after[1].st_ino, after[1].st_mtime_ns) == (before[1].st_ino, before[1].st_mtime_ns)

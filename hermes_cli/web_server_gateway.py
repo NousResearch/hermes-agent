@@ -596,6 +596,10 @@ def _write_restart_record(action_pid: int) -> None:
         if not _store_restart_record(record):
             _log.warning("Could not record gateway restart pid %s for its replacement", action_pid)
         return
+    _drop_restart_record()
+
+
+def _drop_restart_record() -> None:
     try:
         (_ACTION_LOG_DIR / _RESTART_RECORD_FILE).unlink(missing_ok=True)
     except OSError as exc:
@@ -646,31 +650,53 @@ def settle_restart_record(action_pid: int, exit_code: int) -> None:
         _store_restart_record({**record, "exit_code": exit_code})
 
 
+def _may_succeed(record: dict[str, Any], me: list[int]) -> bool:
+    """``me`` (a process holding this home's gateway lock) can be the replacement the record's
+    restart brought up: not the spawner, no non-zero exit settled, inside the window, and either the
+    action child itself (no service manager: the child runs the new gateway in-process) or started
+    no earlier than it (a service manager started a different process)."""
+    action = record["action"]
+    return (me != record["spawner"] and record.get("exit_code") in (None, 0)
+            and 0 <= time.time() - record["spawned_at"] <= _RESTART_RECORD_TTL_SECONDS
+            and (me == action or me[1] >= action[1]))
+
+
+def bind_restart_record() -> None:
+    """Gateway startup, once this process holds the home's runtime lock and its host role and
+    before it serves any API: claim the recorded ``gateway-restart`` as its replacement, or delete
+    the record. The first gateway to take the lock after the spawner is the only process that can
+    be the replacement, so binding here (not on a client's poll) means no later gateway inherits a
+    restart it does not describe, whether or not anyone polled in between. Deleted, not marked: a
+    file that is gone cannot be misread, and the next restart writes a fresh one. A no-op for a
+    process without the lock (a separate dashboard) and for a missing or malformed record."""
+    record = _read_restart_record() if _is_home_gateway() else None
+    if record is None:
+        return
+    me = _process_identity(os.getpid())
+    if (me is not None and record.get("successor") is None and _may_succeed(record, me)
+            and _store_restart_record({**record, "successor": me})):
+        return
+    _drop_restart_record()
+
+
 def restart_successor_result() -> Optional[dict[str, Any]]:
     """``{"pid": <action pid>, "exit_code": 0}`` when THIS process is the gateway that replaced the
     one that spawned the recorded ``gateway-restart``, else None (the caller answers as before).
 
     Proof, all required: the record was written by a process holding this home's gateway runtime
-    lock (``_write_restart_record``); this process holds that lock now; this process is not the
-    spawner (``(pid, start_time)`` differs); the spawner never recorded a non-zero exit for the child;
-    the record is younger than ``_RESTART_RECORD_TTL_SECONDS``; no other process claimed it first;
-    and either this process IS the action child (no service manager: the child runs the new gateway
-    in-process) or the child is gone and this process started after it (service manager). The first
-    process to qualify claims the record, so a later gateway never inherits it. A separate dashboard
-    holds no gateway lock and never qualifies; it keeps its in-memory answer.
+    lock (``_write_restart_record``); this process holds that lock now and claimed the record at its
+    own startup (``bind_restart_record``: the first gateway after the spawner claims or deletes it);
+    ``_may_succeed`` still holds (not the spawner, no non-zero exit settled, inside the window, the
+    action child itself or started no earlier than it); and this process IS the action child or the
+    child is gone. A read never claims. A separate dashboard holds no gateway lock and never
+    qualifies; it keeps its in-memory answer.
     """
     record = _read_restart_record()
     me = _process_identity(os.getpid())
-    if record is None or me is None or not _is_home_gateway():
+    if record is None or me is None or record.get("successor") != me or not _is_home_gateway():
         return None
     action = record["action"]
-    if me == record["spawner"] or record.get("exit_code") not in (None, 0) or record.get("successor") not in (None, me):
-        return None
-    if not 0 <= time.time() - record["spawned_at"] <= _RESTART_RECORD_TTL_SECONDS:
-        return None
-    if me != action and (_process_identity(action[0]) == action or me[1] < action[1]):
-        return None
-    if record.get("successor") is None and not _store_restart_record({**record, "successor": me}):
+    if not _may_succeed(record, me) or (me != action and _process_identity(action[0]) == action):
         return None
     return {"pid": action[0], "exit_code": 0}
 

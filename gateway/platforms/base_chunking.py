@@ -113,7 +113,12 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
         # whole table fits a fresh chunk; a larger table splits between rows and the next
         # chunk repeats its header (``carry_header``). Fenced pipes are not tables.
         if not fence_state_after(remaining[:split_at], carry_lang is not None, carry_lang or "")[0]:
-            split_at = table_row_start(remaining, split_at)
+            # A continuation chunk's header lives only in ``prefix``; let the row check see it.
+            if carry_header:
+                row_start = table_row_start(prefix + remaining, len(prefix) + split_at) - len(prefix)
+                split_at = row_start if row_start >= 1 else split_at  # first row of remaining: oversized
+            else:
+                split_at = table_row_start(remaining, split_at)
             split_at = table_rollback_point(
                 remaining, split_at, lambda t: _len(t) <= max_length - INDICATOR_RESERVE)
         chunk_body = remaining[:split_at]

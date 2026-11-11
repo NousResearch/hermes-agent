@@ -22,12 +22,12 @@ logger = logging.getLogger("cron.scheduler")
 
 
 def _standalone_send(
-    t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str], bool]:
-    """Run the standalone sender for one target: ``(result, None, False)`` or
-    ``(None, error, in_flight)`` (already logged — WARNING for a shutdown race, ERROR with
-    traceback otherwise). ``in_flight`` is True only for a timeout: the dispatch shield keeps a
-    timed-out send un-cancelled, so the payload may STILL be delivered — the caller must not
-    queue such a payload for redelivery (a replay would duplicate it)."""
+    t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str]]:
+    """Run the standalone sender for one target: ``(result, None)`` or ``(None, error)`` (already
+    logged — WARNING for a shutdown race, ERROR with traceback otherwise). A timeout also sets
+    ``t.standalone_in_flight``: the dispatch shield keeps a timed-out send un-cancelled, so the
+    payload may STILL be delivered and the caller must not queue it for redelivery (a replay
+    would duplicate it)."""
     from tools.send_message_tool import _send_to_platform
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
@@ -43,22 +43,23 @@ def _standalone_send(
             media_files=media_files, notify=t.notify_delivery, force_document=t.force_document),
             timeout=send_timeout)
 
-    def _warned(msg: str) -> tuple[None, str, bool]:
+    def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
-        return None, msg, False
+        return None, msg
 
-    def _failed(e) -> tuple[None, str, bool]:
+    def _failed(e) -> tuple[None, str]:
         msg = f"delivery to {t.where} failed: {e}"
         logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
-        return None, msg, False
+        return None, msg
 
-    def _in_flight(seconds: float) -> tuple[None, str, bool]:
+    def _in_flight(seconds: float) -> tuple[None, str]:
         # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
         # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
         msg = (f"standalone send to {t.where} timed out after {seconds:g}s "
                "(the send may still be in flight)")
         logger.error("Job '%s': %s", job["id"], msg)
-        return None, msg, True
+        t.standalone_in_flight = True
+        return None, msg
 
     # Interpreter finalizing (SIGTERM/restart/OOM): asyncio.run and a fresh ThreadPoolExecutor both
     # raise "cannot schedule new futures after interpreter shutdown" — warn, not ERROR traceback.
@@ -70,7 +71,7 @@ def _standalone_send(
         return _warned(f"standalone send skipped (empty text and no media) for {t.where}")
     coro = _send()
     try:
-        return asyncio.run(coro), None, False
+        return asyncio.run(coro), None
     except TimeoutError:
         return _in_flight(send_timeout)
     except RuntimeError as run_err:
@@ -85,7 +86,7 @@ def _standalone_send(
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
                 return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
-                    timeout=30 + send_timeout - base_timeout), None, False
+                    timeout=30 + send_timeout - base_timeout), None
             finally:
                 pool.shutdown(wait=False)
         except Exception as e:

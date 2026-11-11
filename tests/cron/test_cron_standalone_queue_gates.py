@@ -56,12 +56,13 @@ def _target(loop, *, token="tok"):
     return sd._TargetDelivery(**fields)
 
 
-def _run_lanes(t, loop, monkeypatch, *, standalone_outcome):
+def _run_lanes(t, loop, monkeypatch, *, standalone_outcome, in_flight=False):
     """Live lane (transport rejects "Not connected", retryable) then the standalone lane."""
     standalone_calls = []
     monkeypatch.setattr(
         sd, "_standalone_send",
-        lambda t, content, media: standalone_calls.append(content) or standalone_outcome)
+        lambda t, content, media: (standalone_calls.append(content),
+                                   setattr(t, "standalone_in_flight", in_flight))[0] or standalone_outcome)
     target_errors, delivery_errors = [], []
     assert not sd._deliver_via_live_adapter(
         t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors,
@@ -75,7 +76,7 @@ def _run_lanes(t, loop, monkeypatch, *, standalone_outcome):
 def test_retryable_not_connected_rejection_is_queued_for_redelivery(monkeypatch, gateway_loop):
     t = _target(gateway_loop)
     standalone_calls, errors = _run_lanes(
-        t, gateway_loop, monkeypatch, standalone_outcome=(None, "You must pass the token from BotFather", False))
+        t, gateway_loop, monkeypatch, standalone_outcome=(None, "You must pass the token from BotFather"))
     assert standalone_calls == ["the report"]  # token-holding worker attempts standalone first
     assert t.live_error == "Not connected" and t.live_retryable is True
     assert any("queued text for telegram:-100:42" in e for e in errors)
@@ -99,7 +100,7 @@ def test_non_retryable_same_wording_queues_nothing(monkeypatch, gateway_loop):
 
     t.transport = FatalTransport()
     standalone_calls, errors = _run_lanes(
-        t, gateway_loop, monkeypatch, standalone_outcome=(None, "definitive failure", False))
+        t, gateway_loop, monkeypatch, standalone_outcome=(None, "definitive failure"))
     assert standalone_calls == ["the report"]
     assert not any("queued" in e for e in errors)
     assert dl.sweep_failed_for_runtime("telegram", profile="primary") == []
@@ -129,14 +130,15 @@ def test_standalone_timeout_is_not_queued(monkeypatch, gateway_loop):
     t = _target(gateway_loop)
     standalone_calls, errors = _run_lanes(
         t, gateway_loop, monkeypatch,
-        standalone_outcome=(None, "standalone send timed out after 45s (the send may still be in flight)", True))
+        standalone_outcome=(None, "standalone send timed out after 45s (the send may still be in flight)"),
+        in_flight=True)
     assert standalone_calls == ["the report"]
     assert not any("queued" in e for e in errors)
     assert dl.sweep_failed_for_runtime("telegram", profile="primary") == []
 
 
 def test_standalone_send_marks_timeouts_in_flight(monkeypatch):
-    """_standalone_send's own timeout arm reports in_flight=True (not a definitive failure)."""
+    """_standalone_send's own timeout arm flags the target in flight (not a definitive failure)."""
     import tools.send_message_tool as smt
 
     async def _hang(platform, pconfig, chat_id, message, **kwargs):
@@ -145,8 +147,8 @@ def test_standalone_send_marks_timeouts_in_flight(monkeypatch):
     monkeypatch.setattr(smt, "_send_to_platform", _hang)
     monkeypatch.setattr(sd, "_get_standalone_send_timeout", lambda: 0.05)
     t = _target(None)
-    result, err, in_flight = sd._standalone_send(t, "the report", [])
-    assert result is None and "may still be in flight" in err and in_flight is True
+    result, err = sd._standalone_send(t, "the report", [])
+    assert result is None and "may still be in flight" in err and t.standalone_in_flight is True
 
 
 def test_standalone_send_definitive_failure_is_not_in_flight(monkeypatch):
@@ -156,9 +158,9 @@ def test_standalone_send_definitive_failure_is_not_in_flight(monkeypatch):
     import tools.send_message_tool as smt
     monkeypatch.setattr(smt, "_send_to_platform", _refused)
     t = _target(None)
-    _result, _err, in_flight = sd._standalone_send(t, "the report", [])
+    sd._standalone_send(t, "the report", [])
     # A result-dict error surfaces at the caller; the send itself completed (definitive).
-    assert in_flight is False
+    assert not t.standalone_in_flight
 
 
 # --- gate 1b: queueing arms the in-process drain timer (#127188 review, Enough1122) -----------
@@ -177,7 +179,7 @@ def test_queueing_arms_the_flood_drain_timer(monkeypatch, gateway_loop):
 
     t.transport.adapter.gateway_runner = Runner()
     standalone_calls, errors = _run_lanes(
-        t, gateway_loop, monkeypatch, standalone_outcome=(None, "definitive failure", False))
+        t, gateway_loop, monkeypatch, standalone_outcome=(None, "definitive failure"))
     assert standalone_calls == ["the report"]
     assert any("queued text" in e for e in errors)
     # Flush the gateway loop so the call_soon_threadsafe-marshaled arming callback has run.
@@ -190,7 +192,7 @@ def test_queueing_without_a_runner_handle_still_queues(monkeypatch, gateway_loop
     the next boot's sweep remains the backstop."""
     t = _target(gateway_loop)  # adapter carries no gateway_runner attribute
     _standalone_calls, errors = _run_lanes(
-        t, gateway_loop, monkeypatch, standalone_outcome=(None, "definitive failure", False))
+        t, gateway_loop, monkeypatch, standalone_outcome=(None, "definitive failure"))
     assert any("queued text" in e for e in errors)
     claimed = dl.sweep_failed_for_runtime("telegram", now=time.time() + 120, profile="primary")
     assert [row["content"] for row in claimed] == ["the report"]

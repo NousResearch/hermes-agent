@@ -24,9 +24,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
         f"display: {{suppress_warning_notifications: {str(suppress).lower()}}}\n"
     )
     config = GatewayConfig()
-    # A token so the standalone lane is exercised; the credential-less skip has its own
-    # coverage in test_cron_standalone_queue_gates.py.
-    config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True, token="tok")
+    config.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True)
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     sent = []
 

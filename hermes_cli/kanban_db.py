@@ -1211,14 +1211,16 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 from hermes_cli.kanban_costar_policy import (
-                    CONTRACT, apply_create_policy, is_costar_card, persist_creation_receipts,
+                    CONTRACT, apply_create_policy, has_costar_parent_lineage, is_costar_card,
+                    persist_creation_receipts,
                 )
 
+                costar_target = is_costar_card(title, body) or has_costar_parent_lineage(conn, parents)
                 effective_model, effective_provider, effective_initial_status, costar_exception, supervisor_hold = (
                     apply_create_policy(
                         task_id=task_id, title=title.strip(), body=body,
                         model=model_override, provider=provider_override,
-                        initial_status=initial_status,
+                        initial_status=initial_status, costar_target=costar_target,
                     )
                 )
                 task_status, tenant = initial_task_state(
@@ -1274,7 +1276,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": effective_model,
                         "provider_override": effective_provider,
-                        **({"costar_contract": CONTRACT} if is_costar_card(title, body) else {}),
+                        **({"costar_contract": CONTRACT} if costar_target else {}),
                     },
                 )
                 persist_creation_receipts(

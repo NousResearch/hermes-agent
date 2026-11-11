@@ -107,6 +107,35 @@ def test_decompose_costar_children_get_contract_and_terra_without_parent_luna(ka
         assert created.payload["costar_contract"]["cdp_url"] == "http://127.0.0.1:9224"
 
 
+def test_tool_create_inherits_costar_contract_from_parent_without_parent_luna(kanban_home: Path) -> None:
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        parent = kb.create_task(
+            conn, title="CoStar Florida recovery", body=_costar_body(), assignee="operator",
+            model_override="gpt-5.6-luna", provider_override="openai-codex",
+        )
+
+    result = json.loads(kt._handle_create({
+        "title": "prepare result",
+        "body": "generic helper child",
+        "assignee": "operator",
+        "parents": [parent],
+    }))
+
+    assert result["ok"] is True, result
+    with kbc.connect() as conn:
+        child = kb.get_task(conn, result["task_id"])
+        assert child is not None
+        assert (child.model_override, child.provider_override) == ("gpt-5.6-terra", "openai-codex")
+        created = next(event for event in kb.list_events(conn, child.id) if event.kind == "created")
+        assert created.payload["costar_contract"] == {
+            "browser": "HermesCDP-CoStar",
+            "cdp_url": "http://127.0.0.1:9224",
+            "no_fallback": True,
+        }
+
+
 def test_dispatch_refuses_provider_hold_and_second_costar_owner(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
     spawned: list[str] = []

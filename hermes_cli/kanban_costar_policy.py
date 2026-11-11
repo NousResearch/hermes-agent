@@ -5,6 +5,7 @@ connects to CDP, or retries a different endpoint.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from typing import Any
@@ -23,6 +24,40 @@ _DENIAL_RE = re.compile(r"\b(access\s+denied|unusual[_\s-]?activity)\b", re.IGNO
 
 def is_costar_card(title: str | None, body: str | None) -> bool:
     return "costar" in f"{title or ''}\n{body or ''}".casefold()
+
+
+def has_costar_parent_lineage(conn: sqlite3.Connection, parents: tuple[str, ...]) -> bool:
+    """Return whether any direct or transitive parent establishes a CoStar contract."""
+    if not parents:
+        return False
+    placeholders = ", ".join("?" for _ in parents)
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT id FROM tasks WHERE id IN ({placeholders})
+            UNION
+            SELECT link.parent_id
+            FROM task_links AS link
+            JOIN ancestors ON link.child_id = ancestors.id
+        )
+        SELECT task.title, task.body, event.payload
+        FROM tasks AS task
+        LEFT JOIN task_events AS event
+            ON event.task_id = task.id AND event.kind = 'created'
+        WHERE task.id IN ancestors
+        """,
+        parents,
+    ).fetchall()
+    for row in rows:
+        if is_costar_card(row["title"], row["body"]):
+            return True
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if payload.get("costar_contract") == CONTRACT:
+            return True
+    return False
 
 
 def is_warden_saved_search(title: str | None, body: str | None) -> bool:
@@ -95,7 +130,6 @@ def provider_hold_owner(conn: sqlite3.Connection) -> str | None:
     ).fetchone()
     if row is None:
         return None
-    import json
     try:
         payload = json.loads(row["payload"] or "{}")
     except (TypeError, ValueError):

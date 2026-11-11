@@ -14,6 +14,7 @@ import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+from agent.secret_scope import get_secret_str
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
 
@@ -752,7 +753,7 @@ class _PickerBuild:
         pcfg = PROVIDER_REGISTRY.get(slug)
         if not pcfg:
             return
-        url = os.environ.get(pcfg.base_url_env_var, "") if getattr(pcfg, "base_url_env_var", "") else ""
+        url = get_secret_str(pcfg.base_url_env_var, "") if getattr(pcfg, "base_url_env_var", "") else ""
         normed = _norm_url(url or getattr(pcfg, "inference_base_url", "") or "")
         if normed:
             self.builtin_endpoints.add(normed)
@@ -953,13 +954,14 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.model_switch import _scoped_key_env
     for cp in CANONICAL_PROVIDERS:
         if _skip(b.seen_slugs, b.excluded, cp.slug):
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False
         if cp_config and cp_config.api_key_env_vars:
-            lit = {ev for ev in cp_config.api_key_env_vars if os.environ.get(ev)}
+            lit = {ev for ev in cp_config.api_key_env_vars if _scoped_key_env(ev)}
             has_creds = bool(lit)
             # A regional "-cn" twin lit only by key vars shared with its non-CN sibling is a
             # phantom row: hide it unless it is the current provider, and only when it has a
@@ -1209,15 +1211,15 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     # Left live even on the non-blocking path: it is a loopback endpoint with a 1.5s timeout, so it
     # cannot be the degraded remote provider this path must never wait on.
     is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
-    if "lmstudio" not in curated and (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or is_current_lmstudio):
+    if "lmstudio" not in curated and (get_secret_str("LM_API_KEY") or get_secret_str("LM_BASE_URL") or is_current_lmstudio):
         from hermes_cli.models_local import fetch_lmstudio_models
         from hermes_cli.auth import AuthError
         lm_base = (
-            os.environ.get("LM_BASE_URL")
+            get_secret_str("LM_BASE_URL")
             or (current_base_url if is_current_lmstudio and current_base_url else None)
             or "http://127.0.0.1:1234/v1")
         try:
-            live = fetch_lmstudio_models(api_key=os.environ.get("LM_API_KEY", ""), base_url=lm_base, timeout=1.5)
+            live = fetch_lmstudio_models(api_key=get_secret_str("LM_API_KEY", ""), base_url=lm_base, timeout=1.5)
         except AuthError:
             live = []
         if not live and is_current_lmstudio and current_model:

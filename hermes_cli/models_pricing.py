@@ -10,11 +10,11 @@ intercepting.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 import urllib.request
 from typing import Any, Optional
+from agent.secret_scope import get_secret_str
 from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
 
 
@@ -322,7 +322,7 @@ def fetch_ai_gateway_pricing(timeout: float = 8.0, *, force_refresh: bool = Fals
 
 def _resolve_openrouter_api_key() -> str:
     """Best-effort OpenRouter API key for pricing fetch."""
-    return os.getenv("OPENROUTER_API_KEY", "").strip()
+    return get_secret_str("OPENROUTER_API_KEY", "").strip()
 
 
 _DEFAULT_NOUS_INFERENCE_BASE = "https://inference-api.nousresearch.com"
@@ -448,7 +448,7 @@ def _kilo_pricing_scope() -> str:
     from providers import get_provider_profile
 
     base_url = (
-        os.getenv("KILOCODE_BASE_URL", "").strip()
+        get_secret_str("KILOCODE_BASE_URL", "").strip()
         or getattr(get_provider_profile("kilocode"), "base_url", "")
         or ""
     )
@@ -476,7 +476,7 @@ def _fetch_kilocode_pricing(timeout: float = 8.0, *, force_refresh: bool = False
             return cached
 
     headers = {"Accept": "application/json", "User-Agent": hermes_user_agent()}
-    api_key = os.getenv("KILOCODE_API_KEY", "").strip()
+    api_key = get_secret_str("KILOCODE_API_KEY", "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = _get_json(cache_key + "/models", headers, timeout)
@@ -538,7 +538,7 @@ def _ai_gateway_pricing_scope() -> str:
 
 
 def _novita_pricing_scope() -> str:
-    return (os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1").rstrip("/")
+    return (get_secret_str("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1").rstrip("/")
 
 
 def get_cached_nous_inference_base_url() -> str:
@@ -690,11 +690,11 @@ def _fetch_novita_pricing(timeout: float = 8.0, *, force_refresh: bool = False) 
     """NovitaAI /v1/models pricing (per-million prices in units of 0.0001 USD → per-token strings),
     cached on the resolved base URL so menu renders don't re-hit the network."""
     from hermes_cli.version_info import hermes_user_agent
-    api_key = os.getenv("NOVITA_API_KEY", "").strip()
+    api_key = get_secret_str("NOVITA_API_KEY", "").strip()
     if not api_key:
         return {}
 
-    cache_key = (os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1").rstrip("/")
+    cache_key = (get_secret_str("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1").rstrip("/")
     if not force_refresh:
         cached = _cached_catalog(cache_key)
         if cached is not None:

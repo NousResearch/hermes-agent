@@ -1189,7 +1189,7 @@ def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     if not alias_key and st.target_provider.strip().lower() == "ollama":
         ollama_cfg, ollama_cfg_base = _ollama_configured_base()
         if ollama_cfg_base and _same_ollama_native_root(st.base_url, ollama_cfg_base):
-            configured_key = _entry_configured_key(ollama_cfg, lambda n: os.environ.get(n, "").strip())
+            configured_key = _entry_configured_key(ollama_cfg, _scoped_key_env)
             if configured_key:
                 st.api_key = configured_key
         else:

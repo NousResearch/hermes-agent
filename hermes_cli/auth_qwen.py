@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import logging
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
+from agent.secret_scope import get_secret_str
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_QWEN_BASE_URL, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_OAUTH_CLIENT_ID,
     QWEN_OAUTH_TOKEN_URL, _FORM_JSON_HEADERS, _qwen_err, httpx,
@@ -112,7 +112,7 @@ def _mark_qwen_oauth_active(creds: dict[str, Any]) -> None:
 
 
 def _qwen_base_url() -> str:
-    return os.getenv("HERMES_QWEN_BASE_URL", "").strip().rstrip("/") or DEFAULT_QWEN_BASE_URL
+    return get_secret_str("HERMES_QWEN_BASE_URL", "").strip().rstrip("/") or DEFAULT_QWEN_BASE_URL
 
 
 def resolve_qwen_runtime_credentials(

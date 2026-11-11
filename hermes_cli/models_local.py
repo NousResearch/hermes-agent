@@ -674,8 +674,8 @@ def fetch_ollama_cloud_models(
         if cached is not None:
             return cached["models"]
 
-    api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
-    base_url = base_url or os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
+    api_key = api_key or get_secret_str("OLLAMA_API_KEY", "")
+    base_url = base_url or get_secret_str("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
     # cache_only (GUI read path): skip only the network probe. The models.dev additions are a local
     # cache read, so the row still populates with what is known; the live catalog lands next open.
     live_models = [] if cache_only else ((fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else [])

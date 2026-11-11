@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
+from agent.secret_scope import get_secret_str
 from utils import atomic_json_write, env_float, file_cache_version
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
@@ -2030,7 +2031,7 @@ def _provider_env_base_url(pconfig: ProviderConfig) -> str:
             configured_url = str(model.get("base_url") or "").strip()
             if configured_url:
                 return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    return get_secret_str(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
 
 
 def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:
@@ -2190,10 +2191,7 @@ def _get_azure_foundry_auth_status() -> dict[str, Any]:
             info["error"] = f"azure-identity check failed: {exc}"
         return info
 
-    try:
-        api_key = get_env_value_prefer_dotenv("AZURE_FOUNDRY_API_KEY") or ""
-    except Exception:
-        api_key = os.getenv("AZURE_FOUNDRY_API_KEY", "")
+    api_key = get_env_value_prefer_dotenv("AZURE_FOUNDRY_API_KEY") or ""
     info["logged_in"] = has_usable_secret(api_key)
     return info
 

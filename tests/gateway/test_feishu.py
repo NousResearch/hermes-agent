@@ -1299,6 +1299,78 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_document_thread_validation_failure_falls_back_to_chat(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"replies": [], "creates": []}
+
+        class _FileAPI:
+            def create(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_123"),
+                )
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["replies"].append(request)
+                return SimpleNamespace(
+                    success=lambda: False,
+                    code=99992402,
+                    msg="field validation failed",
+                )
+
+            def create(self, request):
+                captured["creates"].append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_file_fallback"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".xlsx", delete=False) as tmp:
+            tmp.write(b"xlsx fixture")
+            file_path = tmp.name
+
+        try:
+            with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+                result = asyncio.run(
+                    adapter.send_document(
+                        chat_id="oc_chat",
+                        file_path=file_path,
+                        metadata={
+                            "thread_id": "omt-thread",
+                            "reply_to_message_id": "om_parent",
+                        },
+                    )
+                )
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(captured["replies"]), 2)
+        self.assertTrue(captured["replies"][0].request_body.reply_in_thread)
+        self.assertEqual(len(captured["creates"]), 1)
+        fallback = captured["creates"][0]
+        self.assertEqual(fallback.receive_id_type, "chat_id")
+        self.assertEqual(fallback.request_body.receive_id, "oc_chat")
+        self.assertEqual(fallback.request_body.msg_type, "file")
+
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
         """Regression for #26841: when a long Markdown message is split
         across multiple chunks, every chunk must go out as
@@ -2353,7 +2425,6 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
 # The Feishu SDK request builders are the external boundary: fake them so the
 # adapter logic around them runs on every lane.
 # ---------------------------------------------------------------------------
-
 
 class _FakeSdkBuilder:
     """Stands in for a lark-oapi ``*.builder()``: every setter records its value."""

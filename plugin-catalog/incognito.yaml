@@ -1,0 +1,29 @@
+name: incognito
+repo: https://github.com/nicolasbuelvas/hermes-incognito
+sha: 5fed3531d4daa87755e380b92a1ab2c5701e00f2
+title: Hermes Incognito
+description: "Zero-trace ephemeral and incognito sessions across Hermes CLI, TUI, Gateway, and Desktop: hides active chats from sidebars and cross-session searches, blocks persistent memory and skill mutations, strips profile and personal memory in RAM in strict clean-room mode, optionally masks outbound PII via a reversible RAM-only vault, zero-fills transcript and hook spill files before unlinking on close or TTL expiry, and emits content-free SHA-256 verification receipts. Disclosure: reads and deletes only incognito-tagged rows in $HERMES_HOME/state.db and files in $HERMES_HOME/sessions/ and $HERMES_HOME/hook_outputs/ when an incognito session is burned or swept; stores content-free leases and receipt hashes under $HERMES_HOME/plugin-data/incognito/; attaches provider non-retention flags to outbound LLM requests; makes no third-party network calls."
+maintainer: nicolasbuelvas
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/nicolasbuelvas/hermes-incognito
+platforms: []
+capabilities:
+  provides_tools:
+    - incognito_control
+    - incognito_verify
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - transform_tool_result
+    - post_compaction
+    - on_session_end
+    - on_session_finalize
+    - on_session_reset
+  provides_middleware:
+    - llm_request
+    - llm_execution
+  requires_env: []

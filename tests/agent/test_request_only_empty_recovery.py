@@ -171,3 +171,83 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
             agent._session_db.close()
             server.shutdown()
             thread.join(timeout=5)
+
+
+def test_reasoning_only_plain_retry_changes_custom_endpoint_request(tmp_path, monkeypatch):
+    """The final retry must change the prompt when reasoning-off is not on the wire."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  supports_vision: true\n  context_length: 128000\n"
+        "auxiliary:\n  title_generation:\n    enabled: false\n"
+    )
+    from run_agent import AIAgent
+    import agent.turn_empty_response as recovery
+
+    monkeypatch.setattr(recovery, "interruptible_backoff_sleep", lambda *a, **kw: None)
+    sent = []
+
+    class Provider(BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.path != "/v1/chat/completions":
+                self.send_error(404)
+                return
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            sent.append(payload)
+            if len(sent) < 4:
+                message = {
+                    "role": "assistant", "content": None,
+                    "reasoning_content": "Let me think about the answer again.",
+                }
+                finish = "tool_calls"  # Keep clean-stop reasoning promotion out of this test.
+            else:
+                message = {"role": "assistant", "content": "VISIBLE-ANSWER"}
+                finish = "stop"
+            response = {
+                "id": "retry-seam", "model": "test-model", "created": 0,
+                "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            }
+            body = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Provider) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        agent = None
+        try:
+            agent = AIAgent(
+                model="test-model", provider="openai-compat", api_key="test-key",
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
+                skip_memory=True, save_trajectories=False,
+            )
+            agent._disable_streaming = True
+            agent._use_prompt_caching = False
+            agent.compression_enabled = False
+            agent.tool_delay = 0
+
+            result = agent.run_conversation("Answer briefly.")
+            assert result["final_response"] == "VISIBLE-ANSWER"
+            assert len(sent) == 4
+            first, last = sent[0]["messages"], sent[3]["messages"]
+            assert [m["role"] for m in first] == [m["role"] for m in last]
+            assert first[:-1] == last[:-1]
+            assert last[-1]["content"].startswith(first[-1]["content"])
+            assert last[-1]["content"] != first[-1]["content"], (
+                "An endpoint without reasoning controls must not resend the original prompt"
+            )
+            assert last[-1]["content"] != sent[2]["messages"][-1]["content"]
+            assert "Earlier attempts produced internal reasoning" in last[-1]["content"]
+            assert "Earlier attempts produced internal reasoning" not in json.dumps(result["messages"])
+        finally:
+            if agent is not None:
+                agent.client.close()
+            server.shutdown()
+            thread.join(timeout=5)

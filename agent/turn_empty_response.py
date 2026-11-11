@@ -123,8 +123,12 @@ def _retry_empty(
     if _interrupted is not None:
         return "return", _interrupted, deterministic
     if observed_generation:
-        # Reasoning-only streak past both reminders: without this the plain retry re-sends
-        # the original request byte for byte. Answer it without thinking (one-shot).
+        # Generic custom endpoints cannot disable reasoning on the wire. Give the final
+        # attempt a distinct request-local prompt as well as the one-shot override.
+        agent._empty_response_retry_hint = (
+            "[System: Earlier attempts produced internal reasoning but no visible answer. "
+            "Reply now with the user-visible answer or the next tool call, without further analysis.]"
+        )
         agent._ephemeral_reasoning_off = True
     return "continue", None, deterministic
 

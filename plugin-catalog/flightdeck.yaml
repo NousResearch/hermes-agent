@@ -1,21 +1,21 @@
 name: flightdeck
 title: Flightdeck
 repo: https://github.com/freemanconsulting/hermes-flightdeck
-sha: 0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc
+sha: 399b080430f6871d42c1c8d8837f2a05efb63c3e
 description: Live air-traffic control for your agents and model servers — which agent holds which local GPU slot, who's queued, plan usage on cloud lanes, and opt-in capacity-aware subagent placement.
 maintainer: freemanconsulting
 tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/freemanconsulting/hermes-flightdeck#readme
-version: "0.1.0"
+version: "0.1.1"
 screenshots:
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/by-model.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/swim-lane.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/server-cards.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/cloud-cards.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/by-agent.png
-  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/routing.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/by-model.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/swim-lane.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/server-cards.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/cloud-cards.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/by-agent.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/399b080430f6871d42c1c8d8837f2a05efb63c3e/docs/img/routing.png
 readme: true
 platforms: []
 known_issues:

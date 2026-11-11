@@ -8,7 +8,7 @@ import re
 import threading
 from typing import Any, Dict, List
 
-from agent.memory_context import sanitize_context
+from agent.memory_context import fence_recalled_context, sanitize_context
 from agent.message_content import flatten_message_text
 from agent.history_commentary import COMMENTARY_WITHHELD, commentary_items, visible_commentary
 
@@ -192,7 +192,7 @@ class StreamDeliveryMixin:
         progress leaks the answer early — else top-level content (may be a parts list)."""
         return (
             self._extract_codex_interim_visible_text(assistant_msg)
-            or self._strip_think_blocks(flatten_message_text(assistant_msg.get("content"))).strip()
+            or fence_recalled_context(self._strip_think_blocks(flatten_message_text(assistant_msg.get("content"))).strip())
         )
 
     def _interim_text_was_delivered(self, text: str) -> bool:

@@ -582,6 +582,21 @@ def settle_held_final(agent, result: Any) -> None:
     result.update(final_response=final, response_transformed=transformed, pre_transform_response=None)
 
 
+def fence_result_reply(result: Any) -> None:
+    """Strip echoed ``<memory-context>`` spans from the reply every surface delivers (#81312).
+    Streamed deltas pass the stateful scrubber, but a non-streamed reply reaches adapters (email
+    bodies included) only through ``final_response``; the transcript row keeps the raw text."""
+    if not isinstance(result, dict) or not isinstance(result.get("final_response"), str):
+        return
+    from agent.memory_context import fence_recalled_context
+    raw = result["final_response"]
+    fenced = fence_recalled_context(raw)
+    if fenced != raw:
+        result["final_response"] = fenced
+        if result.get("error") == raw:
+            result["error"] = fenced
+
+
 def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     """``pre_transform_response`` for a turn result: a held turn's original never leaves the agent
     (receipts, replay-gap recovery, post-stream suffix painting all see only the rewrite)."""

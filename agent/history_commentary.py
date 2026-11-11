@@ -29,13 +29,15 @@ COMMENTARY_WITHHELD = "commentary_withheld"
 
 
 def visible_commentary(text: str, *, strip_thinking=None) -> str:
-    """Use the same think stripping and secret redaction as live delivery."""
+    """Use the same think stripping, memory-context fence and secret redaction as live delivery."""
+    from agent.memory_context import fence_recalled_context
+
     if strip_thinking is None:
         from agent.agent_runtime_helpers import strip_think_blocks
 
         strip_thinking = lambda value: strip_think_blocks(None, value)
 
-    visible = strip_thinking(text).strip()
+    visible = fence_recalled_context(strip_thinking(text).strip())
     return redact_sensitive_text(visible) if visible else visible
 
 

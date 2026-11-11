@@ -175,6 +175,22 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
+def test_new_command_transfers_only_this_sessions_pending_handoff(tmp_path, monkeypatch):
+    from tools.next_session_handoff import (
+        next_session_handoff_prompt, queue_next_session_handoffs)
+
+    monkeypatch.setattr("tools.next_session_handoff._handoff_dir", lambda: tmp_path / "handoffs")
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+    queue_next_session_handoffs(
+        ["TASK for next session: continue CLI work"], source_session_id=old_session_id)
+
+    cli.process_command("/new")
+
+    assert "continue CLI work" in next_session_handoff_prompt(cli.session_id)
+    assert next_session_handoff_prompt(old_session_id) is None
+
+
 
 
 

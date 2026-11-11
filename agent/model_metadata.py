@@ -299,6 +299,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
+    # Common Claude proxy aliases when the endpoint cannot report metadata.
+    "opus-latest": 1000000, "sonnet-latest": 1000000, "agy-opus": 1000000,
+    "haiku-latest": 200000,
     "claude": 200000,  # catch-all for older Claude models
     # OpenAI — direct-API windows (Codex OAuth caps gpt-5.4+/5.5/5.6 at 272K, resolved by
     # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is

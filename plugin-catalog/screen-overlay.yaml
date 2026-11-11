@@ -1,21 +1,21 @@
 name: screen-overlay
 repo: https://github.com/tuancookiez-hub/hermes-screen-overlay
-sha: a08737886c6f95af596998dc8657f5c5373f3f7f
-version: "0.2.1"
+sha: 0270e5224513e0fa091bf49df44fd58e1126125d
+version: "0.3.0"
 title: Screen Overlay
-description: "Hermes points at things on your real Windows screen: a gliding drawn pointer, spotlights, boxes, arrows and numbered steps anchored to live UI Automation elements, a floating step guide with Next and Back, and handwritten glass notes. Click-through, never takes focus, DPI- and multi-monitor-aware, with an emergency clear hotkey (Ctrl+Alt+Shift+F12). Disclosure — Windows only. Starts one detached background process (the overlay, run by Hermes's own Python) on first use; it exits on the hotkey, on stop, or after 10 idle minutes. No network: the plugin and the overlay talk over a local named pipe with a random key. Reads monitor layout, visible window titles, process names and bounds, and UI Automation names, types and bounds of elements in the window you target; these appear in tool results and so reach the model Hermes is using. Takes no screenshots, logs no keys, never moves the mouse or types, reads no credential or config files. Writes only to its plugin-data folder (pipe key, pid, logs, saved guides). Registers the global hotkey Ctrl+Alt+Shift+F12 while the overlay runs. While a guide is open it looks up the current step's target about once a second. Installs PySide6-Essentials (about 215 MB) and comtypes. No telemetry, no self-update, no paid APIs."
+description: "Gives Hermes the ability to draw on your screen. On your real Windows desktop it draws a gliding pointer, spotlights, boxes, arrows and numbered steps anchored to live UI Automation elements, a floating step guide with Next and Back, handwritten glass notes, and sticky notes you can drag and edit. Marks are click-through and nothing takes focus unless you choose to edit a sticky note; DPI- and multi-monitor-aware, with an emergency clear hotkey (Ctrl+Alt+Shift+F12). Disclosure — Windows only. Starts one detached background process (the overlay, run by Hermes's own Python) on first use; it exits on the hotkey, on stop, or after 10 idle minutes with nothing on screen (an open sticky note keeps it running). No network: the plugin and the overlay talk over a local named pipe with a random key. Reads monitor layout, visible window titles, process names and bounds, and UI Automation names, types and bounds of elements in the window you target; these appear in tool results and so reach the model Hermes is using. Takes no screenshots, logs no keys, never moves the mouse or types, reads no credential or config files. Writes only to its plugin-data folder (pipe key, pid, logs, saved guides). Registers the global hotkey Ctrl+Alt+Shift+F12 while the overlay runs. While a guide is open it looks up the current step's target about once a second. Installs PySide6-Essentials (about 215 MB) and comtypes. No telemetry, no self-update, no paid APIs."
 maintainer: tuancookiez-hub
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/tuancookiez-hub/hermes-screen-overlay/tree/a08737886c6f95af596998dc8657f5c5373f3f7f
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/a08737886c6f95af596998dc8657f5c5373f3f7f/docs/images/banner.png
+docs_url: https://github.com/tuancookiez-hub/hermes-screen-overlay/tree/0270e5224513e0fa091bf49df44fd58e1126125d
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/0270e5224513e0fa091bf49df44fd58e1126125d/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/a08737886c6f95af596998dc8657f5c5373f3f7f/docs/images/pointer.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/a08737886c6f95af596998dc8657f5c5373f3f7f/docs/images/guide.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/a08737886c6f95af596998dc8657f5c5373f3f7f/docs/images/notes.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/a08737886c6f95af596998dc8657f5c5373f3f7f/docs/images/spotlight.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/a08737886c6f95af596998dc8657f5c5373f3f7f/docs/images/steps.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/0270e5224513e0fa091bf49df44fd58e1126125d/docs/images/pointer.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/0270e5224513e0fa091bf49df44fd58e1126125d/docs/images/guide.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/0270e5224513e0fa091bf49df44fd58e1126125d/docs/images/notes.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/0270e5224513e0fa091bf49df44fd58e1126125d/docs/images/spotlight.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-screen-overlay/0270e5224513e0fa091bf49df44fd58e1126125d/docs/images/steps.png
 platforms:
   - windows
 capabilities:
@@ -28,4 +28,5 @@ capabilities:
 known_issues:
   - "Windows 10 2004+ or Windows 11 only; on other platforms the tool is hidden."
   - "Cannot draw over exclusive-fullscreen games, and UI Automation is blocked for apps running as administrator; use a window or rect target for those."
+  - "Sticky notes last until closed or the overlay stops; they are not saved across a restart."
   - "The overlay is hidden from screenshots and recordings by default; turn off exclude_from_capture to record it."

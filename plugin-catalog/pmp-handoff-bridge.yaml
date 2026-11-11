@@ -5,7 +5,7 @@ sha: 04f04711dfc10edbf9e77bb98dd390ab03bea60c
 description: Verify selected PMP handoff files, detect workspace drift, and persist reception receipts. Reads/writes the explicitly authorized workspace; no network or credentials.
 maintainer: Mad-Max8063
 tier: community
-category: memory
+category: tools
 version: "0.1.0"
 requires_hermes: ">=0.21.6"
 platforms: [windows, linux]

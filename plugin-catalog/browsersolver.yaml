@@ -3,7 +3,7 @@ title: BrowserSolver
 repo: https://github.com/browsersolver/hermes-plugin-browsersolver
 sha: a3e5c4cd61211c58eb0c7b4f9af2ab20cdf376b2
 version: "1.0.0"
-description: "Fetch web pages behind Cloudflare, DataDome and similar protections for the built-in web_extract tool, through the BrowserSolver web unlocker API. Extract only; pair it with a search backend for web_search. Disclosure — sends each URL to api.browsersolver.com with your BROWSERSOLVER_API_KEY, and calls can use BrowserSolver credits. Reads the key only through Hermes's secret scope. Registers no tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+description: "Fetch web pages behind Cloudflare, DataDome and similar protections for the built-in web_extract tool, through the BrowserSolver web unlocker API. Extract only; pair it with a search backend for web_search. Disclosure — sends each URL to api.browsersolver.com with your BROWSERSOLVER_API_KEY so BrowserSolver fetches the page past Cloudflare, DataDome and similar bot protection; the default engine is webunlocker, the most expensive tier, and calls use BrowserSolver credits (set engine to crawler or rendering for cheaper fetches). Reads the key only through Hermes's secret scope. Registers no tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
 maintainer: browsersolver
 tier: community
 category: web

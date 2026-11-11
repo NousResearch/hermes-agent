@@ -2,7 +2,7 @@ name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
 sha: 40932f8b828f584e64c985ddc8920dfd06d43693
-description: Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression.
+description: "Test recovery before delivery, after commit and across restart; inspect saved records, verify the repair and keep a reusable regression. Disclosure — After a Hermes approval prompt, runs the `app.start` command declared by a case file or a model-prepared experiment as a local process outside the Hermes sandbox, and drives it with a Node/Playwright runner and a local Chromium launched with `--no-sandbox`; stores runs, experiments, exports and watch files under `~/.local/share/crashlab` (or `CRASHLAB_DATA_DIR`), shared across Hermes profiles; the opt-in `crashlab_experiment_watch` adds a `pre_verify` reminder that asks Hermes to continue after edits in a watched project; the dashboard tab can start an approved run after its own confirmation."
 maintainer: dolepee
 tier: community
 category: tools

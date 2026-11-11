@@ -147,3 +147,47 @@ def test_secret_source_never_forwards_config_env_ref_credentials(monkeypatch):
 
     assert not set(referenced) & set(result)
     assert result["SERVER_TOKEN"] == "MARKER-server"
+
+
+def test_secret_source_never_forwards_model_api_alias_ref(monkeypatch):
+    """``model.api`` is read as the main model's API key (an alias of ``model.api_key``), so a
+    ``${VAR}`` there makes VAR a Hermes credential whose vault copy is withheld."""
+    from hermes_cli import env_loader
+    from tools.mcp_tool_config import _build_safe_env
+
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        "model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  api: ${LAB_LLM}\n", encoding="utf-8")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "LAB_LLM", "command")
+    fake_env = {"PATH": "/usr/bin", "LAB_LLM": "MARKER-llm", "HERMES_HOME": os.environ["HERMES_HOME"]}
+    with patch.dict("os.environ", fake_env, clear=True):
+        result = _build_safe_env(None)
+
+    assert "LAB_LLM" not in result
+
+
+def test_secret_source_never_forwards_managed_config_credential_refs(monkeypatch, tmp_path):
+    """The managed-scope config.yaml is expanded and merged over the profile's, so a credential
+    ``${VAR}`` it declares is a Hermes credential exactly like one in the profile file; its own
+    ``mcp_servers.*.env`` refs stay the server's declared env."""
+    from hermes_cli import env_loader, managed_scope
+    from tools.mcp_tool_config import _build_safe_env
+
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "custom_providers:\n  - name: lab\n    base_url: http://127.0.0.1:9/v1\n    api_key: ${LAB_LLM}\n"
+        "mcp_servers:\n  other:\n    command: x\n    env:\n      SERVER_TOKEN: ${SERVER_TOKEN}\n",
+        encoding="utf-8")
+    for name in ("LAB_LLM", "SERVER_TOKEN"):
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "command")
+    fake_env = {"PATH": "/usr/bin", "LAB_LLM": "MARKER-llm", "SERVER_TOKEN": "MARKER-server",
+                "HERMES_MANAGED_DIR": str(managed), "HERMES_HOME": os.environ["HERMES_HOME"]}
+    managed_scope.invalidate_managed_cache()
+    try:
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _build_safe_env(None)
+    finally:
+        managed_scope.invalidate_managed_cache()
+
+    assert "LAB_LLM" not in result
+    assert result["SERVER_TOKEN"] == "MARKER-server"

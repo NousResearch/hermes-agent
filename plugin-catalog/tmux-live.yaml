@@ -1,6 +1,6 @@
 name: tmux-live
 repo: https://github.com/maksymhs/hermes-tmux-live
-sha: cd48d859ac09b45c35376c45c2550944ce6a5482
+sha: e2ec7dcc7c69f958a0daae9041a927728f18648b
 description: >-
   Live tmux tab for the Hermes web dashboard: pick a pane, watch it in ANSI
   colour, type into it when needed, and terminate the process, pane or session.
@@ -13,13 +13,13 @@ maintainer: maksymhs
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "1.1.1"
+version: "1.2.2"
 docs_url: https://github.com/maksymhs/hermes-tmux-live#readme
 readme: true
 platforms: [linux, macos]
 screenshots:
-  - https://raw.githubusercontent.com/maksymhs/hermes-tmux-live/cd48d859ac09b45c35376c45c2550944ce6a5482/docs/tmux-live-picker.png
-  - https://raw.githubusercontent.com/maksymhs/hermes-tmux-live/cd48d859ac09b45c35376c45c2550944ce6a5482/docs/tmux-live-pane.png
+  - https://raw.githubusercontent.com/maksymhs/hermes-tmux-live/e2ec7dcc7c69f958a0daae9041a927728f18648b/docs/tmux-live-picker.png
+  - https://raw.githubusercontent.com/maksymhs/hermes-tmux-live/e2ec7dcc7c69f958a0daae9041a927728f18648b/docs/tmux-live-pane.png
 known_issues:
   - The view is a one-second mirror, not a PTY attachment, so typed characters appear on the next poll.
   - Only panes belonging to the same user and host as the dashboard are visible.

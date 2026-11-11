@@ -1,13 +1,13 @@
 name: ball
 repo: https://github.com/getaskclaw/hermes-ball
-sha: a10ea6789792d2fc3750adb99264d2b62c3e635b
+sha: 036ef752cf21d5b18f3f391b3311222b5a964676
 description: >-
-  Estimates which Hermes chats are waiting on you and what the AI asked (/ball, Matrix !ball). Heuristic; local-only storage of short AI-reply excerpts; reads Hermes state.db read-only.
+  Shows which Hermes chats are waiting on you and what the AI asked (/ball; Matrix: !ball). A phrase heuristic, not a guarantee. Reads each inbound message to track turns but never stores it; keeps short AI-reply excerpts in local SQLite. No network unless you enable the optional LLM judge.
 maintainer: getaskclaw
 tier: community
 category: general
 docs_url: https://github.com/getaskclaw/hermes-ball#readme
-version: "0.1.1"
+version: "0.1.2"
 requires_hermes: ">=0.23.1"
 platforms: [linux]
 capabilities:
@@ -21,6 +21,6 @@ capabilities:
   provides_middleware: []
   requires_env: []
 screenshots:
-  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/a10ea6789792d2fc3750adb99264d2b62c3e635b/demo/screens/ball.png
-  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/a10ea6789792d2fc3750adb99264d2b62c3e635b/demo/screens/ball-all.png
-  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/a10ea6789792d2fc3750adb99264d2b62c3e635b/demo/screens/ball-done.png
+  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/036ef752cf21d5b18f3f391b3311222b5a964676/demo/screens/ball.png
+  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/036ef752cf21d5b18f3f391b3311222b5a964676/demo/screens/ball-all.png
+  - https://raw.githubusercontent.com/getaskclaw/hermes-ball/036ef752cf21d5b18f3f391b3311222b5a964676/demo/screens/ball-done.png

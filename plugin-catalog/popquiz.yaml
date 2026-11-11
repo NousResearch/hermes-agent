@@ -1,0 +1,33 @@
+name: popquiz
+title: "Pop Quiz"
+repo: https://github.com/4n0nn43x/hermes-popquiz
+sha: 129c888322e31143f139761a6ef853b5a9d1cf5d
+description: "Pop Quiz, the room vs the models: any document becomes a live quiz for the whole room in about a minute. Hermes writes the questions and the plugin refuses every question whose quote is not found verbatim in the document; people join from their phones with a QR code (no app, no account) while up to four Nous Portal models play the same questions on the same clock, with latency and cost on screen (a free preset plays models the Portal prices at $0); the report says what the room got wrong and which model understood the document best, for what cost. Disclosure — runs an aiohttp web server on 127.0.0.1:8765 by default while a quiz is up (it stops 10 minutes after the game ends); \"Open to phones\" (the /popquiz command, or the agent calling popquiz_control open_lan without an approval prompt) adds one listener on the machine's private LAN address (never all interfaces), plain HTTP, and from then on anyone on that network can watch the projector page (questions, source quotes, room code), join as a player and read the end-of-game report; the host page and host commands need the host token and a loopback client (with a public_url tunnel every visitor arrives as loopback, so only the token protects them); model players are ctx.llm calls on your Nous Portal account, started when the game starts (the agent can start it), paid unless you pick the free preset, capped per game by budget_usd (default 1 USD) against estimated costs, with no cap for a model the public price list does not know (a custom players entry, or your main model when the llm.model_override and llm.provider_override capabilities are not granted); in open_book mode each call carries the document text (up to 400 000 characters); if the Portal refuses a call, Hermes may retry it on its fallback chain and then on your main model and provider, and such answers are labelled fallback model; at the end of a game the report (with player nicknames typed by the people in the room) is posted into the chat as a user message, which starts a model turn; fetches the public Nous Portal model list for prices at most once a day (no key sent) and caches it in its plugin state, the only thing it writes; reads only the document the agent is given, inside the session folder or the Hermes document cache; an opt-in Desktop pane frames the projector page in the SDK's SandboxedFrame; no telemetry."
+maintainer: 4n0nn43x
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/4n0nn43x/hermes-popquiz#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/4n0nn43x/hermes-popquiz/129c888322e31143f139761a6ef853b5a9d1cf5d/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/4n0nn43x/hermes-popquiz/129c888322e31143f139761a6ef853b5a9d1cf5d/docs/screens/01-projector-question.png
+  - https://raw.githubusercontent.com/4n0nn43x/hermes-popquiz/129c888322e31143f139761a6ef853b5a9d1cf5d/docs/screens/02-phone.png
+  - https://raw.githubusercontent.com/4n0nn43x/hermes-popquiz/129c888322e31143f139761a6ef853b5a9d1cf5d/docs/screens/03-room-vs-models.png
+  - https://raw.githubusercontent.com/4n0nn43x/hermes-popquiz/129c888322e31143f139761a6ef853b5a9d1cf5d/docs/screens/04-report.png
+readme: true
+platforms: []
+known_issues:
+  - Tested on Linux (Ubuntu 26.04); macOS and Windows are not tested yet.
+  - Phones must reach the host machine on the local network; guest Wi-Fi with client isolation blocks them.
+  - Paid model players need Nous Portal credit; without it their answers are refused ($0) and the game still runs for the humans. The free preset needs no credit.
+  - The Desktop pane was checked in headless Chromium with the same sandboxed frame, not yet inside the Desktop app.
+capabilities:
+  provides_tools:
+    - popquiz_create
+    - popquiz_control
+    - popquiz_status
+    - popquiz_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

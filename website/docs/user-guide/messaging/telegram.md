@@ -99,27 +99,26 @@ Notes:
 
 ### Cold-boot pending queue (Optional)
 
-By default the adapter drops server-side pending updates on a cold boot
-(`drop_pending_updates=True` on the first `start_polling`). That fits
-always-on servers: a restart means "clean up," and the queue is treated as
-stale. It does not fit hosts that turn off (a desktop shut down overnight):
-messages sent while the gateway is offline sit in Telegram's Bot API queue,
-and the next boot discards them before Hermes ever sees them — silently, no
-log, no retry.
+Messages sent while the gateway is off (a desktop shut down overnight, a
+restart, an update) wait in Telegram's Bot API queue for up to 24 hours. By
+default the adapter keeps that queue on a cold boot and answers the backlog
+in order once it starts; updates Hermes already handled before the restart
+are skipped by its persisted update receipts, so they are not answered twice.
 
-Set `drop_pending_on_cold_boot: false` to receive that backlog in order on
-startup instead:
+Set `drop_pending_on_cold_boot: true` to discard that backlog on startup
+instead (an always-on server where a restart means "start clean"):
 
 ```yaml
 platforms:
   telegram:
     extra:
-      drop_pending_on_cold_boot: false
+      drop_pending_on_cold_boot: true
 ```
 
 Notes:
 
-- Default is `true`: existing behavior is unchanged unless you opt in.
+- Default is `false`: the backlog is answered. An explicit value in your
+  config is respected either way.
 - Watcher reconnects (brief network outages with the process still alive)
   always preserve the queue regardless of this setting.
 - Conflict recovery (another poller holding the bot's `getUpdates` session)
@@ -159,6 +158,10 @@ platforms:
       media_group_wait_seconds: 3.0
 ```
 
+A short text followed right away by a photo (a question, then the screenshot it is about) also
+reaches the agent as one message. If the photo starts arriving before the text has been sent on,
+the text waits up to 8 seconds for the photo's download and joins it.
+
 ### Repeated inbound updates
 
 Hermes suppresses repeated Telegram `update_id` values before message batching,
@@ -166,14 +169,16 @@ command/media handling, observed group-history writes and plugin observers.
 The receiving adapter and numeric bot ID scope this check; it does not deduplicate
 by text or `message_id`. A genuine edit with a new update ID can still be processed.
 
-This is bounded, **in-memory** protection, not an exactly-once guarantee:
+This is bounded protection, not an exactly-once guarantee:
 
-- The adapter remembers the most recent 4096 completed admissions, with no time
-  expiry. Active updates stay claimed until dispatch and its scheduled PTB handler
-  tasks finish, including nonblocking native plugins and registered error callbacks.
-- Reconnecting the same adapter retains that history. Eviction, adapter replacement
-  or a process restart can allow an old update through again. Nothing is written
-  to a replay ledger on disk.
+- The adapter remembers the most recent 4096 completed admissions per bot. Active
+  updates stay claimed until dispatch and its scheduled PTB handler tasks finish,
+  including nonblocking native plugins and registered error callbacks.
+- Completed update IDs are also saved per bot under the Hermes home and kept for
+  24 hours, the longest Telegram holds an undelivered update. Reconnects, adapter
+  rebuilds and gateway restarts therefore do not answer an already-handled update
+  again, including the backlog answered after a cold boot. A receipt older than
+  24 hours, or a receipts file that cannot be read, no longer protects that update.
 - Failed or cancelled preparation releases its claim if nothing has been handed
   off. Once an update enters a batch/hold queue, gateway dispatch, an observer or
   a native plugin, a later error does not reopen it. Native plugins own their own
@@ -235,6 +240,10 @@ The first word filters the catalog; everything after it is carried into the sent
 
 Results are only served to users who pass your gateway allowlist — unauthorized users get an empty list, so your installed skill catalog is not exposed to strangers (inline queries can be sent from any chat, even ones the bot is not in).
 
+### Forum topics
+
+In Telegram supergroups with topics enabled, the command menu does **not** inherit from the global `AllGroupChats` scope — each forum supergroup needs its own chat-scoped command registration. Hermes handles this automatically: the first time a message arrives in a forum supergroup, the gateway lazily registers the same capped menu scoped to that chat (`BotCommandScopeChat`). This happens once per forum chat per gateway run and is transparent to users — the `/` menu appears in forum topics just like in regular groups, without any configuration.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.
@@ -277,6 +286,8 @@ telegram:
 ```
 
 With this mode enabled, unmentioned group messages from explicitly allowlisted chats/topics are appended to the shared chat/topic session transcript as observed context, but they do not dispatch the agent. `allowed_chats` gates where the bot responds; `group_allowed_chats` authorizes the shared group session used for observed context, so use the same chat IDs for this mode. A later `@botname` mention, reply to the bot, or configured mention pattern in that same allowlisted chat/topic can use that observed context. The triggered message is also tagged with `[nickname|user_id]` and gets a per-turn safety prompt so the model treats prior observed lines as context, not instructions addressed to the bot. Slash commands sent in that chat/topic (`/new`, `/model`, `/undo`, skill commands) act on the same shared session, while admin-only commands are still checked against the sender.
+
+Observed context is text only. A photo, video or file sent without a trigger is cached, and the observed line gives its saved path; the next addressed turn does not attach it inline. When a later message asks about it, the agent opens the cached file itself (`vision_analyze` for images; `video_analyze` for videos when the opt-in `video` toolset is enabled, otherwise its file tools), so image tokens are only spent when someone asks.
 
 Equivalent environment variable:
 
@@ -481,6 +492,10 @@ TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
 
 `TELEGRAM_CRON_THREAD_ID` overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron deliveries only. Replies in that topic continue the topic's existing session.
 
+## Shared Contacts and Locations
+
+A contact card or location pin you share with the bot reaches the agent as a short text block (name, phone number and vCard for a contact; coordinates and venue for a location), so the agent can act on it.
+
 ## Voice Messages
 
 ### Incoming Voice (Speech-to-Text)
@@ -676,6 +691,8 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message is addressed to one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run (and log one `Skipping message ... addressed to other bot(s)` line). A message is addressed to another bot only when it starts with that bot's handle (`@OtherBot do this`, `@BotA @BotB: compare`, `/status@OtherBot`). A handle later in the text, as in `the shop has its own bot now (@ShopBot)`, only talks about that bot and does not silence this one. This bot's own handle anywhere still wins unless an opening command, optionally after this bot's address, explicitly targets another bot. Enabled by default.
 - Renaming the bot's `@username` in BotFather is picked up automatically — Hermes follows the new handle for mention routing without a gateway restart. Collectible (Fragment) usernames that don't end in `bot` are supported too.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
+- Use `telegram.allowed_topics` as a forum-topic whitelist — when set, Hermes ignores messages from any other group/forum topic and logs the first drop per chat/topic at INFO (DMs are never filtered). Telegram's General topic, and any group message without a `message_thread_id`, is normalized to topic ID `1`. Whitelist evaluation runs before `ignored_threads`.
+- Use `telegram.free_response_chats` / `telegram.free_response_topics` to bypass `require_mention` for a whole chat or a single forum topic only.
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
 ### Letting the bot stay silent in a group
@@ -863,6 +880,10 @@ platforms:
 4. Messages in each topic have their own conversation history, memory flush, and context window
 5. Every topic with a `thread_id` (in `dm_topics` and `group_topics`) is listed in `channel_directory.json`, so `send_message` can target it by name even when it has no recent session. A topic name used in more than one chat is listed as `<chat_id> / <name>`. A topic named like another directory entry (a DM or group of that name) is listed as `<chat_id>:<thread_id> / <name>`, and that entry as `<its id> / <name>`, so the bare name resolves to neither
 
+:::caution Read-state limitation
+Telegram private DM topics have a Bot API read-state limitation. Hermes can receive messages from a user-created topic and route replies back into that topic, but normal bot accounts don't expose a reliable API for marking the topic copy of an incoming user message as read. Telegram may show the root "All Messages" chat and the topic with different unread/read indicators. This is expected Telegram behaviour, not necessarily a Hermes processing failure.
+:::
+
 ### Root DM handling
 
 By default, messages sent to the root DM (outside any topic) are processed
@@ -903,7 +924,7 @@ A ChatGPT-style multi-session DM — one bot, many parallel conversations. Unlik
 
 | Form | Context | Effect |
 |------|---------|--------|
-| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode, create pinned System topic |
+| `/topic` | Root DM, not yet enabled | Check BotFather capabilities, enable multi-session mode |
 | `/topic` | Root DM, already enabled | Show status: unlinked sessions available for restore |
 | `/topic` | Inside a topic | Show the current topic's session binding |
 | `/topic help` | Any | Inline usage |
@@ -946,8 +967,7 @@ Hermes will:
 
 1. Check `getMe().has_topics_enabled` and `allows_users_to_create_topics`
 2. If both are true, enable multi-session topic mode for this DM
-3. Create and pin a **System** topic for status/commands (best-effort)
-4. Reply with a list of previous unlinked Telegram sessions the user can restore
+3. Reply with a list of previous unlinked Telegram sessions the user can restore
 
 After activation, the **root DM is a lobby**: normal prompts are rejected with guidance pointing at **All Messages**. System commands (`/status`, `/sessions`, `/usage`, `/help`, etc.) still work in the root.
 
@@ -1032,7 +1052,7 @@ Shows the current topic's binding: session title, session ID, and hints for `/ne
 - BotFather setup screenshots are rate-limited to one send per 5 minutes per **(profile, chat)** — repeated `/topic` attempts while Threads Settings are still disabled won't re-upload the same image
 - `/bg <prompt>` started inside a topic delivers its result back to the same topic; background sessions don't trigger auto-rename of the owning topic
 - `/topic` itself is gated by the bot's user authorization check — unauthorized DMs get a refusal instead of activation
-- When Telegram rejects a topic with `message thread not found` (the topic was deleted, or topics were turned off in the Telegram client), Hermes retries the same topic once by `direct_messages_topic_id`, then delivers the reply to the root chat without its reply anchor and drops that topic's binding. A reply whose anchor message was deleted keeps its topic and only loses the anchor. A send to a topic Hermes just created by name fails instead, so the topic is recreated rather than the reply landing in the root. Removing the chat's last binding turns topic mode off, so the root DM works as a normal chat again
+- When Telegram rejects a topic with `message thread not found` (the topic was deleted, or topics were turned off in the Telegram client), Hermes retries the same topic once, then delivers the reply to the root chat without its reply anchor and drops that topic's binding. A reply whose anchor message was deleted keeps its topic and only loses the anchor. A send to a topic Hermes just created by name fails instead, so the topic is recreated rather than the reply landing in the root. Removing the chat's last binding turns topic mode off, so the root DM works as a normal chat again
 
 ### Disabling multi-session mode
 
@@ -1180,8 +1200,6 @@ The same setting applies to sends made outside the gateway process: `hermes send
 
 CJK text (Chinese, Japanese, Korean, and rare Han extensions) stays on the legacy MarkdownV2 path by default because affected Telegram Desktop/macOS clients have rendered Bot API rich messages with overlapping CJK glyph artifacts. If you use an unaffected client and prefer native rich tables/task lists/details/math for CJK payloads, set `allow_cjk_rich_messages: true` alongside `rich_messages: true` to opt in to that client-side risk.
 
-If you only want the legacy "always code-block" table behavior while keeping rich messages enabled, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
-
 **Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
 
 ```yaml
@@ -1275,6 +1293,8 @@ With `guest_mode: true`, a message from a non-allowlisted group is processed **o
 
 DMs and allowlisted groups behave exactly as before.
 
+Broadcast **channel** posts run the same `allowed_chats`, `require_mention` and topic gates as groups, but never get the guest bypass: anyone with posting rights in a channel could otherwise cross the allowlist. Add the channel's ID to `allowed_chats` and @mention the bot in a post to address it.
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the platform's `extra` block:
@@ -1341,10 +1361,13 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 1. If `TELEGRAM_FALLBACK_IPS` is set, those IPs are used directly.
 2. Otherwise, the adapter automatically queries **Google DNS** and **Cloudflare DNS** via DNS-over-HTTPS (DoH) to discover alternative IPs for `api.telegram.org`.
 3. Known IPv4 Telegram API IPs are tried **before** the dual-stack `api.telegram.org` hostname. A blackholed IPv6 path can sit in `connect()` without erroring, which used to pin the event loop so the 30s init deadline never fired.
-4. If DoH is also blocked or times out, a hardcoded IPv4 seed list (`149.154.166.110`, `149.154.167.220`) is used as that IPv4-first list. The hostname remains last resort.
+4. A hardcoded IPv4 seed list (`149.154.166.110`, `149.154.167.220`) always follows the DoH answers (DoH often returns a single edge, which would otherwise be the only fallback), and is the whole list when DoH is blocked or times out. The hostname remains last resort.
 5. Once a path succeeds, it becomes "sticky" — subsequent requests use it directly. The hostname is kept as a last resort for IPv6-only networks.
+6. One request's walk across these paths shares a 15s connect budget, half the 30s send deadline. The first path keeps its full connect timeout and later paths split the rest. If every path hangs, the send fails with a connect timeout before the deadline. The gateway retries it, because the message never left.
 
-Sends made outside the gateway process (`hermes send`, the `send_message` tool, standalone cron delivery) use the same transport with your configured IPs or the seed list. They skip DoH discovery so a one-shot send stays fast. They also use the gateway's `HERMES_TELEGRAM_HTTP_*` timeouts and its 60s media-upload write timeout. A connect or pool timeout is retried there, because the request never left. Any other timeout is not retried: Telegram may already have delivered the message.
+Sends made outside the gateway process (`hermes send`, the `send_message` tool, standalone cron delivery) use the same transport with your configured IPs or the seed list. They skip DoH discovery so a one-shot send stays fast. They also use the gateway's `HERMES_TELEGRAM_HTTP_*` timeouts and its media-upload budgets. A connect or pool timeout is retried there, because the request never left. Any other timeout is not retried: Telegram may already have delivered the message, and `hermes send` says so in its warning instead of inviting a resend.
+
+A media upload from a file on disk (gateway or standalone) gets read and write timeouts of 60s plus the time the file takes at 128 KB/s. Gateway uploads also get a wall-clock cap of 300s plus 1.5x that time (at most one hour). `hermes send` and the `send_message` tool are bounded only by those per-request timeouts. Standalone cron delivery keeps its `cron.standalone_send_timeout_seconds` cap (60s by default), widened by 1.5x the upload time when the delivery carries files, and a cron delivery through the live gateway widens `cron.media_send_timeout_seconds` the same way. A large file on a slow uplink, or through a self-hosted Bot API server that only answers once it has forwarded the file, then waits for Telegram's answer instead of reporting a failure for a file that lands minutes later.
 
 ### Configuration
 
@@ -1462,6 +1485,7 @@ Numeric YAML keys are automatically normalized to strings.
 | Bot ignores group messages | Privacy mode is likely on. Disable it (Step 3) or make the bot a group admin. **Remember to remove and re-add the bot after changing privacy.** |
 | Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`. |
 | Voice replies are files, not bubbles | Install `ffmpeg` (needed for Edge TTS Opus conversion). |
+| Logs show `Telegram polling conflict` (409) | Another poller holds the bot's `getUpdates` session. This is usually the gateway's own previous long poll, which Telegram expires on its own: the adapter retries for about 200 s, then the gateway reconnects it again about 2, 5 and 10 minutes later (every profile in a multiplexed gateway does this). If the token is still in use after that, `hermes status` shows the platform as `fatal` with `token_in_use_elsewhere` and needs-attention, and the gateway stops retrying. Stop the other poller (another machine, a leftover process, or another bot framework using this token), then run `hermes gateway restart`. Two of your own profiles set up with the same token never get this far: the second one is refused at startup with `duplicate_credential` (or `telegram-bot-token_lock` when the other is a separate local gateway). |
 | Bot token revoked/invalid | Generate a new token via `/revoke` then `/newbot` or `/token` in BotFather. Update your `.env` file. |
 | Webhook not receiving updates | Verify `TELEGRAM_WEBHOOK_URL` is publicly reachable (test with `curl`). Ensure your platform/reverse proxy routes inbound HTTPS traffic from the URL's port to the local listen port configured by `TELEGRAM_WEBHOOK_PORT` (they do not need to be the same number). Ensure SSL/TLS is active — Telegram only sends to HTTPS URLs. Check firewall rules. |
 

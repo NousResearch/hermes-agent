@@ -1,0 +1,39 @@
+name: sheets
+title: Hermes Sheets
+repo: https://github.com/Adolanium/hermes-sheets
+sha: 65888b7c6a0304d61ac5f1d060a5d4bd95ee73eb
+description: >-
+  An agentic spreadsheet. Ask for a sheet and a Hermes agent finds the rows on
+  the web, each with its source, or bring your own. Hermes suggests typed
+  columns, fills only the ones you pick, explains what the answers add up to,
+  and, once you allow it, lets any chat read your grids and propose cells,
+  columns and rows that you approve and can undo. Formula columns, a totals
+  row and Excel export are built in. Disclosure — Build sheet,
+  research columns and Ask start hidden Hermes sessions that use your Hermes
+  tools and read third-party web pages; approval prompts inside build and
+  research sessions are denied; import reads and export writes the one file
+  you pick in the system dialog, through the plugin's own backend, and the
+  folder source reads a folder you grant; grids live in Desktop plugin
+  storage, with a copy under plugin-data/sheets/ only after you turn on chat
+  access, which starts off; no telemetry, no credentials, no shell commands or
+  background processes of its own. Independent community project, not
+  affiliated with Nous Research.
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Adolanium/hermes-sheets#readme
+version: "0.1.2"
+image: https://raw.githubusercontent.com/Adolanium/hermes-sheets/65888b7c6a0304d61ac5f1d060a5d4bd95ee73eb/docs/assets/catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/65888b7c6a0304d61ac5f1d060a5d4bd95ee73eb/docs/assets/hero.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-sheets/65888b7c6a0304d61ac5f1d060a5d4bd95ee73eb/docs/assets/built.png
+capabilities:
+  provides_tools:
+    - sheets_list
+    - sheets_read
+    - sheets_propose
+    - sheets_create
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -701,8 +701,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return
             try:
                 from tools.approval import resolve_gateway_approval_card  # lazy: keep adapter light
-                count = resolve_gateway_approval_card(  # refuses approve on Deny-only
-                    session_key, choice, approval_button_request_id(button_data))
+                count = resolve_gateway_approval_card(  # refuses approve on Deny-only and a refused clicker
+                    session_key, choice, approval_button_request_id(button_data),
+                    actor_id=event.operator_openid, extra=self.config.extra)
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)

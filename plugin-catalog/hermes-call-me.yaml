@@ -1,0 +1,21 @@
+name: hermes-call-me
+title: Hermes Call Me
+repo: https://github.com/fozagtx/hermes-call-me
+sha: 78d7b14f69eeb81879a604fc4478ea03c19ddca5
+description: "Hermes phones its owner through CALL-E before a risky action, when it is stuck, or when it finishes: call_for_approval, call_for_help and call_report each place one real phone call, the owner says a PIN the plugin compares (an approval also needs a one-time code read on the call and repeated back), and a wrong PIN, wrong code, no answer, busy, silence, an unclear reply or a timeout is never approval; an optional pre_tool_call guard blocks deploy/delete/payment-style tools until a single-use approval is on file. Disclosure — Each call_for_approval, call_for_help or call_report places a real phone call billed to your own CALL-E account, and the model decides when to call, within a one-at-a-time limit and a daily cap of 8 by default. The action summary, issue or report text the model writes, your phone number, a one-time code and the call task go to api.heycall-e.com, which handles the call audio and transcript. Call records and transcripts, with spoken digits redacted, are stored in the plugin's data folder. A tool call can block for up to 180 seconds by default (600 max) waiting for you to answer."
+maintainer: fozagtx
+tier: community
+category: voice
+requires_hermes: ">=0.21.6"
+version: "0.2.0"
+docs_url: https://github.com/fozagtx/hermes-call-me#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - call_for_approval
+    - call_for_help
+    - call_report
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

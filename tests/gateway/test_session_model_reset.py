@@ -56,7 +56,6 @@ def _make_runner():
     runner.session_store._generate_session_key.return_value = session_key
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._agent_cache_lock = None  # disables _evict_cached_agent lock path
     runner._is_user_authorized = lambda _source: True

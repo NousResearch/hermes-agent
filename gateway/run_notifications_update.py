@@ -33,6 +33,8 @@ def _update_failed_notice() -> str:
 # configured at all — no adapter will ever appear — would keep itself on disk and re-log a
 # deferred line on every poll, in every process, forever. Stop waiting past this age.
 _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
+# How long a watcher follows one /update before writing the timeout exit code.
+_UPDATE_WATCH_TIMEOUT_SECONDS = 1800.0
 
 
 def _update_output_tail(output: str, limit: int) -> str:
@@ -129,6 +131,25 @@ class GatewayUpdateNotificationsMixin:
         # The writer stamps a naive local ``datetime.now()``; tolerate a tz-aware one too.
         now = datetime.now(stamped.tzinfo) if stamped.tzinfo else datetime.now()
         return (now - stamped).total_seconds()
+
+    @classmethod
+    def _update_in_flight(cls) -> bool:
+        """An earlier ``/update`` has not finished: its marker is on disk with no exit code yet.
+
+        Its watcher keeps the chat and opener it read at start, so a second ``/update`` must not
+        rewrite the marker (who answers the prompt) under it. A marker older than the watcher's
+        timeout is a dead run the watcher can no longer finish, and does not block a new one."""
+        paths = cls._update_paths()
+        if paths.exit_code.exists():
+            return False
+        for path in (paths.claimed, paths.pending):
+            try:
+                marker = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            age = cls._marker_age_seconds(marker) if isinstance(marker, dict) else None
+            return age is not None and age < _UPDATE_WATCH_TIMEOUT_SECONDS
+        return False
 
     def _resolve_update_target(self, paths: _UpdatePaths) -> Optional[_UpdateTarget]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
@@ -227,7 +248,7 @@ class GatewayUpdateNotificationsMixin:
             state.persistent.update_prompt_pending = False
 
     async def _watch_update_progress(
-        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = 1800.0
+        self, poll_interval: float = 2.0, stream_interval: float = 4.0, timeout: float = _UPDATE_WATCH_TIMEOUT_SECONDS
     ) -> None:
         """Watch ``hermes update --gateway``, streaming output + forwarding prompts.
 

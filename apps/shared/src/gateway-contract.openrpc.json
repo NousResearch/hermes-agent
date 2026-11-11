@@ -30371,7 +30371,7 @@
       },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
+        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` when the new profile has no\nauth.json of its own and reads the default root's.",
         "properties": {
           "env": {
             "default": false,
@@ -31040,7 +31040,7 @@
       },
       "ProfilesCreateParams": {
         "additionalProperties": false,
-        "description": "``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on\nso a headless bot has a provider.",
+        "description": "``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` and\n``share_auth`` default on (the bot page's defaults) so a headless bot has a provider.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -31243,6 +31243,14 @@
           },
           "mirrored": {
             "$ref": "#/components/schemas/ProfileMirrored"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [

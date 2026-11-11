@@ -112,8 +112,7 @@ jobs:
         #
         # No --files: the runner discovers the suite itself. The discovered
         # set is identical to the list the removed matrix job used to pass in.
-        run: |
-          scripts/run_tests.sh
+        run: just test-all
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/3
           HERMES_TEST_FORKSERVER: "1"

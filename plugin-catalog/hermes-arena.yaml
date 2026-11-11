@@ -1,0 +1,34 @@
+name: hermes-arena
+title: Hermes Arena
+repo: https://github.com/JustinPerea/Hermes-arena
+sha: "8c7ba632f82fb9ea945eede6b548981ad552d147"
+subdir: hermes-plugin
+version: "1.0.0"
+description: >-
+  A pixel-art platform fighter that runs inside Hermes Desktop. Four fighters, two stages, and
+  three ways to play: against a CPU, with a second player on the same keyboard, or online
+  through Find a match or a room code. Online play connects the two computers directly.
+maintainer: JustinPerea
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/JustinPerea/Hermes-arena/tree/main/hermes-plugin#readme
+image: https://raw.githubusercontent.com/JustinPerea/Hermes-arena/8c7ba632f82fb9ea945eede6b548981ad552d147/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/JustinPerea/Hermes-arena/8c7ba632f82fb9ea945eede6b548981ad552d147/docs/media/desktop.png
+  - https://raw.githubusercontent.com/JustinPerea/Hermes-arena/8c7ba632f82fb9ea945eede6b548981ad552d147/docs/media/select.png
+  - https://raw.githubusercontent.com/JustinPerea/Hermes-arena/8c7ba632f82fb9ea945eede6b548981ad552d147/docs/media/kairos.png
+  - https://raw.githubusercontent.com/JustinPerea/Hermes-arena/8c7ba632f82fb9ea945eede6b548981ad552d147/docs/media/iris.png
+  - https://raw.githubusercontent.com/JustinPerea/Hermes-arena/8c7ba632f82fb9ea945eede6b548981ad552d147/docs/media/kyllene.png
+  - https://raw.githubusercontent.com/JustinPerea/Hermes-arena/8c7ba632f82fb9ea945eede6b548981ad552d147/docs/media/online.png
+readme: true
+platforms: []
+known_issues:
+  - "Online play is a direct connection between the two computers, so the other player can see your IP address. The online screen says so before you connect."
+  - "To set up an online match the game contacts the free public PeerJS signaling server (0.peerjs.com) and Google's public STUN server (stun.l.google.com). There is no relay server, so some strict networks (some offices and mobile carriers) cannot connect."
+  - "The page loads its three fonts from Google Fonts each time it opens."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

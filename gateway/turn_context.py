@@ -90,7 +90,9 @@ class TurnContext:
     # hook / status bridge wiring
     _loop_for_step: Any = None
     _hooks_ref: Any = None
-    _status_adapter: Any = None
+    _status_adapter: Any = None  # read through the live-resolving property below (bind_status_adapter)
+    # The runner's delivery lookup for this turn's source; None keeps the pinned adapter only.
+    _status_adapter_resolver: Optional[Callable[[], Any]] = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
     # bound TurnRunner callbacks read via ctx
@@ -107,3 +109,26 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    def bind_status_adapter(self, resolve: Callable[[], Any]) -> None:
+        """Pin the adapter that answers the turn now, and keep *resolve* to re-ask at every send."""
+        self._status_adapter, self._status_adapter_resolver = resolve(), resolve
+
+
+def _status_adapter_now(ctx: TurnContext) -> Any:
+    """The adapter that answers the turn NOW. A reconnect replaces the platform's adapter while a
+    turn runs, and the retired instance has no bot, so an approval card, clarify question or status
+    sent through the adapter pinned at turn start fails "Not connected" and the gated command waits
+    out its full timeout (#138133). The pinned one answers while no adapter is registered (the
+    reconnect gap), where its own send() still waits for the replacement."""
+    resolve = ctx._status_adapter_resolver
+    live = resolve() if resolve is not None else None
+    return live if live is not None else ctx.__dict__.get("_status_adapter_pinned")
+
+
+def _pin_status_adapter(ctx: TurnContext, adapter: Any) -> None:
+    ctx.__dict__["_status_adapter_pinned"] = adapter
+
+
+# Installed after @dataclass so ``TurnContext(_status_adapter=...)`` and plain assignment still pin it.
+TurnContext._status_adapter = property(_status_adapter_now, _pin_status_adapter)  # type: ignore[assignment]

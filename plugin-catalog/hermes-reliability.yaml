@@ -1,0 +1,43 @@
+name: hermes-reliability
+repo: https://github.com/MadBonzz/hermes-reliability
+sha: c21843eb9122ff83ebfd0fe8e68510951004e077
+title: Reliability Lab
+description: >-
+  Architecture-aware reliability testing for agent repositories: discover real usage datasets, generate
+  scenarios, review them independently, execute configured targets and inspect evidence in Hermes web
+  and Desktop dashboards. Freeze audited benchmarks and compare regressions across code changes, with
+  baseline references for native Hermes memory. Disclosure: sends source excerpts and sampled user messages
+  to the configured model provider, queries Hugging Face/Zenodo, clones supplied repositories, starts
+  background workers, and runs target/evaluator code on the host when execution is enabled; OpenHands/DeerFlow
+  targets use configured containers. Campaign evidence is stored in the active profile.
+maintainer: MadBonzz
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.2.0"
+docs_url: https://github.com/MadBonzz/hermes-reliability#readme
+screenshots:
+  - https://raw.githubusercontent.com/MadBonzz/hermes-reliability/c21843eb9122ff83ebfd0fe8e68510951004e077/docs/screenshots/regression-dashboard.png
+platforms:
+  - linux
+known_issues:
+  - The Hermes target adapter uses version-sensitive runtime interfaces in separate evaluation
+    workers; compatibility warnings and tested revisions are documented.
+  - End-to-end workflows are verified with deterministic models; live Command A target smoke passed,
+    but autonomous live scenario generation has not yet completed.
+capabilities:
+  provides_tools:
+    - reliability_start
+    - reliability_status
+    - reliability_stop
+    - reliability_evidence
+    - reliability_history
+    - reliability_freeze
+    - reliability_compare
+    - reliability_memory
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - HF_TOKEN
+    - RELIABILITY_TARGET_API_KEY

@@ -209,15 +209,36 @@ def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     return not pasted_text.strip()
 
 
+class _LiveAreaOutput:
+    """The output the live area paints through, writing every cell without U+FE0F (VS16).
+
+    prompt_toolkit sizes a cell with ``get_cwidth``, which counts VS16 as zero, so ``🗜️`` is one
+    cell to it, while a terminal that honours VS16 (Ghostty, kitty, foot, WezTerm) draws it two
+    cells wide. Every cell right of it then lands a column off: the row's last column falls off
+    the edge, and a diff repaint writes over the wrong cells (#120588). Without the selector a
+    glyph keeps its default presentation, the width prompt_toolkit measured.
+    """
+
+    def __init__(self, output):
+        self._output = output
+
+    def write(self, data: str) -> None:
+        self._output.write(data.replace("\ufe0f", ""))
+
+    def __getattr__(self, name):
+        return getattr(self._output, name)
+
+
 def _hermes_call_output_screen_diff(
     orig_osd, app, output, screen, current_pos, color_depth, previous_screen, last_style, is_done, full_screen,
     attrs_for_style_string, style_string_has_style, size, previous_width,
 ):
-    """prompt_toolkit ``_output_screen_diff`` with resize guards.
+    """prompt_toolkit ``_output_screen_diff`` with resize guards, painting without VS16.
 
     Inflates ``previous_screen.height`` when the new screen is taller so pt skips the
     cursor move that stamps chrome into scrollback; on a corrupt previous paint buffer
-    (tmux re-attach) retries once as a first paint instead of crashing the loop.
+    (tmux re-attach) retries once as a first paint instead of crashing the loop. Cells go out
+    through ``_LiveAreaOutput``, so each is drawn as wide as pt measured it.
 
     1. 2. On AttributeError/TypeError from a corrupt previous paint buffer (classic after tmux attach with
     same width), retry once with ``previous_screen=None`` so pt first-paints cleanly instead of crashing the
@@ -229,7 +250,7 @@ def _hermes_call_output_screen_diff(
     except Exception:
         pass
 
-    common = (app, output, screen, current_pos, color_depth)
+    common = (app, _LiveAreaOutput(output), screen, current_pos, color_depth)
     tail = (is_done, full_screen, attrs_for_style_string, style_string_has_style, size)
     try:
         return orig_osd(*common, previous_screen, last_style, *tail, previous_width)

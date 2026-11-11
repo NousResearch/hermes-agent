@@ -1,0 +1,31 @@
+# Catalog entry for NousResearch/hermes-agent, plugin-catalog/neuron-steer.yaml
+# Schema and admission rules verified against plugin-catalog/README.md in
+# NousResearch/hermes-agent on 2026-11-11 (category "tools" is a listed
+# shelf; image may be empty; sha is a mandatory full 40-char pin).
+name: neuron-steer
+repo: https://github.com/mrfentmen/hermes-neuron-steer
+sha: 59b4fa1cdc54599c129e1130a4a3bfc01356c12a
+description: >-
+  Neuron steering for Hermes Agent, implementing Nous Research's own
+  Contrastive Neuron Attribution (arXiv:2605.12290). Find the sparse MLP
+  neurons that distinguish two behaviors with forward passes only, save
+  them as named circuits, then scale or ablate those neurons at inference
+  to steer a local model, plus a dose scan that maps where the behavior
+  turns on before output quality breaks.
+maintainer: mrfentmen
+tier: community
+category: tools
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/mrfentmen/hermes-neuron-steer#readme
+version: "1.0.0"
+image: ""
+platforms: []
+capabilities:
+  provides_tools:
+    - neuron_steer_find
+    - neuron_steer_generate
+    - neuron_steer_scan
+    - neuron_steer_list
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

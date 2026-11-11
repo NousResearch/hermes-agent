@@ -118,12 +118,14 @@ class FakeConnector:
         self.unacked_ops: set[str] = set()  # applied but never acked: the gateway sees a lost ack
         self.dropping_ops: set[str] = set()  # applied, then the socket drops before the ack
         self.url = ""
+        self._port = 0
         self._server: Any = None
 
     # ── WebSocket half ──────────────────────────────────────────────────
     async def start(self) -> None:
-        self._server = await websockets.serve(self._handle, "127.0.0.1", 0)
-        port = next(iter(self._server.sockets)).getsockname()[1]
+        """Listen on a free port; a restart after ``stop()`` listens on the same one."""
+        self._server = await websockets.serve(self._handle, "127.0.0.1", self._port)
+        port = self._port = next(iter(self._server.sockets)).getsockname()[1]
         self.url = f"ws://127.0.0.1:{port}/relay"
 
     async def stop(self) -> None:

@@ -25,6 +25,9 @@ InboundHandler = Callable[[MessageEvent], Awaitable[Optional["asyncio.Task[None]
 # acked by the handler after durable handoff.
 PassthroughHandler = Callable[[Any, Optional[str]], Awaitable[None]]
 
+# Callback the transport invokes when its link to the connector drops or comes back.
+LinkHandler = Callable[[], None]
+
 
 @runtime_checkable
 class RelayTransport(Protocol):
@@ -50,6 +53,15 @@ class RelayTransport(Protocol):
         The connector answers the provider's edge ACK itself, then forwards the real
         request over this same outbound socket (a hosted gateway has no public
         inbound port). Optional on a transport (a stub may not implement it).
+        """
+        ...
+
+    def set_link_handlers(self, on_lost: LinkHandler, on_restored: LinkHandler) -> None:
+        """Register the callbacks for link loss and link recovery after ``connect()``.
+
+        ``on_lost`` runs when the link to the connector drops other than by
+        ``disconnect()``; ``on_restored`` runs when the transport's own re-dial
+        brings it back. Optional on a transport (a stub whose link cannot drop).
         """
         ...
 

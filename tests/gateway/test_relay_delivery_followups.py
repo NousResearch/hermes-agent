@@ -174,17 +174,23 @@ def test_drain_grace_uses_threaded_remaining_budget(monkeypatch):
     assert _disconnect_drain_grace_s(reserved + 1.0) == pytest.approx(1.0)
 
 
+def _relay_adapter(transport):
+    from gateway.config import PlatformConfig
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+
+    descriptor = CapabilityDescriptor(
+        contract_version=CONTRACT_VERSION, platform="slack", label="Relay", max_message_length=4096,
+        supports_draft_streaming=False, supports_edit=True, supports_threads=False,
+        markdown_dialect="plain", len_unit="chars",
+    )
+    return RelayAdapter(PlatformConfig(), descriptor, transport=transport)
 
 
 @pytest.mark.asyncio
 async def test_adapter_disconnect_threads_remaining_budget():
     """RelayAdapter.disconnect must pass budget_s to the transport, and the
     value must be <= the full budget (its own spend subtracted)."""
-    from gateway.relay.adapter import RelayAdapter
-
-    adapter = object.__new__(RelayAdapter)
-    adapter._revocation_monitor = None
-
     seen = {}
 
     class _Transport:
@@ -200,7 +206,7 @@ async def test_adapter_disconnect_threads_remaining_budget():
 
             return _noop()
 
-    adapter._transport = _Transport()
+    adapter = _relay_adapter(_Transport())
     await adapter.disconnect()
 
     assert "budget_s" in seen, "transport.disconnect never received budget_s"
@@ -217,10 +223,6 @@ async def test_adapter_disconnect_threads_remaining_budget():
 async def test_adapter_disconnect_tolerates_legacy_transport_signature():
     """A transport without the budget_s keyword (stubs) must still be torn
     down through the legacy no-arg call, not crash."""
-    from gateway.relay.adapter import RelayAdapter
-
-    adapter = object.__new__(RelayAdapter)
-    adapter._revocation_monitor = None
     called = {}
 
     class _LegacyTransport:
@@ -232,7 +234,7 @@ async def test_adapter_disconnect_tolerates_legacy_transport_signature():
 
             return _noop()
 
-    adapter._transport = _LegacyTransport()
+    adapter = _relay_adapter(_LegacyTransport())
     await adapter.disconnect()
     assert called.get("legacy") is True
 

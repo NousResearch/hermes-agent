@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable, Optional
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.session import SessionSource
 from gateway.relay.descriptor import CapabilityDescriptor
-from gateway.relay.transport import InboundHandler
+from gateway.relay.transport import InboundHandler, LinkHandler
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +395,8 @@ class WebSocketRelayTransport:
         self._inbound_acks: set[asyncio.Task[None]] = set()  # ACKs of off-reader admissions
         self._interrupt_inbound_handler: Any = None
         self._passthrough_handler: Any = None
+        self._on_link_lost: LinkHandler = lambda: None
+        self._on_link_restored: LinkHandler = lambda: None
         # `_descriptor` is the FIRST (primary-identity) descriptor; the map holds
         # one per hello'd identity, keyed by platform (descriptor_for_platform).
         self._descriptor: Optional[CapabilityDescriptor] = None
@@ -582,6 +584,11 @@ class WebSocketRelayTransport:
     def set_passthrough_handler(self, handler: Any) -> None:
         """Register ``handler(forward, buffer_id)`` for passthrough_forward frames (§5.1)."""
         self._passthrough_handler = handler
+
+    def set_link_handlers(self, on_lost: LinkHandler, on_restored: LinkHandler) -> None:
+        """Register the callbacks for an unexpected close and for a successful re-dial."""
+        self._on_link_lost = on_lost
+        self._on_link_restored = on_restored
 
     # ── outbound ─────────────────────────────────────────────────────────
     async def send_outbound(
@@ -805,6 +812,7 @@ class WebSocketRelayTransport:
             # owns the handle during deliberate teardown.
             if self._ws is ws and not self._closing:
                 self._ws = None
+                self._on_link_lost()
             # The reader is the ONLY thing that resolves pending futures; once it
             # exits every waiter would block the full outbound timeout. Fail them
             # NOW with the dict shape callers expect (never an exception); a
@@ -861,6 +869,7 @@ class WebSocketRelayTransport:
             return
         try:
             await self._dial_and_start()
+            self._on_link_restored()
             logger.info("relay ws re-dialed with a fresh upgrade token after 4401")
         except asyncio.CancelledError:
             raise
@@ -909,6 +918,7 @@ class WebSocketRelayTransport:
                 return
             try:
                 await self._dial_and_start()
+                self._on_link_restored()
                 logger.info("relay ws reconnected")
                 return
             except Exception as exc:

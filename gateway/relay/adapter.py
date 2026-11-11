@@ -807,11 +807,6 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
     # ── abstract methods (delegated to the transport) ────────────────────
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract (the
-        # reconnect watcher passes it; refusing the kwarg would break recovery).
-        # Relay IGNORES it: messages buffered during a gap live in the CONNECTOR's
-        # durable buffer and replay on re-handshake; routine WS drops are handled by
-        # the transport's own reconnect supervisor.
         if self._transport is None:
             # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract: the gateway's reconnect
             # watcher (gateway/run.py) re-establishes a platform after a fatal adapter error by building a
@@ -826,14 +821,16 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             raise RuntimeError("RelayAdapter has no transport configured")
         self._transport.set_inbound_handler(self._on_inbound)
         # Interrupts and passthrough-plane forwards (Discord interactions, Twilio, …)
-        # ride the SAME outbound WS — no inbound HTTP receiver, no public port.
-        for setter_name, handler in (
+        # ride the SAME outbound WS — no inbound HTTP receiver, no public port. The
+        # transport re-dials a dropped link itself and reports loss and recovery here.
+        for setter_name, *handlers in (
             ("set_interrupt_inbound_handler", self.on_interrupt),
             ("set_passthrough_handler", self._on_passthrough),
+            ("set_link_handlers", self._mark_disconnected, self._mark_connected),
         ):
             setter = getattr(self._transport, setter_name, None)
             if callable(setter):
-                setter(handler)
+                setter(*handlers)
         if not await self._transport.connect():
             return False
         # Adopt the connector-advertised descriptor in place of the placeholder.
@@ -846,6 +843,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # Only the production WebSocket transport exposes `auth_revoked`.
         if hasattr(self._transport, "auth_revoked"):
             self._start_revocation_monitor()
+        self._mark_connected()
         return True
 
     def _start_revocation_monitor(self) -> None:
@@ -1173,6 +1171,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                     await asyncio.shield(_td)
                 except Exception:
                     logger.debug("relay transport disconnect failed during drain", exc_info=True)
+        self._mark_disconnected()
 
     async def go_dormant(self) -> bool:
         """Quiesce the relay for a scale-to-zero suspend. Unlike ``disconnect()`` this

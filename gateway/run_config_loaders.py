@@ -120,17 +120,16 @@ class GatewayConfigLoadersMixin:
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
     def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id, source=None):
-        """``channel_overrides`` entry for this channel/thread in the serving profile, or None (also
-        when no config is bound). Without *source* the bound profile scope names that profile."""
+        """``channel_overrides`` entry for this channel/thread in *source*'s serving profile (the
+        launch config without a source), or None (also when no config is bound)."""
         from gateway.run import _get_channel_override
-        config = self._serving_channel_config(source, platform=platform)
+        config = self._serving_channel_config(source) if source is not None else getattr(self, "config", None)
         if not config:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
-    def _serving_channel_config(self, source: Optional[SessionSource] = None, *, platform: Optional[Platform] = None,
-                                unbound_reads_home: bool = False):
-        """The config whose ``channel_overrides`` serve *source* (else the bound profile scope).
+    def _serving_channel_config(self, source: SessionSource, *, unbound_reads_home: bool = False):
+        """The config whose ``channel_overrides`` serve *source*.
 
         ``self.config`` (a ``gateway --config`` file included) belongs to the primary profile only.
         A turn another multiplexed profile serves reads that profile's own config.yaml: chat ids
@@ -140,22 +139,12 @@ class GatewayConfigLoadersMixin:
         """
         from gateway.session_identity import identity_of
         config = getattr(self, "config", None)
-        primary = getattr(self, "_primary_profile_name", None) or "default"
-        home = None
-        if source is not None:
-            identity = identity_of(source)
-            runtime = identity.runtime_profile if identity is not None else (source.profile or None)
-            if (config is None and unbound_reads_home) or (runtime and runtime != primary):
-                home = self._resolve_profile_home_for_source(source)
-        else:
-            from hermes_constants import get_hermes_home_override
-            from hermes_cli.profiles import get_active_profile_name
-            scoped = get_hermes_home_override()
-            if scoped and get_active_profile_name() != primary:
-                home = Path(scoped)
-        if home is None:
-            return config
-        return _profile_channel_overrides(home, platform if platform is not None else source.platform)
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        if routed or (config is None and unbound_reads_home):
+            return _profile_channel_overrides(self._resolve_profile_home_for_source(source), source.platform)
+        return config
 
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
         """Evaluate existing exemptions before consulting the optional room permission."""
@@ -199,7 +188,7 @@ class GatewayConfigLoadersMixin:
 
     def _get_system_prompt_for_channel(
         self, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
+        parent_id: Optional[str] = None, source: Optional[SessionSource] = None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -213,7 +202,7 @@ class GatewayConfigLoadersMixin:
         boot-time snapshot of the launch profile's (#89161); ``/personality`` edits take effect on the next
         turn for the same reason.
         """
-        override = self._channel_override(platform, chat_id, thread_id, parent_id)
+        override = self._channel_override(platform, chat_id, thread_id, parent_id, source)
         if override and override.system_prompt:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()

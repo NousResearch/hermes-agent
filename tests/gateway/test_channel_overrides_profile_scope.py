@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 
+from types import SimpleNamespace
+
 import pytest
 
 from agent.secret_scope import set_multiplex_active
 from gateway.config import Platform, load_gateway_config
 from gateway.run import GatewayRunner, _profile_runtime_scope
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
 from gateway.session_identity import RoutingIdentity
 
@@ -43,7 +46,9 @@ def _turn(runner, profile, home, chat_id):
     source._identity = RoutingIdentity(profile, profile, home, home)
     with _profile_runtime_scope(home, prepared_secret_scope={}):
         model, _runtime = runner._resolve_session_agent_runtime(source=source, session_key=None)
-        prompt = runner._get_system_prompt_for_channel(Platform.TELEGRAM, chat_id)
+        # The turn's real prompt builder, which owns the source.
+        ctx = SimpleNamespace(source=source, context_prompt="", channel_prompt="")
+        prompt = TurnRunner(runner, ctx)._combined_ephemeral_prompt()
     channel = runner._channel_override_for(source)
     return model, prompt, getattr(channel, "model", None)
 

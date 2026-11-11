@@ -46,6 +46,15 @@ def _parse_iso(value) -> Optional[datetime]:
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
+def is_delegate_child_row(row: dict) -> bool:
+    """A delegate subagent's row: never a chat's route or topic-binding target. A row that also carries
+    ``_reset_from`` is a /new continuation of the chat whose config picked up the marker (#109073) and
+    stays routable (same rule as peer recovery's ``_DELEGATE_CHILD_EXCLUSION_SQL``)."""
+    from hermes_state_sessions import _parse_model_config
+    config = _parse_model_config(row.get("model_config"))
+    return bool(config.get("_delegate_from")) and "_reset_from" not in config
+
+
 def auto_continue_freshness_window() -> float:
     """Resume-scheduler freshness window; stale automation never discards the transcript."""
     raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
@@ -95,9 +104,7 @@ class SessionLifecycleMixin:
             return False
         # A delegate subagent's row is never a chat's conversation: a route left naming one (written while
         # the subagent captured the thread, #138210) is stale, so recovery hands the chat back to its owner.
-        from hermes_state_sessions import _parse_model_config
-        return (row is None or row.get("end_reason") is not None
-                or bool(_parse_model_config(row.get("model_config")).get("_delegate_from")))
+        return row is None or row.get("end_reason") is not None or is_delegate_child_row(row)
 
     def _local_receipt_target(self, entry: Optional[SessionEntry]) -> Optional[str]:
         """The physical target the authority's receipt names for *entry*'s local route, else None

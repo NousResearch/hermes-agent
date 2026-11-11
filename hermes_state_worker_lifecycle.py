@@ -252,7 +252,9 @@ def insert_session_row_in_transaction(
                             sessions.model_config, '$._reset_from'
                         ) = '{}'
                    THEN json_set(
-                       excluded.model_config,
+                       -- a reset row is the chat itself: a delegate marker riding the incoming
+                       -- config would hide it from every list while it keeps the route (#109073)
+                       json_remove(excluded.model_config, '$._delegate_from'),
                        '$._reset_from',
                        json_extract(
                            sessions.model_config, '$._reset_from'

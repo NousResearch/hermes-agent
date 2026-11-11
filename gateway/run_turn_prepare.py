@@ -494,9 +494,8 @@ class GatewayTurnPrepareMixin:
             # A binding naming a delegate subagent's row (written while the route was captured by it,
             # #138210) is not the topic's conversation either: following it hands the user to the worker.
             bound_row = await self._session_db.get_session(bound_session_id) if self._session_db is not None else None
-            from hermes_state_sessions import _parse_model_config
-            if self._session_db is not None and (
-                    not bound_row or _parse_model_config(bound_row.get("model_config")).get("_delegate_from")):
+            from gateway.session_lifecycle import is_delegate_child_row
+            if self._session_db is not None and (not bound_row or is_delegate_child_row(bound_row)):
                 logger.warning("Telegram topic binding for %s points at session %s with %s; keeping the "
                                "current session and rebinding", session_key, bound_session_id,
                                "a delegate subagent's row" if bound_row else "no sessions row")

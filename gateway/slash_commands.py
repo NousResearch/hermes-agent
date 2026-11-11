@@ -345,7 +345,7 @@ class GatewaySlashCommandsMixin(
             return head + t("gateway.whoami.tier_admin")
         # Non-admin: floor first (mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS), then operator
         # additions, deduped in order.
-        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_allowed_commands)))
+        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_runnable_commands)))
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else t("gateway.shared.none_marker")
         return head + t("gateway.whoami.tier_user", commands=runnable_str)
 
@@ -623,7 +623,7 @@ class GatewaySlashCommandsMixin(
         # policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
-            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
+            return {"allowed_commands": {"help", "whoami", *policy.user_runnable_commands}}
         return {}
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
@@ -1070,9 +1070,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.config_save_failed", error=e)
         example = ""
         if new_state:
-            # Show a preview using current agent state if available.
+            # Preview the model the next turn runs: the turn's own resolver (session /model >
+            # channel_overrides > config.yaml); an unresolvable route still previews the config model.
+            try:
+                preview_model, _ = self._resolve_session_agent_runtime(source=event.source, user_config=user_config)
+            except Exception:  # health: allow BLE001 -- a broken route must not break /footer on
+                logger.debug("Footer preview: session runtime unresolvable", exc_info=True)
+                preview_model = _resolve_gateway_model(user_config)
             preview = format_runtime_footer(
-                model=_resolve_gateway_model(user_config) or None, context_tokens=0, context_length=None,
+                model=preview_model or None, context_tokens=0, context_length=None,
                 fields=effective.get("fields") or ["model", "context_pct", "cwd"])
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)
@@ -1189,9 +1195,11 @@ class GatewaySlashCommandsMixin(
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
 
     def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str,
-                                    resolve_all: bool = False):
+                                    resolve_all: bool = False, choice: str = "once"):
         """``(session_key, None, request_ids)`` when an agent thread is blocked on approval and the
-        sender may answer the approvals this command selects, else ``(session_key, reply, [])``.
+        sender may answer the approvals this command selects (*choice* names its ``/approve`` or
+        ``/deny`` for the chat's slash policy: the bare-word "always" lands here without dispatch's
+        gate), else ``(session_key, reply, [])``.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
@@ -1199,11 +1207,12 @@ class GatewaySlashCommandsMixin(
             from gateway.approval_actor import answerable_request_ids, refusal_text
             from gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
-                session_key, event.sender_id(), resolve_all=resolve_all,
-                admin_ids=policy_for_runner_source(self, event.source).admin_user_ids)
+                session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,
+                admin_ids=policy_for_runner_source(self, event.source))
             return (session_key, refusal_text(requester), []) if requester else (session_key, None, ids)
-        if session_key in self._pending_approvals:
-            self._pending_approvals.pop(session_key)
+        _approval_state = self._peek_session_state(session_key)
+        if _approval_state is not None and _approval_state.persistent.approvals is not None:
+            _approval_state.persistent.approvals = None
             return session_key, t(stale_key), []
         return session_key, t(none_key), []
 
@@ -1241,7 +1250,7 @@ class GatewaySlashCommandsMixin(
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
         session_key, stale, request_ids = self._blocking_approval_or_stale(
-            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=resolve_all)
+            event, "gateway.deny.stale", "gateway.deny.no_pending", resolve_all=resolve_all, choice="deny")
         if stale:
             return stale
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
@@ -1328,6 +1337,7 @@ class GatewaySlashCommandsMixin(
         """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
         restart it may trigger; marker files let this or the next gateway process notify the user."""
         import json
+        from gateway.approval_actor import opener_authority
         from gateway.run import _hermes_home, _resolve_hermes_bin
         from hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
@@ -1369,13 +1379,15 @@ class GatewaySlashCommandsMixin(
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
+        if self._update_in_flight():  # before any write: the marker names who answers its prompts
+            return t("gateway.update.already_running")
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         pending = {
             "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
-            "timestamp": datetime.now().isoformat()}
+            "timestamp": datetime.now().isoformat(), "authority": opener_authority(event)}  # who answers its prompts
         # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
         # requester's own profile bot, not the default profile's adapter for the same platform.
         pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),

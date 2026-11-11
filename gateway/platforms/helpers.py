@@ -815,3 +815,35 @@ def platform_http_client(**kwargs: Any) -> Any:
     elif kwargs["limits"] is None:
         del kwargs["limits"]
     return create_ssrf_safe_async_client(event_hooks=hooks, **kwargs)
+
+
+# The slowest uplink a media upload's budgets still cover, and the wall-clock ceiling they grow to.
+MIN_MEDIA_UPLOAD_RATE = 128 * 1024  # B/s
+MEDIA_UPLOAD_DEADLINE_MAX = 3600.0
+
+
+def _on_disk_size(value: Any) -> int:
+    if isinstance(value, (str, os.PathLike)):
+        try:
+            return os.stat(value).st_size
+        except (OSError, ValueError):
+            return 0  # a URL or platform file id
+    try:  # an open file handle
+        return os.fstat(value.fileno()).st_size
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+def media_upload_seconds(sources: Any) -> float:
+    """Seconds the on-disk payloads in ``sources`` (paths, open files; URLs and ids count 0) take
+    at ``MIN_MEDIA_UPLOAD_RATE``."""
+    return sum(_on_disk_size(source) for source in sources) / MIN_MEDIA_UPLOAD_RATE
+
+
+def scaled_upload_deadline(deadline: float, upload_seconds: float) -> float:
+    """A media send's wall-clock cap widened by 1.5x its upload time (at most
+    ``MEDIA_UPLOAD_DEADLINE_MAX``, never below ``deadline``): a platform answers an upload only once
+    the file has arrived, so a fixed cap reports a slow-but-delivered file as failed (#133093)."""
+    if upload_seconds <= 0:
+        return deadline
+    return max(deadline, min(MEDIA_UPLOAD_DEADLINE_MAX, deadline + 1.5 * upload_seconds))

@@ -22,6 +22,7 @@ import pytest
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
 from tests.fakes.providers.gemini_native import (
+    HERMES_CONFIG,
     HERMES_ENV,
     Blocked,
     Drop,
@@ -80,7 +81,7 @@ class Outcome:
 
 def _run(root: Path, name: str, case: Case) -> Outcome:
     home = nh.make_home(root / name, hermes_model(), env_file=HERMES_ENV,
-                        extra_config={"agent": {"api_max_retries": case.max_retries}})
+                        extra_config={**HERMES_CONFIG, "agent": {"api_max_retries": case.max_retries}})
     with GeminiFake(root / name / "fake", case.script, route=case.route) as fake:
         result = nh.run_chat(home, f"Say hello ({name}).", env=fake.child_env())
         calls = fake.generate_calls()

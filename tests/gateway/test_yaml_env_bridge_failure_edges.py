@@ -133,6 +133,33 @@ def test_a_force_reload_drops_the_failed_load_record(tmp_path, monkeypatch):
     assert "TELEGRAM_REACTIONS" not in os.environ
 
 
+def test_another_profiles_reload_keeps_this_profiles_failed_load_record(tmp_path, monkeypatch):
+    """A force reload of a sibling profile's plugins re-decides only that profile's plugins."""
+    from gateway import platform_registry as registry_module
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager, PluginManifest
+
+    plugin_dir = tmp_path / "plugins" / "bridgeprobe"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text(
+        "import bridgeprobe_missing_sdk  # noqa: F401\n\ndef register(ctx):\n    pass\n", encoding="utf-8")
+    manifest = PluginManifest(name="bridgeprobe-platform", kind="platform", source="bundled",
+                              path=str(plugin_dir), key="bridgeprobe-platform")
+    registry = registry_module.PlatformRegistry()
+    monkeypatch.setattr(registry_module, "platform_registry", registry)
+    monkeypatch.setattr(plugins, "discover_plugins", lambda: None)
+    (tmp_path / "config.yaml").write_text("bridgeprobe:\n  flag: false\n", encoding="utf-8")
+    PluginManager()._register_deferred_platform(manifest)
+    load_yaml_layer(tmp_path, {})  # this profile's import fails and is recorded
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
+
+    PluginManager(scope_key=str(tmp_path / "sibling")).unload()
+    load_yaml_layer(tmp_path, {})
+
+    assert os.environ.get("TELEGRAM_REACTIONS") == "false"  # the failed plugin may still own it
+
+
 @pytest.mark.parametrize("yaml_text", ["{}\n", "telegram:\n  proxy_url: 'http://other:3128'\n"])
 def test_a_value_an_external_secret_source_supplies_is_the_operators(tmp_path, monkeypatch, yaml_text):
     """The proxy moved from config.yaml into the vault: neither a YAML removal nor a YAML edit touches it."""

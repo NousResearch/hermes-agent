@@ -1,6 +1,6 @@
 name: hermes-line
 repo: https://github.com/uzay-eth/hermes-line
-sha: '5521505dcf151e03ff38b42313453066ec788abb'
+sha: 'a2ff2700cc4b5b0e3b05484a2a4b8d1cabd75333'
 subdir: plugin
 title: Hermes Line
 description: >-
@@ -13,10 +13,10 @@ requires_hermes: '>=0.22.5'
 version: '0.1.0'
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/uzay-eth/hermes-line/5521505dcf151e03ff38b42313453066ec788abb/tools/pane-preview/screenshots/round4/on_hold.png
-  - https://raw.githubusercontent.com/uzay-eth/hermes-line/5521505dcf151e03ff38b42313453066ec788abb/tools/pane-preview/screenshots/round4/human_detected.png
-  - https://raw.githubusercontent.com/uzay-eth/hermes-line/5521505dcf151e03ff38b42313453066ec788abb/tools/pane-preview/screenshots/round4/owner_connected.png
-  - https://raw.githubusercontent.com/uzay-eth/hermes-line/5521505dcf151e03ff38b42313453066ec788abb/tools/pane-preview/screenshots/round4/ended.png
+  - https://raw.githubusercontent.com/uzay-eth/hermes-line/a2ff2700cc4b5b0e3b05484a2a4b8d1cabd75333/tools/pane-preview/screenshots/round4/on_hold.png
+  - https://raw.githubusercontent.com/uzay-eth/hermes-line/a2ff2700cc4b5b0e3b05484a2a4b8d1cabd75333/tools/pane-preview/screenshots/round4/human_detected.png
+  - https://raw.githubusercontent.com/uzay-eth/hermes-line/a2ff2700cc4b5b0e3b05484a2a4b8d1cabd75333/tools/pane-preview/screenshots/round4/owner_connected.png
+  - https://raw.githubusercontent.com/uzay-eth/hermes-line/a2ff2700cc4b5b0e3b05484a2a4b8d1cabd75333/tools/pane-preview/screenshots/round4/ended.png
 platforms: []
 known_issues:
   - "US numbers only (geographic and toll-free); premium 900/976 and non-US numbers are refused."

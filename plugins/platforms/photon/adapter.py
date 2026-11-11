@@ -453,13 +453,20 @@ def _parse_timestamp(ts_str: str) -> datetime:
 _Normalized = tuple[str, MessageType, list[str], list[str]]  # text, type, media_urls, media_types
 
 
+def _is_voice_payload(payload: dict[str, Any]) -> bool:
+    """A ``voice`` payload, or an attachment that is one: iMessage voice notes are CAF and may arrive
+    "(unnamed)", so MIME is a signal too."""
+    if payload.get("type") == "voice":
+        return True
+    return payload.get("type") == "attachment" and (
+        str(payload.get("name") or "").lower().endswith(".caf") or payload.get("mimeType") == "audio/x-caf")
+
+
 def _normalize_binary_payload(payload: dict[str, Any]) -> _Normalized:
     """Cache an inline attachment/voice payload; fall back to a text marker."""
-    is_voice = payload.get("type") == "voice"
+    is_voice = _is_voice_payload(payload)
     name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
     mime = payload.get("mimeType") or ""
-    # iMessage voice notes are CAF and may arrive "(unnamed)", so MIME is a signal too.
-    is_voice = is_voice or name.lower().endswith(".caf") or mime == "audio/x-caf"
     mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
     label = "voice" if is_voice else "attachment"
     cached = _cache_inbound_attachment(payload, name, mime, force_audio=is_voice)
@@ -509,8 +516,8 @@ _BINARY_CONTENT_TYPES = {"attachment", "voice", "group"}  # may decode/cache med
 def _carries_voice(content: dict[str, Any]) -> bool:
     """A voice note, alone or inside a ``group`` envelope: only speech can hold a spoken wake word."""
     if content.get("type") == "group":
-        return any(c.get("type") == "voice" for c in _group_item_contents(content))
-    return content.get("type") == "voice"
+        return any(map(_is_voice_payload, _group_item_contents(content)))
+    return _is_voice_payload(content)
 
 
 def _mention_gate_text(content: dict[str, Any]) -> str:

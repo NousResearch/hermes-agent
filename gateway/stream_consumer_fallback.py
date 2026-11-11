@@ -200,11 +200,17 @@ class StreamFallbackMixin:
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only
-                # prevents a duplicate of the partial.  Nothing landed: let the
-                # gateway final send try once more.
+                # prevents a duplicate of the partial, and the answer now spans several
+                # messages (the id is only the last one).  Nothing landed: the frozen
+                # preview keeps its id, so the gateway finishes it in place instead of
+                # posting the whole answer again beside it.
                 self._already_sent = sent_any_chunk
-                self._message_id = last_message_id
-                self._last_sent_text = last_successful_chunk
+                self._turn_split_delivery = self._turn_split_delivery or sent_any_chunk
+                if sent_any_chunk or not stale_message_id:
+                    self._message_id = last_message_id
+                    self._last_sent_text = last_successful_chunk
+                else:
+                    self._message_id = stale_message_id
                 self._fallback_prefix = ""
                 return
             sent_any_chunk = True

@@ -2,7 +2,7 @@ name: siteform
 title: SiteForm
 repo: https://github.com/duclucky/siteform
 sha: "be9b797345e695630318c66b5245657738767b9b"
-description: Review planning PDFs, compare evidence-linked 3D options in Hermes chat, and edit the same revision in Studio.
+description: "Review planning PDFs, compare evidence-linked 3D options in Hermes chat, and edit the same revision in Studio. Disclosure — The siteform_import_pdf tool reads any local .pdf file whose absolute path the agent supplies and stores a copy in this profile's SiteForm library (plugin-data/siteform); optional \"use model\" quantity extraction sends selected PDF text rows to your configured Hermes model; OCR runs locally with bundled Tesseract tessdata_fast data, and the plugin makes no other network calls."
 maintainer: duclucky
 tier: community
 category: desktop

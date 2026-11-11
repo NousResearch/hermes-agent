@@ -540,8 +540,8 @@ def _(rid, params: dict, db) -> dict:
         if title_lookup := _str_param(params, "title"):
             return _session_list_by_title(rid, db, title_lookup)
         limit = int(params.get("limit", 200) or 200)
-        # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
-        # surfaces that OWN hidden sessions (Bots pane, pickers).
+        # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for surfaces
+        # that OWN hidden sessions (Bots pane, pickers). A pin is an explicit keep, as on REST and the sidebar.
         from pathlib import Path
 
         from hermes_cli.session_listing import show_subagent_sessions
@@ -550,12 +550,12 @@ def _(rid, params: dict, db) -> dict:
         # A store without a path has no profile config to read, so it keeps the default shape.
         db_path = getattr(db, "db_path", None)
         include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
-        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
-                             include_subagents=include_subagents, title_prefix=params.get("title_prefix") or None)[:limit]
+        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"), include_pinned=True,
+                             include_subagents=include_subagents, title_prefix=params.get("title_prefix") or None)
         # No live_message_count here on purpose: the bulk listing serves rows whose open
         # paths never demand history (expectHistory defaults false); the count is a
         # per-session scan and would turn one listing call into hundreds of them.
-        return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
+        return _ok(rid, {"sessions": [_session_row_summary(s) for i, s in enumerate(rows) if i < limit or s.get("pinned")]})
     except Exception as e:
         return _err(rid, 5006, str(e))
 

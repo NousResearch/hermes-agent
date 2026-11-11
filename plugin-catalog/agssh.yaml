@@ -1,0 +1,28 @@
+name: agssh
+repo: https://github.com/mosesman831/agssh
+sha: 0ca72f7482e25961bfc30770f10c32dde60028ba
+subdir: "plugin/agssh"
+description: >-
+  SSH hosts as first-class agent tools. Register your hosts once, then the model calls
+  agssh / agssh-read / agssh-find / agssh-hosts instead of assembling
+  `ssh -i key user@host 'quoted string'`. Commands travel as one byte-exact argv element,
+  the tool returns the real remote exit code (never a `| tail` status), output is capped
+  with a full-text spill file, and every call multiplexes over one persistent ControlMaster
+  connection per host so rapid agent calls never exhaust sshd MaxStartups. Dangerous
+  commands go through Hermes' own approval gate, and a pre_tool_call hook blocks raw
+  terminal ssh to registered hosts so exit codes and the audit log cannot be bypassed.
+  Disclosure: executes shell commands on the user's own remote machines with their existing
+  SSH keys and remote privileges, reads ~/.ssh for keys and config, and appends an audit
+  log of executed commands. No pty and no background jobs: interactive prompts fail fast
+  rather than hang. No network service, no telemetry, no third-party host.
+maintainer: mosesman831
+tier: community
+category: tools
+docs_url: https://github.com/mosesman831/agssh#readme
+version: "1.1.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [agssh, agssh-read, agssh-find, agssh-hosts]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

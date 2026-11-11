@@ -8,17 +8,20 @@ Reference limits: ``prune_published_terminal_tasks`` reads ``hosted_room_policy_
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from persistence import JsonValue
 from persistence.gateway.hosted_rooms import (
+    SHOWN_TASK_STATUSES,
     DriverLease,
     HostedPlacement,
     HostedTaskIdentity,
     InvalidTaskTransitionError,
     LeaseHeldError,
     LeaseRelease,
+    RoomChangeRows,
     RoomRecovery,
     StaleLeaseError,
     TaskStatus,
@@ -163,6 +166,21 @@ class InMemoryHostedRoomDriverRepository(DriverTaskMixin):
 
     def list_tasks(self, *, placement: HostedPlacement, room_id: str, status: TaskStatus | None = None) -> tuple[Mapping[str, JsonValue], ...]:
         return tuple(task_view(row) for row in tasks_in_order(read_tables(self._store, placement), room_id, status))
+
+    def room_task_summary(self, *, placement: HostedPlacement, room_id: str, statuses: Collection[str]) -> tuple[Mapping[str, int], tuple[Mapping[str, JsonValue], ...]]:
+        tables = read_tables(self._store, placement)
+        counts = Counter(str(row["status"]) for row in tables["hosted_room_driver_tasks"].get(room_id, {}).values())
+        wanted = frozenset(statuses)
+        return dict(counts), tuple(task_view(row) for row in tasks_in_order(tables, room_id) if row["status"] in wanted)
+
+    def room_change_rows(self, *, placement: HostedPlacement, statuses: Collection[str] = SHOWN_TASK_STATUSES) -> Mapping[str, RoomChangeRows]:
+        tables = read_tables(self._store, placement)
+        wanted = frozenset(statuses)
+        return {
+            room_id: RoomChangeRows(int(room["next_seq"]), int(room["revision"]), tuple(sorted(
+                (str(row["task_id"]), str(row["status"]), int(row["execution_generation"]), int(row["cancel_generation"]))
+                for row in tables["hosted_room_driver_tasks"].get(room_id, {}).values() if row["status"] in wanted)))
+            for room_id, room in tables["hosted_rooms"].items() if room["disbanded_at"] is None}
 
     def get_task_for_turn(self, identity: HostedTaskIdentity, *, placement: HostedPlacement) -> Mapping[str, JsonValue] | None:
         rows = read_tables(self._store, placement)["hosted_room_driver_tasks"].get(identity.room_id, {}).values()

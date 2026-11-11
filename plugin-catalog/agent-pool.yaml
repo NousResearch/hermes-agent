@@ -1,6 +1,6 @@
 name: agent-pool
 repo: https://github.com/maxcurrent420/agent-pool
-sha: d220f4da87a87fc18aa054b8c66abb21b6d1d829
+sha: 5b973a5c3dfd8633840bb438208211da1c78f3cf
 description: Friends form a pool of agents sharing repos — bundles propagate BLAKE3-verified and end-to-end encrypted over Iroh-over-Tor only; tasks, claims and approvals coordinate through the Hermes gateway (e.g. Discord), and a prompt-injection audit gate refuses any bundle that tries to hijack your agent.
 maintainer: maxcurrent420
 tier: community
@@ -8,8 +8,8 @@ category: tools
 requires_hermes: ">=0.23.0"
 version: "2.8.0"
 screenshots:
-  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/d220f4da87a87fc18aa054b8c66abb21b6d1d829/media/pane.png
-  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/d220f4da87a87fc18aa054b8c66abb21b6d1d829/media/injection-blocked.png
+  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/5b973a5c3dfd8633840bb438208211da1c78f3cf/media/pane.png
+  - https://raw.githubusercontent.com/maxcurrent420/agent-pool/5b973a5c3dfd8633840bb438208211da1c78f3cf/media/injection-blocked.png
 title: Agent Pool
 capabilities:
   provides_tools:

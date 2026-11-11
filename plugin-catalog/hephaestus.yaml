@@ -2,7 +2,7 @@ name: hephaestus
 repo: https://github.com/madebylegion/hermes-plugin-hephaestus
 sha: 9805692032681b1376496ce89a404c1ab1edce07
 title: Hephaestus
-description: "Ask for a plugin and your own agent writes it, checked by the official validator and doctor; you approve each check, because it runs the draft's code. It installs disabled; only you enable it. Disclosure: runs the hermes CLI (fixed argument list, no shell) to validate, doctor, enable, disable and remove plugins; writes forged plugins under HERMES_HOME/plugins and drafts and snapshots in its data folder; a pre_tool_call guard blocks the agent from enabling plugins. No network, no telemetry, no LLM calls."
+description: "Ask for a plugin and your own agent writes it, checked by the official validator and doctor; you approve each check, because it runs the draft's code. It installs disabled; only you enable it. Disclosure — forge_check imports each draft's Python and calls its register() on this machine, outside the sandbox, after you approve that exact draft (no prompt if approvals are off or YOLO is on); runs the hermes CLI (fixed argument list, no shell, minimal environment) to validate, doctor, enable, disable and remove plugins; writes forged plugins under HERMES_HOME/plugins and drafts and snapshots in its data folder; a pre_tool_call guard blocks the agent from enabling plugins. No network, no telemetry, no LLM calls."
 maintainer: madebylegion
 tier: community
 category: tools

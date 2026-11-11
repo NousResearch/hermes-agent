@@ -469,7 +469,7 @@ def _do_clipboard_write(backend, action, args, **_):
                                     "`file_path` (absolute path)"})
     return _clipboard_response(backend.clipboard_write(**given))
 
-def _summarize_clipboard_write(action: str, args: Dict[str, Any], fg: str) -> str:
+def _summarize_clipboard_write(action: str, args: dict[str, Any], fg: str) -> str:
     if (text := args.get("text")) is not None:
         return f"replace the clipboard with text {text[:60]!r}" + ("..." if len(text) > 60 else "")
     return f"replace the clipboard with {args.get('image_path') or args.get('file_path')!r}"

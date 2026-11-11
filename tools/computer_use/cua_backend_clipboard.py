@@ -33,6 +33,6 @@ class _ClipboardMixin:
         """Replace the clipboard with exactly one value; the driver returns the resulting ``types`` for read-back."""
         if (refusal := self._clipboard_refusal("clipboard_write")) is not None:
             return refusal
-        payload: Dict[str, Any] = {k: v for k, v in (("text", text), ("image_path", image_path), ("file_path", file_path))
+        payload: dict[str, Any] = {k: v for k, v in (("text", text), ("image_path", image_path), ("file_path", file_path))
                                    if v is not None}
         return self._action("clipboard_write", payload)

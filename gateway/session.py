@@ -1341,9 +1341,6 @@ class SessionStore(
         Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
         starts a different conversation on the same routing key.
         """
-        # Adopt a delegate target BEFORE the route moves: a failed marker write then leaves the old route
-        # intact instead of a chat pointing at a row the route guard rejects. A refused switch undoes it.
-        adopted = bool(self._db_for_key(session_key)) and self._adopt_delegate_row(session_key, target_session_id)
         with self._lock:
             old_entry = self._entry_locked(session_key)
             refused = old_entry is None or (
@@ -1353,6 +1350,11 @@ class SessionStore(
                     "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
                     session_key, expected_session_id, old_entry.session_id,
                 )
+            # Adopt a delegate target under the route lock, after the CAS and BEFORE the route moves: a
+            # failed marker write leaves the old route intact, and a refused switch never adopts, so it
+            # has nothing to undo that an overlapping successful switch onto the same row relies on.
+            if not refused and self._db_for_key(session_key):
+                self._adopt_delegate_row(session_key, target_session_id)
             if not refused and old_entry.session_id != target_session_id:
                 new_entry = self._replace_route_locked(
                     session_key, old_entry, target_session_id, _now(),
@@ -1364,8 +1366,6 @@ class SessionStore(
                     ),
                 )
         if refused:
-            if adopted:
-                self._unadopt_delegate_row(session_key, target_session_id)
             return None
         if old_entry.session_id == target_session_id:
             return old_entry

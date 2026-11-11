@@ -97,3 +97,39 @@ def test_a_resumed_delegate_keeps_the_route_through_a_compression_rotation(tmp_p
     assert db.get_session_model_config_value(tip, "_delegate_from") == entry.session_id
     assert not is_delegate_child_row(row), "the rotated tip lost the user's choice"
     db.close()
+
+
+def test_a_refused_switch_never_strips_an_overlapping_successful_adoption(tmp_path, monkeypatch):
+    """Two switches onto one delegate row overlap: a stale-snapshot switch that is refused must leave
+    the marker the successful one relies on, or the next message moves the chat off the resumed row."""
+    import threading
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    store._db = db
+    source = SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="1", chat_type="dm")
+    entry = store.get_or_create_session(source)
+    child = entry.session_id + "-worker"
+    db.create_session(child, "subagent", parent_session_id=entry.session_id,
+                      model_config={"_delegate_from": entry.session_id})
+    real_adopt = store._adopt_delegate_row
+    armed = {"on": True}
+    winner = []
+
+    def overlapping_adopt(key, sid):
+        adopted = real_adopt(key, sid)
+        if armed.pop("on", False):  # the refused switch's adoption: the winner runs in between
+            thread = threading.Thread(target=lambda: winner.append(store.switch_session(key, child)))
+            thread.start()
+            thread.join(timeout=1)
+        return adopted
+
+    monkeypatch.setattr(store, "_adopt_delegate_row", overlapping_adopt)
+    assert store.switch_session(entry.session_key, child, expected_session_id="a-stale-snapshot") is None
+    armed.pop("on", None)
+    if not winner:
+        winner.append(store.switch_session(entry.session_key, child))
+
+    assert winner[0] is not None and winner[0].session_id == child
+    assert store.get_or_create_session(source).session_id == child
+    db.close()

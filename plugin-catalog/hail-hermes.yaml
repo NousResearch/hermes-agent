@@ -1,0 +1,19 @@
+name: hail-hermes
+repo: https://github.com/KeyArgo/hail-hermes
+sha: ade2b7b2e40c6762411e04e928e5da3bba99c185
+description: "Talk to your Hermes agent out loud — in a desktop page it adds to Hermes Desktop, or from a Watch it pairs with in four digits. Replies are spoken, the face moves only while real audio plays, sessions resolve to folders on disk, and any model Hermes has already authorised can answer. Disclosure — the hub listens on ws://127.0.0.1:8767 (or the LAN with --lan) and accepts a device only after the four-digit code is approved on this computer; the watch APK is optional and the panel needs no hardware. Speech binds to Hermes’ internal TTS/STT modules (tools.tts_*, hermes_cli audio routes, agent.auxiliary_client), which have no public plugin API yet: if they change, the panel keeps working as text. It reads no credential file: the model list comes from the configured default, any local endpoint, and the model names Hermes has cached, so a listed name is visible rather than proven usable. The weather fast path makes one HTTPS request to open-meteo.com and stores nothing. State lives under the profile’s hail-hermes directory; the two Android modules vendor the standard Gradle wrapper jars; no telemetry, no self-updater."
+maintainer: KeyArgo
+tier: community
+category: voice
+version: "1.0.0"
+docs_url: https://github.com/KeyArgo/hail-hermes/blob/ade2b7b2e40c6762411e04e928e5da3bba99c185/docs/INSTALL.md
+platforms: []
+capabilities:
+  provides_tools:
+    - device_notify
+    - device_say
+    - device_haptic
+    - device_battery
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

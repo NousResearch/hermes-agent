@@ -1,0 +1,17 @@
+name: mayar
+title: Mayar
+repo: https://github.com/mayarid/mayar-agent-plugin
+sha: 19eb8005683c04045765c16897fb2c7e9490de21
+description: "Read and manage a Mayar (mayar.id, Indonesian payments platform) account through Mayar's official hosted MCP server: balance, invoices, installments, payment links and products, customers, transactions, memberships, credits, coupons, webhooks, reviews, QRIS and license codes. Bundles one workflow skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to https://mcp.mayar.id/mcp, which calls the Mayar production API (api.mayar.id) with the user's API key from MAYAR_API_KEY, sent as a Bearer header. Write actions use real money and live data: they create or update invoices, payment links, products, customers and coupons, change membership status, change the webhook URL and add or spend credits. The package marks the server untrusted, so Hermes asks before write-capable calls. Account data returned by tools (customers, transactions, balances) reaches the model provider. The tool list comes from the server at run time and is not covered by the pinned sha."
+maintainer: Mayar
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/mayarid/mayar-agent-plugin/blob/19eb8005683c04045765c16897fb2c7e9490de21/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [MAYAR_API_KEY]

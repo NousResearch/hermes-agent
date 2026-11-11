@@ -120,7 +120,7 @@ async def transcribe_audio_upload(
                 prefix="hermes-desktop-voice-", suffix=_audio_extension_for_mime(mime_type),
                 delete=False,
             ) as tmp:
-                tmp.write(audio_bytes)
+                await asyncio.to_thread(tmp.write, audio_bytes)
                 temp_path = tmp.name
 
             # transcribe_recording (not raw transcribe_audio): filters Whisper

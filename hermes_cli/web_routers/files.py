@@ -1131,8 +1131,8 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
 
     tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
     try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, target)
+        await asyncio.to_thread(tmp.write_text, text, encoding="utf-8")
+        await asyncio.to_thread(os.replace, tmp, target)
     except PermissionError:
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=403, detail="File is not writable")

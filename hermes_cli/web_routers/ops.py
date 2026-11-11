@@ -181,7 +181,7 @@ async def enable_webhooks(profile: Optional[str] = None):
 
     with http_failure("Failed to enable webhook platform from dashboard", 500, detail="Failed to enable webhook platform."):
         await asyncio.to_thread(_run)
-    restart_result = _restart_gateway_after(profile, what="enabling webhooks", label="Webhook enable")
+    restart_result = await asyncio.to_thread(_restart_gateway_after, profile, what="enabling webhooks", label="Webhook enable")
     return {
         "ok": True,
         "platform": "webhook",
@@ -664,8 +664,8 @@ async def run_import_upload(
         file, target, too_large="Archive is too large",
         not_writable="Import staging directory is not writable", write_failed="Could not write uploaded archive",
     )
-    if not zipfile.is_zipfile(target):
-        target.unlink(missing_ok=True)
+    if not await asyncio.to_thread(zipfile.is_zipfile, target):
+        await asyncio.to_thread(target.unlink, missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded archive is not a valid zip file")
     return {**_spawn_import(str(target), force, profile), "archive": str(target), "uploaded_bytes": total}
 

@@ -287,7 +287,7 @@ def _source_release_label(status: dict[str, Any]) -> str:
 
 
 @router.get("/api/hermes/update/check")
-async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
+def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
 
     Returns install_method ('apt'|'git'|'docker'|'nix'|'nixos'|'unknown'),
@@ -334,7 +334,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         from hermes_cli.source_check import check_for_updates
 
         with _config_profile_scope(profile):
-            status = await asyncio.to_thread(check_for_updates, force=force)
+            status = check_for_updates(force=force)
         behind = status.get("behind")
     except Exception:
         _log.exception("Update check failed")
@@ -383,7 +383,7 @@ def _completed_exit_code(
 
 
 @status_router.get("/api/actions/{name}/status")
-async def get_action_status(name: str, lines: int = 200):
+def get_action_status(name: str, lines: int = 200):
     """Tail an action log and report whether the process is still running."""
     log_file_name = _ACTION_LOG_FILES.get(name)
     if log_file_name is None:

@@ -1,4 +1,3 @@
-import asyncio
 import time
 
 import pytest
@@ -63,11 +62,9 @@ def test_apply_whatsapp_onboarding_saves_pairing_policy(monkeypatch):
     _web_server_messaging._whatsapp_onboarding_sessions.clear()
     _web_server_messaging._whatsapp_onboarding_sessions["pairing"] = record
 
-    result = asyncio.run(
-        _rt_messaging.apply_whatsapp_onboarding(
-            "pairing",
-            _web_models.WhatsAppOnboardingApply(mode="bot", allowed_users=""),
-        )
+    result = _rt_messaging.apply_whatsapp_onboarding(
+        "pairing",
+        _web_models.WhatsAppOnboardingApply(mode="bot", allowed_users=""),
     )
 
     assert result["ok"] is True
@@ -103,10 +100,8 @@ def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeyp
     monkeypatch.setattr(_web_server_messaging, "_whatsapp_session_path", lambda: session_dir)
     monkeypatch.setattr(ws.secrets, "token_urlsafe", lambda size: "existing-creds")
 
-    result = asyncio.run(
-        _rt_messaging.start_whatsapp_onboarding(
-            _web_models.WhatsAppOnboardingStart(mode="self-chat", allowed_users="")
-        )
+    result = _rt_messaging.start_whatsapp_onboarding(
+        _web_models.WhatsAppOnboardingStart(mode="self-chat", allowed_users="")
     )
 
     assert result["pairing_id"] == "existing-creds"

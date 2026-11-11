@@ -368,7 +368,7 @@ async def get_board_endpoint(
     return await _read_board(
         tenant=tenant,
         include_archived=include_archived,
-        board=board or kanban_db.get_current_board(),
+        board=board or await asyncio.to_thread(kanban_db.get_current_board),
         workflow_template_id=workflow_template_id,
         current_step_key=current_step_key,
     )
@@ -469,7 +469,7 @@ def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
 
 
 @router.post("/tasks/{task_id}/attachments")
-async def upload_task_attachment(
+def upload_task_attachment(
     task_id: str,
     file: UploadFile = File(...),
     board: Optional[str] = Query(None),
@@ -484,8 +484,8 @@ async def upload_task_attachment(
         dest_path = _collision_free_path(dest_dir, safe_name)  # foo.pdf → foo (1).pdf …
         total = 0  # stream in chunks with a hard size cap so one upload can't fill the disk
         try:
-            with open(dest_path, "wb") as out:  # noqa: ASYNC230 -- chunked local write of the upload stream; open() is non-blocking in practice
-                while chunk := await file.read(1024 * 1024):
+            with open(dest_path, "wb") as out:
+                while chunk := file.file.read(1024 * 1024):
                     total += len(chunk)
                     if total > KANBAN_ATTACHMENT_MAX_BYTES:
                         out.close()
@@ -1528,7 +1528,7 @@ async def import_board_endpoint(body: ImportBoardBody):
     result = await _run_transfer(
         lambda: kanban_transfer.import_board(archive, (body.slug or "").strip() or None, activate=body.switch),
         "POST /boards/import")
-    return {**result, "current": kanban_db.get_current_board()}
+    return {**result, "current": await asyncio.to_thread(kanban_db.get_current_board)}
 
 
 @router.post("/boards/{slug}/switch")

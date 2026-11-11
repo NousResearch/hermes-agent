@@ -315,7 +315,7 @@ async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
         await ws.close(code=4401)
         return
     track(ws, admitted)
-    named = reach.entry_url(connection_id)
+    named = await asyncio.to_thread(reach.entry_url, connection_id)
     parts = urllib.parse.urlsplit(row.base_url)
     joiner = "&" if "?" in target else "?"
     url = (f"{'wss' if parts.scheme == 'https' else 'ws'}://{parts.netloc}{parts.path}{target}"
@@ -334,7 +334,7 @@ async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
     with _live_lock:
         _live[id(ws)] = (weakref.ref(ws), asyncio.get_running_loop(), connection_id)
     # Remove forgets the entry, then closes its live sockets; one removed during the dial missed this one.
-    if reach.entry_url(connection_id) != named:
+    if await asyncio.to_thread(reach.entry_url, connection_id) != named:
         with _live_lock:
             _live.pop(id(ws), None)
         with contextlib.suppress(OSError):

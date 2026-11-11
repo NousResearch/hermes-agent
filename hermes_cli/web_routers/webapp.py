@@ -252,7 +252,7 @@ async def issue_socket_ticket(request: Request, socket: str = "", profile: str |
 
 
 @router.post("/webapp/window-session")
-async def redeem_window_ticket(request: Request):
+def redeem_window_ticket(request: Request):
     from hermes_cli import browser_credential
 
     _require_private_webapp(request)

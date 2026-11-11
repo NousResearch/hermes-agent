@@ -16,7 +16,6 @@ platform — leaving only the implicit ``local`` entry. The read must run inside
 
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 
@@ -43,7 +42,7 @@ def test_delivery_targets_route_binds_profile_scope(tmp_path, monkeypatch):
 
     from hermes_cli.web_routers import cron as cron_router
 
-    result = asyncio.run(cron_router.get_cron_delivery_targets())
+    result = cron_router.get_cron_delivery_targets()
 
     assert "chat" in seen, "route must call cron_delivery_targets()"
     assert seen["chat"] == "12345", "route must bind the profile secret scope before the read"

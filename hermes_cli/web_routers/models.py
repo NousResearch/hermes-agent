@@ -148,7 +148,7 @@ async def get_model_options(
     /api/model/set writes. ``refresh`` busts the per-provider model-id disk cache
     (picker's explicit "Refresh Models"); normal opens stay on the 1h cache."""
     with http_failure("GET /api/model/options failed", 500, detail="Failed to list model options"):
-        skew_msg = _dashboard_code_skew_guard()
+        skew_msg = await asyncio.to_thread(_dashboard_code_skew_guard)
         if skew_msg:
             _log.warning("GET /api/model/options refused: %s", skew_msg)
             raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")
@@ -389,7 +389,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         # #99859 (R2): the options picker already refuses on code skew; the WRITE path
         # must too — a stale process persisting a post-update model string is the
         # invalid-model-serving failure the reporter hit.
-        skew_msg = _dashboard_code_skew_guard()
+        skew_msg = await asyncio.to_thread(_dashboard_code_skew_guard)
         if skew_msg:
             _log.warning("POST /api/model/set refused: %s", skew_msg)
             raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")

@@ -231,7 +231,7 @@ def mount_spa(application: FastAPI):
     # browsers resolve against the document origin — wrong under a proxy prefix. Intercept CSS
     # BEFORE the StaticFiles mount and rewrite when a prefix is in play.
     @application.get("/assets/{filename}.css")
-    async def serve_css(filename: str, request: Request):
+    def serve_css(filename: str, request: Request):
         dist = web_dist()
         css_path = dist / "assets" / f"{filename}.css"
         if not css_path.is_file() or not css_path.resolve().is_relative_to(dist.resolve()):

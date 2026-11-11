@@ -793,7 +793,7 @@ async def local_models_download_resume(body: JobIdBody):
 
 
 @router.delete("/api/local-models/models/{model_id}")
-async def local_models_delete(model_id: str):
+def local_models_delete(model_id: str):
     """Remove every split part plus private assets, then bounce the router off the request thread (deleting
     the active file mid-serve is exactly the stale state the refresh exists for)."""
     files = _variant_files_on_disk(model_id)
@@ -1006,11 +1006,11 @@ async def local_models_search(q: str, limit: int = 20):
 
 
 @router.get("/api/local-models/search/files")
-async def local_models_search_files(repo: str):
+def local_models_search_files(repo: str):
     """Servable GGUFs in one HF repo with a rough pre-download fit verdict per quant (file size + conservative
     fill-ins; the GGUF header refines it)."""
     with _http_error(502, f"Could not list {repo}: "):
-        groups = await run_in_threadpool(hf_browse.priced_repo_files, repo, hardware.probe_budget(planning=True))
+        groups = hf_browse.priced_repo_files(repo, hardware.probe_budget(planning=True))
     return {"files": [dict(g.__dict__, paths=list(g.paths)) for g in groups]}
 
 

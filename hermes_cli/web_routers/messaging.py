@@ -496,7 +496,7 @@ def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
                 proc.wait(timeout=3)
     if proc.poll() is not None:
         # Stopped; one we failed to stop stays covered by the owner-death supervisor. timeout=0:
-        # callers run on the event loop.
+        # callers hold the onboarding lock.
         release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
 
 
@@ -698,7 +698,7 @@ def _launch_whatsapp_pairing(pairing_id: str, record: _WhatsAppOnboardingSession
 
 
 @router.post("/api/messaging/whatsapp/onboarding/start")
-async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart, profile: Optional[str] = None):
+def start_whatsapp_onboarding(body: WhatsAppOnboardingStart, profile: Optional[str] = None):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
 
@@ -748,7 +748,7 @@ def _whatsapp_record_or_404(pairing_id: str):
 
 
 @router.get("/api/messaging/whatsapp/onboarding/{pairing_id}")
-async def get_whatsapp_onboarding_status(pairing_id: str):
+def get_whatsapp_onboarding_status(pairing_id: str):
     with _whatsapp_onboarding_lock:
         record = _whatsapp_record_or_404(pairing_id)
         if record.status == "expired":
@@ -757,8 +757,8 @@ async def get_whatsapp_onboarding_status(pairing_id: str):
 
 
 @router.post("/api/messaging/whatsapp/onboarding/{pairing_id}/apply")
-async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApply, profile: Optional[str] = None):
-    await _wait_whatsapp_pairing_flush(pairing_id)
+def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApply, profile: Optional[str] = None):
+    _wait_whatsapp_pairing_flush(pairing_id)
     with _whatsapp_onboarding_lock:
         record = _whatsapp_record_or_404(pairing_id)
         if record.status != "connected":
@@ -791,14 +791,14 @@ async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApp
     return {"ok": True, "platform": "whatsapp", "needs_restart": not restart_result["restart_started"], **restart_result}
 
 
-async def _wait_whatsapp_pairing_flush(pairing_id: str) -> None:
+def _wait_whatsapp_pairing_flush(pairing_id: str) -> None:
     with _whatsapp_onboarding_lock:
         record = _whatsapp_record_or_404(pairing_id)
         if record.status != "connected":
             raise HTTPException(status_code=409, detail="WhatsApp setup is not connected yet.")
     if record.session_reserved and record.proc is not None:
         try:
-            await asyncio.to_thread(record.proc.wait, timeout=3)
+            record.proc.wait(timeout=3)
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(status_code=409, detail="WhatsApp is still saving its linked device. Wait a moment and try Save and restart again.") from exc
     with _whatsapp_onboarding_lock:
@@ -808,7 +808,7 @@ async def _wait_whatsapp_pairing_flush(pairing_id: str) -> None:
 
 
 @router.delete("/api/messaging/whatsapp/onboarding/{pairing_id}")
-async def cancel_whatsapp_onboarding(pairing_id: str):
+def cancel_whatsapp_onboarding(pairing_id: str):
     with _whatsapp_onboarding_lock:
         record = _whatsapp_onboarding_sessions.get(pairing_id)
         if record:
@@ -967,7 +967,8 @@ async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApp
     # Best-effort restart: the QR flow pulls users into Telegram on another device, so a
     # saved token waiting on a manual restart click reads as "Hermes is broken" from the
     # chat side. The save stays authoritative; a failed restart is reported for the UI banner.
-    restart_result = _restart_gateway_after(effective_profile, what="Telegram onboarding", label="Telegram onboarding")
+    restart_result = await asyncio.to_thread(
+        _restart_gateway_after, effective_profile, what="Telegram onboarding", label="Telegram onboarding")
     return {
         "ok": True, "platform": "telegram", "bot_username": bot_username,
         "needs_restart": not restart_result["restart_started"], **restart_result,

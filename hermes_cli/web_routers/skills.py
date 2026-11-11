@@ -465,7 +465,7 @@ async def create_skill(body: SkillCreate, profile: Optional[str] = None):
         body.profile or profile, lambda: _create_skill(body.name, body.content, body.category or None))
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
-    _clear_skills_prompt_cache()
+    await asyncio.to_thread(_clear_skills_prompt_cache)
     return result
 
 
@@ -479,5 +479,5 @@ async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] 
         err = result.get("error", "Failed to update skill.")
         status = 404 if "not found" in str(err).lower() else 400
         raise HTTPException(status_code=status, detail=err)
-    _clear_skills_prompt_cache()
+    await asyncio.to_thread(_clear_skills_prompt_cache)
     return result

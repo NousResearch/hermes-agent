@@ -67,7 +67,7 @@ def pairing(tmp_path, monkeypatch):
     monkeypatch.setattr(messaging.threading, "Timer", Timer)
 
     def start(**kwargs):
-        return asyncio.run(messaging.start_whatsapp_onboarding(web_models.WhatsAppOnboardingStart(**kwargs)))
+        return messaging.start_whatsapp_onboarding(web_models.WhatsAppOnboardingStart(**kwargs))
 
     def gateway_can_acquire():
         from hermes_cli._subprocess_compat import windows_hide_flags
@@ -110,7 +110,7 @@ def test_repair_preserves_credentials_and_starts_fresh_pairing(pairing):
 def test_reservation_blocks_gateway_until_cancel_before_worker_start(pairing):
     result = pairing.start(reset_session=True)
     assert pairing.gateway_can_acquire() is False
-    asyncio.run(messaging.cancel_whatsapp_onboarding(result["pairing_id"]))
+    messaging.cancel_whatsapp_onboarding(result["pairing_id"])
     assert pairing.gateway_can_acquire() is True
     assert pairing.timers[0].cancelled is True
 
@@ -184,7 +184,7 @@ def test_reservation_covers_connected_event_and_credential_flush(pairing, monkey
         assert record.status == "connected"
         assert pairing.gateway_can_acquire() is False
         # A status poll must not release the lock before the process exits.
-        asyncio.run(messaging.get_whatsapp_onboarding_status(result["pairing_id"]))
+        messaging.get_whatsapp_onboarding_status(result["pairing_id"])
         assert pairing.gateway_can_acquire() is False
 
     proc = _Bridge(events())
@@ -265,7 +265,7 @@ def test_apply_waits_for_flush_before_restarting_gateway(pairing, monkeypatch):
 
     monkeypatch.setattr(proc, "wait", wait)
     monkeypatch.setattr(web_server_messaging, "_restart_gateway_after_whatsapp_onboarding", restart)
-    assert asyncio.run(messaging.apply_whatsapp_onboarding(result["pairing_id"], web_models.WhatsAppOnboardingApply()))["ok"]
+    assert messaging.apply_whatsapp_onboarding(result["pairing_id"], web_models.WhatsAppOnboardingApply())["ok"]
 
 
 def test_unverifiable_live_pid_stays_blocked(pairing, monkeypatch):
@@ -362,7 +362,7 @@ def test_apply_retains_flushing_bridge_for_reset_guard(pairing, monkeypatch):
     monkeypatch.setattr(config, "save_env_value", lambda *args: None)
     monkeypatch.setattr(web_server_messaging, "_write_platform_enabled", lambda *args: None)
     monkeypatch.setattr(web_server_messaging, "_restart_gateway_after_whatsapp_onboarding", lambda profile=None: {"restart_started": True})
-    asyncio.run(messaging.apply_whatsapp_onboarding(result["pairing_id"], web_models.WhatsAppOnboardingApply()))
+    messaging.apply_whatsapp_onboarding(result["pairing_id"], web_models.WhatsAppOnboardingApply())
     assert messaging._whatsapp_onboarding_sessions[result["pairing_id"]] is record
     with pytest.raises(HTTPException) as refused:
         pairing.start(reset_session=True)
@@ -375,7 +375,7 @@ def test_cancel_during_process_start_cannot_race_session_backup(pairing, monkeyp
     record = messaging._whatsapp_onboarding_sessions[result["pairing_id"]]
 
     def spawn(session_path, mode):
-        asyncio.run(messaging.cancel_whatsapp_onboarding(result["pairing_id"]))
+        messaging.cancel_whatsapp_onboarding(result["pairing_id"])
         with pytest.raises(HTTPException) as refused:
             pairing.start(reset_session=True)
         assert refused.value.status_code == 409

@@ -1,6 +1,6 @@
 name: summon
 repo: https://github.com/gtmcknight/hermes-summon
-sha: 70dd86080578ab5a6f28163e65b730b6e4b59f82
+sha: ccfc8c4163fa736785b4f0cd7322742f39c6d435
 title: Summon
 description: >-
   Your own @grok on X that learns: tag your bot under any post and your Hermes answers in the
@@ -22,12 +22,12 @@ category: platform
 requires_hermes: ">=0.23"
 docs_url: https://summon.taylor.fyi
 version: "0.1.0"
-image: https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/banner.png
+image: https://raw.githubusercontent.com/gtmcknight/hermes-summon/ccfc8c4163fa736785b4f0cd7322742f39c6d435/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/01-check.jpg
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/02-find.jpg
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/03-learn.jpg
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/04-approve.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/ccfc8c4163fa736785b4f0cd7322742f39c6d435/docs/01-check.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/ccfc8c4163fa736785b4f0cd7322742f39c6d435/docs/02-find.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/ccfc8c4163fa736785b4f0cd7322742f39c6d435/docs/03-learn.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/ccfc8c4163fa736785b4f0cd7322742f39c6d435/docs/04-approve.jpg
 platforms: []
 capabilities:
   provides_tools: []

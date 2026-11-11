@@ -231,3 +231,29 @@ def test_a_handoff_claimed_as_the_pending_timeout_fires_still_completes(handoff_
     assert ("handoff.fail", {"session_id": "local-s", "error": "timed out waiting for gateway"}) in conn.calls
     assert cli._should_exit is True and "local-s" in _handed_off_session_ids
     _handed_off_session_ids.discard("local-s")
+
+
+def test_a_handoff_claimed_at_the_timeout_then_unreadable_still_ends(handoff_cli, monkeypatch, capsys):
+    """The read after the pending timeout's CAS-fail sees ``running``, then the gateway goes away: the
+    wait still ends (an unreadable row is the timeout), never polls forever."""
+    from hermes_cli.gateway_client import GatewayClientError
+    cli, conn = handoff_cli(["pending", "running"], **{"handoff.fail": {"failed": False, "state": "running"}})
+    clock = iter([0.0, 100.0])
+    monkeypatch.setattr("time.time", lambda: next(clock, 100.0))
+    sleeps = []
+
+    def sleep(_s):
+        sleeps.append(_s)
+        if len(sleeps) > 50:
+            pytest.fail("the handoff wait never ended")
+    monkeypatch.setattr("time.sleep", sleep)
+    scripted = conn.call
+
+    def flaky(method, **params):
+        if method == "handoff.state" and not conn.states:
+            raise GatewayClientError("gateway went away")
+        return scripted(method, **params)
+    conn.call = flaky
+    assert cli.process_command("/handoff telegram") is True
+    out = capsys.readouterr().out
+    assert "picked it up" in out and "Timed out waiting for the gateway" in out

@@ -20,8 +20,11 @@ class _Bot:
 
     def __init__(self, text):
         self.text = text
+        self.read_fails = False
 
     async def get_my_short_description(self):
+        if self.read_fails:
+            raise TimeoutError("Bot API read timed out")
         return SimpleNamespace(short_description=self.text)
 
     async def set_my_short_description(self, short_description):
@@ -61,6 +64,38 @@ async def test_new_botfather_text_replaces_the_capture(tmp_path):
     await _adapter(tmp_path, bot, status_indicator=True)._set_status_indicator(online=True)
     bot.text = "v2 text"  # operator edits the profile while the gateway is down
     await _adapter(tmp_path, bot, status_indicator=True)._set_status_indicator(online=True)
+
+    await _adapter(tmp_path, bot)._set_status_indicator(online=True)
+
+    assert bot.text == "v2 text"
+
+
+@pytest.mark.asyncio
+async def test_status_text_is_never_taken_for_the_operators_and_never_written_without_a_capture(tmp_path):
+    bot = _Bot("Plans trips and books trains")
+    bot.read_fails = True  # the first capture cannot read the operator's text
+    unsaved = _adapter(tmp_path, bot, status_indicator=True)
+    await unsaved._set_status_indicator(online=True)
+    await unsaved._set_status_indicator(online=False)
+    assert bot.text == "Plans trips and books trains"  # no status write over the only copy
+
+    bot.read_fails = False
+    long_label = "Online " + "x" * 200  # longer than Telegram's 120-char cap
+    await _adapter(tmp_path, bot, status_indicator=True, status_online=long_label)._set_status_indicator(online=True)
+    # The operator renames both labels between runs: the old Hermes text is still not theirs.
+    renamed = _adapter(tmp_path, bot, status_indicator=True, status_online="Up", status_offline="Down")
+    await renamed._set_status_indicator(online=True)
+    await _adapter(tmp_path, bot)._set_status_indicator(online=True)
+    assert bot.text == "Plans trips and books trains"
+
+
+@pytest.mark.asyncio
+async def test_turning_the_indicator_off_keeps_a_newer_botfather_text(tmp_path):
+    bot = _Bot("v1 text")
+    run = _adapter(tmp_path, bot, status_indicator=True)
+    await run._set_status_indicator(online=True)
+    await run._set_status_indicator(online=False)
+    bot.text = "v2 text"  # set in BotFather while the gateway is down, indicator then turned off
 
     await _adapter(tmp_path, bot)._set_status_indicator(online=True)
 

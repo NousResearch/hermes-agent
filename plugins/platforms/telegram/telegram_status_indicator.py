@@ -41,34 +41,53 @@ def _write_captures(adapter: TelegramAdapter, data: dict) -> None:
     atomic_json_write(_state_path(adapter), data)
 
 
+def _status_text(adapter: TelegramAdapter, online: bool) -> str:
+    return (adapter._status_online_text if online else adapter._status_offline_text)[:_TELEGRAM_SHORT_DESCRIPTION_CAP]
+
+
+def _is_ours(adapter: TelegramAdapter, entry: dict, live: str) -> bool:
+    """Hermes wrote ``live``: it is in the saved list of texts we wrote (survives a changed
+    ``status_online``/``status_offline``), or it is a current status text (a build before this fix
+    wrote it and kept no list)."""
+    return live in entry.get("written", ()) or live in (_status_text(adapter, True), _status_text(adapter, False))
+
+
 async def _capture_original(adapter: TelegramAdapter, bot: Any) -> None:
     """Remember the operator's short description. Read on every connect, so text the operator set
-    in BotFather since the last run replaces the old capture. A live text equal to one of our
-    status strings is not the operator's (an earlier run, a crash, or a build before this fix wrote
-    it): the capture is kept as it is, and nothing wrong is ever restored."""
-    current = getattr(await bot.get_my_short_description(), "short_description", "") or ""
-    if current in (adapter._status_online_text, adapter._status_offline_text):
-        return
+    in BotFather since the last run replaces the old capture; text Hermes wrote never does. Raises
+    when the read or the save fails, and the caller then writes no status text this run."""
+    live = getattr(await bot.get_my_short_description(), "short_description", "") or ""
     data = _captures(adapter)
-    if data.get(_bot_key(bot)) != current:
-        data[_bot_key(bot)] = current
-        _write_captures(adapter, data)
+    entry = data.get(_bot_key(bot)) or {}
+    if not _is_ours(adapter, entry, live):
+        entry["original"] = live
+    # Record every text before it is written, so a crash between the save and the write still
+    # leaves a live text this file names as ours.
+    entry["written"] = sorted({*entry.get("written", ()), _status_text(adapter, True), _status_text(adapter, False)})
+    data[_bot_key(bot)] = entry
+    _write_captures(adapter, data)
 
 
 async def _restore_original(adapter: TelegramAdapter, bot: Any) -> None:
-    """Indicator off: put the captured text back once and forget it."""
+    """Indicator off: put the captured text back once and forget it, unless the operator replaced
+    the status text in BotFather since; their newer text is kept."""
     data = _captures(adapter)
-    original = data.get(_bot_key(bot))
-    if not isinstance(original, str):
+    entry = data.get(_bot_key(bot))
+    if not isinstance(entry, dict):
         return
-    await bot.set_my_short_description(short_description=original[:_TELEGRAM_SHORT_DESCRIPTION_CAP])
+    live = getattr(await bot.get_my_short_description(), "short_description", "") or ""
+    original = entry.get("original")
+    if isinstance(original, str) and _is_ours(adapter, entry, live):
+        await bot.set_my_short_description(short_description=original[:_TELEGRAM_SHORT_DESCRIPTION_CAP])
+        logger.info("[%s] status_indicator is off: restored the bot's own short description", adapter.name)
     del data[_bot_key(bot)]
     _write_captures(adapter, data)
-    logger.info("[%s] status_indicator is off: restored the bot's own short description", adapter.name)
 
 
 async def set_status_indicator(adapter: TelegramAdapter, online: bool) -> None:
-    """Connect (``online``) / clean disconnect. Best-effort: failures are debug-logged, never raised."""
+    """Connect (``online``) / clean disconnect. Best-effort: failures are debug-logged, never raised.
+    No status text is written in a run whose capture failed: it would overwrite the only copy of the
+    operator's text."""
     bot = adapter._bot
     if bot is None:
         return
@@ -80,13 +99,15 @@ async def set_status_indicator(adapter: TelegramAdapter, online: bool) -> None:
                 await _restore_original(adapter, bot)
             return
         if online:
+            adapter._status_capture_saved = False
             await _capture_original(adapter, bot)
+            adapter._status_capture_saved = True
     except Exception as e:  # health: allow BLE001 -- best-effort profile text; never blocks connect/disconnect
         logger.debug("[%s] Bot short description capture/restore failed: %s", adapter.name,
                      _redact_telegram_error_text(e), exc_info=True)
-        if not enabled:
-            return
-    text = (adapter._status_online_text if online else adapter._status_offline_text)[:_TELEGRAM_SHORT_DESCRIPTION_CAP]
+    if not enabled or not getattr(adapter, "_status_capture_saved", False):
+        return
+    text = _status_text(adapter, online)
     try:
         await bot.set_my_short_description(short_description=text)
         logger.info("[%s] Set bot status indicator to %r", adapter.name, text)

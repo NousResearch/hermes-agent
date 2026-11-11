@@ -35,6 +35,7 @@ import smtplib as _smtplib
 import socket as _socket
 import ssl as _ssl
 import time as _time
+from unittest import mock as _mock
 
 import badbool
 import brokers
@@ -746,26 +747,26 @@ class _FakeSMTPSSL:
         _FakeSMTPSSL.sent.append(m)
 
 
-def test_email_send_uses_implicit_tls_on_port_465(monkeypatch):
+def _assert_verifying(ctx):
+    assert isinstance(ctx, _ssl.SSLContext)
+    assert ctx.verify_mode == _ssl.CERT_REQUIRED and ctx.check_hostname
+
+
+def test_email_send_uses_implicit_tls_on_port_465():
     _FakeSMTPSSL.sent, _FakeSMTPSSL.context = [], None
 
     def _forbidden_plaintext(*a, **k):
         raise AssertionError("port 465 must connect with SMTP_SSL, not plaintext SMTP")
 
-    monkeypatch.setattr(emailer.smtplib, "SMTP_SSL", _FakeSMTPSSL)
-    monkeypatch.setattr(emailer.smtplib, "SMTP", _forbidden_plaintext)
     env = {"EMAIL_ADDRESS": "agent@corp.example", "EMAIL_PASSWORD": "p",
            "EMAIL_SMTP_HOST": "mail.corp.example", "EMAIL_SMTP_PORT": "465"}
     broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
-    out = emailer.send(broker, "Subject: s\n\nb", env=env, _sleep=lambda *_: None)
+    with _mock.patch.object(emailer.smtplib, "SMTP_SSL", _FakeSMTPSSL), \
+            _mock.patch.object(emailer.smtplib, "SMTP", _forbidden_plaintext):
+        out = emailer.send(broker, "Subject: s\n\nb", env=env, _sleep=lambda *_: None)
     assert out["attempts"] == 1 and _FakeSMTPSSL.sent
     # The implicit-TLS connection is verified, matching the gateway adapter.
-    assert isinstance(_FakeSMTPSSL.context, _ssl.SSLContext)
-
-
-def _assert_verifying(ctx):
-    assert isinstance(ctx, _ssl.SSLContext)
-    assert ctx.verify_mode == _ssl.CERT_REQUIRED and ctx.check_hostname
+    _assert_verifying(_FakeSMTPSSL.context)
 
 
 class _RecordingStartTLS(_FakeSMTP):
@@ -784,7 +785,7 @@ def test_email_send_starttls_verifies_certificate():
     _assert_verifying(_RecordingStartTLS.context)
 
 
-def test_imap_fetch_verifies_certificate(monkeypatch):
+def test_imap_fetch_verifies_certificate():
     seen = {}
 
     class _IMAP:
@@ -803,9 +804,9 @@ def test_imap_fetch_verifies_certificate(monkeypatch):
         def logout(self):
             pass
 
-    monkeypatch.setattr(emailer.imaplib, "IMAP4_SSL", _IMAP)
     env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
-    assert emailer.fetch_recent(env) == []
+    with _mock.patch.object(emailer.imaplib, "IMAP4_SSL", _IMAP):
+        assert emailer.fetch_recent(env) == []
     _assert_verifying(seen["ctx"])
 
 

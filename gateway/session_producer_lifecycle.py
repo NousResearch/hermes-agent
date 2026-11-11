@@ -150,11 +150,16 @@ async def close_settled_turn(authority, admission_id):
 
 async def close_observed_turn(event, delivered):
     """A busy follow-up's observer finished: report its turn by whether the reply was delivered (a
-    turn that failed or was cancelled while executing was already reported; this is a no-op then)."""
+    turn that failed or was cancelled while executing was already reported; this is a no-op then).
+    An observer released before its turn started (a pause notice: the row stays queued) gives up
+    only the send; the entry stays, so the resumed turn still opens its lifecycle and the drain's
+    send reports it."""
     authority, admission_id = getattr(event, '_observed_turn', (None, None))
     if authority is None:
         return
     _observed(authority).discard(admission_id)
+    if _turns(authority).get(admission_id) is None:
+        return
     await close_producer_turn(
         authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
 

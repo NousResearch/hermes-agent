@@ -1,6 +1,6 @@
 name: leadpoet
 repo: https://github.com/leadpoet/get-customers
-sha: 3adf77534f2477799b8ec07057af5066ee5819ff
+sha: 59779b521163da321ff591f089ff1086d1b5480a
 title: Leadpoet
 description: "Send your website and get customers. Hermes finds verified contacts at companies showing a buying signal, writes emails where every personal line shows its source, lets you approve from your phone, and brings replies back to chat. Try /customers demo with no account. Disclosure — calls the Leadpoet API (leadpoet.com) with your LEADPOET_API_KEY: it can spend Leadpoet credits on contact searches, create and launch email campaigns to third parties from your connected inbox, and send replies, each only after you type the approval code shown under the exact content; it reads public pages of your site and your prospects' sites and sends that text and prospects' replies to your configured Hermes model; the optional `hermes leadpoet watch` cron check runs with no model, launches campaigns you already approved and approves matching drafts unattended; contact details and drafts are stored in the plugin's data folder."
 maintainer: leadpoet
@@ -8,7 +8,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/leadpoet/get-customers#readme
-version: "0.2.8"
+version: "0.2.9"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [leadpoet_desk_current, leadpoet_desk_set_draft, leadpoet_customers_status]

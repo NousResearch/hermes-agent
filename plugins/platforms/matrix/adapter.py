@@ -2325,11 +2325,27 @@ class MatrixAdapter(BasePlatformAdapter):
         inviter = str(getattr(event, "sender", ""))
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.
         if not self._is_authorized_user(inviter, str(room_id)):
-            logger.warning("Matrix: rejecting invite to %s from unauthorized user %s", room_id, inviter)
+            await self._decline_invite(room_id, inviter)
             return
         logger.info("Matrix: invited to %s — joining (is_direct=%s)", room_id, is_direct)
         # Join off the sync path; a declared DM is recorded in m.direct once the join lands.
         self._schedule_invite_join(room_id, is_direct=is_direct and bool(inviter), inviter=inviter)
+
+    async def _decline_invite(self, room_id: str, inviter: str) -> None:
+        """Leave an unauthorized invite so the rejection persists.
+
+        Logging alone leaves the membership at ``invite``, so the room is
+        re-listed and re-warned by every later sync and after each gateway
+        restart. Declining settles the state; the allow-list gate is
+        unchanged — the invite is still refused, just no longer left pending.
+        """
+        logger.warning("Matrix: declining invite to %s from unauthorized user %s", room_id, inviter)
+        if not room_id or not self._client:
+            return
+        try:
+            await self._client.leave_room(RoomID(room_id))
+        except Exception as exc:
+            logger.warning("Matrix: failed to decline invite to %s: %s", room_id, exc)
 
     async def _join_room_by_id(self, room_id: str) -> bool:
         if not room_id or room_id in self._joined_rooms:

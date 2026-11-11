@@ -905,7 +905,18 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
             if _is_num(value) and float(value) > 0:
                 usage_parts.append(f"${float(value):.2f} {label}")
         details.append(" • ".join(usage_parts))
-    return _snapshot("openrouter", "credits_api", windows, details)
+    # Exact decoded bodies, no headers or credentials: the plugin pane keeps
+    # OpenRouter's free-model daily quota, per-period key spend and BYOK total,
+    # none of which the normalized details above can reconstruct.
+    return _snapshot("openrouter", "credits_api", windows, details,
+                     raw={"credits": credits, "key": key_data})
+
+
+def _fetch_openrouter_account_usage_read_only(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Read-only picker variant: this fetcher never rotates or refreshes a credential."""
+    return _fetch_openrouter_account_usage(base_url, api_key)
 
 
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
@@ -917,6 +928,7 @@ _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[Acc
 # rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``).
 _READ_ONLY_USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage_read_only,
+    "openrouter": _fetch_openrouter_account_usage_read_only,
 }
 
 
@@ -941,6 +953,76 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
     return None if bounded.timed_out else bounded.value
 
 
+def list_account_usage_identities(provider: str, *, base_url: Optional[str] = None) -> list[dict[str, Any]]:
+    """Non-secret inventory of this profile's pooled credentials for *provider*.
+
+    Each row is ``{identity_id, label, auth_type, source, available, status,
+    request_count, last_status_at, base_url}``.  ``identity_id`` is the stable
+    key :func:`fetch_account_usage` accepts; no access token, refresh token,
+    agent key or credential-store value is returned.  A provider with no pool
+    rows returns an empty list (the caller's config/env presence check stays
+    separate).  A broken credential store fails closed to an empty list.
+    """
+    slug = str(provider or "").strip().lower()
+    if not slug:
+        return []
+    try:
+        from agent.credential_pool import load_pool
+
+        entries = load_pool(slug).entries()
+    except Exception:
+        return []
+    try:
+        from agent.account_usage_cache import _identity_id_for
+    except Exception:
+        return []
+
+    accounts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        try:
+            identity = _identity_id_for(slug, entry)
+        except Exception:
+            continue
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        status = str(getattr(entry, "last_status", None) or "ok")
+        try:
+            request_count = int(getattr(entry, "request_count", 0) or 0)
+        except (TypeError, ValueError):
+            request_count = 0
+        accounts.append({
+            "identity_id": identity,
+            "label": str(getattr(entry, "label", None) or getattr(entry, "source", None) or identity),
+            "auth_type": str(getattr(entry, "auth_type", None) or ""),
+            "source": str(getattr(entry, "source", None) or ""),
+            "available": status not in {"dead", "exhausted"},
+            "status": status,
+            "request_count": request_count,
+            "last_status_at": getattr(entry, "last_status_at", None),
+            "base_url": str(getattr(entry, "runtime_base_url", None) or base_url or "") or None,
+        })
+    return accounts
+
+
+def _account_usage_entry(provider: str, identity_id: str):
+    """Pool row for *identity_id*, resolved inside core; the token stays here."""
+    wanted = str(identity_id or "").strip()
+    if not wanted:
+        return None
+    from agent.account_usage_cache import _identity_id_for
+    from agent.credential_pool import load_pool
+
+    for entry in load_pool(provider).entries():
+        try:
+            if _identity_id_for(provider, entry) == wanted:
+                return entry
+        except Exception:
+            continue
+    return None
+
+
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
     read_only: bool = False, identity_id: Optional[str] = None,
@@ -948,6 +1030,20 @@ def fetch_account_usage(
     from agent.account_usage_cache import remember_account_usage
 
     slug = str(provider or "").strip().lower()
+    # A per-account request names only the public identity from
+    # ``list_account_usage_identities``; core resolves the pool row and its
+    # token here, so plugin code never reads the credential store.
+    if identity_id and not api_key:
+        try:
+            entry = _account_usage_entry(slug, identity_id)
+        except Exception:
+            entry = None
+        if entry is None:
+            return None
+        api_key = str(getattr(entry, "runtime_api_key", "") or "").strip() or None
+        base_url = str(getattr(entry, "runtime_base_url", "") or "").strip() or base_url
+        if not api_key:
+            return None
     # The picker's per-credential path resolves variants that never rotate/refresh a credential
     # on failure (Codex 401), so a read cannot repair or bench a pool entry it does not own.
     fetcher = _READ_ONLY_USAGE_FETCHERS.get(slug) if read_only else None

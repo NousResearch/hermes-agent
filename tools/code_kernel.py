@@ -231,6 +231,7 @@ class CellAuthority:
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
+        from tools.file_tools_read_tracking import programmatic_file_read
         previous = None
         if self._callbacks:
             try:
@@ -240,7 +241,8 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            with programmatic_file_read():
+                return handle_function_call(tool_name, tool_args, task_id=self.task_id)
         finally:
             if previous is not None:
                 try:

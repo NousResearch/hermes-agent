@@ -466,6 +466,16 @@ _EMPTY_PROVIDER_RESPONSE_PATTERNS = (
     "model returning empty responses", "empty response stream",
 )
 
+# Zero-chunk SSE drops raised as ``agent.errors.EmptyStreamError``. The wording says
+# "empty STREAM", so _EMPTY_PROVIDER_RESPONSE_PATTERNS ("empty RESPONSE") misses them by
+# one word and the turn ends terminally instead of cascading. These carry no transport
+# exception — the server or an intermediate proxy closed the stream cleanly before any
+# chunk — so ``try_recover_primary_transport`` declines them and nothing else retries.
+_EMPTY_STREAM_PATTERNS = (
+    "empty stream with no finish_reason", "empty stream with no stop_reason",
+    "empty stream with no events", "returned an empty stream",
+)
+
 # Timeout wording from generic exception types the type heuristics would miss.
 _TIMEOUT_MESSAGE_PATTERNS = (
     "timed out", "turn timed out", "request timed out", "deadline exceeded", "operation timed out",
@@ -566,6 +576,14 @@ _V_SSL_CERT = _v(_R.ssl_cert_verification, **_ABORT_FALLBACK)
 _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
+
+# A dropped stream cannot be recovered on the same provider by the retry loop: it carries
+# no transport exception, so ``try_recover_primary_transport`` declines it. ``retryable=
+# False`` + ``should_fallback=True`` is the only shape that reaches the fallback cascade —
+# "retry THEN fall back" exists solely for RETRYABLE_CLIENT_REASONS, and widening that set
+# would change behaviour for every 500/502 as well.
+_V_EMPTY_STREAM = _v(_R.server_error, retryable=False, should_fallback=True)
+
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
@@ -712,6 +730,7 @@ _IMAGE_TOOL_RULES = (
 # Overflow signals arriving as 5xx (llama.cpp reports overflow as 500; busy /
 # model-load OOM as 503). Empty-response advisories must not enter compression.
 _OVERFLOW_AS_5XX_RULES = (
+    (_EMPTY_STREAM_PATTERNS, _V_EMPTY_STREAM),
     (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR), (_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW),
 )
@@ -745,7 +764,9 @@ _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
 # wording last, classified as transport (never compression).
 _MESSAGE_TAIL_RULES = (
     (_OVERLOADED_PATTERNS, _V_OVERLOADED), (_ACCOUNT_WALL_PATTERNS, _billing_hints),
-    (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
+    (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT),
+    (_EMPTY_STREAM_PATTERNS, _V_EMPTY_STREAM),
+    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),
     (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
     (_TIMEOUT_MESSAGE_PATTERNS, _V_TIMEOUT), (_CONNECTION_MESSAGE_PATTERNS, _V_TIMEOUT),

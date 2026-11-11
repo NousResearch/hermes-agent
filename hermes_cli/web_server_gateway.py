@@ -552,6 +552,8 @@ def _spawn_hermes_action(
         log_file.close()
         raise
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
+    if name == "gateway-restart":
+        _write_restart_record(proc.pid)
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
@@ -561,6 +563,109 @@ def _spawn_hermes_action(
     else:
         _ACTION_IDS.pop(name, None)
     return proc
+
+
+# A gateway that serves its own dashboard API loses the registries above when its own
+# ``gateway-restart`` replaces it, so the replacement would answer ``pid null`` for a restart that
+# worked. This record carries the action across; see ``restart_successor_result`` for what it proves.
+_RESTART_RECORD_FILE = "gateway-restart.record.json"
+# Longer than any client polls across a restart; past it the record certifies nothing.
+_RESTART_RECORD_TTL_SECONDS = 600.0
+
+
+def _process_identity(pid: int) -> Optional[list[int]]:
+    from gateway.status import get_process_start_time
+    start = get_process_start_time(pid)
+    return None if start is None else [pid, start]
+
+
+def _is_home_gateway() -> bool:
+    """This process holds the gateway runtime lock of the home the action log lives in."""
+    from gateway.runtime_ownership import process_ownership
+    return process_ownership.owns(_ACTION_LOG_DIR.parent)
+
+
+def _write_restart_record(action_pid: int) -> None:
+    """Record a ``gateway-restart`` spawn, or drop an older record: only a spawn by this home's
+    own gateway is recorded, so a newer restart always supersedes an older record."""
+    action, spawner = _process_identity(action_pid), _process_identity(os.getpid())
+    # The child is already running: a record that cannot be written costs only the cross-restart
+    # answer, never the request.
+    if _is_home_gateway() and action and spawner:
+        record = {"action": action, "spawner": spawner, "spawned_at": time.time(), "exit_code": None, "successor": None}
+        if not _store_restart_record(record):
+            _log.warning("Could not record gateway restart pid %s for its replacement", action_pid)
+        return
+    try:
+        (_ACTION_LOG_DIR / _RESTART_RECORD_FILE).unlink(missing_ok=True)
+    except OSError as exc:
+        _log.warning("Could not drop the previous gateway restart record: %s", exc)
+
+
+def _is_identity(value: Any) -> bool:
+    return isinstance(value, list) and len(value) == 2 and all(type(v) is int for v in value)
+
+
+def _read_restart_record() -> Optional[dict[str, Any]]:
+    """The record, or None when missing, unreadable or malformed (never raises)."""
+    try:
+        record = json.loads((_ACTION_LOG_DIR / _RESTART_RECORD_FILE).read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not (isinstance(record, dict) and _is_identity(record.get("action")) and _is_identity(record.get("spawner"))):
+        return None
+    successor, exit_code = record.get("successor"), record.get("exit_code")
+    if not (successor is None or _is_identity(successor)) or not (exit_code is None or type(exit_code) is int):
+        return None
+    spawned_at = record.get("spawned_at")
+    return record if type(spawned_at) in (int, float) else None
+
+
+def _store_restart_record(record: dict[str, Any]) -> bool:
+    """Atomic write next to the action log; False when it could not be written."""
+    from pm.filesystem import durable_write_bytes
+    try:
+        durable_write_bytes(_ACTION_LOG_DIR / _RESTART_RECORD_FILE, json.dumps(record).encode("utf-8"))
+    except OSError:
+        return False
+    return True
+
+
+def settle_restart_record(action_pid: int, exit_code: int) -> None:
+    """The spawner saw its restart child exit: keep that code so no later reader certifies a
+    restart that failed."""
+    record = _read_restart_record()
+    if record is not None and record["action"][0] == action_pid:
+        _store_restart_record({**record, "exit_code": exit_code})
+
+
+def restart_successor_result() -> Optional[dict[str, Any]]:
+    """``{"pid": <action pid>, "exit_code": 0}`` when THIS process is the gateway that replaced the
+    one that spawned the recorded ``gateway-restart``, else None (the caller answers as before).
+
+    Proof, all required: the record was written by a process holding this home's gateway runtime
+    lock (``_write_restart_record``); this process holds that lock now; this process is not the
+    spawner (``(pid, start_time)`` differs); the spawner never recorded a non-zero exit for the child;
+    the record is younger than ``_RESTART_RECORD_TTL_SECONDS``; no other process claimed it first;
+    and either this process IS the action child (no service manager: the child runs the new gateway
+    in-process) or the child is gone and this process started after it (service manager). The first
+    process to qualify claims the record, so a later gateway never inherits it. A separate dashboard
+    holds no gateway lock and never qualifies; it keeps its in-memory answer.
+    """
+    record = _read_restart_record()
+    me = _process_identity(os.getpid())
+    if record is None or me is None or not _is_home_gateway():
+        return None
+    action = record["action"]
+    if me == record["spawner"] or record.get("exit_code") not in (None, 0) or record.get("successor") not in (None, me):
+        return None
+    if not 0 <= time.time() - record["spawned_at"] <= _RESTART_RECORD_TTL_SECONDS:
+        return None
+    if me != action and (_process_identity(action[0]) == action or me[1] < action[1]):
+        return None
+    if record.get("successor") is None and not _store_restart_record({**record, "successor": me}):
+        return None
+    return {"pid": action[0], "exit_code": 0}
 
 
 def _own_profile_selector(profile: Optional[str]) -> Optional[str]:

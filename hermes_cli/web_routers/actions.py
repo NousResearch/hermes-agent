@@ -424,6 +424,11 @@ async def get_action_status(name: str, lines: int = 200):
     proc = _ACTION_PROCS.get(name)
     if proc is None:
         result = _ACTION_RESULTS.get(name)
+        if result is None and name == "gateway-restart":
+            # This process may be the gateway its own restart brought up, holding none of the
+            # predecessor's registries.
+            from hermes_cli.web_server_gateway import restart_successor_result
+            result = restart_successor_result()
         running = False
         pid = result.get("pid") if result else None
         exit_code = _completed_exit_code(result, durable_update_action_id, action_receipt_summary)
@@ -435,6 +440,9 @@ async def get_action_status(name: str, lines: int = 200):
             with contextlib.suppress(Exception):
                 proc.wait(timeout=1)
             _finish_action(name, exit_code, pid)
+            if name == "gateway-restart":
+                from hermes_cli.web_server_gateway import settle_restart_record
+                settle_restart_record(pid, exit_code)
 
     response = {"name": name, "running": running, "exit_code": exit_code, "pid": pid, "lines": tail}
     if durable_update_action_id:

@@ -219,6 +219,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._global_secret: str = extra.get("secret", "")
         self._static_routes: dict[str, dict] = extra.get("routes", {})
+        # The connector owns subscriptions even when an event runs in a routed profile.
+        from hermes_constants import get_hermes_home
+        self._subscriptions_home = get_hermes_home()
         self._dynamic_routes: dict[str, dict] = {}
         self._dynamic_routes_stat: Optional[tuple] = None
         self._routes: dict[str, dict] = dict(self._static_routes)
@@ -253,8 +256,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
     # --- Lifecycle ---
 
-    def _validate_route(self, name: str, route: dict) -> None:
+    def _validate_route(self, name: str, route: dict, *, require_target: bool = True) -> None:
         """Startup validation: secret required; INSECURE_NO_AUTH only on loopback (crash early on a public footgun)."""
+        from gateway.platforms.webhook_delivery import validate_bot_chat_address, validate_bot_chat_route
+        (validate_bot_chat_route if require_target else validate_bot_chat_address)(route)
         secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(secret):
             raise ValueError(f"[webhook] Route '{name}' HMAC secret is missing, blank, or not a string. Set 'secret' "
@@ -278,7 +283,7 @@ class WebhookAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
         for name, route in self._routes.items():
-            self._validate_route(name, route)
+            self._validate_route(name, route, require_target=name in self._static_routes)
         # client_max_size enforces the cap on every read path, including chunked bodies without
         # Content-Length that bypass the header check.
         app = web.Application(client_max_size=self._max_body_bytes)
@@ -334,6 +339,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
     async def _deliver_to(self, delivery: dict[str, Any], chat_id: str, content: str) -> SendResult:
         deliver_type = delivery["deliver"]
+        from gateway.webhook_target import is_bot_chat
+        if is_bot_chat(deliver_type):
+            return SendResult(success=False, error="Bot Chat requires the original committed webhook final")
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
@@ -429,6 +437,10 @@ class WebhookAdapter(BasePlatformAdapter):
             return False
         try:
             # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
+            from gateway.platforms.webhook_delivery import validate_bot_chat_address
+            # Reload authenticates a live source, not a new recipient. Existing origins
+            # retain their pin; new preparations still acquire a strict target pin.
+            validate_bot_chat_address(route)
             validate_coalesce_config(name, route)
         except ValueError as e:
             logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
@@ -442,9 +454,8 @@ class WebhookAdapter(BasePlatformAdapter):
         atomic rename, which also gives the file a new inode, so a restored mtime cannot hide a change;
         ``file_cache_version`` also catches a same-tick same-size edit made in place (a hand edit).
         """
-        from hermes_constants import get_hermes_home
         from utils import file_cache_version
-        subs_path = get_hermes_home() / _DYNAMIC_ROUTES_FILENAME
+        subs_path = self._subscriptions_home / _DYNAMIC_ROUTES_FILENAME
         try:
             stat_key = file_cache_version(subs_path)
         except FileNotFoundError:
@@ -701,6 +712,11 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self._route_processor.route_filters_match(route_config, payload, event_type, request.headers):
             logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
             return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
+        from gateway.webhook_target import is_bot_chat
+        if (is_bot_chat(route_config.get("deliver")) and not route_config.get("cron_job")
+                and not isinstance(route_config.get("coalesce"), dict)):
+            from gateway.webhook_origins import handle_origin
+            return await handle_origin(self, route_config, route_name, profile, payload, event_type, delivery_id, raw_body)
         # Script, prompt render and skill lookup read the profile's home (skills/, config); the runner
         # only enters the routed profile's scope later around handle_message, so enter it here.
         # See #67277.
@@ -795,6 +811,14 @@ class WebhookAdapter(BasePlatformAdapter):
                                route_name: str, profile, event_type: str) -> Optional[str]:
         """Record delivery info and admit the run through the durable producer (shared by the immediate
         and coalesced paths). ``"accepted"`` / ``"duplicate"``, or None when admission failed."""
+        from gateway.webhook_target import is_bot_chat
+        if is_bot_chat(route_config.get('deliver')) and isinstance(route_config.get('coalesce'), dict):
+            from gateway.webhook_origins import admit_rendered_origin
+            try:
+                return await admit_rendered_origin(self, route_config, route_name, profile, payload, prompt, delivery_id)
+            except Exception:  # health: allow BLE001 -- hook/admission errors may contain private payloads
+                logger.warning('[webhook] Coalesced Bot Chat origin unavailable')
+                return None
         # (profile, route, delivery_id) in the session key → concurrent webhooks get independent runs.
         identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         session_chat_id = identity.session_chat_id
@@ -825,8 +849,11 @@ class WebhookAdapter(BasePlatformAdapter):
             reply = getattr(event, '_consumer_reply', None)
             if reply:
                 from gateway.platforms.webhook_delivery import snapshot_destination
-                await self._deliver_to(snapshot_destination(self, self._delivery_info.get(session_chat_id)),
-                                       session_chat_id, reply)
+                result = await self._deliver_to(snapshot_destination(self, self._delivery_info.get(session_chat_id)),
+                                                session_chat_id, reply)
+                if route_config.get("deliver") == "bot-chat" and not result.success:
+                    event_ref = hashlib.sha256(delivery_id.encode()).hexdigest()[:16]
+                    logger.warning("[webhook] Bot Chat consumed-hook reply refused; event_ref=%s", event_ref)
             return "accepted"
         from gateway.session_authorities import active_authority, authority_for_profile_id
         runner = self._message_handler.__self__

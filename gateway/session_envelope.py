@@ -194,6 +194,20 @@ def snapshot_native(runner, event):
 
 
 async def prepare_native(runner, event):
+    frozen, payload = await _prepare_native_source(runner, event)
+    return _pinned_native(runner, frozen, payload)
+
+
+async def prepare_native_source(runner, event):
+    """Revalidate ingress identity/configuration before durable-origin lookup.
+
+    This is not an admissible new obligation until its destination is pinned.
+    """
+    _, payload = await _prepare_native_source(runner, event)
+    return payload
+
+
+async def _prepare_native_source(runner, event):
     from gateway.session_ingress_context import capture_provenance, reauthorize_roles
     provenance = capture_provenance(runner, event)
     # Freeze caller-owned identity and content before the first network yield.
@@ -228,10 +242,27 @@ async def prepare_native(runner, event):
         except BaseException:
             await abandon_capture(scope)
             raise
-    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
+    return frozen, _snapshot_native_source(runner, frozen, provenance, fresh_roles, encoded_source, media)
+
+
+def pin_webhook_target(runner, event, payload):
+    """Acquire a destination only for a new obligation, never to read an old origin."""
+    from gateway.webhook_target import is_bot_chat, target_home, capture_target
+    envelope = payload['native_text_v1']
+    delivery = envelope.get('webhook_delivery', {})
+    if is_bot_chat(delivery.get('deliver')):
+        producer_home = runner._resolve_profile_home_for_source(event.source)
+        envelope['webhook_target'] = deepcopy(getattr(event.source, '_webhook_target_pin', None)) or capture_target(
+            target_home(delivery['deliver'], producer_home))
+    return payload
 
 
 def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None):
+    payload = _snapshot_native_source(runner, event, provenance, fresh_roles, encoded_source, media)
+    return _pinned_native(runner, event, payload)
+
+
+def _snapshot_native_source(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None):
     if encoded_source is None:
         encoded_source = _validate_native(runner, event, provenance, fresh_roles)
     envelope = {'source': encoded_source,
@@ -269,10 +300,15 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
             envelope['event']['media_filenames'] = list(event.media_filenames)
     # Keep the private dispatch key so previously committed text-only rows recover
     # under the same authority; optional media/context fields extend that envelope.
-    payload = {'text': event.text, 'native_text_v1': envelope}
+    return {'text': event.text, 'native_text_v1': envelope}
+
+
+def _pinned_native(runner, event, payload):
+    payload = pin_webhook_target(runner, event, payload)
+    envelope = payload['native_text_v1']
     # Only an exact persisted legacy retry retains its old fingerprint. New
     # ordinary admissions must bind homes too, including execution after restart.
-    if provenance is not None and not getattr(runner.config, 'multiplex_profiles', False):
+    if envelope.get('provenance') is not None and not getattr(runner.config, 'multiplex_profiles', False):
         from hermes_state_runtime import list_session_admissions
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)

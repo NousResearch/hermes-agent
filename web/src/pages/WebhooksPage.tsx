@@ -11,11 +11,10 @@ import {
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { WebhookRoute, WebhooksResponse } from "@/lib/api";
+import type { WebhookRoute, WebhooksResponse } from "@/lib/api-webhooks";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -28,6 +27,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { WebhookDeliveryTarget, WebhookExecutionProfile } from "./WebhooksPageDelivery";
 
 interface CreatedWebhook {
   url: string;
@@ -400,23 +400,7 @@ export default function WebhooksPage() {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver">Deliver to</Label>
-                    <Select
-                      id="webhook-deliver"
-                      value={deliver}
-                      onValueChange={(v) => setDeliver(v)}
-                    >
-                      <SelectOption value="log">Log</SelectOption>
-                      <SelectOption value="telegram">Telegram</SelectOption>
-                      <SelectOption value="discord">Discord</SelectOption>
-                      <SelectOption value="slack">Slack</SelectOption>
-                      <SelectOption value="email">Email</SelectOption>
-                      <SelectOption value="github_comment">
-                        GitHub comment
-                      </SelectOption>
-                    </Select>
-                  </div>
+                  <WebhookDeliveryTarget value={deliver} onChange={setDeliver} />
 
                   <div className="grid gap-2">
                     <Label htmlFor="webhook-deliver-only">Deliver only</Label>
@@ -427,7 +411,7 @@ export default function WebhooksPage() {
                         checked={deliverOnly}
                         onChange={(e) => setDeliverOnly(e.target.checked)}
                       />
-                      Skip the agent, deliver payload directly
+                      Skip the webhook-side agent, deliver the rendered template
                     </label>
                   </div>
                 </div>
@@ -551,6 +535,7 @@ export default function WebhooksPage() {
                     {sub.name}
                   </span>
                   <Badge tone="outline">{sub.deliver}</Badge>
+                  <WebhookExecutionProfile profile={sub.profile} />
                   {sub.deliver_only && (
                     <Badge tone="secondary">deliver only</Badge>
                   )}

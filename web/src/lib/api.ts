@@ -3,6 +3,7 @@ import {
   type ModelOptionProvider,
   type ModelOptionsResult,
 } from "@hermes/shared";
+import type { WebhookCreate, WebhookEnableResponse, WebhookRoute, WebhooksResponse } from "./api-webhooks";
 import { createDashboardSessionMutations } from "./session-mutations";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
@@ -1696,48 +1697,6 @@ export interface PairingUser {
 export interface PairingResponse {
   pending: PairingUser[];
   approved: PairingUser[];
-}
-
-export interface WebhookRoute {
-  name: string;
-  description: string;
-  events: string[];
-  deliver: string;
-  deliver_only: boolean;
-  prompt: string;
-  skills: string[];
-  created_at: string | null;
-  url: string;
-  secret_set: boolean;
-  enabled: boolean;
-}
-
-export interface WebhooksResponse {
-  enabled: boolean;
-  base_url: string;
-  subscriptions: WebhookRoute[];
-}
-
-export interface WebhookEnableResponse {
-  ok: boolean;
-  platform: "webhook";
-  enabled: true;
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
-export interface WebhookCreate {
-  name: string;
-  description?: string;
-  events?: string[];
-  prompt?: string;
-  skills?: string[];
-  deliver?: string;
-  deliver_only?: boolean;
-  deliver_chat_id?: string;
 }
 
 export interface CredentialPoolEntry {

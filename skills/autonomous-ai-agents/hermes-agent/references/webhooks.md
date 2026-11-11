@@ -163,9 +163,9 @@ hermes webhook subscribe alerts \
   --deliver origin
 ```
 
-### Direct delivery (no agent, zero LLM cost)
+### Direct delivery (no webhook-side agent)
 
-For use cases where you just want to push a notification through to a user's chat — no reasoning, no agent loop — add `--deliver-only`. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
+I add `--deliver-only` to skip the webhook-side agent. The receiving Bot Chat may still run its model and incur cost. The rendered `--prompt` template becomes the literal message body and is dispatched directly to the target adapter.
 
 Use this for:
 - External service push notifications (Supabase/Firebase webhooks → Telegram)
@@ -182,11 +182,31 @@ hermes webhook subscribe antenna-matches \
   --description "Antenna match notifications"
 ```
 
-The POST returns `200 OK` on successful delivery, `502` on target failure — so upstream services can retry intelligently. HMAC auth, rate limits, and idempotency still apply.
+Other targets retain `200 OK` on transport success and `502` on target failure. For Bot Chat I receive `202` with durable origin/delivery IDs and observed state, not recipient completion. HMAC auth, rate limits, and idempotency still apply.
 
 Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
 
+### Bot Chat targets and inspection
+
+I choose `--deliver bot-chat` for the executing profile or
+`--deliver bot-chat:<existing-local-profile>` for another local profile. The
+separate `--route-profile` selects route execution, not the destination. Both
+Dashboard and Desktop expose Bot Chat and target-profile selectors. I never use
+arbitrary paths, sessions, chat IDs, fan-out or `deliver_extra` for Bot Chat.
+
+I inspect bounded payload-free state with `hermes webhook deliveries` or
+`hermes webhook deliveries --cursor '<next_cursor>'`. Authenticated HTTP exposes
+`GET /api/webhooks/deliveries?profile=<profile>`; MCP `list_event_types` includes
+states only for that server's routes. I treat `queued`/`claimed` as admission,
+not settlement. `settled` means the receiving turn completed. Source task outcome
+is separate. The readback contains IDs and allowlisted status/reason metadata,
+never messages, home paths, payloads or credentials.
+
 ### Let the user reply to a delivery
+
+For Bot Chat I already have canonical history. `--mirror-to-session` is an
+accepted no-op and does not append a duplicate. The following behavior applies
+to other targets.
 
 Each event runs in its own session, so by default the agent in the target chat has no record of what a route delivered ("what are you referring to?"). Add `--mirror-to-session` and each delivered message is also written into that chat's session as `[Webhook delivery: <route>]` + the text. Off by default: the text enters the conversation as if the user had sent it (on `--deliver-only` routes it is the raw payload), so only use it for sources the user trusts. Skipped when the chat has no session yet.
 

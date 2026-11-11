@@ -28,6 +28,7 @@ vi.mock('@/store/profile', async () => {
 
   return {
     $activeGatewayProfile: atom('alpha'),
+    $profiles: atom([{ name: 'producer' }, { name: 'recipient' }]),
     $profileScope: atom('__all__'),
     normalizeProfileKey: (value: string | null | undefined) => String(value ?? '').trim() || 'default'
   }
@@ -143,5 +144,41 @@ describe('WebhooksView profile ownership', () => {
 
     expect(await screen.findByText('strict-secret')).toBeTruthy()
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
+  })
+})
+
+
+describe('Bot Chat target creation', () => {
+  it.each(['bot-chat', 'bot-chat:recipient'])('roundtrips %s separately from the backend profile', async target => {
+    mocks.createWebhook.mockImplementation(async body => {
+      const route = { ...body, profile: 'alpha', enabled: true, skills: [], events: [],
+        url: 'http://localhost:8644/webhooks/fixture' }
+
+      mocks.getWebhooks.mockResolvedValue({ enabled: true, subscriptions: [route] })
+
+      return { ...route, secret: 'created-once' }
+    })
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: /new subscription/i }))
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: 'fixture' } })
+    fireEvent.keyDown(screen.getByLabelText('Deliver to'), { key: 'ArrowDown' })
+    expect(await screen.findByRole('option', { name: 'Log' })).toBeTruthy()
+    fireEvent.click(await screen.findByRole('option', { name: 'Bot Chat' }))
+
+    if (target.includes(':')) {
+      fireEvent.keyDown(screen.getByLabelText('Target profile'), { key: 'ArrowDown' })
+      fireEvent.click(await screen.findByRole('option', { name: 'recipient' }))
+    }
+
+    fireEvent.click(screen.getByLabelText(/deliver.*only|only.*deliver/i))
+    expect(screen.getByText(/receiving Bot Chat may run its model/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^create$/i }))
+    await waitFor(() => expect(mocks.createWebhook).toHaveBeenCalledWith(expect.objectContaining({
+      deliver: target, deliver_only: true
+    }), 'alpha'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Done' }))
+    expect(await screen.findByText(target === 'bot-chat' ? 'Bot Chat' : target)).toBeTruthy()
+    expect(screen.getByText('alpha')).toBeTruthy()
+    expect(screen.getByText('http://localhost:8644/webhooks/fixture')).toBeTruthy()
   })
 })

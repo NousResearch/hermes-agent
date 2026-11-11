@@ -3187,6 +3187,11 @@ export const frOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    targetProfile: 'Profil cible',
+    executingProfile: 'Profil exécutant',
+    executionProfile: 'Profil d’exécution',
+    botChatHint: 'Je livre au Bot Chat local canonique. Le Bot Chat destinataire peut exécuter son modèle et entraîner des coûts, même en livraison seule.',
+
     search: 'Rechercher des webhooks...',
     loading: 'Chargement des webhooks...',
     loadFailed: 'Échec du chargement des webhooks',
@@ -3244,6 +3249,7 @@ export const frOverrides = {
     createFailed: (detail: string) => `Échec de la création : ${detail}`,
     copy: 'Copier',
     deliverOptions: {
+      'bot-chat': 'Bot Chat',
       log: 'Journal',
       telegram: 'Telegram',
       discord: 'Discord',

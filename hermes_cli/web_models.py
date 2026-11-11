@@ -403,6 +403,9 @@ class WebhookCreate(BaseModel):
     deliver: str = "log"
     deliver_only: bool = False
     deliver_chat_id: Optional[str] = None
+    route_profile: Optional[str] = None
+    deliver_extra: dict = {}
+    mirror_to_session: bool = False
     secret: Optional[str] = None  # omit to auto-generate
 
 class WebhookEnabledToggle(BaseModel):

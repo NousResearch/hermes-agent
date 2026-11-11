@@ -365,9 +365,17 @@ class GatewayGoalsMixin:
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
-            session_entry = await self.async_session_store.get_or_create_session(
-                source, touch_activity=not is_internal,
-            )
+            metadata = getattr(event, 'metadata', None) or {}
+            if metadata.get('gateway_session_strict') and getattr(source, 'platform', None) == Platform.WEBHOOK:
+                # A verified native completion can follow a finalized one-shot webhook.
+                # Observe its pinned route; get_or_create would rotate the ended source.
+                session_entry = await self.async_session_store.lookup_by_session_key(metadata['gateway_session_key'])
+                if session_entry is None or session_entry.session_id != metadata.get('gateway_proven_session_id'):
+                    return
+            else:
+                session_entry = await self.async_session_store.get_or_create_session(
+                    source, touch_activity=not is_internal,
+                )
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return

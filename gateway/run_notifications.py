@@ -1910,6 +1910,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if silent:
                 # Still wait for the process to exit so we can log it, but don't push any messages.
                 if session.exited:
+                    if platform_name == 'webhook' and not process_registry.is_completion_consumed(session_id):
+                        from gateway.webhook_process import present_process_final
+                        await present_process_final(self, watcher, session, notify_mode)
                     break
                 continue
             current_output_len = len(session.output_buffer)
@@ -1972,15 +1975,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         "via wait/log — skipping raw notification (#65379)", session_id,
                     )
                     break
-                if notify_mode in {"concise", "all", "result"} or (
-                    notify_mode == "error" and session.exit_code not in {0, None}
-                ):
-                    message_text = self._format_process_final_message(session_id, session, notify_mode)
-                    from gateway.warning_notifications import present_notification
-                    # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
-                    await present_notification(
-                        lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher),
-                        platform=platform_name, diagnostic=session.exit_code not in {0, None})
+                from gateway.webhook_process import present_process_final
+                await present_process_final(self, watcher, session, notify_mode)
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers

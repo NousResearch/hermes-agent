@@ -503,6 +503,8 @@ def snapshot_automation(authority, adapter, event, identity):
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': owner}}
     envelope['automation'].update(notification)
+    from gateway.webhook_completion import inherit_webhook
+    envelope.update(inherit_webhook(authority, entry, identity))
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
     identities = event.metadata.get('automation_identities')
@@ -525,6 +527,11 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
             or runner.session_store._generate_session_key(available_source) != entry.session_key
             or adapter is None or runner._adapter_for_source(event.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
+    if 'webhook_root' in envelope:
+        from gateway.webhook_completion import verify_root
+        from gateway.webhook_final_intent import _authorize
+        verify_root(authority, {'target_session_id': authority.logical_owner(session_id)}, envelope)
+        _authorize(authority, envelope, adapter)
     return event.source, entry.session_key
 
 
@@ -616,7 +623,7 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None, *, _authorize_write=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
@@ -641,12 +648,18 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
             if replaced:  # the guard ran in the committed write; an exact replay runs no guard
                 authority._settle_cancelled(ref, replaces)
             return admitted(row)
+    replacement = (None if replaces is None else
+        (_replace_queued(replaces, ref.session_id, replaced) if fold is None
+         else _fold_queued(replaces, ref.session_id, replaced, fold)))
+    def authorize(conn):
+        if _authorize_write is not None:
+            _authorize_write(conn)
+        if replacement is not None:
+            replacement(conn)
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and (
-            _replace_queued(replaces, ref.session_id, replaced) if fold is None
-            else _fold_queued(replaces, ref.session_id, replaced, fold)))),
+        _authorize_write=authority._admission_gate(authorize)),
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 

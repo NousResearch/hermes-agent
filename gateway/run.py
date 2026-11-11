@@ -4399,13 +4399,6 @@ def _housekeeping_memory_trim() -> None:
     trim_memory_when_idle(reason="messaging gateway housekeeping")
 
 
-def _housekeeping_checkpoint_prune() -> None:
-    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
-    ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
-    ``git gc`` can block for tens of seconds on a large store."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
-    auto_prune_from_config()
-
 
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
@@ -4441,7 +4434,9 @@ def _start_gateway_housekeeping(
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
-    from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from gateway.run_housekeeping_disk import (
+        _housekeeping_checkpoint_prune, housekeeping_media_caches, maybe_post_auto_prune_prompt)
+    from gateway.webhook_reconcile import schedule_reconciliation
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4456,8 +4451,8 @@ def _start_gateway_housekeeping(
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", housekeeping_media_caches),
         (60, "Paste sweep", _housekeeping_paste_sweep)]
-    # Low disk + auto-prune undecided: ask on the home channel (two syscalls; snoozed per post).
     chores.append((1, "Auto-prune low-disk prompt", lambda: maybe_post_auto_prune_prompt(runner, loop)))
+    chores.append((1, "Webhook final receipts", lambda: schedule_reconciliation(runner, loop)))
     if cron_provider is not None:
         chores.append((5, "Misfire catch-up sweep", lambda: _housekeeping_misfire_catch_up(cron_provider, adapters, loop)))
     if cron_thread is not None:

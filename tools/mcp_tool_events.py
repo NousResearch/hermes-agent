@@ -328,11 +328,15 @@ async def _list_event_types(session, args: dict, server_name: str) -> dict:
             break
     routes = await asyncio.to_thread(_load_routes, server_name)
     states = await asyncio.to_thread(_load_state)
+    from hermes_cli.webhook import _execution_profile
     subscribed = [{"name": r["mcp_event"]["name"], "arguments": r["mcp_event"]["arguments"],
-                   "deliver": r.get("deliver", "log"), "refreshBefore": states.get(n, {}).get("refresh_before"),
+                   "deliver": r.get("deliver", "log"), "profile": _execution_profile(r), "refreshBefore": states.get(n, {}).get("refresh_before"),
                    **({"enabled": False} if r.get("enabled", True) is False else {})}
                   for n, r in routes.items()]
-    listed = {"events": events, "subscriptions": subscribed}
+    from hermes_cli.webhook_inspection import delivery_states
+    # Existing MCP tool/profile trust still owns this read; never expose another server's routes.
+    deliveries = await asyncio.to_thread(delivery_states, routes=tuple(routes))
+    listed = {"events": events, "subscriptions": subscribed, "deliveries": deliveries}
     if cursor:
         listed["truncated"] = (f"The server has more than {_MAX_LIST_PAGES} pages of event types; "
                                f"these are the first {len(events)}.")
@@ -414,6 +418,12 @@ def _subscribe_args_error(args: dict) -> Optional[str]:
     for key in ("deliver", "deliver_chat_id"):
         if args.get(key) is not None and not isinstance(args[key], str):
             return f"'{key}' must be a string"
+    from gateway.platforms.webhook_delivery import validate_bot_chat_route
+    try:
+        validate_bot_chat_route({'deliver': args.get('deliver'),
+                                 'deliver_extra': args.get('deliver_extra') or ({'chat_id': args['deliver_chat_id']} if args.get('deliver_chat_id') else {})})
+    except ValueError as exc:
+        return str(exc)
     return None
 
 
@@ -423,11 +433,13 @@ def _consent_error(server_name: str, args: dict) -> Optional[str]:
     contract: the event, its arguments, the instructions each run follows, and where results go."""
     deliver = args.get("deliver") or "log"
     target = f"'{deliver}' chat {args['deliver_chat_id']}" if args.get("deliver_chat_id") else f"'{deliver}'"
+    from gateway.webhook_target import is_bot_chat
+    receiving_cost = ' The receiving Bot Chat may run its model and incur additional cost.' if is_bot_chat(deliver) else ''
     try:
         from tools.approval_prompt import request_elicitation_consent
         answer = request_elicitation_consent(
             f"Subscribe to MCP event '{args['name']}' from server '{server_name}'? Each event starts an "
-            f"unattended agent run that follows the instructions below and sends its result to {target}.",
+            f"unattended agent run that follows the instructions below and sends its result to {target}.{receiving_cost}",
             f"Instructions: {args.get('instructions') or 'Summarize what happened.'}\n"
             f"Arguments: {json.dumps(args.get('arguments') or {})[:500]}",
             surface=f"mcp-events/{server_name}", title=f"MCP server '{server_name}' event subscription")

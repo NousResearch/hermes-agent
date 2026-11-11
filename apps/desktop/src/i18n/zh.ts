@@ -2660,6 +2660,11 @@ export const zhOverrides = {
   },
 
   webhooks: {
+    targetProfile: '目标配置档',
+    executingProfile: '执行配置档',
+    executionProfile: '执行配置档',
+    botChatHint: '我会投递到规范的本地 Bot Chat。即使使用仅投递模式，接收方 Bot Chat 仍可能运行模型并产生费用。',
+
     search: '搜索 Webhook…',
     loading: '正在加载 Webhook…',
     loadFailed: 'Webhook 加载失败',
@@ -2716,6 +2721,7 @@ export const zhOverrides = {
     createFailed: (detail: string) => `创建失败：${detail}`,
     copy: '复制',
     deliverOptions: {
+      'bot-chat': 'Bot Chat',
       log: '日志',
       telegram: 'Telegram',
       discord: 'Discord',

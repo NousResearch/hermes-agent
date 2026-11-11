@@ -922,6 +922,10 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
             await await_session_socket_preload(ws_preload)
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
+            # Bot Chat handoffs discover this very owner over the native control and
+            # WebSocket transports; the earlier recovery pass runs before READY.
+            from gateway.run_runtime import recover_served_native_rows
+            await recover_served_native_rows(runner)
             runner._start_systemd_watchdog()
             if idle_exit:
                 from gateway.run_idle_exit import arm_unmanaged_idle_exit

@@ -313,6 +313,10 @@ async def execute_admission(authority, ref, row):
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
         event.metadata['gateway_proven_session_id'] = (
             authority.physical_target(ref) if 'native_text_v1' in row['payload'] else event.metadata['gateway_session_id'])
+        if row['payload'].get('native_text_v1', {}).get('webhook_root'):
+            # Preclaim verified this exact route and physical target. A one-shot webhook
+            # remains finalized; get_or_create would rotate it and strand later children.
+            event.metadata['gateway_session_strict'] = True
     provenance = row['payload'].get('native_text_v1', {}).get('provenance')
     home = None
     if provenance is not None:
@@ -368,6 +372,14 @@ async def execute_admission(authority, ref, row):
             authority.pending_results[row['admission_id']] = {
                 'result': result, 'usage': captured.get('usage', {}),
                 **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
+            if event.source.platform.value == 'webhook':
+                from gateway.platforms.webhook_bot_chat import presentation
+                from gateway.warning_notifications import diagnostic_metadata, diagnostic_wake_muted
+                outcome = 'interrupted' if result.get('interrupted') else (
+                    'failed' if result.get('failed') or result.get('error') else 'completed')
+                authority.pending_results[row['admission_id']]['webhook_presentation'] = presentation(
+                    result, outcome, muted=diagnostic_wake_muted(event),
+                    category=diagnostic_metadata(event).get('notification_category', 'result'))
             if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:
@@ -469,7 +481,19 @@ async def deliver_settled(authority, admission_id):
     delivered = False
     try:
         with await _execution_scope(authority, home):
-            delivered = await deliver_response(adapter, event, session_key, response)
+            bot_result = None
+            if event.source.platform.value == 'webhook':
+                from gateway.platforms.webhook_bot_chat import deliver_settled as deliver_webhook_final
+                bot_result = await deliver_webhook_final(authority, adapter, event, admission_id)
+            if bot_result is None:
+                delivered = await deliver_response(adapter, event, session_key, response)
+            else:
+                delivered = bot_result.success
+                if bot_result.raw_response:
+                    logger.info('Webhook Bot Chat source=%s receipt=%s status=%s', admission_id,
+                                bot_result.message_id, bot_result.raw_response.get('status'))
+                if not delivered:
+                    logger.warning('Webhook Bot Chat handoff failed: %s', bot_result.error)
     except Exception:
         logger.exception('Delivery of settled admission %s failed', admission_id)
     finally:

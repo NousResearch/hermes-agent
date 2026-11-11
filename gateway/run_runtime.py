@@ -522,6 +522,10 @@ async def recover_served_native_rows(runner):
     for authority in serving_authorities(runner):
         try:
             await recover_profile_native_sessions(runner, authority)
+            from gateway.session_authorities import owner_scope
+            from gateway.platforms.webhook_ingress import recover_bot_chat_finals
+            with owner_scope(authority):
+                await recover_bot_chat_finals(authority)
         except Exception:  # health: allow BLE001 -- logged; the rows stay queued for the next start
             logger.error('Native session recovery failed for %s', authority.profile_id, exc_info=True)
 

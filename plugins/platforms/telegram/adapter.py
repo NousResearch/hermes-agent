@@ -304,7 +304,8 @@ from plugins.platforms.telegram.telegram_split import _strip_mdv2
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, hand_off_split, prompt_id_counter)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, hand_off_split, prompt_id_counter,
+    tag_safe_display_name)
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
@@ -5659,18 +5660,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None, shared_session=True)
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
-        # Local import: don't force gateway.session at module load (mirrors slack adapter).
-        from gateway.session import neutralize_untrusted_inline_text
-
         user_id = event.source.user_id or "unknown"
-        # Display names are attacker-influenceable (anyone can set theirs on Telegram):
-        # neutralize newlines/control chars and strip the bracket delimiter so a hostile
-        # name can neither close this attribution early nor forge bracketed structure
-        # inside gateway-built context (same delimiter class as #127053; the shared
-        # [Name] prefix path is fixed separately in #127066, this one never used it).
-        safe_name = neutralize_untrusted_inline_text(event.source.user_name or user_id)
-        safe_name = "".join(ch for ch in safe_name if ch not in "[]")
-        return f"[{safe_name}|{user_id}]\n{event.text or ''}"
+        return f"[{tag_safe_display_name(event.source.user_name or user_id)}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
         username = self._current_bot_username() or "unknown"

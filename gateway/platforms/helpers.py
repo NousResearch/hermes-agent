@@ -114,6 +114,17 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
+def tag_safe_display_name(value: Any) -> str:
+    """A sender display name made safe to sit inside a gateway-built ``[name]`` / ``[name|id]`` tag.
+
+    Display names are set by the sender. On top of the one-line neutralization, the tag's own
+    delimiters (``[``, ``]`` and the ``|`` that precedes a trusted id) are dropped, so a name can
+    neither end the tag early nor forge a second id or mention span inside it."""
+    from gateway.session import neutralize_untrusted_inline_text
+    text = neutralize_untrusted_inline_text(value)
+    return " ".join("".join(ch for ch in text if ch not in "[]|").split())
+
+
 def display_width(text: str) -> int:
     """Terminal-style display columns: East-Asian wide/full-width characters count as two.
     Chat clients clip button labels by rendered width, not by codepoints, so a 25-character

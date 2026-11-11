@@ -51,3 +51,31 @@ async def test_reset_mid_code_block_keeps_the_closing_fence():
 async def test_reset_without_a_cursor_makes_no_extra_edit():
     adapter, _ = await _stream_then_reset("partial answer", cursor="")
     adapter.edit_message.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_reset_while_final_send_fails_does_not_retry_the_dead_turn():
+    """A /stop during the final send must not retry stale text after it was rejected."""
+    current = {"ok": True}
+    attempts = []
+
+    async def send(*, chat_id, content, reply_to=None, metadata=None):
+        attempts.append(content)
+        if len(attempts) == 1:
+            current["ok"] = False  # /stop arrived during the awaited send
+            return SimpleNamespace(success=False, message_id=None, error="rejected")
+        return SimpleNamespace(success=True, message_id="too-late")
+
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.send = AsyncMock(side_effect=send)
+    adapter.edit_message = AsyncMock()
+    consumer = GatewayStreamConsumer(
+        adapter, "chat", run_still_current=lambda: current["ok"],
+    )
+    consumer.on_delta("answer that must not be re-sent after stop")
+    consumer.finish()
+
+    await consumer.run()
+
+    assert attempts == ["answer that must not be re-sent after stop"]
+    assert consumer.final_response_sent is False

@@ -27,4 +27,3 @@ capabilities:
   requires_env:
     - HERMES_JOBS_GOOGLE_CLIENT_ID
     - HERMES_JOBS_GOOGLE_CLIENT_SECRET
-

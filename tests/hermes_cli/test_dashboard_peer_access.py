@@ -376,6 +376,15 @@ def test_an_agent_that_accepts_no_passes_has_no_peer_route(peer):
     assert peer.seen == []
 
 
+def test_the_public_status_says_whether_this_agent_takes_peer_passes(peer):
+    """The pass issuer reads ``peer_access`` from ``/api/status`` and mints passes only for agents
+    that report it: an agent without this route reads a pass as a dashboard sign-in."""
+    assert peer.client.get("/api/status").json()["peer_access"] == 1
+    clear_providers()
+    register_provider(StubAuthProvider())
+    assert peer.client.get("/api/status").json()["peer_access"] == 0
+
+
 def test_an_api_server_without_a_key_is_never_called(peer, monkeypatch):
     monkeypatch.setattr(_web_server_cron, "_gateway_api_target", lambda name, home: ("http://gateway.test", ""))
     resp = peer.client.get("/api/peer/health", headers=_bearer("pass-message"))

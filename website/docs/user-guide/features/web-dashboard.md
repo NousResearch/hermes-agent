@@ -1193,6 +1193,7 @@ A provider can also accept **peer passes** (`supports_peer_pass = True` + `verif
 - Any other path is never forwarded, including `/api/cron/fire`, platform event intake, RoomLink grants and `/health/detailed`.
 - A gateway that is asleep or restarting answers 503 with `Retry-After`. A request the gateway dropped after receiving it answers 502 `peer_gateway_dropped` with no retry hint, because it may have run.
 - Only a peer pass opens `/api/peer`. It is checked apart from `verify_token`, so a pass never authorises another provider's token routes, and a pass without the dashboard scope never opens a dashboard session.
+- `/api/status` reports `peer_access`: the peer-pass contract this agent takes (currently `1`), or `0` when no registered provider takes peer passes. A pass issuer should mint passes only for agents that report it, because an agent without `/api/peer` reads a pass as a dashboard sign-in.
 - Control actions are written to `logs/dashboard-auth.log` as `peer_control` events with the pass holder, and jobs created through the route record the holder as `peer_principal` in their origin.
 
 The bundled Nous provider verifies peer passes with the same Portal keys and audience as dashboard sign-ins; dashboard sign-ins carry `agent_dashboard:access`, peer passes carry only the peer permissions.

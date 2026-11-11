@@ -25,10 +25,21 @@ from hermes_cli.dashboard_auth.request_utils import client_ip, extract_bearer, u
 _log = logging.getLogger(__name__)
 
 PEER_PREFIX = "/api/peer/"
+#: The pass contract this agent implements, reported as ``peer_access`` in ``/api/status`` while a
+#: provider that mints passes is registered. The issuer mints passes only for agents reporting it,
+#: because an agent without this route reads a pass as a dashboard sign-in. Raise it when what a
+#: pass may carry changes, so agents on the older contract stop getting the new passes.
+PEER_ACCESS_CONTRACT = 1
 
 
 def is_peer_path(path: str) -> bool:
     return path.startswith(PEER_PREFIX)
+
+
+def peer_access_contract() -> int:
+    """:data:`PEER_ACCESS_CONTRACT` when a registered provider takes peer passes, else 0 (the route
+    answers 404 then)."""
+    return PEER_ACCESS_CONTRACT if any(getattr(p, "supports_peer_pass", False) for p in list_providers()) else 0
 
 
 async def _verify(providers: list, token: str) -> tuple[Optional[TokenPrincipal], Optional[str]]:

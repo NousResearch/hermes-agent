@@ -312,7 +312,7 @@ def _line_survival(hf: FileMeasure | None, bf: FileMeasure | None,
     # Line matching only places hits; without any on either side it is pure cost.
     if hf is None or bf is None or not (hf.hit_lines or bf.hit_lines):
         return set(), set()
-    old = [bf.code_line(n) for n in range(1, len(bf.lines) + 1)]
+    old = [renamed(bf.code_line(n)) for n in range(1, len(bf.lines) + 1)]
     new = [renamed(hf.code_line(n)) for n in range(1, len(hf.lines) + 1)]
     # autojunk off: `except Exception:` and `pass` are frequent lines, never noise here.
     blocks = SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks()
@@ -386,7 +386,7 @@ def _moved_unit_lines(base: dict[str, FileMeasure], head: dict[str, FileMeasure]
         new_span, old_span = _span(hf.units[qual]), _span(origin)
         if new_span is None or old_span is None:
             continue
-        old = [bf.code_line(n) for n in old_span]
+        old = [renamed(bf.code_line(n)) for n in old_span]
         new = [renamed(hf.code_line(n)) for n in new_span]
         for block in SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks():
             kept[hpath].update(new_span[block.b + i] for i in range(block.size))
@@ -444,6 +444,7 @@ def compare(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
     renamed = module_renames(moves or {})
     if moves:
         head = {path: _spelled_as_base(fm, renamed) for path, fm in head.items()}
+        base = {path: _spelled_as_base(fm, renamed) for path, fm in base.items()}
     base_of = {c.new: c.old for c in changes if c.new}
     head_of = {c.old: c.new for c in changes if c.old}
     matcher = _Matcher(base, head, base_of, head_of)

@@ -100,6 +100,22 @@ def test_moved_code_keeps_its_cap(tmp_path, capsys):
     assert code == 0, out
 
 
+_MOVES_X = {"hermes_agent/compat/moves.py": 'MOVES: dict[str, str] = {"x": "hermes_agent.x"}\n'}
+_SPAWN = 'import subprocess\n\n\ndef f():\n    return subprocess.run(["python", "hermes_agent/x/tool.py"])\n'
+
+
+def test_old_violation_stays_old_when_the_base_already_names_a_moved_module_new(tmp_path, capsys):
+    # A stacked PR is judged against the previous chunk, whose files already name earlier-moved
+    # modules the new way: the head's MOVES must not make an old violation on such a line new.
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, {**_MOVES_X, "pkg/m.py": _SPAWN + "\n\ndef g():\n    return 1\n"})
+    code, out = _verdict(repo, base, {"pkg/m.py": _SPAWN + "\n\ndef g():\n    return 2\n"}, capsys)
+    assert code == 0, out
+    fresh = _SPAWN + "\n\ndef h():\n    return subprocess.run([\"python\", \"hermes_agent/x/other.py\"])\n"
+    code, out = _verdict(repo, base, {"pkg/m.py": fresh}, capsys)
+    assert code == 1 and "pkg/m.py:9" in out and "pkg/m.py:5" not in out, out
+
+
 _RUN = "import subprocess\n\n\ndef f(cmd):\n    return subprocess.run(cmd{})\n"
 _PROC = "import asyncio\n\n\nasync def f(cmd):\n    proc = await asyncio.create_subprocess_exec(*cmd)\n{}\n"
 _TWO_RUNS = "import subprocess\n\n\ndef f(a, b):\n    subprocess.run(a){}\n    subprocess.run(b){}\n"

@@ -1,6 +1,6 @@
 name: xscapes
 repo: https://github.com/donlucasx/hermes-xscapes
-sha: f32549c2ca638b98f67d8bf938410968f254700a
+sha: 3a12d11bdc4e7fd917b256014e7efcf4e79c9e3d
 subdir: ""
 title: xscapes
 description: 'Living ASCII scenes under Hermes in the terminal that show what the agent is doing while you wait:
@@ -14,7 +14,7 @@ tier: community
 category: general
 requires_hermes: ">=0.23.0"
 docs_url: https://donlucasx.github.io/xscapes/
-version: "0.2.0"
+version: "0.2.1"
 platforms: [linux, macos]
 capabilities:
   provides_tools: []

@@ -93,7 +93,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import prompt_id_counter, send_chunks
+from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
@@ -3059,7 +3059,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         media_text_inlined: list[bool] = []
         inlined_parts: list[str] = []
         for media_url, media_type in zip(media_urls, media_types):
-            extracted = await self._maybe_extract_text_document(media_url, media_type)
+            extracted = "" if caption_is_command(text) else await self._maybe_extract_text_document(media_url, media_type)
             media_text_inlined.append(bool(extracted))
             if extracted:
                 inlined_parts.append(extracted)

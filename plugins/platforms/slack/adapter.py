@@ -49,7 +49,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, request_never_left, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
+from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, inline_document_text
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
@@ -4821,9 +4821,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 cached_path, media_type, injection = cached
                 media_urls.append(cached_path)
                 media_types.append(media_type)
-                media_text_inlined.append(bool(injection))
-                if injection:
-                    text = f"{injection}\n\n{text}" if text else injection
+                text, (inlined,) = inline_document_text(text, injection, [bool(injection)])
+                media_text_inlined.append(inlined)
             except Exception as e:  # pragma: no cover - defensive logging
                 self._note_attachment_failure(
                     notices, self._describe_slack_download_failure(e, file_obj=f),

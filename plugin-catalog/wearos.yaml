@@ -7,7 +7,7 @@ maintainer: borealBytes
 tier: community
 category: platform
 requires_hermes: ">=0.23.0"
-version: "0.2.0"
+version: "0.3.0"
 image: https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/d2bc4175604abc3dcc35da25e8907117e6ce1dea/docs/banner.png
 screenshots:
   - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/d2bc4175604abc3dcc35da25e8907117e6ce1dea/docs/screenshots/66-wearkit-pane.png

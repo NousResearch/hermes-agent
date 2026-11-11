@@ -448,3 +448,43 @@ async def test_photon_document_first_envelope_still_sends_its_spoken_audio_to_st
     event = adapter.handle_message.await_args.args[0]
     _images, stt_paths, audio_files, _videos = GatewayInboundMixin._classify_inbound_media(event, False)
     assert len(stt_paths) == 1 and stt_paths[0].endswith(".ogg") and audio_files == []
+
+
+@pytest.mark.asyncio
+async def test_a_group_control_command_never_waits_on_an_earlier_voice_check(tmp_path, monkeypatch):
+    """A same-group ``/stop`` sent while an earlier voice note is still at gate STT is dispatched at
+    once (the base adapter's guards route it); ordinary text still waits behind the note."""
+    import asyncio
+    import base64
+    import json
+    import threading
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    seen = []
+    adapter.handle_message = AsyncMock(side_effect=lambda e: seen.append(e.message_id))
+    release = threading.Event()
+
+    def slow(path, _model=None, _source=None):
+        release.wait(10)
+        return {"success": True, "transcript": "hermes, what is on today", "provider": "fake"}
+
+    def line(mid, content):
+        return json.dumps({"messageId": mid, "space": {"id": "group-guid", "type": "group", "phone": None},
+                           "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
+    voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+        await asyncio.wait_for(adapter._on_inbound_line(line("v1", voice)), 2)
+        await asyncio.wait_for(adapter._on_inbound_line(line("t1", {"type": "text", "text": "hermes later"})), 2)
+        # Photon's group mention gate needs the wake word on a command too.
+        await asyncio.wait_for(adapter._on_inbound_line(line("s1", {"type": "text", "text": "/stop hermes"})), 2)
+        assert seen == ["s1"]
+        release.set()
+        for _ in range(200):
+            if len(seen) == 3:
+                break
+            await asyncio.sleep(0.02)
+    assert seen == ["s1", "v1", "t1"]

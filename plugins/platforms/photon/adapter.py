@@ -43,7 +43,7 @@ from gateway.platforms._shared import (
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
-from gateway.platforms.helpers import chat_ordered_work, voice_mention_gate_enabled
+from gateway.platforms.helpers import bypasses_chat_order, chat_ordered_work, voice_mention_gate_enabled
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
@@ -831,7 +831,9 @@ class PhotonAdapter(BasePlatformAdapter):
         # A group voice note may wait on gate-time STT: run it off this single reader, FIFO per chat.
         chat, transcribes = self._gate_stt_chat(event)
         work = chat_ordered_work(self)
-        if transcribes or (chat and work.busy(chat)):
+        content = event.get("content") or {}
+        command = content.get("type") == "text" and bypasses_chat_order(content.get("text"))
+        if transcribes or (chat and work.busy(chat) and not command):
             work.submit(chat, lambda: self._dispatch_inbound(event), transcribes=transcribes)
             return
         try:

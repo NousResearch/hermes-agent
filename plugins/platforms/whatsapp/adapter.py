@@ -361,6 +361,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
 from gateway.platforms.helpers import cancel_task, chat_ordered_work, spoken_mention_clips, voice_mention_gate_enabled
+from gateway.platforms.helpers import bypasses_chat_order
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import caption_is_command
 from utils import env_int
@@ -1313,7 +1314,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             # A group voice note may wait on gate-time STT: run it off this poll loop, FIFO per chat.
                             chat, work = str(msg_data.get("chatId") or ""), chat_ordered_work(self)
                             transcribes = self._may_transcribe_at_gate(msg_data)
-                            if transcribes or (chat and work.busy(chat)):
+                            if transcribes or (chat and work.busy(chat) and not bypasses_chat_order(msg_data.get("body"))):
                                 work.submit(chat, lambda d=msg_data: self._process_inbound(d), transcribes=transcribes)
                             else:
                                 await self._process_inbound(msg_data)

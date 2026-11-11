@@ -107,6 +107,9 @@ class PersistentState:
     # not). gateway.run mirrors this value to the DB keyed by session_key so the same semantics also survive
     # gateway restarts.
     hygiene_failure_streak: int = 0
+    # Identity of the request last re-run after a compression-exhaustion reset (#137565): the same
+    # request exhausting the fresh session too is not re-run again. Process-local.
+    exhaustion_replayed: Optional[str] = None
 
 
 @dataclass

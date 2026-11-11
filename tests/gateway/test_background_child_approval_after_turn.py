@@ -37,6 +37,12 @@ class _Adapter:
     def __init__(self, name: str) -> None:
         self.name, self.calls = name, []
 
+    def max_message_length_for_chat(self, chat_id: str) -> int:
+        return 4096
+
+    def message_len_fn_for_chat(self, chat_id: str):
+        return len
+
     def pause_typing_for_chat(self, chat_id: str) -> None:
         raise AssertionError("a background prompt must not touch the finished turn's typing state")
 
@@ -47,6 +53,27 @@ class _Adapter:
     async def send(self, chat_id: str, text: str, **_kw: Any) -> SendResult:
         self.calls.append(("text", chat_id, None))
         return SendResult(success=True, message_id=f"{self.name}-text")
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str, **_kw: Any) -> SendResult:
+        self.calls.append(("edit", chat_id, message_id))
+        return SendResult(success=True, message_id=message_id)
+
+
+class _CanonicalOwner:
+    """The parent turn's canonical owner: refuses once the parent's generation settled, as
+    ``SessionAuthority.check_approval_generation`` does, and records every use."""
+
+    def __init__(self) -> None:
+        self.settled, self.calls = False, []
+
+    def check_approval_generation(self, session_id, generation):
+        self.calls.append("check")
+        if self.settled:
+            raise RuntimeError("stale_generation")
+
+    def register_approval(self, *a, **k):
+        self.calls.append("register")
+        self.check_approval_generation(None, None)
 
 
 @pytest.fixture
@@ -160,6 +187,57 @@ def test_child_without_a_chat_fails_closed_instead_of_pending(gate):
         assert adapter.calls == []
         assert not approval.has_blocking_approval(SESSION)
         assert SESSION not in approval._pending
+    finally:
+        ask.set()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+
+
+def _wait(predicate, what):
+    pause = threading.Event()
+    for _ in range(80):
+        if predicate():
+            return
+        pause.wait(0.1)
+    raise AssertionError(what)
+
+
+def test_child_card_raised_mid_turn_survives_the_parent_settling(gate, monkeypatch):
+    """The child asks while the parent turn still runs; the parent then ends (its canonical generation
+    settles) before anyone answers. The card must not touch the parent's generation, stays answerable,
+    and its timeout notice still fires although a newer turn owns the chat by then."""
+    monkeypatch.setattr(approval.approval_context, "_get_approval_timeout", lambda: 1)
+    loop, thread = _loop_thread()
+    adapter, owner = _Adapter("live"), _CanonicalOwner()
+    ask, asked, done, decisions = threading.Event(), threading.Event(), threading.Event(), []
+
+    def child():
+        assert ask.wait(5)
+        asked.set()
+        decisions.append(approval.check_execute_code_guard("print('x')", "local"))
+        done.set()
+        return {"status": "completed"}
+
+    try:
+        turn = _turn(Platform.TELEGRAM, adapter, loop)
+        turn._approval_owner = (owner, "s1", 1)
+        turn._ctx._run_still_current = lambda: not owner.settled  # a successor turn takes the chat
+
+        def run_conversation(message, **_kw):
+            ad.dispatch_async_delegation(goal="clean up", context=None, toolsets=None, role="leaf",
+                                         model=None, session_key=SESSION, runner=child)
+            ask.set()
+            _wait(lambda: adapter.calls, "the child's card was sent while the parent ran")
+            return {"final_response": "started a helper"}
+
+        turn._run_conversation_with_approval(SimpleNamespace(run_conversation=run_conversation), [], None, None, None)
+        owner.settled = True  # the parent's generation is gone
+        assert owner.calls == [], "a child's prompt must never project onto the parent's generation"
+        assert approval.has_blocking_approval(SESSION), "the parent ending must not withdraw the child's card"
+        assert done.wait(5)
+        assert decisions[0]["outcome"] == "timeout"
+        # The card send was the first call; the timeout notice is a second one (edit or new message).
+        _wait(lambda: any(c[0] == "edit" for c in adapter.calls), "the expired card was edited to say so")
     finally:
         ask.set()
         loop.call_soon_threadsafe(loop.stop)

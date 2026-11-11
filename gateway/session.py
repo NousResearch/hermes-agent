@@ -1376,6 +1376,7 @@ class SessionStore(
                 self._reopen_session_row(
                     session_key, target_session_id, log_prefix="Session DB reopen_session failed"
                 )
+                self._adopt_delegate_row(session_key, target_session_id)
                 self._record_gateway_session_peer(
                     target_session_id, session_key, new_entry.origin,
                     display_name=new_entry.display_name, include_compression_ancestors=True,

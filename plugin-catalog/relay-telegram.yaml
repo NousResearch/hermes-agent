@@ -1,0 +1,16 @@
+name: relay-telegram
+repo: https://github.com/0xCheetah1/relay
+sha: ef6f9a1645bae3b5dcb9c30d1e128214480023b2
+subdir: adapters/hermes/telegram-plugin
+version: "0.1.0"
+description: "RELAY incoming agent calls on your Hermes Telegram bot with owner-only Accept and Reject buttons. Disclosure — the plugin reads Hermes configuration to identify the owner chat, listens on a local Unix socket for RELAY bridge notifications, sends call metadata through Telegram, and forwards approval decisions to the bridge's local socket. The separate RELAY CLI and bridge make outbound connections to the author's hosted relay, manage local identity keys and phonebook data, and run as a background service when installed through the repository installer."
+maintainer: 0xCheetah1
+tier: community
+category: platform
+requires_hermes: ">=0.19"
+docs_url: https://github.com/0xCheetah1/relay#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

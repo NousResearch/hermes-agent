@@ -1,0 +1,34 @@
+name: repager
+title: repager
+repo: https://github.com/clawpawtech/hermes-repager
+sha: fc354afe99ab041e096efee4d87d20190ae0d040
+description: Evidence-bound hero design lab with approved copy, local layout exploration, revision-bound browser checks and portable review handoffs.
+maintainer: clawpawtech
+tier: community
+category: web
+requires_hermes: ">=0.22.5"
+version: "0.3.0"
+docs_url: https://github.com/clawpawtech/hermes-repager/blob/fc354afe99ab041e096efee4d87d20190ae0d040/README.md
+readme: true
+platforms: [linux]
+known_issues:
+  - "Requires Node.js 20+, npm dependencies and separately provisioned compatible Chromium; no browser downloads at runtime."
+  - "Linux verified; POSIX file locking is required. Native Windows is unsupported."
+  - "Model calls are off until consented. Generation requires an explicit host auxiliary route without fallback chains. Local revisions use no additional inference."
+  - "Text-only hero alternatives, not whole-site reconstruction or proven conversion improvement; human review remains necessary."
+  - "Chromium sandboxing is on by default. Opt out only with separate appropriate container/VM isolation."
+capabilities:
+  provides_tools:
+    - repager_capture
+    - repager_get
+    - repager_scope
+    - repager_list
+    - repager_approve
+    - repager_generate
+    - repager_remix
+    - repager_decide
+    - repager_verify
+    - repager_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

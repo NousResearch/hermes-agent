@@ -218,3 +218,16 @@ def test_an_unclaimed_handoff_is_failed_on_the_gateway_so_it_can_be_retried(hand
     assert cli.process_command("/handoff telegram") is True
     assert ("handoff.fail", {"session_id": "local-s", "error": "timed out waiting for gateway"}) in conn.calls
     assert "Timed out waiting for the gateway" in capsys.readouterr().out
+
+
+def test_a_handoff_claimed_as_the_pending_timeout_fires_still_completes(handoff_cli, monkeypatch):
+    """The CAS-fail loses to a claim that finishes first: the CLI reports what the row says, not a timeout."""
+    from cli import _handed_off_session_ids
+    cli, conn = handoff_cli(["pending", "completed", "completed"],
+                            **{"handoff.fail": {"failed": False, "state": "completed"}})
+    clock = iter([0.0, 100.0])
+    monkeypatch.setattr("time.time", lambda: next(clock, 100.0))
+    assert cli.process_command("/handoff telegram") is False  # the session ended, as /quit
+    assert ("handoff.fail", {"session_id": "local-s", "error": "timed out waiting for gateway"}) in conn.calls
+    assert cli._should_exit is True and "local-s" in _handed_off_session_ids
+    _handed_off_session_ids.discard("local-s")

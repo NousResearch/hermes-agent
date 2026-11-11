@@ -759,6 +759,13 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             now = time.time()
             if current == "pending":
                 if now >= pending_deadline:
+                    with suppress(Exception):  # unclaimed: CAS-clear so the user can retry
+                        fail_pending("timed out waiting for gateway")
+                    # A claim that won the race may finish first: report what the row says now.
+                    with suppress(Exception):
+                        if ((read_state() or {}).get("state") or "") in ("running", "completed"):
+                            pending_deadline = float("inf")
+                            continue
                     break
             else:  # running
                 if next_heartbeat is not None and now >= next_heartbeat:
@@ -771,8 +778,6 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                         f"  {_t('handoff.check_platform', platform=platform_name)}",
                         f"  {_t('handoff.no_longer_waiting')}", f"  {_t('handoff.retry_when_settled')}")
             time.sleep(0.5)
-        with suppress(Exception):  # pending timed out: CAS-clear so the user can retry
-            fail_pending("timed out waiting for gateway")
         return self._handoff_keep(f"  {_t('handoff.timed_out')}", f"  {_t('handoff.session_intact')}")
 
     def _handoff_fail_pending(self, reason: str) -> None:

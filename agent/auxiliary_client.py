@@ -20,6 +20,7 @@ import re
 import threading
 import time
 import uuid
+from enum import Enum
 from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple, Optional, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -217,7 +218,13 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
 # a task mark its in-flight LLM call as interrupt-protected; the Codex Responses stream's cancellation check
 # honors it. TIMEOUTS still fire (a hung call must die), and all OTHER aux tasks (vision, web_extract,
 # title_generation, …) remain freely interruptible.
-_aux_interrupt_protection = threading.local()
+_aux_interrupt_protection = threading.local()  # .scope: the innermost _AuxProtection, absent = unprotected
+
+
+class _AuxProtection(NamedTuple):
+    """An interrupt-protected aux call and its explicit host hard-cancel sources (the Event is preferred)."""
+    cancel_check: Optional[Callable[[], Any]]
+    cancel_event: Any
 
 
 class AuxiliaryExplicitCancellation(BaseException):
@@ -231,7 +238,7 @@ class AuxiliaryExplicitCancellation(BaseException):
 
 
 def _aux_interrupt_protected() -> bool:
-    return bool(getattr(_aux_interrupt_protection, "active", False))
+    return getattr(_aux_interrupt_protection, "scope", None) is not None
 
 
 def _aux_interrupt_cancel_requested() -> bool:
@@ -241,33 +248,30 @@ def _aux_interrupt_cancel_requested() -> bool:
 
 
 @contextlib.contextmanager
-def aux_interrupt_protection(active: bool = True, cancel_check=None, cancel_event=None):
+def aux_interrupt_protection(cancel_check=None, cancel_event=None):
     """Mark this thread's aux LLM call interrupt-protected (re-entrant-safe). ``cancel_check`` /
     ``cancel_event`` keep an explicit host hard-cancel path (Event preferred); nested scopes inherit both."""
-    prev = getattr(_aux_interrupt_protection, "active", False)
-    prev_cancel_check = getattr(_aux_interrupt_protection, "cancel_check", None)
-    prev_cancel_event = getattr(_aux_interrupt_protection, "cancel_event", None)
-    _aux_interrupt_protection.active = active
-    if callable(cancel_check):
-        _aux_interrupt_protection.cancel_check = cancel_check
-    if cancel_event is not None and callable(getattr(cancel_event, "is_set", None)):
-        _aux_interrupt_protection.cancel_event = cancel_event
+    prev = getattr(_aux_interrupt_protection, "scope", None)
+    inherited = prev or _AuxProtection(None, None)
+    _aux_interrupt_protection.scope = _AuxProtection(
+        cancel_check if callable(cancel_check) else inherited.cancel_check,
+        cancel_event if callable(getattr(cancel_event, "is_set", None)) else inherited.cancel_event,
+    )
     try:
         yield
     finally:
-        _aux_interrupt_protection.active = prev
-        _aux_interrupt_protection.cancel_check = prev_cancel_check
-        _aux_interrupt_protection.cancel_event = prev_cancel_event
+        _aux_interrupt_protection.scope = prev
 
 
 def _capture_aux_cancel_check() -> Optional[Callable[[], Any]]:
     """Capture the current explicit-cancel source on the owning request thread."""
-    is_set = getattr(getattr(_aux_interrupt_protection, "cancel_event", None), "is_set", None)
-    if callable(is_set):
-        return is_set
+    scope = getattr(_aux_interrupt_protection, "scope", None)
+    if scope is None:
+        return None
+    if scope.cancel_event is not None:
+        return scope.cancel_event.is_set
     # Return the callable itself so attempt-local decision objects keep begin_timeout_cleanup().
-    check = getattr(_aux_interrupt_protection, "cancel_check", None)
-    return check if callable(check) else None
+    return scope.cancel_check
 
 
 def _captured_aux_cancel_requested(cancel_check: Callable[[], Any]) -> bool:
@@ -279,27 +283,30 @@ def _captured_aux_cancel_requested(cancel_check: Callable[[], Any]) -> bool:
         return False
 
 
+_AttemptOutcome = Enum("_AttemptOutcome", "ACTIVE CANCELLED TIMED_OUT")
+
+
 class _AuxiliaryCancellationDecision:
     """Atomically choose explicit cancellation or provider timeout per attempt."""
 
     def __init__(self, source_cancel_check: Callable[[], Any]) -> None:
         self._source_cancel_check = source_cancel_check
         self._lock = threading.Lock()
-        self._outcome = "active"
+        self._outcome = _AttemptOutcome.ACTIVE
 
     def __call__(self) -> bool:
         with self._lock:
-            if self._outcome == "active" and _captured_aux_cancel_requested(self._source_cancel_check):
-                self._outcome = "cancelled"
-            return self._outcome == "cancelled"
+            if self._outcome is _AttemptOutcome.ACTIVE and _captured_aux_cancel_requested(self._source_cancel_check):
+                self._outcome = _AttemptOutcome.CANCELLED
+            return self._outcome is _AttemptOutcome.CANCELLED
 
     def begin_timeout_cleanup(self) -> bool:
         """Return whether timeout won and destructive cleanup is permitted."""
         with self._lock:
-            if self._outcome == "active":
+            if self._outcome is _AttemptOutcome.ACTIVE:
                 cancelled = _captured_aux_cancel_requested(self._source_cancel_check)
-                self._outcome = "cancelled" if cancelled else "timed_out"
-            return self._outcome == "timed_out"
+                self._outcome = _AttemptOutcome.CANCELLED if cancelled else _AttemptOutcome.TIMED_OUT
+            return self._outcome is _AttemptOutcome.TIMED_OUT
 
 
 # Forward-progress hooks for streamed aux calls: a fixed host deadline kills a SLOW model

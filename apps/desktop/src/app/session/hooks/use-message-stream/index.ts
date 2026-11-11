@@ -1190,7 +1190,7 @@ export function useMessageStream({
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
-        const error = errorMessage.trim() || 'Hermes reported an error'
+        const error = errorMessage.trim() || 'Unitalk reported an error'
         // The `error` event carries no descriptor; the dispatcher may recover
         // one from the text (SESSION_NOT_OWNED, disk_full) so the card gates
         // its buttons like a classified turn.

@@ -30,7 +30,7 @@ export class McpOAuthCancelled extends Error {
 }
 
 const defaultSleep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds))
-const UPDATE_BACKEND = 'Update the Hermes backend to support Desktop MCP OAuth callbacks.'
+const UPDATE_BACKEND = 'Update the Unitalk backend to support Desktop MCP OAuth callbacks.'
 
 /** Remote gateways require the Desktop callback bridge. An explicitly local
  *  gateway can host its own loopback listener when that capability is absent. */
@@ -49,7 +49,7 @@ export async function completeMcpDesktopOAuth({
 
   // A legacy null connection can resolve to a remote registry primary.
   if (!bridge && scope.connectionId !== 'local') {
-    throw new Error('Update Hermes Desktop to support MCP OAuth callbacks.')
+    throw new Error('Update Unitalk to support MCP OAuth callbacks.')
   }
 
   let listener: { id: string; redirectUri: string } | undefined

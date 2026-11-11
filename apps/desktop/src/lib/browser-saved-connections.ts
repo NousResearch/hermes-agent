@@ -150,7 +150,7 @@ export function createBrowserSavedConnections({
     const read = await api<DesktopConnectionsRegistry | null>({ path: ROUTE })
 
     if (!Array.isArray(read?.connections)) {
-      throw new Error('Hermes did not return the saved connections')
+      throw new Error('Unitalk did not return the saved connections')
     }
 
     return publish(read)
@@ -188,7 +188,7 @@ export function createBrowserSavedConnections({
     const ticket = String(minted?.ticket || '').trim()
 
     if (!ticket) {
-      throw new Error('Hermes did not return a relay ticket')
+      throw new Error('Unitalk did not return a relay ticket')
     }
 
     const url = new URL(websocketUrl(relayed.basePath, path, {}, profile))

@@ -1,7 +1,7 @@
 /**
  * What a bot's chat shows before it has said anything.
  *
- * Core's splash is Hermes' own wordmark and belongs to a fresh draft; a bot
+ * Core's splash is Unitalk' own wordmark and belongs to a fresh draft; a bot
  * chat is neither. It gets the same lettering with the bot's name in it, over
  * the same face the roster row and tab carry, so an empty conversation still
  * says whose it is.

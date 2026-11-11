@@ -14,5 +14,5 @@ export const ruPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptRevoke: (origin: string) => `Отозвать доступ к ${origin}`,
   previewScriptRevoked: (plugin: string, origin: string) => `${plugin} больше не может запускать скрипты на ${origin}.`,
   previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
-    `Не удалось сохранить изменение, поэтому оно действует только до перезапуска Hermes. Пока ${plugin} заблокирован на ${origin}.`
+    `Не удалось сохранить изменение, поэтому оно действует только до перезапуска Unitalk. Пока ${plugin} заблокирован на ${origin}.`
 }

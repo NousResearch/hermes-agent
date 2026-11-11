@@ -4,9 +4,9 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const jaGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'ゲートウェイ設定は利用できません',
   unavailableDesc: 'デスクトップ IPC ブリッジはゲートウェイ設定を公開していません。',
-  webappHostTitle: 'Hermes ホスト',
+  webappHostTitle: 'Unitalk ホスト',
   webappHostDesc:
-    'Webapp は常にそれを配信する Hermes ホスト上で動作します。下の保存済み接続はこのマシンの一覧で、Hermes Desktop アプリと共有されます。他のゲートウェイにはこのホスト経由で接続します。',
+    'Webapp は常にそれを配信する Unitalk ホスト上で動作します。下の保存済み接続はこのマシンの一覧で、Unitalk Desktop アプリと共有されます。他のゲートウェイにはこのホスト経由で接続します。',
   webappOauthPaste: {
     title: 'サインインを完了',
     description: 'サインインのタブが読み込めないアドレスで止まった場合（このブラウザがゲートウェイのマシン上にない場合）、そのアドレスをここに貼り付けてください。',
@@ -16,7 +16,7 @@ export const jaGatewayHost: GatewayHostTranslations = {
   },
   webAccess: {
     title: 'Web アクセス',
-    intro: 'スマートフォンや別のコンピューターから、Nous アカウントでサインインしてこのコンピューターの Hermes を開きます。サインインした人はこのコンピューターでコマンドを実行できます。',
+    intro: 'スマートフォンや別のコンピューターから、Nous アカウントでサインインしてこのコンピューターの Unitalk を開きます。サインインした人はこのコンピューターでコマンドを実行できます。',
     failed: 'Web アクセスを変更できませんでした',
     running: '実行中',
     stopped: '停止中',
@@ -24,7 +24,7 @@ export const jaGatewayHost: GatewayHostTranslations = {
     stopping: '停止処理中',
     restartNeeded: '再起動が必要',
     unavailable: '利用できません',
-    notRunningDetail: '起動すると、別のデバイスから Hermes を開けます。',
+    notRunningDetail: '起動すると、別のデバイスから Unitalk を開けます。',
     needsNous: '先に「プロバイダー」で Nous アカウントにサインインしてください。',
     runningLan: '同じネットワーク上のデバイスでこのアドレスを開いてください。',
     runningPublic: 'あなたの URL 経由で提供中です。',

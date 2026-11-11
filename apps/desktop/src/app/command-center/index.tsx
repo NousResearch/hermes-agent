@@ -131,7 +131,7 @@ function RowIconButton({
   )
 }
 
-/** The System card's Update button. Hermes Cloud updates its agents itself, so it has none there. */
+/** The System card's Update button. Unitalk Cloud updates its agents itself, so it has none there. */
 function UpdateHermesButton({ label, onClick }: { label: string; onClick: () => void }) {
   if (useStore($cloudOwnsUpdates).backend) {
     return null

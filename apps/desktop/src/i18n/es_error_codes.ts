@@ -10,7 +10,7 @@ export const esErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   session_read_only: {
     title: 'Este chat es de solo lectura',
-    body: 'Es historial guardado que Hermes puede mostrar pero no continuar, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
+    body: 'Es historial guardado que Unitalk puede mostrar pero no continuar, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
   },
   workspace_unavailable: {
     title: 'La carpeta de este chat ya no existe',
@@ -24,6 +24,6 @@ export const esErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: 'No se puede acceder al servidor de modelos local',
     body: 'El servidor de modelos local aún no está en ejecución: puede que todavía se esté iniciando. Reintenta en un momento o cambia a otro modelo.',
     bodyNoRetry:
-      'El servidor de modelos local está apagado. Inícialo desde la app de escritorio de Hermes o con `hermes model` en una terminal, o cambia a otro modelo.'
+      'El servidor de modelos local está apagado. Inícialo desde la app de escritorio de Unitalk o con `hermes model` en una terminal, o cambia a otro modelo.'
   }
 }

@@ -4,7 +4,7 @@ import type { Translations } from '@/i18n'
 
 import { CATCH_UP_CHOICES, type CatchUpChoice } from './run-control'
 
-/** Cron editor: what happens to the runs a job missed while Hermes was not running. */
+/** Cron editor: what happens to the runs a job missed while Unitalk was not running. */
 export function CatchUpField({
   c,
   onChange,

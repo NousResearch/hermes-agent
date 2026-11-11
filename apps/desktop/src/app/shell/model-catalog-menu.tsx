@@ -151,7 +151,7 @@ export interface ModelChoice {
  * the kanban override just holds a value in dialog state.
  *
  * `presetFor` supplies the remembered settings shown on a non-active row.
- * Returning `{}` is fine — the row then shows Hermes' defaults.
+ * Returning `{}` is fine — the row then shows Unitalk' defaults.
  */
 export interface ModelMenuController {
   /** Detached task pickers can edit effort but have no speed write path. */

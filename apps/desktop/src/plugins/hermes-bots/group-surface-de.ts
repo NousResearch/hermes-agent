@@ -109,7 +109,7 @@ export const GROUP_SURFACE_DE = {
     statusUnknown: "Status unbekannt",
     unavailable: "Nicht verfügbar",
     retryNow: "Jetzt erneut versuchen",
-    rosterUnavailable: reason => `Liste nicht verfügbar: ${reason}. Falls dein Gateway profiles.list noch nicht unterstützt, aktualisiere Hermes und starte das Gateway neu.`,
+    rosterUnavailable: reason => `Liste nicht verfügbar: ${reason}. Falls dein Gateway profiles.list noch nicht unterstützt, aktualisiere Unitalk und starte das Gateway neu.`,
     waitingForGateway: "Warte auf die Gateway-Verbindung… (entfernte Gateways können einige Sekunden benötigen; automatischer neuer Versuch)"
   },
   sections: {

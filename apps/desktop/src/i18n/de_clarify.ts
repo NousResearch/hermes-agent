@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const deClarify: Partial<ClarifyCopy> = {
   notReady: 'Klärungsanfrage ist noch nicht bereit',
-  gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
+  gatewayDisconnected: 'Unitalk-Gateway ist nicht verbunden',
   sendFailed: 'Klärungsantwort konnte nicht gesendet werden',
   loadingQuestion: 'Frage wird geladen…',
   other: 'Anderes (Antwort eingeben)',

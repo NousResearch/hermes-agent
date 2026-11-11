@@ -60,7 +60,7 @@ export interface CatalogEntry {
   sha: string | null
   subdir: string | null
   scan: CatalogScan | null
-  /** The Hermes version range the plugin needs; its env vars are the target's `requiredEnv`. */
+  /** The Unitalk version range the plugin needs; its env vars are the target's `requiredEnv`. */
   requiresHermes: string | null
   hasDesktopHalf: boolean
   /** The profile the row installs into; null when the chat's home is no named profile. */

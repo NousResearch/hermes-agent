@@ -26,7 +26,7 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
 
   // Only THIN rows from another source trade the friendly name for their
   // connection label — the active gateway's own default must keep reading
-  // "Hermes". Annotated active rows carry sourceScoped too, and keying this
+  // "Unitalk". Annotated active rows carry sourceScoped too, and keying this
   // off sourceScoped renamed the user's main agent to an IP-derived label
   // (community report, Aug 17 2026). A name its own backend reports is a real
   // name, never traded for a Desktop-side label.
@@ -58,7 +58,7 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   }
 
   // An untitled backend row claimed by an alias reads as the alias name —
-  // never generic "Hermes" or a hostname-derived label.
+  // never generic "Unitalk" or a hostname-derived label.
   if (alias) {
     const raw = alias.name.replace(/[-_]+/g, ' ').trim()
 
@@ -66,10 +66,10 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   }
 
   // The primary profile is literally named "default" — as a bot identity
-  // that reads like nobody bothered. Present it as Hermes (the agent it is)
+  // that reads like nobody bothered. Present it as Unitalk (the agent it is)
   // unless the user gives it a real title.
   if ((bot.name || '').trim().toLowerCase() === 'default' && !bot.title) {
-    return 'Hermes'
+    return 'Unitalk'
   }
 
   const raw = (bot.title || bot.name || '').replace(/[-_]+/g, ' ').trim()

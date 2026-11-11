@@ -89,7 +89,7 @@ export function runPluginAppAction(pluginId: string, id: unknown): PluginRunActi
 
     return known
       ? refuse(pluginId, 'denied', `${label} is not available to plugins. See ctx.listActions() for the allowed ids.`)
-      : refuse(pluginId, 'unknown', `${label} is not a Hermes app action. See ctx.listActions() for the allowed ids.`)
+      : refuse(pluginId, 'unknown', `${label} is not a Unitalk app action. See ctx.listActions() for the allowed ids.`)
   }
 
   if (!runner || !runner(id)) {

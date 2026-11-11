@@ -28,7 +28,7 @@ export const deDesktopCommands = {
   historyHeader: (count: string) => `Gesprächsverlauf (${count} Nachrichten):`,
   historyEmpty: 'Noch keine Nachrichten.',
   historyYou: 'Du',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: 'Verwendung: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     'Nicht gespeichert: Dieses Gateway kann keine geschwärzte, benannte oder Nicht-JSON-Kopie exportieren. Aktualisiere das Gateway oder führe /save ohne Optionen aus, um rohes JSON auf dem Gateway-Host zu schreiben.',

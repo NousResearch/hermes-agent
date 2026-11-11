@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const frClarify: Partial<ClarifyCopy> = {
   notReady: "La demande de clarification n'est pas encore prête",
-  gatewayDisconnected: "La Gateway Hermes n'est pas connectée",
+  gatewayDisconnected: "La Gateway Unitalk n'est pas connectée",
   sendFailed: "Impossible d'envoyer la réponse de clarification",
   loadingQuestion: 'Chargement de la question…',
   other: 'Autre (saisissez votre réponse)',

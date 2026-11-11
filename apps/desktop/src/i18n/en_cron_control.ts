@@ -9,7 +9,7 @@ export const enCronControl: CronControlCopy = {
   failedStop: 'Could not stop the run',
   lastCancelled: (reason: string) => (reason ? `Last run cancelled: ${reason}` : 'Last run cancelled'),
   catchUpLabel: 'Missed runs',
-  catchUpHint: 'What to do with runs missed while Hermes was not running.',
+  catchUpHint: 'What to do with runs missed while Unitalk was not running.',
   catchUpChoices: {
     default: 'Use the default',
     run: 'Run once when back',

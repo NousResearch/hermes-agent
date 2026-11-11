@@ -37,7 +37,7 @@ function firstBillingLine(text: string): string {
  * gateway forwards the structured descriptor built by `agent/billing_links.py`;
  * we cache it per-session, which drives the out-of-credits banner above the
  * composer. A wall in a session that is NOT on screen also raises one sticky,
- * billing-specific toast — never the generic "Hermes error" — with a smart CTA
+ * billing-specific toast — never the generic "Unitalk error" — with a smart CTA
  * (Nous → in-app Settings → Billing, other providers → their billing page); on
  * screen the banner and the turn's card carry it, so no toast repeats them.
  */
@@ -88,7 +88,7 @@ function turnFailure(payload: GatewayEventPayload | undefined, finalText: string
   }
 
   return {
-    error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
+    error: coerceGatewayText(payload.error).trim() || finalText || 'Unitalk reported an error',
     partial: Boolean(payload.partial),
     surface: parseErrorSurface(payload.error_surface)
   }

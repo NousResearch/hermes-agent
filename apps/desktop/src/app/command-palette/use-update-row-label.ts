@@ -13,7 +13,7 @@ import { $backendUpdateApply, $backendUpdateStatus, $desktopVersion, $updateAppl
  * target selection, same resolver. Reduced to the label string: an in-flight
  * apply rewrites these stores on every progress line, and only a changed
  * string should rebuild the palette's groups. Null in a Webapp served by
- * Hermes Cloud, where nothing is updatable, so the row is not listed at all.
+ * Unitalk Cloud, where nothing is updatable, so the row is not listed at all.
  */
 export function useUpdateRowLabel(): null | string {
   const { t } = useI18n()

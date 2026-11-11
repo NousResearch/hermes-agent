@@ -26,7 +26,7 @@ export const arDesktopCommands = {
   historyHeader: (count: string) => `سجل المحادثة (${count} رسالة):`,
   historyEmpty: 'لا توجد رسائل بعد.',
   historyYou: 'أنت',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: 'الاستخدام: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     'لم يتم الحفظ: لا تستطيع هذه البوابة تصدير نسخة منقّحة أو باسم محدد أو بغير JSON. حدّث البوابة، أو شغّل /save دون خيارات لكتابة JSON خام على مضيف البوابة.',

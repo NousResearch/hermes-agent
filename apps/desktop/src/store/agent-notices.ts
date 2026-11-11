@@ -198,7 +198,7 @@ export function clearAgentNotice(key: string | undefined): void {
 }
 
 // Only these credit notices are urgent enough to break through as a native OS
-// notification (when Hermes is backgrounded): access paused, a window plan's
+// notification (when Unitalk is backgrounded): access paused, a window plan's
 // limit reached, and access restored. The escalating usage line
 // (`credits.usage`) and the grant-spent notice stay in-app toasts only — they
 // aren't worth interrupting the user's OS for.

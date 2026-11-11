@@ -10,7 +10,7 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   serverRunning: 'En ejecución',
   runtimeInstalled: 'Entorno llama.cpp instalado',
   runtimeInstalledDetail: (tag, backend) =>
-    `Compilación ${tag}, backend ${backend}. Hermes inicia y gestiona el servidor por ti.`,
+    `Compilación ${tag}, backend ${backend}. Unitalk inicia y gestiona el servidor por ti.`,
   installTitle: 'Instalar el entorno local',
   installDetail:
     'Descarga el motor de inferencia llama.cpp (unos cientos de MB). Los modelos que descargues se ejecutan por completo en este equipo: sin cuenta y sin que nada salga de tu computadora.',
@@ -58,7 +58,7 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   updateDetail: (next, current) =>
     `Hay una compilación más reciente de llama.cpp (${next}) lista para instalar; tienes ${current}. Los modelos siguen funcionando durante la descarga.`,
   updateSameBuildDetail: tag =>
-    `Hermes ahora incluye llama.cpp ${tag} con archivos que necesita para funcionar. Al actualizar, el motor se vuelve a descargar; los modelos siguen funcionando durante la descarga.`,
+    `Unitalk ahora incluye llama.cpp ${tag} con archivos que necesita para funcionar. Al actualizar, el motor se vuelve a descargar; los modelos siguen funcionando durante la descarga.`,
   updateAction: 'Actualizar motor',
   updating: 'Actualizando el motor…',
   upToDateTitle: 'Motor actualizado',

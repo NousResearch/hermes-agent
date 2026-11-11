@@ -9,7 +9,7 @@ export const arCronControl: CronControlCopy = {
   failedStop: 'تعذّر إيقاف التشغيل',
   lastCancelled: (reason: string) => (reason ? `أُلغي آخر تشغيل: ${reason}` : 'أُلغي آخر تشغيل'),
   catchUpLabel: 'التشغيلات الفائتة',
-  catchUpHint: 'ما يحدث للتشغيلات الفائتة أثناء توقف Hermes.',
+  catchUpHint: 'ما يحدث للتشغيلات الفائتة أثناء توقف Unitalk.',
   catchUpChoices: {
     default: 'استخدام الإعداد الافتراضي',
     run: 'تشغيل مرة واحدة عند العودة',

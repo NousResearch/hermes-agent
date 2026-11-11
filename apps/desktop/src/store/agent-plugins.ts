@@ -4,7 +4,7 @@ import { atom } from 'nanostores'
 import { notifyError } from '@/store/notifications'
 
 /**
- * Feature store for backend (agent) plugins — the native Hermes plugins plus
+ * Feature store for backend (agent) plugins — the native Unitalk plugins plus
  * portable Agent Plugins v1 packages the backend discovers on disk. Settings
  * renders this next to the desktop (renderer) plugin inventory so every plugin
  * the user has is discoverable and toggleable from one page, whatever process
@@ -42,7 +42,7 @@ export interface AgentPluginRow {
   /** 'bundled' | 'user' | 'git' | 'project' | 'entrypoint' */
   source: string
   status: 'enabled' | 'disabled' | 'not enabled'
-  /** Agent Plugins v1 package (portable skills/MCP format) vs native Hermes. */
+  /** Agent Plugins v1 package (portable skills/MCP format) vs native Unitalk. */
   portable?: boolean
   /** Curated-catalog provenance (from the install sidecar), when present. */
   catalog_name?: string

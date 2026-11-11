@@ -1,14 +1,14 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const deOnboarding: TranslationOverrides['onboarding'] = {
-  headerTitle: 'Hermes Agent für Sie einrichten',
+  headerTitle: 'Unitalk Agent für Sie einrichten',
   headerDesc:
     'Verbinden Sie einen Modell-Anbieter, um mit dem Chatten zu beginnen. Die meisten Optionen brauchen nur einen Klick.',
   preparingInstall:
-    'Hermes schließt die Installation ab. Das dauert beim ersten Start normalerweise unter einer Minute.',
-  starting: 'Hermes wird gestartet…',
+    'Unitalk schließt die Installation ab. Das dauert beim ersten Start normalerweise unter einer Minute.',
+  starting: 'Unitalk wird gestartet…',
   setupSlowTitle: 'Die Einrichtung dauert länger als üblich.',
-  setupSlowBody: 'Hermes wird im Hintergrund noch gestartet.',
+  setupSlowBody: 'Unitalk wird im Hintergrund noch gestartet.',
   continueWithoutSetup: 'Ohne Einrichtung fortfahren',
   lookingUpProviders: 'Anbieter werden gesucht...',
   collapse: 'Einklappen',
@@ -17,7 +17,7 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
   chooseLater: 'Ich wähle später einen Anbieter',
   recommended: 'Empfohlen',
   connected: 'Verbunden',
-  featuredPitch: 'Ein Abo, 300+ Frontier-Modelle – die empfohlene Art, Hermes zu nutzen',
+  featuredPitch: 'Ein Abo, 300+ Frontier-Modelle – die empfohlene Art, Unitalk zu nutzen',
   fireworksPitch: 'Direkte Model-API – Fireworks-gehostete Frontier-Modelle',
   localModelsTitle: 'Modelle lokal ausführen',
   localModelsPitch: 'Kein Konto nötig – laden Sie ein Modell herunter und führen Sie es auf diesem Rechner aus',
@@ -46,7 +46,7 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
     local: {
       short: 'selbst gehostet',
       description:
-        'Verbinden Sie Hermes mit einem lokalen oder selbst gehosteten OpenAI-kompatiblen Endpunkt (vLLM, llama.cpp, Ollama usw.).'
+        'Verbinden Sie Unitalk mit einem lokalen oder selbst gehosteten OpenAI-kompatiblen Endpunkt (vLLM, llama.cpp, Ollama usw.).'
     }
   },
   backToSignIn: 'Zurück zur Anmeldung',
@@ -60,7 +60,7 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
   update: 'Aktualisieren',
   flowSubtitles: {
     pkce: 'Öffnet Ihren Browser zur Anmeldung und fährt dann hier fort',
-    device_code: 'Öffnet eine Verifizierungsseite in Ihrem Browser – Hermes verbindet sich automatisch',
+    device_code: 'Öffnet eine Verifizierungsseite in Ihrem Browser – Unitalk verbindet sich automatisch',
     external: 'Melden Sie sich einmal in Ihrem Terminal an und kehren Sie dann zum Chatten zurück'
   },
   startingSignIn: provider => `Anmeldung für ${provider} wird gestartet...`,
@@ -78,7 +78,7 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
   pickDifferentProvider: 'Einen anderen Anbieter wählen',
   signInWith: provider => `Mit ${provider} anmelden`,
   openedBrowser: provider => `Wir haben ${provider} in Ihrem Browser geöffnet.`,
-  authorizeThere: 'Autorisieren Sie Hermes dort.',
+  authorizeThere: 'Autorisieren Sie Unitalk dort.',
   copyAuthCode: 'Kopieren Sie den Autorisierungscode und fügen Sie ihn unten ein.',
   pasteAuthCode: 'Autorisierungscode einfügen',
   reopenAuthPage: 'Autorisierungsseite erneut öffnen',

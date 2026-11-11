@@ -10,7 +10,7 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   serverRunning: 'Läuft',
   runtimeInstalled: 'llama.cpp-Laufzeit installiert',
   runtimeInstalledDetail: (tag, backend) =>
-    `Build ${tag}, ${backend}-Backend. Hermes startet und verwaltet den Server für Sie.`,
+    `Build ${tag}, ${backend}-Backend. Unitalk startet und verwaltet den Server für Sie.`,
   installTitle: 'Lokale Laufzeit installieren',
   installDetail:
     'Lädt die llama.cpp-Inferenz-Engine herunter (einige hundert MB). Heruntergeladene Modelle laufen komplett auf diesem Rechner – kein Konto, nichts verlässt Ihren Computer.',
@@ -58,12 +58,12 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   updateDetail: (next, current) =>
     `Eine neuere llama.cpp-Version (${next}) ist bereit zur Installation – Sie verwenden ${current}. Während des Downloads laufen die Modelle weiter.`,
   updateSameBuildDetail: tag =>
-    `Hermes liefert llama.cpp ${tag} jetzt mit Dateien aus, die es zum Ausführen braucht. Beim Aktualisieren wird die Engine erneut heruntergeladen; während des Downloads laufen die Modelle weiter.`,
+    `Unitalk liefert llama.cpp ${tag} jetzt mit Dateien aus, die es zum Ausführen braucht. Beim Aktualisieren wird die Engine erneut heruntergeladen; während des Downloads laufen die Modelle weiter.`,
   updateAction: 'Engine aktualisieren',
   updating: 'Engine wird aktualisiert…',
   upToDateTitle: 'Engine aktuell',
   upToDateDetail: (tag, backend) =>
-    `llama.cpp ${tag} (${backend}) wird ausgeführt — der neueste Build, den Hermes mitliefert.`,
+    `llama.cpp ${tag} (${backend}) wird ausgeführt — der neueste Build, den Unitalk mitliefert.`,
   activeDetail: 'Neue Chats verwenden dieses Modell – es wird geladen, wenn Sie Ihre erste Nachricht senden',
   activeNotLoaded: 'Wird bei Ihrer ersten Nachricht geladen',
   loadedPill: 'Im Speicher',

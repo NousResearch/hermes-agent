@@ -460,7 +460,7 @@ export function performScopedFind(root: Element, query: string, options: ScopedF
 
   // The marks store the ORIGINAL-CASE source slice (`highlightMatches`
   // writes `mark.textContent = matchText`), so byte-equality against the
-  // typed query fails on the first match whose casing differs — 'Hermes'
+  // typed query fails on the first match whose casing differs — 'Unitalk'
   // for 'hermes', sentence-initial capitals, ALL-CAPS. Without the
   // case-insensitive comparison, every Enter/⌘G step re-wraps all
   // highlights, `data-find-active` is lost on the fresh DOM, and the

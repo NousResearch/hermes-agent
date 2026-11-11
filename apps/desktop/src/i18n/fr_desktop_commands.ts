@@ -28,7 +28,7 @@ export const frDesktopCommands = {
   historyHeader: (count: string) => `Historique de la conversation (${count} messages) :`,
   historyEmpty: 'Aucun message pour l’instant.',
   historyYou: 'Vous',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: 'utilisation : /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     'Non enregistré : cette passerelle ne peut pas exporter de copie expurgée, nommée ou autre que JSON. Mettez à jour la passerelle, ou lancez /save sans option pour écrire le JSON brut sur l’hôte de la passerelle.',

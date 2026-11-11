@@ -19,9 +19,9 @@ export const zhErrorLayers: {
     streaming: '流式连接错误'
   },
   errorLayerBodies: {
-    generic: 'Hermes 回复时出现问题。请重试；若问题持续，请复制错误详情。',
+    generic: 'Unitalk 回复时出现问题。请重试；若问题持续，请复制错误详情。',
     provider: 'AI 服务无法完成此请求。请稍后重试或切换服务商。',
-    endpoint: 'Hermes 无法连接到你的自定义模型服务器。请确认它正在运行，然后重新发送消息。',
+    endpoint: 'Unitalk 无法连接到你的自定义模型服务器。请确认它正在运行，然后重新发送消息。',
     streaming: '回复完成前连接已断开。请重试以重新发送。'
   }
 }

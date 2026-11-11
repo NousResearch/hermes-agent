@@ -191,7 +191,7 @@ export function closeHubLog(): void {
 // no Desktop route, so the remedy offered is reading the scan, not overriding
 // it. Two CLI shapes exist (`hermes_cli/skills_hub.py::_scan_block_message`):
 //   current: "Not installed: the security scan found 2 high-risk pattern(s) in
-//            'org/skill' (listed above). Hermes never installs unverified
+//            'org/skill' (listed above). Unitalk never installs unverified
 //            skills with high-risk findings, even with --force. ..."
 //            (the "never installs unverified" sentence only appears for a
 //            non-official source; otherwise it says "Re-run with --force").

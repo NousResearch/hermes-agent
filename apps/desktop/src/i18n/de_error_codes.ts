@@ -10,7 +10,7 @@ export const deErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   session_read_only: {
     title: 'Dieser Chat ist schreibgeschützt',
-    body: 'Er ist gespeicherter Verlauf, den Hermes anzeigen, aber nicht fortsetzen kann, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
+    body: 'Er ist gespeicherter Verlauf, den Unitalk anzeigen, aber nicht fortsetzen kann, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
   },
   workspace_unavailable: {
     title: 'Der Ordner dieses Chats fehlt',
@@ -24,6 +24,6 @@ export const deErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: 'Lokaler Modellserver nicht erreichbar',
     body: 'Der lokale Modellserver läuft noch nicht: Er startet möglicherweise noch. Versuchen Sie es gleich noch einmal oder wechseln Sie zu einem anderen Modell.',
     bodyNoRetry:
-      'Der lokale Modellserver ist ausgeschaltet. Starten Sie ihn in der Hermes-Desktop-App oder mit `hermes model` im Terminal, oder wechseln Sie zu einem anderen Modell.'
+      'Der lokale Modellserver ist ausgeschaltet. Starten Sie ihn in der Unitalk-Desktop-App oder mit `hermes model` im Terminal, oder wechseln Sie zu einem anderen Modell.'
   }
 }

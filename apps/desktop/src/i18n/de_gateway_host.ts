@@ -4,9 +4,9 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const deGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Gateway-Einstellungen nicht verfügbar',
   unavailableDesc: 'Die Desktop-IPC-Brücke stellt keine Gateway-Einstellungen bereit.',
-  webappHostTitle: 'Hermes-Host',
+  webappHostTitle: 'Unitalk-Host',
   webappHostDesc:
-    'Die Webapp läuft immer auf dem Hermes-Host, der sie bereitstellt. Die gespeicherten Verbindungen unten sind die Liste dieses Rechners, geteilt mit der Hermes-Desktop-App; andere Gateways werden über diesen Host erreicht.',
+    'Die Webapp läuft immer auf dem Unitalk-Host, der sie bereitstellt. Die gespeicherten Verbindungen unten sind die Liste dieses Rechners, geteilt mit der Unitalk-Desktop-App; andere Gateways werden über diesen Host erreicht.',
   webappOauthPaste: {
     title: 'Anmeldung abschließen',
     description: 'Wenn der Anmelde-Tab auf einer Adresse endete, die nicht lädt (dieser Browser läuft nicht auf dem Rechner des Gateways), füge diese Adresse hier ein.',
@@ -16,7 +16,7 @@ export const deGatewayHost: GatewayHostTranslations = {
   },
   webAccess: {
     title: 'Webzugriff',
-    intro: 'Öffne Hermes auf diesem Computer vom Handy oder einem anderen Computer aus, angemeldet mit deinem Nous-Konto. Wer sich anmeldet, kann Befehle auf diesem Computer ausführen.',
+    intro: 'Öffne Unitalk auf diesem Computer vom Handy oder einem anderen Computer aus, angemeldet mit deinem Nous-Konto. Wer sich anmeldet, kann Befehle auf diesem Computer ausführen.',
     failed: 'Der Webzugriff konnte nicht geändert werden',
     running: 'Läuft',
     stopped: 'Gestoppt',
@@ -24,7 +24,7 @@ export const deGatewayHost: GatewayHostTranslations = {
     stopping: 'Wird gestoppt',
     restartNeeded: 'Neustart nötig',
     unavailable: 'Nicht verfügbar',
-    notRunningDetail: 'Starte ihn, um Hermes von einem anderen Gerät aus zu öffnen.',
+    notRunningDetail: 'Starte ihn, um Unitalk von einem anderen Gerät aus zu öffnen.',
     needsNous: 'Melde dich zuerst unter Anbieter bei deinem Nous-Konto an.',
     runningLan: 'Öffne diese Adresse auf einem Gerät im selben Netzwerk.',
     runningPublic: 'Über deine URL bereitgestellt.',

@@ -1,4 +1,4 @@
-// Keydowns the window keybind dispatcher ran as a Hermes action. It cancels
+// Keydowns the window keybind dispatcher ran as a Unitalk action. It cancels
 // every chord it matches in capture, including one whose passthrough handler
 // then declines, so `defaultPrevented` alone doesn't say an action ran. xterm
 // ignores `defaultPrevented`; the terminal asks here before sending a key to

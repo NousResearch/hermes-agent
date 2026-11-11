@@ -11,7 +11,7 @@ export type McpServerEntry = McpServers[string]
 export const isServerShape = (value: Record<string, unknown>) =>
   typeof value.command === 'string' || typeof value.url === 'string'
 
-/** Cursor/Claude write `type`; Hermes reads `transport`. Normalizing on the way
+/** Cursor/Claude write `type`; Unitalk reads `transport`. Normalizing on the way
  *  in makes pasted configs behave identically under the CLI/TUI loader. */
 export function normalizeEntry(entry: Record<string, unknown>): Record<string, unknown> {
   if (typeof entry.type === 'string' && entry.transport === undefined) {

@@ -6,7 +6,7 @@ export const frUpdateChannel = {
   main: 'Chaque commit',
   stableConfirmTitle: 'Passer aux versions stables ?',
   stableConfirmBody:
-    'Hermes passera à la dernière version publiée, qui peut être plus ancienne que le code que vous utilisez. Les données écrites par un code plus récent risquent de mal se lire : sauvegardez-les d’abord.',
+    'Unitalk passera à la dernière version publiée, qui peut être plus ancienne que le code que vous utilisez. Les données écrites par un code plus récent risquent de mal se lire : sauvegardez-les d’abord.',
   stableConfirm: 'Passer en stable',
   failed: 'Impossible de changer le canal de mise à jour',
   detailsLabel: 'Canal',
@@ -15,9 +15,9 @@ export const frUpdateChannel = {
   latestRelease: (v: string) => `Vous utilisez la dernière version stable (${v}).`,
   rollbackTitle: (v: string) => `Revenir à la version stable ${v}`,
   rollbackBody: (v: string) =>
-    `Cette build est plus récente que la version stable ${v}. L’installer ramène Hermes à cette version.`,
+    `Cette build est plus récente que la version stable ${v}. L’installer ramène Unitalk à cette version.`,
   heldBody: (v: string) =>
-    `Cette version est plus récente que la version stable ${v}, et vos sessions utilisent déjà son environnement de passerelle, que ${v} ne peut pas ouvrir. Hermes reste sur cette version jusqu’à la prochaine version stable.`,
+    `Cette version est plus récente que la version stable ${v}, et vos sessions utilisent déjà son environnement de passerelle, que ${v} ne peut pas ouvrir. Unitalk reste sur cette version jusqu’à la prochaine version stable.`,
   rollbackAction: (v: string) => `Revenir à ${v}`,
   allChanges: 'Voir toutes les modifications'
 }

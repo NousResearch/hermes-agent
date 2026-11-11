@@ -74,7 +74,7 @@ export async function setYoloEnabled(enabled: boolean): Promise<boolean> {
   const gateway = $gateway.get()
 
   if (!gateway) {
-    throw new Error('Hermes gateway unavailable')
+    throw new Error('Unitalk gateway unavailable')
   }
 
   return setSessionYolo((method, params) => gateway.request(method, params), sessionId, enabled)

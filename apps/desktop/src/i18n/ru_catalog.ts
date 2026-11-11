@@ -65,7 +65,7 @@ export const ruCatalog = {
   retry: 'Попробовать снова',
   more: 'Показать ещё',
   pinned: 'Проверенный коммит',
-  snapshotHint: 'Из каталога Hermes. При просмотре нет обращений к исходным репозиториям.',
+  snapshotHint: 'Из каталога Unitalk. При просмотре нет обращений к исходным репозиториям.',
   installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
   results: (count: number) =>
     `${count.toLocaleString('ru')} ${resultWord(count)}`,

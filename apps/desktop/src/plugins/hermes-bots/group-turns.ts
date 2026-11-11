@@ -57,7 +57,7 @@ interface GroupTurnTranscriptMessage {
 }
 
 /** What a finished turn left behind: the member's reply, or the notice of the
- *  `failed_turn` row Hermes closed it with (the member never answered), or
+ *  `failed_turn` row Unitalk closed it with (the member never answered), or
  *  null when no assistant row landed. */
 type GroupTurnPick = { failedNotice: string } | null | string
 

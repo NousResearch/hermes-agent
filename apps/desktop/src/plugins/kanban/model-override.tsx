@@ -82,7 +82,7 @@ export function ModelOverrideField({
 
     current: { effort: value.effort, fast: false, model: value.model, provider: value.provider },
 
-    // Read-only against Hermes' global presets is deliberate: see applyPreset.
+    // Read-only against Unitalk' global presets is deliberate: see applyPreset.
     presetFor: () => ({}),
 
     select: (model, provider) => {

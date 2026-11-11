@@ -7,7 +7,7 @@ export const jaSessionCommands = {
   retryNothing: '再試行するものはありません',
   retryUnsupported: '/retry: メディアや不明なコンテンツを含むターンは再試行できません',
   busy: (command: string) =>
-    `セッションが使用中です — Hermes はまだ応答中です。先に現在の応答を停止してから（停止ボタン、またはターミナルでは Ctrl+C）/${command} を実行してください。`,
+    `セッションが使用中です — Unitalk はまだ応答中です。先に現在の応答を停止してから（停止ボタン、またはターミナルでは Ctrl+C）/${command} を実行してください。`,
   busyCompressing: (command: string) =>
     `セッションが使用中です — /compress を実行中です。完了したら /${command} を実行してください。`,
   steerUsage: '使い方: /steer <プロンプト>',
@@ -21,5 +21,5 @@ export const jaSessionCommands = {
   queueEditKeptTitle: 'キュー内のメッセージは変更されていません',
   queueEditKept: '編集を保存する前に開始されたか、拒否されました。編集したテキストは入力欄にあります。',
   queueEditUnconfirmedTitle: '編集を確認できません',
-  queueEditUnconfirmed: 'Hermes は編集を確認できませんでした。もう一度保存すると同じ編集を再試行します。二重にキューに入ることはありません。'
+  queueEditUnconfirmed: 'Unitalk は編集を確認できませんでした。もう一度保存すると同じ編集を再試行します。二重にキューに入ることはありません。'
 }

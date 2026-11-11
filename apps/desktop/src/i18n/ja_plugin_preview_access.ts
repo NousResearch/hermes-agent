@@ -14,5 +14,5 @@ export const jaPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptRevoke: (origin: string) => `${origin} へのアクセスを取り消す`,
   previewScriptRevoked: (plugin: string, origin: string) => `${plugin} は ${origin} でスクリプトを実行できなくなりました。`,
   previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
-    `変更を保存できなかったため、Hermes を再起動するまでの一時的な設定です。現在 ${plugin} は ${origin} でブロックされています。`
+    `変更を保存できなかったため、Unitalk を再起動するまでの一時的な設定です。現在 ${plugin} は ${origin} でブロックされています。`
 }

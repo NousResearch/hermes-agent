@@ -38,7 +38,7 @@ export const esFirstRun: FirstRunCopy = {
     notNow: 'Ahora no'
   },
   intro: {
-    greeting: 'Hola, soy Hermes.',
+    greeting: 'Hola, soy Unitalk.',
     plan: 'Vamos a dejarlo todo listo para ti. Luego haremos algo genial.'
   },
   rerun: {

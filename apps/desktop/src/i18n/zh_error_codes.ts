@@ -18,7 +18,7 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   no_reply: {
     title: '未收到回复',
-    body: 'Hermes 已完成本轮，但回复未送达此窗口。请重试以重新发送。'
+    body: 'Unitalk 已完成本轮，但回复未送达此窗口。请重试以重新发送。'
   },
   upstream_blocked: {
     title: provider => `${provider} 拦截了此请求`,
@@ -41,20 +41,20 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     body: (_provider, model) => `${model || '模型'} 的回复在完成前中断了。点击“继续”从中断处接着生成。`
   },
   loop_error: {
-    title: 'Hermes 无法完成此步骤',
+    title: 'Unitalk 无法完成此步骤',
     body: '处理回复时出现问题。请重试；若再次发生，请从错误详情中发送诊断信息。'
   },
   agent_init_failed: {
     title: '无法开始此聊天',
-    body: provider => `Hermes 无法为此聊天连接到 ${provider}。请重试；若持续失败，请在设置中检查该服务商。`
+    body: provider => `Unitalk 无法为此聊天连接到 ${provider}。请重试；若持续失败，请在设置中检查该服务商。`
   },
   SESSION_NOT_OWNED: {
     title: '聊天已在别处打开',
-    body: '此聊天已在另一个 Hermes 窗口或终端中打开。请在这里新建聊天，或先在那边关闭它。'
+    body: '此聊天已在另一个 Unitalk 窗口或终端中打开。请在这里新建聊天，或先在那边关闭它。'
   },
   disk_full: {
     title: '磁盘已满',
-    body: 'Hermes 无法保存此对话。请释放空间后重试。'
+    body: 'Unitalk 无法保存此对话。请释放空间后重试。'
   },
   // Nous free tier. The body is normally the backend's own sentence; these stand in for an older backend.
   free_tier_disabled: {
@@ -71,7 +71,7 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   free_tier_model_not_free: {
     title: '此模型需要登录',
-    body: 'Hermes 暂时使用免费模型。使用 Nous 账户登录可使用更多模型，完全免费。'
+    body: 'Unitalk 暂时使用免费模型。使用 Nous 账户登录可使用更多模型，完全免费。'
   },
   free_tier_route: {
     title: '无法连接免费模型',
@@ -91,7 +91,7 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   session_read_only: {
     title: '此聊天为只读',
-    body: '它是 Hermes 只能显示、无法继续的已保存历史记录，因此你的消息未被执行。请新建聊天后再发送。'
+    body: '它是 Unitalk 只能显示、无法继续的已保存历史记录，因此你的消息未被执行。请新建聊天后再发送。'
   },
   workspace_unavailable: {
     title: '此聊天的文件夹已不存在',
@@ -105,6 +105,6 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: '无法连接本地模型服务器',
     body: '本地模型服务器尚未运行：它可能仍在启动。请稍后重试，或切换到其他模型。',
     bodyNoRetry:
-      '本地模型服务器已关闭。请在 Hermes 桌面应用或终端中的 `hermes model` 启动它，或切换到其他模型。'
+      '本地模型服务器已关闭。请在 Unitalk 桌面应用或终端中的 `hermes model` 启动它，或切换到其他模型。'
   }
 }

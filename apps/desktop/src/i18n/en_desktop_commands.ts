@@ -27,7 +27,7 @@ export const enDesktopCommands: DesktopCommandNotices = {
   historyHeader: count => `Conversation history (${count} messages):`,
   historyEmpty: 'No messages yet.',
   historyYou: 'You',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: 'usage: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     'Not saved: this gateway cannot export a redacted, named or non-JSON copy. Update the gateway, or run /save with no options to write raw JSON on the gateway host.',

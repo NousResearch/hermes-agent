@@ -864,8 +864,12 @@ class ResponsesApiTransport(ProviderTransport):
         if is_codex_backend:
             # SDK kwarg -> HTTP headers. ``session_id`` = raw physical id (transcript
             # identity); ``x-client-request-id`` mirrors the body cache key so both agree.
+            # The backend only matches its prompt cache inside one ``session_id``, so sibling
+            # subagents send the scope they share instead of their own id.
+            from agent.prompt_cache_scope import is_sibling_cache_scope
+            header_session_id = _cache_scope if is_sibling_cache_scope(_cache_scope) else session_id
             headers = {
-                "session_id": str(session_id) if session_id else None,
+                "session_id": str(header_session_id) if header_session_id else None,
                 "x-client-request-id": kwargs.get("prompt_cache_key") or _bounded_prompt_cache_key(_cache_scope),
             }
             headers = {k: v for k, v in headers.items() if v}

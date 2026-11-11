@@ -360,6 +360,7 @@ class SQLiteRoutingRepository:
     def bind_topic(
         self, *, chat_id: str, thread_id: str, user_id: str, session_key: str, session_id: str,
         managed_mode: str = "auto", profile_name: str = "default", expected_session_id: str | None = None,
+        move_session: bool = False,
     ) -> bool:
         with translated():
             holder = self._store.holder()
@@ -387,7 +388,9 @@ class SQLiteRoutingRepository:
                     linked_profile, linked_chat, linked_thread = existing_session
                     linked = (str(linked_profile), str(linked_chat), str(linked_thread))
                     if linked != (profile_name, chat_id, thread_id):
-                        raise TopicAlreadyLinked(session_id)
+                        if not move_session or linked[0] != profile_name:  # never across profiles
+                            raise TopicAlreadyLinked(session_id)
+                        conn.execute("DELETE FROM telegram_dm_topic_bindings WHERE session_id = ?", (session_id,))
                 conn.execute("""
                     INSERT INTO telegram_dm_topic_bindings (
                         profile_name, chat_id, thread_id, user_id, session_key, session_id,

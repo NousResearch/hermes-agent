@@ -448,6 +448,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_state",
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_session_terminal_cwd_restart.py",
         "tests/gateway/test_native_role_reauthorization.py",
         "tests/gateway/test_native_telegram_startup_recovery.py",
         "tests/gateway/test_native_pause_notice.py",

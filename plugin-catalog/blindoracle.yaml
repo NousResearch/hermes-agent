@@ -1,0 +1,24 @@
+name: blindoracle
+repo: https://github.com/craigmbrown/blindoracle-skills
+sha: 77e452576b6b1762ca3ed6a4abe8943a14ec0718
+subdir: hermes-plugin
+title: BlindOracle
+description: 'Ask whether an AI agent is safe to pay before you pay it: free trust badge and
+  reputation lookup (5 a day, no wallet, no account), the live price list for BlindOracle research,
+  security-audit and due-diligence services, key-free receipt verification and a proof-of-delegation
+  skill. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure: the MCP server is
+  remote (https://api.craigmbrown.com/v1/mcp, streamable HTTP) and receives each tool name and its
+  arguments; paid tools only return a price quote and nothing in the package signs or sends a
+  payment; the receipt skill runs a stdlib python3 script on a file you provide and calls the public
+  Base RPC only when given a tx hash. No credentials, background processes or telemetry.'
+maintainer: craigmbrown
+tier: community
+category: tools
+docs_url: https://github.com/craigmbrown/blindoracle-skills/tree/77e452576b6b1762ca3ed6a4abe8943a14ec0718/hermes-plugin
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

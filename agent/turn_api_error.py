@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.route_verdicts import route_visit
+from agent.turn_recovery_replay import is_classified_replay_401
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
@@ -327,6 +328,7 @@ def settle_unrecovered_error(
         # credential + client rebuild, one retry, SAME provider.
         if (
             not _retry.provider_stale_refresh_attempted
+            and not is_classified_replay_401(classified, status_code)
             and (profile := _credential_refresh_profile(agent)) is not None
             and ask_on_error_path(
                 profile, "is_stale_credential_error", False,

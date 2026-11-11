@@ -1766,21 +1766,28 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
+        from tools.process_registry import COMPLETION_OUTPUT_CHARS, transform_process_output
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
                                         task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
-        _LIMIT = 2000
+        # Size like the caller asked for: when the output IS the payload (a bot DM reply, a delegated
+        # result) the spawning call sets ``completion_output_chars`` so the notification is sized like a
+        # message, not like a build log (#115334). 0 keeps the historical 2000.
+        _LIMIT = int(getattr(session, "completion_output_chars", 0) or 0) or COMPLETION_OUTPUT_CHARS
         # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
-        # output was cut.
+        # ~_LIMIT chars but snap to the nearest following newline, then prepend a truncation marker when
+        # output was cut. Snap forward only when it leaves a body: a single-line payload longer than the
+        # window (the ``message_agent`` delivery runner prints one ``json.dumps`` line) has exactly one
+        # newline — the last character — so snapping there would deliver an EMPTY notification and the
+        # sender would never see its teammate's answer (#151053, #150617, #152075).
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            if _nl != -1:
+                _snapped = _tail[_nl + 1:]
+                _tail = _snapped if _snapped.strip() else _tail
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

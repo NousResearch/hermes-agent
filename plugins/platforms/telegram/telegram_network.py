@@ -33,6 +33,13 @@ def _describe_transport_error(error: Exception) -> str:
     except Exception:
         return type(error).__name__
 
+def _warn_walk_failed(reason: str, failures: list[tuple[str, str]]) -> None:
+    """The one WARNING a failed request owes: per-path failures log at INFO while the walk can still
+    recover (#152898), so every exit by exception after a failed path reports them here."""
+    logger.warning("[Telegram] Telegram API %s: %s", reason,
+                   "; ".join(f"{path} ({failure})" for path, failure in failures))
+
+
 # TCP keepalive so a half-open/CLOSE-WAIT long-poll errors out instead of blocking getUpdates forever
 # (Windows leaves SO_KEEPALIVE off). Idle/interval knobs are best-effort per Python/OS combo.
 # Windows does not enable SO_KEEPALIVE on new sockets by default, so a dead api.telegram.org peer can hang
@@ -357,6 +364,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             except Exception as exc:
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
+                    if failures:  # earlier paths failed and are logged only at INFO so far
+                        _warn_walk_failed(f"failed on {ip or _TELEGRAM_API_HOST} ({_describe_transport_error(exc)}) "
+                                          "after earlier paths failed", failures)
                     raise
                 path = ip or _TELEGRAM_API_HOST
                 failure = _describe_transport_error(exc)
@@ -380,15 +390,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         # The connect budget can expire during a reset before later paths are tried.
         # Do not claim all paths failed unless the walk actually attempted each one.
-        reason = (
+        _warn_walk_failed(
             "unreachable via all paths" if len(failures) == len(order)
-            else "connect budget exhausted before all paths were tried"
-        )
-        logger.warning(
-            "[Telegram] Telegram API %s: %s",
-            reason,
-            "; ".join(f"{path} ({failure})" for path, failure in failures),
-        )
+            else "connect budget exhausted before all paths were tried", failures)
         raise last_error
 
     async def aclose(self) -> None:

@@ -74,9 +74,23 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     """
     if not profile_home:
         return None
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_cli.plugins import discover_plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.environments.local import _is_routed_home, hermes_subprocess_env, served_profile_child_env
     base = hermes_subprocess_env(inherit_credentials=True)
     routed = _is_routed_home(profile_home)
+    home_token = set_hermes_home_override(profile_home)
+    multiplex_token = set_multiplex_context(True)
+    try:
+        # Cold CLI callers have neither plugin registrations nor source snapshots. Discovery must
+        # use this home's registry, and its dotenv refresh must not publish routed secrets globally.
+        discover_plugins()
+        hydrate_profile_secret_sources(profile_home)
+    finally:
+        reset_multiplex_context(multiplex_token)
+        reset_hermes_home_override(home_token)
     if routed:
         # gh's config dir decides which login `gh api` uses, yet it is a path, not a
         # credential, so no scrub list sees it; the target's own value is overlaid from its .env.

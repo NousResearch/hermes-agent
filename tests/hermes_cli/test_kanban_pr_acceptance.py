@@ -131,6 +131,115 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             github.pop("race")
 
 
+@pytest.fixture
+def cold_secret_profiles(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from hermes_cli import env_loader, plugins
+
+    launch = tmp_path / "launch"
+    target = launch / "profiles" / "worker"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("GH_TOKEN", "launch-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "launch-github-token")
+    monkeypatch.setenv("GH_CONFIG_DIR", str(launch / "gh"))
+    for home in (launch, target):
+        plugin = home / "plugins" / "fixture-vault"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: fixture-vault\n", encoding="utf-8")
+        (plugin / "__init__.py").write_text('''
+from agent.secret_sources.base import FetchResult, SecretSource
+from hermes_constants import get_hermes_home
+
+class FixtureVault(SecretSource):
+    name = "fixturevault"
+    shape = "bulk"
+
+    def fetch(self, cfg, home_path):
+        (home_path / "fetched").write_text("yes", encoding="utf-8")
+        if (home_path / "fail").exists():
+            raise RuntimeError("offline fixture fetch failure")
+        return FetchResult(secrets={"GH_TOKEN": home_path.name + "-vault-token"})
+
+def register(ctx):
+    home = get_hermes_home()
+    (home / "registered").write_text(str(home), encoding="utf-8")
+    ctx.register_secret_source(FixtureVault())
+''', encoding="utf-8")
+        (home / "config.yaml").write_text(
+            "plugins:\n  enabled: [fixture-vault]\n"
+            "secrets:\n  sources: [fixturevault]\n  fixturevault:\n    enabled: true\n",
+            encoding="utf-8",
+        )
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                  "if not os.environ.get('GH_TOKEN'):\n    sys.exit(4)\n"
+                  "print(json.dumps({key: os.environ.get(key) for key in "
+                  "('GH_TOKEN', 'GITHUB_TOKEN', 'GH_CONFIG_DIR', 'HERMES_HOME')}))\n",
+                  encoding="utf-8")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    env_loader.reset_secret_source_cache()
+    try:
+        yield launch, target
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+        env_loader.reset_secret_source_cache()
+
+
+@pytest.mark.platforms("posix")
+def test_cold_acceptance_loads_only_the_assignee_plugin_secrets(cold_secret_profiles):
+    from hermes_cli import env_loader
+    from hermes_cli.kanban_pr_acceptance import _api, _gh_env
+    from hermes_constants import get_hermes_home, get_hermes_home_override
+    from agent.secret_scope import is_multiplex_active
+
+    launch, target = cold_secret_profiles
+    original_home = get_hermes_home_override()
+    original_multiplex = is_multiplex_active()
+    assert env_loader.get_secret_source_values(target) == {}
+    captured = _api("user", profile_home=str(target))
+    assert captured["GH_TOKEN"] == "worker-vault-token"
+    assert captured["GITHUB_TOKEN"] is None
+    assert captured["GH_CONFIG_DIR"] != str(launch / "gh")
+    assert captured["HERMES_HOME"] == str(target)
+    assert (target / "registered").read_text(encoding="utf-8") == str(target)
+    assert (target / "fetched").exists()
+    assert not (launch / "registered").exists()
+    assert os.environ["GH_TOKEN"] == "launch-token"
+    assert get_hermes_home() == launch
+    assert get_hermes_home_override() == original_home
+    assert is_multiplex_active() == original_multiplex
+    assert _gh_env(None) is None
+    assert _api("user")["GH_TOKEN"] == "launch-token"
+
+
+@pytest.mark.platforms("posix")
+def test_cold_acceptance_fetch_failure_never_uses_launch_login(cold_secret_profiles):
+    from agent.secret_scope import is_multiplex_active
+    from hermes_cli.kanban_pr_acceptance import _api, _GateAuthError, _gh_env
+    from hermes_constants import get_hermes_home, get_hermes_home_override
+
+    launch, target = cold_secret_profiles
+    (target / "fail").touch()
+    original_home = get_hermes_home_override()
+    original_multiplex = is_multiplex_active()
+    with pytest.raises(_GateAuthError, match="no login"):
+        _api("user", profile_home=str(target))
+    assert (target / "fetched").exists()
+    env = _gh_env(str(target))
+    assert env is not None
+    assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env
+    assert env["GH_CONFIG_DIR"] == str(target / "gh")
+    assert os.environ["GH_TOKEN"] == "launch-token"
+    assert get_hermes_home() == launch
+    assert get_hermes_home_override() == original_home
+    assert is_multiplex_active() == original_multiplex
+
+
 # --- #122689: acceptance must read the repo as the ASSIGNEE profile's gh login ---
 
 @pytest.mark.platforms("posix")

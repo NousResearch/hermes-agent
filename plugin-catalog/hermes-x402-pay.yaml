@@ -1,0 +1,22 @@
+name: hermes-x402-pay
+version: "0.1.0"
+repo: https://github.com/ciperx/hermes-x402-pay
+sha: b904e5fab25c37987010825afd05bf71df97472d
+description: "Pay x402 (HTTP 402) APIs from inside Hermes with hard spend caps. Adds two tools and one hook: x402_pay sends a request, reads the 402 Payment Required requirements, and if the price fits the caps signs an EIP-3009 TransferWithAuthorization in USDC on Base (gasless for the payer — the facilitator's fee payer covers the network fee), retries with the X-PAYMENT header and returns the payload plus the settlement receipt; x402_receipts reads the payment ledger. Disclosure — the plugin reads a private key from the environment variable named by the private_key_env setting (default X402_PRIVATE_KEY) with the user's own wallet, signs USDC payments to the payTo address advertised by the endpoint the agent requests, and appends every attempt (URL, method, status, price, payer, payee, tx hash; never the key, never request bodies) to a local plaintext SQLite ledger at HERMES_HOME/plugin-data/hermes-x402-pay/receipts.db that is never pruned; it is inert until dry_run is turned off and enforces per_call_cap_usd (default 0.01) and a rolling 24h daily_budget_usd (default 0.05) summed from that ledger; the post_tool_call hook writes the audit row so spend survives context truncation; no telemetry, no network calls except the endpoint being paid, no self-update, no core patches; Base (EVM) only — solana-only x402 endpoints are refused explicitly."
+maintainer: ciperx
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/ciperx/hermes-x402-pay#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - x402_pay
+    - x402_receipts
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env:
+    - name: X402_PRIVATE_KEY
+      description: "Private key (0x-prefixed, 32 bytes) of a dedicated low-balance wallet that holds USDC on Base. Never your main wallet. Read at call time by name from the private_key_env setting."
+      secret: true

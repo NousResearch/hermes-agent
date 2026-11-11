@@ -250,6 +250,24 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") is None
 
+    def test_rejects_answer_shaped_chinese_output(self):
+        """Regression for #139667: Chinese answers have no whitespace word breaks."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "这个链接我没法访问，也无法判断它对你当前的任务是否有用。"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("这个对你有用吗", "answer") is None
+
+    def test_accepts_short_chinese_title(self):
+        """A concise Chinese title remains valid under the answer-shape guard."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "修复移动端登录按钮"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("登录按钮坏了", "answer") == "修复移动端登录按钮"
+
     def test_accepts_normal_title(self):
         """A normal 3-7 word title is unaffected by the answer-shape guard."""
         mock_response = MagicMock()

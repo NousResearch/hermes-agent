@@ -1488,6 +1488,18 @@ def _redact_phone(m):
     return phone[:keep] + "****" + phone[-keep:]
 
 
+def _redact_phone_nonreusable(m):
+    """Phone sentinel for agent-facing file reads (#35519 precedent).
+
+    The head/tail mask is itself a valid-looking E.164 literal, so an
+    agent that reads it from a fixture and writes it back corrupts the
+    file with the mask. The sentinel preserves a two-char hint only,
+    cannot be mistaken for a usable number, and fails E.164 validation
+    loudly if copied back.
+    """
+    return "\u00abredacted:phone:" + m.group(1)[:2] + "\u2026\u00bb"
+
+
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
                           redact_url_credentials: bool = False) -> str:
@@ -1630,7 +1642,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_form_body(text)
 
     if "+" in text:
-        text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+        # file_read content goes to the agent, who may copy it back into a
+        # write — use the non-reusable sentinel (see _redact_phone_nonreusable).
+        text = _SIGNAL_PHONE_RE.sub(
+            _redact_phone_nonreusable if file_read else _redact_phone, text)
 
     return text
 

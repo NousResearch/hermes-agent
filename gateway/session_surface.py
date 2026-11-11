@@ -102,11 +102,14 @@ def surface_turn_note(agent):
     return surface_note(committed, getattr(agent, 'valid_tool_names', None))
 
 
-def arm_surface_turn(agent, notes=(), voice_turn=False):
+def arm_surface_turn(agent, notes=(), voice_turn=False, spoken_reply=False):
     """Project the executing admission's surface onto the agent's one-turn inputs, the same way in
-    process and in a managed worker: the ``auxiliary.voice_chat`` marker and the must-deliver notes
+    process and in a managed worker: the ``auxiliary.voice_chat`` marker, the spoken-reply marker
+    (agent/voice_turn_route.py::voice_turn_note) and the must-deliver notes
     that ride the current user message (never the system prompt). Assigned unconditionally so a
     reused agent never replays a stale note or route."""
     agent._voice_turn_pending = bool(voice_turn) or surface_voice_turn()
+    # A client voice conversation (Desktop / TUI / CLI) speaks every reply it marks as a voice turn.
+    agent._spoken_reply_pending = bool(spoken_reply) or surface_voice_turn()
     agent._gateway_turn_context_notes = '\n\n'.join(
         note for note in (*notes, surface_turn_note(agent)) if note)

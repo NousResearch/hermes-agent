@@ -285,10 +285,8 @@ class CLIChatTurnMixin:
                 self._voice_last_tts_text = (self._voice_last_tts_text or "") + delta
             turn.stream_callback = stream_callback
 
-        # API-call-local only — run_conversation persists the original clean user message.
-        if voice_input and isinstance(message, str):
-            turn.voice_prefix = ("[Voice input — respond concisely and conversationally, "
-                                 "2-3 sentences max. No code blocks or markdown.] ")
+        # A spoken turn: auxiliary.voice_chat route + the brief-reply note (agent/voice_turn_route.py).
+        turn.voice_input = bool(voice_input and isinstance(message, str))
 
     def _chat_run_agent(self, turn, message):
         """Agent-thread body: bind per-thread callbacks/approval key, prepend one-shot notes, run the turn."""
@@ -312,8 +310,8 @@ class CLIChatTurnMixin:
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
-        agent_message = turn.voice_prefix + message if turn.voice_prefix else message
-        self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
+        agent_message = message
+        self.agent._voice_turn_pending = turn.voice_input
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
         _taken_notes = {}
@@ -329,9 +327,9 @@ class CLIChatTurnMixin:
             agent_message = _prepend_note_to_message(agent_message, SPEECH_INTERRUPTED_NOTE)
         _moa_cfg = getattr(self, "_pending_moa_config", None)
         self._pending_moa_config = None
-        # Notes and voice prefix are API-local: the staged input stays the durable transcript
+        # Notes are API-local: the staged input stays the durable transcript
         # value so a close-path marker follows the same dict instead of a second user row.
-        _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
+        _persist_clean_user_message = message if agent_message != message else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         # Set only by a dispatcher-spawned `-q` run; a human turn keeps today's call shape.

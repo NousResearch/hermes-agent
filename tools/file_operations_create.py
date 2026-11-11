@@ -1,6 +1,5 @@
 """Publish complete new files without ever replacing an existing directory entry."""
 
-import base64
 import json
 
 # POSIX shell twin of the Python helper for backends without python3: link(1)
@@ -67,9 +66,5 @@ def atomic_create(ops, path, content):
     if ops._lsp_local_only():
         # The local backend runs the agent's own interpreter (always present).
         return ops._exec_python_snippet(snippet, stdin_data=content)
-    py = ops._python_interpreter_cmd()
-    encoded = base64.b64encode(snippet.encode("utf-8")).decode("ascii")
-    return ops._exec(
-        f"if command -v {py} >/dev/null 2>&1; then "
-        f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\"; "
-        f"else (t={ops._escape_shell_arg(path)}; {_SHELL_CREATE}); fi", stdin_data=content)
+    return ops._exec_python_snippet(snippet, stdin_data=content, fallback=(
+        f"t={ops._escape_shell_arg(path)}; {_SHELL_CREATE}"))

@@ -721,7 +721,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return "python3"
 
     def _exec_python_snippet(self, snippet: str, py: str | None = None,
-                             stdin_data: Optional[str] = None) -> ExecuteResult:
+                             stdin_data: Optional[str] = None,
+                             fallback: str | None = None) -> ExecuteResult:
         """Run a Python ``snippet`` in the terminal backend's interpreter.
 
         Base64-encodes the snippet so it survives every shell/quoting layer
@@ -734,8 +735,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         encoded = base64.b64encode(snippet.encode("utf-8")).decode("ascii")
         if py is None:
             py = self._python_interpreter_cmd()
-        return self._exec(
-            f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\"", stdin_data=stdin_data
+
+        def run(command: str) -> ExecuteResult:
+            if fallback is not None:  # shell command for backends without ``py``
+                command = f"if command -v {py} >/dev/null 2>&1; then {command}; else ({fallback}); fi"
+            return self._exec(command, stdin_data=stdin_data)
+        return run(
+            f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
         )
 
     def _try_read_utf16(self, path: str, offset: int, limit: int,

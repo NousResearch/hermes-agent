@@ -1,20 +1,20 @@
 name: film-suite
 title: Continuo
 repo: https://github.com/realartsbro/continuo
-sha: "1c0684ec20e476a729b26e09016629ef1bef7887"
+sha: "4f661d3a1e10ca5021d20efbc0617a744ea4c2d5"
 version: "1.0.0"
-description: "A film studio inside Hermes: write the script, make pictures and video takes on your own GPU through ComfyUI, cut them to music and render the film, with Hermes working in the same project on every page. The bundled Sample film needs no model: open it, change the cut and render an MP4. Disclosure — runs ffmpeg and ffprobe, and the optional analysis engines you install; talks to a ComfyUI on this machine at 127.0.0.1:8188 only; fetches LoRA lookups and previews from Civitai when you ask and style thumbnails from Krea when a style board you open has none cached; the optional engine installers download hash-locked packages from PyPI, PyTorch, GitHub and JKU; reads and writes only the folders you approve, plus its own data under the Hermes home; keeps a per-profile receipt key; asks Hermes' own session verifier (hermes_cli.web_server._has_valid_session_token) whether a request comes from your signed-in desktop app and never reads or holds the token; no telemetry."
+description: "A film studio inside Hermes: write the script, make pictures and video takes on your own GPU through ComfyUI, cut them to music and render the film, with Hermes working in the same project on every page. The bundled Sample film needs no model: open it, change the cut and render an MP4. Disclosure — runs ffmpeg and ffprobe, and the optional analysis engines you install; talks to a ComfyUI on this machine (127.0.0.1:8188, then 127.0.0.1:8000) or at the address you set in FILM_SUITE_COMFY_URL; fetches LoRA lookups and previews from Civitai when you ask and style thumbnails from Krea when a style board you open has none cached; the optional engine installers download hash-locked packages from PyPI, PyTorch, GitHub and JKU; reads and writes only the folders you approve, plus its own data under the Hermes home; keeps a per-profile receipt key; asks Hermes' own session verifier (hermes_cli.web_server._has_valid_session_token) whether a request comes from your signed-in desktop app and never reads or holds the token; no telemetry."
 maintainer: Arts Bro
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/realartsbro/continuo#readme
-image: "https://raw.githubusercontent.com/realartsbro/continuo/1c0684ec20e476a729b26e09016629ef1bef7887/docs/media/banner-1200x600.png"
+image: "https://raw.githubusercontent.com/realartsbro/continuo/4f661d3a1e10ca5021d20efbc0617a744ea4c2d5/docs/media/banner-1200x600.png"
 readme: true
 platforms: [windows]
 known_issues:
   - "Needs ffmpeg on PATH, in FFMPEG_PATH or in C:\\ffmpeg\\bin for Cut, Audio and Deliver (the Sample film included)."
-  - "Generating pictures, video, music and voice needs a local ComfyUI at http://127.0.0.1:8188, a GPU and the models of each workflow (no model ships; the README lists every file and size). Script, Cut, beat analysis and Deliver run on the CPU without them."
+  - "Generating pictures, video, music and voice needs a ComfyUI on this machine (http://127.0.0.1:8188 or http://127.0.0.1:8000; another address through FILM_SUITE_COMFY_URL), a GPU and the models of each workflow (no model ships; the README lists every file and size). Script, Cut, beat analysis and Deliver run on the CPU without them."
   - "After a command-line install the Continuo window is off: turn it on under Capabilities > Plugins > Continuo (`hermes plugins enable` turns on only the agent's tools). Enabling sets up its Python packages (numpy, librosa, soundfile, httpx, Pillow; 511 MB measured)."
   - "Tested on Windows 11 with the Hermes desktop app. The code is written to run on Linux too, not yet tested; macOS is not listed."
 capabilities:

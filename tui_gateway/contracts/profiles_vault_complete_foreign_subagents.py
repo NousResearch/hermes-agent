@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import Field
 
+from hermes_cli.profile_provision import ProfileCreateReceipt
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
 from .config_free_tier_control import ModelOptionProvider
@@ -227,27 +229,8 @@ class ProfilesCreateResult(Result):
     model_set: bool = False
     mirrored: ProfileMirrored
     warnings: list[str] = []  # best-effort steps that did not fully apply (create still succeeded)
-    receipt: ProfileCreateReceipt | None = None  # with ``report``: what ``hermes profile create`` prints
-
-
-class ProfileCreateReceipt(Result):
-    """``hermes_cli.profile_provision.CreateReceipt``, read where the profile was made. A gateway always
-    sends every field; a client treats a receipt missing one as an unknown outcome."""
-
-    path: str
-    display_path: str
-    launch_label: str
-    source_label: str
-    skills_seeded: dict[str, JsonValue] | None
-    alias_path: str | None
-    alias_collision: str | None
-    mirrored: ProfileMirrored
-    warnings: list[str]
-    cloned_plugins: list[str]
-    memory_provider: str | None
-    channels_left_behind: list[str]
-    shared_channels: list[str]
-    served_now: bool | None
+    # With ``report``: what ``hermes profile create`` prints. One definition, shared with the CLI that reads it.
+    receipt: ProfileCreateReceipt | None = None
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,

@@ -3,7 +3,7 @@
 The CLI asks the gateway that serves its profile to make the profile (``HERMES_TUI_GATEWAY_URL``, the dial
 ``connect_gateway`` honours for every client, names a remote one), so a terminal attached to a gateway
 creates profiles on the gateway's machine. The gateway answers with the same
-:class:`~hermes_cli.profile_provision.CreateReceipt` a local create builds, so the output does not depend
+:class:`~hermes_cli.profile_provision.ProfileCreateReceipt` a local create builds, so the output does not depend
 on where the profile was made.
 """
 from __future__ import annotations
@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from hermes_cli.profile_provision import CreateReceipt, ProfileCreateRequest, redact_create_text, refusal_from
+from hermes_cli.profile_provision import (
+    ProfileCreateReceipt, ProfileCreateRequest, redact_create_text, refusal_from,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +27,9 @@ CREATE_RPC_TIMEOUT = 300
 #: Answered before the handler runs, so nothing was made there. 4000: a gateway that predates these
 #: fields (unknown param); 5035: one retiring between discovery and the request.
 _OLDER_OR_RETIRING = (4000, 5035)
-#: Refused before the create: 4061 no name; 4064 the connection's profile is unavailable.
-_REFUSED_BEFORE_CREATE = (4061, 4064)
+#: Refused before the create (no name). Not 4064: the dispatcher also answers it for a config outage
+#: raised mid-handler, after the profile may have been made.
+_REFUSED_BEFORE_CREATE = (4061,)
 
 
 class GatewayCreateError(RuntimeError):
@@ -47,9 +50,9 @@ def _where(remote: str) -> str:
     """How messages name the gateway: ``scheme://host[:port]`` only (``safe_proxy_url_for_log``: never the
     query's token, the userinfo's password, or a password an unencoded ``/`` pushed into the path). A URL
     ``connect_gateway`` would refuse (not ws/wss with a host) is a :class:`GatewayCreateError` here."""
-    from gateway.platforms.base_log_safety import safe_proxy_url_for_log
     if not remote:
         return "the running gateway"
+    from gateway.platforms.base_log_safety import safe_proxy_url_for_log  # a URL only: it loads gateway.platforms
     try:
         parts = urlsplit(remote)
         ok = bool(parts.hostname) and (parts.port is None or parts.port > 0)
@@ -61,18 +64,14 @@ def _where(remote: str) -> str:
     return f"the gateway at {named}"
 
 
-def _is_this_machines_profile(made: CreateReceipt, request: ProfileCreateRequest) -> bool:
+def _is_this_machines_profile(made: ProfileCreateReceipt, request: ProfileCreateRequest) -> bool:
     """Whether the profile the gateway made is the one ``-p <name>`` selects here: same directory, and it
     exists. A loopback URL is not enough (a tunnel or a container can serve another home)."""
-    from hermes_cli.profiles import get_profile_dir
-    try:
-        here = get_profile_dir(request.name).resolve()
-        return here.is_dir() and Path(made.path).resolve() == here
-    except (OSError, ValueError):
-        return False
+    from hermes_cli.profiles import profile_matches_home
+    return profile_matches_home(request.name, Path(made.path)) and Path(made.path).is_dir()
 
 
-def create_through_gateway(request: ProfileCreateRequest) -> Optional[CreateReceipt]:
+def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCreateReceipt]:
     """The receipt of the gateway's create for *request*, or None to create here.
 
     ``HERMES_TUI_GATEWAY_URL`` set: that gateway makes the profile, and anything short of its answer is
@@ -132,7 +131,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[CreateRece
             logger.info("profile create: the running gateway is unreachable (%s); creating locally", exc)
             return None
         raise GatewayCreateError(f"lost {where} during the create ({type(exc).__name__}); {unknown}") from exc
-    made = CreateReceipt.from_wire(answer.get("receipt") if isinstance(answer, dict) else None)
+    made = ProfileCreateReceipt.from_wire(answer.get("receipt") if isinstance(answer, dict) else None)
     if made is None:
         # It made a profile without a full, well-typed receipt (``--clone`` / ``--sync-imports`` may be ignored).
         raise GatewayCreateError(f"{where} answered without the details this version needs; {unknown}")
@@ -140,7 +139,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[CreateRece
     return _with_local_alias(made, request) if request.alias and _is_this_machines_profile(made, request) else made
 
 
-def _with_local_alias(made: CreateReceipt, request: ProfileCreateRequest) -> CreateReceipt:
+def _with_local_alias(made: ProfileCreateReceipt, request: ProfileCreateRequest) -> ProfileCreateReceipt:
     from hermes_cli.profile_provision import write_alias
     try:
         path, collision = write_alias(request.name)

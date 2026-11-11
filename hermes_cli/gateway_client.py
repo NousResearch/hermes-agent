@@ -77,20 +77,25 @@ def _bounded_reason(value):
     return value if isinstance(value, str) and value.replace("_", "").isalnum() and len(value) <= 80 else None
 
 
+#: What ``error.data`` keeps: strings up to this long, lists and key counts up to ``ERROR_DATA_ITEMS``.
+ERROR_DATA_TEXT, ERROR_DATA_ITEMS = 200, 16
+
+
 def _bounded_error_data(data):
     """At most 16 short keys whose values are bool/int/None, short strings or short lists of them;
     anything else (nested objects, raw remote diagnostics) is dropped, never forwarded."""
     def scalar(value):
-        return value is None or isinstance(value, (bool, int)) or (isinstance(value, str) and len(value) <= 200)
+        return value is None or isinstance(value, (bool, int)) or (
+            isinstance(value, str) and len(value) <= ERROR_DATA_TEXT)
     if not isinstance(data, dict):
         return {}
     out = {}
     for key, value in data.items():
-        if len(out) >= 16 or not isinstance(key, str) or len(key) > 64:
+        if len(out) >= ERROR_DATA_ITEMS or not isinstance(key, str) or len(key) > 64:
             continue
         if scalar(value):
             out[key] = value
-        elif isinstance(value, list) and len(value) <= 16 and all(scalar(item) for item in value):
+        elif isinstance(value, list) and len(value) <= ERROR_DATA_ITEMS and all(scalar(item) for item in value):
             out[key] = list(value)
     return out
 

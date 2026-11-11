@@ -280,8 +280,9 @@ class RoutingRepository(Protocol):
         managed_mode: str = "auto",
         profile_name: str = "default",
         expected_session_id: str | None = None,
+        move_session: bool = False,
     ) -> bool:
-        """Run ``prepare_topic_storage``, then bind the (profile, chat, thread) to the session in a second write. A session already bound to another (profile, chat, thread) raises :class:`TopicAlreadyLinked`; rebinding the same triple refreshes it (``linked_at`` kept); binding the triple to another session replaces the old session's binding. A session id with no row raises ``SessionRowMissing``. ``expected_session_id`` makes the bind a compare-and-swap inside that write: it goes through only while the triple's stored binding names that id, and an absent binding or one naming another session (a concurrent /new or /topic off that rebound or cleared the topic) returns ``False`` with nothing written. ``True`` otherwise."""
+        """Run ``prepare_topic_storage``, then bind the (profile, chat, thread) to the session in a second write. A session already bound to another (profile, chat, thread) raises :class:`TopicAlreadyLinked`, unless ``move_session`` (a handoff moves the conversation) and that binding is in the same profile: it is dropped in the same write. Rebinding the same triple refreshes it (``linked_at`` kept); binding the triple to another session replaces the old session's binding. A session id with no row raises ``SessionRowMissing``. ``expected_session_id`` makes the bind a compare-and-swap inside that write: it goes through only while the triple's stored binding names that id, and an absent binding or one naming another session (a concurrent /new or /topic off that rebound or cleared the topic) returns ``False`` with nothing written. ``True`` otherwise."""
         ...
 
     # ── reads ───────────────────────────────────────────────────────────────

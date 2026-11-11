@@ -666,6 +666,7 @@ class InMemoryRoutingRepository:
         managed_mode: str = "auto",
         profile_name: str = "default",
         expected_session_id: str | None = None,
+        move_session: bool = False,
     ) -> bool:
         self.prepare_topic_storage()
         _modes, bindings = self._topic_tables()  # type: ignore[misc]
@@ -677,10 +678,13 @@ class InMemoryRoutingRepository:
                 return False
         sid = str(session_id)
         linked = [binding for binding in bindings.values() if binding.session_id == sid]
-        if linked and (linked[0].profile_name, linked[0].chat_id, linked[0].thread_id) != key:
+        old_key = (linked[0].profile_name, linked[0].chat_id, linked[0].thread_id) if linked else key
+        if old_key != key and (not move_session or old_key[0] != key[0]):  # never across profiles
             raise TopicAlreadyLinked(sid)
         if sid not in self._sessions():
             raise SessionRowMissing(SessionId(sid))
+        if old_key != key:
+            del bindings[old_key]
         fields = {"user_id": str(user_id), "session_key": str(session_key), "session_id": SessionId(sid), "managed_mode": managed_mode, "updated_at": now}
         existing = bindings.get(key)
         bindings[key] = (

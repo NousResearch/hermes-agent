@@ -428,20 +428,15 @@ class DiscordMediaMixin:
     async def _ogg_opus_voice_payload(audio_path: str) -> Optional[tuple[bytes, float]]:
         """``(ogg_opus_bytes, duration_secs)`` for a voice message: the file itself when it already
         is Ogg/Opus, else an ffmpeg transcode; None when neither yields Ogg/Opus."""
-        from gateway.platforms.base import transcode_to_ogg_opus
+        from plugins.platforms.discord.ffmpeg_utils import transcode_voice_audio
 
         data = await asyncio.to_thread(Path(audio_path).read_bytes)
         duration = _ogg_opus_duration(data)
         if duration is not None:
             return data, duration
-        converted = await asyncio.to_thread(transcode_to_ogg_opus, audio_path, bitrate="48k", timeout=30)
-        if not converted:
+        data = await transcode_voice_audio(audio_path)
+        if not data:
             return None
-        try:
-            data = await asyncio.to_thread(Path(converted).read_bytes)
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(converted)
         duration = _ogg_opus_duration(data)
         return (data, duration) if duration is not None else None
 

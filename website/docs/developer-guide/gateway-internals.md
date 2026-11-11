@@ -41,6 +41,15 @@ the failure notice. Idle `/stop`, adapter interruption, session cancellation and
 shutdown cancel the owned tasks. Worker spawn and reaping are shielded against
 repeated cancellation, then cancellation is re-raised to prevent a late upload.
 
+Discord's attachment encoder is also owned: `ffmpeg_utils.transcode_voice_audio`
+starts an asyncio subprocess, reads Ogg/Opus from stdout rather than a temporary
+file, and kills and drains the encoder before cancellation returns. Spawn and
+cleanup remain shielded through repeated cancellation. The encoder has a
+30-second timeout inside the overall audio deadline; unavailable or failed
+encoding retains the original-file fallback. This applies to Discord voice
+attachments generally, not live voice-channel playback. No executor thread can
+continue encoding after its attachment task exits.
+
 On POSIX the worker starts its own process session. Cleanup suspends the worker,
 uses psutil to kill its discoverable descendants, kills the worker and its process
 group, and waits for exit. On Windows psutil supplies descendant handling and the

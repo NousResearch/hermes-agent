@@ -89,6 +89,14 @@ def test_a_workspace_listing_matches_its_replacement(store, legacy):
     assert {row["id"] for row in rows} == {"w1", "w2"}
 
 
+def test_a_negative_window_and_a_loose_sort_read_as_the_old_class_did(store, legacy):
+    every = [e.as_list_row() for e in store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=None))]
+    assert legacy.list_sessions_rich(limit=-1) == legacy.list_sessions_rich(limit=-1, offset=-1) == every
+    for sort, order in (("NEWEST", SearchSort.NEWEST), (" oldest ", SearchSort.OLDEST), ("bogus", SearchSort.RELEVANCE)):
+        hits = store.search.search_messages("zebra", sort=order)
+        assert [row["id"] for row in legacy.search_messages("zebra", sort=sort)] == [hit.message_id for hit in hits]
+
+
 def test_a_named_source_wins_over_a_source_list(store, legacy):
     assert legacy.session_count(source="cli", sources=["telegram"]) == 2
     assert {row["id"] for row in legacy.list_sessions_rich(source="cli", sources=["telegram"])} == {"s1", "s3"}

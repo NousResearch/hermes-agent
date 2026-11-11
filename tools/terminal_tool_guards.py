@@ -106,23 +106,25 @@ _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
 # set is the excuse list, never a launcher list. An excuse can only turn a refusal into a run;
 # nothing here refuses a command the patterns do not match.
 _SEGMENT_SPLIT_RE = re.compile(r"([;&|\n]+)")
-# fd redirects (`2>&1`, `&>log`) are not separators.
-_FD_REDIRECT_RE = re.compile(r"\d*[<>]&(?:\d+|-)?|&>>?")
-# Windows launchers name the same command: `npm.cmd run dev`, `uvicorn.exe app:app`.
-_WIN_LAUNCHER_SUFFIX_RE = re.compile(r"\b(\w+)\.(?:exe|cmd|bat|ps1)\b", re.IGNORECASE)
+# fd redirects (`2>&1`, `&>log`) are not separators. The lookbehind keeps a long digit run from
+# being rescanned at every position.
+_FD_REDIRECT_RE = re.compile(r"(?<!\d)\d*[<>]&(?:\d+|-)?|&>>?")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*=")
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 _PYTHON_RE = re.compile(r"(?:python[\d.]*|py)$")
 _SYSTEM_BIN_DIRS = ("/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/")
-_TRANSPARENT_PREFIXES = frozenset({"time", "then", "do", "else", "!", "env"})
+_TRANSPARENT_PREFIXES = frozenset({"time", "then", "do", "else", "elif", "if", "while", "until", "!", "env"})
 _SUDO_FLAGS = frozenset({"-E", "-H", "-n", "-k", "-S", "-b"})
 _COMPOSE_VALUE_FLAGS = frozenset({"-f", "--file", "-p", "--project-name", "--project-directory", "--profile", "--env-file"})
 _DATA_COMMANDS = frozenset((
     "echo printf cat ls ll dir type grep egrep fgrep rg ag ack head wc stat du df file which whereis "
     "whence rm rmdir mkdir cp mv ln touch chmod chown cd pushd test [ sed awk sort uniq cut tr jq yq "
     "tree basename dirname realpath readlink diff cmp tar zip unzip fd find tail tee locate pgrep ps "
-    "lsof curl wget git export unset"
+    "lsof curl wget git export unset column nl base64 xxd od fold paste tac rev comm md5sum sha256sum "
+    "shasum true false done fi esac"
 ).split())
+# Subcommands of `docker` / `docker compose` that report and return.
+_DOCKER_REPORT_SUBCOMMANDS = frozenset({"ps", "port", "config", "images", "version", "ls", "inspect"})
 _PACKAGE_TOOLS = frozenset("npm pnpm yarn bun pip pip3 uv poetry pdm pipx brew apt apt-get apk dnf conda cargo gem".split())
 _PACKAGE_DATA_SUBCOMMANDS = frozenset((
     "install i add update up upgrade remove rm uninstall ls list view info show why outdated audit ci "
@@ -133,24 +135,36 @@ _VITE_LAUNCHERS = frozenset({"npx", "bunx", "pnpx", "npm", "pnpm", "yarn", "bun"
 
 def _has_flag(args: list, short: str = "", long: tuple = ()) -> bool:
     """True when *args* carry one of the *short* letters (alone or in a cluster such as `-fn`,
-    `-100f`) or one of the *long* options, abbreviated or with a value (`--fol`, `--follow=name`)."""
+    `-100f`) or one of the *long* options, bare or with a value (`--follow=name`)."""
     for arg in args:
         if arg.startswith("--"):
-            option = arg.split("=", 1)[0]
-            if len(option) > 2 and any(name.startswith(option) for name in long):
+            if arg.split("=", 1)[0] in long:
                 return True
         elif arg.startswith("-") and any(letter in arg for letter in short):
             return True
     return False
 
 
+def _git_runs_command(args: list) -> bool:
+    """git forms that execute a command named in their arguments. Options before the subcommand
+    are git's own (`-c alias.x=!cmd`); after it they belong to the subcommand (`switch -c name`)."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] == "-c":
+            return True
+        i += 2 if args[i] == "-C" else 1
+    subcommand, rest = "".join(args[i:i + 1]), args[i + 1:]
+    return (subcommand in ("bisect", "difftool", "mergetool", "filter-branch")
+            or (subcommand == "submodule" and "foreach" in rest)
+            or (subcommand == "rebase" and (_has_flag(rest, "x") or any(a.startswith("--exec") for a in rest)))
+            or (subcommand == "grep" and any(a.startswith(("-O", "--open-files-in-pager")) for a in rest)))
+
+
 # Data commands stop being data when an argument makes them run a command or never exit.
 _DATA_COMMAND_EXCEPTIONS = {
     "find": lambda args: any(a in ("-exec", "-execdir", "-ok", "-okdir") for a in args),
     "tail": lambda args: _has_flag(args, "fF", ("--follow",)),
-    "git": lambda args: ("rebase" in args and _has_flag(args, "x")) or any(
-        a in ("bisect", "foreach", "difftool", "mergetool", "-x", "-c", "-O") or a.startswith(("--exec", "--open-files-in-pager"))
-        for a in args),
+    "git": _git_runs_command,
     "fd": lambda args: _has_flag(args, "xX", ("--exec", "--exec-batch")),
     "rg": lambda args: _has_flag(args, long=("--pre", "--hostname-bin")),
     "ag": lambda args: _has_flag(args, long=("--pager",)),
@@ -170,7 +184,9 @@ def _command_word(tokens: list) -> tuple[str, list]:
         # `./echo` is a local script; only a system directory makes `/usr/bin/echo` echo.
         if word.startswith(_SYSTEM_BIN_DIRS) and ".." not in word:
             word = word.rsplit("/", 1)[-1]
-        if word == "sudo":
+        if not word:  # a spaced group opener: `( grep vite x )`
+            i += 1
+        elif word == "sudo":
             i += 1
             while i < len(tokens) and tokens[i].startswith("-"):
                 if tokens[i] in ("-u", "-g"):
@@ -221,12 +237,25 @@ def _is_data_command(word: str, args: list) -> bool:
     """True when *word* only reads, writes or lists what its arguments name."""
     if word == "command":
         return args[:1] in (["-v"], ["-V"])
-    if (word == "uv" and args[:1] == ["pip"]) or (_PYTHON_RE.match(word) and args[:2] == ["-m", "pip"]):
+    if (word == "uv" and args[:1] == ["pip"]) or (_PYTHON_RE.match(word.rsplit("/", 1)[-1]) and args[:2] == ["-m", "pip"]):
         args = args[args.index("pip") + 1:]
     elif word not in _PACKAGE_TOOLS:
         runs_or_follows = _DATA_COMMAND_EXCEPTIONS.get(word)
         return word in _DATA_COMMANDS and not (runs_or_follows and runs_or_follows(args))
     return next((arg for arg in args if not arg.startswith("-")), "") in _PACKAGE_DATA_SUBCOMMANDS
+
+
+def _returns_promptly(word: str, args: list) -> bool:
+    """Commands that are not data commands but end by themselves: a timed sleep, a docker report."""
+    if word == "sleep":
+        return bool(args) and all(_DURATION_RE.match(arg) for arg in args)
+    if word == "docker":
+        own = args[1:] if args[:1] == ["compose"] else args
+        i = 0
+        while i < len(own) and own[i].startswith("-"):
+            i += 2 if own[i] in _COMPOSE_VALUE_FLAGS else 1
+        return "".join(own[i:i + 1]) in _DOCKER_REPORT_SUBCOMMANDS
+    return False
 
 
 def _parse_segment(segment: str) -> tuple[str, list, list] | None:
@@ -246,29 +275,54 @@ def _names_a_server(text: str) -> bool:
     return any(pattern.search(text) for pattern in _LONG_LIVED_FOREGROUND_PATTERNS)
 
 
-def _starts_long_lived_server(unquoted: str) -> bool:
-    unquoted = _WIN_LAUNCHER_SUFFIX_RE.sub(r"\1", unquoted)
-    # Whole-string check first: nearly every command names no server at all.
-    if not _names_a_server(unquoted):
-        return False
-    parts = _SEGMENT_SPLIT_RE.split(_FD_REDIRECT_RE.sub(" ", unquoted))
-    segments, separators = parts[::2], parts[1::2]
-    parse = functools.lru_cache(maxsize=None)(lambda index: _parse_segment(segments[index]))
+class _CommandSegments:
+    """The segments of one command and what surrounds each. Every table is one pass over the
+    command, built on first use, so a long command costs linear time."""
 
-    def is_data(index: int) -> bool:
-        seg = parse(index)
-        return seg is not None and _is_data_command(seg[0], seg[1])
+    def __init__(self, unquoted: str):
+        parts = _SEGMENT_SPLIT_RE.split(_FD_REDIRECT_RE.sub(" ", unquoted))
+        self.texts, self.separators = parts[::2], parts[1::2]
 
-    def piped_to_runner(index: int) -> bool:
-        # Text piped into anything but data commands may be executed (`echo … | tee x | sh`).
-        while index < len(separators) and "|" in separators[index] and "||" not in separators[index]:
-            index += 1
-            if not is_data(index):
-                return True
-        return False
+    @functools.cached_property
+    def parsed(self) -> list:
+        return [_parse_segment(text) for text in self.texts]
 
-    def excused(index: int) -> bool:
-        seg = parse(index)
+    @functools.cached_property
+    def is_data(self) -> list:
+        return [seg is not None and _is_data_command(seg[0], seg[1]) for seg in self.parsed]
+
+    def _piped(self, index: int) -> bool:
+        return index < len(self.separators) and "|" in self.separators[index] and "||" not in self.separators[index]
+
+    @functools.cached_property
+    def piped_to_runner(self) -> list:
+        """Per segment: its output reaches something that is not a data command and may run it
+        (`echo npm run dev | tee x | sh`)."""
+        reaches = [False] * len(self.texts)
+        for index in range(len(self.texts) - 2, -1, -1):
+            reaches[index] = self._piped(index) and (not self.is_data[index + 1] or reaches[index + 1])
+        return reaches
+
+    @functools.cached_property
+    def writes_a_file(self) -> list:
+        """Per segment: it, or a `tee` it is piped into, writes its text to a file."""
+        writes = [">" in text or (seg is not None and seg[0] == "tee") for text, seg in zip(self.texts, self.parsed)]
+        for index in range(len(self.texts) - 2, -1, -1):
+            writes[index] = writes[index] or (self._piped(index) and writes[index + 1])
+        return writes
+
+    @functools.cached_property
+    def harmless_after(self) -> list:
+        """Per segment: every later segment is empty, a data command, or returns promptly."""
+        harmless = [True] * len(self.texts)
+        for index in range(len(self.texts) - 2, -1, -1):
+            later, seg = index + 1, self.parsed[index + 1]
+            harmless[index] = harmless[later] and (
+                not self.texts[later].strip() or self.is_data[later] or (seg is not None and _returns_promptly(seg[0], seg[1])))
+        return harmless
+
+    def excused(self, index: int) -> bool:
+        seg = self.parsed[index]
         if seg is None:
             return False
         word, args, tokens = seg
@@ -276,11 +330,20 @@ def _starts_long_lived_server(unquoted: str) -> bool:
             return True
         if _is_detached_compose_up(word, args):
             # It returns at once, which helps only if nothing after it holds the call open
-            # (`up -d && docker compose logs -f`): every later segment must be a data command.
-            return all(not segments[i].strip() or is_data(i) for i in range(index + 1, len(segments)))
-        return _is_data_command(word, args) and not piped_to_runner(index)
+            # (`up -d && docker compose logs -f`, `… && npm test`).
+            return self.harmless_after[index]
+        if not self.is_data[index] or self.piped_to_runner[index]:
+            return False
+        # Text written to a file can be run by what follows (`echo npm run dev > x.sh; sh x.sh`).
+        return not self.writes_a_file[index] or self.harmless_after[index]
 
-    return any(_names_a_server(segment) and not excused(index) for index, segment in enumerate(segments))
+
+def _starts_long_lived_server(unquoted: str) -> bool:
+    # Whole-string check first: nearly every command names no server at all.
+    if not _names_a_server(unquoted):
+        return False
+    command = _CommandSegments(unquoted)
+    return any(_names_a_server(text) and not command.excused(index) for index, text in enumerate(command.texts))
 
 
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.

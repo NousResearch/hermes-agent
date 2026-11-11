@@ -416,6 +416,55 @@ def test_burst_stamps_host_pressure_and_names_capacity(kanban_home, caplog):
         assert "3" in text
 
 
+# ------------------------------------------------------------------- the lane it resumes into
+
+
+def test_refused_review_run_resumes_as_review_not_implementation(kanban_home):
+    """The one line this PR added to ``kanban_db.py`` has a job: a refused REVIEWER run comes back
+    as review, never as an implementation run.
+
+    ``_retry_status_for_run`` stamps the booked event with the status the attempt was running, and
+    ``_resume_status_from_events`` only sees that stamp if ``transport_refused`` is one of the kinds
+    it reads. Delete ``, 'transport_refused'`` and nothing in the suite notices (QE mutant MU1: 49
+    passed) — which is how a future rename of the event kind would silently flip reviewers into
+    implementation spawns.
+
+    The run is ARMED, never re-claimed: the ``claimed`` event carrying ``source_status`` has to stay
+    the one under test, and ``claim_task`` would append a newer one.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="review me", assignee="a")
+        claimed = kb.claim_task(conn, tid, claimer=kb._claimer_id())
+        assert claimed is not None
+        assert kb.request_review(conn, tid, summary="done", reviewer="r",
+                                 expected_run_id=claimed.current_run_id)
+        assert kb.claim_review_task(conn, tid, claimer=kb._claimer_id()) is not None
+        _arm_dead_worker(
+            conn, tid, 81001, kbt.KANBAN_TURN_UNKNOWN_EXIT_CODE,
+            "Kanban owner refused: Gateway disconnected; turn outcome is unknown",
+            session_id=SESSION_A,
+        )
+
+        kbd.detect_crashed_workers(conn)
+
+        ev = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='transport_refused' "
+            "ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()
+        assert ev is not None, "no transport_refused event booked"
+        assert kb._json_dict(kb._row_get(ev, "payload")).get("retry_status") == "review", ev
+        booked = kb.get_task(conn, tid)
+        assert booked is not None and booked.status == "review", booked
+        assert kb._resume_status_from_events(conn, tid) == "review"
+
+        # The decision also holds on the real promotion path: parked in ``todo``, re-promoted.
+        conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (tid,))
+        conn.commit()
+        kb.recompute_ready(conn)
+        promoted = kb.get_task(conn, tid)
+        assert promoted is not None and promoted.status == "review", promoted
+
+
 # ------------------------------------------------------------------ submitter exit codes
 
 

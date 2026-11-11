@@ -128,13 +128,16 @@ def _given(**params: Any) -> dict[str, Any]:
 async def send_widget(
         bot: Any, chat_id: Any, html: str, *, chat_data: Optional[str] = None,
         public_data: Optional[str] = None, caption: Optional[str] = None, allow_queries: bool = True,
-        disable_notification: bool = False, thread_id: Optional[str] = None) -> Any:
-    """``sendWidget``; returns the raw message Telegram sends back."""
+        disable_notification: bool = False, thread_id: Optional[str] = None, width: Optional[int] = None,
+        height: Optional[int] = None) -> Any:
+    """``sendWidget``; returns the raw message Telegram sends back. ``width`` / ``height`` are logical pixels
+    (the app clamps the width to 200 up to the bubble's width and the height to 50-600); an omitted width fills
+    the bubble and an omitted height follows the content."""
     params: dict[str, Any] = {
         "chat_id": chat_id, "html": html, "allow_queries": allow_queries,
         "disable_notification": disable_notification}
     params.update(_given(
-        chat_data=chat_data, public_data=public_data, caption=caption,
+        chat_data=chat_data, public_data=public_data, caption=caption, width=width, height=height,
         message_thread_id=None if thread_id is None else int(thread_id)))
     return await bot.do_api_request("sendWidget", api_kwargs=params)
 

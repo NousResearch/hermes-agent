@@ -390,6 +390,14 @@ class TestBotApiCalls:
                           "disable_notification": False, "message_thread_id": 5}
 
     @pytest.mark.asyncio
+    async def test_send_widget_passes_the_widget_size(self, monkeypatch, tmp_path):
+        stub = StubRequest()
+        async with connected(monkeypatch, tmp_path, stub) as adapter:
+            await adapter.send_widget("88", "<b>hi</b>", width=320, height=240)
+        (params,) = stub.sent("sendWidget")
+        assert (params["width"], params["height"]) == (320, 240)
+
+    @pytest.mark.asyncio
     async def test_edit_widget_data_rewrites_only_the_packet_given(self, monkeypatch, tmp_path):
         stub = StubRequest()
         async with connected(monkeypatch, tmp_path, stub) as adapter:

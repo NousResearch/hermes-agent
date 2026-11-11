@@ -125,6 +125,8 @@ class TestReasoningChoicePicker:
         result = await runner._handle_reasoning_command(event)
 
         assert result is None
+        # Every button the global picker offers works under --global (a session reset would be refused).
+        assert "reset" not in [c["value"] for c in adapter.calls[0]["choices"]]
         on_choice = adapter.calls[0]["on_choice_selected"]
         reply = await on_choice(event.source.chat_id, "ultra")
 

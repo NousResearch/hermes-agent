@@ -31,6 +31,22 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 _RESET_ABOVE = 1400
 
 
+def _default_hello_size() -> int:
+    """Bytes in this OpenSSL build's default TLS ClientHello (large only with the PQ hybrid share)."""
+    from agent.ssl_verify import platform_ssl_context
+
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = platform_ssl_context().wrap_bio(incoming, outgoing, server_hostname="127.0.0.1")
+    with pytest.raises(ssl.SSLWantReadError):
+        tls.do_handshake()
+    return len(outgoing.read())
+
+
+def _require_large_default_hello() -> None:
+    if _default_hello_size() <= _RESET_ABOVE:
+        pytest.skip("this OpenSSL sends no post-quantum key share by default; nothing for the path to reset")
+
+
 class _HelloSizeEdge:
     """TLS edge on 127.0.0.1 that resets a connection whose ClientHello record exceeds
     ``_RESET_ABOVE`` bytes and answers ``getMe`` otherwise."""
@@ -116,10 +132,11 @@ async def _get_me_through_adapter(edge: _HelloSizeEdge, monkeypatch, extra: dict
 async def test_classic_key_exchange_handshakes_where_the_default_hello_is_reset(tmp_path, monkeypatch):
     edge = _HelloSizeEdge(tmp_path)
     try:
-        with pytest.raises(Exception, match="ConnectError"):
-            await _get_me_through_adapter(edge, monkeypatch, {})
-        assert edge.hello_sizes and min(edge.hello_sizes) > _RESET_ABOVE, "default hello was not the large one"
-        edge.hello_sizes.clear()
+        if _default_hello_size() > _RESET_ABOVE:  # the failing leg needs OpenSSL's PQ default
+            with pytest.raises(Exception, match="ConnectError"):
+                await _get_me_through_adapter(edge, monkeypatch, {})
+            assert edge.hello_sizes and min(edge.hello_sizes) > _RESET_ABOVE
+            edge.hello_sizes.clear()
 
         me = await _get_me_through_adapter(edge, monkeypatch, {"tls_classic_key_exchange": True})
         assert me.username == "edge_bot"
@@ -132,6 +149,7 @@ async def test_classic_key_exchange_handshakes_where_the_default_hello_is_reset(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", ["sometimes", 1])
 async def test_unrecognised_setting_keeps_the_default_handshake(tmp_path, monkeypatch, caplog, value):
+    _require_large_default_hello()
     edge = _HelloSizeEdge(tmp_path)
     try:
         with pytest.raises(Exception, match="ConnectError"):

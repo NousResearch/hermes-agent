@@ -17,6 +17,8 @@ export interface KanbanTask {
   link_counts?: { parents: number; children: number }
   /** N-of-M child completion, or null when the task has no children. */
   progress?: null | { done: number; total: number }
+  /** session_id records the originating HERMES_SESSION_ID (NULL for CLI/dashboard-created cards). */
+  session_id?: null | string
   /** Compact diagnostics rollup — present only when a card has warnings. */
   warnings?: null | { count: number; highest_severity?: null | string }
   /** Worker liveness (present on running cards) — drives the arc + run clock. */

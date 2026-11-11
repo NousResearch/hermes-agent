@@ -79,6 +79,7 @@ import {
   fetchProfiles,
   patchTask,
   profilesKey,
+  runGc,
   taskKey,
   useKanbanScope
 } from './api'
@@ -242,6 +243,19 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         {created && !task.assignee && !unassignedReady ? (
           <span className="text-(--ui-text-quaternary)">{created}</span>
         ) : null}
+        {task.session_id && (
+          <Tip label={k.openSession(task.session_id)}>
+            <span
+              className="min-w-0 cursor-pointer font-mono text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)"
+              onClick={event => {
+                event.stopPropagation()
+                host.openSession(task.session_id!, { intent: 'in-place', forceResume: true })
+              }}
+            >
+              <Codicon name="note" size="0.7rem" />
+            </span>
+          </Tip>
+        )}
         <span className="min-w-0 truncate font-mono text-(--ui-text-quaternary)">{shortId(task.id)}</span>
       </div>
     </div>
@@ -1121,6 +1135,30 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [gcRunning, setGcRunning] = useState(false)
+
+  // GC: sweep archived workspaces, old events, old logs.
+  const doGc = async () => {
+    setGcRunning(true)
+
+    try {
+      const result = await runGc()
+
+      if (result.ok) {
+        host.notify({
+          kind: 'info',
+          message: k.gcSuccess(result.removed_workspaces, result.removed_events, result.removed_logs)
+        })
+      } else {
+        host.notify({ kind: 'error', message: k.gcFailed })
+      }
+    } catch {
+      host.notify({ kind: 'error', message: k.gcFailed })
+    } finally {
+      setGcRunning(false)
+      void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+    }
+  }
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on
@@ -1375,6 +1413,18 @@ export function KanbanBoardPage() {
               variant="ghost"
             >
               <Codicon name="organization" size="0.85rem" />
+            </Button>
+          </Tip>
+          <Tip label={k.gc}>
+            <Button
+              aria-label={k.gc}
+              disabled={gcRunning}
+              loading={gcRunning}
+              onClick={doGc}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="trash" size="0.7rem" />
             </Button>
           </Tip>
           <Button onClick={() => setAddStatus('triage')} size="sm">

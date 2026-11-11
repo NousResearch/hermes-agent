@@ -556,3 +556,14 @@ export const autoDescribeProfile = (name: string) =>
     `/profiles/${encodeURIComponent(name)}/describe-auto`,
     { method: 'POST', body: { overwrite: true } }
   )
+
+/** Run kanban GC — sweep archived workspaces, old events, old logs. Returns counts of what was removed. */
+export const runGc = (params: { eventRetentionDays?: number; logRetentionDays?: number } = {}) =>
+  call<{
+    ok: boolean
+    removed_events: number
+    removed_logs: number
+    removed_workspaces: number
+    event_retention_days: number
+    log_retention_days: number
+  }>('/gc', { method: 'POST', params })

@@ -736,12 +736,12 @@ class GatewayTurnPersistenceMixin:
         may-be-a-duplicate marker and a lost send is not silence. That is what ``send_final_ledgered``
         gives a timed-out final on a non-streaming platform. Both the completion path and the queued
         first-response lane (whose result the follow-up replaces) ledger through here; an adapter
-        without the base contract has no ledger and keeps the old behaviour. True when ledgered."""
+        without the base contract has no ledger and keeps the old behaviour. True only when a
+        redelivery row was saved (``gateway.delivery_ledger: false`` saves none)."""
         if not callable(getattr(adapter, "ledger_attempted_final", None)):
             return False
-        await adapter.ledger_attempted_final(
-            event, session_key, response, error="Timed out: the streamed send may not have landed")
-        return True
+        return await adapter.ledger_attempted_final(
+            event, session_key, response, error="Timed out: the streamed send may not have landed") is True
 
     async def _hmwa_stop_typing_for_turn(self, event, source):
         """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing

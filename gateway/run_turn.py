@@ -630,7 +630,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
     def _generation_stop_callback(self, source, session_key, run_generation):
         """Native UI stop is exact-turn only: never use /stop's broader chat fallback."""
-        if not session_key or run_generation is None:
+        if source.platform != Platform.TELEGRAM or not session_key or run_generation is None:
             return None
 
         async def stop():
@@ -863,6 +863,10 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
         with self._profile_scope_for_source(source):
+            if source.platform == Platform.TELEGRAM:
+                from plugins.platforms.telegram.telegram_ui_tool import bind_telegram_ui
+                with bind_telegram_ui(self, source, session_id, turn_kwargs.get("session_key"), turn_kwargs.get("run_generation")):
+                    return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
     def _run_agent_display_settings(self, source: SessionSource) -> GatewayRunner._RunAgentDisplay:

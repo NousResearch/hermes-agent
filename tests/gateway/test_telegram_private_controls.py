@@ -3,7 +3,9 @@
 Covers the privacy lifecycle only: receiver mismatch, same ephemeral id scoped
 across two chats, fail-closed on a missing requester, no public fallback on any
 failure (uniform decline recognized by ``gateway.relay.egress.declined_send``),
-and the actual edit/delete lifecycle. No forwarded-dict wire-shape assertions.
+Bot API 10.4 callback-addressed sends with returned-address verification, the
+ephemeral-tap identity used by prompt bindings, and the actual edit/delete
+lifecycle. No forwarded-dict wire-shape assertions.
 Adapter/gateway integration is parent-owned.
 """
 
@@ -44,7 +46,8 @@ class _Bot:
         self.send_kwargs = kwargs
         if self._send_error is not None:
             raise self._send_error
-        return self._send_result
+        result = self._send_result
+        return result(**kwargs) if callable(result) else result
 
     async def do_api_request(self, method, api_kwargs=None):
         self.api_calls.append((method, api_kwargs))
@@ -148,10 +151,11 @@ async def test_handle_is_opaque_and_feeds_on_sent():
 
 @pytest.mark.asyncio
 async def test_same_ephemeral_id_in_two_chats_stays_scoped():
-    bot = _Bot(send_result=_eph_msg())
+    bot = _Bot(send_result=lambda **kw: _eph_msg(chat_id=kw["chat_id"]))
     adapter = _adapter(bot=bot)
     for chat in (-100, -200):
-        await adapter._send_private_control({"chat_id": chat, "text": "x"}, _meta())
+        await adapter._send_private_control(
+            {"chat_id": chat, "text": "x"}, _meta(telegram_callback_query_id=""))
     for chat in (-100, -200):
         record = adapter.resolve_private_control(f"{EPH_PREFIX}111:7", chat_id=chat)
         assert record is not None and record["chat_id"] == chat
@@ -258,7 +262,9 @@ async def test_send_rich_flag_off_keeps_plain_ephemeral_send():
         {"chat_id": -100, "text": "Approve?", "reply_markup": {"inline_keyboard": [[{"text": "Yes", "callback_data": "ea:1"}]]}},
         _meta())
     assert bot.send_calls == 1 and bot.api_calls == []  # plain sendMessage only
-    assert bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]["receiver_user_id"] == 111
+    params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert "receiver_user_id" not in params and params["callback_query_id"] == "cbq-1"
+    assert bot.send_kwargs["chat_id"] is None  # API ignores chat_id on the callback route
     assert "rich_message" not in bot.send_kwargs
 
 
@@ -278,8 +284,9 @@ async def test_send_rich_flag_on_uses_sendrichmessage_with_ephemeral_parameters(
     assert bot.send_calls == 0  # no public sendMessage
     method, payload = bot.api_calls[0]
     assert method == "sendRichMessage"
-    assert payload["ephemeral_message_parameters"]["receiver_user_id"] == 111
-    assert payload["ephemeral_message_parameters"]["callback_query_id"] == "cbq-1"
+    params = payload["ephemeral_message_parameters"]
+    assert "receiver_user_id" not in params and params["callback_query_id"] == "cbq-1"
+    assert "chat_id" not in payload  # callback addressing ignores the requested chat
     assert "<tg-button" in payload["rich_message"]["html"] and "Approve?" in payload["rich_message"]["html"]
     for absent in ("text", "parse_mode", "reply_markup"):  # no contradictory content fields
         assert absent not in payload
@@ -328,7 +335,8 @@ async def test_send_preserves_caller_api_kwargs_non_destructive():
         {"chat_id": -100, "text": "x", "api_kwargs": {"business_connection_id": "bc-1"}}, _meta())
     merged = bot.send_kwargs["api_kwargs"]
     assert merged["business_connection_id"] == "bc-1"
-    assert merged["ephemeral_message_parameters"]["receiver_user_id"] == 111
+    assert "receiver_user_id" not in merged["ephemeral_message_parameters"]
+    assert merged["ephemeral_message_parameters"]["callback_query_id"] == "cbq-1"
 
 
 @pytest.mark.asyncio
@@ -442,8 +450,9 @@ async def test_fresh_public_callback_send_sets_replace_callback_query_message():
     adapter = _adapter(bot=bot)
     await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
     params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
-    assert params["replace_callback_query_message"] is True
-    assert params["callback_query_id"] == "cbq-1" and params["receiver_user_id"] == 111
+    assert "receiver_user_id" not in params
+    assert params["callback_query_id"] == "cbq-1" and params["replace_callback_query_message"] is True
+    assert bot.send_kwargs["chat_id"] is None and bot.send_kwargs["message_thread_id"] is None
 
 
 @pytest.mark.asyncio
@@ -455,6 +464,7 @@ async def test_callback_from_ephemeral_never_replaces():
     await adapter._send_private_control(
         {"chat_id": -100, "text": "x"}, _meta(telegram_callback_from_ephemeral=True))
     params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert params["receiver_user_id"] == 111 and params["callback_query_id"] == "cbq-1"
     assert "replace_callback_query_message" not in params
 
 
@@ -465,7 +475,105 @@ async def test_no_callback_id_no_replace_flag():
     bot = _Bot(send_result=_eph_msg())
     adapter = _adapter(bot=bot)
     await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta(telegram_callback_query_id=""))
-    assert "replace_callback_query_message" not in bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert "replace_callback_query_message" not in params
+    assert params["receiver_user_id"] == 111 and bot.send_kwargs["chat_id"] == -100
+
+
+# -- Bot API 10.4: callback-addressed delivery -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_callback_addressed_send_omits_receiver_and_registers_handle():
+    """A fresh public callback is addressed by callback_query_id ALONE: the
+    trusted requester stamp is not sent, chat routing is dropped, and the
+    returned address is registered only after receiver verification."""
+    bot = _Bot(send_result=_eph_msg())
+    adapter = _adapter(bot=bot)
+    handle = await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    assert bot.send_kwargs["chat_id"] is None and bot.send_kwargs["message_thread_id"] is None
+    params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert "receiver_user_id" not in params
+    assert params["callback_query_id"] == "cbq-1" and params["replace_callback_query_message"] is True
+    assert handle.message_id == f"{EPH_PREFIX}111:7" and handle.chat_id == -100
+    assert adapter._lookup_private_record(-100, 111, 7) is not None
+
+
+@pytest.mark.asyncio
+async def test_callback_addressed_registry_uses_response_chat_address():
+    """The response chat is authoritative when callback routing supplies one
+    (the requested chat_id is ignored on this route)."""
+    bot = _Bot(send_result=_eph_msg(chat_id=-100))
+    adapter = _adapter(bot=bot)
+    handle = await adapter._send_private_control({"chat_id": "@some_group", "text": "x"}, _meta())
+    assert handle.chat_id == -100
+    assert adapter._lookup_private_record(-100, 111, 7) is not None
+    assert await adapter.edit_ephemeral_control_text(handle, "✓") is True
+    assert bot.api_calls[-1][1]["chat_id"] == -100
+
+
+@pytest.mark.asyncio
+async def test_callback_addressed_response_receiver_mismatch_declines():
+    """A response addressed to a different user must never become a handle:
+    the trusted requester stamp verifies the returned receiver."""
+    plain_bot = _Bot(send_result=_eph_msg(receiver=999))
+    plain_adapter = _adapter(bot=plain_bot)
+    with pytest.raises(PrivateControlError):
+        await plain_adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    assert plain_adapter._private_records() == {}
+
+    rich_bot = _Bot(api_result={"message_id": 0, "chat_id": -100,
+                                "api_kwargs": {"receiver_user": {"id": 999}, "ephemeral_message_id": 7}})
+    rich_adapter = _rich_adapter(rich_bot)
+    with pytest.raises(PrivateControlError):
+        await rich_adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    assert rich_adapter._private_records() == {}
+
+
+@pytest.mark.asyncio
+async def test_callback_addressed_response_chat_mismatch_declines():
+    """A response from another chat is inconsistent trusted state — no record."""
+    bot = _Bot(send_result=_eph_msg(chat_id=-200))
+    adapter = _adapter(bot=bot)
+    with pytest.raises(PrivateControlError):
+        await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    assert adapter._private_records() == {}
+
+
+@pytest.mark.asyncio
+async def test_callback_addressed_missing_response_chat_uses_trusted_chat():
+    """Telegram may omit the chat on a callback-routed response; the trusted
+    request chat is the fallback address, not a guess."""
+    message = SimpleNamespace(message_id=0, chat_id=None, chat=SimpleNamespace(id=None),
+                              api_kwargs={"receiver_user": {"id": 111}, "ephemeral_message_id": 7})
+    bot = _Bot(send_result=message)
+    adapter = _adapter(bot=bot)
+    handle = await adapter._send_private_control({"chat_id": -100, "text": "x"}, _meta())
+    assert handle.chat_id == -100
+    assert await adapter.edit_ephemeral_control_text(handle, "✓") is True
+    assert bot.api_calls[-1][1]["chat_id"] == -100
+
+
+@pytest.mark.asyncio
+async def test_direct_messages_topic_never_callback_addressed():
+    """Channel direct messages cannot take ephemeral callback replies; a
+    direct_messages_topic_id send keeps the explicit receiver/chat form and never
+    claims the forbidden route."""
+    bot = _Bot(send_result=_eph_msg())
+    adapter = _adapter(bot=bot)
+    await adapter._send_private_control(
+        {"chat_id": -100, "text": "x", "direct_messages_topic_id": 42}, _meta())
+    params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert params["receiver_user_id"] == 111 and params["callback_query_id"] == "cbq-1"
+    assert bot.send_kwargs["chat_id"] == -100 and bot.send_kwargs["direct_messages_topic_id"] == 42
+
+
+def test_callback_addressing_does_not_broaden_chat_gate():
+    """Ordinary DM controls keep the public path: 10.4 callback addressing only
+    changes HOW an already-requested private send is delivered."""
+    adapter = _adapter()
+    for chat_type in ("dm", "private", "channel", ""):
+        assert adapter.private_control_requested(-100, _meta(telegram_chat_type=chat_type)) is False
 
 
 @pytest.mark.asyncio
@@ -522,6 +630,53 @@ def test_wrap_stamps_trusted_callback_origin_on_record():
     assert meta["telegram_callback_from_ephemeral"] is True
     assert meta["telegram_callback_query_id"] == "cbq-1"
     assert meta["telegram_requester_user_id"] == "111"
+
+
+def test_private_query_message_reports_send_handle_and_preserves_fields():
+    """The wrapped tap carries the SAME identity a private send returned:
+    ``eph:<receiver>:<ephemeral>`` — not the raw message_id 0 — while keeping the
+    original chat/thread/text fields and ephemeral api_kwargs."""
+    adapter = _adapter()
+    raw = _eph_msg()
+    raw.text = "prompt"
+    raw.message_thread_id = 42
+    raw.chat.type = "supergroup"
+    wrapped = adapter.wrap_private_control_query(_query(111, raw))
+    message = wrapped.message
+    assert message.message_id == f"{EPH_PREFIX}111:7"
+    assert message.chat_id == -100 and message.chat is raw.chat and message.chat.type == "supergroup"
+    assert message.ephemeral_message_id == 7 and message.receiver_user.id == 111
+    assert message.text == "prompt" and message.message_thread_id == 42
+    assert message.api_kwargs["ephemeral_message_id"] == 7
+    assert wrapped._query.message is raw  # the raw query is untouched
+
+
+@pytest.mark.asyncio
+async def test_private_clarify_prompt_binding_accepts_tap_after_merge():
+    """End-to-end private clarify: the sent ephemeral prompt is bound by its
+    ``eph:`` handle and the tap on that same ephemeral message matches — while a
+    tap on another ephemeral message is still rejected."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from plugins.platforms.telegram.telegram_clarify_binding import tap_matches_prompt
+
+    adapter = TelegramAdapter(PlatformConfig(extra={"private_controls": True}))
+    bot = _Bot(send_result=_eph_msg())
+    adapter._bot = bot
+    adapter._clarify_state = {}
+    result = await adapter.send_clarify(
+        "-100", "Pick one", ["A", "B"], "cl-1", "sess", metadata=_meta())
+    assert result.success is True and bot.send_calls == 1
+    prompt = adapter._clarify_state["cl-1"]
+    assert (prompt.chat_id, prompt.message_id) == ("-100", f"{EPH_PREFIX}111:7")
+
+    tap = adapter.wrap_private_control_query(_query(111, _eph_msg()))
+    assert await tap_matches_prompt(tap, "cl-1", prompt, "denied") is True
+    tap.answer.assert_not_called()
+
+    other = adapter.wrap_private_control_query(_query(111, _eph_msg(eph=8)))
+    assert await tap_matches_prompt(other, "cl-1", prompt, "denied") is False
+    other.answer.assert_awaited_once()
 
 
 # -- media and caption edits ---------------------------------------------------
@@ -811,3 +966,52 @@ async def test_private_plain_paths_strip_native_wrapper_rich_metadata():
     assert rich_call[0] == "editEphemeralMessageText" and "rich_message" in rich_call[1]
     assert plain_call[1]["text"] == "✓"
     assert plain_call[1]["reply_markup"] is legacy_kb  # unwrapped: no disabled/style/fragments
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requester", ["111", None])
+async def test_group_update_prompt_from_persisted_marker_never_posts_publicly(requester):
+    from gateway.config import Platform, PlatformConfig
+    from gateway.run import GatewayRunner
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    runner = object.__new__(GatewayRunner)
+    adapter = TelegramAdapter(PlatformConfig(extra={"private_controls": True}))
+    bot = _Bot(send_result=_eph_msg())
+    adapter._bot = bot
+    metadata = runner._pending_marker_metadata(
+        Platform.TELEGRAM, "-100", {"chat_type": "group", "user_id": requester}, adapter)
+    result = await adapter.send_update_prompt("-100", "Overwrite local changes?", metadata=metadata)
+    if requester is None:
+        assert declined_send(result)
+        assert bot.send_calls == 0
+    else:
+        assert result.success
+        assert bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"] == {"receiver_user_id": 111}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("topic_id", [73, None])
+async def test_channel_dm_callback_keeps_explicit_receiver_after_ingress(topic_id):
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter, _CONTROL_CALLBACK_CONTEXT
+
+    adapter = TelegramAdapter(PlatformConfig(extra={"private_controls": True}))
+    bot = _Bot(send_result=_eph_msg())
+    adapter._bot = bot
+    message = SimpleNamespace(
+        message_id=55, chat_id=-100, chat=SimpleNamespace(id=-100, type="supergroup", is_direct_messages=True),
+        message_thread_id=None, api_kwargs={},
+        direct_messages_topic=SimpleNamespace(topic_id=topic_id) if topic_id is not None else None)
+    context = adapter._callback_ctx(_query(111, message))
+    token = _CONTROL_CALLBACK_CONTEXT.set(context)
+    try:
+        result = await adapter.send_update_prompt("-100", "Private action?")
+    finally:
+        _CONTROL_CALLBACK_CONTEXT.reset(token)
+    assert result.success
+    params = bot.send_kwargs["api_kwargs"]["ephemeral_message_parameters"]
+    assert params["receiver_user_id"] == 111
+    assert bot.send_kwargs["chat_id"] == -100
+    if topic_id is not None:
+        assert bot.send_kwargs["direct_messages_topic_id"] == topic_id

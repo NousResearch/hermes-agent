@@ -10,6 +10,9 @@ description: >
   network transport (direct-IP failover), notification modes, mention gating,
   and per-user/chat allowlists.
 author: NousResearch
+# Discovery imports only tools.py so CLI/TUI processes register the session-scoped tool.
+provides_tools:
+  - telegram_ui
 requires_env:
   - name: TELEGRAM_BOT_TOKEN
     description: "Telegram bot token from @BotFather"

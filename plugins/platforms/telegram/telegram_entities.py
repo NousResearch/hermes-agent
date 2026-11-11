@@ -3,6 +3,9 @@
 A rich-text hyperlink arrives as visible anchor text plus a ``text_link`` entity carrying the
 URL; the model only ever sees the anchor unless the URL is inlined (#31071). Long multi-paragraph
 messages can instead arrive with an empty ``text`` and their content in ``rich_message.blocks``.
+Rich TON address / bank card spans keep their actual value in ``address`` / ``bank_card_number``
+beside a label that may be descriptive or empty; that value is preserved for the agent but never
+in the addressing views.
 """
 
 from __future__ import annotations
@@ -22,13 +25,37 @@ _CODE_TYPES = frozenset({"code", "pre"})
 _ADDRESSING_MASK_TYPES = _CODE_TYPES | frozenset({"url", "link", "text_link"})
 # Stands in for skipped code: leading content like the code in plain text, never whitespace, a separator or a handle.
 _CODE_PLACEHOLDER = "\ufffc"
+# ``RichTextTonAddress.address`` / ``RichTextBankCardNumber.bank_card_number`` hold the machine-readable
+# value beside a display text that may be a label (or empty). Like a hidden link URL they are inlined
+# for the agent, but never in the addressing views, so a payload cannot become a wake word.
+_RICH_PAYLOAD_FIELDS = {"ton_address": "address", "bank_card_number": "bank_card_number"}
+
+
+def _rich_type(value: Mapping) -> str:
+    kind = value.get("type")
+    return kind if isinstance(kind, str) else ""
+
+
+def _rich_payload(kind: str, value: Mapping) -> str:
+    """The machine-readable TON address / bank card number of a rich span, else an empty string."""
+    payload = value.get(_RICH_PAYLOAD_FIELDS.get(kind, ""))
+    return payload.strip() if isinstance(payload, str) else ""
+
+
+def _payload_already_shown(text: str, payload: str, kind: str) -> bool:
+    """Whether the payload is already readable in ``text`` (a card may be grouped by spaces/dashes)."""
+    if kind == "bank_card_number":
+        digits = re.sub(r"\D", "", payload)
+        return bool(digits) and digits in re.sub(r"\D", "", text)
+    return payload in text
 
 
 def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False, urls: bool = True) -> str:
     """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)
     whose content sits in ``text`` or ``children``, falling back to a link's ``url``, a math
-    ``expression`` or a custom emoji's ``alternative_text``. ``skip_code`` masks ``code``/``pre`` and linked-label spans with a placeholder;
-    ``urls`` inlines a hidden link's URL after its anchor."""
+    ``expression``, a custom emoji's ``alternative_text``, or a TON address / bank card number whose
+    display text is a label or empty. ``skip_code`` masks ``code``/``pre`` and linked-label spans with a placeholder;
+    ``urls`` inlines a hidden link's URL and those machine-readable payloads after their anchor."""
     if depth > _MAX_RICH_DEPTH:
         return ""
     if isinstance(value, str):
@@ -36,16 +63,27 @@ def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False, urls: bool
     if isinstance(value, list):
         return "".join(_rich_inline(part, depth + 1, skip_code, urls) for part in value)
     if isinstance(value, Mapping):
-        if skip_code and value.get("type") in _ADDRESSING_MASK_TYPES:
+        kind = _rich_type(value)
+        if skip_code and kind in _ADDRESSING_MASK_TYPES:
             return _CODE_PLACEHOLDER
+        payload = _rich_payload(kind, value)
         for key in ("text", "children"):
             if value.get(key) is not None:
                 text = _rich_inline(value[key], depth + 1, skip_code, urls)
+                if payload and not text.strip():
+                    # An annotated address with an empty label still has to reach the agent; the
+                    # addressing views keep it out, exactly like a hidden link's URL.
+                    return payload if urls else text
                 # A hidden link keeps its URL, as ``expand_link_entities`` inlines a ``text_link``; the
                 # addressing views leave it out so ``?u=@bot`` in a URL cannot wake the bot.
                 url = value.get("url") if urls else None
-                return f"{text} ({url})" if isinstance(url, str) and url and url != text else text
-        return str(value.get("url") or value.get("expression") or value.get("alternative_text") or "")
+                if isinstance(url, str) and url and url != text:
+                    text = f"{text} ({url})"
+                if urls and payload and not _payload_already_shown(text, payload, kind):
+                    text = f"{text} ({payload})"
+                return text
+        return str(value.get("url") or value.get("expression") or value.get("alternative_text")
+                   or (payload if urls else "") or "")
     return ""
 
 
@@ -58,7 +96,7 @@ def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool =
     for block in blocks if isinstance(blocks, list) else []:
         if not isinstance(block, Mapping):
             continue
-        if skip_code and block.get("type") in _ADDRESSING_MASK_TYPES:
+        if skip_code and _rich_type(block) in _ADDRESSING_MASK_TYPES:
             lines.append(prefix + _CODE_PLACEHOLDER)
             prefix = ""
             continue
@@ -83,7 +121,7 @@ def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool =
 def rich_message_text(message: Any, skip_code: bool = False, urls: bool | None = None) -> str:
     """Flattened text of a ``rich_message`` payload ("" when there is none), for inbound messages and
     the replied-to message alike; ``skip_code`` masks ``code``/``pre`` and linked-label spans with a placeholder, ``urls`` (default: not
-    ``skip_code``) inlines hidden link URLs. PTB keeps the Bot API field in ``api_kwargs``, a
+    ``skip_code``) inlines hidden link URLs and TON address / bank card payloads. PTB keeps the Bot API field in ``api_kwargs``, a
     ``mappingproxy`` (not a ``dict``), when it has no attribute for it."""
     rich = getattr(message, "rich_message", None)
     if rich is None and isinstance(kwargs := getattr(message, "api_kwargs", None), Mapping):
@@ -108,7 +146,8 @@ def _rich_addressing_entities(text: str) -> list[SimpleNamespace]:
 
 def addressing_sources(message: Any) -> list[tuple[str, list]]:
     """``(text, entities)`` every mention / command / addressee check reads: the text and the caption, or for a
-    text-less ``rich_message`` its blocks with code and linked labels as placeholders and hidden URLs left out, carrying the
+    text-less ``rich_message`` its blocks with code and linked labels as placeholders and hidden URLs / TON
+    address / bank card payloads left out, carrying the
     ``mention``/``bot_command`` entities Telegram would have sent for that text as plain text (#151730)."""
     text, caption = getattr(message, "text", None) or "", getattr(message, "caption", None) or ""
     sources = [(text, getattr(message, "entities", None) or []), (caption, getattr(message, "caption_entities", None) or [])]
@@ -120,7 +159,8 @@ def addressing_sources(message: Any) -> list[tuple[str, list]]:
 
 def addressing_text(message: Any) -> str:
     """The text wake-word patterns and the group ``?``/``/`` reply rules read: text, caption, else the rich
-    blocks with code kept and hidden link URLs left out (a link to ``chompy.example.com`` is not a wake word)."""
+    blocks with code kept and hidden link URLs / TON address / bank card payloads left out (a link to
+    ``chompy.example.com`` is not a wake word)."""
     return (getattr(message, "text", None) or getattr(message, "caption", None)
             or rich_message_text(message, urls=False))
 

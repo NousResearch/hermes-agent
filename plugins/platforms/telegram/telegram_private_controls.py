@@ -1,4 +1,4 @@
-"""Requester-only Telegram group controls via Bot API 10.2/10.3 ephemeral messages.
+"""Requester-only Telegram group controls via Bot API 10.2/10.3/10.4 ephemeral messages.
 
 Parent-stamped metadata (authentic source only): ``telegram_requester_user_id``
 (str; required by the send — a configured group without it FAILS CLOSED, never
@@ -41,9 +41,29 @@ against PTB source: ``RequestParameter.from_input`` extracts InputMedia
 parameter on ``do_api_request``), and captions through
 ``editEphemeralMessageCaption``; both stay requester-gated and private.
 
+Callback-addressed delivery (Bot API 10.4): a FRESH public callback query (trusted
+``telegram_callback_query_id``, not from an ephemeral message, no channel
+``direct_messages_topic_id``) is addressed by ``callback_query_id`` ALONE —
+``receiver_user_id`` is omitted and ``chat_id`` is dropped (the API ignores it on
+that route). Delivery still goes only to the authenticated tapper and works in
+chats where the bot is not a member, which is exactly the case the
+explicit-receiver form cannot serve (the API requires omitting the receiver
+there). The trusted ``telegram_requester_user_id`` stamp stays local: the send
+still fails closed without it, and the RETURNED message's receiver and chat are
+verified against that trusted request before a record/handle is registered (a
+mismatch declines — never a retry, never a public fallback). Explicit
+``receiver_user_id`` remains for non-callback admin/group prompts and for
+ephemeral-origin sends/replies/edits (the post-send edit methods are unchanged and
+always need the receiver). Channel direct messages are never callback-addressed
+(the API forbids it): a ``direct_messages_topic_id`` send keeps the explicit path
+and fails closed if Telegram refuses. No DM/channel broadening:
+``private_control_requested`` stays group/forum-only — an ephemeral DM reply adds
+no privacy over the DM itself, and a ``channel`` chat type is the forbidden
+direct-message case.
+
 Parent integration (this module edits no adapter/gateway file): mixin first in
 the ``TelegramAdapter`` bases; ``__init__`` sets ``self._private_controls =
-self._coerce_bool_extra("private_controls", False)``; ``_send_control_message_routed``
+self._coerce_bool_extra("private_controls", False)``; ``_send_control_message``
 calls ``private_control_requested`` → ``_send_private_control`` BEFORE the
 public send (failures via ``send_private_control_prompt``'s decline contract —
 never a public fallback; ``send()`` fails closed on
@@ -125,7 +145,9 @@ def _ephemeral_fields(message: Any) -> Optional[Tuple[int, int, Any]]:
     """``(receiver_user_id, ephemeral_message_id, chat_id)`` of an ephemeral Message, else None.
 
     Ephemeral messages carry ``receiver_user`` + ``ephemeral_message_id`` in
-    ``api_kwargs`` (PTB 22.8); dict form (raw API echo) is accepted too.
+    ``api_kwargs`` (PTB 22.8); dict form (raw API echo) and message-like objects
+    exposing the fields as attributes (a sent handle or the wrapped-message
+    facade) are accepted too.
     """
     if message is None:
         return None
@@ -139,6 +161,10 @@ def _ephemeral_fields(message: Any) -> Optional[Tuple[int, int, Any]]:
         receiver = getattr(message, "receiver_user", None)
         if receiver is not None and "receiver_user" not in kw:
             kw["receiver_user"] = receiver
+        ephemeral_attr = getattr(message, "ephemeral_message_id", None)
+        if isinstance(ephemeral_attr, int) and not isinstance(ephemeral_attr, bool):
+            if "ephemeral_message_id" not in kw:
+                kw["ephemeral_message_id"] = ephemeral_attr
         chat_id = getattr(message, "chat_id", None)
         if chat_id is None:
             chat_id = getattr(getattr(message, "chat", None), "id", None)
@@ -174,6 +200,34 @@ def is_private_control_handle(message_id: Any) -> bool:
     return parse_private_handle(message_id if isinstance(message_id, str) else None) is not None
 
 
+def _verified_ephemeral_address(fields: Tuple[int, int, Any], *, expected_chat_id: Any,
+                               expected_receiver_id: int) -> Tuple[Any, int, int]:
+    """Verify a returned ephemeral Message against the trusted send request.
+
+    The receiver must be the authenticated requester: a positive-id-only check
+    would accept a response addressed to someone else. The chat must match the
+    trusted address whenever both sides are numeric; a response reporting another
+    chat is inconsistent trusted state — refuse rather than register a handle that
+    later edits/deletes in the wrong chat. When Telegram supplies a response chat
+    it is authoritative (a callback-addressed send ignores the requested
+    ``chat_id`` and derives delivery from the callback query); the trusted request
+    chat is the fallback only when the response carries none.
+    """
+    receiver_id, ephemeral_id, msg_chat = fields
+    if ephemeral_id <= 0 or receiver_id <= 0:
+        raise PrivateControlError("missing_ephemeral_message_id")
+    if receiver_id != expected_receiver_id:
+        raise PrivateControlError("ephemeral_receiver_mismatch")
+    expected_chat = normalize_telegram_chat_id(expected_chat_id) if expected_chat_id not in (None, "") else None
+    response_chat = normalize_telegram_chat_id(msg_chat) if msg_chat not in (None, "") else None
+    if isinstance(expected_chat, int) and isinstance(response_chat, int) and expected_chat != response_chat:
+        raise PrivateControlError("ephemeral_chat_mismatch")
+    chat_id = response_chat if response_chat is not None else expected_chat
+    if chat_id is None:
+        raise PrivateControlError("missing_ephemeral_chat")
+    return chat_id, receiver_id, ephemeral_id
+
+
 def _record_key(chat_id: Any, receiver_user_id: int, ephemeral_message_id: int) -> Tuple[Any, int, int]:
     """Registry key: chat + receiver + ephemeral. The ephemeral id is reusable after
     delete/expiry and the same id may exist in two groups simultaneously — the chat
@@ -198,12 +252,63 @@ class _PrivateRecord(dict):
             raise AttributeError(name) from None
 
 
+class _PrivateMessageFacade:
+    """Message-like identity of a wrapped ephemeral message.
+
+    Ephemeral messages arrive with ``message_id == 0``; the manageable identity
+    is ``eph:<receiver>:<ephemeral>`` — the same handle a private send returns.
+    Bindings that record the SENT message identity (the clarify prompt binding)
+    and later compare it with the tapped ``query.message`` must therefore see the
+    handle, not the raw 0. Everything else (chat object/type, thread id, text,
+    entities, date, caller/raw ``api_kwargs``) stays the original message's; the
+    ephemeral receiver/id remain present in ``api_kwargs`` and as attributes.
+    """
+
+    def __init__(self, message: Any, record: _PrivateRecord):
+        object.__setattr__(self, "_message", message)
+        object.__setattr__(self, "_record", record)
+
+    @property
+    def message_id(self) -> str:
+        return self._record.handle
+
+    @property
+    def chat_id(self) -> Any:
+        return self._record["chat_id"]
+
+    @property
+    def ephemeral_message_id(self) -> int:
+        return self._record["ephemeral_message_id"]
+
+    @property
+    def receiver_user(self) -> Any:
+        return SimpleNamespace(id=self._record["receiver_user_id"])
+
+    @property
+    def api_kwargs(self) -> Dict[str, Any]:
+        raw = getattr(self._message, "api_kwargs", None)
+        kwargs = dict(raw) if isinstance(raw, dict) else dict(raw or {})
+        kwargs["receiver_user"] = {"id": self._record["receiver_user_id"]}
+        kwargs["ephemeral_message_id"] = self._record["ephemeral_message_id"]
+        return kwargs
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._message, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._message, name, value)
+
+
 class PrivateQuery:
     """CallbackQuery facade whose message is ephemeral (requester-only).
 
-    Identity attributes delegate to the wrapped query; ``edit_message_text`` and
-    ``delete`` route to the raw ephemeral endpoints. NEVER issues a public
-    send/edit — failure degrades to nothing, never to the shared chat message.
+    Identity attributes delegate to the wrapped query; ``message`` reports the
+    ``eph:<receiver>:<ephemeral>`` handle a private send returned (the raw
+    message id is 0) while delegating every other field to the original message,
+    so prompt bindings compare the same identity on send and tap.
+    ``edit_message_text`` and ``delete`` route to the raw ephemeral endpoints.
+    NEVER issues a public send/edit — failure degrades to nothing, never to the
+    shared chat message.
     Rich buttons: only when the adapter's ``extra.rich_controls`` is on — the
     ``_rich_control_payload(text, parse_mode=…, reply_markup=…)`` helper
     (rich-control module) converts to ``InputRichMessage`` and the edit carries
@@ -215,6 +320,24 @@ class PrivateQuery:
         object.__setattr__(self, "_query", query)
         object.__setattr__(self, "_adapter", adapter)
         object.__setattr__(self, "record", record)
+        object.__setattr__(self, "_message_facade", None)
+
+    @property
+    def message(self) -> Any:
+        """The tapped message with the ``eph:`` identity a send returned (raw ``message_id`` is 0).
+
+        Prompt bindings (``ClarifyPrompt.from_sent`` / ``tap_matches_prompt``) compare this identity,
+        so delegating the raw 0 rejected every private clarify tap. All non-identity attributes still
+        delegate to the original message.
+        """
+        raw = getattr(self._query, "message", None)
+        if raw is None:
+            return None
+        cached = object.__getattribute__(self, "_message_facade")
+        if cached is None or object.__getattribute__(cached, "_message") is not raw:
+            cached = _PrivateMessageFacade(raw, self.record)
+            object.__setattr__(self, "_message_facade", cached)
+        return cached
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._query, name)  # only reached for non-facade attrs
@@ -334,6 +457,13 @@ class TelegramPrivateControlsMixin:
         True iff ``extra.private_controls`` is on and the source chat is a group or
         forum (DMs/channels excluded). Requester-INDEPENDENT: a configured group
         without the stamp still requests the private path, and the send FAILS CLOSED.
+
+        Bot API 10.4 callback addressing does NOT broaden this gate: a DM ephemeral
+        reply adds no privacy over the DM itself (and ephemeral delivery is not
+        guaranteed), while ``channel``/``direct_messages_topic_id`` chats are the
+        forbidden channel-direct-message case. A chat where the bot is not a member
+        still reports ``group``/``supergroup``/``forum``, so it is already covered by
+        the callback-routed send path without touching ordinary DM controls.
         """
         if not self._private_controls_enabled():
             return False
@@ -410,21 +540,42 @@ class TelegramPrivateControlsMixin:
             raise PrivateControlError("missing_requester_user_id")  # fail closed
 
         send_kwargs = dict(kwargs)
-        ephemeral_params: Dict[str, Any] = {"receiver_user_id": receiver}
+        expected_chat_id = send_kwargs.get("chat_id")
         callback_query_id = str(meta.get("telegram_callback_query_id") or "").strip()
         # Ephemeral-origin flag comes ONLY from parent-stamped trusted update state
         # (``query.message`` being ephemeral), never inferred from user text.
         callback_from_ephemeral = bool(meta.get("telegram_callback_from_ephemeral"))
-        if callback_query_id:
-            # Non-admin delivery needs a 15s trigger (callback query or ephemeral
-            # reply); admins send any time. We do NOT preflight privilege —
-            # Telegram rejects non-privileged sends and we report them.
-            ephemeral_params["callback_query_id"] = callback_query_id
-            if not callback_from_ephemeral:
-                # Overlay: show this private content IN PLACE OF the public message
-                # the fresh callback query came from. Must stay False for callbacks
-                # from ephemeral messages (API contract) — those edit instead.
-                ephemeral_params["replace_callback_query_message"] = True
+        # Bot API 10.4: a FRESH public callback may address delivery with ``callback_query_id``
+        # ALONE — ``receiver_user_id`` omitted, ``chat_id`` ignored, delivery goes to the
+        # authenticated tapper (works even where the bot is not a member). Channel direct messages
+        # are the one exception the API forbids; any direct-topic signal (routing kwarg or trusted
+        # metadata) keeps the explicit receiver/chat path and fails closed if Telegram refuses it.
+        direct_topic_id = (send_kwargs.get("direct_messages_topic_id")
+                           or meta.get("direct_messages_topic_id")
+                           or meta.get("telegram_direct_messages_topic_id"))
+        callback_routes = (bool(callback_query_id) and not callback_from_ephemeral
+                           and not direct_topic_id and not meta.get("telegram_channel_direct_messages"))
+        ephemeral_params: Dict[str, Any]
+        if callback_routes:
+            # The trusted requester stamp still gates this send above and verifies the response
+            # below; it is simply not sent. Chat-addressed routing is dropped: the API ignores
+            # ``chat_id`` on this route and derives the chat from the callback query.
+            ephemeral_params = {"callback_query_id": callback_query_id,
+                                "replace_callback_query_message": True}
+            send_kwargs["chat_id"] = None
+            send_kwargs["message_thread_id"] = None
+        else:
+            ephemeral_params = {"receiver_user_id": receiver}
+            if callback_query_id:
+                # Explicit-receiver callbacks (ephemeral-origin sends) still carry the trigger;
+                # non-admin delivery needs it. Admins send any time — we do NOT preflight
+                # privilege, Telegram rejects non-privileged sends and we report them.
+                ephemeral_params["callback_query_id"] = callback_query_id
+                if not callback_from_ephemeral:
+                    # Overlay: show this private content IN PLACE OF the public message
+                    # the fresh callback query came from. Must stay False for callbacks
+                    # from ephemeral messages (API contract) — those edit instead.
+                    ephemeral_params["replace_callback_query_message"] = True
         # A regular reply anchor is meaningless on an ephemeral send; an ``eph:``
         # anchor becomes the ephemeral reply_parameters form.
         anchor = send_kwargs.pop("reply_to_message_id", None)
@@ -462,8 +613,8 @@ class TelegramPrivateControlsMixin:
         # The edit is the whole flow — a failed API reply may already have been delivered, never resend.
         if replaces_ephemeral is not None:
             edit_record = self._lookup_private_record(
-                send_kwargs.get("chat_id"), receiver, replaces_ephemeral) or _PrivateRecord(
-                send_kwargs.get("chat_id"), receiver, replaces_ephemeral)
+                expected_chat_id, receiver, replaces_ephemeral) or _PrivateRecord(
+                expected_chat_id, receiver, replaces_ephemeral)
             rich_replacement = None
             if _rich_embedding_enabled(self) and text is not None:
                 supported = getattr(self, "_rich_control_markup_supported", None)
@@ -504,8 +655,9 @@ class TelegramPrivateControlsMixin:
                     rich = None
             if rich:
                 rich_payload: Dict[str, Any] = {
-                    "chat_id": send_kwargs.get("chat_id"), "rich_message": rich,
-                    "ephemeral_message_parameters": ephemeral_params}
+                    "rich_message": rich, "ephemeral_message_parameters": ephemeral_params}
+                if send_kwargs.get("chat_id") is not None:
+                    rich_payload["chat_id"] = send_kwargs["chat_id"]
                 for key in ("reply_parameters", "message_thread_id", "direct_messages_topic_id",
                             "disable_notification"):
                     if send_kwargs.get(key) is not None:
@@ -529,7 +681,7 @@ class TelegramPrivateControlsMixin:
                     fields = _ephemeral_fields(message)
                     if fields is not None and fields[1] > 0:
                         return self._register_private_record(
-                            fields, send_kwargs.get("chat_id"), meta, callback_query_id)
+                            fields, expected_chat_id, receiver, meta, callback_query_id)
                     raise PrivateControlError("missing_ephemeral_message_id")
 
         send_kwargs["api_kwargs"] = merged_api_kwargs
@@ -549,12 +701,14 @@ class TelegramPrivateControlsMixin:
             # "Success" without an ephemeral id is unmanageable (no edit/delete
             # target) — fail closed, never public-fallback, never pretend delivered.
             raise PrivateControlError("missing_ephemeral_message_id")
-        return self._register_private_record(fields, send_kwargs.get("chat_id"), meta, callback_query_id)
+        return self._register_private_record(fields, expected_chat_id, receiver, meta, callback_query_id)
 
-    def _register_private_record(self, fields: Tuple[int, int, Any], chat_id: Any,
-                                 meta: Dict[str, Any], callback_query_id: Optional[str]) -> _HandleFacade:
-        """Registry bookkeeping shared by the rich and plain send paths."""
-        receiver_id, ephemeral_id, _msg_chat = fields
+    def _register_private_record(self, fields: Tuple[int, int, Any], expected_chat_id: Any,
+                                 expected_receiver_id: int, meta: Dict[str, Any],
+                                 callback_query_id: Optional[str]) -> _HandleFacade:
+        """Verify the returned address, then register only the trusted scope."""
+        chat_id, receiver_id, ephemeral_id = _verified_ephemeral_address(
+            fields, expected_chat_id=expected_chat_id, expected_receiver_id=expected_receiver_id)
         record = _PrivateRecord(chat_id, receiver_id, ephemeral_id, metadata=meta,
                                 callback_query_id=callback_query_id or None)
         bounded_put(self._private_records(), _record_key(chat_id, receiver_id, ephemeral_id), record, 1024)

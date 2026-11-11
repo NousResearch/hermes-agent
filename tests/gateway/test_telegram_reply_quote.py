@@ -8,7 +8,13 @@ message as ``reply_to_text``, which can cause it to act on unrelated
 actionable-looking text the user did not quote (#22619).
 """
 
+import json
+import pathlib
+import subprocess
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -27,6 +33,8 @@ def _make_message(
     reply_to_entities=None,
     reply_to_caption_entities=None,
     quote_position=None,
+    quote_rich_texts=None,
+    quote_rich_texts_as_attribute=False,
 ):
     chat = SimpleNamespace(id=111, type="private", title=None, full_name="Alice")
     user = SimpleNamespace(id=42, full_name="Alice")
@@ -42,8 +50,15 @@ def _make_message(
         )
 
     quote = None
-    if quote_text is not None:
-        quote = SimpleNamespace(text=quote_text, position=quote_position)
+    if quote_text is not None or quote_rich_texts is not None:
+        quote = SimpleNamespace(text=quote_text or "", position=quote_position)
+        if quote_rich_texts is not None:
+            if quote_rich_texts_as_attribute:
+                # A future PTB release may model ``rich_texts`` as a first-class attribute
+                # instead of leaving it in ``api_kwargs``.
+                quote.rich_texts = quote_rich_texts
+            else:
+                quote.api_kwargs = {"rich_texts": quote_rich_texts}
 
     return SimpleNamespace(
         chat=chat,
@@ -147,3 +162,210 @@ def test_native_quote_at_a_mismatched_position_is_left_as_quoted():
     event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "the changelog"
+
+
+# --- Bot API 10.4: quotes chosen from rich messages -----------------------------------------
+
+
+def test_rich_quote_used_when_quote_text_is_empty():
+    """A rich quote has empty ``text``; its selection must still win over the whole reply."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="do the selected bit",
+        reply_to_text=(
+            "Briefing:\n- Item A: deploy fix\n- Item B: rotate keys\n- Item C: update docs"
+        ),
+        quote_text="",
+        quote_rich_texts=[["Item B: ", [{"type": "bold", "text": "rotate"}], " keys"]],
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "Item B: rotate keys"
+    assert event.reply_to_message_id == "42"
+
+
+def test_rich_quote_top_level_segments_join_with_newlines():
+    """The top-level array holds distinct quoted segments, not inline runs."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="apply both",
+        reply_to_text="unrelated body",
+        quote_text="",
+        quote_rich_texts=[["First segment"], "Second segment"],
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "First segment\nSecond segment"
+
+
+def test_rich_quote_nested_segments_concatenate_inline():
+    """Nested arrays are inline runs: no separator is added inside one quoted segment."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="apply this",
+        reply_to_text="unrelated body",
+        quote_text="",
+        quote_rich_texts=[[{"type": "italic", "text": "rotate "}, ["the ", "keys"]]],
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "rotate the keys"
+
+
+def test_rich_quote_flattens_math_custom_emoji_and_date_time():
+    """Documented rich quote nodes carry their readable text, not just plain runs."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="check this",
+        reply_to_text="unrelated body",
+        quote_text="",
+        quote_rich_texts=[
+            [
+                "See ",
+                {"type": "mathematical_expression", "expression": "x^2"},
+                " for ",
+                {
+                    "type": "custom_emoji",
+                    "custom_emoji_id": "5368324170671202286",
+                    "alternative_text": "😀",
+                },
+                " on ",
+                {
+                    "type": "date_time",
+                    "text": "Nov 9",
+                    "unix_time": 1762646400,
+                    "date_time_format": "{month} {day}",
+                },
+            ]
+        ],
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "See x^2 for 😀 on Nov 9"
+
+
+def test_empty_rich_quote_never_injects_full_replied_message():
+    """A present but contentless rich selection is still a quote, not a cue to echo the reply."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="hm",
+        reply_to_text="Briefing:\n- Item A: deploy fix\n- Item B: rotate keys",
+        quote_text="",
+        quote_rich_texts=[[]],
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text is None
+    assert event.reply_to_message_id == "42"
+
+
+def test_rich_quote_read_from_attribute_when_a_future_ptb_models_it():
+    """The adapter also accepts ``quote.rich_texts`` directly, not only ``api_kwargs``."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="apply this",
+        reply_to_text="unrelated body",
+        quote_text="",
+        quote_rich_texts=[["Modelled field"]],
+        quote_rich_texts_as_attribute=True,
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "Modelled field"
+
+
+def test_quote_without_rich_texts_still_falls_back_to_full_reply():
+    """Quotes from ordinary messages keep the pre-10.4 fallback when they carry no text."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(
+        text="continue",
+        reply_to_text="Full briefing body",
+        quote_text="",
+    )
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "Full briefing body"
+
+
+_REPO = pathlib.Path(__file__).resolve().parents[2]
+
+_REAL_PTB_PROBE = r"""
+import json, sys
+sys.path.insert(0, __REPO__)
+from telegram import Message
+from gateway.config import PlatformConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter
+
+adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={}))
+payload = {
+    "message_id": 1001,
+    "date": 1762646400,
+    "chat": {"id": 111, "type": "private"},
+    "from": {"id": 42, "is_bot": False, "first_name": "Alice"},
+    "text": "do the selected bit",
+    "reply_to_message": {
+        "message_id": 42,
+        "date": 1762646400,
+        "chat": {"id": 111, "type": "private"},
+        "text": "Full briefing:\n- Item A: deploy fix\n- Item B: rotate keys",
+    },
+    "quote": {
+        "text": "",
+        "position": 0,
+        "is_manual": True,
+        "rich_texts": [
+            ["Item B: ", [{"type": "bold", "text": "rotate"}], " keys"],
+            [{"type": "mathematical_expression", "expression": "x^2"}],
+        ],
+    },
+}
+message = Message.de_json(payload, None)
+quote = message.quote
+print("___RESULT___")
+print(json.dumps({
+    "quote_type": type(quote).__name__,
+    "quote_text": quote.text,
+    "rich_texts": quote.api_kwargs.get("rich_texts"),
+    "reply_context": list(adapter._reply_context(message)),
+}))
+"""
+
+
+def _probe_real_ptb():
+    """Run the payload check in a clean interpreter (no conftest ``telegram`` mock)."""
+    code = _REAL_PTB_PROBE.replace("__REPO__", repr(str(_REPO)))
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"real python-telegram-bot unavailable: {proc.stderr.strip()[-300:]}")
+    marker = proc.stdout.rfind("___RESULT___")
+    return json.loads(proc.stdout[marker + len("___RESULT___"):].strip())
+
+
+def test_real_ptb_passes_rich_quote_payload_through():
+    """Real PTB ``Message.de_json`` keeps ``rich_texts`` in ``api_kwargs`` and the adapter reads it."""
+    result = _probe_real_ptb()
+
+    assert result["quote_type"] == "TextQuote"
+    assert result["quote_text"] == ""
+    assert result["rich_texts"] == [
+        ["Item B: ", [{"type": "bold", "text": "rotate"}], " keys"],
+        [{"type": "mathematical_expression", "expression": "x^2"}],
+    ]
+    assert result["reply_context"] == ["42", "Item B: rotate keys\nx^2"]
+

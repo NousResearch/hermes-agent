@@ -178,10 +178,14 @@ class GatewayUpdateNotificationsMixin:
 
     def _pending_marker_metadata(self, platform, chat_id, data: dict, adapter):
         """Thread metadata for a persisted update/restart marker (thread_id/chat_type/message_id keys)."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             platform, chat_id, data.get("thread_id"), chat_type=data.get("chat_type"),
             reply_to_message_id=data.get("message_id"), adapter=adapter,
         )
+        if platform == Platform.TELEGRAM and data.get("chat_type") in {"group", "supergroup", "forum"}:
+            metadata = {**(metadata or {}), "telegram_chat_type": data["chat_type"],
+                        "telegram_requester_user_id": data.get("user_id")}
+        return metadata
 
     async def _watch_update_completion_only(self, paths: _UpdatePaths, deadline: float, poll_interval: float) -> None:
         """Fallback when no adapter/chat can be resolved: wait for the exit code, then notify."""

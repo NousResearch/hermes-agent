@@ -604,6 +604,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     continue
 
                 if tick.got_done:
+                    # Completion also seals overflow heads before _push_update. A late Stop
+                    # must not invalidate the turn during any of those awaited final sends.
+                    self._finalizing = True
                     self._flush_think_buffer()
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
@@ -659,7 +662,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 if (self._run_still_current() and self._use_draft_streaming
                         and self._on_generation_stop is not None
                         and time.monotonic() - self._last_edit_time >= 10.0):
-                    await self._send_draft_frame(self._clean_for_display(self._accumulated))
+                    heartbeat_text = self._clean_for_display(self._accumulated)
+                    if (has_pending_media_directive(heartbeat_text)
+                            or _is_partial_silence_marker(heartbeat_text)
+                            or _ends_with_partial_silence_marker(self._accumulated)):
+                        heartbeat_text = self._last_sent_text or ""
+                    await self._send_draft_frame(heartbeat_text)
                     self._last_edit_time = time.monotonic()
 
         except asyncio.CancelledError:

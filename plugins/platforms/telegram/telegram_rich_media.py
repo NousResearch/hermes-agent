@@ -189,7 +189,7 @@ def build_rich_message(
     ``None`` so callers keep their default (raw-markdown) rich behavior — an explicit opt-in.
 
     ``normalizer`` (optional) is applied to ``markdown``/``html`` content (e.g. the adapter's
-    ``_rich_normalize_linebreaks``); ``blocks`` pass through untouched. Raises
+    ``rich_normalize_linebreaks``); ``blocks`` pass through untouched. Raises
     :class:`RichMediaError` on contract violations — malformed metadata is a caller bug and
     must fail loudly rather than silently degrade to a different format.
     """
@@ -333,6 +333,19 @@ class TelegramRichMediaMixin:
             and getattr(bot, "do_api_request", None) is not None
             and not getattr(self, "_rich_send_disabled", False))
 
+    async def _send_local_rich_media(self, chat_id, path, file, media_key, legacy, caption, reply_to, metadata):
+        """Send the original caption and upload together; None selects the legacy endpoint."""
+        import html
+        spec = {**rich_media_spec(media_key, file), "filename": legacy.get("filename") or pathlib.Path(path).name}
+        spec.update({key: value for key, value in legacy.items()
+                     if key not in {media_key, "caption", "filename", "parse_mode"}})
+        caption_text = html.escape(caption or "", quote=False).replace("\n", "<br>")
+        body = (f"{caption_text}<br><br>" if caption_text else "") + media_ref_html(media_key, spec["id"])
+        if not self._content_fits_rich_limits(body):
+            return None
+        rich_metadata = {**(metadata or {}), "telegram_rich_message": {"html": body}}
+        return await self._send_rich_media(chat_id, body, [spec], reply_to, rich_metadata)
+
     async def _send_rich_media(
         self, chat_id: Any, content: str, media_specs: List[Dict[str, Any]], reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
@@ -401,8 +414,8 @@ class TelegramRichMediaMixin:
             payload["reply_parameters"] = {"message_id": reply_to_id}
         rich_message: Dict[str, Any] = build_rich_message(content, metadata) or {"markdown": content}
         if "markdown" in rich_message:
-            from plugins.platforms.telegram.adapter import _rich_normalize_linebreaks
-            rich_message["markdown"] = _rich_normalize_linebreaks(rich_message["markdown"])
+            from plugins.platforms.telegram.rich_markdown import rich_normalize_linebreaks
+            rich_message["markdown"] = rich_normalize_linebreaks(rich_message["markdown"])
         if media_specs:
             rich_message["media"] = [*rich_message.get("media", []), *(_rich_media_entry(m) for m in media_specs)]
         payload["rich_message"] = rich_message

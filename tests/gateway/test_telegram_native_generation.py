@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import re
+
 import pytest
 
 from gateway.config import PlatformConfig
@@ -105,7 +107,8 @@ async def test_runner_native_stop_callback_does_not_interrupt_replacement():
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    source = SimpleNamespace()
+    from gateway.config import Platform
+    source = SimpleNamespace(platform=Platform.TELEGRAM)
     key = "telegram:dm:123"
     old_generation = runner._begin_session_run_generation(key)
     stop = runner._generation_stop_callback(source, key, old_generation)
@@ -129,3 +132,64 @@ async def test_finalizing_consumer_fences_stop_binding():
     assert control.current() is True
     consumer._finalizing = True
     assert control.current() is False
+
+
+@pytest.mark.parametrize("platform", ["slack", "discord", "matrix"])
+def test_native_stop_does_not_enable_telegram_heartbeat_on_other_platforms(platform):
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+    runner = object.__new__(GatewayRunner)
+    assert runner._generation_stop_callback(SimpleNamespace(platform=Platform(platform)), "session", 1) is None
+
+
+@pytest.mark.asyncio
+async def test_stop_during_completed_overflow_send_cannot_interrupt_turn():
+    from gateway.platforms.base import SendResult
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    tg = adapter()
+    tg._bot = SimpleNamespace(send_message_draft=AsyncMock(return_value=True))
+    cancel = AsyncMock()
+    delivered = []
+    consumer = GatewayStreamConsumer(
+        tg, "123", StreamConsumerConfig(transport="draft", chat_type="private"),
+        on_generation_stop=cancel)
+
+    async def send(**kwargs):
+        await tg._handle_generation_stopped(stop_update(draft_id=consumer._draft_id), None)
+        delivered.append(kwargs["content"])
+        return SendResult(success=True, message_id=str(len(delivered)))
+
+    tg.send = send
+    text = "complete answer " * 500
+    consumer.on_delta(text)
+    consumer.finish(text)
+    await consumer.run()
+    cancel.assert_not_awaited()
+    delivered_text = " ".join(re.sub(r" \(\d+/\d+\)$", "", part) for part in delivered)
+    assert delivered_text == text
+    assert consumer.final_content_delivered
+
+
+@pytest.mark.asyncio
+async def test_stop_heartbeat_never_publishes_unfinished_media_directive():
+    import asyncio
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    tg = adapter()
+    draft = AsyncMock(return_value=True)
+    tg._bot = SimpleNamespace(send_message_draft=draft)
+    consumer = GatewayStreamConsumer(
+        tg, "123", StreamConsumerConfig(transport="draft", chat_type="private", edit_interval=300),
+        on_generation_stop=AsyncMock())
+    task = asyncio.create_task(consumer.run())
+    try:
+        await asyncio.sleep(0.1)
+        consumer._accumulated = "answer\nMEDIA:/tmp/secret-half"
+        consumer._last_edit_time = 0.0
+        await asyncio.sleep(0.2)
+    finally:
+        task.cancel()
+        await task  # run() consumes CancelledError via _on_cancelled
+    frames = [call.kwargs.get("text", "") for call in draft.await_args_list]
+    assert frames and all("MEDIA:" not in text for text in frames)

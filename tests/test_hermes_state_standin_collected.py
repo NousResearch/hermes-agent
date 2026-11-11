@@ -120,6 +120,7 @@ def test_a_collection_under_a_lock_the_release_takes_releases_the_handle_once_it
     assert out == "True False"
 
 
+@pytest.mark.platforms("posix")
 def test_a_collection_inside_the_replacement_open_releases_the_retired_store(tmp_path):
     out = _run_bounded(tmp_path, """
         gc.disable()

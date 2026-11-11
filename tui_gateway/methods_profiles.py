@@ -299,7 +299,7 @@ def _(rid, params: dict) -> dict:
 @method("profiles.create")
 def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
-    ``clone_from`` (omitted without ``clone_all`` = fresh + bundled skills; ``clone_all`` alone = full copy of the launch profile), ``clone_all``, ``clone_channels`` (opt-in: keep the
+    ``clone_from`` (omitted = fresh + bundled skills, or with ``clone_all`` a full copy of the active profile), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``no_alias``, ``share_auth`` / ``mirror_credentials`` (both default true, the
     bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless)."""

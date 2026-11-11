@@ -1302,7 +1302,7 @@ For `update`, pass `skills=[]` to remove all attached skills.
 `delegate_task`): the tool call returns at once with a handle, and the job's
 outcome — success/failure, delivery target and next scheduled run — re-enters
 the conversation as a new message when the run finishes. The output excerpt is
-included only for `deliver: local` jobs and for runs whose delivery failed: a
+included only for `deliver: local` jobs and for runs whose delivery failed on every target: a
 job that delivered to a chat already posted its output there, so the excerpt is
 not copied into the conversation that ran it (which may be a different topic).
 The agent (and you) can keep working in the meantime, and a job that is

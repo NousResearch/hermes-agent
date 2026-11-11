@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Attributes ``wire`` may overwrite on the cached agent for one local-viewer turn.
 _TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_callback", "reasoning_callback",
-               *local_desktop_ui.CALLBACK_ATTRS)
+               "route_change_callback", *local_desktop_ui.CALLBACK_ATTRS)
 # Private key in ``wire``'s return value: the desktop window bridge registration ``restore`` releases.
 _DESKTOP_UI_TOKEN = "__desktop_ui_token__"
 # MoA facade progress (agent/moa_loop._RELAY_EVENTS) -> the payload tui_gateway/tool_progress emits.
@@ -43,6 +43,9 @@ def wire(turn, agent) -> dict:
     # Kawaii spinner text ("" clears it) and hearts; neither changes what the provider is sent.
     agent.thinking_callback = lambda text: publish("thinking.delta", {"text": str(text or "")})
     agent.reaction_callback = lambda kind: publish("reaction", {"kind": str(kind or "")})
+    # A mid-turn fallback switch or primary restore republishes session.info with the new route.
+    from gateway.session_local_inventory import publish_route_info
+    agent.route_change_callback = lambda: publish_route_info(turn, agent)
     owner = getattr(turn, "_approval_owner", None)
     if owner is not None:
         from gateway.session_usage import seed_compression_count

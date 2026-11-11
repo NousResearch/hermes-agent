@@ -59,6 +59,16 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
+def test_written_tree_passes_check_and_is_marked_generated(repo):
+    assert _generate(repo, "--check").returncode == 0
+    block = (repo / ".gitattributes").read_text().split("# BEGIN shims")[1]
+    assert {"/oldpkg/__init__.py", "/oldpkg/tool.py", "/oldpkg/data.py"} <= {
+        line.split()[0] for line in block.splitlines()[1:] if line.startswith("/")}
+    assert "/oldtop.py" not in block
+    assert (repo / "oldpkg/data.py").read_bytes() == (repo / "hermes_agent/oldpkg/data.py").read_bytes()
+    assert "MARKER the release greps for" in (repo / "oldpkg/tool.py").read_text()
+
+
 def test_old_updater_package_reaches_the_moved_module_through_the_shim(repo):
     # An updater imported the old package before the swap: Python finds oldpkg/tool.py on its
     # __path__ and never asks a finder, since none is installed in that process yet.
@@ -66,6 +76,18 @@ def test_old_updater_package_reaches_the_moved_module_through_the_shim(repo):
              "sys.modules['oldpkg'] = p; import oldpkg.tool, hermes_agent.oldpkg.tool as m; "
              "assert sys.modules['oldpkg.tool'] is m; print(m.VALUE)")
     assert _run(repo, "-c", probe).stdout.strip() == "42"
+
+
+@pytest.mark.parametrize("argv", [["oldpkg/tool.py"], ["-m", "oldpkg.tool"]])
+def test_run_as_a_script_runs_the_moved_main_with_its_argv(repo, argv):
+    result = _run(repo, *argv, "a", "b")
+    assert result.stdout.strip() == "argv ['a', 'b']", result.stderr
+
+
+def test_loaded_by_path_carries_the_moved_names(repo):
+    probe = ("import runpy, sys; ns = runpy.run_path('oldpkg/tool.py'); "
+             "print(ns['VALUE'], callable(ns['main']), '<run_path>' in sys.modules)")
+    assert _run(repo, "-c", probe).stdout.strip() == "42 True False"
 
 
 def test_check_fails_on_drift_and_strays_but_not_on_ignored_output(repo):
@@ -84,3 +106,16 @@ def test_check_fails_on_drift_and_strays_but_not_on_ignored_output(repo):
     result = _generate(repo, "--check")
     assert result.returncode == 1
     assert "elsewhere.py: stray" in result.stdout and "oldpkg/notes.txt: stray" in result.stdout
+
+
+def test_startup_list_and_hand_files_fail_only_the_check(repo):
+    (repo / "pyproject.toml").write_text('[tool.hermes]\nupdate-startup-files = ["oldpkg/gone.py"]\n')
+    for args, code in ((["--check"], 1), ([], 0)):
+        result = _generate(repo, *args)
+        assert result.returncode == code
+        assert "oldpkg/gone.py: listed in [tool.hermes] update-startup-files" in result.stdout
+        assert "oldtop.py: hand-written file is not in [tool.hermes] update-startup-files" in result.stdout
+
+    (repo / "pyproject.toml").write_text('[tool.hermes]\nupdate-startup-files = ["oldtop.py"]\n')
+    (repo / "oldtop.py").unlink()
+    assert "oldtop.py: hand-written file (required_names kind 'hand') is missing" in _generate(repo, "--check").stdout

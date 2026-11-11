@@ -1,36 +1,26 @@
 name: motion-studio
 title: Motion Studio
 repo: https://github.com/gregoryhorn/motion-studio
-sha: cec4fa5406d689c4bf3952121f63429e4deeea18
-description: Durable media projects, visual storyboards, timeline editing, bounded local rendering, captions, exact-candidate review, and checked delivery for Hermes.
+sha: 24d3a0e549ec19f10fc3e981acb5f3d53caa5b2e
+version: "0.1.0"
+description: "Creation-first media studio for Hermes Desktop. Quick Create turns a chat request into sound effects, images, voice or video takes you can play, compare, keep and download; Production collects chosen takes and imported files into a project and exports them. Image, voice and video come from Hermes' own image_gen, tts and video_gen tools; sound effects from a local producer you configure. Disclosure — downloads finished media only from the provider URLs those Hermes tools return (x.ai, openai.com, oaiusercontent.com, fal.media, fal.run, deepinfra.com, krea.ai; no proxies, cookies or credentials, same-host redirects only); runs ffmpeg/ffprobe to check imported and generated media, nvidia-smi to report GPU use, and local audio engines you set up, each with a minimal fixed environment (no inherited credentials or provider keys); reads Hermes' generator output cache read-only (secret and hidden files refused); stores projects and takes under the Motion Studio profile's data directory. Saved takes are kept, not deleted. No telemetry."
 maintainer: gregoryhorn
 tier: community
 category: desktop
-version: "0.1.0"
+requires_hermes: ">=0.23.1"
 readme: true
-platforms: [linux]
+platforms: [linux, windows]
 known_issues:
-  - "Early source preview with an unqualified-development runtime manifest. Broader production acceptance is incomplete; a downstream Breeze journey remains under investigation."
-  - "The Desktop HTTP backend requires Hermes source revision 109fd8161a509db5a00942152ba48882e446e8b0, or the exact managed-runtime API bytes in studio/host-lock.json; other builds fail closed."
-  - "Windows and macOS backend execution are not qualified. An observed Windows loaded-client/backend mismatch blocks saving; matching disk files do not establish loaded-code parity."
-  - "Local Node 22+, Chromium, FFmpeg/ffprobe and optional media engines must already be installed and pass capability checks; plugin registration does not install them."
+  - "Open Motion Studio from a chat in the motion-studio profile: the panel works with the focused chat. If it says the chat is not connected, click Connect."
+  - "Image, voice and video need the matching Hermes tool enabled with a provider. Paid or unknown-cost methods ask before running."
+  - "Sound effects need a local audio producer you configure. Music generation is not available yet."
+  - "Tested on Linux and Windows Hermes Desktop. macOS has not been tested."
+  - "Saved takes and projects cannot be deleted from the app yet."
+  - "Install asks for confirmation: Hermes' security scan rates the package caution because it runs media tools (ffmpeg/ffprobe) on file descriptors and includes subprocess and setup helpers."
 capabilities:
   provides_tools:
-    - motion_project
-    - motion_capabilities
-    - motion_asset
-    - motion_asset_library
-    - motion_storyboard
-    - motion_plan
-    - motion_run
-    - motion_caption
-    - motion_review
-    - motion_deliver
-    - motion_ui_handoff
-  provides_hooks:
-    - pre_api_request
-    - pre_tool_call
-    - post_tool_call
-    - post_api_request
+    - motion_studio_creation
+    - motion_studio_production
+  provides_hooks: []
   provides_middleware: []
   requires_env: []

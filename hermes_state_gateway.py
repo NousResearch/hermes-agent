@@ -39,18 +39,16 @@ _COMPRESSION_LINEAGE_CTE = f"""
                     )
                 """
 
-# Gateway routing recovery must never land on a delegate/branch child. The create path already
-# refuses to inherit the routing columns into a fork (#92859/#116322), but a row that predates that
-# guard, a restored/imported DB, or any writer that set them explicitly keeps the poison live, and
-# the recovery query then hands the user's thread to the subagent — the exact #138210 symptom
-# (user messages recorded in the child session, child answering for the main agent). Anchored on
-# the lineage marker, not the ``source`` label: a delegate child built on a gateway turn is
-# stamped with the parent's source (``session_source_for`` reads the session env before the
-# platform argument), so a source filter would not exclude it and would also misclassify one-shot
-# children (#112550).
-_FORK_CHILD_EXCLUSION_SQL = (
-    f"AND NOT (COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') != ''"
-    f" OR COALESCE({_sql_json_extract('s.model_config', '$._branched_from')}, '') != '')"
+# Gateway routing recovery must never land on a delegate child. The create path already refuses to
+# inherit the routing columns into one (#92859/#116322), but a row that predates that guard, a
+# restored/imported DB, or any writer that set them explicitly keeps the poison live, and the
+# recovery query then hands the user's thread to the subagent (#138210). Anchored on the lineage
+# marker, not the ``source`` label: a delegate child built on a gateway turn is stamped with the
+# parent's source. A ``/branch`` child (``_branched_from``) is NOT excluded: it is a user-facing
+# conversation that owns its route, and its routing columns are written at create on purpose so a
+# crash before ``switch_session`` still recovers it.
+_DELEGATE_CHILD_EXCLUSION_SQL = (
+    f"AND COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
 )
 
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).
@@ -75,7 +73,7 @@ _PEER_SELECT_HEAD = """
 _HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
 _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.session_key = ?
                   AND s.source = ?
-                  {_FORK_CHILD_EXCLUSION_SQL}
+                  {_DELEGATE_CHILD_EXCLUSION_SQL}
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})
                   AND NOT EXISTS (
@@ -96,7 +94,7 @@ _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.source = ?
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
-                  {_FORK_CHILD_EXCLUSION_SQL}
+                  {_DELEGATE_CHILD_EXCLUSION_SQL}
                   AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})

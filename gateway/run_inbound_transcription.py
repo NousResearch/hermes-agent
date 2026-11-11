@@ -111,11 +111,11 @@ def hand_prepared_voice_to_turn(event) -> None:
     native admission restores from the same clip bytes, noting whether the chat was shown them."""
     clip_memo = getattr(event, "_gateway_pending_stt_clips", None) or {}
     done = [(path, transcript) for path, (transcript, _note) in clip_memo.items() if transcript is not None]
-    # The echo count is a prefix of the transcripts, which follow ``done``'s order: only those clips were shown.
-    echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
+    # Transcript indices whose busy echo the platform accepted (``done`` follows the transcripts' order).
+    shown = getattr(event, "_gateway_pending_stt_shown", None) or ()
     for index, (path, transcript) in enumerate(done):
         remember_gate_transcript(path, transcript)
-        if index < echoed and (key := _echo_key(event, path)) is not None:
+        if index in shown and (key := _echo_key(event, path)) is not None:
             with _GATE_TRANSCRIPTS_LOCK:
                 _ECHOED_CLIPS[key] = None
                 while len(_ECHOED_CLIPS) > _GATE_TRANSCRIPTS_MAX:
@@ -273,17 +273,15 @@ class GatewayInboundTranscriptionMixin:
         already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
         tail = transcripts[already_echoed:]
         event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))  # claimed before the await
-        accepted = 0
-        for transcript in tail:
-            if not await self._echo_stt_transcripts(
+        # A refused echo (flood control, dead transport) was never shown: record each accepted one, so
+        # the turn native admission restores echoes exactly the clips still owed. Every clip is tried:
+        # a steered message has no later turn to make up a skipped echo.
+        shown = event._gateway_pending_stt_shown = set(getattr(event, "_gateway_pending_stt_shown", None) or ())
+        for index, transcript in enumerate(tail, start=already_echoed):
+            if await self._echo_stt_transcripts(
                 adapter, source, [transcript], metadata=metadata, log_context=log_context,
             ):
-                break
-            accepted += 1
-        if accepted < len(tail):
-            # A refused echo (flood control, dead transport) was never shown. Stop at it and count the
-            # shown prefix, so the turn native admission restores echoes exactly the clips still owed.
-            event._gateway_pending_stt_echoed = already_echoed + accepted
+                shown.add(index)
 
     async def _transcribe_and_echo_pending_voice(
         self, event, adapter, source, text: str, *, log_context: str, metadata=_UNSET

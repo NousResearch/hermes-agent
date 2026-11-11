@@ -28,6 +28,7 @@ from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
+from gateway.run_turn_setup_guard import cancel_preagent_setup, pending_setup_busy_notice
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
@@ -835,32 +836,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
         return bool(outcome.steered or outcome.redirected)
 
-    def _pending_setup_busy_notice(self, session_key: str) -> Optional[str]:
-        """Visible busy ack when a follow-up arrives behind a wedged pre-agent turn.
-
-        Fresh PENDING setup stays silent (the historical race-avoidance). After
-        ``session_stall_timeout`` with no agent activity the user gets the same
-        class of notice as a stalled running turn (#138358). 0 disables.
-        """
-        from gateway.run import _float_env
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
-            return None
-        timeout = _float_env("HERMES_SESSION_STALL_TIMEOUT", 300)
-        if timeout <= 0:
-            return None
-        state = self._peek_session_state(session_key)
-        started = float(getattr(getattr(state, "turn", None), "started_ts", 0.0) or 0.0)
-        if state is None or not started:
-            return None
-        now = time.time()
-        age = now - started
-        if age < timeout:
-            return None
-        if now - float(state.turn.busy_ack_ts or 0.0) < 30:
-            return None
-        state.turn.busy_ack_ts = now
-        return t("gateway.busy.setup_waiting", minutes=max(1, int(age // 60)))
-
     async def _hm_handle_running_session_message(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> Optional[str]:
@@ -887,11 +862,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         running_agent = _ra_state.turn.agent if _ra_state else None
         if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
+                cancel_preagent_setup(self, _quick_key)  # and end the setup still holding its claim
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
-            return self._pending_setup_busy_notice(_quick_key)
+            return pending_setup_busy_notice(self, _quick_key)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:

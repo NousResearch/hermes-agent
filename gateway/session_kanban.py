@@ -53,6 +53,16 @@ def build_kanban_policy(connection, params, config):
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
         if value:
             params_policy[name] = value
+    if task.max_runtime_seconds:
+        # Local patch (Andrew 2026-11-04): the card's dispatcher cap is the worker's real deadline.
+        # Fold it into the run budget so the 80% wrap-up notice fires before the kill, never after
+        # it under the profile's longer agent.run_budget_seconds. 120s is left for the checkpoint.
+        card_budget = max(60.0, float(task.max_runtime_seconds) - 120.0)
+        try:
+            profile_budget = float((config.get('agent') or {}).get('run_budget_seconds') or 0)
+        except (TypeError, ValueError, AttributeError):
+            profile_budget = 0.0
+        params_policy['run_budget'] = min(card_budget, profile_budget) if profile_budget > 0 else card_budget
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
     if policy.model is None:

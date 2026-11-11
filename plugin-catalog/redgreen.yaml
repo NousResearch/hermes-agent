@@ -3,7 +3,7 @@
 name: redgreen
 title: RedGreen
 repo: https://github.com/shahaman098/hermes-redgreen
-sha: edaf92843c312dbef067b4e258853b104f171349
+sha: c4b162c72e9555ecc7930c2a367dab6ae0ccd60d
 version: "1.0.0"
 description: >-
   Prove a fix with a negative control before Hermes can call it done — re-run
@@ -16,9 +16,9 @@ tier: community
 category: tools
 requires_hermes: ">=0.18.0"
 docs_url: https://github.com/shahaman098/hermes-redgreen#readme
-image: https://raw.githubusercontent.com/shahaman098/hermes-redgreen/edaf92843c312dbef067b4e258853b104f171349/assets/banner.png
+image: https://raw.githubusercontent.com/shahaman098/hermes-redgreen/c4b162c72e9555ecc7930c2a367dab6ae0ccd60d/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/shahaman098/hermes-redgreen/edaf92843c312dbef067b4e258853b104f171349/assets/certificate.png
+  - https://raw.githubusercontent.com/shahaman098/hermes-redgreen/c4b162c72e9555ecc7930c2a367dab6ae0ccd60d/assets/certificate.png
 known_issues:
   - Needs a git repository; outside a repo RedGreen does not gate completion.
   - Full suites run twice — use a targeted test command or raise REDGREEN_TIMEOUT on large repos.

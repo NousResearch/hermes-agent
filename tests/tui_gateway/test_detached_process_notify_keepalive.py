@@ -291,7 +291,8 @@ def test_process_started_before_compression_still_pins_session(server, registry,
 def test_disabled_watch_does_not_pin_session(server, registry, detached):
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], watch_patterns=["VERDICT"])
-    proc._watch_disabled = True
+    from tools.process_registry_watch import WatchPhase
+    proc._watch.phase = WatchPhase.DISABLED
 
     assert server._session_is_reapable(sid, session)
 

@@ -2925,9 +2925,6 @@ class TestNotificationRedaction:
         sess = _make_session(sid="proc_notif2", command="python server.py")
         sess.output_buffer = "Server started\nAPI_TOKEN=ghp_abc123def456\nListening on :8080"
         sess.watch_patterns = ["API_TOKEN"]
-        sess._watch_disabled = False
-        sess._watch_hits = 0
-        sess._watch_suppressed = 0
         sess.watcher_platform = None
         sess.watcher_chat_id = None
         sess.watcher_user_id = None

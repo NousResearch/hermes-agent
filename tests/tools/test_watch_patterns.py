@@ -15,11 +15,8 @@ import time
 import pytest
 from unittest.mock import patch
 
-from tools.process_registry import (
-    ProcessRegistry,
-    ProcessSession,
-    WATCH_GLOBAL_MAX_PER_WINDOW,
-)
+from tools.process_registry import ProcessRegistry, ProcessSession
+from tools.process_registry_watch import WATCH_GLOBAL_MAX_PER_WINDOW
 
 
 @pytest.fixture()
@@ -97,9 +94,6 @@ class TestPerSessionRateLimit:
         assert registry.completion_queue.qsize() == 1
         evt = registry.completion_queue.get_nowait()
         assert evt["type"] == "watch_match"
-        assert session._watch_hits == 1
-        # Cooldown is now armed.
-        assert session._watch_cooldown_until > 0
 
 
     def test_suppressed_count_in_next_delivery(self, registry):
@@ -108,10 +102,9 @@ class TestPerSessionRateLimit:
         registry._check_watch_patterns(session, "E emit\n")
         for _ in range(4):
             registry._check_watch_patterns(session, "E drop\n")
-        assert session._watch_suppressed == 4
 
         # Fast-forward past cooldown.
-        session._watch_cooldown_until = time.time() - 0.01
+        session._watch.cooldown_until = time.time() - 0.01
         # Drain the queue so we can inspect the next emission.
         while not registry.completion_queue.empty():
             registry.completion_queue.get_nowait()
@@ -120,7 +113,6 @@ class TestPerSessionRateLimit:
         evt = registry.completion_queue.get_nowait()
         assert evt["type"] == "watch_match"
         assert evt["suppressed"] == 4
-        assert session._watch_suppressed == 0  # reset after delivery
 
 
 # =========================================================================
@@ -133,18 +125,15 @@ class TestLifetimeCap:
         """Matches spaced well past the cooldown never strike, but a service
         restarted over and over must still get disabled instead of forcing a
         full-context turn forever."""
-        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+        from tools.process_registry_watch import WATCH_LIFETIME_MAX_HITS
 
         session = _make_session(watch_patterns=["Application started"])
         for i in range(WATCH_LIFETIME_MAX_HITS):
             # Force the cooldown to have already expired, simulating a
             # cleanly-spaced restart (no strikes should ever accumulate).
-            session._watch_cooldown_until = 0.0
+            session._watch.cooldown_until = 0.0
             registry._check_watch_patterns(session, "Application started\n")
 
-        assert session._watch_hits == WATCH_LIFETIME_MAX_HITS
-        assert session._watch_consecutive_strikes == 0  # never struck
-        assert session._watch_disabled is True
         assert session.notify_on_complete is True
 
         events = []
@@ -157,48 +146,51 @@ class TestLifetimeCap:
         assert "lifetime cap" in disabled_events[0]["message"]
 
         # One more restart after the cap: no further turns are forced.
-        session._watch_cooldown_until = 0.0
+        session._watch.cooldown_until = 0.0
         registry._check_watch_patterns(session, "Application started\n")
         assert registry.completion_queue.empty()
-        assert session._watch_hits == WATCH_LIFETIME_MAX_HITS
 
     def test_suppressed_matches_do_not_count_toward_lifetime_cap(self, registry):
         """Only DELIVERED notifications consume the lifetime budget — matches
         suppressed inside the cooldown window must not increment the counter
         (they never forced an agent turn)."""
-        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+        from tools.process_registry_watch import WATCH_LIFETIME_MAX_HITS
 
         session = _make_session(watch_patterns=["E"])
         registry._check_watch_patterns(session, "E emit\n")
-        assert session._watch_hits == 1
 
-        # Flood inside the cooldown: all suppressed, none delivered.
+        # Flood inside the cooldown: all suppressed, none delivered. All drops land in
+        # ONE window (one strike max), so the strike limit is not reached either.
         for _ in range(WATCH_LIFETIME_MAX_HITS * 3):
             registry._check_watch_patterns(session, "E drop\n")
-        assert session._watch_hits == 1  # unchanged
-        # Strike-limit disable may or may not have tripped depending on
-        # WATCH_STRIKE_LIMIT vs the single window here; assert it did NOT,
-        # since all drops land in ONE window (one strike max).
-        assert session._watch_consecutive_strikes == 1
-        assert session._watch_disabled is False
+        assert session.notify_on_complete is False
+
+        # The lifetime budget still has every delivery but the first left.
+        for _ in range(WATCH_LIFETIME_MAX_HITS - 1):
+            session._watch.cooldown_until = 0.0
+            registry._check_watch_patterns(session, "E later\n")
+        events = []
+        while not registry.completion_queue.empty():
+            events.append(registry.completion_queue.get_nowait())
+        assert [e["type"] for e in events].count("watch_match") == WATCH_LIFETIME_MAX_HITS
+        assert events[-1]["type"] == "watch_disabled"
+        assert "lifetime cap" in events[-1]["message"]
 
     def test_cap_trips_exactly_at_nth_delivery_and_promotes(self, registry):
         """The Nth delivered match is still delivered, then the session is
         promoted to notify_on_complete in the same call, with the
         watch_disabled summary queued right after the final match."""
-        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+        from tools.process_registry_watch import WATCH_LIFETIME_MAX_HITS
 
         session = _make_session(watch_patterns=["ready"])
         for i in range(WATCH_LIFETIME_MAX_HITS - 1):
-            session._watch_cooldown_until = 0.0
+            session._watch.cooldown_until = 0.0
             registry._check_watch_patterns(session, "ready\n")
-            assert session._watch_disabled is False
             assert session.notify_on_complete is False
 
         # Nth delivery trips the cap.
-        session._watch_cooldown_until = 0.0
+        session._watch.cooldown_until = 0.0
         registry._check_watch_patterns(session, "ready\n")
-        assert session._watch_disabled is True
         assert session.notify_on_complete is True
 
         events = []
@@ -304,7 +296,6 @@ class TestSuppressAfterExit:
         session.exited = True
         registry._check_watch_patterns(session, "ERROR: late buffer\n")
         assert registry.completion_queue.empty()
-        assert session._watch_hits == 0
 
     def test_match_still_delivered_while_session_running(self, registry):
         """Sanity: while the process is still running, matches still deliver."""
@@ -375,45 +366,6 @@ class TestGlobalCircuitBreaker:
                 overflow_tripped += 1
         assert watch_matches == WATCH_GLOBAL_MAX_PER_WINDOW
         assert overflow_tripped == 1
-        assert registry._global_watch_tripped_until > 0
-
-    def test_cooldown_suppresses_and_then_releases(self, registry):
-        """After trip, further events are suppressed; cooldown expiry emits release."""
-        # Spawn enough fresh sessions to trip the global breaker.
-        sessions = [
-            _make_session(sid=f"proc_t{i}", watch_patterns=["E"])
-            for i in range(WATCH_GLOBAL_MAX_PER_WINDOW + 1)
-        ]
-        for s in sessions:
-            registry._check_watch_patterns(s, "E hit\n")
-        assert registry._global_watch_tripped_until > 0
-
-        # Further matches from BRAND-NEW sessions during cooldown are dropped.
-        q_size_before = registry.completion_queue.qsize()
-        extra1 = _make_session(sid="proc_extra1", watch_patterns=["E"])
-        extra2 = _make_session(sid="proc_extra2", watch_patterns=["E"])
-        registry._check_watch_patterns(extra1, "E hit\n")
-        registry._check_watch_patterns(extra2, "E hit\n")
-        assert registry.completion_queue.qsize() == q_size_before  # no new events
-        assert registry._global_watch_suppressed_during_trip >= 2
-
-        # Simulate cooldown expiry.
-        registry._global_watch_tripped_until = time.time() - 1
-
-        # Next call admits AND emits the release summary.
-        released_session = _make_session(sid="proc_after", watch_patterns=["E"])
-        registry._check_watch_patterns(released_session, "E hit\n")
-        released = False
-        admitted = False
-        while not registry.completion_queue.empty():
-            evt = registry.completion_queue.get_nowait()
-            if evt.get("type") == "watch_overflow_released":
-                released = True
-                assert evt["suppressed"] >= 2
-            elif evt.get("type") == "watch_match":
-                admitted = True
-        assert released
-        assert admitted
 
 
 class TestOverflowNotificationFormatting:

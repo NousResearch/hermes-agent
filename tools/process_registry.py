@@ -41,6 +41,10 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.process_registry_watch import (
+    WATCH_LIFETIME_MAX_HITS, WATCH_MIN_INTERVAL_SECONDS, WATCH_STRIKE_LIMIT, WatchBreaker, WatchLimiter, WatchPhase,
+    WatchVerdict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,23 +67,7 @@ COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
 
-# Watch-pattern rate limiting, PER SESSION: one watch-match notification per
-# WATCH_MIN_INTERVAL_SECONDS; a match inside the cooldown is dropped and counts as one
-# strike per window; WATCH_STRIKE_LIMIT consecutive strike windows permanently disable
-# watching and fall back to notify_on_complete semantics.
-WATCH_MIN_INTERVAL_SECONDS = 15
-WATCH_STRIKE_LIMIT = 3
-# Lifetime cap, independent of strikes: a pattern recurring just above the cooldown never
-# strikes yet forces a full-context agent turn each time; watch_patterns is "ONLY for
-# rare one-shot signals", so after this many deliveries fall back to notify_on_complete.
 # MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
-# A process whose pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a service
-# restarted repeatedly over a day) never trips the consecutive-strike limit, since each match lands in its
-# own clean cooldown window, yet still forces a full-context agent turn every single time (#93513).
-# watch_patterns is documented as "ONLY for rare one-shot mid-process signals", so once a session has
-# delivered this many matches over its whole life we disable it and fall back to notify_on_complete, same as
-# the strike-limit path.
-WATCH_LIFETIME_MAX_HITS = 8
 # Heartbeat: an opt-in periodic "still running, here is the output since last time" event for
 # long bounded jobs (merge trains, full test suites, deploys). Unlike watch patterns it is
 # time-driven, so it is bounded by construction (≤ 3600/HEARTBEAT_MIN_SECONDS events per hour
@@ -92,11 +80,6 @@ HEARTBEAT_TICK_SECONDS = 5
 # interval plus that drain.
 _FINAL_DRAIN_MAX_CHARS = 1 << 20
 _READER_FINAL_DRAIN_WAIT_SECONDS = 1.0
-# Global circuit breaker across all sessions so concurrent siblings can't collectively
-# flood the user even when each is under its own cap.
-WATCH_GLOBAL_MAX_PER_WINDOW = 15
-WATCH_GLOBAL_WINDOW_SECONDS = 10
-WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
 
 # --- systemd cgroup isolation for gateway-spawned local executors ------------------
@@ -591,13 +574,7 @@ class ProcessSession:
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
     _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
     _heartbeat_seq: int = field(default=0, repr=False)
-    _watch_hits: int = field(default=0, repr=False)          # total matches delivered
-    _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
-    _watch_disabled: bool = field(default=False, repr=False) # permanently killed after strike limit
-    # Rate-limit window state (see WATCH_*). A strike is a WINDOW with drops, not a drop.
-    _watch_cooldown_until: float = field(default=0.0, repr=False)
-    _watch_strike_candidate: bool = field(default=False, repr=False)
-    _watch_consecutive_strikes: int = field(default=0, repr=False)
+    _watch: WatchLimiter = field(default_factory=WatchLimiter, repr=False)
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     # Set by the _move_to_finished call that moved the session out of _running; only that call
     # publishes the completion, so a duplicate finisher must not release waiters early.
@@ -713,10 +690,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # gateway/tui watchers deliberately ignore this set.
         # See #8228.
         self._poll_observed: set = set()
-        # Global watch-match circuit breaker across all sessions.
-        self._global_watch_lock = threading.Lock()
-        self._global_watch_window_start = self._global_watch_tripped_until = 0.0
-        self._global_watch_window_hits = self._global_watch_suppressed_during_trip = 0
+        self._global_watch = WatchBreaker()
         # Driver-installed sinks (desktop gateway): on_output(session, chunk) streams
         # live output from reader threads; on_close(session_or_none, process_id) drops
         # a read-only terminal tab without killing the process.
@@ -805,7 +779,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         window, a match inside the window is one strike, WATCH_STRIKE_LIMIT consecutive
         strikes or WATCH_LIFETIME_MAX_HITS total deliveries disable watching and
         promote the session to notify_on_complete."""
-        if not session.watch_patterns or session._watch_disabled:
+        if not session.watch_patterns or session._watch.phase is WatchPhase.DISABLED:
             return
         # Late chunks after the reader declared exit are post-exit noise; dropping them
         # avoids stale notifications minutes after the process ended.
@@ -820,44 +794,25 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         matched_lines = [line for _, line in hits]
         now = time.time()
         with session._lock:
-            if session._watch_cooldown_until and now < session._watch_cooldown_until:
-                # Inside the cooldown: drop, count one strike per window, disable +
-                # promote once the strike limit is hit.
-                session._watch_suppressed += len(matched_lines)
-                if session._watch_strike_candidate:
-                    return
-                session._watch_strike_candidate = True
-                session._watch_consecutive_strikes += 1
-                if session._watch_consecutive_strikes < WATCH_STRIKE_LIMIT:
-                    return
-                session._watch_disabled = True
+            verdict, suppressed = session._watch.admit(now, len(matched_lines))
+            if verdict in (WatchVerdict.DISABLE, WatchVerdict.DELIVER_LAST):
                 # Promote so the agent still gets exactly one notification on exit,
                 # plus exactly one summary so it sees why things went quiet.
                 session.notify_on_complete = True
+            if verdict is WatchVerdict.DISABLE:
                 self._emit_watch_disabled(
-                    session, session._watch_suppressed,
+                    session, suppressed,
                     f"{WATCH_STRIKE_LIMIT} consecutive rate-limit windows triggered "
                     f"(min spacing {WATCH_MIN_INTERVAL_SECONDS}s). ")
-                return
-            # Cooldown expired. A prior window with no drops resets the
-            # consecutive-strike counter (healthy cadence again).
-            if session._watch_cooldown_until and not session._watch_strike_candidate:
-                session._watch_consecutive_strikes = 0
-            session._watch_strike_candidate = False
-            # Emit and start a new cooldown window.
-            session._watch_cooldown_until = now + WATCH_MIN_INTERVAL_SECONDS
-            session._watch_hits += 1
-            suppressed = session._watch_suppressed
-            session._watch_suppressed = 0
-            # Lifetime cap: this match is still delivered, but no further ones.
-            lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
-            if lifetime_exhausted:
-                session._watch_disabled = True
-                session.notify_on_complete = True
+        if verdict in (WatchVerdict.DROP, WatchVerdict.DISABLE):
+            return
         output = "\n".join(matched_lines[:20])
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
-        if self._global_watch_admit(now):
+        admitted, breaker_events = self._global_watch.admit(now)
+        for event in breaker_events:
+            self.completion_queue.put(event)
+        if admitted:
             notification = {
                 **self._watch_event_base(session),
                 "type": "watch_match",
@@ -868,7 +823,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             _redact_process_result(notification)
             self.completion_queue.put(notification)
         # Even when the breaker drops the final match, still explain the silence.
-        if lifetime_exhausted:
+        if verdict is WatchVerdict.DELIVER_LAST:
             self._emit_watch_disabled(
                 session, 0, f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered matches. ",
             )
@@ -899,57 +854,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "command": session.command,
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
         }
-
-    @staticmethod
-    def _global_watch_event(type_: str, message: str, **extra) -> dict:
-        """Unaddressed (all-sessions) watch breaker event."""
-        return {
-            "session_id": "", "session_key": "", "command": "", "type": type_, **extra,
-            "message": message,
-            "platform": "", "chat_id": "", "user_id": "", "user_name": "", "thread_id": "",
-        }
-
-    def _global_watch_admit(self, now: float) -> bool:
-        """True if this watch_match may pass the global breaker.
-        In cooldown: drop and count. Otherwise slide the rolling window; exceeding
-        the cap trips the breaker for WATCH_GLOBAL_COOLDOWN_SECONDS with ONE
-        "tripped" summary, and the cooldown's end emits ONE "released" summary."""
-        events = []  # summary events, queued outside the lock
-        with self._global_watch_lock:
-            # Handle cooldown expiry first so we can emit the release summary.
-            if self._global_watch_tripped_until and now >= self._global_watch_tripped_until:
-                suppressed = self._global_watch_suppressed_during_trip
-                self._global_watch_tripped_until = 0.0
-                self._global_watch_suppressed_during_trip = 0
-                self._global_watch_window_start, self._global_watch_window_hits = now, 0
-                if suppressed > 0:
-                    events.append(self._global_watch_event(
-                        "watch_overflow_released",
-                        f"Watch-pattern notifications resumed. "
-                        f"{suppressed} match event(s) were suppressed during the flood.",
-                        suppressed=suppressed))
-            if self._global_watch_tripped_until and now < self._global_watch_tripped_until:
-                # Still in cooldown — drop and count.
-                self._global_watch_suppressed_during_trip += 1
-                admit = False
-            else:
-                if now - self._global_watch_window_start >= WATCH_GLOBAL_WINDOW_SECONDS:
-                    self._global_watch_window_start, self._global_watch_window_hits = now, 0
-                admit = self._global_watch_window_hits < WATCH_GLOBAL_MAX_PER_WINDOW
-                if admit:
-                    self._global_watch_window_hits += 1
-                else:
-                    self._global_watch_tripped_until = now + WATCH_GLOBAL_COOLDOWN_SECONDS
-                    self._global_watch_suppressed_during_trip += 1
-                    events.append(self._global_watch_event(
-                        "watch_overflow_tripped",
-                        f"Watch-pattern overflow: >{WATCH_GLOBAL_MAX_PER_WINDOW} "
-                        f"notifications in {WATCH_GLOBAL_WINDOW_SECONDS}s across all processes. "
-                        f"Suppressing further watch_match events for "
-                        f"{WATCH_GLOBAL_COOLDOWN_SECONDS}s."))
-        for msg in events:
-            self.completion_queue.put(msg)
-        return admit
 
     @staticmethod
     def _is_host_pid_alive(pid: Optional[int]) -> bool:
@@ -1674,7 +1578,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 return False
             session = refreshed
         return not session.exited and not (
-            session.watch_patterns and not session._watch_disabled and session._watch_hits > 0)
+            session.watch_patterns and session._watch.phase is not WatchPhase.DISABLED and session._watch.hits > 0)
 
     def wait_for_pending_completions(
         self, task_id: Optional[str] = None, *, timeout: float | None = None, poll_interval: float = 1.0,
@@ -2404,8 +2308,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 entry["wsl_chain"] = True
                 entry["wsl_note"] = _WSL_CHAIN_NOTE
             # Trigger metadata for goal-loop judges (a watcher may never exit).
-            if s.watch_patterns and not s._watch_disabled:
-                entry.update(watch_patterns=list(s.watch_patterns), watch_hit=s._watch_hits > 0)
+            if s.watch_patterns and s._watch.phase is not WatchPhase.DISABLED:
+                entry.update(watch_patterns=list(s.watch_patterns), watch_hit=s._watch.hits > 0)
             if s.notify_on_complete:
                 entry["notify_on_complete"] = True
             if s.persist_on_release:

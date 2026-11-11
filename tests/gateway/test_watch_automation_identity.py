@@ -11,7 +11,7 @@ def test_watch_event_identity_survives_retry_but_not_another_hit():
     session.watch_patterns = ['READY']
     registry._check_watch_patterns(session, 'READY\n')
     first = registry.completion_queue.get_nowait()
-    session._watch_cooldown_until = 0
+    session._watch.cooldown_until = 0
     registry._check_watch_patterns(session, 'READY\n')
     second = registry.completion_queue.get_nowait()
     registry._emit_watch_disabled(session, 0, 'test cap')

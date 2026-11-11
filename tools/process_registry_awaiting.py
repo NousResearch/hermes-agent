@@ -23,6 +23,8 @@ import collections
 import contextlib
 import threading
 
+from tools.process_registry_watch import WatchPhase
+
 # Owner task id → number of dequeued-but-unrouted events. take_ready increments it under the queue's mutex in the same
 # critical section as the dequeue, and awaits_notification reads queue and counter under that mutex too, so a reader
 # sees each event either queued or held, never neither. Decrements (release) happen only after any requeue.
@@ -97,7 +99,7 @@ def retained_for_delivery(s) -> bool:
 
 
 def _notifies(s) -> bool:
-    return bool(s.notify_on_complete or (s.watch_patterns and not s._watch_disabled))
+    return bool(s.notify_on_complete or (s.watch_patterns and s._watch.phase is not WatchPhase.DISABLED))
 
 
 def awaits_notification(registry, owner_task_ids) -> bool:

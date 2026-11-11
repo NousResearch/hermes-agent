@@ -25,6 +25,8 @@ _HOLD = textwrap.dedent("""
     sys.path.insert(0, sys.argv[1])
     from gateway import lifecycle_ledger, status
     status._looks_like_gateway_process = lambda pid: True
+    assert status.acquire_gateway_runtime_lock()  # a real gateway holds its home's flock while it lives
+    status.write_pid_file()
     ok, _ = status.acquire_scoped_lock("telegram-bot-token", "123:fixture")
     lifecycle_ledger.record_startup(defer_integrity_check=True)
     print(json.dumps({"ok": ok, "pid": os.getpid()}), flush=True)
@@ -60,18 +62,25 @@ def namespaced_holder(tmp_path, monkeypatch):
         assert held["ok"]
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
-        yield held, home, locks
+        yield held, home, locks, lambda: _end(proc)
     finally:
-        proc.stdin.close()  # the holder exits on EOF; the namespace goes with its init
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=10)
+        _end(proc)
+
+
+def _end(proc):
+    """Close the holder's stdin: it exits without any exit path (no lock release, sentinel left
+    ``running``), like a SIGKILL; the kernel drops its flock and the namespace goes with its init."""
+    if proc.stdin and not proc.stdin.closed:
+        proc.stdin.close()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
 
 
 def test_a_live_owner_in_another_pid_namespace_keeps_the_token_lock(namespaced_holder, monkeypatch):
-    held, _home, locks = namespaced_holder
+    held, _home, locks, _end_holder = namespaced_holder
     record = json.loads(next(locks.glob("*.lock")).read_text())
     assert record["pid"] == held["pid"] and held["pid"] != os.getpid()
     assert record["pidns"] and record["pidns"] != os.readlink("/proc/self/ns/pid")[5:-1]
@@ -82,8 +91,26 @@ def test_a_live_owner_in_another_pid_namespace_keeps_the_token_lock(namespaced_h
 
 
 def test_its_lifecycle_sentinel_is_not_reported_as_an_unclean_death(namespaced_holder):
-    _held, home, _locks = namespaced_holder
+    _held, home, _locks, _end_holder = namespaced_holder
     assert lifecycle_ledger.detect_unclean_exit(home) is None
+
+
+def test_its_pid_file_survives_a_status_poll_from_outside(namespaced_holder):
+    _held, home, _locks, _end_holder = namespaced_holder
+    status.get_running_pid(home / "gateway.pid")
+    assert (home / "gateway.pid").exists(), "a status poll unlinked a live namespaced gateway's pid file"
+
+
+def test_a_dead_owner_in_another_pid_namespace_is_reclaimed_and_reported(namespaced_holder, monkeypatch):
+    """After a SIGKILL under ``PrivatePIDs=`` the record still names another namespace, so only the
+    home's free ``gateway.lock`` flock can say it is gone. A start must take the token, not exit 78."""
+    held, home, _locks, end_holder = namespaced_holder
+    end_holder()
+    monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+    acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "123:fixture")
+    assert acquired, "a dead owner in another PID namespace kept the token lock forever"
+    evidence = lifecycle_ledger.detect_unclean_exit(home)
+    assert evidence is not None and evidence["prior_pid"] == held["pid"]
 
 
 def test_a_dead_owner_in_this_namespace_is_still_reclaimed(tmp_path, monkeypatch):

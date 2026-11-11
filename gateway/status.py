@@ -1548,9 +1548,8 @@ def _acquire_scoped_lock_at(
         # Same live PID as this process: always self-reacquire. ``start_time`` is a PID-reuse guard for
         # *other* PIDs; it cannot distinguish two processes that share the caller's own PID (impossible
         # while we are alive). Requiring start_time equality here falsely rejects reconnects when the
-        # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the
-        # freshly built record has a real value — the gateway then reports itself as the foreign squatter of
-        # its own token (#81468).
+        # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the fresh
+        # record has a real value — the gateway then reports itself as the foreign squatter of its token (#81468).
         from gateway.status_scoped_locks import scoped_lock_pid_is_ours
         if existing_pid == os.getpid() and scoped_lock_pid_is_ours(existing):
             _write_json_file(lock_path, record)
@@ -1965,13 +1964,14 @@ def get_running_pid(
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
-        records = (
-            _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
-        )
+        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
         expected_home = pid_path.parent if pid_path is not None else None
-        saw_live_pid = False
-        foreign_live_pid = False
+        saw_live_pid = foreign_live_pid = False
         for record in records:
+            if isinstance(record, dict) and not scoped_lock_pid_is_ours(record):
+                saw_live_pid = True  # held flock, PID from another namespace: never probe or unlink (#123081)
+                continue
             pid = _live_pid_from_record(record)
             if pid is None:
                 continue

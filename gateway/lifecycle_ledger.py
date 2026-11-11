@@ -160,8 +160,12 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
         return None
     from hermes_state_pidns import persistent_record_pidns_checkable
     if not persistent_record_pidns_checkable(sentinel.get("pidns")):
-        return None  # written in another PID namespace: its pid cannot be probed here (#123081)
-    if _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time")):
+        # Written in another PID namespace, so its pid means nothing here (#123081). The home's
+        # gateway.lock flock does: held by another process = that life is still running.
+        from gateway.runtime_ownership import runtime_lock_held_elsewhere
+        if runtime_lock_held_elsewhere(_home_path(home)):
+            return None
+    elif _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("start_time"), sentinel.get("create_time")):
         return None  # live owner — planned takeover in flight, not a death
     evidence: dict[str, Any] = {
         "prior_pid": sentinel.get("pid"), "prior_started_at": sentinel.get("started_at"),

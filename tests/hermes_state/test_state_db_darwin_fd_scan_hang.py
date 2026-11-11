@@ -30,15 +30,15 @@ from hermes_state_dbfile import (
     _iter_darwin_sidecar_holders,
 )
 
-# Far below the 5s production budget so the suite stays fast; far above zero
-# so scheduling jitter cannot flake it.
-BUDGET = 2.0
 # Guard so a regression (scan blocks again) fails instead of hanging the suite.
 HANG_GUARD = 30.0
 
 
 class _HungLibproc:
-    """One pid, one fd, whose vnode lookup never returns (state-U process)."""
+    """One pid, one fd, whose vnode lookup blocks until the test releases it."""
+
+    def __init__(self, release):
+        self.release = release
 
     def proc_pidinfo(self, pid, flavor, arg, buf, size):
         payload = struct.pack("<iI", 7, 1)
@@ -46,8 +46,8 @@ class _HungLibproc:
         return len(payload)
 
     def proc_pidfdinfo(self, pid, fd, flavor, record, size):
-        threading.Event().wait()
-        return 0  # unreachable
+        self.release.wait()
+        return 0
 
 
 class _HealthyLibproc:
@@ -83,20 +83,25 @@ def _run_guarded(func, *args):
 
 
 def test_hung_vnode_scan_fails_open_within_budget(monkeypatch, tmp_path, caplog):
-    monkeypatch.setattr(dbfile, "_darwin_libproc", lambda: _HungLibproc())
+    release = threading.Event()
+    monkeypatch.setattr(dbfile, "_darwin_libproc", lambda: _HungLibproc(release))
     monkeypatch.setattr(dbfile, "_darwin_all_pids", lambda _lib: [4242])
-    if hasattr(dbfile, "_DARWIN_FD_SCAN_TIMEOUT_SECONDS"):
-        monkeypatch.setattr(dbfile, "_DARWIN_FD_SCAN_TIMEOUT_SECONDS", BUDGET)
-    with caplog.at_level(logging.WARNING, logger="hermes_state"):
-        worker, elapsed, outcome = _run_guarded(
-            _iter_darwin_sidecar_holders, tmp_path / "state.db"
-        )
-    assert not worker.is_alive(), "scan blocked past the hang guard: no deadline"
-    assert elapsed < HANG_GUARD
-    assert outcome == [[]], "a timed-out scan must fail open (no holders, no refusal)"
-    assert any(
-        "timed out" in record.getMessage() for record in caplog.records
-    ), "deadline expiry must log a visible warning"
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            worker, elapsed, outcome = _run_guarded(
+                _iter_darwin_sidecar_holders, tmp_path / "state.db"
+            )
+        assert not worker.is_alive(), "scan blocked past the hang guard: no deadline"
+        assert elapsed < HANG_GUARD
+        assert outcome == [[]], "a timed-out scan must fail open (no holders, no refusal)"
+        assert any(
+            "timed out" in record.getMessage() for record in caplog.records
+        ), "deadline expiry must log a visible warning"
+    finally:
+        release.set()
+        scan_worker = getattr(dbfile, "_DARWIN_FD_SCAN_WORKER", None)
+        if scan_worker is not None:
+            scan_worker.join(2.0)
 
 
 def test_healthy_scan_still_reports_holder(monkeypatch, tmp_path, caplog):
@@ -107,15 +112,70 @@ def test_healthy_scan_still_reports_holder(monkeypatch, tmp_path, caplog):
     lib = _HealthyLibproc(watched, (0xDEAD, 0xBEEF))
     monkeypatch.setattr(dbfile, "_darwin_libproc", lambda: lib)
     monkeypatch.setattr(dbfile, "_darwin_all_pids", lambda _lib: [4242])
-    if hasattr(dbfile, "_DARWIN_FD_SCAN_TIMEOUT_SECONDS"):
-        monkeypatch.setattr(dbfile, "_DARWIN_FD_SCAN_TIMEOUT_SECONDS", BUDGET)
+    # Prior test intentionally timed out; each test starts outside its brief cache.
+    monkeypatch.setattr(dbfile, "_DARWIN_FD_SCAN_NEXT_RETRY", 0.0, raising=False)
     with caplog.at_level(logging.WARNING, logger="hermes_state"):
         worker, elapsed, outcome = _run_guarded(
             _iter_darwin_sidecar_holders, tmp_path / "state.db"
         )
     assert not worker.is_alive()
-    assert elapsed < BUDGET, "a fast scan must not wait out the budget"
+    assert elapsed < dbfile._DARWIN_FD_SCAN_TIMEOUT_SECONDS, "a fast scan must not wait out the budget"
     assert outcome == [[(4242, watched)]]
     assert not any(
         "timed out" in record.getMessage() for record in caplog.records
     ), "a successful scan must not log a timeout warning"
+
+
+def test_stuck_scan_is_single_flight_across_callers(monkeypatch, tmp_path):
+    """Regression for #153123: a timed-out scan cannot multiply libproc workers."""
+    monkeypatch.setattr(dbfile, "_DARWIN_FD_SCAN_NEXT_RETRY", 0.0, raising=False)
+    entered = threading.Event()
+    release = threading.Event()
+    scans = []
+
+    def blocked_scan():
+        scans.append(True)
+        entered.set()
+        release.wait()
+        return iter(())
+
+    monkeypatch.setattr(dbfile, "_iter_darwin_fd_targets", blocked_scan)
+    results = []
+    path = tmp_path / "state.db"
+    first = threading.Thread(
+        target=lambda: results.append(_iter_darwin_sidecar_holders(path)), daemon=True
+    )
+    second = threading.Thread(
+        target=lambda: results.append(_iter_darwin_sidecar_holders(path)), daemon=True
+    )
+    third = threading.Thread(
+        target=lambda: results.append(_iter_darwin_sidecar_holders(path)), daemon=True
+    )
+    first.start()
+    try:
+        assert entered.wait(2.0), "first libproc scan never started"
+        second.start()
+        second.join(2.0)
+        assert not second.is_alive(), "a concurrent caller waited for a second scan timeout"
+        assert len(scans) == 1, "a concurrent caller started another libproc worker"
+        assert results == [[]], "a caller sharing a stuck scan must fail open"
+
+        # Let the original caller hit its unchanged production deadline while
+        # its libproc worker stays blocked inside the kernel-equivalent call.
+        first.join(dbfile._DARWIN_FD_SCAN_TIMEOUT_SECONDS + 2.0)
+        assert not first.is_alive(), "the initial caller exceeded its production deadline"
+        third.start()
+        third.join(2.0)
+        assert not third.is_alive(), "a later caller started another timed-out scan"
+        assert len(scans) == 1, "only one libproc worker may remain in flight"
+        assert results == [[], [], []]
+    finally:
+        release.set()
+        first.join(2.0)
+        if second.ident is not None:
+            second.join(2.0)
+        if third.ident is not None:
+            third.join(2.0)
+        scan_worker = getattr(dbfile, "_DARWIN_FD_SCAN_WORKER", None)
+        if scan_worker is not None:
+            scan_worker.join(2.0)

@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 import gateway.platforms._shared as shared
-from gateway.platforms._shared import bridged_env_marker, yaml_env_setter
+from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, yaml_env_setter
 
 
 def test_first_bridge_writes_the_value_and_its_marker(monkeypatch):
@@ -25,7 +25,7 @@ def test_first_bridge_writes_the_value_and_its_marker(monkeypatch):
     yaml_env_setter()("TELEGRAM_REACTIONS", "true")
 
     assert shared.os.environ["TELEGRAM_REACTIONS"] == "true"
-    assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == "true"
+    assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("true")
 
 
 def test_env_the_operator_set_is_never_overwritten(monkeypatch):
@@ -41,18 +41,18 @@ def test_env_the_operator_set_is_never_overwritten(monkeypatch):
 def test_an_inherited_bridge_value_is_refreshed_from_yaml(monkeypatch):
     """The regression: a restarted gateway inherits the bridged ``false``; YAML now says true."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
-    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
 
     yaml_env_setter()("TELEGRAM_REACTIONS", "true")
 
     assert shared.os.environ["TELEGRAM_REACTIONS"] == "true"
-    assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == "true"
+    assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("true")
 
 
 def test_a_value_changed_since_the_bridge_belongs_to_the_operator(monkeypatch):
     """Marker says we wrote ``false``; the process env says ``true`` — somebody else set it."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
-    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
 
     yaml_env_setter()("TELEGRAM_REACTIONS", "false")
 
@@ -111,12 +111,12 @@ AUTHORIZATION_ENV_NAMES = [
 def test_a_tightened_authorization_value_reaches_the_process(monkeypatch, name):
     """Each allowlist must lose to the YAML that narrowed it, not to the value the bridge wrote earlier."""
     monkeypatch.setenv(name, "111,222")
-    monkeypatch.setenv(bridged_env_marker(name), "111,222")
+    monkeypatch.setenv(bridged_env_marker(name), bridged_env_digest("111,222"))
 
     yaml_env_setter()(name, ["111"])  # the adapters pass the list form
 
     assert shared.os.environ[name] == "111"
-    assert shared.os.environ[bridged_env_marker(name)] == "111"
+    assert shared.os.environ[bridged_env_marker(name)] == bridged_env_digest("111")
 
 
 def test_every_authorization_name_is_refreshed_by_the_real_adapter_hooks(monkeypatch):
@@ -126,7 +126,7 @@ def test_every_authorization_name_is_refreshed_by_the_real_adapter_hooks(monkeyp
 
     for name in AUTHORIZATION_ENV_NAMES:
         monkeypatch.setenv(name, "111,222")
-        monkeypatch.setenv(bridged_env_marker(name), "111,222")
+        monkeypatch.setenv(bridged_env_marker(name), bridged_env_digest("111,222"))
     telegram_hook({}, {
         "allow_from": ["111"], "allowed_chats": ["111"], "allowed_topics": ["111"],
         "group_allow_from": ["111"], "group_allowed_chats": ["111"], "allow_bots": False,
@@ -140,7 +140,7 @@ def test_every_authorization_name_is_refreshed_by_the_real_adapter_hooks(monkeyp
     for name in AUTHORIZATION_ENV_NAMES:
         expected = "false" if name.endswith(("ALLOW_BOTS", "ALLOW_ALL_USERS")) else "111"
         assert shared.os.environ[name] == expected
-        assert shared.os.environ[bridged_env_marker(name)] == expected
+        assert shared.os.environ[bridged_env_marker(name)] == bridged_env_digest(expected)
 
 
 def test_the_restart_child_env_keeps_the_value_and_its_marker(monkeypatch, tmp_path):
@@ -153,14 +153,16 @@ def test_the_restart_child_env_keeps_the_value_and_its_marker(monkeypatch, tmp_p
     from tools.environments.local import served_profile_child_env
 
     monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
-    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
 
-    child = served_profile_child_env(
-        base=dict(shared.os.environ), target_home=tmp_path, inherit_credentials=False
+    from hermes_constants import get_hermes_home
+
+    child = served_profile_child_env(  # the launch profile's own restart: same home
+        base=dict(shared.os.environ), target_home=get_hermes_home(), inherit_credentials=False
     )
 
     assert child["TELEGRAM_REACTIONS"] == "false"
-    assert child[bridged_env_marker("TELEGRAM_REACTIONS")] == "false"
+    assert child[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("false")
 
     # Now be that child: it boots with the inherited pair and reads its own edited YAML.
     for key in ("TELEGRAM_REACTIONS", bridged_env_marker("TELEGRAM_REACTIONS")):
@@ -176,7 +178,7 @@ def test_a_dotenv_value_survives_even_when_it_matches_the_bridge(monkeypatch):
 
     monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"TELEGRAM_REACTIONS"}, raising=False)
     monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
-    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
 
     yaml_env_setter()("TELEGRAM_REACTIONS", "true")
 
@@ -188,9 +190,9 @@ def test_the_telegram_adapter_applies_an_edited_reactions_setting(monkeypatch):
     telegram = pytest.importorskip("plugins.platforms.telegram.adapter")
 
     monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
-    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
 
     telegram._apply_yaml_config({"platforms": {"telegram": {"reactions": True}}}, {"reactions": True})
 
     assert shared.os.environ["TELEGRAM_REACTIONS"] == "true"
-    assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == "true"
+    assert shared.os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("true")

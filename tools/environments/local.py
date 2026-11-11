@@ -23,7 +23,8 @@ from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.process_identity import own_process_groups, release_process_groups
 from tools.environments.local_env_policy import (
-    _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    BRIDGED_ENV_MARKER_PREFIX, _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST,
+    _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env,
@@ -451,10 +452,11 @@ def served_profile_child_env(
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
     target = str(target_home or get_hermes_home_override() or "")
+    routed = bool(target) and _is_routed_home(target)
     if target:
         env["HERMES_HOME"] = target
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
-        if _is_routed_home(target):
+        if routed:
             strip_launch_profile_env(env, target)
             _scrub_credentials(env, inherit_credentials=False)
     if inherit_credentials:
@@ -468,7 +470,24 @@ def served_profile_child_env(
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
         env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
+    _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)
     return env
+
+
+def _carry_bridge_markers(env: dict, source: Mapping[str, str], *, own_profile: bool) -> None:
+    """Keep a YAML-bridge ownership marker only on a child that serves the launch profile itself and
+    still holds the exact value the marker's digest names: that child (a daemon restart) re-bridges
+    the same ``config.yaml`` and must know which inherited values are the bridge's to refresh. A child
+    for any other profile, or one whose scrub dropped or replaced the value, never sees a marker."""
+    from gateway.platforms._shared import bridged_env_digest
+    for key in [k for k in env if k.upper().startswith(BRIDGED_ENV_MARKER_PREFIX)]:
+        del env[key]
+    if not own_profile:
+        return
+    for key, digest in source.items():
+        name = key[len(BRIDGED_ENV_MARKER_PREFIX):]
+        if key.startswith(BRIDGED_ENV_MARKER_PREFIX) and name and bridged_env_digest(env.get(name)) == digest:
+            env[key] = digest
 
 
 def host_gateway_child_env(
@@ -538,8 +557,8 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
         set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
         | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
-    for key in [k for k in env if k.upper() in residue_names]:
-        del env[key]
+    for key in [k for k in env if k.upper() in residue_names or k.upper().startswith(BRIDGED_ENV_MARKER_PREFIX)]:
+        del env[key]  # bridge markers name the LAUNCH profile's YAML values, never the target's
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).

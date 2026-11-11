@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from gateway.platforms._shared import bridged_env_digest
+
 
 _BOOT = """
 import json, os, sys
@@ -93,7 +95,7 @@ def test_fresh_process_refreshes_only_bridge_owned_values(tmp_path, source):
 
     assert second["value"] == ("true" if source == "bridge" else "false")
     if source == "bridge":
-        assert second["marker"] == "true"
+        assert second["marker"] == bridged_env_digest("true")
 
 
 @pytest.mark.parametrize("replacement", ["{}\n", "telegram:\n  allow_from: ['111']\n"])
@@ -107,7 +109,7 @@ def test_fresh_process_retracts_inherited_value_when_yaml_key_is_removed(tmp_pat
     env.update({key: str(home) for key in ("HERMES_HOME", "HOME", "USERPROFILE", "TMP", "TEMP", "TMPDIR")})
     first = _boot(home, env)
     assert first["value"] == "false"
-    assert first["marker"] == "false"
+    assert first["marker"] == bridged_env_digest("false")
     env["TELEGRAM_REACTIONS"] = first["value"]
     env["HERMES_BRIDGED_TELEGRAM_REACTIONS"] = first["marker"]
     config.write_text(replacement, encoding="utf-8")
@@ -130,11 +132,11 @@ def test_real_child_env_builder_preserves_refresh_retraction_and_operator_preced
 
     observed = _boot(home, env, replacement=replacement, source=source)
 
-    assert observed["first"] == {"TELEGRAM_REACTIONS": "false", "HERMES_BRIDGED_TELEGRAM_REACTIONS": "false"}
+    assert observed["first"] == {"TELEGRAM_REACTIONS": "false", "HERMES_BRIDGED_TELEGRAM_REACTIONS": bridged_env_digest("false")}
     assert Path(observed["builder_module"]).resolve() == (
         Path(__file__).resolve().parents[2] / "tools/environments/local.py"
     )
     expected = "false" if source != "bridge" else (None if replacement == "{}\n" else "true")
     assert observed["value"] == expected
     if source == "bridge":
-        assert observed["marker"] == expected
+        assert observed["marker"] == bridged_env_digest(expected)

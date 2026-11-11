@@ -6,6 +6,9 @@ import functools
 import os
 from typing import Optional
 
+# Ownership markers of the YAML -> env bridge (``gateway.platforms._shared.bridged_env_marker``).
+BRIDGED_ENV_MARKER_PREFIX = "HERMES_BRIDGED_"
+
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
@@ -319,8 +322,13 @@ def _is_hermes_internal_secret(key: str) -> bool:
     blocklist cannot enumerate: ``AUXILIARY_<TASK>_API_KEY``/``_BASE_URL`` (per-task
     side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
     auth; non-secret routing hints stay visible). Stripped on every spawn path
-    regardless of env_passthrough registration or ``inherit_credentials``."""
+    regardless of env_passthrough registration or ``inherit_credentials``. Also the YAML bridge's
+    ``HERMES_BRIDGED_*`` ownership markers (``gateway.platforms._shared``): a child that is not the
+    launch profile's own restart has no use for them, and ``served_profile_child_env`` puts back
+    the ones whose value the child kept."""
     upper = key.upper()
+    if upper.startswith(BRIDGED_ENV_MARKER_PREFIX):
+        return True
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))

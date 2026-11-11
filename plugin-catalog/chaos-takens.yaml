@@ -1,0 +1,16 @@
+name: chaos-takens
+description: Nonlinear phase-space attractor reconstruction via Takens delay-embedding
+  theorem and maximal Lyapunov exponent estimation.
+repository: https://github.com/arjunbagga-xyz/hermes-chaos-takens
+sha: bb32967332dd57870cc610ec928b861505d4c5df
+author: Arjun Bagga <arjunbagga-xyz>
+license: MIT
+categories:
+- dynamical-systems
+- chaos-theory
+- telemetry
+tags:
+- takens-embedding
+- lyapunov-exponent
+- phase-space
+- strange-attractor

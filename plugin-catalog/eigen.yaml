@@ -1,0 +1,16 @@
+name: eigen
+description: Graph-Laplacian spectral spectral partitioner computing Fiedler vector
+  and algebraic connectivity for agent multi-agent communication networks.
+repository: https://github.com/arjunbagga-xyz/hermes-eigen
+sha: 4c4d5c1a314be6ed154624f796bcc20b03a818bf
+author: Arjun Bagga <arjunbagga-xyz>
+license: MIT
+categories:
+- spectral-graph-theory
+- network-analysis
+- multi-agent
+tags:
+- laplacian
+- fiedler-vector
+- algebraic-connectivity
+- spectral-clustering

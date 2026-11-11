@@ -732,7 +732,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 await asyncio.sleep(1)
             return True
 
+        started = time.monotonic()
         await asyncio.sleep(10)  # initial delay — let startup finish
+        discount_suspended_wait(self._failed_platforms.values(), started, 10)  # startup-queued entries
         while self._running:
             if not self._failed_platforms:
                 if not await _idle(30, until_queued=True):
@@ -746,7 +748,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             idle_from = time.monotonic()
             if not await _idle(10):  # re-check every 10 seconds
                 return
-            discount_suspended_wait(self._failed_platforms.values(), time.monotonic() - idle_from, 10)
+            discount_suspended_wait(self._failed_platforms.values(), idle_from, 10)
 
     def _flag_reconnect_needs_attention(
         self, platform, info: dict, now: float, *, status_key: Optional[str] = None

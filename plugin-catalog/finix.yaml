@@ -1,0 +1,21 @@
+name: finix
+title: Finix
+repo: https://github.com/web3blind/finix
+sha: 168a8aa37911d7a18650a869388105d0eaed3293
+description: Encrypted profile backups with cloud readback verification and experimental default-profile recovery.
+maintainer: web3blind
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+platforms: [linux, windows]
+known_issues:
+  - Experimental beta. Full live default-profile restoration and Linux cloud restoration have not passed end-to-end acceptance.
+  - Native Windows archive verification succeeded, but Desktop cold preview timed out before Apply. UI still contains Russian labels.
+  - Requires separately installed age and age-keygen. Keep independent backups and the recovery key off the backup host.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

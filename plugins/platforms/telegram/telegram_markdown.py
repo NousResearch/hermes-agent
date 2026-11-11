@@ -5,6 +5,7 @@ import re
 
 from gateway.platforms.helpers import convert_table_to_bullets as _wrap_markdown_tables
 from plugins.platforms.telegram.rich_code_regions import map_outside_code
+from plugins.platforms.telegram.telegram_latex import normalize_latex_macros, normalize_rich_latex_macros
 
 # Stands in for the ** of a line-start **> expandable-quote opener while emphasis is resolved.
 _EXPANDABLE_QUOTE = "\x00EQ\x00"
@@ -295,8 +296,11 @@ def to_markdown_v2(content: str) -> str:
     def _ph_wrap(open_: str, close: str):
         return lambda m: _ph(f"{open_}{_escape_mdv2(m.group(1))}{close}")
 
-    # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
-    #    before the normal MarkdownV2 conversions run.
+    # 0) LaTeX macros in prose (\rightarrow, $x \leq y$) become Unicode: MarkdownV2 has no math, so
+    #    they would reach the chat as raw backslash text. Code keeps them verbatim. Then rewrite
+    #    GFM-style pipe tables into Telegram-friendly row groups.
+    if "\\" in content:
+        content = map_outside_code(content, normalize_latex_macros)
     text = _wrap_markdown_tables(content)
 
     # 1) Protect fenced code blocks (``` ... ```)
@@ -466,6 +470,11 @@ _RICH_DOLLAR_RE = re.compile(
     r'(?:\\[a-zA-Z]+(?:\{[^{}$\n\\]*\})*+|\\[^a-zA-Z\s$]|[^\W\d_](?![^\W\d_])|[^$\n\\\w`]|[\d_])*+(?<![-+*/^=<>\s])\$(?![\w$]|\s?\d))'
     r'|(?P<currency>(?<![\\$])\$(?!\$)(?=\d)|(?<=[A-Z])\$(?=\s?\d))'
 )
+
+
+def normalize_rich_latex(text: str) -> str:
+    """Bare LaTeX macros in rich-message prose become Unicode; math spans and code stay verbatim."""
+    return map_outside_code(text, normalize_rich_latex_macros) if '\\' in text else text
 
 
 def escape_rich_currency_dollars(text: str) -> str:

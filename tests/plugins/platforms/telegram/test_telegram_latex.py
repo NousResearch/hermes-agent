@@ -1,0 +1,53 @@
+"""LaTeX macros in ordinary prose reach a Telegram chat as Unicode symbols, not raw backslash text."""
+
+import re
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from gateway.config import PlatformConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.fakes.platforms.telegram_standin import mdv2_error
+
+
+def _shown(formatted: str) -> str:
+    """What the Telegram client displays for a MarkdownV2 string (escapes dropped)."""
+    return re.sub(r"\\(.)", r"\1", formatted)
+
+
+@pytest.mark.parametrize(
+    ("markdown", "visible"),
+    [
+        ("Flow: A \\rightarrow B \\rightarrow C", "Flow: A → B → C"),
+        ("If $x \\leq y$ and $y \\neq 0$ then \\alpha \\Rightarrow \\beta", "If x ≤ y and y ≠ 0 then α ⇒ β"),
+        ("Cost: $5 \\times 3$ items, total \\approx $15", "Cost: 5 × 3 items, total ≈ $15"),
+        # Controls: code, paths, an escaped backslash, unknown macros and currency stay as written.
+        ("Run `a \\rightarrow b` then\n```tex\n\\to\n```", "Run `a \\rightarrow b` then\n```tex\n\\to\n```"),
+        ("C:\\in\\data, \\\\rightarrow, \\textbf{x}", "C:\\in\\data, \\\\rightarrow, \\textbf{x}"),
+        ("Prices $395k vs $483k", "Prices $395k vs $483k"),
+    ],
+)
+def test_format_message_renders_latex_macros_as_unicode(markdown, visible):
+    formatted = TelegramAdapter(PlatformConfig(enabled=True, token="123:abc")).format_message(markdown)
+    assert mdv2_error(formatted) is None
+    assert _shown(formatted) == visible
+
+
+@pytest.mark.asyncio
+async def test_rich_send_maps_bare_macros_and_keeps_math_for_the_client():
+    """A rich reply (a table makes it rich-eligible) maps bare macros; math spans the rich client
+    typesets itself, and code, reach sendRichMessage unchanged."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123:abc", extra={"rich_messages": True}))
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=7))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+    content = "Pipeline: A \\rightarrow B\n\n| a | b |\n|---|---|\n| $x \\leq y$ | `\\to` |\n\n$$\\alpha + \\beta$$"
+
+    assert (await adapter.send("4242", content)).success
+    method, = bot.do_api_request.call_args.args
+    markdown = bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert method == "sendRichMessage"
+    assert "A → B" in markdown and "\\rightarrow" not in markdown
+    assert "$x \\leq y$" in markdown and "`\\to`" in markdown and "$$\\alpha + \\beta$$" in markdown

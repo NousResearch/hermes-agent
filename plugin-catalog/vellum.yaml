@@ -1,6 +1,6 @@
 name: vellum
 repo: https://github.com/0xsaltylollipop/vellum
-sha: 509d282a27631657129e48dc864c094d599c2233
+sha: 8de4363f0d66be6e5f135d9e8e4c351e476a0c49
 description: >-
   Vellum: Hermes draws inside the paper. Highlight a passage in an arXiv paper (HTML version) in Hermes's browser
   and your own Hermes session gives you the gist like a friend at a whiteboard, talking while it sketches a live,
@@ -31,3 +31,5 @@ capabilities:
   provides_hooks: [pre_llm_call, pre_tool_call, on_stream_delta, on_stream_end, post_llm_call]
   provides_middleware: []
   requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/a2019ed0b5545f113102b31cd083dfccecc5945e/demo.gif

@@ -259,6 +259,43 @@ class TestCapabilityProbe:
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
 
+    @pytest.mark.parametrize("state_access", ["ctx.state", "state"])
+    def test_probe_state_round_trips_across_accesses(self, tmp_path, state_access):
+        """Separate property reads and a retained handle share the registration's state."""
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "provides_tools": ["t"]},
+            init_py=(
+                "def register(ctx):\n"
+                "    state = ctx.state\n"
+                f"    {state_access}.set('cursor', {{'page': 7}})\n"
+                f"    assert {state_access}.get('cursor') == {{'page': 7}}, 'state disappeared'\n"
+                f"    {state_access}.set('cursor', {{'page': {state_access}.get('cursor')['page'] + 1}})\n"
+                f"    assert {state_access}.get('cursor')['page'] == 8\n"
+                "    ctx.register_tool('t', schema={}, handler=lambda **kw: None)\n"),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+
+    def test_probe_state_does_not_leak_between_plugins(self, tmp_path):
+        """A preceding plugin's registration cannot seed another plugin's scratch state."""
+        first = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "name": "first-plugin"},
+            init_py="def register(ctx):\n    ctx.state.set('cursor', {'page': 7})\n",
+        )
+        second = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "name": "second-plugin", "provides_tools": ["t"]},
+            init_py=(
+                "def register(ctx):\n"
+                "    assert ctx.state.get('cursor') is None, 'another plugin leaked state'\n"
+                "    ctx.register_tool('t', schema={}, handler=lambda **kw: None)\n"),
+        )
+        for plugin in (first, second):
+            report = validate_plugin_dir(plugin)
+            assert report.ok, report.failures
+
 
 class TestModelProviderKind:
     def test_import_time_register_provider_is_the_entry_point(self, tmp_path):

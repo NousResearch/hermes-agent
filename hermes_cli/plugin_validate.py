@@ -270,7 +270,9 @@ class RecordingContext:
 
             return _noop
         if name == "state":
-            return _ProbeState()
+            # PluginContext.state is cached for the lifetime of one registration.
+            self.state = _ProbeState()
+            return self.state
         if name in context_properties:
             return _InertService()
         raise AttributeError(name)

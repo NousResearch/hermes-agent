@@ -139,3 +139,15 @@ async def test_a_heal_before_the_boot_pass_or_for_the_next_restart_sends_nothing
         await _settle(runner, adapter)
     assert len(_sent(adapter)) == 2
     assert (home / ".restart_notify.json").exists(), "the next boot's notice must survive"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_requester_marker_does_not_stop_the_other_boot_sends(rig):
+    runner, adapter, generation, home = rig
+    assert adapter._record_polling_progress(generation)
+    await _settle(runner, adapter)
+    (home / ".restart_notify.json").write_bytes(b"\xff\xfe not json")
+    await _boot(runner)
+    assert [chat for chat, text in _sent(adapter) if ONLINE in text] == ["999"]
+    runner._redeliver_claimed_obligations.assert_awaited_once_with([])
+    assert not (home / ".restart_notify.json").exists()

@@ -25,6 +25,7 @@ __all__ = [
     "MAX_OWED_REVOKES",
     "MAX_OWED_REVOKES_PER_MEMBER",
     "MAX_OWED_REVOKE_SECONDS",
+    "SHOWN_TASK_STATUSES",
     "TASK_STATUSES",
     "TERMINAL_STATUSES",
     "AttachmentConflictError",
@@ -66,6 +67,7 @@ __all__ = [
     "ReplicaError",
     "ReplicaGapError",
     "ReplicaPage",
+    "RoomChangeRows",
     "RoomConflictError",
     "RoomGrantClaims",
     "RoomHeldGrantsPendingError",
@@ -94,6 +96,8 @@ TaskStatus = Literal["queued", "running", "settled", "failed", "cancelled", "ind
 TerminalStatus = Literal["settled", "failed"]
 TASK_STATUSES: frozenset[str] = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES: frozenset[str] = frozenset({"settled", "failed", "cancelled"})
+# The live tasks a room's status shows one by one (member activity, Retry); the rest are only counted.
+SHOWN_TASK_STATUSES: tuple[str, ...] = ("queued", "running", "stopping", "indeterminate", "deferred")
 
 # The shape and length bound of a room-driver identifier.
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -424,6 +428,15 @@ class RoomRecovery:
 
     queued: tuple[HostedTaskIdentity, ...]
     indeterminate: tuple[HostedTaskIdentity, ...]
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class RoomChangeRows:
+    """What one live room's log and status read from its store, for a change signature: ``next_seq`` moves on every append and ``revision`` on a rename, membership or authority edit; ``tasks`` holds ``(task_id, status, execution_generation, cancel_generation)`` of the tasks in the asked statuses, sorted, so a Retry that keeps its status still moves it."""
+
+    next_seq: int
+    revision: int
+    tasks: tuple[tuple[str, str, int, int], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -792,6 +805,14 @@ class HostedRoomDriverRepository(Protocol):
 
     def list_tasks(self, *, placement: HostedPlacement, room_id: str, status: TaskStatus | None = None) -> tuple[Mapping[str, JsonValue], ...]:
         """The room's tasks in ``(source_event_seq, created_at, task_id)`` order, optionally of one status."""
+        ...
+
+    def room_task_summary(self, *, placement: HostedPlacement, room_id: str, statuses: Collection[str]) -> tuple[Mapping[str, int], tuple[Mapping[str, JsonValue], ...]]:
+        """``({status: count}, the tasks in ``statuses`` in ``list_tasks`` order)`` for one room from one read: every status is counted, only the asked ones are read as task views."""
+        ...
+
+    def room_change_rows(self, *, placement: HostedPlacement, statuses: Collection[str] = SHOWN_TASK_STATUSES) -> Mapping[str, RoomChangeRows]:
+        """Each live room of the placement by ``room_id``, with its ``RoomChangeRows`` over the tasks in ``statuses``; disbanded rooms are left out, and a placement holding no rooms answers no rows."""
         ...
 
     def get_task_for_turn(self, identity: HostedTaskIdentity, *, placement: HostedPlacement) -> Mapping[str, JsonValue] | None:

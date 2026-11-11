@@ -1255,6 +1255,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             else:
                 scope.enter_context(api_policy_scope())
                 bind_turn_workspace(policy, self._ctx.session_id)
+                self._notify_detached_editor_mcp()
                 result = self._run_sync_scoped()
             from gateway.session_results import execution_result
             captured = execution_result.get()
@@ -1267,6 +1268,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     if cli_fields else result
                 )
             return result
+
+    def _notify_detached_editor_mcp(self):
+        """An editor chat whose MCP servers this owner does not hold (a gateway restart, a turn from
+        another client) runs without them: its viewers are told once per turn, and how to get them back."""
+        from gateway.run_turn_progress import local_viewer_turn
+        from gateway.session_local_mcp import detached_editor_notice
+        notice = detached_editor_notice()
+        if notice is None:
+            return
+        logger.info("Session %s runs this turn without its editor's MCP servers (not attached)",
+                    self._ctx.session_id)
+        (self._local_notice_callback_sync if local_viewer_turn(self) else self._notice_callback_sync)(notice)
 
     def _run_sync_scoped(self):
         """Executor-thread body of the turn; returns the gateway result dict.

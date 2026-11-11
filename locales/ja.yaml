@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ コンテキスト: {tokens} トークン ({source})"
     info_acting_model: "◆ 実行モデル (この実行の請求対象): {provider}:{model}"
     info_endpoint: "◆ エンドポイント: {url}"
+    editor_mcp_unavailable: "⚠️ エディターがこのチャットに提供したツール（MCP サーバー）が接続されていないため、この返信はそれらを使わずに実行されます。再接続するには、エディターからこのチャットを開き直してください。"
   proxy:
     requires_aiohttp: "⚠️ プロキシモードには aiohttp が必要です。実行してください: {hint}"
     url_missing: "⚠️ プロキシ URL が設定されていません (GATEWAY_PROXY_URL または gateway.proxy_url)"

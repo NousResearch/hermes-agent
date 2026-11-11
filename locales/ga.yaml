@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ Comhthéacs: {tokens} comhartha ({source})"
     info_acting_model: "◆ Samhail ghníomhach (billeáilte don rith): {provider}:{model}"
     info_endpoint: "◆ Críochphointe: {url}"
+    editor_mcp_unavailable: "⚠️ Níl na huirlisí a thug d'eagarthóir don chomhrá seo (a fhreastalaithe MCP) ceangailte, mar sin ritheann an freagra seo gan iad. Oscail an comhrá seo arís ó d'eagarthóir chun iad a athcheangal."
   proxy:
     requires_aiohttp: "⚠️ Teastaíonn aiohttp le mód seachfhreastalaí. Rith: {hint}"
     url_missing: "⚠️ Níl URL an tseachfhreastalaí cumraithe (GATEWAY_PROXY_URL nó gateway.proxy_url)"

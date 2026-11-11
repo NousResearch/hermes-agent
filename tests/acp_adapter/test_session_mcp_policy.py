@@ -59,9 +59,9 @@ def test_cold_editor_rebind_requires_exact_borrowed_config(server_spec, tmp_path
     original = policy(owner(), 'cold', server_spec, tmp_path)
     cold = restore_policy(json.loads(json.dumps(asdict(original))))
     authority = owner()
-    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
-        with policy_scope(cold, authority=authority):
-            pass
+    # A restarted owner holds no editor servers: the turn runs without the editor's tools.
+    with policy_scope(cold, authority=authority):
+        assert not [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
     changed = json.loads(json.dumps(server_spec))
     changed['env'][0]['value'] = 'CHANGED_SECRET'
     with pytest.raises(RuntimeStoreError, match='acp_mcp_policy_conflict'):

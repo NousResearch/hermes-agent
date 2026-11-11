@@ -832,6 +832,7 @@ gateway:
     info_context: "◆ Kontextus: {tokens} token ({source})"
     info_acting_model: "◆ Végrehajtó modell (a futást ez alapján számlázzák): {provider}:{model}"
     info_endpoint: "◆ Végpont: {url}"
+    editor_mcp_unavailable: "⚠️ A szerkesztőd által ehhez a csevegéshez adott eszközök (az MCP-szerverei) nincsenek csatlakoztatva, ezért ez a válasz nélkülük fut. Nyisd meg újra ezt a csevegést a szerkesztődből, hogy újra csatlakozzanak."
   proxy:
     requires_aiohttp: "⚠️ A proxy módhoz aiohttp szükséges. Futtasd: {hint}"
     url_missing: "⚠️ A proxy URL nincs beállítva (GATEWAY_PROXY_URL vagy gateway.proxy_url)"

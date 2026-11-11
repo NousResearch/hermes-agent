@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ Konteks: {tokens} tokens ({source})"
     info_acting_model: "◆ Handelende model (gefaktureer vir die lopie): {provider}:{model}"
     info_endpoint: "◆ Eindpunt: {url}"
+    editor_mcp_unavailable: "⚠️ Die gereedskap wat jou redigeerder aan hierdie klets gegee het (sy MCP-bedieners) is nie gekoppel nie, so hierdie antwoord loop sonder dit. Maak hierdie klets weer in jou redigeerder oop om dit weer te koppel."
   proxy:
     requires_aiohttp: "⚠️ Instaanmodus vereis aiohttp. Voer uit: {hint}"
     url_missing: "⚠️ Instaan-URL nie opgestel nie (GATEWAY_PROXY_URL of gateway.proxy_url)"

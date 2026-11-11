@@ -841,6 +841,7 @@ gateway:
     info_context: "◆ Context: {tokens} tokens ({source})"
     info_acting_model: "◆ Acting model (billed for the run): {provider}:{model}"
     info_endpoint: "◆ Endpoint: {url}"
+    editor_mcp_unavailable: "⚠️ The tools your editor gave this chat (its MCP servers) aren't connected, so this reply runs without them. Reopen this chat from your editor to reconnect them."
 
   proxy:
     requires_aiohttp: "⚠️ Proxy mode requires aiohttp. Run: {hint}"

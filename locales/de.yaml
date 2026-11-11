@@ -820,6 +820,7 @@ gateway:
     info_context: "◆ Kontext: {tokens} Tokens ({source})"
     info_acting_model: "◆ Aktives Modell (für den Lauf abgerechnet): {provider}:{model}"
     info_endpoint: "◆ Endpunkt: {url}"
+    editor_mcp_unavailable: "⚠️ Die Werkzeuge, die dein Editor diesem Chat gegeben hat (seine MCP-Server), sind nicht verbunden, daher läuft diese Antwort ohne sie. Öffne diesen Chat erneut in deinem Editor, um sie wieder zu verbinden."
   proxy:
     requires_aiohttp: "⚠️ Der Proxy-Modus benötigt aiohttp. Führen Sie aus: {hint}"
     url_missing: "⚠️ Proxy-URL nicht konfiguriert (GATEWAY_PROXY_URL oder gateway.proxy_url)"

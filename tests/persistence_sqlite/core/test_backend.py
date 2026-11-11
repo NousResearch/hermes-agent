@@ -7,6 +7,7 @@ import asyncio
 import contextvars
 import inspect
 import os
+import shutil
 import sqlite3
 import threading
 
@@ -82,6 +83,24 @@ def test_a_swept_holder_is_acquired_again(backend, scope_a):
     store.state_meta.set("k", "after")
     assert store.holder() is not swept
     assert store.state_meta.get("k") == "after"
+
+
+@pytest.mark.platforms("posix")
+def test_a_handle_opened_after_its_file_is_replaced_writes_the_replacement_while_older_handles_stay_fenced(backend, scope_a):
+    old = backend.open(scope_a)
+    old.state_meta.set("k", "original")
+    path = store_for(scope_a)
+    copy = path.with_name("replacement.db")
+    shutil.copyfile(path, copy)
+    os.replace(copy, path)
+    new = backend.open(scope_a)
+    new.state_meta.set("k", "new")
+    assert new.state_meta.get("k") == "new"
+    with pytest.raises(StoreReplaced):
+        old.state_meta.set("k", "old")
+    assert sqlite3.connect(path).execute("SELECT value FROM state_meta WHERE key = 'k'").fetchone() == ("new",)
+    backend.close()
+    assert _registry.stats() == {"live_generations": 0, "retired_generations": 0, "total_refcounts": 0}
 
 
 def test_close_refuses_further_use(backend, scope_a):

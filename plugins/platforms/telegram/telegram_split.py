@@ -17,6 +17,9 @@ from typing import Any
 _RAW_INDICATOR_RE = re.compile(r" \((\d+)/(\d+)\)$")
 _MDV2_INDICATOR_RE = re.compile(r"\\\((\d+)/(\d+)\\\)$")
 _MDV2_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
+# A dropped chunk's marker together with the separator before it (a space, or the newline that moves it
+# off a closing fence): neither is reply text, so neither counts as a dropped character.
+_DROPPED_MARKER_RE = {False: _RAW_INDICATOR_RE, True: re.compile(r"\s*" + _MDV2_INDICATOR_RE.pattern)}
 
 
 def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool) -> list[str]:
@@ -29,7 +32,7 @@ def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool) -> lis
         return chunks
     marker = _MDV2_INDICATOR_RE if formatted else _RAW_INDICATOR_RE
     kept, dropped = chunks[: cap - 1], chunks[cap - 1:]
-    dropped_text = (marker.sub("", chunk) for chunk in dropped)
+    dropped_text = (_DROPPED_MARKER_RE[formatted].sub("", chunk) for chunk in dropped)
     if formatted:
         dropped_text = (_MDV2_ESCAPE_RE.sub(r"\1", chunk) for chunk in dropped_text)
     notice = adapter._split_cap_notice(sum(len(chunk) for chunk in dropped_text))

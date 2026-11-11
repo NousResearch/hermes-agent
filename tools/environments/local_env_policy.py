@@ -346,6 +346,7 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     from hermes_constants import get_hermes_home
 
     adapter_keys = credential_env_keys()
+    registered = _registered_adapter_secret_env()
     pool_rows = {
         str(entry.get("source"))[len("env:"):].strip()
         for entries in read_credential_pool().values() if isinstance(entries, list)
@@ -355,7 +356,7 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     def consumed(name: str) -> bool:
         upper = name.upper()
         return name in pool_rows or _is_hermes_internal_secret(name) or any(
-            candidate in _HERMES_PROVIDER_ENV_BLOCKLIST or candidate in adapter_keys
+            _is_provider_env_blocklisted(candidate, registered) or candidate in adapter_keys
             for candidate in (upper, _NUMBERED_SIBLING_RE.sub("", upper)))
 
     return frozenset(

@@ -46,33 +46,47 @@ class GatewayRestartNoticeMixin:
 
     _restart_notice_lock: Optional[asyncio.Lock] = None
     _restart_notice_context: Optional[contextvars.Context] = None
+    _restart_notice_claimed: Optional[str] = None  # the requester marker the boot pass read
 
-    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
+    def _note_restart_notice_boot(self) -> None:
+        """The boot pass reached a restart notice: from here on, replays may run, in this context."""
+        if self._restart_notice_context is None:
+            self._restart_notice_context = contextvars.copy_context()
+
+    async def _send_restart_notification(self, *, replay: bool = False) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back.
 
         The marker is consumed when the notice is delivered, suppressed, or provably undeliverable.
         It is kept while the requester's platform has no live transport or refuses the send because its
         send path is not ready (Telegram's ``send_path_degraded`` before its first getUpdates),
         so the reconnect / send-path-healed replay can deliver it. One lock serializes the boot pass
-        against a replay, so the notice cannot go out twice."""
+        against a replay, so the notice cannot go out twice. A ``replay`` only answers the marker the
+        boot pass read: a newer one belongs to a /restart this process has not performed yet."""
         from gateway.run import _hermes_home
         if self._restart_notice_lock is None:
             self._restart_notice_lock = asyncio.Lock()
-            self._restart_notice_context = contextvars.copy_context()  # the boot pass's, for the replay
+        if not replay:
+            self._note_restart_notice_boot()
         async with self._restart_notice_lock:
             notify_path = _hermes_home / ".restart_notify.json"
             if not notify_path.exists():
                 return None
-            keep = False
+            raw = notify_path.read_text(encoding="utf-8-sig")
+            if not replay:
+                self._restart_notice_claimed = raw
+            elif raw != self._restart_notice_claimed:
+                return None
+            if _notice_expired(notify_path):
+                logger.warning("Restart notification dropped: still undelivered after %d minutes",
+                               _RESTART_NOTICE_TTL_SECONDS // 60)
+                notify_path.unlink(missing_ok=True)
+                return None
+            keep = True  # a send cancelled mid-flight (shutdown) is not proof of delivery: keep it
             try:
-                if _notice_expired(notify_path):
-                    logger.warning("Restart notification dropped: still undelivered after %d minutes",
-                                   _RESTART_NOTICE_TTL_SECONDS // 60)
-                    return None
-                target, keep = await self._deliver_restart_notification(
-                    json.loads(notify_path.read_text(encoding="utf-8-sig")))
+                target, keep = await self._deliver_restart_notification(json.loads(raw))
                 return target
             except Exception:  # health: allow BLE001 -- moved boundary: a failed notice never breaks the boot pass
+                keep = False
                 logger.warning("Restart notification failed", exc_info=True)
                 return None
             finally:
@@ -125,9 +139,8 @@ class GatewayRestartNoticeMixin:
         logger.info("Sent restart notification to %s:%s", platform_str, chat_id)
         return (str(platform_str), str(chat_id), str(thread_id) if thread_id else None), False
 
-    async def _replay_restart_notices(self, *, requester: bool) -> None:
-        if requester:
-            await self._send_restart_notification()
+    async def _replay_restart_notices(self) -> None:
+        await self._send_restart_notification(replay=True)
         await self._replay_pending_planned_restart_notification()
 
     def _schedule_restart_notice_replay(self) -> None:
@@ -135,15 +148,18 @@ class GatewayRestartNoticeMixin:
         background: after a reconnect, and when an adapter's send path heals in place.
 
         Delivery must not hold up adapter recovery or other platforms' reconnects. The task runs in
-        the boot pass's context (``_restart_notice_context``, captured by the boot pass's first send):
+        the boot pass's context (``_restart_notice_context``, captured when the boot pass reaches a notice):
         both markers are host-wide (they span every served profile and pick each target's own bot), and
         the trigger may fire inside a secondary profile's adapter task, whose scope must not leak in."""
         from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
         context = self._restart_notice_context
-        # Before the boot pass the requester marker is its to send: it reads ``_booted_from_restart`` from it first.
-        requester = context is not None and _restart_notification_pending()
-        if not (requester or _planned_restart_notification_pending()):
+        # Before the boot pass the markers are its to send: it reads ``_booted_from_restart`` from them, and
+        # the planned-restart fan-out needs every served profile loaded. While this process is going down
+        # for a restart, a marker on disk is the NEXT boot's.
+        if context is None or getattr(self, "_restart_requested", False) or getattr(self, "_draining", False):
+            return
+        if not (_restart_notification_pending() or _planned_restart_notification_pending()):
             return
         task = self._retain_background_task(asyncio.get_running_loop().create_task(
-            self._replay_restart_notices(requester=requester), context=context.copy() if context is not None else None))
+            self._replay_restart_notices(), context=context.copy()))
         task.add_done_callback(self._late_failure_callback("restart notification replay failed"))

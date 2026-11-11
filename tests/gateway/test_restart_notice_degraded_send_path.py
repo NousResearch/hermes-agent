@@ -114,3 +114,28 @@ async def test_a_permanent_refusal_or_an_expired_marker_is_still_consumed(rig):
     await runner._send_restart_notification()
     adapter._bot.send_message.assert_not_called()
     assert not (home / ".restart_notify.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_heal_before_the_boot_pass_or_for_the_next_restart_sends_nothing(rig):
+    """Before the boot pass the markers are its (every served profile must be loaded first); after it,
+    a marker the boot pass never read belongs to a /restart this process has not performed yet."""
+    runner, adapter, generation, home = rig
+    assert adapter._record_polling_progress(generation)  # healed while secondary profiles still connect
+    await _settle(runner, adapter)
+    adapter._bot.send_message.assert_not_called()
+    assert (home / ".restart_notify.json").exists() and (home / ".restart_pending.json").exists()
+
+    await _boot(runner)  # the boot pass sends both
+    assert len(_sent(adapter)) == 2
+
+    # A new /restart wrote its marker; this process drains, and Telegram flaps meanwhile.
+    (home / ".restart_notify.json").write_text(json.dumps(
+        {"platform": "telegram", "chat_id": "222", "chat_type": "dm"}), encoding="utf-8")
+    for draining in (False, True):
+        runner._draining = draining
+        generation, _ = adapter._begin_polling_generation()
+        assert adapter._record_polling_progress(generation)
+        await _settle(runner, adapter)
+    assert len(_sent(adapter)) == 2
+    assert (home / ".restart_notify.json").exists(), "the next boot's notice must survive"

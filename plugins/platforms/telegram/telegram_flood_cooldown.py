@@ -94,12 +94,20 @@ def _schedule_persist(adapter: Any) -> None:
             except Exception:  # health: allow BLE001 -- best-effort: a failed write keeps the in-memory window
                 logger.warning("[Telegram] Failed to persist flood windows to %s", path, exc_info=True)
 
-    task = adapter._telegram_send_cooldown_flush = asyncio.get_running_loop().create_task(
+    # Not in ``_background_tasks`` (shutdown cancels those): ``land_persisted_state`` awaits it on disconnect.
+    adapter._telegram_send_cooldown_flush = asyncio.get_running_loop().create_task(
         _flush(), name="telegram-flood-window-persist")
-    tracked = getattr(adapter, "_background_tasks", None)
-    if isinstance(tracked, set):
-        tracked.add(task)
-        task.add_done_callback(tracked.discard)
+
+
+async def land_persisted_state(adapter: Any) -> None:
+    """Disconnect: let the pending update-receipt and flood-window writes land before a replacement
+    adapter or the next process reads them; shielded, so a cancelled disconnect still completes them."""
+    from plugins.platforms.telegram.adapter import _DISCONNECT_STEP_TIMEOUT
+    for attr, label in (("_update_receipt_flush", "update-receipt flush"),
+                        ("_telegram_send_cooldown_flush", "flood-window flush")):
+        flush = adapter.__dict__.get(attr)
+        if flush is not None and not flush.done():
+            await adapter._await_disconnect_step(asyncio.shield(flush), _DISCONNECT_STEP_TIMEOUT, label)
 
 
 class TelegramFloodCooldownMixin:

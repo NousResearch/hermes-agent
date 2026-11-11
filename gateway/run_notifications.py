@@ -496,6 +496,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _planned_restart_notification_path
         from utils import atomic_json_write
 
+        self._note_restart_notice_boot()
         if self._planned_restart_notice_lock is None:
             self._planned_restart_notice_lock = asyncio.Lock()
         async with self._planned_restart_notice_lock:

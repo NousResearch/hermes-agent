@@ -91,7 +91,8 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
 
 
 def _resolve_home_dir() -> str:
-    """Stable HOME for child ACP processes; the temp dir as a last resort so the child never starts HOME-less."""
+    """Process HOME, the temp dir as a last resort. Unused here: the deprecated
+    ``agent.copilot_acp_client`` alias still serves it to pinned catalog plugins."""
     if home := os.environ.get("HOME", "").strip():
         return home
     if (expanded := os.path.expanduser("~")) and expanded != "~":
@@ -107,16 +108,12 @@ def _resolve_home_dir() -> str:
 def _build_subprocess_env() -> dict[str, str]:
     # Lazy: the env policy imports hermes_cli.config, and provider plugins import this module
     # while hermes_cli.config is still initializing (discovery runs from it).
-    from hermes_constants import apply_subprocess_home_env
     from tools.environments.local import hermes_subprocess_env
 
     # An ACP agent drives a model and needs LLM provider credentials; the central helper still
-    # strips Tier-1 secrets (bot tokens, GitHub auth, infra).
-    # See #29157.
-    env = hermes_subprocess_env(inherit_credentials=True)
-    env["HOME"] = _resolve_home_dir()
-    apply_subprocess_home_env(env)
-    return env
+    # strips Tier-1 secrets (bot tokens, GitHub auth, infra), and sets HOME under the served
+    # profile's ``terminal.home_mode``. See #29157.
+    return hermes_subprocess_env(inherit_credentials=True)
 
 
 def _jsonrpc_result(message_id: Any, result: Any) -> dict[str, Any]:

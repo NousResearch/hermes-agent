@@ -24,7 +24,11 @@ def approval_transport(turn):
         _status_adapter_resolver=ctx._status_adapter_resolver,
         _run_still_current=lambda: True,
     )
-    presenter = []
+    # No ``TurnRunner.__init__``: it binds the turn's canonical owner (authority + generation), which a
+    # background prompt must never use. ``_render_approval_sync`` reads only ``_ctx`` and ``_schedule``,
+    # and its timeout notice follows this context, so it fires even after a newer turn has started.
+    presenter = TurnRunner.__new__(TurnRunner)
+    presenter._runner, presenter._ctx = runner, origin
 
     def notify(data):
         turn._approval_notify_sync(data)
@@ -32,9 +36,7 @@ def approval_transport(turn):
     def background_notify(data):
         if origin._status_adapter is None:
             raise RuntimeError("Approval notification unavailable: no chat can show this prompt")
-        if not presenter:
-            presenter.append(TurnRunner(runner, origin))
-        presenter[0]._render_approval_sync(data, background=True)
+        presenter._render_approval_sync(data, background=True)
 
     # Only a chat platform can show a prompt once the turn is gone. API/webhook runs answer through
     # their own run, and a local viewer's prompts ride the turn's canonical stream: publishing no

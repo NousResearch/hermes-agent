@@ -132,7 +132,15 @@ list_windows
 focus_app         app="<app name>"   raise_window=false   (default: don't raise)
 clipboard_read                     (types + plain text of the system clipboard)
 clipboard_write   text="…"  OR  image_path="/abs/…"  OR  file_path="/abs/…"
+zoom              region=[x1, y1, x2, y2]   (free; sharper crop of the last capture)
+invoke_menu       menu_path=["File", "Export", "PDF…"]   (accessibility, never pixels)
 ```
+
+Small text or tiny icons: `zoom` the region, then click what you see in
+the crop with `coordinate` from the crop plus `from_zoom=true`. Menu
+commands: prefer `invoke_menu` over clicking through menus; a
+`menu_path_unavailable` refusal means a label is wrong or disabled, so
+`capture` and re-read the menu instead of falling back to pixel clicks.
 
 All actions accept optional `capture_after=True` to get a follow-up
 screenshot in the same tool call. All actions that target an element

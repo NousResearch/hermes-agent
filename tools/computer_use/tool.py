@@ -316,6 +316,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     focus_app = _noop_stub("focus_app", "app", "raise_window")
     clipboard_read = _noop_stub("clipboard_read", result=ActionResult(ok=True, action="clipboard_read", meta={"types": [], "text": None}))
     clipboard_write = _noop_stub("clipboard_write", "text", "image_path", "file_path")
+    invoke_menu = _noop_stub("invoke_menu", "path")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
@@ -424,8 +425,10 @@ def _scroll_xy(args: dict[str, Any]) -> dict[str, Any]:
                 y=coord[1] if coord and coord[1] is not None else None)
 
 def _do_click(backend, action, args, button=None, count=1, **delivery):
+    # from_zoom only when set, so third-party backends whose click() predates it keep working.
     return backend.click(element=args.get("element"), **_xy(args), button=button or args.get("button") or "left",
-                         click_count=count, modifiers=args.get("modifiers"), **delivery)
+                         click_count=count, modifiers=args.get("modifiers"),
+                         **({"from_zoom": True} if args.get("from_zoom") else {}), **delivery)
 
 def _do_drag(backend, action, args, **delivery):
     src, dst = args.get("from_coordinate"), args.get("to_coordinate")
@@ -446,6 +449,25 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
     cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
     fence()
     return _capture_response(cap, session_id=session_id)
+
+def _do_zoom(backend, action, args, fence=lambda: None, **_):
+    region = args.get("region")
+    if not (isinstance(region, list) and len(region) == 4 and all(isinstance(v, (int, float)) for v in region)
+            and region[0] < region[2] and region[1] < region[3]):
+        return json.dumps({"error": "zoom requires `region` = [x1, y1, x2, y2] in capture pixels with x1<x2, y1<y2"})
+    cap = backend.zoom(tuple(region))
+    fence()
+    # No session_id: a zoom crop must never be deduped against (or replace) the full capture's frame.
+    return _capture_response(cap)
+
+def _do_invoke_menu(backend, action, args, **_):
+    path = args.get("menu_path")
+    if not (isinstance(path, list) and path and all(isinstance(s, str) and s.strip() for s in path)):
+        return json.dumps({"error": "invoke_menu requires `menu_path`, e.g. [\"File\", \"Export\", \"PDF…\"]"})
+    res = backend.invoke_menu([s.strip() for s in path])
+    # Flat payload, no escalate verdict: the driver resolves the path through accessibility only, and the pixel
+    # rungs that verdict recommends are exactly the fallback a refused menu path must not take.
+    return json.dumps({"ok": res.ok, "action": res.action, **_present(message=res.message, code=res.code)})
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -490,6 +512,9 @@ _ACTIONS: dict[str, _ActionSpec] = {
     "clipboard_read": _ActionSpec(_do_clipboard_read, destructive=True,
                                   summarize=lambda a, args, fg: "read the clipboard (returns whatever the user last copied)"),
     "clipboard_write": _ActionSpec(_do_clipboard_write, destructive=True, summarize=_summarize_clipboard_write),
+    "zoom": _ActionSpec(_do_zoom),
+    "invoke_menu": _ActionSpec(_do_invoke_menu, destructive=True,
+                               summarize=lambda a, args, fg: "menu " + " > ".join(map(str, args.get("menu_path") or [])) + fg),
 }
 # Native input actions deliver to the backend's sticky target; `app=` is NOT a targeting parameter (guard in _dispatch).
 _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
@@ -500,6 +525,7 @@ _ACTION_SUGGESTIONS = {
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
     "read_clipboard": "clipboard_read", "get_clipboard": "clipboard_read", "paste_from_clipboard": "clipboard_read",
     "write_clipboard": "clipboard_write", "set_clipboard": "clipboard_write", "copy_to_clipboard": "clipboard_write",
+    "zoom_in": "zoom", "crop": "zoom", "menu": "invoke_menu", "click_menu": "invoke_menu", "select_menu": "invoke_menu",
 }
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fence: Callable[[], None] = lambda: None,

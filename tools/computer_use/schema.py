@@ -34,6 +34,8 @@ _PROPERTIES: dict[str, Any] = {
             "focus_app",
             "clipboard_read",
             "clipboard_write",
+            "zoom",
+            "invoke_menu",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
@@ -41,7 +43,9 @@ _PROPERTIES: dict[str, Any] = {
             "sliders — it selects the matching option directly without opening the native menu (no "
             "focus steal). `clipboard_read` returns the system clipboard's types and plain text; "
             "`clipboard_write` replaces it with one value (`text`, `image_path`, or `file_path`) — "
-            "the fast path for moving long text into an app: write, then `key` the paste shortcut."
+            "the fast path for moving long text into an app: write, then `key` the paste shortcut. "
+            "`zoom` (free): sharper crop of `region` for small text/icons. `invoke_menu`: run a menu item by "
+            "exact `menu_path` via accessibility, never pixels."
         ),
     },
     "mode": {
@@ -150,6 +154,22 @@ _PROPERTIES: dict[str, Any] = {
             "For action='type': text to type (respects the current layout). For action='clipboard_write': "
             "the plain text to place on the clipboard."
         ),
+    },
+    "region": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 4,
+        "maxItems": 4,
+        "description": "zoom: [x1, y1, x2, y2] in the last capture's pixels.",
+    },
+    "from_zoom": {
+        "type": "boolean",
+        "description": "click: `coordinate` is a pixel in the last zoom image.",
+    },
+    "menu_path": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "invoke_menu: exact labels from the menubar down, e.g. [\"File\", \"Save As…\"].",
     },
     "image_path": {
         "type": "string",

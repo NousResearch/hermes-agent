@@ -3367,7 +3367,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     if legacy_key and _unset_nested(user_config, legacy_key):
         print(f"  (removed the shadowed {legacy_key} duplicate)")
     from tools.mcp_tool_common import drop_legacy_disabled_for_key
-    drop_legacy_disabled_for_key(user_config, _split_key_path(key))
+    drop_legacy_disabled_for_key(_locate_nested(user_config, _split_key_path(key)))
     # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
     # state of the OLD provider, and the runtime honours them for whatever provider the block now
     # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync

@@ -66,3 +66,25 @@ def test_override_applies_only_in_the_profile_that_declares_it(homes):
     # The routed profile's own override still applies, and never leaks back to the launch profile.
     assert _turn(runner, "b2", b2, "888") == ("b2/override", "B2 PROMPT", "b2/override")
     assert _turn(runner, "default", launch, "888")[0] == "launch/default"
+
+
+def test_managed_worker_prompt_reads_the_serving_profiles_override(homes):
+    """A managed worker's prompt is resolved owner-side; it must match the in-process turn's."""
+    from contextlib import nullcontext
+
+    from gateway.session_worker_construct import _ephemeral_prompt
+
+    _launch, b2 = homes
+    raw = json.loads((b2 / "config.yaml").read_text(encoding="utf-8"))
+    raw["platforms"]["local"] = {"channel_overrides": {"desk": {"system_prompt": "B2 LOCAL PROMPT"}}}
+    (b2 / "config.yaml").write_text(json.dumps(raw), encoding="utf-8")
+    config = load_gateway_config()
+    config.multiplex_profiles = True
+    set_multiplex_active(True)
+    runner = GatewayRunner(config)
+    source = SessionSource(platform=Platform.LOCAL, chat_id="desk", chat_type="dm", user_id="desk")
+    source._identity = RoutingIdentity("b2", "b2", b2, b2)
+    policy = SimpleNamespace(ignore_user_config=False, client_env_scope=nullcontext, skills_prompt=None)
+
+    with _profile_runtime_scope(b2, prepared_secret_scope={}):
+        assert _ephemeral_prompt(SimpleNamespace(runner=runner), policy, "desk", source) == "B2 LOCAL PROMPT"

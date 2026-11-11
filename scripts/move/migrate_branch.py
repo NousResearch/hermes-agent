@@ -2,10 +2,10 @@
 """Carry the current branch across the module moves that landed on its target.
 
 A move chunk on the target is a set of commits carrying the trailer ``Hermes-Move: NN-<name> <role>``:
-commit A (role ``move``) renames files with ``git mv`` only, commit B (role ``codemod``) is the import rewrite,
-and hand fixes (role ``fix``, or no trailer) follow. Trailers without a role are read as: the first commit is A,
-only its direct child carrying the trailer is B, and any later trailer commit is a hand fix. For every chunk the
-branch has not merged yet, in landing order, this script
+commit A (role ``move``) renames files with ``git mv`` and updates ``hermes_agent/compat/moves.py``, commit B
+(role ``codemod``) is the import rewrite, and hand fixes (role ``fix``, or no trailer) follow. Trailers without a
+role are read as: the first commit is A, only its direct child carrying the trailer is B, and any later trailer
+commit is a hand fix. For every chunk the branch has not merged yet, in landing order, this script
 
 1. merges the commit before A, so ordinary conflicts surface apart from the move;
 2. merges A with directory rename detection, so the branch's edits follow the moved files, then moves any file
@@ -150,9 +150,10 @@ def _present(rename: str, onto: str) -> bool:
     """False for a reverted chunk: onto has every old path of commit A back and none of the new ones."""
     status = [line.split("\t") for line in out("diff", "-M", "--name-status", f"{rename}^", rename).splitlines()]
     renames = [paths for kind, *paths in status if kind.startswith("R")]
-    if not renames or any(kind.startswith("M") for kind, *_ in status):
-        raise Stop(f"Commit {rename[:12]} is commit A of a move chunk but is not a rename; "
-                   "commit A must be `git mv` only.")
+    edits = [paths for kind, *paths in status if kind.startswith("M")]
+    if not renames or any(paths != ["hermes_agent/compat/moves.py"] for paths in edits):
+        raise Stop(f"Commit {rename[:12]} is commit A of a move chunk but is not a rename; commit A must be "
+                   "`git mv` only, plus the update of hermes_agent/compat/moves.py.")
     old_paths, new_paths = zip(*renames)
     def held(paths: tuple[str, ...]) -> int:
         return len(out("ls-tree", "-r", "--name-only", onto, "--", *paths).splitlines())
@@ -349,7 +350,7 @@ def relocate(chunk: Chunk, state: dict) -> None:
 
 def branch_python_files(rename: str) -> list[str]:
     changed = out("diff", "--name-only", "--diff-filter=AMR", rename, "HEAD").splitlines()
-    return [path for path in changed if path.endswith(".py") and Path(path).is_file()]
+    return [path for path in changed if (path.endswith(".py") and Path(path).is_file()) or _python_script(path)]
 
 
 def rewrite(chunk: Chunk, state: dict) -> None:

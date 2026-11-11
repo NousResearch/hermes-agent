@@ -62,6 +62,7 @@ def test_a_config_arriving_with_a_delegate_marker_never_lands_on_a_reset_row(tmp
     finally:
         db.close()
 
+
 def test_a_new_reset_row_with_a_delegate_marker_is_visible_before_reopen(tmp_path):
     """A newly inserted polluted /new chat must not vanish until the store is reopened (#109073)."""
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -77,3 +78,15 @@ def test_a_new_reset_row_with_a_delegate_marker_is_visible_before_reopen(tmp_pat
     finally:
         db.close()
 
+
+def test_a_new_keyed_row_with_only_a_delegate_marker_stays_hidden(tmp_path):
+    """No reset marker: indistinguishable from a captured delegate child (#138210), so it keeps the marker."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(OLD, "telegram", **PEER)
+        db.create_session(LIVE, "telegram", parent_session_id=OLD, model_config={"_delegate_from": OLD}, **PEER)
+        db.append_message(LIVE, "user", "subagent work")
+        assert _config(db, LIVE) == {"_delegate_from": OLD}
+        assert LIVE not in _listed(db)
+    finally:
+        db.close()

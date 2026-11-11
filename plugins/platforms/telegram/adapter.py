@@ -6013,15 +6013,16 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
             return
-        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
-            return
         venue = getattr(msg, "venue", None)
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
         if not location:
             return
         lat, lon = getattr(location, "latitude", None), getattr(location, "longitude", None)
+        # Before the gate: a GPS tick in place is not new input, observed or not (#151333).
         if lat is None or lon is None or is_redundant_live_refresh(self, msg, location, lat, lon):
-            return  # a live-location GPS tick in place is not a new input (#151333)
+            return
+        if not self._gate_or_observe(msg, update, MessageType.LOCATION):
+            return
         parts = ["[The user shared a location pin.]"]
         if venue:
             title = getattr(venue, "title", None)

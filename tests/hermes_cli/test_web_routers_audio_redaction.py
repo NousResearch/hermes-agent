@@ -88,6 +88,21 @@ def test_lease_warmup_error_body_is_redacted(client, monkeypatch, route, target)
     _assert_redacted(resp.json()["error"])
 
 
+@pytest.mark.parametrize("route, target", [
+    ("/api/audio/tts-lease", "tools.tts_tool_lifecycle.warm_tts_provider"),
+    ("/api/audio/stt-lease", "tools.stt_lease.warm_stt_provider"),
+])
+def test_lease_returned_warmup_error_is_redacted(client, monkeypatch, route, target):
+    # Warm-up helpers never raise: a load failure comes back as ``error=str(exc)``.
+    monkeypatch.setattr(target, lambda *_a, **_k: {"provider": "x", "warmed": False,
+                                                    "action": "error", "error": _LEAK})
+    resp = client.post(route, json={"lease": "t", "active": True})
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "error"
+    _assert_redacted(resp.json()["error"])
+    assert "provider rejected key" in resp.json()["error"]
+
+
 def test_transcribe_stream_error_frame_is_redacted(client, monkeypatch):
     class _Session:
         set_input_rate = push_audio = cancel = lambda self, *_: None

@@ -386,7 +386,9 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         raise
     except Exception as exc:
         _log.warning("TTS lease %s (%s) failed: %s", lease, payload.active, exc)
-        result = {"leases": None, "action": "error", "error": client_error(exc)}
+        result = {"leases": None, "action": "error", "error": str(exc)}
+    if result.get("error"):  # warm-up never raises: a load failure returns as error=str(exc)
+        result = {**result, "error": client_error(result["error"])}
     return {"ok": True, "lease": lease, "active": payload.active, **result}
 
 
@@ -514,7 +516,9 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
         raise
     except Exception as exc:
         _log.warning("STT lease %s (%s) failed: %s", lease, payload.active, exc)
-        result = {"leases": None, "action": "error", "error": client_error(exc)}
+        result = {"leases": None, "action": "error", "error": str(exc)}
+    if result.get("error"):  # warm-up never raises: a load failure returns as error=str(exc)
+        result = {**result, "error": client_error(result["error"])}
     return {"ok": True, "lease": lease, "active": payload.active, **result}
 
 

@@ -1,0 +1,27 @@
+name: shadow-army
+repo: https://github.com/SilentKnight87/shadow-army
+sha: 545d7c489f5ae807c99f7c0252aa44d5a26a4bf9
+subdir: shadow-army
+title: Shadow Army
+description: Kanban close gate. A different model family must PASS the exact code first; deleted test assertions are flagged.
+maintainer: SilentKnight87
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.4.0"
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/545d7c489f5ae807c99f7c0252aa44d5a26a4bf9/docs/img/readme-hero.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/545d7c489f5ae807c99f7c0252aa44d5a26a4bf9/docs/img/readme-removed.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/545d7c489f5ae807c99f7c0252aa44d5a26a4bf9/docs/img/readme-refused.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/545d7c489f5ae807c99f7c0252aa44d5a26a4bf9/docs/img/readme-pass.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/545d7c489f5ae807c99f7c0252aa44d5a26a4bf9/docs/img/readme-stale.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/545d7c489f5ae807c99f7c0252aa44d5a26a4bf9/docs/img/readme-kanban.png
+platforms: [linux, macos]
+known_issues:
+  - Gates only the agent's kanban_complete tool; manual board moves, shell commands and disabling the plugin bypass it.
+capabilities:
+  provides_tools: [army_gate, army_verdict]
+  provides_hooks: [pre_tool_call, post_tool_call, subagent_start, subagent_stop, pre_api_request, post_api_request]
+  provides_middleware: []
+  requires_env: []

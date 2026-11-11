@@ -127,6 +127,34 @@ def _archive_answer(archive: str) -> str | None:
     return answer
 
 
+def _framed_run_document(job: dict, job_name: str, job_id: str, prompt: str, response: str) -> str:
+    """The successful run's archive: prompt and response redacted ONCE, then length-stamped.
+
+    The document travels through the gateway's state.db result, whose storage pass redacts
+    every plain string. Redacting a second time is not a no-op (``KEY='exampl...-32c'`` becomes
+    ``KEY='***'``), and a first mask applied after stamping shrinks the text under its stamp;
+    either way ``_archive_answer`` finds no frame (#153079). So both halves are redacted here,
+    the stamps count the redacted text (newlines normalized, as text-mode reads return them), and
+    the result is a ``RedactedText`` that the storage pass keeps byte-identical.
+    """
+    from agent.redact_once import RedactedText, redact_once
+    # The title block (job name, schedule) sits before the prompt frame, so redacting it never
+    # moves an offset; it is redacted on its own so the storage pass has nothing left to do.
+    title = _sched._run_doc_header(job, job_name, job_id, "").removesuffix(_PROMPT_HEADING + _PROMPT_SEPARATOR)
+    parts = [redact_once(title), redact_once(_sched._normalize_newlines(prompt)),
+             redact_once(_sched._normalize_newlines(response))]
+    title, framed_prompt, logged_response = parts
+    document = (
+        f"{title}{_PROMPT_FRAME}{len(framed_prompt)}\n{_PROMPT_HEADING}{framed_prompt}{_PROMPT_SEPARATOR}"
+        f"{_RESPONSE_FRAME}{len(logged_response)}\n{_RESPONSE_HEADING}{logged_response}{_RESPONSE_TERMINATOR}"
+    )
+    # Marked only when every part was redacted (redaction on for this profile); otherwise the
+    # storage pass keeps applying its own policy, exactly as before.
+    if all(isinstance(part, RedactedText) for part in parts):
+        return RedactedText(document)
+    return document
+
+
 def _clip_to_context_budget(text: str) -> str:
     """Clip oversized context head+tail; conclusions and summaries sit at the end."""
     if len(text) <= _MAX_CONTEXT_CHARS:

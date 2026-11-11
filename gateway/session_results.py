@@ -35,7 +35,11 @@ def record_terminal_failure(result):
 def _redacted(value):
     """The stored result is a state.db copy of the model's answer and history: redacted at this
     storage boundary like every transcript row (``security.redact_secrets``). The live viewer
-    prints the completion event, never this copy."""
+    prints the completion event, never this copy. A ``RedactedText`` was redacted once already
+    and its length stamps count those bytes (the cron run document, #153079): kept as is."""
+    from agent.redact_once import RedactedText
+    if isinstance(value, RedactedText):
+        return value
     if isinstance(value, str):
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(value)

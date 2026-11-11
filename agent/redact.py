@@ -17,6 +17,7 @@ from urllib.parse import unquote_plus
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
+from agent.redact_escaped import redact_escaped_assignments
 from agent.redact_headers import (
     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
@@ -252,7 +253,7 @@ _PREFIX_PATTERNS = [
 # ``token=``, ``KEYBOARD=``, ``PASSAGE=``) do not match — those are handled by the config/form/URL paths,
 # and a bare ``password=…`` in a form body must not be swallowed greedily by ``\S+``. See #77484.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
-_ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2")
+_ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(?!\\['\"])(\S+)\2")
 # Command-line credentials. ``--password=…``, ``--token …`` and ``docker login -p …`` reach
 # the approval card and the chat egress verbatim because the ENV passes only look at
 # ``NAME=value`` (issue #143982). The flag name is kept so the reader still knows what was
@@ -306,7 +307,7 @@ _CONNSTR_GATE = re.compile(r"(?:AccountKey|SharedAccessKey|SharedAccessSignature
 # it re.sub retries the greedy prefix at every byte of a long opaque payload.
 # See #77484.
 _ENV_ASSIGN_LOWER_RE = re.compile(
-    r"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(\S+)\2",
+    r"(?<![a-z0-9_])([a-z0-9_]+(?:_|^)(?:key|pass|pw|token|secret|password|passwd|credential|auth)(?=[^a-z0-9_]|$))\s*=\s*(['\"]?)(?!\\['\"])(\S+)\2",
     re.IGNORECASE,
 )
 
@@ -499,10 +500,7 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     then redact when the key is unambiguously credential-bearing or the value looks opaque."""
     # Programmatic env lookups reference variable *names*, not secret values — masking them corrupts code
     # snippets in prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
-    # Same programmatic-env-lookup exception as _redact_env above (issue #2852): "apiKey": "os.getenv('X')"
-    # is a code snippet, not a leaked secret value.
-    # Same programmatic-env-lookup exception as _redact_env above (issue #2852): api_key: os.getenv('X') is
-    # a code snippet, not a leaked secret value.
+    # The JSON (``"apiKey": "os.getenv('X')"``) and YAML passes share this exception (#2852).
     if _ENV_LOOKUP_VALUE_RE.match(value):
         return False
     # An earlier pass already masked this value (``***`` or the ``«redacted:…»`` sentinel). Masking it
@@ -1364,6 +1362,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     if "=" in text:
         text = redact_cookie_assignments(text, mask)
         _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
+        # ``NAME = \"v\"`` inside JSON text first: the ENV regexes skip escaped quotes (#153079).
+        text = redact_escaped_assignments(text, mask, lambda k, v: _should_redact_assignment(k, v, check_keyword=True))
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
             # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally

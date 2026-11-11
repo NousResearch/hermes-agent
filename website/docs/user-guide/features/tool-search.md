@@ -21,7 +21,8 @@ directly callable. Other built-ins, including `todo_list` and
 `process_manage`, are deferred by default. Deferred tools remain available
 through the bridge, subject to the session's enabled and disabled toolsets.
 `tools.tool_search.defer` replaces the curated list; an empty list keeps
-core and GUI tools direct while MCP and non-core plugin tools still defer.
+core and GUI tools direct while MCP tools and other non-core tools still defer.
+Set `enabled: off` to make every tool directly callable.
 :::
 
 ## How it works
@@ -114,7 +115,7 @@ tools:
     max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
-    defer:              # replace the curated default; [] keeps every tool eager
+    defer:              # replace the curated default; [] still defers MCP/non-core tools
       - computer_use
       - session_search
       - image_generate
@@ -138,7 +139,7 @@ shipped curated set; the runtime fallback uses the same value.
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
-| `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
+| `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it. `[]` keeps core and GUI tools direct, but MCP tools and other non-core tools still defer; set `enabled: off` to make every tool directly callable. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.

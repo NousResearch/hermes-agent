@@ -7,7 +7,7 @@
 <h1 align="center">Unitalk Desktop ☤</h1>
 
 <p align="center">
-  <b>The AI Collaborator that grows with your enterprise. Powered by Hermes.</b>
+  <b>The AI Collaborator that grows with your business. Powered by Hermes.</b>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 
 ## Overview
 
-**Unitalk Desktop** is the official enterprise distribution of [Hermes Agent](https://github.com/NousResearch/hermes-agent) developed by [Nous Research](https://nousresearch.com).
+**Unitalk Desktop** is the official business distribution of [Hermes Agent](https://github.com/NousResearch/hermes-agent) developed by [Nous Research](https://nousresearch.com).
 
 While vanilla Hermes is built as a developer-centric agent configured via CLI and raw terminal environments, **Unitalk Desktop** packages the engine into a turn-key, 1-click installable application tailored for companies, executives, and business teams.
 
@@ -49,8 +49,8 @@ While vanilla Hermes is built as a developer-centric agent configured via CLI an
    - Access top frontier models (OpenAI, Anthropic, Google, open-source) through a unified, optimized gateway powered by LiteLLM.
    - Every install includes **10,000 free trial credits (€5)** to test immediately without entering credit card details.
 
-3. **Enterprise Authentication**:
-   - Built-in Clerk SSO allows users to log in with their work accounts and link their Collaborator to their company profile.
+3. **Seamless Work SSO (Google Workspace, Microsoft 365)**:
+   - Built-in Clerk SSO allows users to log in in 1 click with their work accounts (Google Workspace, Microsoft 365, or company email) and link their Collaborator to their organization.
 
 4. **Business Expertises Store**:
    - Upgrade your Collaborator's capabilities in 1 click from the [Marketplace](https://unitalk.ai/home/marketplace/profils-metier):

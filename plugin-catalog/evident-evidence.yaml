@@ -1,7 +1,7 @@
 name: evident-evidence
 title: "Evident — Is this evident?"
 repo: https://github.com/Evident-Scalelabs/evident-hermes-plugin
-sha: 3e03e1d6b42fe5308ada8456626e847b91e32ae6
+sha: bfc0f924e4e4a19d950a3b275885bbd8f06fe38e
 description: >-
   Follow real buyer journeys, compare website claims with independent AI answers
   and suggested competitors, and produce one visual report with highlighted
@@ -9,10 +9,10 @@ description: >-
 maintainer: Evident-Scalelabs
 tier: community
 category: web
-version: "0.19.3"
+version: "0.19.4"
 platforms: [linux, macos]
 screenshots:
-  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/3e03e1d6b42fe5308ada8456626e847b91e32ae6/docs/competitor-report.png
+  - https://raw.githubusercontent.com/Evident-Scalelabs/evident-hermes-plugin/bfc0f924e4e4a19d950a3b275885bbd8f06fe38e/docs/competitor-report.png
 known_issues:
   - Requires a vision-capable configured model for interpreted reports; model calls may incur charges.
   - Anonymous desktop capture has bounded coverage; account actions, purchases and protected pages remain outside scope.

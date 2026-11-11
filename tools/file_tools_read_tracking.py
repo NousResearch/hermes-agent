@@ -7,8 +7,8 @@ call), ``read_history`` (diagnostics), ``dedup`` (key -> file metadata; survives
 compression), ``dedup_generation_reads`` (keys whose full content was served since
 the last compaction boundary; cleared on compression so one recovery read returns
 full content), ``dedup_hits`` (stub-loop breaker), ``seen_lines`` (path ->
-(mtime, merged line spans actually returned); an overlapping read omits those
-lines), ``read_timestamps`` (staleness warnings), ``read_coverage`` (per resolved
+(content version, merged line spans returned at it); a read of that same version
+omits those lines), ``read_timestamps`` (staleness warnings), ``read_coverage`` (per resolved
 path: the line ranges the task has paged through at one file version — contiguous
 pages that reach the last line count as a whole-file read), ``full_write_baselines``
 (resolved paths whose whole-file content this task saw via unredacted read_file
@@ -188,27 +188,29 @@ def _in_spans(line: int, spans: list) -> bool:
     return any(start <= line <= end for start, end in spans)
 
 
-def _unchanged_seen_spans(task_data: dict, resolved_str: str) -> list:
-    """Line spans of *resolved_str* already returned to the model, if the file is
-    unchanged since (else ``[]``). The stat runs outside the tracker lock.
+def _seen_spans_for_read(task_data: dict, resolved_str: str, version_before, snapshot) -> list:
+    """Line spans of *resolved_str* already returned to the model at exactly the
+    version this read returned, else ``[]``.
 
-    Compares the FULL ``_file_metadata`` tuple, not just mtime: mtime alone can be
-    preserved across a content change (editors/copy tools routinely do this, and
-    ``os.utime`` can forge it outright), which would otherwise let a changed file
-    keep serving stale "already seen" omissions. ``st_ctime`` in that tuple always
-    advances on a real content or metadata change and cannot be backdated the same
-    way, so it closes the gap -- the same reason the write-baseline check
-    (``_file_metadata``-based) doesn't use raw mtime either."""
+    *snapshot* is the ``_file_version()`` of the bytes the read returned (the file
+    ops' own read snapshot when it has one). Omission needs a STABLE read: the stat
+    before the read, the snapshot and a stat now all agree, so the returned content
+    is that version. The spans must then have been recorded for that same version
+    (stat fields plus content digest), so a file changed before, during or after an
+    earlier read never has lines omitted as "already seen"."""
     with _read_tracker_lock:
         entry = task_data["seen_lines"].get(resolved_str)
-    if not entry:
+    if not entry or version_before is None:
         return []
-    return entry[1] if _file_metadata(resolved_str) == entry[0] else []
+    version = snapshot or _file_version(resolved_str)
+    if version is None or version[:-1] != version_before or _file_metadata(resolved_str) != version_before:
+        return []
+    return entry[1] if entry[0] == version else []
 
 
 def _record_seen_span(task_data: dict, resolved_str: str, stamp: tuple | None, span: tuple) -> None:
-    """Merge *span* into the path's seen lines (reset when *stamp* -- a ``_file_metadata()``
-    tuple -- moved). Lock must be held."""
+    """Merge *span* into the path's seen lines (reset when *stamp* -- the ``_file_version()``
+    of the content the read returned -- moved). Lock must be held."""
     entry = task_data["seen_lines"].pop(resolved_str, None)  # re-insert: newest last for eviction
     spans = sorted((entry[1] if entry and entry[0] == stamp else []) + [span])
     merged = [spans[0]]

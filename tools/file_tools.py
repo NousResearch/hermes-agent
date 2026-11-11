@@ -42,7 +42,7 @@ from tools.file_tools_read_tracking import (
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _programmatic_read, _read_tracker, _read_tracker_lock,
     _record_not_found, _record_patch_failure, _record_seen_span, _reset_patch_failures,
-    _returned_line_span, _task_data, _unchanged_seen_spans, _update_read_timestamp)
+    _returned_line_span, _seen_spans_for_read, _task_data, _update_read_timestamp)
 
 logger = logging.getLogger(__name__)
 
@@ -534,13 +534,15 @@ def _read_end_line(result_dict: dict, offset: int, limit: int) -> int:
     return end_line
 
 
-def _withholdable_seen_spans(task_data: dict, resolved_str: str, exempt: bool) -> list:
-    """Already-returned line spans a read may omit. *exempt* (an in-cell read, or file ops whose
+def _withholdable_seen_spans(task_data: dict, resolved_str: str, exempt: bool, version_before,
+                             snapshot) -> list:
+    """Already-returned line spans this read may omit: only those recorded for the exact version
+    the read returned (see _seen_spans_for_read). *exempt* (an in-cell read, or file ops whose
     files are not the host's, so a host stat proves nothing) and review-fork reads omit nothing:
     same rule as the exact-key stub."""
     if exempt or is_background_review():
         return []
-    return _unchanged_seen_spans(task_data, resolved_str)
+    return _seen_spans_for_read(task_data, resolved_str, version_before, snapshot)
 
 
 def _withhold_seen_lines(task_data: dict, result, result_dict: dict, path: str, resolved_str: str,
@@ -632,10 +634,11 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
             task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
-            if returned_span and version is not None and not programmatic:
-                _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
         except OSError:
             pass
+        if returned_span and stable and not programmatic:
+            # Keyed to the version this read returned, never to a later stat.
+            _record_seen_span(task_data, resolved_str, version, returned_span)
         baselines = task_data["full_write_baselines"]
         if stable and version is not None and count < 4:
             if not programmatic:
@@ -765,10 +768,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if (cached_version is not None and not programmatic and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
-        # A different window over lines already returned (file unchanged) only
-        # gets its unseen lines; see _withhold_seen_lines.
-        seen_spans = _withholdable_seen_spans(task_data, resolved_str, programmatic or version_before is None)
-
         result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
         result_dict = result.to_dict()
 
@@ -791,6 +790,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
         returned_span = _returned_line_span(result_dict, offset, limit)
+        # A different window over lines already returned at this same version only
+        # gets its unseen lines; see _withhold_seen_lines.
+        seen_spans = _withholdable_seen_spans(task_data, resolved_str, programmatic or version_before is None,
+                                              version_before, getattr(result, "_snapshot", None))
         stub = _withhold_seen_lines(task_data, result, result_dict, path, resolved_str, returned_span, seen_spans)
         if stub is not None:
             return stub

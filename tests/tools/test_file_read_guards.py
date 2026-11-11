@@ -682,6 +682,52 @@ class TestOverlappingReadDedup(unittest.TestCase):
             self.assertEqual(_shown_line_numbers(result), list(range(2160, 2175)))
             self.assertIn("v1 line 2160", result["content"])
 
+    def _write_small(self, prefix):
+        with open(self._tmpfile, "w", encoding="utf-8", newline="\n") as f:
+            f.write("".join(f"{prefix} {i}\n" for i in range(1, 6)))
+
+    def _read_through(self, offset, limit, *, before=None, after=None):
+        """One read whose underlying file-ops read runs *before*/*after* hooks around it."""
+        from tools.file_tools import _get_file_ops
+        ops = _get_file_ops("ov")
+        real = ops.read_file
+
+        def hooked(*args, **kwargs):
+            if before:
+                before()
+            result = real(*args, **kwargs)
+            if after:
+                after()
+            return result
+
+        with patch.object(ops, "read_file", hooked):
+            return self._read(offset, limit)
+
+    def test_file_changed_before_the_next_read_shows_its_new_lines(self):
+        self._write_small("old")
+        self.assertIn("old 1", self._read(1, 3)["content"])
+        r = self._read_through(1, 5, before=lambda: self._write_small("brand-new"))
+        self.assertNotIn("omitted_lines", r)
+        self.assertEqual(_shown_line_numbers(r), [1, 2, 3, 4, 5])
+        self.assertIn("brand-new 1", r["content"])
+
+    def test_file_changed_after_a_read_returned_is_not_marked_seen(self):
+        self._write_small("old")
+        first = self._read_through(1, 3, after=lambda: self._write_small("brand-new"))
+        self.assertIn("old 1", first["content"])
+        # The model was only ever shown OLD lines 1-3: the NEW ones must come back in full.
+        wider = self._read(1, 5)
+        self.assertNotIn("omitted_lines", wider)
+        self.assertEqual(_shown_line_numbers(wider), [1, 2, 3, 4, 5])
+        self.assertIn("brand-new 1", wider["content"])
+
+    def test_file_changed_after_a_read_returned_keeps_its_exact_window_readable(self):
+        self._write_small("old")
+        self._read_through(1, 3, after=lambda: self._write_small("brand-new"))
+        again = self._read(1, 3)
+        self.assertNotIn("dedup", again)
+        self.assertIn("brand-new 1", again["content"])
+
     def test_edit_makes_the_whole_window_readable_again(self):
         self._read(2158, 15)
         # write_file_tool would refuse this: the task only read a partial view, and

@@ -17,7 +17,7 @@ from hermes_constants import get_hermes_home, reset_hermes_home_override, set_he
 from tools.environments.base import BaseEnvironment
 from tools.environments.modal import ModalEnvironment
 from tools.environments.vercel_sandbox import VercelSandboxEnvironment
-from tools.terminal_tool_lifecycle import _cleanup_env, _evict_environment_for_task
+from tools.terminal_tool_lifecycle import _cleanup_env, _evict_environment_for_task, _teardown_env
 
 
 class _RecordingEnv(BaseEnvironment):
@@ -81,6 +81,41 @@ def test_eviction_teardown_resolves_owning_profile(tmp_path, monkeypatch):
     _in_fresh_thread(lambda: _evict_environment_for_task("evict-me"))
 
     assert env.seen == [owner]
+
+
+class _SuspendingEnv(_RecordingEnv):
+    """A backend the idle reaper suspends (``stop_idle``) instead of destroying."""
+
+    def stop_idle(self):
+        self.seen.append(get_hermes_home())
+
+
+def test_idle_suspend_resolves_owning_profile(tmp_path):
+    owner = _profile_home(tmp_path)
+    env = _in_owner(owner, _SuspendingEnv)
+
+    _in_fresh_thread(lambda: _teardown_env(env, "idle-1", stop_idle=True))
+
+    assert env.seen == [owner]
+
+
+def test_teardown_inside_a_hosted_scope_leaves_the_hosted_scope_bound(tmp_path):
+    """A hosted sandbox's operations carry their own scope, and a hosted activity may not switch
+    profiles: the owner bind steps aside rather than raise ScopeSwitchRefused."""
+    from agent.runtime_scope import bind_state
+    from hermes_scope import current_scope
+    from tools.environments.sandbox_conformance import hosted_scope_for
+
+    owner = _profile_home(tmp_path)
+    env = _in_owner(owner, _RecordingEnv)
+    hosted = hosted_scope_for("agent-1")
+    seen_scopes = []
+    env.cleanup = lambda: seen_scopes.append(current_scope())
+
+    with bind_state(hosted):
+        _cleanup_env(env)
+
+    assert seen_scopes == [hosted]
 
 
 def test_teardown_scope_does_not_leak_into_the_calling_thread(tmp_path):

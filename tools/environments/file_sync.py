@@ -5,7 +5,6 @@ remote environments transactionally.  Used by SSH, Modal, and Daytona.
 Docker uses bind mounts (live host FS view) and doesn't need this.
 """
 
-import contextlib
 import hashlib
 import logging
 import os
@@ -27,8 +26,8 @@ from typing import Callable
 
 import psutil
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
-from tools.environments.base import _file_mtime_key
+from hermes_constants import get_hermes_home
+from tools.environments.base import _file_mtime_key, profile_home_scope
 from utils import mtime_is_racy
 
 logger = logging.getLogger(__name__)
@@ -226,14 +225,9 @@ class FileSyncManager:
         with self._transaction_lock, self._owner_scope():
             self._sync_transaction(force=force)
 
-    @contextlib.contextmanager
     def _owner_scope(self):
         """Resolve get_files_fn, config and lock paths against the owning profile."""
-        token = set_hermes_home_override(self._hermes_home)
-        try:
-            yield
-        finally:
-            reset_hermes_home_override(token)
+        return profile_home_scope(self._hermes_home)
 
     def _sync_transaction(self, *, force: bool = False) -> None:
         """Execute one sync cycle while holding the per-manager lock."""

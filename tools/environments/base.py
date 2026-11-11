@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Iterable
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import get_hermes_home
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
@@ -263,22 +263,34 @@ def env_uses_host_filesystem(env: object) -> bool:
 
 
 @contextlib.contextmanager
+def profile_home_scope(home):
+    """Bind local profile *home* (home, secrets and terminal policy together) for a body that runs
+    outside that profile's scope.
+
+    A no-op when *home* is unknown or inside a hosted scope: a hosted sandbox's operations already
+    carry the scope that created them (``ScopedEnvironment``), and a hosted activity may not switch
+    profiles. External secret sources are not hydrated; the body only needs the profile's paths
+    and its own ``.env``.
+    """
+    from tools.environments.sandbox_scope import hosted_scope
+    if home is None or hosted_scope() is not None:
+        yield
+        return
+    from agent.runtime_scope import bind_profile_scope
+    with bind_profile_scope(home, hydrate_secrets=False):
+        yield
+
+
+@contextlib.contextmanager
 def owner_scope(env):
-    """Resolve ``get_hermes_home()`` against the profile that created *env*.
+    """Run *env*'s teardown in the profile that created it.
 
     Teardown runs on the idle reaper thread, at exit or under GC, none of which carry the
     owning profile's scope. Unscoped, sync-back and the persistent snapshot stores
     (modal, vercel and catalog-plugin backends) resolve the launch profile's home instead.
     """
-    home = getattr(env, "_owner_hermes_home", None)
-    if home is None:
+    with profile_home_scope(getattr(env, "_owner_hermes_home", None)):
         yield
-        return
-    token = set_hermes_home_override(home)
-    try:
-        yield
-    finally:
-        reset_hermes_home_override(token)
 
 
 class BaseEnvironment(LongLivedProcessMixin, ABC):

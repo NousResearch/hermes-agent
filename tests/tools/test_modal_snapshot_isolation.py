@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sys
@@ -130,6 +131,7 @@ def _install_modal_test_modules(
         _save_json_store=_save_json_store,
         _update_json_store=_update_json_store,
         _file_mtime_key=_file_mtime_key,
+        profile_home_scope=lambda home: contextlib.nullcontext(),
     )
     sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
     sys.modules["tools.credential_files"] = types.SimpleNamespace(

@@ -654,8 +654,7 @@ export function useMessageStream({
         // open, the #120104 / #93926 refresh-in-place path below keeps its
         // semantics: the completion path relies on the interim flip it
         // performs.
-        const liveMessage =
-          streamId != null ? (state.messages.find(message => message.id === streamId) ?? null) : null
+        const liveMessage = streamId != null ? (state.messages.find(message => message.id === streamId) ?? null) : null
 
         if (liveMessage) {
           const lastUserIndex = state.messages.findLastIndex(message => message.role === 'user')
@@ -677,18 +676,32 @@ export function useMessageStream({
                   .trim()
               : ''
 
-          const stale = state.messages.some((message, index) => {
-            if (index <= lastUserIndex || message.role !== 'assistant' || message.hidden) {
-              return false
-            }
+          // #127661: the current response — everything after the last tool
+          // row — is the only wording this seal restates. When the incoming
+          // text IS that response the seal is legitimate even if a pre-tool
+          // segment happens to read the same: sealing with words already on
+          // screen adds no twin, while dropping it leaves `interim` false and
+          // the completion path then folds only the post-tool segment, painting
+          // the identical prefix as a second bubble.
+          const normalizedCurrentResponse = normalizeWs(partsText(currentResponseParts(liveMessage.parts)))
 
-            const candidate =
-              message.id === liveMessage.id
-                ? normalizedLivePrefix
-                : chatMessageText(message).replace(/\s+/g, ' ').trim()
+          const sealRestatesCurrentResponse =
+            normalizedCurrentResponse !== '' && normalizedCurrentResponse === normalizedIncoming
 
-            return candidate === normalizedIncoming
-          })
+          const stale =
+            !sealRestatesCurrentResponse &&
+            state.messages.some((message, index) => {
+              if (index <= lastUserIndex || message.role !== 'assistant' || message.hidden) {
+                return false
+              }
+
+              const candidate =
+                message.id === liveMessage.id
+                  ? normalizedLivePrefix
+                  : chatMessageText(message).replace(/\s+/g, ' ').trim()
+
+              return candidate === normalizedIncoming
+            })
 
           if (stale) {
             return state

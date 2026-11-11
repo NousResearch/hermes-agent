@@ -87,3 +87,16 @@ it('keeps one bubble when the interim is redelivered after the turn settled', as
 
   expect(visibleAssistantTexts(stream)).toEqual([T])
 })
+
+it('renders one bubble when the post-tool response repeats the pre-tool text', async () => {
+  const { stream, send } = mount()
+  await send('message.start', {})
+  await send('message.delta', { text: 'Done.' })
+  await send('tool.start', { name: 'terminal', tool_id: 't1', args: { command: 'pwd' } })
+  await send('tool.complete', { name: 'terminal', tool_id: 't1', result: 'out' })
+  await send('message.delta', { text: 'Done.' })
+  await send('message.interim', { text: 'Done.' })
+  await send('message.complete', { text: 'Done.' })
+
+  expect(visibleAssistantTexts(stream)).toEqual(['Done.'])
+})

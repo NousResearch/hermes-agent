@@ -1,6 +1,6 @@
 name: hermes-studio
 repo: https://github.com/PabloTheThinker/hermes-studio
-sha: af266d7e0ca740684c29bd670f9d0e352f0b1377
+sha: d0ea7966424dbbf188e56aec5f2b9c76a1bf0ea1
 subdir: hermes_plugin/hermes-studio
 title: Hermes Studio
 description: >-
@@ -9,8 +9,8 @@ description: >-
   and photo tools. Whisper + FFmpeg on your machine. Never posts. Disclosure —
   tools shell out to the hermes-studio CLI/engine (install separately); optional
   download of public media URLs via yt-dlp/HTTP when you pass a URL; localhost
-  desk on loopback; Desktop companion may shell.exec a frame helper when the
-  desk is running; optional local Ollama for clip titles; no telemetry and no
+  desk on loopback; Desktop companion shells out to frame.py shipped in this
+  plugin when the desk is running; optional local Ollama for clip titles; no telemetry and no
   social publish.
 maintainer: PabloTheThinker
 tier: community
@@ -18,16 +18,16 @@ category: tools
 requires_hermes: ">=0.19.0"
 docs_url: https://github.com/PabloTheThinker/hermes-studio#readme
 version: "0.6.0"
-image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/af266d7e0ca740684c29bd670f9d0e352f0b1377/docs/catalog/banner.png
+image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/d0ea7966424dbbf188e56aec5f2b9c76a1bf0ea1/docs/catalog/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/af266d7e0ca740684c29bd670f9d0e352f0b1377/docs/catalog/01-timeline.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/af266d7e0ca740684c29bd670f9d0e352f0b1377/docs/catalog/02-clips-library.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/af266d7e0ca740684c29bd670f9d0e352f0b1377/docs/catalog/03-desktop-sidebar.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/af266d7e0ca740684c29bd670f9d0e352f0b1377/docs/catalog/04-desktop-proof.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/af266d7e0ca740684c29bd670f9d0e352f0b1377/docs/catalog/05-edit-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/d0ea7966424dbbf188e56aec5f2b9c76a1bf0ea1/docs/catalog/01-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/d0ea7966424dbbf188e56aec5f2b9c76a1bf0ea1/docs/catalog/02-clips-library.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/d0ea7966424dbbf188e56aec5f2b9c76a1bf0ea1/docs/catalog/03-desktop-sidebar.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/d0ea7966424dbbf188e56aec5f2b9c76a1bf0ea1/docs/catalog/04-desktop-proof.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/d0ea7966424dbbf188e56aec5f2b9c76a1bf0ea1/docs/catalog/05-edit-timeline.jpg
 platforms: []
 known_issues:
-  - Needs the Hermes Studio engine installed (curl install script or uv tool install) so agent tools can invoke the hermes-studio CLI; Desktop timeline needs the Studio desk running for the embed frame.
+  - Needs the Hermes Studio engine installed (curl install script or uv tool install) so agent tools can invoke the hermes-studio CLI. Desktop uses the frame helper shipped in this plugin; the Studio desk must be running on loopback.
 capabilities:
   provides_tools:
     - hermes_studio_run

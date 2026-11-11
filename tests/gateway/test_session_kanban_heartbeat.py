@@ -79,9 +79,21 @@ def _expire_all_leases(path, context, scope):
         conn.execute("UPDATE task_ownership SET claim_expires=1 WHERE scope_key=?", (scope,))
 
 
+def _arm_ownership_gate(monkeypatch):
+    """C5a staged activation: the ledger fence is OFF unless the flag is set.
+
+    These heartbeat tests exercise the fence itself, so they must arm it
+    explicitly — exactly as ``test_session_kanban_ownership._run_task`` and
+    ``test_phase2_e2e`` do. Without this the ledger half of the beat is inert
+    (``ownership_not_enforced``) and the fence is never under test.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_OWNERSHIP_ENFORCE", "1")
+
+
 # --- (a) a worker outliving the TTL keeps both leases and is NOT taken over -------
 
 def test_heartbeat_extends_both_leases_before_expiry(tmp_path, monkeypatch):
+    _arm_ownership_gate(monkeypatch)
     path, context, _task, scope = _claimed_context(tmp_path, monkeypatch, ttl=1)
     # The lease is still live but about to lapse (the worker is mid-turn).
     res = session_kanban._heartbeat_claims_once(context)
@@ -99,6 +111,7 @@ def test_heartbeat_extends_both_leases_before_expiry(tmp_path, monkeypatch):
 def test_heartbeat_does_not_resurrect_an_expired_lease(tmp_path, monkeypatch):
     """Fail-closed: once the ledger lease has lapsed, a late beat must NOT renew it
     (the scope may already have been taken over by another session)."""
+    _arm_ownership_gate(monkeypatch)
     path, context, _task, scope = _claimed_context(tmp_path, monkeypatch, ttl=1)
     _expire_all_leases(path, context, scope)
     res = session_kanban._heartbeat_claims_once(context)
@@ -107,6 +120,7 @@ def test_heartbeat_does_not_resurrect_an_expired_lease(tmp_path, monkeypatch):
 
 
 def test_periodic_heartbeat_thread_keeps_lease_alive(tmp_path, monkeypatch):
+    _arm_ownership_gate(monkeypatch)
     path, context, _task, scope = _claimed_context(tmp_path, monkeypatch, ttl=2)
     stop = session_kanban._start_claim_heartbeat(
         context, interval_seconds=0.05, ttl_seconds=2)
@@ -143,6 +157,7 @@ def test_heartbeat_rejects_wrong_kanban_claimer(tmp_path, monkeypatch):
 
 
 def test_heartbeat_rejects_wrong_ledger_owner(tmp_path, monkeypatch):
+    _arm_ownership_gate(monkeypatch)
     path, context, _task, scope = _claimed_context(tmp_path, monkeypatch)
     # No admission marker -> the helper falls back to the caller's owner, which is wrong.
     with connect_closing(path) as conn:

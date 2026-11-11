@@ -17,6 +17,10 @@ Scenarios (L0 C6 matrix)
       the free scope is NOT claimed (all-or-nothing).
   E4  The real worker heartbeat keeps an admitted claim alive past its TTL;
       the real completion paths release it so the next session can claim.
+  E5  Two Direct (Delegate Profile) sessions dispatching the SAME logical work
+      are fenced by the real hook layer: the first claims the scope, the second
+      is blocked and claims nothing, a success post keeps the fence, and the
+      failure-release path frees the scope so the second session is admitted.
 
 Production safety: every write lands in ``tmp_path``. The ownership ledger is
 the private board DB itself — the same file the admission gate, the Direct
@@ -521,3 +525,72 @@ def test_e4d_full_worker_turn_releases_the_scope(tmp_path, monkeypatch):
     assert ins['verdict'] == VERDICT_FREE, ins
     assert ins['state'] == STATE_RELEASED, ins
     assert _claim(path, SCOPE, 'session-next')['ok'] is True
+
+
+# ---------------------------------------------------------------------------
+# E5 — Direct <-> Direct: two Delegate Profile sessions, same logical work
+# ---------------------------------------------------------------------------
+def test_e5_direct_to_direct_same_work_is_fenced(tmp_path, monkeypatch):
+    """Two Direct (Delegate Profile) sessions dispatching the SAME logical work
+    are fenced by the REAL hook layer on the production ledger: D1 claims the
+    scope, D2 is blocked and claims nothing, D2's failed post cannot release
+    D1's claim, D1's success post keeps the fence, and D1's failure-release
+    frees the scope so D2 is admitted on retry (a dynamic fence, no deadlock).
+    """
+    _workspace, _task, path = _prepare_board(tmp_path, monkeypatch)
+    monkeypatch.setenv('HERMES_OWNERSHIP_DIRECT_ENFORCE', '1')
+    monkeypatch.setenv('HERMES_KANBAN_OWNERSHIP_ENFORCE', '1')
+    gate.reset_state()
+
+    goal = f'Work {REPO_OWNER}/{REPO_NAME}#33 per directive'
+
+    # (i) Direct session D1 is admitted: the REAL hook claims #33 for it.
+    pre_d1 = gate.pre_tool_call(tool_name='delegate_task', args=_direct_args(goal),
+                                session_id='session-D1', tool_call_id='call-e5-d1')
+    assert pre_d1 is None, pre_d1
+    ins = _inspect(path, SCOPE)
+    assert ins['verdict'] == VERDICT_OWNED and ins['owner'] == 'session-D1', ins
+    assert ins['state'] == STATE_ACTIVE, ins
+    assert gate.claimed_scopes('call-e5-d1') == [SCOPE]
+
+    # (ii) Direct session D2 dispatches the SAME logical work -> blocked.
+    pre_d2 = gate.pre_tool_call(tool_name='delegate_task', args=_direct_args(goal),
+                                session_id='session-D2', tool_call_id='call-e5-d2')
+    assert isinstance(pre_d2, dict) and pre_d2.get('action') == 'block', pre_d2
+    assert SCOPE in pre_d2['message'], pre_d2
+    # The blocked dispatch claimed nothing; D1's claim is undisturbed.
+    assert gate.claimed_scopes('call-e5-d2') == []
+    ins = _inspect(path, SCOPE)
+    assert ins['verdict'] == VERDICT_OWNED and ins['owner'] == 'session-D1', ins
+    with closing(_open(path)) as conn:
+        rows = list_ownership(conn, active_only=True)
+    assert len(rows) == 1 and rows[0]['owner_session'] == 'session-D1', rows
+    assert rows[0]['scope_key'] == SCOPE, rows
+
+    # (iii) D2's failed post is a no-op: a blocked call must not release D1.
+    gate.post_tool_call(tool_name='delegate_task', args=_direct_args(goal),
+                        session_id='session-D2', tool_call_id='call-e5-d2',
+                        status='error', error_type='tool_error')
+    assert _inspect(path, SCOPE)['owner'] == 'session-D1'
+
+    # (iv) D1 succeeds: the fence is KEPT after the call returns.
+    gate.post_tool_call(tool_name='delegate_task', args=_direct_args(goal),
+                        session_id='session-D1', tool_call_id='call-e5-d1', status='ok')
+    assert gate.claimed_scopes('call-e5-d1') == [SCOPE]
+    pre_d2b = gate.pre_tool_call(tool_name='delegate_task', args=_direct_args(goal),
+                                 session_id='session-D2', tool_call_id='call-e5-d2b')
+    assert isinstance(pre_d2b, dict) and pre_d2b.get('action') == 'block', pre_d2b
+    assert gate.claimed_scopes('call-e5-d2b') == []
+
+    # (v) D1 fails: the REAL release path frees the scope -> D2 is admitted.
+    gate.post_tool_call(tool_name='delegate_task', args=_direct_args(goal),
+                        session_id='session-D1', tool_call_id='call-e5-d1',
+                        status='error', error_type='tool_error')
+    ins = _inspect(path, SCOPE)
+    assert ins['verdict'] == VERDICT_FREE, ins
+    assert ins['state'] == STATE_RELEASED, ins
+    pre_d2c = gate.pre_tool_call(tool_name='delegate_task', args=_direct_args(goal),
+                                 session_id='session-D2', tool_call_id='call-e5-d2c')
+    assert pre_d2c is None, pre_d2c
+    ins = _inspect(path, SCOPE)
+    assert ins['verdict'] == VERDICT_OWNED and ins['owner'] == 'session-D2', ins

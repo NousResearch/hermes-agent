@@ -15,12 +15,15 @@ from hermes_state_runtime import RuntimeStoreError
 def _ownership_enforce() -> bool:
     """Cross-session ownership gate for fresh Kanban admissions (#47 Phase 2).
 
-    ``HERMES_KANBAN_OWNERSHIP_ENFORCE`` defaults to ``'1'`` (enforced). Any
-    value outside ``{'1', 'true', 'yes'}`` (case-insensitive, surrounding
-    whitespace ignored) disables the gate, so an operator can bypass the
-    ledger without a code change.
+    C5a (#47 Phase 2, SAGE deployment condition): the gate is STAGED — it is
+    OFF unless ``HERMES_KANBAN_OWNERSHIP_ENFORCE`` is explicitly set to a
+    truthy value (``1``/``true``/``yes``, case-insensitive, surrounding
+    whitespace ignored). Deploying the code does NOT activate the gate: the
+    operator migrates the ledger, backfills already-running cards, verifies,
+    and only then exports the flag. Any other value (including unset) keeps
+    the gate inert, so an operator can also bypass it without a code change.
     """
-    return os.environ.get('HERMES_KANBAN_OWNERSHIP_ENFORCE', '1').strip().lower() in {'1', 'true', 'yes'}
+    return os.environ.get('HERMES_KANBAN_OWNERSHIP_ENFORCE', '').strip().lower() in {'1', 'true', 'yes'}
 
 
 _OWNERSHIP_TABLES = ('task_ownership', 'task_ownership_events')

@@ -77,24 +77,83 @@ __all__ = [
 # tests/gateway/test_cross_mode_integration.py (``_scan_batch`` /
 # ``_scopes_from_text``). Do NOT diverge: the integration suite pins this exact
 # union semantics (top-level goal+context AND every tasks[].goal/context).
+#
+# ONE deliberate divergence: a bare ``GH-n`` / ``#n`` ref is no longer
+# hard-mapped onto ``DEFAULT_REPO_*``. Its repo comes from the dispatch context
+# (the repo carried by the task / card / batch). The default applies ONLY when
+# the context carries no repo at all. Ref matching itself is unchanged, so the
+# set of refs found in a text is exactly the one the integration suite pins.
 # --------------------------------------------------------------------------
 DEFAULT_REPO_OWNER = "Andrew288369"
 DEFAULT_REPO_NAME = "ANDREW-GRP"
 
 _ISSUE_REF_RE = re.compile(r"(?i)\b(?:gh[-_]?(\d+)|#(\d+))\b")
 
+# Mapping keys that may carry the dispatch-context repo, checked in order.
+_REPO_KEYS = ("repo", "source_repo", "repository", "default_repo")
 
-def _scopes_from_text(text: Any) -> set:
-    """Issue refs in a goal/context string -> canonical ``gh:`` scopes."""
+
+def _normalize_repo(repo: Any) -> Optional[tuple]:
+    """Normalize a dispatch-context repo value to ``(owner, name)`` or ``None``.
+
+    Accepts ``"owner/name"``, ``(owner, name)`` / ``[owner, name]``, or a
+    mapping with ``owner`` + ``name`` (or ``repo_owner`` + ``repo_name``).
+    """
+    if repo is None:
+        return None
+    if isinstance(repo, str):
+        owner, sep, name = repo.strip().partition("/")
+        return (owner, name) if sep and owner and name else None
+    if isinstance(repo, (tuple, list)) and len(repo) == 2:
+        owner, name = str(repo[0]).strip(), str(repo[1]).strip()
+        return (owner, name) if owner and name else None
+    if isinstance(repo, dict):
+        owner = repo.get("owner", repo.get("repo_owner"))
+        name = repo.get("name", repo.get("repo_name"))
+        if owner and name:
+            return str(owner).strip(), str(name).strip()
+    return None
+
+
+def _repo_from_context(mapping: Any) -> Optional[tuple]:
+    """``(owner, name)`` from a task/card/batch mapping's repo field, or ``None``."""
+    if not isinstance(mapping, dict):
+        return None
+    for key in _REPO_KEYS:
+        repo = _normalize_repo(mapping.get(key))
+        if repo:
+            return repo
+    return None
+
+
+def _scopes_from_text(text: Any, default_repo: Any = None) -> set:
+    """Issue refs in a goal/context string -> canonical ``gh:`` scopes.
+
+    Every ref's repo comes from ``default_repo`` — the repo associated with the
+    dispatch context (task / card / batch), as ``"owner/name"`` or
+    ``(owner, name)``. ``DEFAULT_REPO_OWNER`` / ``DEFAULT_REPO_NAME`` apply
+    ONLY when the context carries no repo at all.
+
+    Previously the repo was hard-mapped to ``DEFAULT_REPO_*``, so a dispatch
+    about another repo was claimed on the default repo's issue — the wrong
+    ledger key, producing a false conflict or a false free. Ref matching is
+    unchanged: the same refs are found, only their repo is now derived.
+    """
+    owner, name = _normalize_repo(default_repo) or (DEFAULT_REPO_OWNER, DEFAULT_REPO_NAME)
     out = set()
     for m in _ISSUE_REF_RE.finditer(text or ""):
         number = m.group(1) or m.group(2)
         if number:
-            out.add(github_scope(DEFAULT_REPO_OWNER, DEFAULT_REPO_NAME, int(number)))
+            out.add(github_scope(owner, name, int(number)))
     return out
 
 
-def scan_dispatch_scope(batch: Optional[dict], *, include_tasks: bool = True) -> list:
+def scan_dispatch_scope(
+    batch: Optional[dict],
+    *,
+    include_tasks: bool = True,
+    default_repo: Any = None,
+) -> list:
     """The UNION of top-level ``goal`` + ``context`` + every ``tasks[].goal/context``.
 
     ``tasks`` may be a JSON-array string (small models emit the batch that way):
@@ -106,9 +165,18 @@ def scan_dispatch_scope(batch: Optional[dict], *, include_tasks: bool = True) ->
     ``include_tasks=False`` reproduces the v1 defect (F2): a conflicting issue
     hidden inside ``tasks[]`` is never inspected. Production callers must leave
     it at the default ``True``.
+
+    The repo for a bare ref is resolved per text: an explicit ``default_repo``
+    (the task/card/session context), else the batch's own repo field, else the
+    individual ``tasks[]`` entry's repo field, else ``DEFAULT_REPO_*``. Ref
+    matching is unchanged from the integration suite's pinned reference.
     """
     batch = batch or {}
-    texts = [batch.get("goal") or "", batch.get("context") or ""]
+    batch_repo = _normalize_repo(default_repo) or _repo_from_context(batch)
+    texts = [
+        (batch.get("goal") or "", batch_repo),
+        (batch.get("context") or "", batch_repo),
+    ]
     tasks = batch.get("tasks")
     if isinstance(tasks, str):
         try:
@@ -121,11 +189,12 @@ def scan_dispatch_scope(batch: Optional[dict], *, include_tasks: bool = True) ->
     if include_tasks:
         for task in tasks or []:
             if isinstance(task, dict):
-                texts.append(task.get("goal") or "")
-                texts.append(task.get("context") or "")
+                task_repo = _repo_from_context(task) or batch_repo
+                texts.append((task.get("goal") or "", task_repo))
+                texts.append((task.get("context") or "", task_repo))
     scopes: set = set()
-    for text in texts:
-        scopes |= _scopes_from_text(text)
+    for text, repo in texts:
+        scopes |= _scopes_from_text(text, repo)
     return sorted(scopes)
 
 
@@ -306,6 +375,7 @@ def pre_tool_call(
     session_id: str = "",
     task_id: str = "",
     tool_call_id: str = "",
+    default_repo: Any = None,
     **_: Any,
 ) -> Optional[dict]:
     """``pre_tool_call`` hook — claim the dispatch scope(s) or block.
@@ -314,6 +384,12 @@ def pre_tool_call(
     proceed. NEVER raises: any ledger/claim failure is converted into a block
     directive (fail-closed), because the hook mechanism also fails closed on a
     raise or timeout.
+
+    ``default_repo`` is the dispatch-context repo (task / card / session) as
+    ``"owner/name"`` or ``(owner, name)``. It is used for bare ``GH-n`` / ``#n``
+    refs, so a dispatch about another repo is claimed on THAT repo's issue
+    instead of being assumed onto ``DEFAULT_REPO_*``. A repo carried on the
+    batch / ``tasks[]`` entry wins over the tool-call arguments.
     """
     if not enforcement_enabled():
         return None
@@ -324,7 +400,8 @@ def pre_tool_call(
     batch = _extract_batch(args)
     if batch is None:
         return None
-    scopes = scan_dispatch_scope(batch)
+    ctx_repo = _normalize_repo(default_repo) or _repo_from_context(args)
+    scopes = scan_dispatch_scope(batch, default_repo=ctx_repo)
     if not scopes:
         return None
     try:

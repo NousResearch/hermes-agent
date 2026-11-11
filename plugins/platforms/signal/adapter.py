@@ -205,7 +205,7 @@ class SignalAdapter(BasePlatformAdapter):
         # Per-chat typing backoff: on NETWORK_FAILURE base.py's _keep_typing would hammer sendTyping every ~2s.
         self._typing_failures: dict[str, int] = {}
         self._typing_skip_until: dict[str, float] = {}
-        self._running = False
+        self._closing = False
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
         self._account_normalized = self.account.strip()
@@ -250,7 +250,8 @@ class SignalAdapter(BasePlatformAdapter):
             if resp.status_code != 200:
                 logger.error("Signal: health check failed (status %d)", resp.status_code)
                 return False
-            self._running = True
+            self._closing = False
+            self._mark_connected()
             self._last_sse_activity = time.time()
             self._sse_task = asyncio.create_task(self._sse_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
@@ -271,7 +272,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""
-        self._running = False
+        self._closing = True
         for task in (self._sse_task, self._health_monitor_task):
             await cancel_task(task)
         for task in self._typing_tasks.values():
@@ -279,6 +280,7 @@ class SignalAdapter(BasePlatformAdapter):
         self._typing_tasks.clear()
         await self._close_client()
         self._release_platform_lock()
+        self._mark_disconnected()
         logger.info("Signal: disconnected")
 
     async def _handle_sse_line(self, line: str) -> None:
@@ -298,18 +300,20 @@ class SignalAdapter(BasePlatformAdapter):
         """Listen for SSE events from signal-cli daemon, reconnecting with jittered backoff."""
         url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
         backoff = SSE_RETRY_DELAY_INITIAL
-        while self._running:
+        while not self._closing:
             try:
                 logger.debug("Signal SSE: connecting to %s", url)
                 async with self.client.stream("GET", url, headers={"Accept": "text/event-stream"},
                                               timeout=None) as response:
+                    response.raise_for_status()
                     self._sse_response = response
+                    self._mark_connected()
                     backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
                     self._last_sse_activity = time.time()
                     logger.info("Signal SSE: connected")
                     buffer = ""
                     async for chunk in response.aiter_text():
-                        if not self._running:
+                        if self._closing:
                             break
                         buffer += chunk
                         while "\n" in buffer:
@@ -319,21 +323,23 @@ class SignalAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 break
             except httpx.HTTPError as e:
-                if self._running:
+                if not self._closing:
                     logger.warning("Signal SSE: HTTP error: %s (reconnecting in %.0fs)", e, backoff)
             except Exception as e:
-                if self._running:
+                if not self._closing:
                     logger.warning("Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
-            if self._running:
+            if not self._closing:
+                if self._running:
+                    self._mark_disconnected()
                 await asyncio.sleep(backoff + backoff * 0.2 * random.random())  # 20% jitter vs thundering herd
                 backoff = min(backoff * 2, SSE_RETRY_DELAY_MAX)
         self._sse_response = None
 
     async def _health_monitor(self) -> None:
         """Monitor SSE connection health and force reconnect if stale."""
-        while self._running:
+        while not self._closing:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-            if not self._running:
+            if self._closing:
                 break
             if (elapsed := time.time() - self._last_sse_activity) <= HEALTH_CHECK_STALE_THRESHOLD:
                 continue

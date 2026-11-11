@@ -34,16 +34,12 @@ aiohttp = pytest.importorskip("aiohttp")
 from plugins.platforms.mattermost.adapter import MattermostAdapter
 
 def _make_adapter(closing: bool = False) -> MattermostAdapter:
-    adapter = MattermostAdapter.__new__(MattermostAdapter)
-    adapter._closing = closing
-    # The genuine-auth path now escalates via _set_fatal_error +
-    # _notify_fatal_error (OOF-156 follow-up), which touch these attributes
-    # that __init__ would normally provide.
-    from gateway.config import Platform
+    from gateway.config import PlatformConfig
 
-    adapter.platform = Platform.MATTERMOST
+    adapter = MattermostAdapter(
+        PlatformConfig(enabled=True, token="test-token", extra={"url": "https://mm.example.com"}))
+    adapter._closing = closing
     adapter._running = True
-    adapter._fatal_error_handler = None
     return adapter
 
 class TestMattermostWSAuthRetryBoundaryProbes:

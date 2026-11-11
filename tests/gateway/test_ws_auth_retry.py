@@ -77,10 +77,11 @@ class TestMattermostWSAuthRetry:
         "401" (e.g. a proxy error body with digits) must not be mistaken
         for a genuine auth rejection. The loop should log a warning and
         retry, not return."""
+        from gateway.config import PlatformConfig
         from plugins.platforms.mattermost.adapter import MattermostAdapter
 
-        adapter = MattermostAdapter.__new__(MattermostAdapter)
-        adapter._closing = False
+        adapter = MattermostAdapter(
+            PlatformConfig(enabled=True, token="test-token", extra={"url": "https://mm.example.com"}))
 
         call_count = 0
 

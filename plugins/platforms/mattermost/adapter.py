@@ -477,6 +477,8 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay)
             if self._closing:
                 return
+            if self._running:
+                self._mark_disconnected()
             await asyncio.sleep(delay + delay * _RECONNECT_JITTER * random.random())
             delay = min(delay * 2, _RECONNECT_MAX_DELAY)
 
@@ -487,6 +489,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
         await self._ws.send_json({"seq": 1, "action": "authentication_challenge", "data": {"token": self._token}})
         logger.info("Mattermost: WebSocket connected and authenticated")
+        self._mark_connected()
 
         async for raw_msg in self._ws:
             if self._closing:

@@ -266,6 +266,15 @@ fn is_full_sha(value: &str) -> bool {
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// A receipt-trustworthy pin: a full lowercase 40-hex sha that is not the
+/// all-zero placeholder. Packaged fallback pins carry ``commit: "000…0"``,
+/// and a prior receipt written from one would stamp it again —
+/// scripts/verify-bootstrap-version-stamp.py's ``SHA_RE`` (``^[0-9a-f]{40}$``)
+/// accepts it, so the receipt would lie about the bytes actually checked out.
+fn is_pinned_commit(value: &str) -> bool {
+    is_full_sha(value) && value.bytes().any(|b| b != b'0')
+}
+
 /// HEAD of the checkout read from its ref files. install.ps1 resolves git
 /// through the PM-staged binary, which is not on PATH, so a bare `git` spawn
 /// here returns nothing on a git-less machine.
@@ -296,7 +305,7 @@ fn read_existing_marker_commit(marker_path: &Path) -> Option<String> {
     let body = raw.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&raw);
     let marker: serde_json::Value = serde_json::from_slice(body).ok()?;
     let commit = marker.get("pinnedCommit")?.as_str()?;
-    is_full_sha(commit).then(|| commit.to_string())
+    is_pinned_commit(commit).then(|| commit.to_string())
 }
 
 /// Same order as install.ps1's Stage-Complete: the pinned commit, else the
@@ -304,7 +313,8 @@ fn read_existing_marker_commit(marker_path: &Path) -> Option<String> {
 fn resolve_marker_commit(install_root: &Path, pin: &Pin, marker_path: &Path) -> Option<String> {
     pin.commit
         .clone()
-        .filter(|commit| !commit.trim().is_empty())
+        .map(|commit| commit.trim().to_string())
+        .filter(|commit| is_pinned_commit(commit))
         .or_else(|| read_checkout_head(install_root))
         .or_else(|| read_existing_marker_commit(marker_path))
 }
@@ -1275,6 +1285,40 @@ mod tests {
         std::fs::write(root.join(".hermes-bootstrap-complete"), receipt).unwrap();
         let marker = write_bootstrap_complete_marker(&root, &pin).unwrap();
         assert_eq!(marker["pinnedCommit"], head);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn all_zero_placeholder_pins_never_stamp_the_receipt() {
+        // Packaged fallback pins carry commit "000…0"; the receipt must not
+        // present them as a real pin — the checkout's HEAD (or the prior
+        // receipt) is the truth. verify-bootstrap-version-stamp.py's SHA_RE
+        // would accept the placeholder, so the guard lives here.
+        let root = unique_tmp_dir("marker-zero-pin");
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/HEAD"), format!("{head}\n")).unwrap();
+        let zero = "0".repeat(40);
+        let pin = Pin {
+            commit: Some(zero.clone()),
+            branch: Some("main".to_string()),
+        };
+
+        let marker = write_bootstrap_complete_marker(&root, &pin).unwrap();
+        assert_eq!(marker["pinnedCommit"], head, "all-zero pin.commit must fall through to the checkout HEAD");
+
+        // A prior receipt carrying the placeholder is likewise not trusted.
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let receipt = format!(
+            "\u{feff}{{\"schemaVersion\":1,\"pinnedCommit\":\"{zero}\",\"pinnedBranch\":\"main\",\"completedAt\":\"2026-01-01T00:00:00.000Z\"}}"
+        );
+        std::fs::write(root.join(".hermes-bootstrap-complete"), receipt).unwrap();
+        let marker = write_bootstrap_complete_marker(&root, &pin).unwrap();
+        assert_ne!(
+            marker["pinnedCommit"].as_str().unwrap(),
+            zero,
+            "a placeholder receipt must not be re-stamped"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -233,6 +233,41 @@ def finish_aux_call_hooks(
         logger.warning("post_auxiliary_call payload build failed; continuing", exc_info=True)
 
 
+def _telemetry_line(response: Any, aux_task: str, model: str, streaming: bool) -> None:
+    """Controller-v2 aux telemetry (G5): one INFO line per aux attempt completion,
+    same shape as main calls so the experience tracker parses both identically.
+    Fires here (not in record_aux_usage) because hook runners run for EVERY aux
+    attempt — including gateway-triggered compressions that run outside the
+    accounting context. Best-effort, fail-open."""
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        upstream = str(getattr(response, "provider", "") or "") or "unknown"
+        lat = getattr(response, "_aux_latency_s", None)
+        if lat is None:
+            lat = "n/a"
+        # Raw SDK usage uses prompt_tokens/completion_tokens; Hermes-normalized
+        # usage uses input_tokens/output_tokens. Accept either shape.
+        def _u(*names: str) -> int:
+            for n in names:
+                v = getattr(usage, n, None)
+                if v:
+                    return int(v)
+            return 0
+        _in = _u("input_tokens", "prompt_tokens")
+        _out = _u("output_tokens", "completion_tokens")
+        _cache = _u("cache_read_tokens", "cached_tokens")
+        _cache_pct = int(100 * _cache / _in) if _in else 0
+        logger.info(
+            "Auxiliary %s done: model=%s upstream=%s in=%d out=%d "
+            "latency=%ss cache=%d%%",
+            aux_task, model, upstream, _in, _out, lat, _cache_pct,
+        )
+    except Exception:
+        logger.debug("Aux telemetry line failed (non-fatal)", exc_info=True)
+
+
 def run_with_aux_hooks(
     call: Callable[[], Any], *, aux_task: str, metadata: dict[str, Any], client: Any,
     kwargs: dict[str, Any], provider: str, model: str, api_mode: str, streaming: bool = False,
@@ -247,6 +282,7 @@ def run_with_aux_hooks(
         finish_aux_call_hooks(hooks, error=exc)
         raise
     finish_aux_call_hooks(hooks, response=response)
+    _telemetry_line(response, aux_task, model, streaming)
     return response
 
 
@@ -263,4 +299,5 @@ async def arun_with_aux_hooks(
         finish_aux_call_hooks(hooks, error=exc)
         raise
     finish_aux_call_hooks(hooks, response=response)
+    _telemetry_line(response, aux_task, model, False)
     return response

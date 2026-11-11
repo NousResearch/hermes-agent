@@ -74,6 +74,9 @@ def record_aux_usage(
         ):
             return
         model = str(getattr(response, "model", "") or "") or "unknown"
+        # Controller-v2 telemetry (G5) moved to run_with_aux_hooks (auxiliary_hooks.py):
+        # hook runners fire for EVERY aux attempt regardless of accounting context —
+        # gateway-triggered compressions (no accounting ctx) still emit the line.
         estimated_cost = None
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)

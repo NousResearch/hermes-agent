@@ -2,7 +2,7 @@ name: lethe
 title: Lethe
 repo: https://github.com/itsflownium/hermes-lethe
 sha: f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1
-description: "Take one chat off the record with /lethe or the Desktop panel. Hermes can still use what it knows, but nothing from that chat is written to MEMORY.md, USER.md or skills (including by the background review), its transcript is deleted when it ends, and a 'Where it went' river in the CLI, TUI and Desktop shows every write that was kept out. Disclosure — deletes the off-the-record chat's rows from state.db via SessionDB.delete_session (keep_transcript: true to keep them), vetoes memory/skill_manage/provider save tools in those chats only, reads Hermes config and session rows, and posts a status line after each CLI/TUI turn."
+description: "Take one chat off the record with /lethe: nothing reaches memory, your profile or skills, the transcript is deleted, and a river shows every write it kept out."
 maintainer: itsflownium
 tier: community
 category: memory

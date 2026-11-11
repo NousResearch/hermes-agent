@@ -699,6 +699,16 @@ error. A delivery failure does not count toward the job's `failure_streak`
 (the agent did its job); the next fully successful run returns the status to
 `ok`.
 
+A related case is not a failure at all: `deliver: origin` on a job that
+captured no origin (script- or API-created jobs) on a machine with no home
+channel resolves to no target. The run succeeds and its output is saved under
+`cron/output/<job_id>/`, but nothing leaves the machine. The job records
+`last_status: delivery_not_configured` — never a plain `ok` — `hermes cron
+list` shows it in yellow, and `hermes cron doctor` asks for an explicit target
+(`hermes cron edit <id> --deliver <target>`). `failure_streak`, `last_error`
+and `last_delivery_error` stay untouched, and the next run that resolves a
+target returns the status to `ok`.
+
 ### Bot Chat delivery (`bot-chat`)
 
 `bot-chat` delivers the output **into a profile's canonical "Bot Chat" session as a real message**. Unlike every other target — where the recipient is a human reading a channel — the recipient here is the bot itself: it receives the output as an incoming message, acts on anything that needs action, and responds in its chat. Use it when scheduled output should be *processed*, not just posted.

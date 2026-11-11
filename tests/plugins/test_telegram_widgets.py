@@ -170,15 +170,33 @@ class TestWidgetQueryEvent:
         assert bare_adapter()._normalize_platform_event(update_of(widget_query())) == {
             "platform": "telegram",
             "event_type": "widget_query",
-            "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh", "thread_id": None},
+            "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh", "thread_id": None,
+                        "type": {"type": "data"}, "widget_id": None},
         }
 
     def test_ids_are_text_and_bounded_and_json_safe(self):
-        event = bare_adapter()._normalize_platform_event(
-            update_of(widget_query(id="q" * 300, message_id=int("9" * 300), data="d" * 300)))
+        event = bare_adapter()._normalize_platform_event(update_of(widget_query(
+            id="q" * 300, message_id=int("9" * 300), data="d" * 300, widget_id="w" * 300)))
         payload = event["payload"]
-        assert (len(payload["query_id"]), len(payload["message_id"]), len(payload["data"])) == (128, 128, 128)
+        assert (len(payload["query_id"]), len(payload["message_id"]), len(payload["data"]),
+                len(payload["widget_id"])) == (128, 128, 128, 128)
         json.dumps(event)
+
+    def test_a_wallet_query_from_a_shared_widget_keeps_its_type_and_widget(self):
+        """A shared widget's sign-data query: the plugin gets Telegram's ``WidgetQueryType`` whole (the wallet and
+        the signed data it needs to verify) and the shared widget's id, as a copy of the update's own."""
+        kind = {"type": "sign_data", "sign_data": '{"signature":"c2ln","timestamp":1}',
+                "wallet": {"address": "0:abc", "amount": "1000", "public_key": "ab01", "state_init": "te6c"}}
+        update = update_of(widget_query(type=kind, widget_id="shared-1"))
+        payload = bare_adapter()._normalize_platform_event(update)["payload"]
+        assert (payload["type"], payload["widget_id"]) == (kind, "shared-1")
+        payload["type"]["wallet"]["address"] = "changed"
+        assert telegram_widgets.widget_query_of(update)["type"]["wallet"]["address"] == "0:abc"
+
+    @pytest.mark.parametrize("kind", [None, "data", {"kind": "data"}, {"type": 5}, ["data"]])
+    def test_a_query_type_of_another_shape_is_none_and_the_tap_still_arrives(self, kind):
+        payload = bare_adapter()._normalize_platform_event(update_of(widget_query(type=kind)))["payload"]
+        assert (payload["type"], payload["query_id"], payload["data"]) == (None, "q1", "refresh")
 
     @pytest.mark.parametrize("broken", [
         {"id": None}, {"data": None}, {"data": 5}, {"message_id": None}, {"chat": None},
@@ -262,7 +280,8 @@ async def test_a_tap_polled_from_telegram_reaches_the_platform_event_boundary(mo
     event, source = seen[0]
     assert event == {
         "platform": "telegram", "event_type": "widget_query",
-        "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh", "thread_id": None},
+        "payload": {"query_id": "q1", "chat_id": "88", "message_id": "472", "data": "refresh", "thread_id": None,
+                    "type": {"type": "data"}, "widget_id": None},
     }
     assert (source.user_id, source.chat_id, source.chat_type, source.message_id) == ("88", "88", "dm", "472")
     assert "1:7" in claimed  # admitted and completed once
@@ -326,7 +345,8 @@ class TestWidgetTopic:
         stub = StubRequest(replies={"sendWidget": sent_into_topic()})
         event, source = await tap_after_send(monkeypatch, tmp_path, stub, thread_id="7")
         assert event["payload"] == {
-            "query_id": "q1", "chat_id": "88", "message_id": "501", "data": "refresh", "thread_id": "7"}
+            "query_id": "q1", "chat_id": "88", "message_id": "501", "data": "refresh", "thread_id": "7",
+            "type": {"type": "data"}, "widget_id": None}
         assert source.thread_id == "7"
         assert build_session_key(source).endswith(":dm:88:7")
 

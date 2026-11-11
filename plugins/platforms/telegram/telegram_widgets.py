@@ -11,6 +11,7 @@ extended twice and a native ``widget_query`` object is read through ``to_dict()`
 
 from __future__ import annotations
 
+import json
 from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any, Optional
@@ -101,10 +102,23 @@ class WidgetThreads:
         return self._threads.get((ids["chat_id"], ids["message_id"]))
 
 
+def _query_type(value: Any) -> Optional[dict[str, Any]]:
+    """The query's ``WidgetQueryType`` as a JSON copy: ``type`` is ``data``, ``sign_data`` or ``sent_transaction``,
+    with the TON wallet fields Telegram sends for them, uncut (a signature is useless shortened); ``None`` for
+    any other shape."""
+    if not isinstance(value, Mapping) or not isinstance(value.get("type"), str):
+        return None
+    try:
+        return json.loads(json.dumps(dict(value)))
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_event(query: Mapping[str, Any], thread_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     """``widget_query`` → the ``widget_query`` platform event: ``query_id``, ``chat_id``, ``message_id`` and
     the ``data`` the widget sent, all text, plus ``thread_id``, the widget's topic when the adapter knows it
-    (see ``WidgetThreads``); ``None`` when an identity is missing or malformed."""
+    (see ``WidgetThreads``), the query's ``type`` object and the ``widget_id`` of a shared widget; ``None``
+    when an identity is missing or malformed."""
     ids = identities(query)
     query_id = _text(query.get("id"))
     data = query.get("data")
@@ -115,7 +129,8 @@ def normalize_event(query: Mapping[str, Any], thread_id: Optional[str] = None) -
         "event_type": EVENT_TYPE,
         "payload": {
             "query_id": query_id, "chat_id": ids["chat_id"], "message_id": ids["message_id"],
-            "data": data[:_TEXT_LIMIT], "thread_id": thread_id},
+            "data": data[:_TEXT_LIMIT], "thread_id": thread_id,
+            "type": _query_type(query.get("type")), "widget_id": _text(query.get("widget_id"))},
     }
 
 

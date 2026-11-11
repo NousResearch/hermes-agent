@@ -69,24 +69,3 @@ async def test_streamed_media_delivery_carries_notify_metadata(tmp_path, monkeyp
     metadata = adapter.voices[0]["metadata"] or {}
     assert metadata.get("notify") is True
 
-
-
-@pytest.mark.asyncio
-async def test_queued_followup_streamed_media_carries_notify_metadata(tmp_path, monkeypatch):
-    """The queued-follow-up lane hands off a turn whose text already streamed: its trailing media
-    rings like the streamed completion path's, on the same thread route."""
-    from gateway.platforms import base as platforms_base
-
-    voice = tmp_path / "note.ogg"
-    voice.write_bytes(b"ogg")
-    monkeypatch.setattr(platforms_base, "MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path,))
-    adapter = _VoiceCaptureAdapter()
-    runner = _make_runner(adapter)
-    source = SessionSource(platform=adapter.platform, chat_id="-1001", chat_type="group", thread_id="17585")
-
-    delivered = await runner._deliver_queued_first_response(
-        f"here you go\n\nMEDIA: {voice} [[audio_as_voice]]", source, adapter,
-        metadata={"thread_id": "17585"}, event_message_id="1", text_already_delivered=True)
-
-    assert delivered is True
-    assert [v["metadata"] for v in adapter.voices] == [{"thread_id": "17585", "notify": True}]

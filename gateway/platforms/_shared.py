@@ -7,7 +7,6 @@ import it at module top level without cycles.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -18,6 +17,7 @@ from typing import Any, Callable, Iterable, Optional
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from tools.environments.local_env_policy import BRIDGED_ENV_MARKER_PREFIX, bridged_env_digest
 
 logger = logging.getLogger(__name__)
 
@@ -157,17 +157,12 @@ def profile_scoped() -> bool:
 # edited YAML would never take effect (#109032's mirror image). The marker holds a digest, never
 # the value: bridged names include credential-bearing ones (``TELEGRAM_PROXY``) and allowlists the
 # subprocess scrub strips, and ownership only needs equality. The scrub also drops the markers
-# (``local_env_policy._is_hermes_internal_secret``); only a same-profile restart child gets them back.
-BRIDGED_ENV_MARKER_PREFIX = "HERMES_BRIDGED_"
+# (``local_env_policy._is_hermes_internal_secret``); only a same-profile restart child gets them back. The prefix and digest live in that
+# leaf so the spawn path never imports ``gateway.platforms``.
 
 
 def bridged_env_marker(name: str) -> str:
     return f"{BRIDGED_ENV_MARKER_PREFIX}{name}"
-
-
-def bridged_env_digest(value: Optional[str]) -> Optional[str]:
-    """What the marker stores for *value* (None stays None, so an unset name never matches)."""
-    return None if value is None else "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _is_bridge_leftover(name: str, marker_value: Optional[str]) -> bool:

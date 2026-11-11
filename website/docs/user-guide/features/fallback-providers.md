@@ -244,8 +244,8 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes follows your configured fallback policy and then stops:
 
 ```text
-Main provider + main model → auxiliary.<task>.fallback_chain →
-fallback_providers / fallback_model → skip the task (warn)
+Main provider + main model → auxiliary.<task>.fallback_providers →
+fallback_chain (legacy) → fallback_providers / fallback_model → skip the task (warn)
 ```
 
 A billing or quota failure quarantines only the failed custom endpoint for the auxiliary health cooldown, not every route registered as `custom`. A healthy local endpoint with a different base URL remains eligible for fallback and subsequent auto routing. Aliases for the same custom endpoint share its health state. Built-in providers retain their shared-account health checks.
@@ -283,16 +283,20 @@ auxiliary:
   compression:
     provider: "auto"
     model: ""
-    fallback_chain:              # optional, task-specific fallback policy
+    fallback_providers:          # optional, task-specific fallback policy
       - provider: openrouter
         model: inclusionai/ring-2.6-1t:free
+    # Legacy spelling (still recognized):
+    # fallback_chain:
+    #   - provider: openrouter
+    #     model: inclusionai/ring-2.6-1t:free
 
   mcp:
     provider: "auto"
     model: ""
 ```
 
-Every task above follows the same **provider / model / base_url** pattern. Each task can also declare its own `fallback_chain`; if omitted, `provider: auto` uses the top-level `fallback_providers` chain (the built-in discovery chain applies only when no main provider is selected).
+Every task above follows the same **provider / model / base_url** pattern. Each task can also declare its own `fallback_providers`; if omitted, `provider: auto` uses the top-level `fallback_providers` chain (the built-in discovery chain applies only when no main provider is selected). The legacy `fallback_chain` spelling is still recognized.
 
 Context compression is configured under `auxiliary.compression`:
 
@@ -350,26 +354,26 @@ auxiliary:
 When you set an explicit auxiliary provider (e.g. `auxiliary.vision.provider: glm`), Hermes treats that as your preferred choice — but if the provider literally cannot serve the request because of a **capacity error** (HTTP 402 payment required, HTTP 429 daily-quota exhaustion, connection failure), Hermes falls back through a layered chain instead of failing silently:
 
 1. **Primary aux provider** — the one you configured (tried first, always)
-2. **`auxiliary.<task>.fallback_chain`** — your per-task override list, if you wrote one
+2. **`auxiliary.<task>.fallback_providers`** — your per-task override list, if you wrote one (the legacy `fallback_chain` spelling is still recognized)
 3. **Main agent provider + model** — last-resort safety net (always tried, even if you didn't write a chain)
 4. **Warn + re-raise** — if every layer fails, Hermes logs `Auxiliary <task>: ... all fallbacks exhausted` at WARNING level and re-raises the original error
 
 Transient HTTP 429 rate limits (`Retry-After: ...`) are treated as request constraints, not capacity problems — they respect your explicit provider choice and do **not** trigger the fallback ladder. Only daily/monthly quota exhaustion, payment errors, and connection failures bypass the explicit-provider gate.
 
-**Auth errors (HTTP 401) on an explicit provider** walk only step 2: if you wrote `auxiliary.<task>.fallback_chain`, its entries are tried in order (and a chain entry that dies mid-request hands off to the next one); the main agent model and the auto-detection chain are never consulted, because you did not opt that task into them. Without a chain the task fails on the auth error as before. Auth is credential-wide, so chain entries on the same provider label are skipped — point the spare at a different provider (a separate `providers:` entry counts).
+**Auth errors (HTTP 401) on an explicit provider** walk only step 2: if you wrote `auxiliary.<task>.fallback_providers`, its entries are tried in order (and a chain entry that dies mid-request hands off to the next one); the main agent model and the auto-detection chain are never consulted, because you did not opt that task into them. Without a chain the task fails on the auth error as before. Auth is credential-wide, so chain entries on the same provider label are skipped — point the spare at a different provider (a separate `providers:` entry counts).
 
 For users on `provider: auto` (no explicit aux provider), the existing auto-detection chain runs in place of steps 2–3. Its first step is already the main agent model, so `auto` users get the same outcome with zero config.
 
 ### Optional: per-task fallback chain
 
-If you want a different fallback ordering than "main agent model first", configure `fallback_chain` explicitly. Each entry needs at least `provider`; `model`, `base_url`, and `api_key` are optional.
+If you want a different fallback ordering than "main agent model first", configure `fallback_providers` explicitly. Each entry needs at least `provider`; `model`, `base_url`, and `api_key` are optional.
 
 ```yaml
 auxiliary:
   vision:
     provider: glm
     model: glm-4v-flash
-    fallback_chain:
+    fallback_providers:
       - provider: openrouter
         model: google/gemini-3-flash-preview
       - provider: nous
@@ -377,15 +381,17 @@ auxiliary:
 
   compression:
     provider: openrouter
-    fallback_chain:
+    fallback_providers:
       - provider: openai
         model: gpt-4o-mini
         timeout: 240            # optional — this candidate's own deadline (seconds)
 ```
 
-You do **not** need to configure `fallback_chain` to get fallback — the main-agent safety net runs regardless. Use it only when you specifically want a different order than the default.
+You do **not** need to configure `fallback_providers` to get fallback — the main-agent safety net runs regardless. Use it only when you specifically want a different order than the default.
 
-Each `fallback_chain` entry may also declare its own `timeout` (seconds). Without it, a fallback candidate inherits the task-level timeout — which may be tuned for the primary provider. Declaring a per-entry `timeout` lets a slower-but-reliable fallback (e.g. a large-context summarizer) get the budget it actually needs instead of dying on the primary's clock.
+The legacy `fallback_chain` spelling is still recognized and is read only when `fallback_providers` is not set.
+
+Each `fallback_providers` entry may also declare its own `timeout` (seconds). Without it, a fallback candidate inherits the task-level timeout — which may be tuned for the primary provider. Declaring a per-entry `timeout` lets a slower-but-reliable fallback (e.g. a large-context summarizer) get the budget it actually needs instead of dying on the primary's clock.
 
 ### Provider quota errors that trigger fallback
 
@@ -458,7 +464,7 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 |---------|-------------------|----------------|
 | Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
-| Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
+| Auxiliary tasks (any) — explicit provider | `fallback_providers` (if set) → `fallback_chain` (legacy) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_providers` only | `auxiliary.<task>.fallback_providers` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |

@@ -955,7 +955,7 @@ fallback_providers:
     model: anthropic/claude-sonnet-4
 ```
 
-The older top-level `fallback_model` single-provider shape is still read for backward compatibility, but new configuration should use `fallback_providers`. For task-specific auxiliary policy, use `auxiliary.<task>.fallback_chain` in `config.yaml`; there is no environment variable equivalent.
+The older top-level `fallback_model` single-provider shape is still read for backward compatibility, but new configuration should use `fallback_providers`. For task-specific auxiliary policy, use `auxiliary.<task>.fallback_providers` in `config.yaml` (the legacy `auxiliary.<task>.fallback_chain` spelling is still recognized); there is no environment variable equivalent.
 
 See [Fallback Providers](../user-guide/features/fallback-providers.md) for full details.
 

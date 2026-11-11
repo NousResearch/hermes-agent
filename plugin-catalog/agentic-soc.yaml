@@ -1,0 +1,41 @@
+name: agentic-soc
+title: Hermes Agentic SOC
+repo: https://github.com/CyStrat-Services-GmbH/hermes-agentic-soc
+sha: ebb3dfd5ebef4e7bbc8943f40c59401313145f07
+description: >-
+  Evidence-first SOC and DFIR work for Hermes: six defense specialist personas
+  (L1 triage, L2 incident response, threat hunting, DFIR compromise
+  assessment, detection engineering, vulnerability management), 39 skills,
+  25 technology scaffolds and deterministic THOR Lite triage with exact event
+  counts, correlation, audit trail and human approval. Everything is local
+  file work. Disclosure: runs the operator's own THOR Lite executable as a
+  subprocess (separate Nextron licence required, nothing bundled, no download)
+  and can create a new Hermes profile via the local `hermes` CLI when the
+  operator asks for it; reads evidence files only inside operator-configured
+  root folders; writes reports and an audit log under the plugin's own data
+  directory; makes no network calls, holds no credentials (a minimal PATH-only
+  environment is passed to child processes) and never acts on a target.
+maintainer: CyStrat-Services-GmbH
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/CyStrat-Services-GmbH/hermes-agentic-soc
+version: "0.2.2"
+platforms: []
+known_issues:
+  - "Local THOR triage needs a separately licensed THOR Lite executable: set `thor_path` in the plugin settings. No THOR binary, signature or rule set is bundled or downloaded."
+  - "Evidence analysis covers THOR JSON v1/v2 and NDJSON only; THOR JSON v3, legacy text and CSV exports are not parsed in this version."
+  - "Offensive-research profiles and skills are not part of this release; they are planned for a later version and nothing of them is present, previewable or enableable here."
+capabilities:
+  provides_tools:
+    - soc_capabilities
+    - soc_template_list
+    - soc_template_install
+    - thor_lite_scan
+    - thor_parse
+    - thor_first_assessment
+    - soc_alert_triage
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

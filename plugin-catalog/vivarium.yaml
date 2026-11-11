@@ -1,0 +1,23 @@
+name: vivarium
+repo: https://github.com/r3adaszer0/vivarium
+sha: 81a535ed1bde8e9d8fddebe86b4aa6c197beb7e5
+subdir: ""
+description: A living artificial-life world inside Hermes. Real tool calls drop nutrients into a 48x48 cellular-automaton dish; creatures carry genomes, forage, reproduce, mutate and go extinct on their own; every skill the agent learns births a new species. Deterministic, mathematically grounded, private.
+maintainer: r3adaszer0
+tier: community
+platforms: []
+capabilities:
+  provides_tools:
+    - vivarium_status
+    - vivarium_feed
+    - vivarium_render
+    - vivarium_release
+    - vivarium_export
+    - vivarium_codex
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+    - on_skill_lifecycle
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

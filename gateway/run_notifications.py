@@ -383,7 +383,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return True
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
-            thread_metadata=metadata,
+            # Streamed text already rang; its attachments complete that reply and ring like it.
+            thread_metadata=_mark_notify_metadata(metadata) if text_already_delivered else metadata,
         )
         return True
 

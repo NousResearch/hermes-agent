@@ -31,21 +31,7 @@ repo: https://github.com/Joystonm/hermes-gmi-nexus
 sha: 7b2d8c5eb7578d73f4f58907f9ddfe5e2da58fe9
 subdir: plugins/gmi-nexus
 title: GMI NEXUS
-description: >-
-  Adaptive intelligence layer for Hermes Agent over the live GMI Cloud model
-  catalogue. A goal is understood, planned into steps, and each step is routed
-  to the model that suits it from the catalogue read live at runtime, so a
-  retired model stops being routable and a new one becomes routable without a
-  code change. Results are evaluated against each step's own criteria, a
-  failure is recovered on a different model with bounded retries, the verified
-  outcome feeds the routing statistics, and the report says what ran, what it
-  cost and what failed. Ships a vision module for screenshots and before/after
-  comparison, a benchmarking arena whose results feed the router, a Dev Agent
-  that writes and tests code through Hermes' own tools, and a creative engine
-  for image, video and audio generation and editing. Also ships a web
-  dashboard tab. No third-party dependencies; the key is read through Hermes'
-  secret scope; a per-run ceiling, a rolling daily ceiling and an approval
-  threshold are enforced before any request is submitted.
+description: "Adaptive intelligence layer for Hermes Agent over the live GMI Cloud model catalogue. A goal is understood, planned into steps, and each step is routed to the model that suits it from the catalogue read live at runtime, so a retired model stops being routable and a new one becomes routable without a code change. Results are evaluated against each step's own criteria, a failure is recovered on a different model with bounded retries, the verified outcome feeds the routing statistics, and the report says what ran, what it cost and what failed. Ships a vision module for screenshots and before/after comparison, a benchmarking arena whose results feed the router, a Dev Agent that writes and tests code through Hermes' own tools, and a creative engine for image, video and audio generation and editing. Also ships a web dashboard tab. No third-party dependencies; the key is read through Hermes' secret scope; a per-run ceiling, a rolling daily ceiling and an approval threshold are enforced before any request is submitted. Disclosure — Sends goals, prompts, files and images you or the model name, plus screenshots captured through Hermes' computer_use tool, to GMI Cloud (api.gmi-serving.com, console.gmicloud.ai) for paid inference and generation billed to your GMI account. Spend at or above approval_threshold_usd, or with no published price, asks for approval in Hermes' own prompt, under per-run and daily caps. Vision downloads model-supplied public image URLs on your machine before sending them. The Dev Agent writes files and runs test commands through Hermes' write_file and terminal tools."
 maintainer: Joystonm
 tier: community
 category: models

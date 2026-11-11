@@ -33,6 +33,7 @@ from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_
 from hermes_cli.env_loader import load_hermes_dotenv
 # The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from tui_gateway.method_ctx import HYDRATE_SECRETS_IF_UNTRIED
 from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_state_ids import new_session_id
@@ -482,7 +483,7 @@ def _profile_home(profile: str | None) -> Path | None:
 _served_profile_homes: set[Path] = set()
 
 
-def _profile_scoped(handler):
+def _profile_scoped(handler, *, hydrate_secrets: bool | str = True):
     """Bind ``params['profile']``'s full runtime scope (HERMES_HOME + secrets + terminal policy) around a
     handler, so config.yaml ``${VAR}`` refs, provider credential checks and ``.env`` writes resolve to
     THAT profile (app-global remote mode hits the focused profile). Home alone left ``get_secret`` on the
@@ -498,7 +499,15 @@ def _profile_scoped(handler):
     is the scope. The TUI and the Desktop's ambient dispatcher send session-bound RPCs with the
     session id alone, so a ``config.set`` from a focused worker session otherwise persisted into the
     LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669).
+
+    ``hydrate_secrets``: True loads the profile's external sources (``op``/``bws``) on every call until
+    they all succeed once (a failing one is retried per call); False never does (the scope keeps their
+    last successful load); ``HYDRATE_SECRETS_IF_UNTRIED`` (polled reads) only when
+    ``env_loader.secret_sources_tried`` is false, one attempt shared by overlapping callers.
     """
+    if hydrate_secrets not in (True, False, HYDRATE_SECRETS_IF_UNTRIED):
+        raise ValueError(f"_profile_scoped: unknown hydrate_secrets={hydrate_secrets!r}")
+
     def wrapper(rid, params):
         p = params if isinstance(params, dict) else {}
         if str(p.get("profile") or "").strip():
@@ -509,7 +518,7 @@ def _profile_scoped(handler):
             from tui_gateway.ws_legacy_fallback import connection_profile_home
             session = _sessions.get(str(p.get("session_id") or ""))
             profile_home = session.get("profile_home") if isinstance(session, dict) else connection_profile_home()
-        with _session_profile_runtime_scope({"profile_home": profile_home or None}):
+        with _session_profile_runtime_scope({"profile_home": profile_home or None}, hydrate_secrets=hydrate_secrets):
             return handler(rid, params)
     return wrapper
 

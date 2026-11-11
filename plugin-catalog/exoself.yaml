@@ -1,0 +1,32 @@
+name: exoself
+repo: https://github.com/cYoren/hermes-exoself
+sha: 1470d537057be407e1718345bee2f2dddc600266
+title: exoself
+description: >-
+  A drawn temperament for the agent. One 32 byte seed, drawn once per profile with
+  `hermes exoself born`, expanded deterministically into a bounded system prompt
+  section, plus four tools (status, verify, temperament, record_session) and an
+  on_session_end hook that records one development event per completed turn from turn
+  facts only. Style only: the section states that the operating contract wins on every
+  conflict. Disclosure — no network calls, no credentials, no shell commands, no
+  telemetry, no self-update; it reads the bundled exoself registry and writes only its
+  own state.json/runtime.json under plugin-data/exoself. There is deliberately no tool
+  that draws a seed, and a second `born` in the same profile is refused.
+maintainer: cYoren
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/cYoren/hermes-exoself#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - exoself_status
+    - exoself_verify
+    - exoself_temperament
+    - exoself_record_session
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

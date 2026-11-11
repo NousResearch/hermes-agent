@@ -386,6 +386,10 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
     results = [title_result] if title_result else []
     if title_result and (title_lineage := title_result.pop("_lineage_root", None)):
         seen_sessions[title_lineage] = {"_title_only": True}
+    # True once a candidate was dropped only because it lives in the current live context. That
+    # shape must not be reported as a clean miss: the caller sees success with count 0, reads it as
+    # "this was never discussed", and retries the identical query.
+    filtered_current_context = False
     # Dedupe by lineage (lineage_root -> first surviving FTS row) up to `limit`. The raw
     # owning session_id stays on the row — only it pairs validly with the FTS match id.
     # Current-lineage hits are skipped UNLESS the transcript left live context
@@ -410,8 +414,10 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
         if current_lineage_root and resolved_sid == current_lineage_root and not (
                 _session_left_live_context(db, raw_sid) or is_compacted_hit):
+            filtered_current_context = True
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+            filtered_current_context = True
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
@@ -423,6 +429,14 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
+    if not results and filtered_current_context:
+        # Candidates existed, but every one lived in the current live context. Reporting an empty
+        # success here reads as "nothing was ever discussed" and drives an identical retry loop.
+        return tool_error(
+            "Search matched only live current-session content, which discovery excludes because it "
+            "is already in your active context. No other matching sessions were found.",
+            success=False,
+        )
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "

@@ -4,6 +4,11 @@ repo: "https://github.com/ranggaoscar/ideacut"
 sha: "b78cdff6327a2d3baf2023a1d7798207e4334dff"
 version: "1.2.0"
 title: "IDEA CUT"
+image: "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/covers/catalog-cover.png"
+screenshots:
+  - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/01-gallery.png"
+  - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/02-studio.png"
+  - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/03-export.png"
 description: >-
   Turns a chat brief into an editable, art-directed video: seven agent tools capture and record a
   public page, write typed scenes, revise them and export H.264 MP4 locally with

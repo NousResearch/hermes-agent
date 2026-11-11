@@ -19,6 +19,7 @@ import { saveSelectedRosterBot } from './bot-state'
 import { prepareBotSource, resolveExpectHistory } from './canonical-chat'
 import { openRosterBot } from './roster-actions'
 import { botConnectionRoute, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
 /** The listed session the menu item would open, or null when the profile has
@@ -72,7 +73,10 @@ export async function openBotRecentSession(bot: RosterRow): Promise<boolean> {
 
     return true
   } catch (error) {
-    host.notifyError?.(error, 'Could not open the recent session')
+    // Non-component module: resolve via the plugin i18n context (same shape as
+    // canonical-chat.ts's kickoffText) so the language bundle is not pulled
+    // into this module's import graph.
+    host.notifyError?.(error, getPluginCtx()?.i18n?.t('bot.openRecentSessionFailed') ?? 'Could not open the recent session')
 
     return false
   }

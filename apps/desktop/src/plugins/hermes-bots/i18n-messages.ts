@@ -147,6 +147,10 @@ export type BotsMessages = {
     helpPromptPlaceholder: string
     descriptionHint: string
     newChatWith: string
+    /** Row context menu: the bot's freshest listed session (#93054), plus the
+     *  toast when opening it fails. */
+    openRecentSession: string
+    openRecentSessionFailed: string
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string

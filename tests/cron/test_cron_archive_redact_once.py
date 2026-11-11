@@ -95,3 +95,15 @@ def test_json_answer_quoting_an_assignment_stays_valid_json(cron_env, monkeypatc
     assert answer is not None
     parsed = json.loads(answer)
     assert FIXTURE not in parsed["p"] and parsed["p"].startswith("const SECRET=") and parsed["ok"] is True
+
+
+@pytest.mark.parametrize("value", [
+    'const SECRET = "abc\\"def0123456789tail"',          # escaped quote inside the value
+    'SECRET="x\\\\\\"0123456789abcdefTAIL" more',        # escaped backslash, then escaped quote
+])
+def test_escaped_quote_inside_a_value_does_not_end_the_mask(value, redaction_on):
+    from agent.redact import redact_sensitive_text
+
+    out = redact_sensitive_text(json.dumps({"p": value}))
+    parsed = json.loads(out)["p"]
+    assert "0123456789" not in parsed and "tail" not in parsed.lower()

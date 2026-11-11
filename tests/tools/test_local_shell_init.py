@@ -13,8 +13,12 @@ import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
+    _make_run_env,
     _prepend_shell_init,
+    _prepend_user_env_dirs,
+    _read_user_env_dirs,
     _resolve_shell_init_files,
+    _sanitize_subprocess_env,
 )
 
 
@@ -227,3 +231,192 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+
+class TestUserEnvDirs:
+    """terminal.user_env_dirs: user-environment PATH channel (#126460).
+
+    The Windows chat-terminal has no default channel to put a user-managed
+    environment first: ``python`` resolves to the bare managed runtime while
+    ``pip`` resolves to the system Python. These tests pin the config-driven
+    prepend with priority semantics.
+    """
+
+    def test_empty_config_returns_path_unchanged(self):
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=[],
+        ):
+            assert _prepend_user_env_dirs("/a:/b") == "/a:/b"
+
+    def test_entries_prepended_in_config_order(self):
+        sep = os.pathsep
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin", "/opt/user-python/scripts"],
+        ):
+            out = _prepend_user_env_dirs(sep.join(["/usr/bin", "/bin"]))
+        parts = out.split(sep)
+        assert parts[0] == "/opt/user-python/bin"
+        assert parts[1] == "/opt/user-python/scripts"
+
+    def test_already_present_dir_moves_to_front(self):
+        # Priority, not presence: the user dir is already in PATH but
+        # after the managed entries, so it must move to the front.
+        sep = os.pathsep
+        existing = sep.join(["/managed/tools", "/opt/user-python/bin", "/usr/bin"])
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin"],
+        ):
+            out = _prepend_user_env_dirs(existing)
+        parts = [p for p in out.split(sep) if p]
+        assert parts[0] == "/opt/user-python/bin"
+        assert parts.count("/opt/user-python/bin") == 1
+
+    def test_mixed_present_and_absent_keep_config_order(self):
+        # Regression: one entry already in PATH, one absent — both must land
+        # in config order at the front (the original occurrence of the
+        # present one is dropped). A presence-grouped merge reorders the
+        # prefix exactly here, which is the default Windows layout (python
+        # dir on PATH, Scripts dir not).
+        sep = os.pathsep
+        existing = sep.join(["/managed/tools", "/opt/user-python/bin", "/usr/bin"])
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin", "/opt/user-python/scripts"],
+        ):
+            out = _prepend_user_env_dirs(existing)
+        parts = [p for p in out.split(sep) if p]
+        assert parts[0] == "/opt/user-python/bin"
+        assert parts[1] == "/opt/user-python/scripts"
+        # the moved entry no longer appears at its old position
+        assert parts.count("/opt/user-python/bin") == 1
+        assert parts[2:] == ["/managed/tools", "/usr/bin"]
+
+    def test_moved_entry_keeps_path_side_spelling(self):
+        # The PATH-side spelling survives the move: config may use forward
+        # slashes while PATH holds backslashes (or vice versa) and tools
+        # disagree on tolerance, so the existing entry's own spelling wins.
+        sep = os.pathsep
+        existing = sep.join([r"C:\managed", r"C:\Program Files\Python313"])
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["C:/Program Files/Python313"],
+        ):
+            out = _prepend_user_env_dirs(existing)
+        parts = [p for p in out.split(sep) if p]
+        assert parts[0] == r"C:\Program Files\Python313"
+        assert r"C:\Program Files\Python313" not in parts[1:]
+
+    def test_trailing_slash_spelling_does_not_duplicate(self):
+        sep = os.pathsep
+        existing = sep.join(["/opt/user-python/bin/", "/usr/bin"])
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin"],
+        ):
+            out = _prepend_user_env_dirs(existing)
+        parts = [p for p in out.split(sep) if p]
+        assert len(parts) == 2
+        assert parts[0] == "/opt/user-python/bin/"
+
+    def test_applying_twice_is_idempotent(self):
+        sep = os.pathsep
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin", "/opt/user-python/scripts"],
+        ):
+            once = _prepend_user_env_dirs(sep.join(["/usr/bin"]))
+            twice = _prepend_user_env_dirs(once)
+        assert once == twice
+
+    def test_make_run_env_honors_user_env_dirs(self, monkeypatch):
+        sep = os.pathsep
+        monkeypatch.setenv("PATH", sep.join(["/usr/bin", "/bin"]))
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin"],
+        ):
+            run_env = _make_run_env({})
+        key = "PATH" if "PATH" in run_env else "Path"
+        assert run_env[key].split(sep)[0] == "/opt/user-python/bin"
+
+    def test_sanitize_env_honors_user_env_dirs(self, monkeypatch):
+        sep = os.pathsep
+        monkeypatch.setenv("PATH", sep.join(["/usr/bin", "/bin"]))
+        base = {"PATH": sep.join(["/usr/bin", "/bin"])}
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin"],
+        ):
+            sanitized = _sanitize_subprocess_env(base, None)
+        key = "PATH" if "PATH" in sanitized else "Path"
+        assert sanitized[key].split(sep)[0] == "/opt/user-python/bin"
+
+    def test_original_path_also_prepended(self, monkeypatch):
+        # git-bash login shells rebuild PATH from ORIGINAL_PATH when present
+        # (etc/profile: ORIGINAL_PATH="${ORIGINAL_PATH:-${PATH}}"); the user
+        # dirs must lead there too or the login snapshot drops them.
+        sep = os.pathsep
+        monkeypatch.setenv("PATH", sep.join(["/usr/bin"]))
+        monkeypatch.setenv("ORIGINAL_PATH", sep.join(["/managed", "/usr/bin"]))
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin"],
+        ):
+            sanitized = _sanitize_subprocess_env(
+                {"PATH": sep.join(["/usr/bin"]),
+                 "ORIGINAL_PATH": sep.join(["/managed", "/usr/bin"])}, None)
+        assert sanitized["ORIGINAL_PATH"].split(sep)[0] == "/opt/user-python/bin"
+
+    def test_original_path_untouched_when_absent(self, monkeypatch):
+        monkeypatch.delenv("ORIGINAL_PATH", raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin")
+        with patch(
+            "tools.environments.local._read_user_env_dirs",
+            return_value=["/opt/user-python/bin"],
+        ):
+            sanitized = _sanitize_subprocess_env(None, None)
+        assert "ORIGINAL_PATH" not in sanitized
+
+    def test_read_user_env_dirs_expands_home_and_vars(self, monkeypatch):
+        monkeypatch.setenv("USERPY", "/opt/user-python")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"terminal": {"user_env_dirs": ["~/.local/py", "${USERPY}/bin"]}},
+        ):
+            import tools.environments.local as local_mod
+
+            home = os.path.expanduser("~")
+            assert local_mod._read_user_env_dirs() == [
+                os.path.expanduser("~/.local/py"), "/opt/user-python/bin"]
+
+    def test_read_user_env_dirs_dedups_config_entries(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"terminal": {"user_env_dirs": [
+                "/opt/x", "/opt/x/", r"C:\opt\y", "C:/opt/y"]}},
+        ):
+            import tools.environments.local as local_mod
+
+            assert local_mod._read_user_env_dirs() == ["/opt/x", r"C:\opt\y"]
+
+    def test_read_user_env_dirs_defaults_on_bad_config(self):
+        import tools.environments.local as local_mod
+
+        with patch(
+            "hermes_cli.config.load_config",
+            side_effect=Exception("boom"),
+        ):
+            assert local_mod._read_user_env_dirs() == []
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"terminal": {"user_env_dirs": "not-a-list"}},
+        ):
+            assert local_mod._read_user_env_dirs() == []
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"terminal": {"user_env_dirs": ["", None, "/opt/x"]}},
+        ):
+            assert local_mod._read_user_env_dirs() == ["/opt/x"]

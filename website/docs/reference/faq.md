@@ -191,6 +191,21 @@ terminal:
   auto_source_bashrc: false
 ```
 
+#### Windows: `python` and `pip` resolve to different environments
+
+**Cause:** On a native Windows install the chat-terminal's `PATH` puts the Hermes-managed bare interpreter first (it ships without third-party packages by design), while `pip` keeps resolving to your system Python — so `pip install` succeeds into one environment and the very next `python -c "import ..."` fails with `ModuleNotFoundError` in another. The interactive terminal had no documented channel to put a user-managed environment first (the cron counterpart is `hermes cron create --interpreter`).
+
+**Solution:** List your environment's directories in `~/.hermes/config.yaml` — they are prepended to the terminal `PATH` with top priority, in list order:
+
+```yaml
+terminal:
+  user_env_dirs:
+    - C:/Program Files/Python313
+    - C:/Program Files/Python313/Scripts
+```
+
+After this, bare `python` and `pip` resolve to the same environment and `pip install` + `python` agree within a session. An entry already on `PATH` is moved to its list position (its old occurrence is dropped); an absent one is inserted — slash spelling (`C:/x` vs `C:\x`) does not create duplicates. The channel is generic: it affects all `PATH` lookups in the terminal, so the same list works for a user-managed `node` (`C:/Program Files/nodejs`), or any other toolchain whose Hermes-managed shadow currently wins. Hermes itself keeps running on its own runtime — this only changes how bare commands resolve in the terminal.
+
 #### `uv: command not found`
 
 **Cause:** The `uv` package manager isn't installed or not in PATH.

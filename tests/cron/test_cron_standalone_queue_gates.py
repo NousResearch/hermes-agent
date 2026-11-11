@@ -151,6 +151,44 @@ def test_standalone_send_marks_timeouts_in_flight(monkeypatch):
     assert result is None and "may still be in flight" in err and t.standalone_in_flight is True
 
 
+@pytest.mark.parametrize("raised, queued", [("timed_out", False), ("connect", True)])
+def test_telegram_sender_lost_answer_is_not_queued(monkeypatch, gateway_loop, raised, queued):
+    """Telegram's own standalone sender can time out after the write and return an error dict well
+    inside cron's outer timeout. That answer was lost, not refused, so the report may already be in
+    the chat: it must not be queued for a replay. A connect failure (the request never left) still is."""
+    pytest.importorskip("telegram")
+    from telegram.error import NetworkError, TimedOut
+
+    import sys
+
+    from tools.send_message_senders import _plugin_standalone_sender
+    sender, _err = _plugin_standalone_sender("telegram")  # the module the registry really calls
+    tg_standalone = sys.modules[sender.__module__]
+    import httpx
+
+    def _connect_error():  # PTB's shape: NetworkError chained to the httpx connect failure
+        err = NetworkError("httpx.ConnectError: All connection attempts failed")
+        err.__cause__ = httpx.ConnectError("All connection attempts failed")
+        return err
+    errors = {"timed_out": lambda: TimedOut("Timed out"), "connect": _connect_error}
+
+    class _Bot:
+        async def send_message(self, **kwargs):
+            raise errors[raised]()
+
+    monkeypatch.setattr(tg_standalone, "_telegram_bot", lambda token, extra=None: _Bot())
+    monkeypatch.setattr(tg_standalone, "_telegram_retry_delay", lambda exc, attempt: None)
+    t = _target(gateway_loop)
+    t.pconfig.extra = {}
+    target_errors, delivery_errors = [], []
+    assert not sd._deliver_via_live_adapter(
+        t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors,
+        unverified_targets=[])
+    sd._deliver_standalone(t, "the report", [], target_errors, delivery_errors)
+    rows = dl.sweep_failed_for_runtime("telegram", now=time.time() + 600, profile="primary")
+    assert bool(rows) is queued, (raised, delivery_errors)
+
+
 def test_standalone_send_definitive_failure_is_not_in_flight(monkeypatch):
     async def _refused(platform, pconfig, chat_id, message, **kwargs):
         return {"error": "You must pass the token from BotFather"}

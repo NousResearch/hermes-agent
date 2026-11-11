@@ -1512,11 +1512,13 @@ def _deliver_standalone(
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], err)
+        # The sender's own timeout / lost answer: as ambiguous as cron's outer timeout.
+        t.standalone_in_flight = t.standalone_in_flight or result.get("delivery_uncertain") is True
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         if t.standalone_in_flight:
-            # A timed-out send may still land; queueing it would let the redelivery sweep replay
+            # A timed-out (or answer-lost) send may still land; queueing it would let the redelivery sweep replay
             # a payload that in fact went out. Possible loss over certain duplication: surface
             # the window loudly instead of queueing.
             logger.warning(

@@ -544,9 +544,23 @@ this is consent and visibility. It is **not a sandbox**: in-process plugin code
 can still read any file the user can, and reviewers reject plugins that do.
 
 **Usage panels:** don't call the usage endpoints yourself. Use
-`agent.account_usage.fetch_account_usage("openai-codex", read_only=True)`. It
-returns an `AccountUsageSnapshot` (plan, session/weekly windows with
-`used_percent` and `reset_at`) and never refreshes or rotates a credential.
+`agent.account_usage.fetch_account_usage(provider, read_only=True)`. It
+returns an `AccountUsageSnapshot` (plan, windows with `used_percent` and
+`reset_at`, plus the exact decoded body on `raw` for providers that publish
+fields core does not normalize) and never refreshes or rotates a credential on
+failure. Core owns fetchers for `openai-codex`, `anthropic`, `openrouter`,
+`deepseek`, `ollama-cloud`, `opencode-zen`, `opencode-go` (profile hook plus a
+core fallback). Nous credits use the named
+`agent.account_usage.fetch_nous_account_usage(read_only=True)` entry point, so
+core's existing credits block is not duplicated. For pooled accounts, enumerate
+`agent.account_usage.list_account_usage_identities(provider)` and pass its
+`identity_id` (the same `_identity_id_for` account namespace the delegation
+roster publishes as `provider_account_id`) back to
+`fetch_account_usage(..., identity_id=...)`; core resolves that exact row and
+its token. Each row also carries the pool row's stable `credential_id`.
+`snapshot.identity_id` is that account namespace (or `None` = unknown),
+`snapshot.account_id` is a stable provider account id when one exists, and
+`snapshot.profile_scope` is the canonical home scope.
 There is no core `fetch_account_usage` adapter for `xai-oauth` yet, so a Grok
 panel goes through `credentialed_provider_request` against the allowlisted
 credits hosts above and keeps its own parsing.

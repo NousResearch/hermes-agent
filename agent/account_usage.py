@@ -66,6 +66,22 @@ class AccountUsageSnapshot:
     # Usage-window plans only: the stacked bar layout. Every other snapshot
     # renders exactly as before.
     usage_window: bool = False
+    # Account namespace (``agent.account_usage_cache._identity_id_for``) of the
+    # credential this snapshot was actually fetched with, when core selected one
+    # by identity: a decoded Codex principal, the cache's existing one-way token
+    # fingerprint, or ``entry:<pool id>``. This is the exact id the delegation
+    # roster publishes as ``provider_account_id`` and the inventory publishes as
+    # ``identity_id``; never the token itself. ``None`` means core could not
+    # prove which credential was selected (for example an env/config key);
+    # callers must render that account as unknown rather than guess.
+    identity_id: Optional[str] = None
+    # Stable account id when the provider exposes one (today the decoded Codex
+    # JWT principal, ``codex:<account>:<sub>``). Never a token.
+    account_id: Optional[str] = None
+    # Canonical, non-path profile scope (``home:<16 hex>``) so two Hermes
+    # profiles' identical provider rows can never be correlated. The hash is
+    # over the canonical home path, not a credential.
+    profile_scope: Optional[str] = None
 
     @property
     def available(self) -> bool:
@@ -74,6 +90,125 @@ class AccountUsageSnapshot:
 
 def _snapshot(provider: str, source: str, windows: list, details: list, **kw: Any) -> AccountUsageSnapshot:
     return AccountUsageSnapshot(provider=provider, source=source, fetched_at=_utc_now(), windows=tuple(windows), details=tuple(details), **kw)
+
+
+def _profile_scope() -> Optional[str]:
+    """Canonical, non-secret profile scope string (``home:<16 hex>``).
+
+    Same value the Desktop Provider Usage plugin derives for its own home
+    scope: a hash of the canonical Hermes home path, never the path itself and
+    never a credential. Two profiles therefore produce different scopes even
+    when they select the same provider/account ids.
+    """
+    try:
+        import hashlib
+
+        from hermes_constants import get_hermes_home, hermes_home_key
+
+        key = hermes_home_key(get_hermes_home())
+        return "home:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return None
+
+
+# Credential-shaped keys are dropped from ``snapshot.raw`` recursively. Provider
+# usage bodies never need them, and a custom gateway body must not smuggle a
+# token into a plugin pane that persists rows.
+_RAW_DROP_KEYS = frozenset({
+    "authorization", "apikey", "accesstoken", "refreshtoken", "agentkey",
+    "clientsecret", "secret", "password", "cookie", "setcookie", "headers",
+    "credential", "credentials", "authtoken", "xapikey",
+})
+
+
+def _sanitized_raw(value: Any) -> Any:
+    """Decoded provider JSON with credential-shaped keys removed, recursively."""
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            normalized = str(key).strip().lower().replace("_", "").replace("-", "")
+            if normalized in _RAW_DROP_KEYS:
+                continue
+            cleaned[key] = _sanitized_raw(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitized_raw(item) for item in value]
+    return value
+
+
+def _redacted_text(value: Any, token: str = "") -> str:
+    text = str(value or "")
+    secret = str(token or "").strip()
+    return text.replace(secret, "redacted") if secret and secret in text else text
+
+
+def _safe_base_url(value: Any, *, token: str = "") -> Optional[str]:
+    """A pool entry's base URL without userinfo, query, fragment or the token.
+
+    A custom gateway may carry ``user:password@`` or a key in a query/path; the
+    inventory is non-secret, so only scheme, host, port and path survive.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    text = _redacted_text(value, token).strip()
+    if not text:
+        return None
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if not parts.scheme or not host:
+        return None
+    netloc = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    if port:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def _credential_identity(provider: str, entry: Any) -> Optional[str]:
+    """The account namespace the cache/metadata footer already uses (``_identity_id_for``).
+
+    Codex resolves to the trusted decoded principal (``codex:<account>:<sub>``);
+    other credentials use the cache's existing ``fp:<16 hex>`` one-way token
+    fingerprint, and a metadata-only row uses ``entry:<pool id>``. This is the
+    exact id the delegation roster publishes as ``provider_account_id``; it is
+    a correlation namespace, never the token, and is not reversible. The pool
+    row's own stable id is published separately as ``credential_id``.
+    """
+    if entry is None:
+        return None
+    try:
+        from agent.account_usage_cache import _identity_id_for
+
+        value = str(_identity_id_for(provider, entry) or "").strip()
+    except Exception:
+        entry_id = str(getattr(entry, "id", "") or "").strip()
+        return f"entry:{entry_id}" if entry_id else None
+    if not value or value == "entry:":
+        return None
+    return value
+
+
+def _credential_id(entry: Any) -> Optional[str]:
+    """The pool row's existing stable id (non-secret), independent of token material."""
+    value = str(getattr(entry, "id", "") or "").strip()
+    return value or None
+
+
+def _credential_account_id(provider: str, entry: Any) -> Optional[str]:
+    """Stable non-secret account id for providers that expose one (Codex JWT)."""
+    if str(provider or "").strip().lower() != "openai-codex" or entry is None:
+        return None
+    try:
+        from agent.credential_pool import _codex_principal_identity
+
+        token = str(getattr(entry, "runtime_api_key", "") or "").strip()
+        principal = _codex_principal_identity(token)
+        return f"codex:{principal[0]}:{principal[1]}" if principal else None
+    except Exception:
+        return None
 
 
 def _title_case_slug(value: Optional[str]) -> Optional[str]:
@@ -702,8 +837,10 @@ def _fetch_codex_account_usage_impl(
         details.append(f"Credits balance: ${float(balance):.2f}")
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
+    identity = _codex_snapshot_identity(token)
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
-                     identity=_codex_snapshot_identity(token), raw=payload)
+                     identity=identity, account_id=identity,
+                     raw=_sanitized_raw(payload), profile_scope=_profile_scope())
 
 
 def _codex_snapshot_identity(token: str) -> Optional[str]:
@@ -842,19 +979,20 @@ def redeem_codex_reset_credit(
 
 
 def _fetch_anthropic_account_usage(
-    base_url: Optional[str] = None, api_key: Optional[str] = None
+    base_url: Optional[str] = None, api_key: Optional[str] = None, *, read_only: bool = False
 ) -> Optional[AccountUsageSnapshot]:
     # An explicit api_key (live agent / per-credential pool read) must not be shadowed by
     # the ambient OAuth singleton: fetch_account_usage(base_url, api_key) promises to
     # report THAT credential's usage. An API key answers the OAuth usage endpoint with
     # 401, so only an OAuth-shaped token reaches the fetch.
     explicit = str(api_key or "").strip()
-    token = explicit or (resolve_anthropic_token() or "").strip()
+    token = explicit or (resolve_anthropic_token(refresh=not read_only) or "").strip()
     if not token:
         return None
     if not _is_oauth_token(token):
         return _snapshot("anthropic", "oauth_usage_api", [], [],
-                         unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.")
+                         unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
+                         profile_scope=_profile_scope())
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
                "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
@@ -868,15 +1006,22 @@ def _fetch_anthropic_account_usage(
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")
     if extra.get("is_enabled") and _is_num(used_credits) and _is_num(monthly_limit):
         details.append(f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {extra.get('currency') or 'USD'}")
-    return _snapshot("anthropic", "oauth_usage_api", windows, details)
+    return _snapshot("anthropic", "oauth_usage_api", windows, details,
+                     raw=_sanitized_raw(payload), profile_scope=_profile_scope())
+
+
+def _fetch_anthropic_account_usage_read_only(
+    base_url: Optional[str] = None, api_key: Optional[str] = None
+) -> Optional[AccountUsageSnapshot]:
+    """Read-only picker variant: never refresh a Claude Code grant on the way to a read."""
+    return _fetch_anthropic_account_usage(base_url, api_key, read_only=True)
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
-    runtime = resolve_runtime_provider(requested="openrouter", explicit_base_url=base_url, explicit_api_key=api_key)
-    token = str(runtime.get("api_key", "") or "").strip()
+    token, resolved_base = _usage_credentials("openrouter", base_url, api_key)
     if not token:
         return None
-    normalized = str(runtime.get("base_url", "") or "").rstrip("/")
+    normalized = (resolved_base or "https://openrouter.ai/api/v1").rstrip("/")
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     with httpx.Client(timeout=10.0) as client:
         def _data(path: str) -> dict:
@@ -909,7 +1054,8 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     # OpenRouter's free-model daily quota, per-period key spend and BYOK total,
     # none of which the normalized details above can reconstruct.
     return _snapshot("openrouter", "credits_api", windows, details,
-                     raw={"credits": credits, "key": key_data})
+                     raw=_sanitized_raw({"credits": credits, "key": key_data}),
+                     profile_scope=_profile_scope())
 
 
 def _fetch_openrouter_account_usage_read_only(
@@ -919,16 +1065,340 @@ def _fetch_openrouter_account_usage_read_only(
     return _fetch_openrouter_account_usage(base_url, api_key)
 
 
+def _usage_credentials(provider: str, base_url: Optional[str], api_key: Optional[str]) -> tuple[str, str]:
+    """``(token, base_url)`` for a usage read, resolved inside core.
+
+    An explicit credential pair (the per-identity path, which core resolved
+    from the pool itself) is used as-is. Otherwise the same profile-aware
+    runtime resolver inference uses supplies env, config, OAuth or a pooled
+    credential, so a usage read never collapses to env-only. No ``force_refresh``
+    is ever requested: a healthy token is read, not rotated.
+    """
+    explicit_key = str(api_key or "").strip()
+    explicit_base = str(base_url or "").strip()
+    if explicit_key and explicit_base:
+        return explicit_key, explicit_base
+    runtime = resolve_runtime_provider(
+        requested=provider,
+        explicit_base_url=explicit_base or None,
+        explicit_api_key=explicit_key or None,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    resolved_base = str(runtime.get("base_url", "") or explicit_base or "").strip()
+    return token, resolved_base
+
+
+def _json_object(response: Any) -> dict:
+    payload = response.json() or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _deepseek_root(base_url: str) -> str:
+    value = (base_url or "https://api.deepseek.com/v1").strip().rstrip("/")
+    if value.endswith("/v1"):
+        value = value[:-3]
+    return value.rstrip("/")
+
+
+def _fetch_deepseek_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """DeepSeek ``/user/balance``; every ``balance_infos`` row stays on ``raw``."""
+    token, resolved_base = _usage_credentials("deepseek", base_url, api_key)
+    if not token:
+        return None
+    payload = _get_json(
+        f"{_deepseek_root(resolved_base)}/user/balance",
+        {"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        timeout=12.0,
+    )
+    infos = payload.get("balance_infos") or payload.get("balances") or []
+    if isinstance(infos, dict):
+        infos = [infos]
+    if not infos and payload.get("currency"):
+        infos = [payload]
+    details: list[str] = []
+    has_balance = False
+    for info in infos if isinstance(infos, list) else []:
+        if not isinstance(info, dict):
+            continue
+        # The exact per-currency rows still ride on raw so the pane keeps
+        # granted/topped-up components and the provider's own currency; this
+        # line only keeps core's own /usage surface useful.
+        total = info.get("total_balance")
+        if total is None:
+            continue
+        has_balance = True
+        details.append(f"{str(info.get('currency') or 'USD').upper()} balance: {total}")
+    if payload.get("is_available") is False:
+        details.insert(0, "Account available: no")
+    return _snapshot("deepseek", "user_balance_api", [], details, title="DeepSeek balance",
+                     unavailable_reason=None if has_balance else "DeepSeek returned no balance entries.",
+                     raw=_sanitized_raw({"balance": payload}), profile_scope=_profile_scope())
+
+
+def _fetch_deepseek_account_usage_read_only(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    return _fetch_deepseek_account_usage(base_url, api_key)
+
+
+def _ollama_cloud_usage_windows(payload: dict) -> tuple[list[AccountUsageWindow], dict]:
+    raw_limits = payload.get("limits")
+    limits: dict = raw_limits if isinstance(raw_limits, dict) else {}
+    windows: list[AccountUsageWindow] = []
+    for key, label in (("session", "5-hour"), ("weekly", "Weekly"), ("monthly", "Monthly")):
+        entry = limits.get(key)
+        if not isinstance(entry, dict):
+            continue
+        fraction = entry.get("usage")
+        if not _is_num(fraction):
+            continue
+        used = float(fraction) * 100.0 if 0.0 <= float(fraction) <= 1.0 else float(fraction)
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=round(max(0.0, min(100.0, used)), 2)))
+    return windows, limits
+
+
+def _ollama_cloud_details(payload: dict, limits: dict) -> list[str]:
+    details: list[str] = []
+    models = None
+    for key in ("monthly", "weekly", "session"):
+        entry = limits.get(key)
+        if isinstance(entry, dict) and entry.get("models"):
+            models = entry.get("models")
+            break
+    if isinstance(models, dict):
+        entries = [
+            dict(value, name=value.get("name") or name) if isinstance(value, dict)
+            else {"name": name, "request_count": value}
+            for name, value in models.items()
+        ]
+    elif isinstance(models, list):
+        entries = [item for item in models if isinstance(item, dict)]
+    else:
+        entries = []
+    for item in entries[:6]:
+        name = str(item.get("name") or "").strip()
+        count = item.get("request_count")
+        if name and _is_num(count):
+            count_int = int(count)
+            details.append(f"{name}: {count_int} request{'s' if count_int != 1 else ''}")
+    raw_activity = payload.get("activity")
+    activity: dict = raw_activity if isinstance(raw_activity, dict) else {}
+    cost = str(activity.get("cost") or "").strip()
+    if cost:
+        try:
+            cost_text = f"${float(cost):.2f}"
+        except ValueError:
+            cost_text = cost
+        raw_period = activity.get("period")
+        period: dict = raw_period if isinstance(raw_period, dict) else {}
+        period_text = str(period.get("type") or "").replace("_", " ").strip()
+        details.append(f"Spend in the {period_text or 'recent period'}: {cost_text}")
+    return details
+
+
+def _ollama_cloud_credit_window(balance: dict) -> Optional[AccountUsageWindow]:
+    included = balance.get("included") if isinstance(balance.get("included"), dict) else {}
+    allowance = included.get("allowance_usd")
+    remaining = included.get("balance_usd")
+    if not _is_num(allowance) or float(allowance) <= 0 or not _is_num(remaining):
+        return None
+    allowance_value = float(allowance)
+    remaining_value = max(0.0, min(allowance_value, float(remaining)))
+    spent = max(0.0, allowance_value - remaining_value)
+    period = included.get("period") if isinstance(included.get("period"), dict) else {}
+    allowance_text = f"${allowance_value:.0f}" if allowance_value == int(allowance_value) else f"${allowance_value:.2f}"
+    return AccountUsageWindow(
+        label="Monthly included",
+        used_percent=(spent / allowance_value) * 100.0,
+        reset_at=_parse_dt(period.get("until")),
+        detail=f"${spent:.2f} spent · ${remaining_value:.2f} left of {allowance_text}",
+    )
+
+
+def _fetch_ollama_cloud_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Ollama Cloud ``/api/usage`` + ``/api/balance``; both bodies ride on raw."""
+    token, resolved_base = _usage_credentials("ollama-cloud", base_url, api_key)
+    if not token:
+        return None
+    base = (resolved_base or "https://ollama.com/v1").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get(f"{base}/api/usage", headers=headers)
+        response.raise_for_status()
+        usage = _json_object(response)
+        balance: dict = {}
+        try:
+            balance_response = client.get(f"{base}/api/balance", headers=headers)
+            if balance_response.status_code == 200:
+                parsed = balance_response.json() or {}
+                if isinstance(parsed, dict):
+                    balance = parsed
+        except httpx.HTTPError:
+            logger.debug("Ollama Cloud balance endpoint unavailable", exc_info=True)
+    windows, limits = _ollama_cloud_usage_windows(usage)
+    details = _ollama_cloud_details(usage, limits)
+    credit = _ollama_cloud_credit_window(balance)
+    balance_windows: list[AccountUsageWindow] = []
+    if credit is not None:
+        balance_windows.append(credit)
+    else:
+        # Older accounts publish the included pool as session/weekly
+        # ``remaining_percent`` instead of allowance_usd/balance_usd.
+        raw_included = balance.get("included")
+        included: dict = raw_included if isinstance(raw_included, dict) else {}
+        for key, label in (("session", "5-hour"), ("weekly", "Weekly")):
+            entry = included.get(key)
+            if not isinstance(entry, dict) or not _is_num(entry.get("remaining_percent")):
+                continue
+            remaining = max(0.0, min(100.0, float(entry["remaining_percent"])))
+            balance_windows.append(AccountUsageWindow(
+                label=label, used_percent=100.0 - remaining,
+                reset_at=_parse_dt(entry.get("resets_at")),
+            ))
+    if balance_windows:
+        windows = [*balance_windows, *windows]
+    else:
+        details.append("Reset times are not published on the usage report; they stay unavailable rather than estimated.")
+    return _snapshot("ollama-cloud", "usage_api", windows, details, title="Ollama Cloud",
+                     raw=_sanitized_raw({"usage": usage, "balance": balance}),
+                     profile_scope=_profile_scope())
+
+
+def _fetch_ollama_cloud_account_usage_read_only(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    return _fetch_ollama_cloud_account_usage(base_url, api_key)
+
+
+def _fetch_opencode_zen_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Verify Zen API access without scraping its browser-only wallet."""
+    token, resolved_base = _usage_credentials("opencode-zen", base_url, api_key)
+    if not token:
+        return None
+    base = (resolved_base or "https://opencode.ai/zen/v1").rstrip("/")
+    payload = _get_json(
+        f"{base}/models",
+        {"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        timeout=15.0,
+    )
+    detail = "Zen API access is authenticated. Credit balance and spend are not exposed through OpenCode API keys."
+    return _snapshot("opencode-zen", "models_api", [], [detail], title="OpenCode account",
+                     plan="Zen API credits", raw=_sanitized_raw({"models": payload}),
+                     profile_scope=_profile_scope())
+
+
+def _fetch_opencode_zen_account_usage_read_only(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    return _fetch_opencode_zen_account_usage(base_url, api_key)
+
+
+def _fetch_opencode_go_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Fallback for OpenCode Go when the bundled profile hook returns nothing.
+
+    The literal endpoint is intentional: the runtime base URL loses ``/v1`` in
+    anthropic_messages mode, and ``/usage`` exists only under ``/v1``.
+    """
+    token, _resolved_base = _usage_credentials("opencode-go", base_url, api_key)
+    if not token:
+        return None
+    payload = _get_json(
+        "https://opencode.ai/zen/go/v1/usage",
+        {"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        timeout=10.0,
+    )
+    raw_usage = payload.get("usage")
+    usage: dict = raw_usage if isinstance(raw_usage, dict) else {}
+    windows: list[AccountUsageWindow] = []
+    for key, label in (("rolling", "Rolling window"), ("weekly", "Weekly"), ("monthly", "Monthly")):
+        window = usage.get(key)
+        if not isinstance(window, dict) or not _is_num(window.get("percent")):
+            continue
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=float(window["percent"]),
+            reset_at=_parse_dt(window.get("resetsAt")),
+        ))
+    return _snapshot("opencode-go", "go_usage_api", windows, [], title="OpenCode usage",
+                     plan="Go subscription", raw=_sanitized_raw(payload),
+                     profile_scope=_profile_scope())
+
+
+def _fetch_nous_account_usage(
+    base_url: Optional[str], api_key: Optional[str], *, read_only: bool = False
+) -> Optional[AccountUsageSnapshot]:
+    """Nous credits from core's portal account helper.
+
+    ``read_only`` never forces a portal refresh: the cached/JWT snapshot is
+    used. A normal /usage read keeps the pane's existing fresh fetch.
+    """
+    del base_url, api_key  # Nous credentials are resolved by the portal helper.
+    from hermes_cli.nous_account import get_nous_portal_account_info
+
+    account = get_nous_portal_account_info(force_fresh=not read_only)
+    snapshot = build_nous_credits_snapshot(account)
+    if snapshot is None:
+        return None
+    return replace(snapshot, profile_scope=snapshot.profile_scope or _profile_scope())
+
+
+def _fetch_nous_account_usage_read_only(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    return _fetch_nous_account_usage(base_url, api_key, read_only=True)
+
+
+def fetch_nous_account_usage(
+    *, read_only: bool = False,
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Public Nous credits read: a fresh portal snapshot, or the cached/JWT one.
+
+    ``read_only=True`` never forces a portal refresh. Kept as a named entry
+    point because core's existing ``/usage`` surfaces already render the Nous
+    credits block through ``nous_credits_lines``; registering Nous in the
+    provider dispatch would print the same block twice.
+    """
+    return _fetch_nous_account_usage(base_url, api_key, read_only=read_only)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    "deepseek": _fetch_deepseek_account_usage,
+    "ollama-cloud": _fetch_ollama_cloud_account_usage,
+    "opencode-zen": _fetch_opencode_zen_account_usage,
 }
 
 # Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by
-# rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``).
+# rotating/refreshing a credential (see ``fetch_account_usage(read_only=True)``). Nous lives only
+# here: its normal /usage block is owned by ``nous_credits_lines``, so a provider dispatch would
+# duplicate it, while the plugin's read-only panel needs the same snapshot.
 _READ_ONLY_USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage_read_only,
+    "anthropic": _fetch_anthropic_account_usage_read_only,
     "openrouter": _fetch_openrouter_account_usage_read_only,
+    "deepseek": _fetch_deepseek_account_usage_read_only,
+    "ollama-cloud": _fetch_ollama_cloud_account_usage_read_only,
+    "opencode-zen": _fetch_opencode_zen_account_usage_read_only,
+    "nous": _fetch_nous_account_usage_read_only,
+}
+
+# Providers whose plugin profile hook is preferred but can be backed by a core
+# read-only fetch when the hook has no answer. OpenCode Go's hook returns None
+# without a key or when its endpoint call fails; the pane then still says why.
+_USAGE_FALLBACK_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
+    "opencode-go": _fetch_opencode_go_account_usage,
 }
 
 
@@ -956,12 +1426,20 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 def list_account_usage_identities(provider: str, *, base_url: Optional[str] = None) -> list[dict[str, Any]]:
     """Non-secret inventory of this profile's pooled credentials for *provider*.
 
-    Each row is ``{identity_id, label, auth_type, source, available, status,
-    request_count, last_status_at, base_url}``.  ``identity_id`` is the stable
-    key :func:`fetch_account_usage` accepts; no access token, refresh token,
-    agent key or credential-store value is returned.  A provider with no pool
-    rows returns an empty list (the caller's config/env presence check stays
-    separate).  A broken credential store fails closed to an empty list.
+    Each row is ``{provider, identity_id, credential_id, account_id, profile_scope,
+    label, auth_type, source, available, status, request_count, last_status_at,
+    base_url}``.  ``identity_id`` is the same account namespace the usage cache
+    and delegation roster use (``_identity_id_for``): ``codex:<account>:<sub>``,
+    the cache's existing ``fp:<16 hex>`` token fingerprint, or ``entry:<pool
+    id>`` for a metadata-only row.  It is a non-secret correlation id, never a
+    token, and is the key :func:`fetch_account_usage` accepts.  ``credential_id``
+    is the pool row's own stable id (``PooledCredential.id``).  ``account_id``
+    is the provider's stable account id when it exposes one (today a decoded
+    Codex JWT principal).  No access token, refresh token, agent key or
+    credential-store value is returned.  ``base_url`` is stripped of userinfo,
+    query and fragment.  A provider with no pool rows returns an empty list
+    (the caller's config/env presence check stays separate).  A broken
+    credential store fails closed to an empty list.
     """
     slug = str(provider or "").strip().lower()
     if not slug:
@@ -972,38 +1450,112 @@ def list_account_usage_identities(provider: str, *, base_url: Optional[str] = No
         entries = load_pool(slug).entries()
     except Exception:
         return []
-    try:
-        from agent.account_usage_cache import _identity_id_for
-    except Exception:
-        return []
 
     accounts: list[dict[str, Any]] = []
     seen: set[str] = set()
+    scope = _profile_scope()
     for entry in entries:
-        try:
-            identity = _identity_id_for(slug, entry)
-        except Exception:
-            continue
+        identity = _credential_identity(slug, entry)
         if not identity or identity in seen:
+            # No account namespace at all: the footer must render this row as
+            # unknown instead of receiving a made-up key. Rows for the same
+            # Codex account collapse to one account-level row.
             continue
         seen.add(identity)
+        token = str(getattr(entry, "runtime_api_key", "") or "").strip()
+        credential_id = _credential_id(entry)
         status = str(getattr(entry, "last_status", None) or "ok")
         try:
             request_count = int(getattr(entry, "request_count", 0) or 0)
         except (TypeError, ValueError):
             request_count = 0
         accounts.append({
+            "provider": slug,
             "identity_id": identity,
-            "label": str(getattr(entry, "label", None) or getattr(entry, "source", None) or identity),
-            "auth_type": str(getattr(entry, "auth_type", None) or ""),
-            "source": str(getattr(entry, "source", None) or ""),
+            "credential_id": _redacted_text(credential_id, token) if credential_id else None,
+            "account_id": _credential_account_id(slug, entry),
+            "profile_scope": scope,
+            "label": _redacted_text(
+                getattr(entry, "label", None) or getattr(entry, "source", None) or identity, token),
+            "auth_type": _redacted_text(getattr(entry, "auth_type", None), token),
+            "source": _redacted_text(getattr(entry, "source", None), token),
             "available": status not in {"dead", "exhausted"},
             "status": status,
             "request_count": request_count,
             "last_status_at": getattr(entry, "last_status_at", None),
-            "base_url": str(getattr(entry, "runtime_base_url", None) or base_url or "") or None,
+            "base_url": _safe_base_url(
+                getattr(entry, "runtime_base_url", None) or base_url, token=token),
         })
     return accounts
+
+
+def provider_credential_summary(provider: str) -> dict[str, Any]:
+    """Non-secret credential presence for one provider, pool-aware.
+
+    Returns ``{provider, configured, account_count, source, profile_scope}``
+    where ``source`` is ``pool`` / ``oauth`` / ``env`` / ``config`` / ``none``.
+    A pool-only provider (no env var, no OAuth store) is configured because its
+    pool rows are counted.  No value, header, path or base URL is returned.
+    """
+    slug = str(provider or "").strip().lower()
+    scope = _profile_scope()
+    if not slug:
+        return {"provider": "", "configured": False, "account_count": 0, "source": "none",
+                "profile_scope": scope}
+    accounts = list_account_usage_identities(slug)
+    if accounts:
+        return {
+            "provider": slug,
+            "configured": True,
+            "account_count": len(accounts),
+            "source": "pool",
+            "profile_scope": scope,
+        }
+    status: dict[str, Any] = {}
+    try:
+        from hermes_cli.auth import get_auth_status
+
+        value = get_auth_status(slug)
+        status = value if isinstance(value, dict) else {}
+    except Exception:
+        status = {}
+    key_source = str(status.get("key_source") or "").strip()
+    upstream = str(status.get("source") or "").strip().lower()
+    configured = bool(status.get("logged_in") or status.get("configured"))
+    if configured:
+        if "pool" in key_source.lower() or upstream.startswith("pool"):
+            source = "pool"
+        elif key_source and key_source.upper() == key_source and any(ch.isalpha() for ch in key_source):
+            source = "env"
+        elif status.get("logged_in"):
+            source = "oauth"
+        else:
+            source = "config"
+    else:
+        source = "none"
+    return {
+        "provider": slug,
+        "configured": configured,
+        "account_count": 1 if configured else 0,
+        "source": source,
+        "profile_scope": scope,
+    }
+
+
+def _entry_identity_matches(provider: str, entry: Any, wanted: str) -> bool:
+    """Match the public account namespace plus the pool id/legacy ids the picker may hold."""
+    identity = _credential_identity(provider, entry)
+    if identity and wanted == identity:
+        return True
+    entry_id = _credential_id(entry)
+    if entry_id and wanted == entry_id:
+        return True
+    if wanted.startswith("entry:") and entry_id and wanted[6:] == entry_id:
+        return True
+    account_id = _credential_account_id(provider, entry)
+    if account_id and wanted == account_id:
+        return True
+    return False
 
 
 def _account_usage_entry(provider: str, identity_id: str):
@@ -1011,12 +1563,11 @@ def _account_usage_entry(provider: str, identity_id: str):
     wanted = str(identity_id or "").strip()
     if not wanted:
         return None
-    from agent.account_usage_cache import _identity_id_for
     from agent.credential_pool import load_pool
 
     for entry in load_pool(provider).entries():
         try:
-            if _identity_id_for(provider, entry) == wanted:
+            if _entry_identity_matches(provider, entry, wanted):
                 return entry
         except Exception:
             continue
@@ -1030,18 +1581,19 @@ def fetch_account_usage(
     from agent.account_usage_cache import remember_account_usage
 
     slug = str(provider or "").strip().lower()
+    resolved_entry = None
     # A per-account request names only the public identity from
     # ``list_account_usage_identities``; core resolves the pool row and its
     # token here, so plugin code never reads the credential store.
     if identity_id and not api_key:
         try:
-            entry = _account_usage_entry(slug, identity_id)
+            resolved_entry = _account_usage_entry(slug, identity_id)
         except Exception:
-            entry = None
-        if entry is None:
+            resolved_entry = None
+        if resolved_entry is None:
             return None
-        api_key = str(getattr(entry, "runtime_api_key", "") or "").strip() or None
-        base_url = str(getattr(entry, "runtime_base_url", "") or "").strip() or base_url
+        api_key = str(getattr(resolved_entry, "runtime_api_key", "") or "").strip() or None
+        base_url = str(getattr(resolved_entry, "runtime_base_url", "") or "").strip() or base_url
         if not api_key:
             return None
     # The picker's per-credential path resolves variants that never rotate/refresh a credential
@@ -1059,13 +1611,37 @@ def fetch_account_usage(
             from providers import get_provider_profile
 
             profile = get_provider_profile(slug)
-            snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
+            snapshot = None
+            if profile:
+                try:
+                    snapshot = _call_plugin_usage_hook(profile, base_url, api_key)
+                except Exception:
+                    if slug not in _USAGE_FALLBACK_FETCHERS:
+                        raise
+            if snapshot is None and slug in _USAGE_FALLBACK_FETCHERS:
+                snapshot = _USAGE_FALLBACK_FETCHERS[slug](base_url, api_key)
     except Exception:
+        logger.debug("account usage fetch failed for %s (fail-open)", slug, exc_info=True)
         return None
+    # A per-identity read knows exactly which credential it used; stamp that
+    # stable id (never the token) so the footer cannot map the row to another
+    # pooled account. Any other fetch stays unknown rather than guessing.
+    # Nous portal credits are account-global (the fetcher never accepts a
+    # credential), so stamping a pool row there would be a false correspondence.
+    if snapshot is not None and resolved_entry is not None and slug != "nous":
+        snapshot = replace(
+            snapshot,
+            identity_id=_credential_identity(slug, resolved_entry),
+            account_id=_credential_account_id(slug, resolved_entry),
+            profile_scope=snapshot.profile_scope or _profile_scope(),
+        )
     # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
     # A per-credential fetch is remembered under its account slot only; the provider-wide fetch
     # keeps both the legacy gauge slot and (when the fetcher identifies the account) that
     # account's slot current.
-    remember_account_usage(provider, snapshot, identity_id=identity_id, base_url=base_url,
-                           started_monotonic=started)
+    remember_account_usage(
+        provider, snapshot,
+        identity_id=_credential_identity(slug, resolved_entry) if slug != "nous" else None,
+        base_url=base_url, started_monotonic=started,
+    )
     return snapshot

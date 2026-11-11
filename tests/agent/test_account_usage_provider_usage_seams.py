@@ -114,6 +114,8 @@ def test_openrouter_raw_keeps_credits_key_and_free_quota(monkeypatch):
         },
     }
     assert "openrouter" in account_usage._READ_ONLY_USAGE_FETCHERS
+    assert snapshot.identity_id is None, "env/config OpenRouter keys are unknown"
+    assert snapshot.profile_scope.startswith("home:")
     assert "sk-synthetic-openrouter" not in str(snapshot.raw)
     assert "authorization" not in str(snapshot.raw).lower()
 
@@ -132,7 +134,13 @@ def test_list_account_usage_identities_is_nonsecret_and_per_pool_entry(monkeypat
     assert [row["available"] for row in rows] == [True, False, False]
     assert [row["status"] for row in rows] == ["ok", "exhausted", "dead"]
     assert [row["request_count"] for row in rows] == [7, 3, 3]
+    assert [row["credential_id"] for row in rows] == ["one", "two", "three"]
+    from agent.account_usage_cache import _identity_id_for
+    expected = [_identity_id_for("openrouter", entry) for entry in pool.entries()]
+    assert [row["identity_id"] for row in rows] == expected
     assert all(row["identity_id"].startswith("fp:") for row in rows)
+    assert all(row["profile_scope"].startswith("home:") for row in rows)
+    assert all(row["account_id"] is None for row in rows)
     text = str(rows)
     assert "sk-pool" not in text
     assert "access_token" not in text and "refresh_token" not in text

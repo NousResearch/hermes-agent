@@ -362,6 +362,68 @@ timeout.
 The bundled `plugins/model-providers/opencode-zen/` profile implements this hook for the
 OpenCode Go plan windows; every `/usage` surface (CLI `hermes usage` and `/usage`, the messaging
 gateway, the TUI/Desktop usage feed) renders the snapshot through the same core formatter.
+If that hook returns `None`, core's own OpenCode Go fallback reads
+`https://opencode.ai/zen/go/v1/usage` once, so the pane still gets the plan
+windows (or a safe failure) without a raw runtime key.
+
+### Core-owned usage reads
+
+These providers have a core fetcher, so a plugin should call
+`agent.account_usage.fetch_account_usage(provider, read_only=True)` instead of
+resolving a key and calling the endpoint itself:
+
+| Provider | Request | `snapshot.raw` (decoded JSON only; no headers or credentials) |
+|---|---|---|
+| `openai-codex` | ChatGPT usage backend | the whole usage body |
+| `anthropic` | `api.anthropic.com/api/oauth/usage` | the whole usage body |
+| `openrouter` | `/credits` + `/key` | `{"credits": {...}, "key": {...}}` (`key` is `{}` when `/key` fails) |
+| `deepseek` | `/user/balance` | `{"balance": {...}}` |
+| `ollama-cloud` | `/api/usage` + `/api/balance` | `{"usage": {...}, "balance": {...}}` |
+| `opencode-zen` | `/models` | `{"models": {...}}` |
+| `opencode-go` | profile hook, else `/zen/go/v1/usage` | `{"usage": {...}}` from the fallback |
+
+Nous credits use the named `agent.account_usage.fetch_nous_account_usage(read_only=True)` entry
+point (or `fetch_account_usage("nous", read_only=True)`); they are intentionally not in the
+provider dispatch because core's `/usage` already prints a Nous credits block through
+`nous_credits_lines`, and a dispatch entry would duplicate it.
+
+`read_only=True` selects a variant that never repairs a failed read by
+rotating or force-refreshing a credential. A per-credential read is meant for
+the model pickers and the Provider Usage pane: an HTTP 401 is reported (the
+account renders unknown), not retried with another account. Normal `fetch`
+reads keep inference's proactive refresh behavior, which only refreshes a token
+already inside its skew window and never starts a sign-in.
+
+`AccountUsageSnapshot` carries three correlation fields. None of them is the
+token or another credential-store value:
+
+- `identity_id`: the account namespace shared with the usage cache and the
+  delegation roster (`_identity_id_for`) — a decoded Codex principal
+  (`codex:<account>:<sub>`), the cache's existing one-way `fp:<16 hex>` token
+  fingerprint, or `entry:<pool id>` for a metadata-only row. It is the exact id
+  the footer receives as `provider_account_id`, so it can attach per-account
+  usage. `None` means core cannot prove which credential answered (an env/config
+  key, for example): treat it as **unknown**, not as "the first pool account".
+- `account_id`: a stable provider-exposed account id (today the same decoded
+  Codex principal; `None` for providers that do not publish one).
+- `profile_scope`: canonical non-path home scope (`home:<16 hex>`), so two
+  Hermes profiles cannot be correlated by identical provider rows.
+
+To enumerate pool accounts without reading the credential store, use
+`agent.account_usage.list_account_usage_identities(provider)`. Each row has
+`provider`, `identity_id`, `credential_id`, `account_id`, `profile_scope`,
+`label`, `auth_type`, `source`, `available`, `status`, `request_count`,
+`last_status_at`, and a `base_url` stripped of userinfo, query and fragment.
+`credential_id` is the pool row's own stable `PooledCredential.id`; use it for
+row-level management, and `identity_id` for the account-correlated usage slot.
+Pass that `identity_id` (or the `credential_id` / legacy `entry:<id>` / `fp:`
+lookup) to `fetch_account_usage(provider, identity_id=..., read_only=True)`:
+core resolves the exact pool row and its token internally, so plugin code
+never receives the token and cannot accidentally read another pooled account.
+A provider with no pool rows returns `[]`; combine it with
+`provider_credential_summary(provider)` (`{configured, account_count, source,
+profile_scope}`, `source` is `pool` / `oauth` / `env` / `config` / `none`) when
+inventory must show env- or config-only providers too.
 
 ```python
 from datetime import datetime, timezone

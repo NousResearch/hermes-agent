@@ -697,25 +697,35 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
     return token
 
 
-def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
+def resolve_anthropic_token(*, model: Optional[str] = None, refresh: bool = True) -> Optional[str]:
     """Resolve an Anthropic token from all sources in priority order (see module docstring).
 
     With *model*, a token the credential pool has benched for that model resolves to ``None``
-    instead of being handed straight back to the caller that just saw it rate-limited."""
+    instead of being handed straight back to the caller that just saw it rate-limited.
+
+    ``refresh=False`` is the read-only diagnostic/usage path: it reads the same sources but
+    never refreshes an expired Claude Code grant and never mutates the credential store."""
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return _available_anthropic_token(
-            _prefer_refreshable_claude_code_token(token, _read_creds()) or token, model,
-        )
+        preferred = _prefer_refreshable_claude_code_token(token, _read_creds()) if refresh else None
+        return _available_anthropic_token(preferred or token, model)
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
         return _available_anthropic_token(api_key, model)
     # The pool's claude_code row mirrors the same externally owned refresh grant.
-    return _available_anthropic_token(
-        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
-        model,
-    )
+    token = _resolve_anthropic_pool_token(skip_borrowed=True)
+    if not token:
+        if refresh:
+            token = _resolve_claude_code_token_from_credentials(_read_creds())
+        else:
+            creds = _read_creds()
+            if (isinstance(creds, dict)
+                    and not is_rotation_consumed_uncommitted(
+                        creds.get("accessToken", ""), source_path=claude_code_credentials_path())
+                    and is_claude_code_token_valid(creds)):
+                token = str(creds.get("accessToken") or "").strip() or None
+    return _available_anthropic_token(token, model)
 
 
 def run_oauth_setup_token() -> Optional[str]:

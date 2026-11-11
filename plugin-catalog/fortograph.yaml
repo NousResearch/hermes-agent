@@ -1,0 +1,26 @@
+name: fortograph
+repo: https://github.com/fortograph/fortograph-hermes-plugin
+sha: eadfb4c143c9729f47551138d2b9d38dbd40d515
+subdir: fortograph
+description: >-
+  Reversible image redaction through the Fortograph selective-encryption API:
+  fortograph_redact encrypts chosen regions into the saved image (not just a
+  black box) and fortograph_unredact restores the original with the password,
+  so Hermes can share redacted photos and recover them later. Disclosures —
+  uploads the image to the configured Fortograph server (default
+  https://fortograph.selectiveencryption.com) and stores the redaction
+  password in the Hermes secret FORTOGRAPH_PASSWORD; pure stdlib, no
+  subprocesses.
+maintainer: fortograph
+tier: community
+category: tools
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - fortograph_status
+    - fortograph_redact
+    - fortograph_unredact
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

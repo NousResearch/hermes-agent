@@ -1,7 +1,7 @@
 name: reliquary
 title: Reliquary
 repo: https://github.com/Lokee86/reliquary-hermes
-sha: 140a6356dc970dc5326af1d98cb9b01ac7efff48
+sha: 20d398459a91de3b67eb6cee12bd325f1a304c56
 version: "0.1.0"
 description: >-
   Local, inspectable long-term memory with source provenance, conversation capture,
@@ -19,9 +19,9 @@ maintainer: Lokee86
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/Lokee86/reliquary-hermes/tree/140a6356dc970dc5326af1d98cb9b01ac7efff48
+docs_url: https://github.com/Lokee86/reliquary-hermes/tree/20d398459a91de3b67eb6cee12bd325f1a304c56
 screenshots:
-  - https://raw.githubusercontent.com/Lokee86/reliquary-hermes/140a6356dc970dc5326af1d98cb9b01ac7efff48/assets/graph-overview.png
+  - https://raw.githubusercontent.com/Lokee86/reliquary-hermes/20d398459a91de3b67eb6cee12bd325f1a304c56/assets/graph-overview.png
 readme: true
 platforms:
   - windows

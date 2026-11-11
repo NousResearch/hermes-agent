@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import queue
-import re
 import secrets
 import shutil
 import socket
@@ -72,7 +71,7 @@ def _edited_modules(report):
                     or path.startswith(_STDLIB_PREFIX) or any(marker in path for marker in _INSTALLED_MARKERS)):
                 continue
             mtime = os.stat(path).st_mtime_ns
-        except Exception:  # anything may sit in sys.modules; the scan must never fail a cell
+        except Exception:  # anything may sit in sys.modules
             continue
         seen = _MODULE_RECORDS.get(name)
         if report and seen is not None and seen[0] != mtime and seen[1] is spec:
@@ -82,13 +81,21 @@ def _edited_modules(report):
     return sorted(edited)
 
 
+def _scan_edited_modules(report):
+    """The scan reads state a cell may have left in any shape; it must never fail a cell."""
+    try:
+        return _edited_modules(report)
+    except Exception:
+        return []
+
+
 def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
     # An imported module keeps the code it was loaded with: name the ones edited on disk since
     # the last cell, so a fix that "still fails" is not mistaken for a wrong fix.
-    stale_modules = _edited_modules(True)
+    stale_modules = _scan_edited_modules(True)
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
@@ -96,7 +103,7 @@ def run_cell(request, execution_count):
         status, trace = "exit", "SystemExit: " + repr(exc.code)
     except BaseException:
         status, trace = "error", traceback.format_exc()
-    _edited_modules(False)  # modules this cell imported are watched from now on
+    _scan_edited_modules(False)  # modules this cell imported are watched from now on
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
@@ -784,15 +791,12 @@ def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> tuple[st
         return "success", payload
 
 
-_MODULE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,199}")
-
-
 def stale_modules_warning(payload: dict[str, Any]) -> str:
     """Tell the model which modules this kernel imported before they were edited on disk."""
     reported = payload.get("stale_modules")
-    # The list comes from the cell process: keep only plain dotted module names.
+    # The list comes from the cell process: keep only dotted identifiers.
     names = [name for name in (reported if isinstance(reported, list) else [])
-             if isinstance(name, str) and _MODULE_NAME_RE.fullmatch(name)]
+             if isinstance(name, str) and len(name) <= 200 and all(part.isidentifier() for part in name.split("."))]
     if not names:
         return ""
     from agent.redact import redact_sensitive_text

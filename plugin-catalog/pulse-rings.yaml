@@ -1,0 +1,41 @@
+name: pulse-rings
+repo: https://github.com/Stormxftw/Pulsr
+sha: 92ed7690dec17605c83e3c287ca96c473c18a88e
+title: Pulsr
+description: >-
+  Live numbers beside your chat: a Pulses pane for Hermes Desktop with rings, bars,
+  numbers and trends from Discord servers, GitHub, feeds, public JSON APIs, read-only
+  MCP tools, Windows notifications and Hermes's own activity. The agent drafts a pulse;
+  only a person can approve it, and the approval card lists every host and the hourly
+  request budget. No model tokens to refresh. Network: GETs to discord.com,
+  cdn.discordapp.com, api.github.com, avatars.githubusercontent.com and HTTPS hosts you
+  approve; the builder's Find sends one query to geocoding-api.open-meteo.com or
+  store.steampowered.com. Notification pulses read counts from the local Windows store;
+  sender and text previews are a separate opt-in. No telemetry; background collection
+  is opt-in.
+maintainer: Stormxftw
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.5.0-dev"
+docs_url: https://github.com/Stormxftw/Pulsr#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/desktop-pane.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/pane-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/notifications-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/trend-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/focus-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/approval-dark.png
+  - https://raw.githubusercontent.com/Stormxftw/Pulsr/92ed7690dec17605c83e3c287ca96c473c18a88e/docs/screens/builder-design-dark.png
+known_issues:
+  - Background collection is opt-in and needs a running Hermes process; alert toasts need a visible Desktop window.
+  - MCP pulses need the server connected in the polling process; hosted Nous-gateway connectors are not supported.
+  - Validator cautions - private MCP policy imports (read-only, fail closed; catalog rule 9) and three scanner pattern matches, explained in the README.
+  - Windows notification pulses work on Windows only.
+  - Not yet checked by an independent security review.
+capabilities:
+  provides_tools: [pulse_rings_status, pulse_rings_catalog, pulse_rings_propose, pulse_rings_layout_check]
+  provides_hooks: [on_session_start, on_session_finalize, post_llm_call, pre_llm_call, on_session_end, post_tool_call, on_human_input_request, on_human_input_resolved, subagent_start, subagent_stop, api_request_error]
+  provides_middleware: []
+  requires_env: []

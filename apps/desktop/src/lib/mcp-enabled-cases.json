@@ -32,5 +32,11 @@
   {"disabled": "", "on": true},
   {"disabled": "maybe", "on": true},
   {"disabled": null, "on": true},
-  {"enabled": false, "disabled": false, "on": false}
+  {"enabled": false, "disabled": false, "on": false},
+  {"disabled": [true], "on": true},
+  {"disabled": ["yes"], "on": true},
+  {"disabled": {"a": 1}, "on": true},
+  {"enabled": [false], "on": true},
+  {"enabled": ["no"], "on": true},
+  {"enabled": {}, "on": true}
 ]

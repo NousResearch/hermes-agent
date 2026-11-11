@@ -763,6 +763,52 @@ def test_email_send_uses_implicit_tls_on_port_465(monkeypatch):
     assert isinstance(_FakeSMTPSSL.context, _ssl.SSLContext)
 
 
+def _assert_verifying(ctx):
+    assert isinstance(ctx, _ssl.SSLContext)
+    assert ctx.verify_mode == _ssl.CERT_REQUIRED and ctx.check_hostname
+
+
+class _RecordingStartTLS(_FakeSMTP):
+    context = None
+
+    def starttls(self, context=None):
+        _RecordingStartTLS.context = context
+
+
+def test_email_send_starttls_verifies_certificate():
+    _RecordingStartTLS.context, _FakeSMTP.sent = None, []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    emailer.send(broker, "Subject: s\n\nb", env=env, _smtp_factory=_RecordingStartTLS,
+                 _sleep=lambda *_: None)
+    _assert_verifying(_RecordingStartTLS.context)
+
+
+def test_imap_fetch_verifies_certificate(monkeypatch):
+    seen = {}
+
+    class _IMAP:
+        def __init__(self, host, port, *, ssl_context=None, timeout=None):
+            seen["ctx"] = ssl_context
+
+        def login(self, u, p):
+            pass
+
+        def select(self, *a, **k):
+            pass
+
+        def search(self, *a):
+            return "OK", [b""]
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(emailer.imaplib, "IMAP4_SSL", _IMAP)
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "p"}
+    assert emailer.fetch_recent(env) == []
+    _assert_verifying(seen["ctx"])
+
+
 def _run(argv) -> dict:
     buf = _io.StringIO()
     with _ctx.redirect_stdout(buf):

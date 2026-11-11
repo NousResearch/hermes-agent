@@ -324,8 +324,12 @@ def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
     import datetime as _dt
     since = (_dt.date.today() - _dt.timedelta(days=max(0, since_days))).strftime("%d-%b-%Y")
 
-    factory = _imap_factory or imaplib.IMAP4_SSL
-    conn = factory(settings["host"], settings["port"])
+    if _imap_factory is not None:
+        conn = _imap_factory(settings["host"], settings["port"])
+    else:
+        # IMAP4_SSL's default context skips certificate checks, so a MITM cert would get the password.
+        conn = imaplib.IMAP4_SSL(settings["host"], settings["port"],
+                                 ssl_context=ssl.create_default_context())
     try:
         conn.login(settings["address"], settings["password"])
         conn.select("INBOX", readonly=True)

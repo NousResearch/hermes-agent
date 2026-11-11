@@ -257,6 +257,37 @@ def test_fs_readers_reject_sensitive_resolved_ssh_path_before_reading(client, mo
     assert response.json()["detail"] == "Access to sensitive files is not allowed"
 
 
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
+def test_fs_ssh_readers_refuse_a_resolved_name_the_adapter_would_rewrite(client, monkeypatch, endpoint):
+    """The real adapter strips whitespace from paths it reads, so a link resolving to ``.env ``
+    (trailing space, not sensitive by name) must not be served: reading it would open ``.env``."""
+    resolved = base64.b64encode(b"/srv/repos/.env ").decode()
+
+    class FakeEnv:
+        cwd = "/srv/repos"
+        timeout = 30
+        _remote_home = "/home/dev"
+
+        def __init__(self):
+            self.commands = []
+
+        def execute(self, command, **_kwargs):
+            self.commands.append(command)
+            if len(self.commands) > 1:
+                pytest.fail("a path the adapter rewrites must not be read")
+            return {"returncode": 0, "output": f"__HERMES_FS_TARGET__:{resolved}\n__HERMES_FS_SIZE__:8\n"}
+
+        def _build_ssh_command(self):
+            pytest.fail("a path the adapter rewrites must not be streamed")
+
+    backend = ssh_workspace_fs.SshWorkspaceFs(FakeEnv())
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: backend)
+
+    response = client.get(endpoint, params={"path": "/srv/repos/safe-link", "profile": "remote-dev"})
+
+    assert response.status_code == 400
+
+
 def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
     class FakeSshFs:
         def inspect_file(self, _path):

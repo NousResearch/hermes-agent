@@ -26,26 +26,29 @@ _INIT = textwrap.dedent("""
             from .client import Client  # imported on first use, like `from .directsdk import Client`
             return Client(**kw)
 
-    register_provider(Profile(name="demo-provider", aliases=("demo-alias",),
+    register_provider(Profile(name="demo-provider", aliases=ALIASES,
                               base_url="process://demo-provider", auth_type="external_process"))
 """)
 
 
 def _write(plugin: Path, version: int, *, extra: bool = False, broken: bool = False) -> None:
-    """One release of the demo plugin; ``extra`` also registers a second profile, ``broken`` raises at import
-    after loading its ``setup`` submodule."""
+    """One release of the demo plugin; ``extra`` also registers a second profile and a second alias, ``broken``
+    raises at import after loading its ``setup`` submodule."""
     plugin.mkdir(parents=True, exist_ok=True)
     (plugin / "plugin.yaml").write_text(f"name: demo-provider\nkind: model-provider\nversion: {version}.0\n")
     (plugin / "setup.py").write_text(f"def fn():\n    return 'v{version}'\n")
+    # A client file from one release running against another release's ``setup`` reports "mixed".
     (plugin / "client.py").write_text(
-        "from .setup import fn\nclass Client:\n    def __init__(self, **kw):\n        self.version = fn()\n")
+        f"from .setup import fn\nclass Client:\n    def __init__(self, **kw):\n"
+        f"        self.version = fn() if fn() == 'v{version}' else 'mixed'\n")
     tail = ""
     if extra:
         tail += ('register_provider(ProviderProfile(name="demo-extra", base_url="process://demo-extra", '
                  'auth_type="external_process"))\n')
     if broken:
         tail += "raise RuntimeError('broken release')\n"
-    (plugin / "__init__.py").write_text(_INIT + tail)
+    aliases = ("demo-alias", "demo-old") if extra else ("demo-alias",)
+    (plugin / "__init__.py").write_text(f"ALIASES = {aliases!r}\n" + _INIT + tail)
     # Every release gets newer files than the last, as an update writes them.
     stamp = (version + 1) * 10**12
     for path in plugin.rglob("*"):
@@ -87,16 +90,17 @@ def test_an_update_serves_new_sessions_whole_while_old_clients_stay_on_their_ver
     from providers import get_provider_profile
 
     _write(plugin, 1, extra=True)
-    before = get_provider_profile("demo-provider")
-    assert before.create_client().version == "v1" and get_provider_profile("demo-extra") is not None
+    before = get_provider_profile("demo-provider")  # loaded, but its lazy ``client`` not imported yet
+    assert get_provider_profile("demo-extra") is not None and get_provider_profile("demo-old") is before
 
     _write(plugin, 2)
     _forced_sweep()
 
     assert get_provider_profile("demo-provider").create_client().version == "v2"
     assert get_provider_profile("demo-alias") is get_provider_profile("demo-provider")
-    assert get_provider_profile("demo-extra") is None  # a profile the new release dropped is gone
-    # An agent still holding the old profile keeps building v1 clients end to end, never a mix.
+    # A profile and an alias the new release dropped are gone.
+    assert get_provider_profile("demo-extra") is None and get_provider_profile("demo-old") is None
+    # An agent still holding the old profile imports its lazy file for the first time now: still v1, no mix.
     assert before.create_client().version == "v1"
 
 

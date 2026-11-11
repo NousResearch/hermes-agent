@@ -4,25 +4,46 @@ A provider plugin used to be imported once per process. An update then never rea
 plugin importing part of its package on first use (inside ``create_client``) read that one file from the new
 tree against siblings loaded from the old one.
 
-Each tree is imported under its own module name (the plugin's base name plus a fingerprint of its files) into a
-staging layer, and only a complete import is published: the plugin's previous registrations stay live until
-then, and stay live if the new tree fails to import. The previous package is left in ``sys.modules``, so
-anything built from it (a cached agent's client) keeps resolving its own lazy imports there: every object runs
-one version end to end, old or new, never a mix.
+Each tree is imported from its own frozen copy, under its own module name (the plugin's base name plus a
+fingerprint of its files), into a staging layer, and only a complete import is published: the plugin's previous
+registrations stay live until then, and stay live if the new tree fails to import. The previous package stays
+in ``sys.modules`` with its ``__path__`` on its own copy, so anything built from it (a cached agent's client)
+imports even its not-yet-loaded files from that version: every object runs one version end to end, never a mix.
 """
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
 import os
+import shutil
 import sys
+import tempfile
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # Directories inside a plugin tree that never hold code the provider imports.
 _SKIP_DIRS = frozenset({"__pycache__", ".git", "node_modules", "tests", "evals", ".venv"})
+_SNAPSHOT_IGNORE = shutil.ignore_patterns("__pycache__", ".git", "node_modules", ".venv")
+# One directory per process for the frozen copies; removed when the process exits.
+_snapshot_root: Path | None = None
+_snapshot_lock = threading.Lock()
+
+
+def _snapshot(plugin_dir: Path, fingerprint: str) -> Path:
+    """A frozen copy of *plugin_dir* for this fingerprint, named like the original (load errors key on it)."""
+    global _snapshot_root
+    with _snapshot_lock:
+        if _snapshot_root is None:
+            _snapshot_root = Path(tempfile.mkdtemp(prefix="hermes-provider-plugins-"))
+            atexit.register(shutil.rmtree, _snapshot_root, True)
+    target = _snapshot_root / fingerprint / plugin_dir.name
+    if not target.is_dir():
+        shutil.copytree(plugin_dir, target, ignore=_SNAPSHOT_IGNORE)
+    return target
 
 
 def tree_fingerprint(plugin_dir: Path) -> str:
@@ -56,7 +77,7 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     staging = P._HomeLayer()
     token = P._REGISTRATION_TARGET.set(staging)
     try:
-        P._import_user_module(plugin_dir, source, module_name)
+        P._import_user_module(_snapshot(plugin_dir, fingerprint), source, module_name)
     finally:
         P._REGISTRATION_TARGET.reset(token)
     if module_name in sys.modules or module_name in staging.hosted:
@@ -75,25 +96,26 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
 
 
 def _publish(layer, base_name: str, module_name: str, fingerprint: str, staging, *, replacing: bool) -> None:
-    """Swap *base_name*'s registrations in *layer* for *staging*'s in one step. A first import keeps the
-    scan's last-writer-wins order; a reload never takes a name another plugin currently owns."""
+    """Swap *base_name*'s registrations in *layer* for *staging*'s. Lookups take no lock, so a name kept by the
+    new release is overwritten in place and the alias table is replaced whole: a reader sees the old entry or
+    the new one, never neither. A first import keeps the scan's last-writer-wins order; a reload never takes a
+    name another plugin currently owns."""
     import providers as P
 
     with P._HOME_LAYERS_LOCK:
-        dropped = {n for n, owner in layer.owner.items() if owner == base_name and n not in staging.registry}
-        for name in dropped:
-            layer.registry.pop(name, None)
-            del layer.owner[name]
-        for alias in [a for a, target in layer.aliases.items() if target in dropped]:
-            del layer.aliases[alias]
+        previous = {n for n, owner in layer.owner.items() if owner == base_name}
         for name, profile in staging.registry.items():
             if replacing and layer.owner.get(name, base_name) != base_name:
                 continue
             layer.registry[name] = profile
             layer.owner[name] = base_name
-        for alias, target in staging.aliases.items():
-            if layer.owner.get(target) == base_name:
-                layer.aliases[alias] = target
+        # The plugin's aliases go with its registrations: one the new release dropped stops resolving.
+        aliases = {a: t for a, t in layer.aliases.items() if t not in previous}
+        aliases.update({a: t for a, t in staging.aliases.items() if layer.owner.get(t) == base_name})
+        layer.aliases = aliases
+        for name in previous - staging.registry.keys():
+            layer.registry.pop(name, None)
+            del layer.owner[name]
         live = layer.trees.get(base_name)
         if live is not None:
             layer.hosted.discard(live[1])

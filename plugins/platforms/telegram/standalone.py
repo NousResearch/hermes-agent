@@ -14,6 +14,7 @@ import re
 from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
+from plugins.platforms.telegram.rich_code_regions import strip_code
 from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
 
@@ -235,6 +236,10 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 thumb_path = await asyncio.to_thread(_video_thumbnail_jpeg, media_path, geometry.get("duration"))
                 if thumb_path:
                     media_kwargs["thumbnail"] = thumb_path
+    from plugins.platforms.telegram.telegram_media_budget import scaled_budgets
+    # The adapter's media budgets (#133164): the Bot's 20s read timeout cuts off Telegram's
+    # post-upload processing, so a delivered file came back "Timed out" and got resent.
+    media_kwargs.update(scaled_budgets([media_path, thumb_path], 0.0)[0])
     try:
         with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
             try:
@@ -265,8 +270,10 @@ _TELEGRAM_HTML_TAGS = ("b", "strong", "i", "em", "u", "ins", "s", "strike", "del
                        "code", "pre", "blockquote", "tg-spoiler", "span", "tg-emoji")
 # Opening tag (optionally with attributes) or closing tag. The name must end at ``>`` or
 # whitespace, so ``<b>`` never matches ``<body>``; longest-first keeps the alternation readable.
+# Quoted attribute values may hold ``>`` (``href="a>b"``): the tag ends at the first unquoted one.
 _TELEGRAM_HTML_TAG_ALT = "|".join(sorted(_TELEGRAM_HTML_TAGS, key=len, reverse=True))
-_TELEGRAM_HTML_TAG_RE = re.compile(rf"</?(?:{_TELEGRAM_HTML_TAG_ALT})(?:\s[^>]*)?>", re.IGNORECASE)
+_TELEGRAM_HTML_TAG_RE = re.compile(
+    rf"""</?(?:{_TELEGRAM_HTML_TAG_ALT})(?:\s(?:[^>"']++|"[^"]*+"|'[^']*+')*+)?>""", re.IGNORECASE)
 
 
 def _telegram_album_paths(media_files, force_document, caption):
@@ -279,12 +286,33 @@ def _telegram_album_paths(media_files, force_document, caption):
     return [os.path.abspath(path) for path, _ in media_files] if ok else []
 
 
+# Telegram rejects the whole message on one stray ``<`` / ``>`` / ``&`` outside a supported tag.
+_HTML_ENTITY_RE = re.compile(r"&(?:#\d+|#x[0-9a-fA-F]+|[a-zA-Z]+);")
+
+
+def _escape_non_telegram_markup(text):
+    """Escape everything between Telegram's supported tags, so a model-invented ``<service>``
+    reads as text instead of failing the parse (and the rest of the formatting with it)."""
+    def esc(chunk):
+        parts = _HTML_ENTITY_RE.split(chunk)
+        entities = _HTML_ENTITY_RE.findall(chunk)
+        out = [p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for p in parts]
+        return "".join(x for pair in zip(out, entities + [""]) for x in pair)
+    pieces, pos = [], 0
+    for tag in _TELEGRAM_HTML_TAG_RE.finditer(text):
+        pieces += [esc(text[pos:tag.start()]), tag.group(0)]
+        pos = tag.end()
+    return "".join(pieces) + esc(text[pos:])
+
+
 def _telegram_format(message):
-    """``(formatted, parse_mode, has_html)``: text already containing a Telegram HTML tag is sent
-    as HTML; otherwise Markdown -> MarkdownV2 via the adapter's ``format_message``."""
+    """``(formatted, parse_mode, has_html)``: text using a Telegram HTML tag outside Markdown code
+    is sent as HTML (any other markup escaped); otherwise Markdown -> MarkdownV2 via the adapter's
+    ``format_message``."""
     from telegram.constants import ParseMode
-    if _TELEGRAM_HTML_TAG_RE.search(message):
-        return message, ParseMode.HTML, True
+    # A tag shown as Markdown code (any backtick width, as the MarkdownV2 path reads it) is an example.
+    if _TELEGRAM_HTML_TAG_RE.search(strip_code(message)):
+        return _escape_non_telegram_markup(message), ParseMode.HTML, True
     mdv2 = _telegram_mdv2(message)
     return (message if mdv2 is None else mdv2), ParseMode.MARKDOWN_V2, False  # None: send as-is
 
@@ -385,7 +413,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
+                from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
+                maybe = " (Telegram may still deliver it; do not resend)" if may_have_delivered(e) else ""
+                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}{maybe}"))
                 logger.error(warnings[-1])
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}

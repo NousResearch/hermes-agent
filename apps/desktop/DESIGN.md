@@ -157,6 +157,11 @@ profile on entry, including links that omit an explicit connection.
 Config, credentials, messaging, memory, and plugin operations retain this owner
 through asynchronous work. Same-name agents on another gateway keep their own
 configuration, plugin cache, conversations, and open tiles.
+
+Keep section resolution, visibility, and model-default derivation separate from
+editor composition. Refactoring these boundaries must preserve owner checks and
+must not mount inactive capability editors or pending inventory content.
+
 Page toolbars occupy the native titlebar band with an opaque surface so open
 chat/tool tabs cannot bleed through; controls remain outside the drag region.
 

@@ -2,6 +2,7 @@
 redispatched on reconnect, and handed to the adapter that replaces this one (#132829)."""
 
 import asyncio
+import itertools
 import logging
 import weakref
 from typing import Optional
@@ -11,9 +12,47 @@ from gateway.platforms.helpers import cancel_task
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
+# Process-wide, so positions stay comparable when a replacement adapter adopts a predecessor's queue.
+_ARRIVALS = itertools.count()
+_ARRIVAL_ATTR = "_telegram_arrival_seq"
+
+
+def _insert_by_arrival(held: list, event: MessageEvent) -> None:
+    """Queue ``event`` behind every held event that arrived before it. Events are held at different
+    times (on arrival behind the delivery fence, by their own flush, by a cancelled flush, by teardown
+    salvage), so appending would replay a later update before an earlier buffered one. Unstamped events
+    keep append order."""
+    seq = getattr(event, _ARRIVAL_ATTR, None)
+    if seq is not None:
+        for i, other in enumerate(held):
+            if getattr(other, _ARRIVAL_ATTR, -1) > seq:
+                held.insert(i, event)
+                return
+    held.append(event)
+
 
 class TelegramHeldInboundMixin:
     """Hold / redispatch / hand-over of inbound events for ``TelegramAdapter``."""
+
+    async def stop_inbound(self) -> None:
+        """Gateway drain: stop getUpdates while the message handler is still installed (#143122).
+
+        A long-poll that outlives the handler withdrawal acks updates nobody admits; stopping it
+        first leaves unfetched updates on Telegram for the next boot. Fences the polling lifecycle
+        like ``disconnect()`` so the verifier/reconnect paths read this as teardown; egress stays up.
+        The fence is set even when the updater is not running: a conflict/network recovery sleeping
+        between its stop and its restart would otherwise restart polling after the handler is gone.
+        """
+        from plugins.platforms.telegram.adapter import _UPDATER_STOP_TIMEOUT, _await_with_thread_deadline
+        if self._teardown_started or self._webhook_mode:
+            return
+        self._polling_teardown_started = True
+        self._polling_progress_accepting = False
+        self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+        self._polling_progress_event = asyncio.Event()
+        updater = getattr(self._app, "updater", None) if self._app else None
+        if getattr(updater, "running", False):
+            await _await_with_thread_deadline(updater.stop(), timeout=_UPDATER_STOP_TIMEOUT, label="stop_inbound")
 
     def _schedule_held_inbound_redispatch(self) -> None:
         """Ensure a tracked drain runs when held events exist and delivery is live (no-op while
@@ -34,6 +73,20 @@ class TelegramHeldInboundMixin:
         if prior is not None and not prior.done() and prior is not current:
             return
         self._held_inbound_redispatch_task = loop.create_task(self._redispatch_held_inbound(prior=None if prior is current else prior))
+
+    @staticmethod
+    def _note_arrival(event: MessageEvent) -> None:
+        """Stamp an inbound update with its arrival position; a batch keeps its first update's stamp."""
+        if getattr(event, _ARRIVAL_ATTR, None) is None:
+            setattr(event, _ARRIVAL_ATTR, next(_ARRIVALS))
+
+    def _salvage_buffered_inbound(self) -> None:
+        """Hold every buffered batch (text, photo burst, album) at teardown, before the maps are cleared."""
+        for events, where in (
+                (self._pending_text_batches, "text-batch-teardown"), (self._pending_photo_batches, "photo-batch-teardown"),
+                (self._media_group_events, "media-group-teardown")):
+            for key in list(events):  # popped: a batch handed over early is never salvaged twice
+                self._hold_inbound_event(events.pop(key), where=where)
 
     def _hold_inbound_event(self, event: MessageEvent, *, where: str, schedule: bool = True) -> None:
         """Preserve an inbound event that cannot be dispatched now (PTB already acked the update, so dropping is silent loss).
@@ -63,7 +116,7 @@ class TelegramHeldInboundMixin:
             dropped = held.pop(0)
             logger.warning(
                 "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)", max_n, len(getattr(dropped, "text", None) or ""))
-        held.append(event)
+        _insert_by_arrival(held, event)
         self._accept_update()
         logger.warning(
             "[Telegram] Holding inbound (%s, %d chars, queue=%d)%s", where, len(getattr(event, "text", None) or ""), len(held),
@@ -76,6 +129,10 @@ class TelegramHeldInboundMixin:
         """Take over the hold queue of the instance the runner just replaced with us (#132829): it only
         drains on its own ``_mark_connected``, which never comes; later holds there forward here."""
         self._held_inbound_successor = None  # we own the queue again: a reverse link would forward in a cycle
+        if predecessor._should_drop_delayed_delivery():
+            # Its buffered batches predate anything we receive; its own teardown salvage may still be
+            # awaiting network cleanup, so take them now or our replay can overtake them.
+            predecessor._salvage_buffered_inbound()
         predecessor._held_inbound_successor = weakref.ref(self)
         held = getattr(predecessor, "_held_inbound_events", None) or []
         events = list(held)

@@ -256,7 +256,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             "predecessor": adapter,
         }
 
-    def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
+    def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter, delay: float = 0.0) -> bool:
         """Queue a retryable fatal adapter for background reconnection (True when newly queued).
 
         Must not await: callers run this BEFORE any disconnect so a wedged close can't strand it.
@@ -284,7 +284,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self._ensure_reconnect_watcher_running()
             return False
         self._failed_platforms[adapter.platform] = self._reconnect_queue_entry(
-            adapter.platform, adapter, platform_config, attempts=0, delay=0.0,
+            adapter.platform, adapter, platform_config, attempts=0, delay=delay,
         )
         logger.info("%s queued for background reconnection", adapter.platform.value)
         # Ensure the reconnect watcher is alive — if it died (e.g. from exhausting its restart budget),
@@ -382,6 +382,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             "Fatal %s adapter error (%s): %s", adapter.platform.value,
             adapter.fatal_error_code or "unknown", adapter.fatal_error_message or "unknown error",
         )
+        # Another poller on the token: reconnect on the contention table, or park it non-retryable once exhausted.
+        delay = self._token_contention_reconnect_delay(adapter.platform.value, adapter)
         # relay_disabled (credential revoked by opt-out) renders "disabled", not red fatal/retrying.
         self._update_platform_runtime_status(
             adapter.platform.value,
@@ -398,7 +400,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
         # Queue BEFORE any disconnect await: a wedged close() once left platforms permanently deaf.
-        self._queue_retryable_fatal_platform(adapter)
+        self._queue_retryable_fatal_platform(adapter, delay)
         if existing is adapter:
             # Bounded by the shutdown-path timeout so this always returns to the stranded check.
             # Queue retryable failures BEFORE any disconnect await (#80598). A half-dead transport can wedge
@@ -830,7 +832,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             from gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = self._create_adapter(platform, platform_config)
+            adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.
@@ -1321,7 +1323,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 continue
             with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                 try:
-                    adapter = self._create_adapter(platform, platform_config)
+                    adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
                 except Exception:
                     logger.error("[MULTIPLEX] Profile '%s': _create_adapter('%s') raised", profile_name,
                                  platform.value, exc_info=True)
@@ -1471,7 +1473,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             await self._safe_adapter_disconnect(adapter, platform)
             if not self._running or getattr(self, "_profile_adapters", {}).get(profile_name) is not profile_map:
                 return  # shutting down, or the profile was unserved while it tore down: nothing to reconnect
-            self._schedule_secondary_profile_reconnect(profile_name, platform, adapter)
+            self._schedule_secondary_profile_reconnect(
+                profile_name, platform, adapter,
+                self._token_contention_reconnect_delay(f"{profile_name}:{platform.value}", adapter))
         finally:
             self._release_secondary_claims(profile_name, platform, adapter)
         logger.error(
@@ -1760,6 +1764,17 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         if adapter is not None:
             adapter.gateway_runner = self
         return adapter
+
+    async def _create_adapter_off_loop_deps(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
+        """``_create_adapter`` for async callers: a registered platform's dependency probe + lazy
+        install runs in the executor first, and the create that follows never re-runs the installer
+        on the loop (#125607). Inline, a minutes-long pm install froze the event loop until the
+        liveness watchdog killed the gateway (exit 75)."""
+        from gateway.platform_registry import platform_registry
+        # None (no registered entry) leaves create_adapter / the built-in path to decide as before.
+        deps_ok = await self._run_in_executor_with_context(platform_registry.ensure_deps, platform.value)
+        with platform_registry.deps_resolved_off_loop(deps_ok):
+            return self._create_adapter(platform, config)
 
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""

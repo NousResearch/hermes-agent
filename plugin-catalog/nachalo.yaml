@@ -1,0 +1,24 @@
+name: nachalo
+repo: https://github.com/RamsisDev/hermes-nachalo
+sha: e2f0269570b9ea8a2922105bed027bed1b31830e
+description: "Pair Hermes agents end-to-end from six spoken words (CPace + X25519 + ML-KEM-768) and catch a man in the middle with four safety words; the agent only drafts, a person sends. Disclosure — talks to a relay (ntfy.sh by default or your relay_url, plus whichever relay each paired peer chose) that sees topics, IP addresses, timing and fixed-size encrypted frames, never contents; while a peer is active a background thread in the gateway holds an HTTPS subscription to it; peers, inbox, drafts and an audit log (no words, no keys) live in the profile's plugin-data/nachalo, and channel state is sealed with NACHALO_STORE_KEY, which the plugin creates once in the profile's .env with save_env_value and reads through the secret scope; pairing is human-only, peer messages are held and never start turns or tool calls (each turn the agent is told only how many are waiting and from which peer names, and reads them as untrusted content with nachalo_inbox), sending needs a person who sees the exact text and does not rely on approval modes, and cron or -q runs never pair or send; a pre_tool_call hook blocks agent terminal calls that drive the nachalo CLI or its data; the native code ships in the nachalo wheel on PyPI with provenance attestations; the protocol and channel are unaudited drafts."
+maintainer: RamsisDev
+tier: community
+category: automation
+title: Nachalo
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/RamsisDev/hermes-nachalo/blob/e2f0269570b9ea8a2922105bed027bed1b31830e/README.md
+version: "0.1.0"
+image: https://raw.githubusercontent.com/RamsisDev/hermes-nachalo/e2f0269570b9ea8a2922105bed027bed1b31830e/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/RamsisDev/hermes-nachalo/e2f0269570b9ea8a2922105bed027bed1b31830e/docs/1-pair-words.png
+  - https://raw.githubusercontent.com/RamsisDev/hermes-nachalo/e2f0269570b9ea8a2922105bed027bed1b31830e/docs/2-safety-words.png
+  - https://raw.githubusercontent.com/RamsisDev/hermes-nachalo/e2f0269570b9ea8a2922105bed027bed1b31830e/docs/3-draft-send.png
+  - https://raw.githubusercontent.com/RamsisDev/hermes-nachalo/e2f0269570b9ea8a2922105bed027bed1b31830e/docs/4-inbox-untrusted.png
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [nachalo_peers, nachalo_inbox, nachalo_draft]
+  provides_hooks: [pre_llm_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

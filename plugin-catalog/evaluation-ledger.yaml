@@ -1,0 +1,21 @@
+name: evaluation-ledger
+repo: https://github.com/1anter/hermes-research-plugins
+sha: 48befeaf71f0bfed7916553d1a511c81a37a9c4b
+subdir: plugins/evaluation-ledger
+description: "Immutable artifact checks and privacy-minimized observer usage ledger. Disclosure — keeps agent-supplied artifact text in a local SQLite file under the profile's plugin-data directory with no automatic deletion. With `observe_usage` turned on (off by default) it also records per-call metadata for every model request and tool call (session and request ids, model, provider, tool name, status, token counts) in the same file; the agent can read that metadata for any session id. Nothing leaves the machine."
+maintainer: 1anter
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+version: 0.2.0
+capabilities:
+  provides_tools:
+  - evaluation_artifact
+  - evaluation_check
+  - evaluation_report
+  provides_hooks:
+  - post_api_request
+  - api_request_error
+  - post_tool_call
+  provides_middleware: []
+  requires_env: []

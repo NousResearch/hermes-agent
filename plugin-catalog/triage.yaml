@@ -1,0 +1,27 @@
+name: triage
+repo: https://github.com/Saderius/hermes-triage
+sha: 913a61d62b0795926531ecdfbf8980a1e9c0b9c9
+description: "Keeps the list of every skill out of your context. Triage suggests skills above the composer as you type and as the chat goes on, ranked locally with no model call; a skill loads only when you pick it or clearly ask for it."
+maintainer: Saderius
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Saderius/hermes-triage#readme
+version: "0.1.2"
+platforms: []
+title: Triage
+known_issues:
+  - Hides Hermes' own skills from Hermes while installed; run `python run.py restore` in the plugin folder before uninstalling.
+capabilities:
+  provides_tools:
+    - skill_search
+    - skill_load
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - transform_tool_result
+    - post_compaction
+  provides_middleware:
+    - llm_request
+    - tool_execution
+  requires_env: []

@@ -136,3 +136,65 @@ async def test_streamed_reply_without_a_photo_keeps_the_trailing_footer(tmp_path
     photo = _photo(tmp_path, monkeypatch)
     await _streamed_turn(adapter, f"Here it is\nMEDIA:{photo}", FOOTER)
     assert adapter.sent == [FOOTER] and adapter.batches[-1][-1][1] == ""
+
+
+@pytest.mark.asyncio
+async def test_non_streamed_footer_is_sent_when_the_captioned_photo_failed(tmp_path, monkeypatch):
+    """Photo-only reply: the footer rides the photo's caption, so when that photo send fails the
+    footer goes out as its own message, as it did before the caption move."""
+    photo = _photo(tmp_path, monkeypatch)
+    adapter = _Adapter()
+
+    async def refused(chat_id, images, metadata=None, human_delay=0.0):
+        adapter.batches.append(list(images))
+        return SendResult(success=False, error="all images failed to send")
+
+    adapter.send_multiple_images = refused
+    outcomes = []
+    extracted = await adapter._extract_response_content(
+        FooteredReply(f"MEDIA:{photo}", FOOTER), _event(), "k", is_ephemeral_response=False)
+    await adapter._deliver_attachments(_event(), extracted, {}, anything_sent=False, record_delivery=outcomes.append)
+
+    assert adapter.batches[-1][-1][1] == FOOTER
+    assert adapter.sent == [FOOTER]
+
+    adapter.sent.clear()  # control: the photo landed, so no footer-only message
+    adapter.send_multiple_images = _Adapter.send_multiple_images.__get__(adapter)
+    await adapter._deliver_attachments(_event(), extracted, {}, anything_sent=False, record_delivery=outcomes.append)
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_streamed_footer_is_sent_when_the_photo_batch_raises(tmp_path, monkeypatch):
+    photo = _photo(tmp_path, monkeypatch)
+    adapter = _Adapter()
+
+    async def boom(chat_id, images, metadata=None, human_delay=0.0):
+        adapter.batches.append(list(images))
+        raise RuntimeError("upload exploded")
+
+    adapter.send_multiple_images = boom
+    await _streamed_turn(adapter, f"Here it is\nMEDIA:{photo}", FOOTER)
+
+    assert adapter.batches
+    assert adapter.sent == [FOOTER]
+
+
+@pytest.mark.asyncio
+async def test_footer_never_rides_an_animation(tmp_path, monkeypatch):
+    """A remote GIF goes out on its own path, whose failure the batch result does not list: the
+    footer rides the last real photo, so a lost GIF cannot take the footer with it."""
+    photo = _photo(tmp_path, monkeypatch)
+    adapter = _Adapter()
+    landed = []
+
+    async def gif_lost(chat_id, images, metadata=None, human_delay=0.0):
+        adapter.batches.append(list(images))
+        landed.extend(alt for url, alt in images if not adapter._is_animation_url(url))
+        return SendResult(success=True, message_id="p1")  # the photo landed, the GIF did not
+
+    adapter.send_multiple_images = gif_lost
+    await _streamed_turn(adapter, f"Here it is\nMEDIA:{photo}\n![cat](https://example.com/cat.gif)", FOOTER)
+
+    assert adapter.batches[-1][-1] == ("https://example.com/cat.gif", "cat")
+    assert FOOTER in [*landed, *adapter.sent]

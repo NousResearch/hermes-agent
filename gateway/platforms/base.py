@@ -22,7 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
-from gateway.runtime_footer import footer_onto_photo_caption
+from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -4192,9 +4192,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
-            record_delivery(SendResult(success=False, error=str(batch_err)))
-            return
-        record_delivery(result)
+            result = SendResult(success=False, error=str(batch_err))
+        record_delivery(result)  # a footer the captioned photo lost goes out on its own (#74547):
+        await send_footer_unless_captioned(self, event.source.chat_id, images, result, metadata, record_delivery)
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,

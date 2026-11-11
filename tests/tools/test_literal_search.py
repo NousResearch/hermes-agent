@@ -181,3 +181,16 @@ def test_valid_empty_search_is_not_an_error(search_root, mode, literal):
     }, task_id="valid-empty-search"))
     assert not out.get("error"), out
     assert out["total_count"] == 0, out
+
+
+@pytest.mark.parametrize("lane", ["rg", "grep", "pruned-grep"])
+def test_literal_multiline_pattern_is_rejected_on_every_engine(tmp_path, lane):
+    root = tmp_path / (".hidden" if lane == "pruned-grep" else "plain")
+    root.mkdir()
+    (root / "a.txt").write_text("alpha\nbeta\nalpha beta\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    if lane != "rg":
+        ops._has_command = lambda name, _has=ops._has_command: name != "rg" and _has(name)
+    result = ops.search("alpha\nbeta", path=str(root), target="content", literal=True)
+    assert result.error and "line break" in result.error, result
+    assert not result.matches

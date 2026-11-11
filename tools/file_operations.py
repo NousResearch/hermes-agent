@@ -1704,6 +1704,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         ordering — fast "discovery" or exact "modified" time."""
         if literal and target != "content":
             return SearchResult(error="literal is only supported for target=content; target=files needs a glob.")
+        if literal and "\n" in pattern:
+            return SearchResult(error="literal=true matches within one line; the pattern contains a line break. "
+                                      "Search for a single line of the text (context=N shows neighbors).")
         offset, limit = normalize_search_pagination(offset, limit)
         if target == "files" and order not in {"discovery", "modified"}:
             return SearchResult(

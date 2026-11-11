@@ -203,10 +203,12 @@ async def test_a_refused_busy_echo_is_sent_by_the_turn(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_partly_refused_busy_echo_repeats_no_shown_clip(tmp_path, monkeypatch):
-    """Two clips, the second clip's busy echo refused: the turn echoes only the second, never the first again."""
+    """Three clips, the middle one's busy echo refused: the busy path still echoes the third (a steered
+    message has no later turn), and the turn echoes only the refused clip, never a shown one again."""
+    words = {'a.ogg': 'one', 'b.ogg': 'two', 'c.ogg': 'three'}
     monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {
-                            'success': True, 'transcript': 'one' if path.endswith('a.ogg') else 'two', 'provider': 'f'})
+                            'success': True, 'transcript': words[path.rsplit('/', 1)[-1]], 'provider': 'f'})
     runner, authority, source, _agent, _sent = await _busy_rig(tmp_path, monkeypatch)
     shown, refuse = [], [True]
 
@@ -217,19 +219,24 @@ async def test_a_partly_refused_busy_echo_repeats_no_shown_clip(tmp_path, monkey
         return SendResult(success=True, message_id='s')
 
     monkeypatch.setattr(runner.adapters[Platform.WHATSAPP], 'send', send)
-    first, second = tmp_path / 'a.ogg', tmp_path / 'b.ogg'
-    first.write_bytes(b'OggS first clip')
-    second.write_bytes(b'OggS second clip')
+    clips = []
+    for name in words:
+        clips.append(tmp_path / name)
+        clips[-1].write_bytes(b'OggS ' + name.encode())
+    def echoes():
+        return [m for m in shown if m.startswith('🎙️')]
+
     try:
         task = asyncio.ensure_future(runner._handle_message(MessageEvent(
             text='', message_type=MessageType.VOICE, source=source, message_id='v2',
-            media_urls=[str(first), str(second)], media_types=['audio/ogg', 'audio/ogg'])))
+            media_urls=[str(c) for c in clips], media_types=['audio/ogg'] * 3)))
         await async_wait_until(lambda: _rows(authority), timeout=10, what='the voice note admitted')
         task.cancel()
+        assert echoes() == ['🎙️ "one"', '🎙️ "three"']
         refuse[0] = False
         restored = restore_native(_rows(authority)[0]['payload'], runner)
         await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
 
-        assert [m for m in shown if '"one"' in m or '"two"' in m] == ['🎙️ "one"', '🎙️ "two"']
+        assert echoes() == ['🎙️ "one"', '🎙️ "three"', '🎙️ "two"']
     finally:
         authority.db.close()

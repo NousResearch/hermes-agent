@@ -2156,6 +2156,9 @@ export interface ProfilesCreateParams {
   provider?: string | null
   share_auth?: boolean | string | null
   mirror_credentials?: boolean | string | null
+  clone_config?: boolean | string | null
+  sync_imports?: boolean | string | null
+  report?: boolean | string | null
 }
 export interface ProfilesCreateResult {
   ok?: boolean
@@ -2165,6 +2168,7 @@ export interface ProfilesCreateResult {
   model_set?: boolean
   mirrored: ProfileMirrored
   warnings?: string[]
+  receipt?: ProfileCreateReceipt | null
 }
 /** What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no auth.json of its own and reads the default root's. */
 export interface ProfileMirrored {
@@ -2172,6 +2176,24 @@ export interface ProfileMirrored {
   auth?: boolean | 'shared'
   model_inherited?: boolean
   voice?: boolean
+}
+/** What ``hermes profile create`` prints about a new profile, read on the machine (and in the profile scope) that made it: built after a local create, or sent by the gateway that made it (``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a local create never loads pydantic. A client treats a receipt missing a field, or with a wrong type, as an unknown outcome. */
+export interface ProfileCreateReceipt {
+  path: string
+  display_path: string
+  launch_label: string
+  source_label: string
+  skills_synced: number | null
+  skills_opted_out: boolean
+  alias_path: string | null
+  alias_collision: string | null
+  mirrored: Record<string, boolean | 'shared'>
+  warnings: string[]
+  cloned_plugins: string[]
+  memory_provider: string | null
+  channels_left_behind: string[]
+  shared_channels: string[]
+  served_now: boolean | null
 }
 export interface ProfileNameParams {
   profile?: string | null

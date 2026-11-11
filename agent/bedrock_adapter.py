@@ -790,8 +790,8 @@ def _replay_ordered_blocks(ordered_blocks: list) -> list[dict]:
                 continue
             # ReasoningContentBlock is a tagged union: reasoningText and redactedContent must go
             # out as separate blocks (#115865). Undecodable redacted entries are skipped alone.
-            if isinstance(reasoning.get("text"), str):
-                reasoning_text: dict[str, str] = {"text": reasoning["text"]}
+            if isinstance(reasoning.get("text"), str) or reasoning.get("signature"):  # omitted thinking: signature only
+                reasoning_text: dict[str, str] = {"text": reasoning.get("text") or ""}
                 if isinstance(reasoning.get("signature"), str) and reasoning["signature"]:
                     reasoning_text["signature"] = reasoning["signature"]  # models that sign thinking reject unsigned replay
                 content_blocks.append({"reasoningContent": {"reasoningText": reasoning_text}})
@@ -1070,12 +1070,25 @@ def _persisted_reasoning_details(ordered_blocks: list[dict[str, Any]]) -> list[d
         reasoning = block.get("reasoningContent") if isinstance(block, dict) else None
         if not isinstance(reasoning, dict):
             continue
-        if isinstance(reasoning.get("text"), str) and reasoning["text"]:
-            details.append({"type": "thinking", "thinking": reasoning["text"],
+        if (isinstance(reasoning.get("text"), str) and reasoning["text"]) or reasoning.get("signature"):
+            details.append({"type": "thinking", "thinking": reasoning.get("text") or "",
                             **({"signature": reasoning["signature"]} if reasoning.get("signature") else {})})
         if reasoning.get("redactedContentBase64"):
             details.append({"type": "redacted_thinking", "data": reasoning["redactedContentBase64"]})
     return details
+
+
+def _opens_new_reasoning_block(current: Any, reasoning: dict[str, Any]) -> bool:
+    """True when a reasoning delta belongs to a NEW block under the same ``contentBlockIndex``. Bedrock can stream
+    two signed blocks under one index with no contentBlockStop between them (text, signature, text, signature);
+    a signature signs only its own block, so a merged replay 400s "Invalid signature". Text after a signed or
+    redacted block, or redacted bytes after a signed one, starts the next block."""
+    if not isinstance(current, dict):
+        return False
+    signed, redacted = bool(current.get("signature")), bool(current.get("redactedContentBase64"))
+    if _encode_redacted(reasoning.get("redactedContent")):
+        return signed and not redacted
+    return bool(reasoning.get("text")) and (signed or redacted)
 
 
 class _ResponseParts:
@@ -1104,7 +1117,9 @@ class _ResponseParts:
         encoded = _encode_redacted(reasoning.get("redactedContent"))
         if encoded:
             self.reasoning_details.append({"type": "redacted_thinking", "data": encoded})
-            block["redactedContentBase64"] = encoded
+            # Streamed binary chunks of one redacted block are independent payload slices: join the bytes.
+            prior, chunk = _decode_redacted(block.get("redactedContentBase64")), _decode_redacted(encoded)
+            block["redactedContentBase64"] = _encode_redacted(prior + chunk) if prior and chunk else encoded
 
     def build(self, ordered_blocks: list[dict[str, Any]], usage_data: dict[str, int], stop_reason: str, model: str) -> SimpleNamespace:
         """Assemble the OpenAI-shaped response. Converse's inputTokens EXCLUDES cache read/write tokens
@@ -1177,6 +1192,7 @@ def stream_converse_with_callbacks(
     text blocks get NO contentBlockStart, so a counter keyed on starts shredded them (#108200)."""
     parts = _ResponseParts()
     stream_blocks: dict[int, dict[str, Any]] = {}
+    closed_reasoning: dict[int, list[dict[str, Any]]] = {}  # earlier blocks streamed under the same index
     current_block_index: Optional[int] = None
     current_tool: Optional[dict] = None
     current_text_buffer: list[str] = []
@@ -1232,8 +1248,11 @@ def stream_converse_with_callbacks(
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict) and (reasoning.get("text", "") or reasoning.get("signature") or _encode_redacted(reasoning.get("redactedContent"))):
-                    block = stream_blocks.setdefault(idx, {"reasoningContent": {}}).setdefault("reasoningContent", {})
-                    parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
+                    slot = stream_blocks.setdefault(idx, {"reasoningContent": {}})
+                    if _opens_new_reasoning_block(slot.get("reasoningContent"), reasoning):
+                        closed_reasoning.setdefault(idx, []).append(slot)
+                        slot = stream_blocks[idx] = {"reasoningContent": {}}
+                    parts.absorb_reasoning(reasoning, slot.setdefault("reasoningContent", {}), on_reasoning_delta)
         elif "contentBlockStop" in event:
             idx = block_index(event["contentBlockStop"])
             current_block_index = None  # a following index-less delta opens a fresh slot, not this one
@@ -1253,7 +1272,8 @@ def stream_converse_with_callbacks(
     if stop_reason is None and not interrupted:
         raise EmptyStreamError("Bedrock Converse stream ended before messageStop; response is incomplete")
     flush_text()
-    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason or "end_turn", "")
+    ordered = [block for i in sorted(stream_blocks) for block in (*closed_reasoning.get(i, ()), stream_blocks[i])]
+    return parts.build(ordered, usage_data, stop_reason or "end_turn", "")
 
 
 # --- High-level API: call Bedrock Converse ---

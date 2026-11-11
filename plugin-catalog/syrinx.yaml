@@ -1,7 +1,7 @@
 name: syrinx
 title: Syrinx
 repo: https://github.com/cstljuan/syrinx
-sha: 21b936946c58d261e743e01120a4e8a3bb1c9ef9
+sha: f7dca94dad43eb302b6b8784a2889a30dae26969
 description: "Your agent is fast; Syrinx makes it wait for the right moment. In a focus block (/flow 45) the agent's questions are parked with the default it took and it keeps working; when you return you get a catch-up, a list counted by code from the tool calls (files changed, commands run, anything that left your machine, and how much work rests on unconfirmed defaults), and every question in one card. During the block anything that would leave your machine (git push, publish, send, deploy) is held before it runs and offered back on that card. Settle a question once with /always and it is never asked again. Late-night requests become a morning brief. Deep-work hours, a question budget, a time receipt, a Desktop pane and Argus, a pet whose pose shows the state. Disclosure: pre_tool_call can block the built-in clarify tool (during a focus block, over the question budget you set, or when a standing answer covers it) and tells the agent which default to use, and during a focus block only it blocks tool calls that match a fixed list of outward actions (push, publish, gh create, curl with a body, ssh, docker push, kubectl, terraform, send/post/deploy/upload/pay tools), storing a label, never the command; hold_outward: false turns that off; pre_llm_call appends short blocks to your message (standing answers, focus notes, the hand-back, the morning brief) and, after your cutoff only, ends the turn to queue the request; post_tool_call stores tool names, file basenames and program names, never arguments, plus your answers to clarify cards; with auto_focus on (macOS, off by default) it runs ioreg and lsappinfo read-only; /syrinx pet writes the bundled sprite sheet through Hermes' pet store. No network calls of its own, approvals untouched, cron runs never held."
 maintainer: cstljuan
 tier: community
@@ -9,13 +9,13 @@ category: general
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/cstljuan/syrinx#readme
 version: "1.1.0"
-image: https://raw.githubusercontent.com/cstljuan/syrinx/21b936946c58d261e743e01120a4e8a3bb1c9ef9/docs/hero.jpg
+image: https://raw.githubusercontent.com/cstljuan/syrinx/f7dca94dad43eb302b6b8784a2889a30dae26969/docs/hero.jpg
 screenshots:
-  - https://raw.githubusercontent.com/cstljuan/syrinx/21b936946c58d261e743e01120a4e8a3bb1c9ef9/docs/screenshots/flow-parked.jpg
-  - https://raw.githubusercontent.com/cstljuan/syrinx/21b936946c58d261e743e01120a4e8a3bb1c9ef9/docs/screenshots/hold-return.jpg
-  - https://raw.githubusercontent.com/cstljuan/syrinx/21b936946c58d261e743e01120a4e8a3bb1c9ef9/docs/screenshots/return-card.jpg
-  - https://raw.githubusercontent.com/cstljuan/syrinx/21b936946c58d261e743e01120a4e8a3bb1c9ef9/docs/screenshots/receipt-card.jpg
-  - https://raw.githubusercontent.com/cstljuan/syrinx/21b936946c58d261e743e01120a4e8a3bb1c9ef9/docs/screenshots/argus-poses.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/f7dca94dad43eb302b6b8784a2889a30dae26969/docs/screenshots/flow-parked.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/f7dca94dad43eb302b6b8784a2889a30dae26969/docs/screenshots/hold-return.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/f7dca94dad43eb302b6b8784a2889a30dae26969/docs/screenshots/return-card.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/f7dca94dad43eb302b6b8784a2889a30dae26969/docs/screenshots/receipt-card.jpg
+  - https://raw.githubusercontent.com/cstljuan/syrinx/f7dca94dad43eb302b6b8784a2889a30dae26969/docs/screenshots/argus-poses.jpg
 readme: true
 platforms: []
 capabilities:

@@ -1,0 +1,33 @@
+name: skilluminati
+title: Skilluminati
+repo: https://github.com/yxssxn/skilluminati
+sha: "0affc46618f62d9b497f177178acefb83f63dd02"
+subdir: plugin
+version: "0.1.0"
+description: "Your skills, judged blind: finds out whether each skill your Hermes agent loads makes its answers better. /skilluminati <skill> takes the latest 12 times you used the skill, each with the chat as it stood at that moment, and your model answers each one twice, once with the skill and once without. The Owl, a blind judge, sees both answers and the skill's one-line description of its job, never which answer had the skill, and sees every pair twice with the answers swapped; if it picks differently the second time, the pair counts as Same. Verdicts: Enlightened (answers are clearly better with it), Dead weight (the model does this anyway, it only costs tokens), Hindrance (answers are worse with it) or Unproven (too few uses to tell yet), each marked Probable or Plausible. Built-in question sets for frontend-design, systematic-debugging and hermes-agent let a fresh install run a test with no history, and /skilluminati selftest plants a helpful, a harmful and an empty skill to prove the Owl can tell them apart. Surfaces: the /skilluminati command, two read-only agent tools, a Desktop page with a sidebar entry (plugin SDK only) and a read-only dashboard backend. Disclosure: opens HERMES_HOME/state.db read-only (never copied) and reads installed skill files and skills.disabled in config.yaml; blanks out emails, phone numbers, key-shaped strings, URLs carrying tokens, money amounts and names listed in HERMES_HOME/plugin-data/skilluminati/names.txt, then sends each task (the chat up to that point, including any tool output in it) and the skill text only to the active provider and model through ctx.llm on credentials Hermes holds; a test of one skill is up to 64 model calls on the user's own allowance, started only by the user in a local session, never under cron or a messaging gateway; runs one call at a time on a background thread inside Hermes; the verdict goes into a chat only when the user presses Show in chat; writes only under HERMES_HOME/plugin-data/skilluminati/; imports one private core helper (agent.skill_utils.get_all_skills_dirs) to list skill folders; never edits or deletes a skill; no telemetry, no other network calls, no shell commands, no stored credentials, no self-updater."
+maintainer: yxssxn
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/yxssxn/skilluminati/blob/0affc46618f62d9b497f177178acefb83f63dd02/README.md
+image: https://raw.githubusercontent.com/yxssxn/skilluminati/0affc46618f62d9b497f177178acefb83f63dd02/docs/img/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/yxssxn/skilluminati/0affc46618f62d9b497f177178acefb83f63dd02/docs/img/page.png
+  - https://raw.githubusercontent.com/yxssxn/skilluminati/0affc46618f62d9b497f177178acefb83f63dd02/docs/img/chat-result.png
+  - https://raw.githubusercontent.com/yxssxn/skilluminati/0affc46618f62d9b497f177178acefb83f63dd02/docs/img/progress.png
+readme: true
+platforms: []
+known_issues:
+  - "Each test is one fresh answer per task from the moment the skill loaded. Tools are not run again, so skills that mostly drive tools are judged on the answer text only."
+  - "The replay puts the skill into the chat directly, so it does not test whether your agent would have chosen to load it."
+  - "If the judge is the same model family as the one under test, it may favour answers like its own. The result names the model."
+  - "Every test spends your own provider allowance: up to 64 model calls for one skill. The frontend-design built-in set takes about an hour because every answer is a whole web page."
+  - "The Desktop page appears only after Capabilities -> Plugins -> Skilluminati is switched on in Hermes Desktop."
+  - "Lists skill folders through agent.skill_utils.get_all_skills_dirs, a private core helper (validator rule 9 warning); a future Hermes release may move it."
+capabilities:
+  provides_tools:
+    - skilluminati_estimate
+    - skilluminati_result
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

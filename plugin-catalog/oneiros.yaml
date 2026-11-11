@@ -1,14 +1,14 @@
 name: oneiros
 title: Oneiros Dream Cycle
 repo: https://github.com/noblebrown-69/hermes-oneiros
-sha: 2f4d232622ef59f8ea432ab384fff8c2716028a8
+sha: 02b5aa9038291cb5e2f88c3660b4fa453336bf90
 description: "Your agent sleeps on it. Nightly proposal-only memory consolidation with morning review, receipts, and one-step rollback. No model calls. Distinct from hermes-dreaming."
 maintainer: noblebrown-69
 tier: community
 category: memory
-version: "0.8.7"
-image: "https://raw.githubusercontent.com/noblebrown-69/hermes-oneiros/2f4d232622ef59f8ea432ab384fff8c2716028a8/assets/banner.png"
-docs_url: "https://github.com/noblebrown-69/hermes-oneiros/blob/2f4d232622ef59f8ea432ab384fff8c2716028a8/README.md"
+version: "0.8.8"
+image: "https://raw.githubusercontent.com/noblebrown-69/hermes-oneiros/02b5aa9038291cb5e2f88c3660b4fa453336bf90/assets/banner.png"
+docs_url: "https://github.com/noblebrown-69/hermes-oneiros/blob/02b5aa9038291cb5e2f88c3660b4fa453336bf90/README.md"
 readme: true
 platforms: []
 capabilities:

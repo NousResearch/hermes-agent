@@ -70,6 +70,9 @@ from hermes_cli.setup import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gateway_pid
+# Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
+# import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
+from hermes_cli.gateway_restart_env import restart_watcher_env
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -1163,7 +1166,6 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     # The watcher copies os.environ into the gateway child, so the child's env is the watcher's: a
     # host respawn gets the default root's secrets, a sibling profile's its own (never the launcher's).
-    from hermes_cli.gateway_restart_env import restart_watcher_env
     watcher_env = restart_watcher_env(
         run_argv, host=_restart_argv_is_host_gateway(run_argv) if host is None else host, home=home)
     popen_env = {"env": watcher_env} if watcher_env is not None else {}

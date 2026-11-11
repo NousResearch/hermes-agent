@@ -5728,24 +5728,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         session_key: str, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Clarify prompt: one button per choice plus ``✏️ Other`` (text-capture); with no choices the
-        gateway's text-intercept captures the next message. Dict choices (LLMs emit
-        ``[{"description": ...}]``) are unwrapped via ``label``/``description``/``text``/``title``."""
-        def _flatten_choice(c):
-            if c is None:
-                return ""
-            if isinstance(c, str):
-                return c.strip()
-            if isinstance(c, dict):
-                # 'name'/'value' excluded: Discord-component-shaped fields would leak raw enum values.
-                for key in ("label", "description", "text", "title"):
-                    v = c.get(key)
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-                return ""
-            if isinstance(c, (list, tuple)):
-                return " ".join(_flatten_choice(x) for x in c).strip()
-            return str(c).strip()
-
+        gateway's text-intercept captures the next message. A choice may be a bare string OR a
+        structured option dict ``{label, brief, pros, cons}`` (the #1 decision helper): structured
+        dicts render their full brief plus pros/cons in the embed body, with a short selector on
+        the button; bare strings keep the classic single-surface behavior."""
         def _build(_channel):
             # Header-only card (same rule as the exec approval prompt): the question and hint live
             # in content only, so embed-rendering clients don't see them twice (#114693).
@@ -5753,17 +5739,57 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             embed = discord.Embed(
                 title=_truncate_discord_component_text(f"❓ {clarify_title}", _DISCORD_EMBED_TITLE_LIMIT), color=discord.Color.orange())
             # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
-            clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
-            if clean_choices:
+            # Keep the RAW choice values for the body brief; buttons get short labels.
+            raw_choices = [c for c in (choices or []) if _choice_text(c).strip()][:24]
+            clean_choices = [_choice_button_text(c) for c in raw_choices]
+            if raw_choices:
                 hint = t("platform.discord.prompt.clarify_hint_buttons")
-                # Button labels clip past ~40 columns on mobile with no tooltip (#78115): when
-                # any option is that long, the numbered full text goes in the content too.
-                # Capped at half the 2000-char content so the question keeps the rest; every
-                # option keeps its line (shortened) so each button still has one to match.
-                numbered = numbered_clarify_choices(clean_choices, max_label_cols=40, max_chars=1000,
-                                                    escape=lambda s: re.sub(r"([\\*_~`|<>\[\]])", r"\\\1", s))
+                # Button labels clip past ~40 columns on mobile with no tooltip (#78115): the
+                # numbered FULL option text rides in the content (capped at half the 2000-char
+                # content so the question keeps the rest); every option keeps its line so each
+                # button still has one to match.
+                numbered = numbered_clarify_choices(
+                    [_choice_text(c) for c in raw_choices], max_label_cols=40, max_chars=1000,
+                    escape=lambda s: re.sub(r"([\\*_~`|<>\[\]])", r"\\\1", s))
                 if numbered:
                     hint = f"{numbered}\n\n{hint}"
+                # Full-text (+ pros/cons) decision brief in the embed body; buttons stay
+                # short numbered selectors. Numbers match across both surfaces.
+                embed.add_field(
+                    name="How to answer",
+                    value="Pick a number below, or tap ✏️ Other to type your own answer.",
+                    inline=False,
+                )
+                option_blocks = []
+                for i, c in enumerate(raw_choices, 1):
+                    # Bold NATIVE label (stands out) + only the pros/cons inside a
+                    # code box so the indentation survives.
+                    block = [_choice_label_line(i, c)]
+                    detail = _choice_detail_block(c)
+                    if detail:
+                        block.append(f"```\n{detail}\n```")
+                    option_blocks.append("\n".join(block))
+                # Separate each option with a blank line so the brief reads as
+                # distinct choices. Chunk by whole options (never split one
+                # mid-way) to stay under the 1000-char per-field limit.
+                chunks = []
+                cur_chunk, cur_chars = [], 0
+                for block in option_blocks:
+                    cost = len(block) + (2 if cur_chunk else 0)  # "\n\n" join
+                    if cur_chunk and cur_chars + cost > 1000:
+                        chunks.append("\n\n".join(cur_chunk))
+                        cur_chunk, cur_chars = [block], len(block)
+                    else:
+                        cur_chunk.append(block)
+                        cur_chars += cost
+                if cur_chunk:
+                    chunks.append("\n\n".join(cur_chunk))
+                for idx, chunk in enumerate(chunks):
+                    embed.add_field(
+                        name="Options" if idx == 0 else "Options (cont.)",
+                        value=chunk,
+                        inline=False,
+                    )
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
@@ -6316,6 +6342,96 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 # ---------------------------------------------------------------------------
 
 
+# =========================================================================
+# Clarify choice helpers -- normalize a raw choice (str OR structured option
+# dict {label, brief, pros, cons}) into the text the different surfaces need.
+# Structured option dicts power the #1 "real decision helper": the embed body
+# shows each option's full brief plus pros/cons, while buttons stay short
+# selectors. Bare strings keep the classic behavior end-to-end.
+# =========================================================================
+
+def _choice_text(c) -> str:
+    """User-facing text for a raw choice (str or option dict) -- used to test
+    existence and as a plain fallback. For a dict, prefers brief/label/
+    description/text/title in that order (the canonical LLM tool-call keys)."""
+    if isinstance(c, dict):
+        for key in ("brief", "label", "description", "text", "title"):
+            v = c.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    if isinstance(c, (list, tuple)):
+        return " ".join(x for x in (_choice_text(x) for x in c) if x).strip()
+    if c is None:
+        return ""
+    return str(c).strip()
+
+def _choice_button_text(c) -> str:
+    """Short selector text for the button base -- the option's short label for a
+    structured dict, else the full text for a bare string."""
+    if isinstance(c, dict):
+        for key in ("label", "brief", "description", "text", "title"):
+            v = c.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    return _choice_text(c)
+
+def _choice_resolve_text(c) -> str:
+    """The answer string resolved back to the agent when this choice is picked.
+    For a structured option, prefer the full ``brief`` (then ``description``)
+    so the agent receives the substance, falling back to the short label."""
+    if isinstance(c, dict):
+        for key in ("brief", "description"):
+            v = c.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        for key in ("label", "text", "title"):
+            v = c.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    return _choice_text(c)
+
+def _choice_label_line(i: int, c) -> str:
+    """Native (non-code) option header: '**1. Label** -- brief'. The label is
+    bold so the option stands out; a structured option's brief rides on the
+    same line after ' -- ' (kept out of the mono box)."""
+    label = _choice_button_text(c)
+    if not label:
+        return f"**{i}. (option)**"
+    if isinstance(c, dict):
+        brief = c.get("brief") or c.get("description")
+        if isinstance(brief, str) and brief.strip() and brief.strip() != label:
+            return f"**{i}. {label}** -- {brief.strip()}"
+    return f"**{i}. {label}**"
+
+def _choice_detail_block(c) -> Optional[str]:
+    """Inner text of the indented code box for a structured option -- ONLY the
+    pros/cons (the brief already lives on the option's label line). Returns
+    None (no code box) for a bare-string option."""
+    if not isinstance(c, dict):
+        return None
+    lines: list = []
+    pros = c.get("pros") or []
+    if pros:
+        lines.append("   ✅ Pros:")
+        for x in pros:
+            s = str(x).strip()
+            if s:
+                lines.append(f"      • {s}")
+    cons = c.get("cons") or []
+    if cons:
+        lines.append("")
+        lines.append("   ❌ Cons:")
+        for x in cons:
+            s = str(x).strip()
+            if s:
+                lines.append(f"      • {s}")
+    return "\n".join(lines) if lines else None
+
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
@@ -6776,11 +6892,16 @@ def _define_discord_view_classes() -> None:
 
         @staticmethod
         def _button_label(index: int, choice: str) -> str:
-            """``"N. <choice>"`` within Discord's 80-char (UTF-16) label cap.
-            Mobile wraps early, so long choices cut at a word boundary in the trailing half, else a
-            soft boundary (``- , . )``, inclusive), else hard."""
+            """``"N. <choice>"`` as a SHORT selector: number + tight label (24-char
+            budget) -- the FULL option text lives in the embed body ("Options"
+            fields), so the user reads the actual answer there instead of a
+            cut-off label. On mobile Discord only ~40 chars are visible
+            comfortably, so aim well under that. Cut strategy (most-preferred
+            to least-preferred): last space in the trailing half of the budget
+            (cleanest word boundary), then a soft boundary (``- , . )``
+            inclusive), then a hard cut at the budget limit (last resort)."""
             prefix = f"{index + 1}. "
-            budget = _DISCORD_BUTTON_LABEL_LIMIT - utf16_len(prefix)
+            budget = 24 - utf16_len(prefix)  # short selector label; full text in body
             if utf16_len(choice) <= budget:
                 return f"{prefix}{choice}"
             truncated = _prefix_within_utf16_limit(choice, max(0, budget - utf16_len(_DISCORD_ELLIPSIS))).rstrip()
@@ -6836,7 +6957,9 @@ def _define_discord_view_classes() -> None:
                 from tools.clarify_gateway import get_pending
                 entry = get_pending(self.clarify_id)
                 if entry and entry.choices and 0 <= index < len(entry.choices):
-                    resolved_text = entry.choices[index]
+                    # Round-trip canonical text -- may be a bare string OR a
+                    # structured option dict (resolve to its brief/label).
+                    resolved_text = _choice_resolve_text(entry.choices[index])
             except Exception:
                 resolved_text = None
             if resolved_text is None:

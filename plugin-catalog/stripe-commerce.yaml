@@ -1,6 +1,6 @@
 name: stripe-commerce
 repo: https://github.com/adroidian/stripe-commerce-hermes
-sha: 2ae7b4950a8cde4c755dda933e398298eff758f3
+sha: ba2c4f343e7599595d79754423f28b9072901be6
 subdir: ''
 description: >-
   Merchant-side Stripe for agents: products, prices and payment links through an
@@ -25,12 +25,16 @@ requires_hermes: '>=0.21.0'
 version: 0.2.0
 known_issues:
   - >-
-    Strict one-operation consent currently uses feature-detected internal Hermes
-    approval/context APIs. The validator reports a compatibility warning; missing
-    or incompatible APIs block writes. See VALIDATION.md before enabling writes.
-    Writes are supported only through native Telegram/Discord gateways. CLI/TUI,
-    QQ and other channels are read/preview-only because complete-display consent
-    is not established there. Long requests that cannot fit the prompt are refused.
+    Writes depend on the public mandatory policy proposed in Hermes PR146488 and
+    request-bound approval/API-declaration work in PR153349, qualified at core
+    826087f934aaef7ca11391101b8957f70eb8bf42. Both remain unmerged. The original
+    feature-only f2d5700 fixture does not qualify callback routing. Tested stable
+    v0.23.0 is read/preview-only; missing or invalid mandatory support blocks writes.
+    Only native Telegram/Discord write routes are qualified, with simulated human
+    input/delivery and mocked Stripe HTTP, not live merchant acceptance. CLI/TUI,
+    QQ and other channels remain read/preview-only. Long requests that cannot fit
+    the complete prompt are refused. After fresh Once and host execution admission,
+    Stop cannot guarantee abort. See VALIDATION.md for source-bound evidence.
 capabilities:
   provides_tools:
   - stripe_whoami
@@ -46,8 +50,18 @@ capabilities:
   - stripe_list_subscriptions
   - stripe_get_subscription
   - stripe_portal_config
-  provides_hooks: []
-  provides_middleware: []
+  provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_approval_request
+  - post_approval_response
+  - agent_loop_stopped
+  - on_session_reset
+  - on_session_finalize
+  - on_session_end
+  - on_session_delete
+  provides_middleware:
+  - tool_execution
   requires_env:
   - STRIPE_API_KEY
 platforms:

@@ -48,24 +48,38 @@ def moves_from_source(source: str | None) -> dict[str, str]:
     return {}
 
 
+def _undo(name: str, step) -> str:
+    """``name`` stepped back through the inverse table until it stops changing.
+
+    A module moved again inside a package that had already moved needs two steps back.
+    """
+    for _ in range(8):
+        before, name = name, step(name)
+        if name == before:
+            break
+    return name
+
+
 class PathMoves:
     def __init__(self, moves: dict[str, str]) -> None:
         self.moves = moves
+        # After a second move both the first name and the intermediate one under hermes_agent/ map to
+        # the last name; the first name, which lies outside hermes_agent/, is the original.
         self.inverse: dict[str, str] = {}
-        for old, new in moves.items():
+        for old, new in sorted(moves.items(), key=lambda item: item[0].startswith("hermes_agent.")):
             self.inverse.setdefault(new, old)
 
     def current(self, path: str) -> str:
         return _map(path, self.moves)
 
     def original(self, path: str) -> str:
-        return _map(path, self.inverse)
+        return _undo(path, lambda p: _map(p, self.inverse))
 
     def module(self, name: str) -> str:
         return current_name(name, self.moves) or name
 
     def original_module(self, name: str) -> str:
-        return current_name(name, self.inverse) or name
+        return _undo(name, lambda n: current_name(n, self.inverse) or n)
 
     def current_globs(self, pattern: str) -> tuple[str, ...]:
         """``pattern`` and the patterns that find its moved matches, for a glob over old paths."""

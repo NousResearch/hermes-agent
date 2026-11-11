@@ -46,21 +46,22 @@ class _Open:
     fire once, after the running one, with the latest gate's payload."""
 
     def __init__(self, ref, db, ahead):
+        # The delivery this one queues behind; None once this one has started.
         self.ref, self.db, self.ahead = ref, db, ahead
         # The profile's ``plugins.hook_callback_timeout``, read by the delivery (off-loop, in that
         # profile's scope, only for a session that loads plugins); 0 until then.
         self.callback_timeout = 0.0
-        self.started = self.coalesced = False
+        self.coalesced = False  # the join warning is logged once per delivery
         self.unsettled, self.opened = set(), None  # gates not yet fired or released; latest payload
         self.task = asyncio.ensure_future(self._run())
 
     def joinable(self):
-        return not self.started and self.ahead is not None and not self.ahead.task.done()
+        return self.ahead is not None and not self.ahead.task.done()
 
     async def _run(self):
         if self.ahead is not None:  # two viewers opening at once: one session's opens fire in order
             await asyncio.wait({self.ahead.task})
-        self.started, self.ahead = True, None  # a session reopened nonstop never chains finished deliveries
+        self.ahead = None  # a session reopened nonstop never chains finished deliveries
         while self.unsettled:
             await asyncio.wait(set(self.unsettled))
         from hermes_cli.lifecycle import hook_known_unused

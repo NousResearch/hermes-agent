@@ -48,8 +48,12 @@ DAEMON_STRIPPED_ENV = (
 
 def strip_supervisor_markers(env: dict) -> dict:
     """Drop :data:`SUPERVISOR_MARKER_ENV` from a detached gateway's env, in place; returns *env*."""
-    from tools.environments.local_env_policy import carry_gateway_profile_pin
+    from tools.environments.local_env_policy import GATEWAY_PROFILE_PIN_ENV, carry_gateway_profile_pin
     carry_gateway_profile_pin(env)  # the supervisor markers go; the gateway keeps its profile pin
+    if env.get("INVOCATION_ID"):
+        # A `gateway run` under INVOCATION_ID skips the sticky active_profile (_under_gateway_supervisor):
+        # without the pin a default respawn (no --profile) would boot the active named profile instead.
+        env[GATEWAY_PROFILE_PIN_ENV] = "1"
     for key in SUPERVISOR_MARKER_ENV:
         env.pop(key, None)
     return env

@@ -3,6 +3,7 @@ a single agent run on the latest event's state; unrelated or unkeyed events are 
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -74,8 +75,9 @@ def _payload(pr_number=None, action: str = "synchronize") -> bytes:
     ({**_coalesce_route(), "cron_job": "sweeper"}, "cron_job"),
 ])
 async def test_invalid_coalesce_config_rejected_at_connect(route, match, tmp_path, monkeypatch):
-    with pytest.raises(ValueError, match=match):
-        await _make_adapter(routes={"pr": route}).connect()
+    refused = _make_adapter(routes={"pr": route})
+    assert await refused.connect() is False
+    assert re.search(match, refused.fatal_error_message) and refused.fatal_error_retryable is False
     # The same block on a hot-reloaded dynamic route is skipped (warned), never admitted — it would
     # otherwise raise inside the request handler.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

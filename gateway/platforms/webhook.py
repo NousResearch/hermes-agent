@@ -277,8 +277,13 @@ class WebhookAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
-        for name, route in self._routes.items():
-            self._validate_route(name, route)
+        try:
+            for name, route in self._routes.items():
+                self._validate_route(name, route)
+        except ValueError as exc:  # a configuration error: a reconnect with the same config cannot fix it
+            logger.error("%s", exc)
+            self._set_fatal_error("webhook_route_invalid", str(exc), retryable=False)
+            return False
         # client_max_size enforces the cap on every read path, including chunked bodies without
         # Content-Length that bypass the header check.
         app = web.Application(client_max_size=self._max_body_bytes)

@@ -188,8 +188,8 @@ class TestCronJobRouteValidation:
             }
         }
         adapter = _make_adapter(routes)
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            await adapter.connect()
+        assert await adapter.connect() is False
+        assert "mutually exclusive" in adapter.fatal_error_message and adapter.fatal_error_retryable is False
 
 # ===================================================================
 # execute_job_for_event unit behaviour

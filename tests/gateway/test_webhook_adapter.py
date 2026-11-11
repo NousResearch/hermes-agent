@@ -1269,8 +1269,8 @@ class TestBlankRouteSecretFailsClosed:
     @pytest.mark.parametrize("secret", ["   ", "\t", "\n", 123])
     def test_connect_rejects_an_unusable_route_secret(self, secret):
         adapter = _make_adapter(routes={"hook": {"secret": secret}})
-        with pytest.raises(ValueError, match="missing, blank, or not a string"):
-            asyncio.run(adapter.connect())
+        assert asyncio.run(adapter.connect()) is False
+        assert "missing, blank, or not a string" in adapter.fatal_error_message
         # The hot-reload path applies the same guard to agent-created dynamic routes.
         assert adapter._dynamic_route_allowed("hook", {"secret": secret}) is False
 

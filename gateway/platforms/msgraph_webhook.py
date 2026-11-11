@@ -132,13 +132,17 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         return host_is_public and not self._allowed_source_networks
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # Configuration refusals: a reconnect with the same config cannot fix them, so they are not retried.
         if self._client_state is None:
             logger.error("[msgraph_webhook] Refusing to start without extra.client_state configured")
+            self._set_fatal_error("msgraph_webhook_config_invalid", "extra.client_state is not configured",
+                                  retryable=False)
             return False
         if self._source_allowlist_required_but_missing():
-            logger.error("[msgraph_webhook] Refusing to start: binding to %s requires extra.allowed_source_cidrs. "
-                         "Configure the Microsoft Graph source CIDRs or bind to loopback (127.0.0.1/::1) behind a "
-                         "tunnel or reverse proxy.", self._host)
+            message = (f"Binding to {self._host} requires extra.allowed_source_cidrs. Configure the Microsoft Graph "
+                       "source CIDRs or bind to loopback (127.0.0.1/::1) behind a tunnel or reverse proxy.")
+            logger.error("[msgraph_webhook] Refusing to start: %s", message)
+            self._set_fatal_error("msgraph_webhook_config_invalid", message, retryable=False)
             return False
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get(self._health_path, self._handle_health)

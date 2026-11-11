@@ -1,7 +1,7 @@
 name: api-indonesia
 title: API Indonesia
 repo: https://github.com/khmuhtadin/api-indonesia-examples
-sha: 5e7a47c1b441fc98b0210c01069fcfd84e221740
+sha: d1d52bce335f1a1efa0d49bd5363c6172883064a
 version: "1.0.0"
 description: |
   Indonesian public data from official sources, right inside your agent: regions down to villages, postal codes, holidays, prayer times, BMKG weather and earthquakes, and more. Connects to API Indonesia's hosted MCP server with your API key.
@@ -24,7 +24,7 @@ tier: community
 category: tools
 docs_url: https://github.com/khmuhtadin/api-indonesia-examples#install-in-hermes-agent
 requires_hermes: ">=0.21.6"
-image: https://raw.githubusercontent.com/khmuhtadin/api-indonesia-examples/5e7a47c1b441fc98b0210c01069fcfd84e221740/assets/banner.png
+image: https://raw.githubusercontent.com/khmuhtadin/api-indonesia-examples/d1d52bce335f1a1efa0d49bd5363c6172883064a/assets/banner.png
 readme: true
 platforms: []
 capabilities:

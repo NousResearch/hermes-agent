@@ -55,8 +55,9 @@ def _launch_bot_token_names() -> set[str]:
     return {name.upper() for name in supplied if name.upper() in adapter_secrets}
 
 
-def _profile_gateway_watcher_env(home: Optional[str]) -> Optional[dict[str, str]]:
-    """The respawned profile gateway's env: the updater's minus everything the LAUNCH profile supplied
+def profile_gateway_restart_env(home: Optional[str]) -> Optional[dict[str, str]]:
+    """The env of a profile gateway an update restarts (the watcher's respawn, and the abort recovery's
+    ``gateway restart`` child in ``update_restart_recovery``): the updater's minus everything the LAUNCH profile supplied
     (its ``.env``, loaded dotenvs, secret sources, bridged ``TERMINAL_*``, authorization gates:
     ``strip_launch_profile_env``) and, under a service manager, every adapter secret; then the target
     profile's own secrets on top. A key only the user's shell exported survives: a blanket credential
@@ -86,4 +87,4 @@ def restart_watcher_env(run_argv: list[str], *, host: bool, home: Optional[str])
     """The watcher's ``env=`` (None: inherit this process's)."""
     if host:
         return _host_gateway_watcher_env()
-    return _profile_gateway_watcher_env(home or _argv_profile_home(run_argv))
+    return profile_gateway_restart_env(home or _argv_profile_home(run_argv))

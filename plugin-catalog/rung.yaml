@@ -2,11 +2,7 @@ name: rung
 repo: https://github.com/miguelangeloazevedo/rung
 sha: 558b5dc86b738cb107dccea955e2986569af9369
 title: Rung
-description: 'Stops an agent from marking its own work done until the tests you approved pass. Tests are approved
-  before any code; when an agent reports claimed work done (rung_report, kanban_complete or a todo item), a deterministic
-  pre_tool_call hook blocks the report until those tests pass on the current code and names the ones that fail.
-  No model is asked. A Desktop pane and dock hold the ladder from need to test result; manual checks stay with a
-  person, and milestones verify whole user journeys. Local SQLite, no network calls of its own.'
+description: "Stops an agent from marking its own work done until the tests you approved pass. Tests are approved before any code; when an agent reports claimed work done (rung_report, kanban_complete or a todo item), a deterministic pre_tool_call hook blocks the report until those tests pass on the current code and names the ones that fail. No model is asked. A Desktop pane and dock hold the ladder from need to test result; manual checks stay with a person, and milestones verify whole user journeys. Local SQLite, no network calls of its own. Disclosure — Runs the shell commands a person approved as tests, contract checks, milestone checks and environment probes/migrations on the host, outside the Hermes sandbox, with the user's privileges, including when the agent calls rung_run_tests; those commands execute files in the project folder that the agent can edit, and receive only PATH, HOME, LANG, LC_*, TMPDIR, the project's own virtual environment and the variables a person names in the project's settings. Pressing Send or Suggest in the Rung pane starts `hermes -p <profile> chat` subprocesses that work in the project folder. On first open Rung reads every profile's config.yaml (platform_toolsets only) and runs `hermes -p <profile> tools list` for each one. A profile without its own Rung store shares the root profile's ladder."
 maintainer: miguelangeloazevedo
 tier: community
 category: automation

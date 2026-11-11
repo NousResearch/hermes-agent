@@ -1,19 +1,19 @@
 name: hephaestus
 repo: https://github.com/madebylegion/hermes-plugin-hephaestus
-sha: fced254765710f8ad3f63d58c02ad55eece6017b
+sha: 9805692032681b1376496ce89a404c1ab1edce07
 title: Hephaestus
-description: "Ask for a plugin and your own agent writes it, checked by the official validator and doctor. It installs disabled; only you enable it. Disclosure: runs the hermes CLI (fixed argument list, no shell) to validate, doctor, enable, disable and remove plugins; writes forged plugins under HERMES_HOME/plugins and drafts and snapshots in its data folder; a pre_tool_call guard blocks the agent from enabling plugins. No network, no telemetry, no LLM calls."
+description: "Ask for a plugin and your own agent writes it, checked by the official validator and doctor; you approve each check, because it runs the draft's code. It installs disabled; only you enable it. Disclosure: runs the hermes CLI (fixed argument list, no shell) to validate, doctor, enable, disable and remove plugins; writes forged plugins under HERMES_HOME/plugins and drafts and snapshots in its data folder; a pre_tool_call guard blocks the agent from enabling plugins. No network, no telemetry, no LLM calls."
 maintainer: madebylegion
 tier: community
 category: tools
-requires_hermes: ">=0.22.5"
+requires_hermes: ">=0.23.1"
 docs_url: https://github.com/madebylegion/hermes-plugin-hephaestus#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/fced254765710f8ad3f63d58c02ad55eece6017b/docs/social-preview.png
+image: https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/social-preview.png
 screenshots:
-  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/fced254765710f8ad3f63d58c02ad55eece6017b/docs/screenshots/consent-card.png
-  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/fced254765710f8ad3f63d58c02ad55eece6017b/docs/screenshots/blocked.png
-  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/fced254765710f8ad3f63d58c02ad55eece6017b/docs/screenshots/upgrade-adds.png
+  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/screenshots/consent-card.png
+  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/screenshots/blocked.png
+  - https://raw.githubusercontent.com/madebylegion/hermes-plugin-hephaestus/9805692032681b1376496ce89a404c1ab1edce07/docs/screenshots/upgrade-adds.png
 platforms: []
 capabilities:
   provides_tools:

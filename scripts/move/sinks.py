@@ -123,16 +123,21 @@ def _sink_params(node: ast.FunctionDef | ast.AsyncFunctionDef, helpers: dict[str
     assigned = {t.id for n in ast.walk(node) if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign))
                 for t in (n.targets if isinstance(n, ast.Assign) else [n.target]) if isinstance(t, ast.Name)}
     sinks = {name: {0} for name in _HELPER_SINKS} | {name: set(found) for name, found in helpers.items()}
+    imports = {"__import__"}
     for inner in ast.walk(node):
         if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             arguments = inner.args.posonlyargs + inner.args.args
             for arg, default in zip(arguments[len(arguments) - len(inner.args.defaults):], inner.args.defaults):
                 if _callee_name(default) in _HELPER_SINKS:
                     sinks[arg.arg] = {0}
+                    if _callee_name(default) == "__import__":
+                        imports.add(arg.arg)
     found, fed = {}, {id(n) for n in _sys_modules_lookups(node)}
     for call in ast.walk(node):
         if not isinstance(call, ast.Call):
             continue
+        if _callee_name(call.func) in imports and not _ast_fromlist_names(call):
+            continue  # it returns the top package: a rewritten name would change what the helper returns
         for index in sinks.get(_callee_name(call.func), ()):
             arg = call.args[index] if index < len(call.args) else None
             if isinstance(arg, ast.Name) and arg.id in params and arg.id not in assigned:
@@ -169,6 +174,20 @@ def _only_fed(node: ast.AST, name: str, fed: set[int]) -> bool:
 
 def _callee_name(node: ast.AST) -> str:
     return node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", "")
+
+
+def _ast_fromlist_names(call: ast.Call) -> bool:
+    """An ``__import__`` call whose ``fromlist`` (keyword or fourth argument) is a non-empty literal."""
+    value = next((k.value for k in call.keywords if k.arg == "fromlist"), call.args[3] if len(call.args) > 3 else None)
+    return isinstance(value, (ast.List, ast.Tuple)) and bool(value.elts)
+
+
+def _fromlist_names(call: cst.Call) -> bool:
+    """``_ast_fromlist_names`` for a libcst call."""
+    positional = [arg.value for arg in call.args if arg.keyword is None and not arg.star]
+    value = next((arg.value for arg in call.args if arg.keyword is not None and arg.keyword.value == "fromlist"),
+                 positional[3] if len(positional) > 3 else None)
+    return isinstance(value, (cst.List, cst.Tuple)) and bool(value.elements)
 
 
 def is_sys_modules(node: cst.BaseExpression) -> bool:
@@ -708,9 +727,18 @@ class SinkFinder(cst.CSTVisitor):
                 isinstance(raising, cst.Name) and raising.value == "False"
                 or isinstance(create, cst.Name) and create.value == "True"):
             self._mark(first, kind, loose=True)
+        if name == "__import__" and owner is None and not self._import_value_kept(node, first):
+            return
         self.feed(first, kind)
         if name == "__import__" and owner is None and isinstance(first, cst.SimpleString):
             self._import_chain(node, first)
+
+    def _import_value_kept(self, node: cst.Call, first) -> bool:
+        """``__import__`` returns the top package unless ``fromlist`` names something, so a rewritten name keeps the
+        call's value only for a bare literal (``_import_chain`` follows or flags it), a non-empty ``fromlist``, or a
+        discarded result. Anything else keeps the old name, which the compat finder still resolves."""
+        return (isinstance(first, cst.SimpleString) and len(node.args) == 1) or _fromlist_names(node) \
+            or isinstance(self._parent(node), cst.Expr)
 
     def _import_chain(self, node: cst.Call, first: cst.SimpleString) -> None:
         """``__import__("a.b")`` returns ``a``: after the move it returns ``hermes_agent``, so the chain changes."""

@@ -1207,7 +1207,7 @@ class TestRefusalReadsAsTheStopLine:
     def test_only_a_billing_refusal_with_the_window_mark_benches_one_model(self):
         """The model-scoped bench applies to the usage-window 402 alone, and wins over the unverified-billing
         sizing; any other reason keeps the pool's own handling."""
-        from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+        from agent.credential_pool_cooldown import FAILURE_REASON_BILLING_UNVERIFIED
         from agent.credential_pool_model_cooldowns import FAILURE_REASON_USAGE_WINDOW, pool_failure_reason
         from agent.error_classifier import FailoverReason
         window = {"usage_window": True}

@@ -289,7 +289,7 @@ class TestGenerateTitle:
         """NFC and NFD forms of the same long Korean reply must both be rejected (#139667)."""
         for form in ("NFC", "NFD"):
             reply = unicodedata.normalize(
-                form, "로그인 페이지가 열리지 않아서 캐시를 지우고 다시 시도하겠습니다",
+                form, "로그인 페이지가 열리지 않아서 캐시를 지우고 다시 시도하겠습니다.",
             )
             mock_response = MagicMock()
             mock_response.choices = [MagicMock()]
@@ -297,6 +297,45 @@ class TestGenerateTitle:
 
             with patch("agent.title_generator.call_llm", return_value=mock_response):
                 assert generate_title("로그인 문제를 해결하고 싶어요") is None, form
+
+    @pytest.mark.parametrize("title", [
+        "クラウドストレージの同期エラーを解決する方法",  # 22 CJK characters
+        "Dockerコンテナのネットワーク設定とポートフォワーディングのトラブルシューティング",  # 37
+        "使用Python和FastAPI构建高性能异步微服务架构的最佳实践指南",  # 22
+        "Node.js、Deno、Bunのパフォーマンス比較とベンチマーク結果",  # list commas, a dotted name
+    ])
+    def test_accepts_a_long_cjk_title_without_sentence_punctuation(self, title):
+        """Length alone does not make a CJK answer: these are titles, so they stay."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = title
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question") == title
+
+    @pytest.mark.parametrize("reply", [
+        "クラウドストレージの同期エラーを解決する方法を説明します。",  # ideographic full stop
+        "クラウドストレージの同期エラーを解決する方法はありますか？",  # fullwidth question mark
+        "クラウドストレージの同期エラーを解決する方法はありますか?",  # ASCII question mark
+        "这个问题需要先确认登录页本身能不能打开然后再看缓存和配置文件是否被修改过以及代理设置",  # 41, no punctuation
+    ])
+    def test_rejects_a_cjk_sentence_or_an_overlong_run(self, reply):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = reply
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question") is None
+
+    def test_decomposed_hangul_cannot_bypass_the_budget(self):
+        """NFD Hangul is conjoining jamo, outside the syllable block: counted only after normalization."""
+        reply = unicodedata.normalize("NFD", "로그인페이지가열리지않아서캐시를지우고다시시도하겠습니다.")
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = reply
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("로그인 문제") is None
 
     def test_accepts_a_short_cjk_title(self):
         """A real CJK title (13 characters) stays under the character budget."""

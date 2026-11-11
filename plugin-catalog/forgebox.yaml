@@ -1,0 +1,19 @@
+name: forgebox
+repo: https://github.com/nosliwhtes/forgebox
+sha: 98adbcaf8d2afcaa59626a13ae4d814fdf484724
+description: "Try-then-commit Git worktree workflow for Hermes Agent. Snapshots dirty repositories and journals tool calls. Best-effort hooks redirect known file paths and command working directories; shell command text is unchanged. This is not an OS sandbox and does not contain shell writes or external side effects. Review and apply changes explicitly with forgebox apply or the dashboard/Desktop panel, or discard the worktree. Requires Git on PATH. Disclosure — redirects the agent's file-tool paths and terminal working directories into a git worktree under `<repo>/.forgebox/` while a session is active and blocks file-tool paths outside that repo (shell command text is not rewritten, so this is not a sandbox); applying copies the reviewed worktree changes into your real checkout and can create a git commit, which runs your repository's own git hooks."
+maintainer: nosliwhtes
+tier: community
+category: tools
+docs_url: https://github.com/nosliwhtes/forgebox#readme
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

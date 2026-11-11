@@ -1,0 +1,18 @@
+name: ship
+repo: https://github.com/shipstatic/mcp
+sha: 47785b8fa646d3140ae6a25e15dd568364f0fa96
+subdir: hermes
+title: ShipStatic
+description: "Deploy static websites, landing pages, and prototypes instantly, through the hosted ShipStatic MCP server (Streamable HTTP at https://mcp.shipstatic.com). Free, no account needed: publishing works with no sign-in, and the site comes back with a link to share and a claim link to keep it; OAuth sign-in only for the account tools (your sites, your domains). Portable Agent Plugins v1 package (plugin.json + mcp.json), configuration only, no code. Disclosure — connects Hermes to the hosted ShipStatic MCP server at https://mcp.shipstatic.com; the files the agent publishes are sent to ShipStatic and nowhere else; a site published with no account is public, stays up for 3 days and is kept through its claim link (anyone who opens that link and signs in owns the site); after OAuth sign-in the account tools can also delete your sites and set or delete your domains; the plugin marks its server untrusted, so those calls go through Hermes's approval gate; the tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: shipstatic
+tier: community
+category: tools
+docs_url: https://github.com/shipstatic/mcp/tree/main/hermes#readme
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

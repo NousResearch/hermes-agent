@@ -455,6 +455,7 @@ class GatewayTurnPrepareMixin:
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
         """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record
         a fresh one. Returns the (possibly switched) session entry."""
+        publication = self._telegram_topic_publication_token(source)
         binding = None
         try:
             if self._session_db:
@@ -465,6 +466,8 @@ class GatewayTurnPrepareMixin:
         except Exception:
             logger.debug("Failed to read Telegram topic binding", exc_info=True)
         if not binding:
+            if self._telegram_topic_publication_moved(source, publication):
+                return session_entry  # the switch in flight writes the binding itself
             try:
                 await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
             except Exception:
@@ -497,6 +500,11 @@ class GatewayTurnPrepareMixin:
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
                 return session_entry
+            if self._telegram_topic_publication_moved(source, publication):
+                # A /resume, /branch --here or handoff is moving this topic (or moved it since the
+                # binding was read): its binding write is authoritative, and following the binding
+                # read here would switch the route back to the session it just left.
+                return session_entry
             # Route through SessionStore so the key → id mapping persists and the previous lane
             # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
             # awaits above are a window for /new or /resume to move the route; the CAS on the
@@ -506,7 +514,8 @@ class GatewayTurnPrepareMixin:
             )
             if switched is not None:
                 session_entry = switched
-        if bound_session_id and bound_session_id != stored_session_id:
+        if bound_session_id and bound_session_id != stored_session_id and (
+                not self._telegram_topic_publication_moved(source, publication)):
             # The stored binding pointed at a parent: rewrite it to the canonical descendant.
             await asyncio.to_thread(
                 self._sync_telegram_topic_binding, source, session_entry, reason="compression-tip-walk",

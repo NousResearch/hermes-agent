@@ -1,13 +1,13 @@
 name: gogogoogle
 repo: https://github.com/josefacero/hermes-gogogoogle
-sha: f293a64fab681b693fa9239c37258bc18b1552ae
+sha: 166dca2141b676dcf84d48b6b64bd716a7e9925c
 description: "Hand bulk work to Google Antigravity's agy CLI as a worker agent on your Antigravity quota while Hermes keeps its own model, then have a fresh agy conversation verify the result against the real files and git diff. Roles do, research and review; background jobs; resume after timeout; a verifier chain that skips models out of quota until their reset; a git check that fails read-only runs that changed files; per-run stats. Disclosure — Each `antigravity_delegate` call asks for Hermes approval. `do` runs start agy with `--dangerously-skip-permissions`, so agy can run shell commands and change files outside the workdir. Research, review and verification runs deny writes, shell and non-Playwright MCP through agy session rules, which are not an OS sandbox: agy can still read files outside the workdir, and its headless browser (isolated profile) can reach your local network. Task text, files agy reads and a diff excerpt go to Google on your Antigravity account. Writes run logs and job records under the plugin data directory."
 maintainer: josefacero
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/josefacero/hermes-gogogoogle#readme
-version: "0.4.1"
+version: "0.5.0"
 readme: true
 known_issues:
   - "Requires agy and an authenticated Antigravity account; runs use that account's quota."

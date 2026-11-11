@@ -154,9 +154,21 @@ class GatewayBusySessionMixin:
         if pending_event is None:
             # An eventless follow-up (leftover /steer, interrupt text) has no slot entry of its
             # own; give it one so it survives like any queued turn.
-            prompt, pinned_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
-            pending_event = MessageEvent(text=pending or "", source=pinned_source, channel_prompt=prompt)
+            pending_event = self._carry_over_event(session_key, source, pending or "")
         self._requeue_event_at_front(session_key, pending_event, adapter)
+
+    def _carry_over_event(self, session_key: str, source: SessionSource, text: str) -> MessageEvent:
+        """A stand-alone event for input the running turn leaves over (a late /steer, interrupt text).
+
+        It continues the active channel context (the pinned prompt and source) and keeps the actor
+        of the turn it came from: ``turn.running_event()``'s sender, ``""`` once another member's
+        input folded into that turn. Built from the source alone it would run as the turn opener.
+        """
+        prompt, pinned_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
+        running = self._session_state(session_key).turn.running_event()
+        actor = running if getattr(running, "user_id", None) is not None else getattr(running, "source", None)
+        return MessageEvent(text=text, source=pinned_source, channel_prompt=prompt,
+                            user_id=getattr(actor, "user_id", None), user_name=getattr(actor, "user_name", None))
 
     def _requeue_event_at_front(self, session_key: str, event: MessageEvent, adapter: Any) -> None:
         """Restore *event* at the FIFO head without dropping a staged next turn.
@@ -198,9 +210,8 @@ class GatewayBusySessionMixin:
         """
         leftover_steer = (result.get("pending_steer") or "").strip()
         if leftover_steer:
-            steer_prompt, steer_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
             self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
-            pending_event = MessageEvent(text=leftover_steer, source=steer_source, channel_prompt=steer_prompt)
+            pending_event = self._carry_over_event(session_key, source, leftover_steer)
         adapter._pending_messages[session_key] = pending_event
         logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
 
@@ -239,17 +250,8 @@ class GatewayBusySessionMixin:
                     session_key, pending[:40],
                 )
             elif pending and not pending_event:
-                from gateway.platforms.base import MessageEvent
-                # A deferred steer continues the active channel context, just like an
-                # eventless follow-up. Reuse its pins without marking the user as internal.
-                steer_prompt, steer_source = self._pinned_channel_inputs(
-                    session_key, None, source, internal=True,
-                )
-                steer_event = MessageEvent(
-                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
-                )
                 if session_key:
-                    self._enqueue_fifo(session_key, steer_event, adapter)
+                    self._enqueue_fifo(session_key, self._carry_over_event(session_key, source, leftover_steer), adapter)
                 logger.debug(
                     "Enqueued leftover /steer behind pending message for session %s: '%s...'",
                     session_key or "?", leftover_steer[:40],
@@ -805,11 +807,15 @@ class GatewayBusySessionMixin:
 
     def _fold_into_running_turn(self, running_agent, session_key: str, event: MessageEvent):
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
-        the bot, a bare silence marker must not end the turn. Returns the turn, or None when a newer
-        turn already owns the slot."""
+        the bot, a bare silence marker must not end the turn, and once another sender's input joins
+        it the turn has no single actor (approvals raised after it fail closed). Returns the turn,
+        or None when a newer turn already owns the slot."""
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None
+        running = turn.running_event()  # a drained queued follow-up's event, else the opener's
+        if running is not None and running is not event:
+            running.absorb_turn_input(event)
         if turn.event is not None and turn.event is not event:
             turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:
@@ -1400,7 +1406,7 @@ class GatewayBusySessionMixin:
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
         )
-        allowed_preview = sorted(policy.user_allowed_commands)
+        allowed_preview = sorted(policy.user_runnable_commands)
         if allowed_preview:
             suffix = (
                 t("gateway.unauthorized.admin_only_can_run") + ", ".join(f"/{c}" for c in allowed_preview[:12])
@@ -1641,8 +1647,12 @@ class GatewayBusySessionMixin:
             counter = self._slash_confirm_counter = _itertools.count(1)
         confirm_id = f"{next(counter)}"
 
-        # Register FIRST so a fast button click cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+        # Register FIRST so a fast button click cannot race the send_slash_confirm return. The
+        # command runs outside any turn: its sender is the requester, never a bound turn's actor.
+        from tools.approval_context import prompt_authority
+        actor = event if event.user_id is not None else source  # as session_context binds it
+        _slash_confirm_mod.register(session_key, confirm_id, command, handler, authority=prompt_authority(
+            str(event.sender_id() or ""), str(actor.user_name or ""), str(getattr(source, "chat_type", None) or "")))
 
         adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))

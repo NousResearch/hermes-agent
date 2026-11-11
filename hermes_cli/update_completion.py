@@ -324,6 +324,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     from pm import receipt
     from pm.client import ensure_tools_for_sync
     from pm.environments import activation_environment, project_python
+    from pm.extras import first_generation_selection
 
     root = Path(request["source"])
     update_id = request["receipt"]["update_id"]
@@ -351,8 +352,10 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # This file runs from the new tree, so its lockfile carries the new
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
             ensure_tools_for_sync()
-            # An update never fails because of a plugin: misfits are disabled and reported.
-            pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            # An update never fails because of a plugin: misfits are disabled and reported. A
+            # pre-PM tree that reached this code with no recorded selection carries its old venv.
+            pm.sync_venv(first_generation_selection(root), explicit=True, project_root=root,
+                         evict_incompatible_plugins=True)
             collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)

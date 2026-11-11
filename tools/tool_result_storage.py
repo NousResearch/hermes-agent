@@ -440,6 +440,8 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
                     tool_name, tool_use_id, len(persisted_content), path, host_suffix)
         return _build_persisted_message(preview, has_more, len(persisted_content), path)
 
+    if (hosted_path := _persist_hosted(persisted_content, tool_use_id, env)) is not None:
+        return _persisted(hosted_path) if hosted_path else _inline_truncated(preview, tool_name, content)
     # Always persist host-side first: cache/spillover is the single canonical home.
     host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
@@ -457,10 +459,41 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
                 return _persisted(remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+    return _inline_truncated(preview, tool_name, content)
+
+
+def _inline_truncated(preview: str, tool_name: str, content: str) -> str:
     logger.info("Inline-truncating large tool result: %s (%d chars, no sandbox write)",
                 tool_name, len(content))
     return (f"{preview}\n\n[Truncated: tool response was {len(content):,} chars. "
             "Full output could not be saved to sandbox.]")
+
+
+def _persist_hosted(content: str, tool_use_id: str, env) -> str | None:
+    """In a hosted scope, write the result straight into the bound agent's own sandbox and return
+    its path there (``""`` when that is impossible: no sandbox yet, another agent's environment, or a
+    failed write — the caller truncates inline). Nothing is written on this host, and the file name
+    carries the sandbox identity, so two agents' equal tool-use ids never share a file. ``None``
+    outside a hosted scope: the caller keeps the host spillover."""
+    from tools.environments.sandbox_scope import (
+        CrossAgentHandleRefused, admit_env, current_sandbox_key)
+    sandbox_key = current_sandbox_key()
+    if not sandbox_key:
+        return None
+    try:
+        env = admit_env(env)
+    except CrossAgentHandleRefused:
+        logger.warning("Refused to persist %s into another agent's sandbox", tool_use_id)
+        return ""
+    if env is None:
+        return ""
+    stem = hashlib.sha256(sandbox_key.encode("utf-8")).hexdigest()[:16]
+    remote_path = f"{_resolve_storage_dir(env)}/{stem}-{_safe_result_filename(tool_use_id)}"
+    try:
+        return remote_path if _write_to_sandbox(content, remote_path, env) else ""
+    except Exception:  # health: allow BLE001 -- a backend's failure falls back to inline truncation, logged with its traceback
+        logger.warning("Sandbox write failed for %s", tool_use_id, exc_info=True)
+        return ""
 
 
 def _content_text_size(content) -> int:

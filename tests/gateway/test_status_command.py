@@ -59,7 +59,6 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = AsyncSessionDB(MagicMock())
     runner._session_db._db.get_session_title.return_value = None
     # Default: no DB row → /status reports 0 tokens.  Tests that exercise
@@ -381,7 +380,7 @@ async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
         get_activity_summary=lambda: {"seconds_since_activity": 0},
     )
     runner._running_agents[session_key] = running_agent
-    runner._running_agents_ts = {session_key: time.time() - 8}
+    runner._session_state(session_key).turn.started_ts = time.time() - 8
     runner._background_tasks = set()
 
     class _FakeRegistry:

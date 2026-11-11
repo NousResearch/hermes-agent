@@ -2476,7 +2476,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _is_anthropic_frontier_tier("claude-fable-5") is True
         assert _is_anthropic_frontier_tier("anthropic/claude-fable-5") is True
         assert _is_anthropic_frontier_tier("anthropic/claude-fable-5:thinking") is True
-        assert _is_anthropic_frontier_tier("claude-opus-5-0") is True  # forward-compat
+        assert all(map(_is_anthropic_frontier_tier, ("claude-opus-5-0", "anthropic/claude-fable-5.2")))
 
         # Sonnet / Haiku remain non-frontier.
         assert _is_anthropic_frontier_tier("claude-sonnet-5") is False
@@ -3405,7 +3405,7 @@ class TestModelContextLength:
 
         No ``provider`` on disk here on purpose: that keeps this test isolated
         to the diff-omission bug rather than the separate, pre-existing (and
-        intentional, see ``_apply_main_model_assignment``) behavior where a
+        intentional, see ``apply_main_model_assignment``) behavior where a
         real provider switch drops the context_length override."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
         from hermes_cli.config import save_config
@@ -5482,7 +5482,7 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
     replace what the user typed and had persisted."""
 
     def test_submitted_custom_endpoint_wins_over_an_env_endpoint(self, monkeypatch):
-        from hermes_cli.web_server_config import _apply_main_model_assignment, _validated_main_model_selection
+        from hermes_cli.model_assignment import apply_main_model_assignment
 
         monkeypatch.setenv("CUSTOM_BASE_URL", "http://127.0.0.1:9999/v1")
         monkeypatch.setattr(
@@ -5492,13 +5492,13 @@ class TestSubmittedCustomEndpointSurvivesAssignment:
         monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
         cfg = {"model": {"provider": "openrouter", "default": "m"}}
-        result = _validated_main_model_selection(
+        result = _web_server_config._validated_main_model_selection(
             cfg, "custom", "qwen3:8b", "https://api.anthropic.com", "submitted-key")
 
         assert result.base_url == "https://api.anthropic.com"
         # The wire protocol follows the endpoint that gets persisted, not the displaced env host.
         assert result.api_mode == "anthropic_messages"
-        applied = _apply_main_model_assignment(cfg.get("model", {}), result, "submitted-key")
+        applied = apply_main_model_assignment(cfg.get("model", {}), result, "submitted-key")
         assert applied["base_url"] == "https://api.anthropic.com"
         assert applied["api_mode"] == "anthropic_messages"
         assert applied["api_key"] == "submitted-key"

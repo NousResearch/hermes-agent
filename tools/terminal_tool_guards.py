@@ -274,10 +274,13 @@ def gateway_lifecycle_block(
     a self-restart into a respawn loop, so it passes too.
     Returns the JSON error string when blocked, else None.
     """
+    from tools.environments.sandbox_scope import hosted_scope
     from tools.process_registry import _is_supervised_gateway_process
     from tools.terminal_tool import _resolve_command_cwd, get_session_cwd
 
-    if not _is_supervised_gateway_process():
+    # A hosted command runs in the agent's remote sandbox, which cannot reach this gateway; the
+    # scan below would read the scripts it names on this host.
+    if hosted_scope() is not None or not _is_supervised_gateway_process():
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,

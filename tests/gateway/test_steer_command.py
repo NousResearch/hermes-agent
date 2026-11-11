@@ -61,9 +61,7 @@ def _make_runner(session_entry: SessionEntry):
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None
@@ -134,7 +132,7 @@ async def test_steer_reaches_ancient_turn_via_fresh_timestamp_fallback(
         "last_activity_desc": "receiving stream response",
     }
     runner._running_agents[sk] = running_agent
-    runner._running_agents_ts[sk] = time.time() - 31_471
+    runner._session_state(sk).turn.started_ts = time.time() - 31_471
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
 
     result = await runner._handle_message(_make_event("/steer pause safely"))

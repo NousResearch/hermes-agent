@@ -1,0 +1,26 @@
+name: ghost-subscriptions
+title: "Ghost Subscriptions"
+repo: https://github.com/Max35j/ghost-subscriptions
+sha: e31a8f6832e8c594a9cc3daa1e15229459eb82e2
+version: "1.0.0"
+description: "Detects subscriptions and recurring charges in a bank statement export (CSV from 17 bank profiles or any CSV by column mapping, OFX 1.x/2.x), reports their yearly cost per currency, price increases, duplicate charges, overlapping services, stopped subscriptions and payment plans, and writes a cancellation pack (one letter per subscription in English or French, a CSV summary and an .ics file with reminders 7 days before each charge). Disclosure: reads only the statement file the user names and its own bundled profile and alias data; stores dates, amounts and sanitised descriptions (IBANs masked, full card numbers removed, file path not stored) in SQLite under its plugin data folder, where the cancellation packs are also written; statement_purge deletes all of it; makes no network requests and imports no networking modules; sends, cancels or pays nothing; no shell commands, background processes, credentials, telemetry, self-updating code, binaries or Python dependencies."
+maintainer: Max35j
+tier: community
+category: tools
+docs_url: https://github.com/Max35j/ghost-subscriptions/blob/e31a8f6832e8c594a9cc3daa1e15229459eb82e2/README.md
+image: https://raw.githubusercontent.com/Max35j/ghost-subscriptions/e31a8f6832e8c594a9cc3daa1e15229459eb82e2/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Max35j/ghost-subscriptions/e31a8f6832e8c594a9cc3daa1e15229459eb82e2/assets/screenshot-audit.png
+  - https://raw.githubusercontent.com/Max35j/ghost-subscriptions/e31a8f6832e8c594a9cc3daa1e15229459eb82e2/assets/screenshot-cancel-pack.png
+  - https://raw.githubusercontent.com/Max35j/ghost-subscriptions/e31a8f6832e8c594a9cc3daa1e15229459eb82e2/assets/screenshot-subs-letter.png
+requires_hermes: ">=0.21.5"
+platforms: []
+capabilities:
+  provides_tools:
+    - statement_import
+    - statement_audit
+    - statement_cancel_pack
+    - statement_purge
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

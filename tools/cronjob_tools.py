@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 from concurrent.futures import Future
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import copy
@@ -28,8 +27,6 @@ _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 # wedged job, but with HERMES_CRON_TIMEOUT=0 (explicit "unlimited") a truly hung run_one_job would otherwise
 # mask the gateway watchdog forever — pre-#76502 the parent was at least reaped at ~1800s.
 _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
@@ -1268,4 +1265,5 @@ registry.register(
     check_fn=check_cronjob_requirements,
     emoji="⏰",
     dynamic_schema_overrides=_cronjob_schema_overrides,
+    compat_args=(*_HANDLER_FORWARDED_ARGS, "include_disabled", "monitor_script", "monitor_url"),
 )

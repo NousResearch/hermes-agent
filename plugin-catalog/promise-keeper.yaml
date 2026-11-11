@@ -1,0 +1,25 @@
+name: promise-keeper
+repo: https://github.com/MokiMeow/promise-keeper
+sha: ab91fee21f607d5515a8e007cf615fc285718dd0
+title: Promise Keeper
+description: "Tell Hermes a rule once (\"never touch the prod folder\", \"ask me before you change migrations\", \"never force push\"). It proposes an exact rule quoting your words; you turn it on with /promise or the Desktop panel. Every tool call is then checked twice (pre_tool_call, and tool_execution middleware on the final arguments) by deterministic code, and a block quotes you. Each rule shows what is enforced, best effort and not covered. Local only: rules in plugin data, no network, no telemetry; reads scripts, Makefiles, package.json and git config of calls it checks. Disclosure — every tool call is checked by a pre_tool_call hook and tool_execution middleware that can block it, or send it to Hermes' approval prompt, under rules the user confirmed (via /promise or the Desktop Promises panel); to judge a call it reads the scripts, Makefiles, package.json, the repo's .git/config and ~/.gitconfig the call refers to and runs `git ls-files` in the target folder; rules and a block history are stored locally in plugin-data/promise-keeper/rules.db, with no network I/O."
+maintainer: MokiMeow
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/MokiMeow/promise-keeper#readme
+platforms: []
+image: https://raw.githubusercontent.com/MokiMeow/promise-keeper/ab91fee21f607d5515a8e007cf615fc285718dd0/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/MokiMeow/promise-keeper/ab91fee21f607d5515a8e007cf615fc285718dd0/docs/desktop-panel.png
+  - https://raw.githubusercontent.com/MokiMeow/promise-keeper/ab91fee21f607d5515a8e007cf615fc285718dd0/docs/desktop-revoke.png
+known_issues:
+  - "Terminal commands are read best effort: an opaque binary that writes files on its own can't be seen; code that names a protected path is blocked to be safe."
+  - "Not covered: other plugins' tools that write without a path argument, or a plugin's pre_tool_call hook that rewrites arguments after Promise Keeper's checks."
+  - "A process that obtains the dashboard session token is as trusted as the UI (a Hermes-wide limit, not specific to this plugin)."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, transform_llm_output, pre_tool_call]
+  provides_middleware: [tool_execution]
+  requires_env: []

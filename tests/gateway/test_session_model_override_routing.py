@@ -50,12 +50,10 @@ def _make_runner():
     runner._fallback_model = None
     runner._service_tier = None
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
-    runner._pending_approvals = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner.hooks = MagicMock()

@@ -795,8 +795,8 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
     through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    from tools.terminal_scope import terminal_env
-    if (terminal_env("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
+    from tools.image_source import _is_local_terminal_backend
+    if _is_local_terminal_backend():  # never in a hosted scope, whose sources are its sandbox's
         return image_url, reference_image_urls, None
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url
@@ -1051,4 +1051,6 @@ registry.register(
     handler=_handle_image_generate, check_fn=check_image_generation_requirements, requires_env=[],
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨", dynamic_schema_overrides=_build_dynamic_image_schema,
+    # Advertised only for providers that support them, but always read by the handler.
+    compat_args=("image_url", "reference_image_urls", "upscale", *_CREATIVE_CONTROL_PARAMS),
 )

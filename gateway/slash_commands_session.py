@@ -20,6 +20,7 @@ from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run_topics import TopicLinkedElsewhere
 from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
 from gateway.session_transcript import TranscriptReadError
 from gateway.slash_commands_branch_thread import (
@@ -903,7 +904,6 @@ class GatewaySessionCommandsMixin:
             return t("gateway.topic.enable_failed", error=exc)
 
         if not source.thread_id:
-            await self._ensure_telegram_system_topic(source)
             return await self._telegram_topic_root_status_message(source)
         try:
             binding = await self._session_db.get_telegram_topic_binding(
@@ -1120,12 +1120,21 @@ class GatewaySessionCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
+        conflict = await self._telegram_topic_switch_conflict(source, target_id)
+        if conflict is not None:
+            return conflict
         self._release_running_agent_state(session_key)
-        new_entry = await self.async_session_store.switch_session(
-            session_key, target_id, preserve_prompt_pin=False,
-        )
-        if not new_entry:
-            return t("gateway.resume.switch_failed")
+        with self._telegram_topic_publication(source):
+            new_entry = await self.async_session_store.switch_session(
+                session_key, target_id, preserve_prompt_pin=False,
+            )
+            if not new_entry:
+                return t("gateway.resume.switch_failed")
+            try:
+                await self._follow_telegram_topic_switch(source, new_entry, reason="resume-command",
+                                                         departed=current_entry)
+            except TopicLinkedElsewhere as refused:  # bound elsewhere since the check: route put back
+                return str(refused)
         if local_owner is not None and authority is not None:  # a Desktop still viewing it follows it
             follow_hand_off(authority, source, session_key, authority.logical_owner(target_id), local_owner)
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
@@ -1141,6 +1150,7 @@ class GatewaySessionCommandsMixin:
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
         title = await self._session_db.get_session_title(target_id) or name
+        await self._rename_telegram_topic_after_switch(source, new_entry, title)
         try:
             history = await self.async_session_store.load_transcript(target_id)
         except TranscriptReadError:
@@ -1305,11 +1315,20 @@ class GatewaySessionCommandsMixin:
             # Materialize the thread's own entry, then point IT at the clone; ``session_key`` (this
             # chat) is never touched, so the original conversation stays live here.
             await self.async_session_store.get_or_create_session(dest_source)
-        new_entry = await self.async_session_store.switch_session(dest_key, new_session_id)
+        with self._telegram_topic_publication(dest_source):
+            new_entry = await self.async_session_store.switch_session(dest_key, new_session_id)
+            try:
+                if new_entry and in_place:
+                    await self._follow_telegram_topic_switch(dest_source, new_entry, reason="branch-command",
+                                                             departed=current_entry)
+            except TopicLinkedElsewhere as refused:  # bound elsewhere since the switch: route put back
+                return str(refused)
         if not new_entry:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(dest_key)
         self._evict_cached_agent(dest_key)
+        if in_place:
+            await self._rename_telegram_topic_after_switch(dest_source, new_entry, branch_title)
         msg_count = len([m for m in history if m.get("role") == "user"])
         if in_place:
             key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"

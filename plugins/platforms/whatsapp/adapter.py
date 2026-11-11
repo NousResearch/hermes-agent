@@ -278,8 +278,6 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
                 getattr(child, action)()
         getattr(parent, action)()
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin

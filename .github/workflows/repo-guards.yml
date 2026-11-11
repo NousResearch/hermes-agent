@@ -303,12 +303,7 @@ jobs:
       # before the first step of every run, whatever the step's `if:`. Same hadolint, by digest.
       - name: Lint Dockerfiles (hadolint)
         if: ${{ !cancelled() && inputs.docker_meta }}
-        env:
-          HADOLINT_IMAGE: ghcr.io/hadolint/hadolint:v2.12.0-debian@sha256:27173fe25e062448490a32de410c08491c626a0bef360aa2ce5d5bdd9384b50d
-        run: |
-          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$HADOLINT_IMAGE" \
-            hadolint --config .hadolint.yaml --failure-threshold warning \
-            Dockerfile docker/sandbox-desktop.Dockerfile
+        run: scripts/ci/lint_docker.sh hadolint
 
       - name: Lint shell scripts (shellcheck)
         if: ${{ !cancelled() && inputs.docker_meta }}
@@ -373,14 +368,4 @@ jobs:
       # OSes — pin fonts via resvg's font_files/font_dirs and commit a known font first.
       - name: Regenerate every icon target, verify structure, diff against committed
         if: ${{ !cancelled() && steps.setup-pm.outcome == 'success' }}
-        env:
-          HERMES_PAYLOAD_TAG: ''
-          HERMES_BUILD_COMMIT: ''
-        run: |
-          node scripts/generate-icons.mjs
-          node scripts/generate-icons.mjs --check
-          if ! git diff --exit-code --stat || [ -n "$(git status --porcelain --untracked-files=all)" ]; then
-            git status --porcelain --untracked-files=all
-            echo "::error::Committed icons are stale. Run 'node scripts/generate-icons.mjs' and commit the result."
-            exit 1
-          fi
+        run: just check-icons

@@ -324,7 +324,7 @@ COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 COPY apps/shared/ apps/shared/
-COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/pnpm-lock.mjs scripts/build/
+COPY scripts/build/node-deps*.mjs scripts/build/electron-runtime.mjs scripts/build/pnpm-lock.mjs scripts/build/
 # Root node_modules/typescript is a link into pnpm's virtual store, which never
 # reaches the runtime image: stage a dereferenced copy for it.
 RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web && \

@@ -4,6 +4,7 @@ import bisect
 import re
 
 from gateway.platforms.helpers import convert_table_to_bullets as _wrap_markdown_tables
+from plugins.platforms.telegram.rich_code_regions import map_outside_code
 
 # Stands in for the ** of a line-start **> expandable-quote opener while emphasis is resolved.
 _EXPANDABLE_QUOTE = "\x00EQ\x00"
@@ -11,6 +12,57 @@ _EXPANDABLE_QUOTE = "\x00EQ\x00"
 # Every char MarkdownV2 requires backslash-escaped outside code spans/fences.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 _EMPHASIS_MARK = {"bold": "*", "italic": "_"}
+
+
+# A line opening with one of these prefixes starts a Telegram blockquote.
+_QUOTE_LINE_PREFIXES = (_EXPANDABLE_QUOTE + ">", ">")
+
+
+def _line_begins_quote(text: str, start: int) -> bool:
+    """True when the line beginning at *start* is a blockquote line."""
+    return text.startswith(_QUOTE_LINE_PREFIXES, start)
+
+
+def _bordering_quote_newline(text: str, pos: int, line_start: int) -> bool:
+    """True when the newline at *pos* closes or opens a quote line (*line_start* starts the line it closes)."""
+    return _line_begins_quote(text, line_start) or _line_begins_quote(text, pos + 1)
+
+
+class _SpanEdges:
+    """Sorted line edges of one text, so delimiter pairing answers its span questions by bisect.
+
+    Re-slicing ``text[o_end:start]`` and re-finding its newlines for every candidate pair cost
+    closers × span: one distant unmatched ``**`` opener made a 32 KB reply take ~1.4 s (200 KB
+    ~106 s) on the gateway event loop (#151723).
+    """
+
+    __slots__ = ("blank_starts", "newlines", "quote_edges")
+
+    def __init__(self, text: str) -> None:
+        self.newlines = [m.start() for m in re.finditer("\n", text)]
+        self.blank_starts = [p for p in self.newlines if text.startswith("\n", p + 1)]
+        edges: list[int] = []
+        line_start = 0
+        for pos in self.newlines:
+            if _bordering_quote_newline(text, pos, line_start):
+                edges.append(pos)
+            line_start = pos + 1
+        self.quote_edges = edges
+
+    def has_newline(self, start: int, end: int) -> bool:
+        """A newline inside ``text[start:end]``."""
+        i = bisect.bisect_left(self.newlines, start)
+        return i < len(self.newlines) and self.newlines[i] < end
+
+    def has_blank_line(self, start: int, end: int) -> bool:
+        """A ``\\n\\n`` fully inside ``text[start:end]``."""
+        i = bisect.bisect_left(self.blank_starts, start)
+        return i < len(self.blank_starts) and self.blank_starts[i] + 2 <= end
+
+    def crosses_quote_edge(self, start: int, end: int) -> bool:
+        """A newline inside ``text[start:end]`` bordering a quote line."""
+        i = bisect.bisect_left(self.quote_edges, start)
+        return i < len(self.quote_edges) and self.quote_edges[i] < end
 
 
 def _resolve_emphasis(text: str, stash, escape) -> str:
@@ -22,19 +74,27 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
     tokens = []  # ("t", s) literal | ["d", start, end, can_open, can_close, remaining, opens, closes]
     pos = 0
     for m in re.finditer(r"\*+", text):
-        if m.start() > pos:
-            tokens.append(("t", text[pos : m.start()]))
-        before = text[m.start() - 1] if m.start() > 0 else ""
+        run_start = m.start()
+        slash = run_start
+        while slash > 0 and text[slash - 1] == "\\":
+            slash -= 1
+        if (run_start - slash) % 2:
+            run_start += 1  # a backslash-escaped * is literal text (**Use \*args**, #151722)
+            if run_start == m.end():
+                continue
+        if run_start > pos:
+            tokens.append(("t", text[pos:run_start]))
+        before = text[run_start - 1] if run_start > 0 else ""
         after = text[m.end()] if m.end() < len(text) else ""
         can_open = bool(after) and not after.isspace()
         can_close = bool(before) and not before.isspace()
         tokens.append([
             "d",
-            m.start(),
+            run_start,
             m.end(),
             can_open,
             can_close,
-            m.end() - m.start(),
+            m.end() - run_start,
             [],
             [],
         ])
@@ -42,42 +102,101 @@ def _resolve_emphasis(text: str, stash, escape) -> str:
     if pos < len(text):
         tokens.append(("t", text[pos:]))
 
+    edges = _SpanEdges(text)
     stack = []  # indexes of delimiter tokens that may still close
+    near2 = []  # per stack slot: the slot of the nearest opener at or below it with 2+ stars left
+    bottoms: dict = {}  # (closer length % 3, closer can open) -> token index a failed search reached
     for idx, tok in enumerate(tokens):
         if tok[0] != "d":
             continue
-        _, start, _end, can_open, can_close, remaining, _opens, closes = tok
-        if can_close:
-            while remaining > 0 and stack:
-                opener = tokens[stack[-1]]
-                o_end, o_remaining = opener[2], opener[5]
-                use = 2 if o_remaining >= 2 and remaining >= 2 else 1
-                span = text[o_end:start]
-                if use == 1 and "\n" in span:
-                    break  # italic must not cross a line
-                if use == 2 and ("\n\n" in span or _crosses_quote_edge(text, o_end, start)):
-                    break  # bold stays within one paragraph and on one side of a quote's edge
-                kind = "bold" if use == 2 else "italic"
-                opener[6].append((kind, idx))
-                closes.append((kind, stack[-1]))
-                opener[5] = o_remaining - use
-                remaining -= use
-                if opener[5] == 0:
-                    stack.pop()
-        tok[5] = remaining
+        _, _start, _end, can_open, can_close, remaining, _opens, closes = tok
+        while can_close and remaining > 0 and stack:
+            depth = _pick_opener(tokens, stack, near2, tok, bottoms, edges)
+            if depth is None:
+                break
+            del stack[depth + 1:], near2[depth + 1:]  # openers between the pair stay literal (CommonMark)
+            opener = tokens[stack[-1]]
+            use = 2 if opener[5] >= 2 and tok[5] >= 2 else 1
+            kind = "bold" if use == 2 else "italic"
+            opener[6].append((kind, idx))
+            closes.append((kind, stack[-1]))
+            opener[5] -= use
+            tok[5] = remaining = remaining - use
+            if opener[5] == 0:
+                stack.pop()
+                near2.pop()
+            elif opener[5] < 2:
+                near2[-1] = near2[-2] if len(near2) > 1 else -1
         if remaining > 0 and can_open:
             stack.append(idx)
+            near2.append(len(stack) - 1 if remaining >= 2 else (near2[-1] if near2 else -1))
 
     return _render_emphasis(tokens, stash, escape)
+
+
+def _rule_of_three_refuses(opener: list, closer: list) -> bool:
+    """CommonMark's rule of 3: when either run can both open and close, the two may not pair if
+    their lengths sum to a multiple of 3 unless both are multiples of 3. Without it the ``*`` of
+    ``2*3`` closed one star of a ``**`` opener, so ``**2*3 = 6**`` turned italic and lost its
+    ``*`` (#151722)."""
+    o_len, c_len = opener[2] - opener[1], closer[2] - closer[1]
+    return bool(opener[4] or closer[3]) and (o_len + c_len) % 3 == 0 and bool(o_len % 3 or c_len % 3)
+
+
+def _span_allows(edges: "_SpanEdges", opener: list, closer: list) -> bool:
+    """Italic stays on one line; bold stays within one paragraph and on one side of a quote edge."""
+    if opener[5] >= 2 and closer[5] >= 2:
+        return not (edges.has_blank_line(opener[2], closer[1]) or edges.crosses_quote_edge(opener[2], closer[1]))
+    return not edges.has_newline(opener[2], closer[1])
+
+
+def _pick_opener(tokens: list, stack: list, near2: list, closer: list, bottoms: dict, edges):
+    """Stack slot of the opener *closer* pairs with, or ``None``.
+
+    The nearest opener the rule of 3 allows wins, as in CommonMark, except that a bare ``**``
+    closer reaches past single-``*`` openers to a ``**`` opener: chat text means
+    ``**rm -rf *.tmp**`` as bold around a literal ``*`` (CommonMark nests two italics there, which
+    Telegram cannot show, and drops the star). A ``***`` closer still pairs its ``*`` first
+    (``**a *b***``). A failed
+    search records how far down it looked for closers of the same class, so a long run of refused
+    openers is walked once, not once per closer.
+    """
+    key = ((closer[2] - closer[1]) % 3, closer[3])
+    floor = bottoms.get(key, -1)
+    nearest = None
+    for depth in range(len(stack) - 1, -1, -1):
+        if stack[depth] <= floor:
+            break
+        if not _rule_of_three_refuses(tokens[stack[depth]], closer):
+            nearest = depth
+            break
+    if nearest is None:
+        bottoms[key] = stack[-1]
+        return None
+    candidates = [nearest]
+    if closer[2] - closer[1] == closer[5] == 2 and tokens[stack[nearest]][5] < 2 and near2[nearest] >= 0:
+        double = tokens[stack[near2[nearest]]]
+        if not _rule_of_three_refuses(double, closer):
+            candidates.insert(0, near2[nearest])
+    return next((d for d in candidates if _span_allows(edges, tokens[stack[d]], closer)), None)
 
 
 def _crosses_quote_edge(text: str, start: int, end: int) -> bool:
     """True when a newline in text[start:end] borders a quote line: Telegram ends a blockquote at a
     newline into non-quote text, an entity still open there is rejected, and an entity spanning
-    quote lines would swallow the next line's > marker."""
-    quote = re.compile(rf'(?:{_EXPANDABLE_QUOTE})?>')
-    is_quote = lambda pos: quote.match(text, text.rfind('\n', 0, pos) + 1) is not None
-    return any(is_quote(start + m.start()) or is_quote(start + m.end()) for m in re.finditer('\n', text[start:end]))
+    quote lines would swallow the next line's > marker. A span with no newline cannot cross one, so
+    the prefix scan that locates the enclosing line only runs once a newline is present: a long
+    single line of short links stays linear (#151728 review)."""
+    pos = text.find("\n", start, end)
+    if pos < 0:
+        return False
+    line_start = text.rfind("\n", 0, start) + 1
+    while pos >= 0:
+        if _bordering_quote_newline(text, pos, line_start):
+            return True
+        line_start = pos + 1
+        pos = text.find("\n", line_start, end)
+    return False
 
 
 def _emphasis_marks(tok, depth: dict) -> tuple:
@@ -128,6 +247,29 @@ def _render_emphasis(tokens: list, stash, escape) -> str:
                 group.append(_EMPHASIS_MARK[kind])
             depth[kind] += 1
     return "".join(parts)
+
+
+# A link target Telegram can open: a scheme URL (https:, tg:, mailto:) or a bare domain. A schemeless
+# title ("[Title](Title)") or Hermes' desktop-only "@session:" reference is shown as raw syntax.
+_RENDERABLE_LINK_TARGET_RE = re.compile(
+    r'(?i)^(?:[a-z][a-z0-9+.-]*:[^\s@]\S*|[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#:]\S*)?)$')
+_MD_LINK_RE = re.compile(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)')
+
+
+def link_target_renders(target: str) -> bool:
+    return bool(_RENDERABLE_LINK_TARGET_RE.match(target.strip()))
+
+
+def degrade_unrenderable_links(markdown: str) -> str:
+    """``[label](target)`` → ``label`` when Telegram cannot open ``target`` (rich-message path; code
+    spans and fences stay verbatim)."""
+    if '](' not in markdown:
+        return markdown
+    return map_outside_code(markdown, lambda prose: _MD_LINK_RE.sub(_link_or_label, prose))
+
+
+def _link_or_label(m) -> str:
+    return m.group(0) if link_target_renders(m.group(2)) else m.group(1)
 
 
 def _escape_mdv2(text: str) -> str:
@@ -195,10 +337,12 @@ def to_markdown_v2(content: str) -> str:
     def _convert_link(m):
         if _crosses_quote_edge(text, m.start(), m.end()):
             return m.group(0)  # Telegram ends the quote at the newline, cutting the link: keep it literal
+        if not link_target_renders(m.group(2)):
+            return _ph(_escape_mdv2(m.group(1)))  # Telegram would show the raw [label](target) syntax
         url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
         return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
 
-    text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
+    text = _MD_LINK_RE.sub(_convert_link, text)
     # 4) Headers (## Title) → bold *Title*, stripping redundant ** inside the header
     def _convert_header(m):
         inner = re.sub(r'\*\*(.+?)\*\*', r'\1', m.group(1).strip())
@@ -301,22 +445,25 @@ def _escape_bare_bracket(m, seg: str) -> str:
 # The formula bodies are possessive: none can consume $, so a match ends a body at the first
 # character it can't take, and a failed span must not retry every split of a TeX command (the
 # escape runs on the gateway event loop for every streamed draft frame).
-# Regions the rich-message dollar escape leaves verbatim (fenced code, inline code delimited by
-# matching backtick-run widths, $$ display math, $x$ inline math, digit-led formulas such as $2+2$
+# Regions the rich-message dollar escape leaves verbatim (code is skipped before this runs, see
+# ``rich_code_regions``; $$ display math, $x$ inline math, digit-led formulas such as $2+2$
 # that carry an operator or close tight like $4$ (an amount is never closed by a $ that no digit or
 # word follows), spaced formulas such as $2x + 1$, $2\,x$ or $5! = 120$ (any symbol but . , and `,
-# or a TeX command; letters only as one-letter variables, so "$5 or 10$" and "$5 - $3" stay prose:
+# or a TeX command, whose {...} arguments may hold words ($1\text{ kg}$); letters only as one-letter variables, so "$5 or 10$" and "$5 - $3" stay prose:
 # the closing $ is never followed by a digit, so an amount's $ cannot close it), already-escaped \$),
 # and the currency $ it escapes: a lone $ before an
 # amount, or after a currency prefix (R$ 1.000, US$ 1,200). Telegram's rich Markdown pairs any two
 # bare $ as inline LaTeX, so "$395k vs $483k" otherwise renders as one garbled math span.
+# A $$ pair stays inside one stretch of prose: its body never holds a backtick (a code span
+# split the prose there, so a prose "Use $$ for the PID" would pair across it with the next
+# formula), a blank line, or a bare $ before a digit (an amount, never display math).
 _RICH_DOLLAR_RE = re.compile(
-    r'(?P<keep>```[\s\S]*?```|(?P<ticks>`+)[^\n]*?(?<!`)(?P=ticks)(?!`)|\\\$|\$\$[\s\S]*?\$\$'
+    r'(?P<keep>\\\$|\$\$(?:[^$\n`]|(?<=\\)\$|(?<!\\)\$(?![\d$])|\n(?![ \t>]*(?:\n|$)))*?\$\$'
     r'|(?<![\w$])\$(?![\d\s$])(?:\\.|[^\\\n$])+?(?<!\s)\$(?![\d$])'
     r'|(?<![\w$\\])\$\d[\w.,]*(?:[-+*/^=<>]|\\[a-zA-Z]++)(?:[\w.,(){}^_+*/=<>-]|\\[a-zA-Z]+)*+(?<![-+*/^=<>])\$(?![\w$])'
     r'|(?<![\w$\\])\$\d[\w.,]*(?<![.,])\$(?![\w$])'
     r'|(?<![\w$\\])\$\d(?=[^$\n]*?(?:[^\w\s$.,`]|\\))'
-    r'(?:\\[a-zA-Z]+|\\[^a-zA-Z\s$]|[^\W\d_](?![^\W\d_])|[^$\n\\\w`]|[\d_])*+(?<![-+*/^=<>\s])\$(?![\w$]|\s?\d))'
+    r'(?:\\[a-zA-Z]+(?:\{[^{}$\n\\]*\})*+|\\[^a-zA-Z\s$]|[^\W\d_](?![^\W\d_])|[^$\n\\\w`]|[\d_])*+(?<![-+*/^=<>\s])\$(?![\w$]|\s?\d))'
     r'|(?P<currency>(?<![\\$])\$(?!\$)(?=\d)|(?<=[A-Z])\$(?=\s?\d))'
 )
 
@@ -325,4 +472,10 @@ def escape_rich_currency_dollars(text: str) -> str:
     """Escape currency ``$`` for ``sendRichMessage`` markdown; real math, code and ``\\$`` are kept."""
     if '$' not in text:
         return text
-    return _RICH_DOLLAR_RE.sub(lambda m: m.group(0) if m.group('keep') else '\\$', text)
+    return map_outside_code(text, _escape_prose_dollars)
+
+
+def _escape_prose_dollars(prose: str) -> str:
+    if '$' not in prose:
+        return prose
+    return _RICH_DOLLAR_RE.sub(lambda m: m.group(0) if m.group('keep') else '\\$', prose)

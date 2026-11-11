@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { CatalogFilterBar } from './catalog-filter-bar'
 import { EMPTY_FACETS } from './catalog-query'
 
-const renderBar = (sources: string[], onSource = vi.fn()) => {
+const renderBar = (sources: string[], onSource = vi.fn(), updateCount = 0) => {
   render(
     <CatalogFilterBar
       actions={null}
@@ -16,10 +16,12 @@ const renderBar = (sources: string[], onSource = vi.fn()) => {
       onInstalled={vi.fn()}
       onSource={onSource}
       onTag={vi.fn()}
+      onUpdates={vi.fn()}
       resultCount={0}
       sortControl={null}
       sources={['official', 'verified', 'community']}
       tags={[]}
+      updateCount={updateCount}
     />
   )
   fireEvent.click(screen.getByRole('button', { name: /^tier$/i }))
@@ -42,5 +44,17 @@ describe('tier chips', () => {
     expect(onSource).toHaveBeenCalledWith('verified')
     fireEvent.click(screen.getByRole('button', { name: 'Official' }))
     expect(onSource).toHaveBeenCalledWith('official')
+  })
+})
+
+describe('updates chip', () => {
+  it('stays hidden with nothing to update', () => {
+    renderBar([])
+    expect(screen.queryByRole('button', { name: /^updates/i })).toBeNull()
+  })
+
+  it('shows the count when installed entries have updates', () => {
+    renderBar([], vi.fn(), 3)
+    expect(screen.getByRole('button', { name: 'Updates · 3' })).toBeTruthy()
   })
 })

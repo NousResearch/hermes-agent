@@ -27,6 +27,7 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
     _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
 )
@@ -295,7 +296,7 @@ _BEDROCK_PROBE_FAILURE_CACHE: dict[tuple, float] = {}
 DEFAULT_CONTEXT_LENGTHS = {
     # Anthropic — bare ids only (prefixed ids resolve via OpenRouter/models.dev
     # and would collide: "anthropic/claude-sonnet-4" ⊂ "anthropic/claude-sonnet-4.6").
-    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
     "claude": 200000,  # catch-all for older Claude models
@@ -404,7 +405,7 @@ def is_grok_46_family(model: str) -> bool:
 # Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 # Exact ids, not a family prefix: Opus 4.7 answers the parameter with an error, Opus 4.6 silently
 # runs and bills at standard speed, and a future Opus is unsupported until the docs list it.
-_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"})
+_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"})
 
 
 def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
@@ -2382,13 +2383,11 @@ def estimate_messages_tokens_rough(messages: list[dict[str, Any]], *, charge_sta
 
 
 def estimate_native_anthropic_messages_tokens_rough(messages: list[dict[str, Any]]) -> int:
-    """Estimate native Anthropic messages with replayed readable thinking charged exactly once."""
+    """Estimate native Anthropic messages with replayed thinking charged exactly once (at its billed size)."""
     from agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
-    return estimate_messages_tokens_rough(projected) + sum(
-        estimate_tokens_rough(text) for text in replayed_thinking
-    )
+    return estimate_messages_tokens_rough(projected) + sum(replayed_thinking)
 
 
 def estimate_native_anthropic_request_tokens_rough(
@@ -2399,9 +2398,7 @@ def estimate_native_anthropic_request_tokens_rough(
     from agent.message_sanitization import native_anthropic_accounting_projection
 
     projected, replayed_thinking = native_anthropic_accounting_projection(messages)
-    return estimate_request_tokens_rough(
-        projected, system_prompt=system_prompt, tools=tools
-    ) + sum(estimate_tokens_rough(text) for text in replayed_thinking)
+    return estimate_request_tokens_rough(projected, system_prompt=system_prompt, tools=tools) + sum(replayed_thinking)
 
 
 # Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
@@ -2459,6 +2456,7 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
     per-image price re-prices cached rows without invalidating them."""
     def _compute() -> tuple[int, int]:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
+    replay = codex_reasoning_replay_tokens(msg)  # stamp lives in display_metadata, outside the memo key
     try:
         pins = MemoPins()
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
@@ -2468,12 +2466,12 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
         cached = lookup_message_tokens(key)
     except Exception:
         text, images = _compute()
-        return text + images * image_cost
+        return text + images * image_cost + replay
     if cached is not None:
-        return cached[1] + cached[2] * image_cost
+        return cached[1] + cached[2] * image_cost + replay
     text, images = _compute()
     remember_message_tokens(key, (pins, text, images))
-    return text + images * image_cost
+    return text + images * image_cost + replay
 
 
 def _count_parts(parts: Any, types: set) -> int:
@@ -2499,18 +2497,6 @@ def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
-def strip_opaque_replay_items(items: Any) -> Any:
-    """``codex_reasoning_items`` with ``encrypted_content`` blanked for local token estimation.
-    The ciphertext is priced by the provider's own count, never by its bytes (a compaction
-    checkpoint alone can be 5M chars, #100611); only real usage prices it."""
-    if not isinstance(items, list):
-        return items
-    return [
-        {k: ("" if k == "encrypted_content" else v) for k, v in item.items()} if isinstance(item, dict) else item
-        for item in items
-    ]
-
-
 def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
@@ -2520,9 +2506,9 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
       ``reasoning_content``); counting both inflated estimates up to +53%.
     * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
-      ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
-      checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
-      prices them, and the usage anchor carries that price forward."""
+      ciphertext, never priced by bytes (a native compaction checkpoint alone can be 5M chars,
+      #100611); replayed reasoning is priced at its provider-reported count by
+      ``replayed_reasoning.codex_reasoning_replay_tokens``."""
     sidecar = msg.get("api_content")
     sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
     drop_reasoning_dup = isinstance(_rc := msg.get("reasoning_content"), str) and bool(_rc.strip())

@@ -89,6 +89,21 @@ async def test_overflow_edit_split_leaves_literal_markers_and_a_final_backslash_
     assert shown.count("*") == 1 and shown.endswith("C:\\"), shown[-30:]
 
 
+def test_raw_split_of_a_long_reply_with_many_escapes_stays_linear():
+    """A long streamed reply full of escaped ``\\*`` must not rescan the rest of the message at every
+    boundary or re-copy its prefix at every marker: that ran seconds on the gateway's event loop."""
+    import time
+
+    from gateway.platforms.base import BasePlatformAdapter
+    from plugins.platforms.telegram.telegram_chunking import split_raw_carrying_emphasis
+
+    content = ("word \\\\\\*x " * 40 + "plain words " * 200 + "\n") * 160
+    started = time.perf_counter()
+    raw, carried = split_raw_carrying_emphasis(content, 4096, BasePlatformAdapter.truncate_message, len)
+    assert len(raw) > 50 and carried == raw
+    assert time.perf_counter() - started < 1.0
+
+
 def _strip(text: str) -> str:
     return re.sub(r"\\(.)", r"\1", text)
 

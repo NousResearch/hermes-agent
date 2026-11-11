@@ -87,6 +87,7 @@ def _carry(chunks: list[str], open_marks: Callable[[str], list[str]], indicator:
     message really closes, so a literal marker with no partner is never turned into styling. Formatted
     MarkdownV2 (no ``closes_reopened``) also moves a backslash cut from the char it escapes."""
     out, reopen, carry_text = [], "", ""
+    stripped = [_INDICATOR_RE.sub("", chunk) for chunk in chunks] if closes_reopened else []
     for index, chunk in enumerate(chunks):
         m = _INDICATOR_RE.search(chunk)
         body = reopen + carry_text + (chunk[:m.start()] if m else chunk)
@@ -97,8 +98,8 @@ def _carry(chunks: list[str], open_marks: Callable[[str], list[str]], indicator:
             body, carry_text = body[:-1], "\\"
         if not last:
             marks = open_marks(body)
-            if closes_reopened is not None:
-                marks = closes_reopened(marks, "".join(_INDICATOR_RE.sub("", rest) for rest in chunks[index + 1:]))
+            if marks and closes_reopened is not None:  # look ahead only past a really open entity
+                marks = closes_reopened(marks, "".join(stripped[index + 1:]))
             reopen = "".join(marks)
             body += "".join(reversed(marks))
         out.append(body + (indicator % m.groups() if m else ""))
@@ -126,8 +127,10 @@ def _raw_emphasis_tokens(text: str):
     CommonMark flanking: never before a space (so not a ``* `` bullet); an intraword ``_`` is literal."""
     masked = _RAW_CODE_RE.sub(lambda c: " " * len(c.group()), text)
     for m in _RAW_MARK_RE.finditer(masked):
-        slashes = len(masked[:m.start()]) - len(masked[:m.start()].rstrip("\\"))
-        if slashes % 2:
+        slash = m.start()
+        while slash and masked[slash - 1] == "\\":
+            slash -= 1
+        if (m.start() - slash) % 2:
             continue
         mark, before, after = m.group(), masked[m.start() - 1:m.start()], masked[m.end():m.end() + 1]
         if len(mark) == 1:

@@ -1,22 +1,22 @@
 name: hermes-village
 repo: https://github.com/tuancookiez-hub/hermes-incremental-village
-sha: 2bf1a82a4ee79f21036c857589a871ddd83cf5c6
+sha: deed98c7fb7674eead7e6ab4821440cdddd2b6c5
 title: Hermes Incremental Village
-description: "Three castaways grow into a city of thousands, inside Hermes Desktop. Hermes plays the named villagers and you are their guide, not their god: you plant ideas, set a focus and give advice, and they decide. Each villager follows a way of life (an ordered list of goals) that the game runs for free, and a council lets Hermes rethink it. Around them the folk multiply as homes and food allow, felling forest to make room, so the village spreads and uses up what is near. A technology tree of 19 ideas runs from fishing to flight, and up to 200 missed days are lived through while you are away. The game validates every action and owns time, resources and death. Ships a Desktop page (three.js r187 bundled, inside the plugin SDK surface) with a blue-ink look, backend routes, a /village command and 4 agent tools. Disclosure: model calls happen only when you ask for a council (one batched structured call for the named villagers, about 3-6k tokens) and are refused before the call if they would pass the daily token budget you set (default 30,000); councils are refused in cron runs. No network requests of its own, no downloads, no telemetry, no background work, no credentials, no native code. The save and token ledger live in Hermes plugin storage."
+description: "Three castaways grow into a city of thousands, inside Hermes Desktop. Hermes plays the named villagers and you are their guide, not their god: you plant ideas, set a focus and give advice, and they decide. Each villager follows a way of life (an ordered list of goals) that the game runs for free, and a council lets Hermes rethink it. Around them the folk multiply as homes and food allow, felling forest to make room, so the village spreads and uses up what is near. A technology tree of 19 ideas runs from fishing to flight, and up to 200 missed days are lived through while you are away. The game validates every action and owns time, resources and death. Ships a Desktop page (three.js r187 bundled, inside the plugin SDK surface) drawn as a colour print with ink outlines, backend routes, a /village command and 4 agent tools. Disclosure: model calls happen only when you ask for a council (one batched structured call for the named villagers, about 3-6k tokens) and are refused before the call if they would pass the daily token budget you set (default 30,000); councils are refused in cron runs. No network requests of its own, no downloads, no telemetry, no background work, no credentials, no native code. The save and token ledger live in Hermes plugin storage."
 maintainer: tuancookiez-hub
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
-version: "0.13.3"
-docs_url: https://github.com/tuancookiez-hub/hermes-incremental-village/tree/2bf1a82a4ee79f21036c857589a871ddd83cf5c6
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/2bf1a82a4ee79f21036c857589a871ddd83cf5c6/docs/images/banner.jpg
+version: "0.14.0"
+docs_url: https://github.com/tuancookiez-hub/hermes-incremental-village/tree/deed98c7fb7674eead7e6ab4821440cdddd2b6c5
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/deed98c7fb7674eead7e6ab4821440cdddd2b6c5/docs/images/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/2bf1a82a4ee79f21036c857589a871ddd83cf5c6/docs/images/city.jpg
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/2bf1a82a4ee79f21036c857589a871ddd83cf5c6/docs/images/tree.jpg
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/2bf1a82a4ee79f21036c857589a871ddd83cf5c6/docs/images/city-colour.jpg
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/2bf1a82a4ee79f21036c857589a871ddd83cf5c6/docs/images/village.jpg
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/2bf1a82a4ee79f21036c857589a871ddd83cf5c6/docs/images/people.jpg
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/2bf1a82a4ee79f21036c857589a871ddd83cf5c6/docs/images/first-days.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/deed98c7fb7674eead7e6ab4821440cdddd2b6c5/docs/images/city.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/deed98c7fb7674eead7e6ab4821440cdddd2b6c5/docs/images/tree.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/deed98c7fb7674eead7e6ab4821440cdddd2b6c5/docs/images/villagers.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/deed98c7fb7674eead7e6ab4821440cdddd2b6c5/docs/images/village.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/deed98c7fb7674eead7e6ab4821440cdddd2b6c5/docs/images/people.jpg
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-incremental-village/deed98c7fb7674eead7e6ab4821440cdddd2b6c5/docs/images/first-days.jpg
 platforms: []
 capabilities:
   provides_tools:

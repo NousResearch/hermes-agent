@@ -1,6 +1,6 @@
 name: postkitty
 repo: https://github.com/mertkayacs/postkitty
-sha: 63ab5e43611055d91b5a532fcc71f2b362cc8735
+sha: 06a80a50a445cc8eaf223cb334eb3fd28fc2ba22
 title: postkitty
 description: 'One post in, every platform out. Fixes and rewrites your draft for each platform and counts it with each
   platform''s own rule, splitting long posts into threads. Crops a photo and reframes landscape video so every face
@@ -12,14 +12,14 @@ description: 'One post in, every platform out. Fixes and rewrites your draft for
 maintainer: mertkayacs
 tier: community
 category: tools
-version: "1.0.0"
+version: "1.0.1"
 requires_hermes: ">=0.22.7"
 docs_url: https://postkitty.mertkayacs.com
-image: https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/banner.png
+image: https://raw.githubusercontent.com/mertkayacs/postkitty/06a80a50a445cc8eaf223cb334eb3fd28fc2ba22/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/board.png
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/before-after.jpg
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/assets/readme/split-screen.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/06a80a50a445cc8eaf223cb334eb3fd28fc2ba22/docs/board.png
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/06a80a50a445cc8eaf223cb334eb3fd28fc2ba22/docs/before-after.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/06a80a50a445cc8eaf223cb334eb3fd28fc2ba22/docs/assets/readme/split-screen.jpg
 known_issues:
   - Needs ffmpeg and ffprobe on PATH for video.
 capabilities:

@@ -22,7 +22,8 @@ Text it reads: ``*.md``, ``*.mdx``, ``*.txt`` whole; ``*.yaml``/``*.yml``/``*.ya
    it does not parse, so it stays. A bare word alone (backticked or not) is never rewritten.
 
 Left alone, and counted as ``skip-*``: a path behind any ``/`` (``~/.hermes/cron/``, ``$HERMES_HOME/...``,
-``./x``); bare directories that also name HERMES_HOME dirs or other projects' dirs (``tools/``, ``cron/``);
+``./x``); bare directories that also name HERMES_HOME dirs or other projects' dirs (``tools/``, ``cron/``), and a
+glob that takes every file of one (``cron/*``, ``plugins/**``);
 a name whose root is a moved *file* that other projects share (``utils.x``, ``cli.x``); config keys
 (``agent.reasoning_effort``, ``plugins.enabled``, ``gateway.platforms.*`` outside an import); i18n keys
 (``t("gateway.status.*")``); tree-diagram lines; and the files in
@@ -278,6 +279,9 @@ def _path(token: str, plan: Plan, stats: Stats):
             return len(base), plan.dirs[base], "path-dir"
     if "*" in token:
         head, _, pattern = token.rpartition("/")
+        if head in AMBIGUOUS_ROOTS and not pattern.strip("*"):
+            stats.skips["bare-dir"] += 1  # ``cron/*`` takes the whole folder, like a bare ``cron/``
+            return None
         if head in plan.dirs or any(PurePosixPath(f).parent.as_posix() == head for f in plan.files):
             hits = [f for f in plan.files if PurePosixPath(f).parent.as_posix() == head
                     and fnmatch.fnmatch(PurePosixPath(f).name, pattern)]

@@ -12,6 +12,7 @@ import hashlib
 import logging
 import mimetypes
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -27,6 +28,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from agent.file_safety import get_write_denied_error
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -1135,13 +1137,17 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     temp file and ``os.replace``-d so a crash can't truncate the original.
     Stale-on-disk detection is the client's job (re-read before save). The
     target resolves as ``read-text`` resolves it, ``session_id`` included, so a
-    file saves to the same place it was read from.
+    file saves to the same place it was read from, behind the same guards: the
+    sensitive-file denylist and a locked managed-files root (#95306).
     """
     text = payload.content or ""
     session = await _fs_owned_session(payload.session_id, profile)
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
     backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
     if backend is not None:
+        # The SSH write replaces the lexical path (mv onto a link swaps the link), so judge that.
+        if _is_sensitive_path(Path(posixpath.normpath(payload.path))):
+            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
         try:
             target, byte_size = await asyncio.to_thread(
                 backend.write_text,
@@ -1159,6 +1165,11 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
     cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
     _refuse_sensitive_write(target, payload.path, Path(cwd))
+    # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too.
+    if get_write_denied_error(str(target)):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    if not await asyncio.to_thread(_is_host_file, str(target), profile):
+        _hosted_fs_read_guard(target)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 

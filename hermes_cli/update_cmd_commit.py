@@ -91,6 +91,7 @@ POST_MOVE_MODULES = (
     "gateway.shutdown_forensics",
     "gateway.status",
     "hermes_cli.gateway",
+    "hermes_cli.gateway_launchd_runtime",  # the macOS bare replay's launchd job
     "hermes_cli.gateway_windows",
     "hermes_cli.github_api",
     "hermes_cli.plugins_session_env",

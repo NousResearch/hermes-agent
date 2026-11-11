@@ -152,7 +152,7 @@ class GrepContentEnvironment(RecordingEnvironment):
             return {"output": "", "returncode": 1}
         if command.startswith("command -v grep"):
             return {"output": "yes\n", "returncode": 0}
-        if "grep -rnHE" in command:
+        if "grep -rnH " in command and " -E " in command:
             return {"output": self.rg_output, "returncode": self.rg_code}
         return {"output": "", "returncode": 1}
 
@@ -343,7 +343,7 @@ def test_grep_content_search_with_unreadable_paths_returns_partial_matches():
 
     result = ShellFileOperations(env).search("needle", path="/repo", target="content")
 
-    assert any("grep -rnHE" in command for command in env.commands)
+    assert any("grep -rnH " in command and " -E " in command for command in env.commands)
     assert result.error is None
     assert [(m.path, m.line_number, m.content) for m in result.matches] == [
         ("/repo/a.py", 3, "needle")]

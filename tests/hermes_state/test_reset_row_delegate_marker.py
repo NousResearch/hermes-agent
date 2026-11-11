@@ -61,3 +61,19 @@ def test_a_config_arriving_with_a_delegate_marker_never_lands_on_a_reset_row(tmp
         assert _config(db, "child") == {"_delegate_from": LIVE}
     finally:
         db.close()
+
+def test_a_new_reset_row_with_a_delegate_marker_is_visible_before_reopen(tmp_path):
+    """A newly inserted polluted /new chat must not vanish until the store is reopened (#109073)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(OLD, "telegram", **PEER)
+        db.append_message(OLD, "user", "old chat")
+        db.end_session(OLD, "session_reset")
+        db.create_session(LIVE, "telegram", parent_session_id=OLD,
+                          model_config={"_reset_from": OLD, "_delegate_from": OLD}, **PEER)
+        db.append_message(LIVE, "user", "new chat")
+        assert _config(db, LIVE) == {"_reset_from": OLD}
+        assert _listed(db)[0] == LIVE
+    finally:
+        db.close()
+

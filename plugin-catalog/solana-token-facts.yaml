@@ -1,0 +1,26 @@
+name: solana-token-facts
+title: Solana Token Facts
+repo: https://github.com/Maxedwolf/solana-token-facts
+sha: e88dba91fb34f53a234b93a8b214a63b98c04ae9
+version: "0.2.1"
+description: "Verifiable on-chain facts about Solana tokens and their developers: mint/freeze authority, supply, Token-2022 risky extensions, whether name/symbol/image can still change, top holders and concentration, wallets that bought in the creation block, creation time, creator wallet and launchpad, who funded the dev wallet, a developer's past launches (graduated, dev sold out, minutes to sell out) and the newest pump.fun -> PumpSwap graduations. Adds 8 tools, a /token fact-sheet command, a due-diligence skill and an opt-in automation blueprint that saves dev reports for new graduations. Facts only: no verdicts, no trading advice, no transactions, no wallet keys. Disclosure: makes outbound HTTPS JSON-RPC calls only to the user's configured Solana RPC (default https://api.mainnet-beta.solana.com; token_holders, dev_launches, launch_buyers, dev_funding and recent_graduations need a provider such as Helius); an optional private RPC URL is a type: secret read with get_secret; writes local Markdown files only when save_dev_report runs (folder set by reports_dir); no background processes of its own, no telemetry."
+maintainer: Maxedwolf
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Maxedwolf/solana-token-facts#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - token_authorities
+    - token_origin
+    - token_holders
+    - dev_launches
+    - save_dev_report
+    - recent_graduations
+    - launch_buyers
+    - dev_funding
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

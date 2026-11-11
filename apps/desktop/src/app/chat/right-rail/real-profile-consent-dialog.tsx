@@ -15,6 +15,7 @@ import type { HermesConnection } from '@/global'
 import { saveHermesConfigRecord } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, Globe } from '@/lib/icons'
+import { claimPreviewSigninsSync, syncPreviewSignins } from '@/lib/preview-signins'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $realProfilePromptClaim,
@@ -111,7 +112,9 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
 
     const next = { ...config, browser: { ...browser, use_real_profile: true } }
 
+    const scope = writeScope
     setBusy(true)
+    claimPreviewSigninsSync(true, scope)
     setConfig(next)
 
     try {
@@ -120,6 +123,8 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
       await saveHermesConfigRecord({ browser: { use_real_profile: true } }, writeScope)
 
       notify({ kind: 'info', title: copy.enabledTitle, message: copy.enabledMessage })
+      // After the save, so the backend's own consent check sees it: signs this Browser tab in too.
+      void syncPreviewSignins(true, scope).catch(() => undefined)
     } catch (err) {
       setConfig(config)
       notifyError(err, copy.failedSave)

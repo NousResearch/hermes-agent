@@ -154,6 +154,8 @@ export interface Msg {
   /** Payloads behind this user row's paste chips, expandable in the transcript. */
   pastes?: PasteSection[]
   role: Role
+  /** The durable message row of a resumed user prompt (backtrack browsing finds its prompt by it). */
+  rowId?: number
   text: string
   // Unix seconds the message was authored (persisted transcript timestamp on
   // rehydrate, wall clock at append time for live rows). Rendered as a dim

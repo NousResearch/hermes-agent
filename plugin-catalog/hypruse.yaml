@@ -1,0 +1,28 @@
+name: hypruse
+repo: https://github.com/IlyasKhallouki/hypruse
+sha: bcb047e4416f5fb79d29e4df0ce62f6a760a8e8c
+subdir: integrations/hermes/hermes_hypruse
+description: "Hyprland computer use through the hypruse CLI: controls from the accessibility tree clicked by number, typing and keys sent to one window, and a background mode where the agent works in apps on its own workspaces (99 down to 90) while your cursor, focus and workspace stay put. Select it with `hermes config set computer_use.backend hypruse`. Disclosure: the provider is pure Python with no third-party dependencies. Each action runs the separately installed `hypruse` command (0.13 or newer), or the one named in `computer_use.hypruse.command` or HERMES_HYPRUSE_CMD, as a subprocess with no shell, and that child gets only the desktop session variables and HYPRUSE_* settings, never Hermes' API keys; `hermes computer-use doctor` also runs `hypruse doctor`. hypruse clicks, types and presses keys in your live session, and a foreground pointer action moves your cursor. With the optional `computer_use.hypruse.delivery: auto`, an action on the window you are in runs on your screen. Screenshots of the targeted window, or of the focused monitor for `app='screen'`, go to your model like any computer-use backend's, and each capture file is deleted once read. It reads hypruse's state file `$XDG_RUNTIME_DIR/hypruse/cli-state.json` and never writes it. No network calls, telemetry, stored data or credentials."
+maintainer: IlyasKhallouki
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/IlyasKhallouki/hypruse/blob/bcb047e4416f5fb79d29e4df0ce62f6a760a8e8c/integrations/hermes/hermes_hypruse/README.md
+version: "0.1.0"
+title: "hypruse"
+platforms:
+  - linux
+readme: true
+known_issues:
+  - "Needs Hyprland and the hypruse command 0.13 or newer on PATH (PyPI, AUR or Nix), which this plugin does not install. Check it with hermes computer-use doctor."
+  - "set_value is not supported: hypruse has no verb that sets a value. Click the field and type, or click the control."
+  - "Modifier keys held during a click, drag or scroll, and triple clicks, are not supported."
+  - "The pointer never works in the background: coordinate clicks, drags and scrolls need delivery_mode='foreground' on the window you are in, and right, middle and double clicks by element work only in the foreground."
+  - "som captures (marks) are sent at full size; max_image_dimension applies to vision captures only."
+  - "computer_use has no launch action: run hypruse launch -- APP with the terminal tool to open an app on the agent's workspaces, then capture(app='APP')."
+  - "Does not load under plugins.isolation: host, because Hermes loads computer-use providers only in its own process."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

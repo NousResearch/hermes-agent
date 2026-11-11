@@ -792,8 +792,7 @@ class SearchMixin:
                          output_mode: str, context: int, order: str = "discovery",
                          literal: bool = False) -> SearchResult:
         if target == "files":
-            result = self._search_files(pattern, path, limit, offset, order)
-            return _filename_glob_hint(result, pattern)
+            return self._search_files(pattern, path, limit, offset, order)
         return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context, literal=literal)
 
     def _path_not_found_result(self, path: str) -> SearchResult:
@@ -864,7 +863,7 @@ class SearchMixin:
             if protected_paths:
                 warning_parts.append(self._macos_protected_search_warning(protected_paths))
         merged.warning = " ".join(warning_parts)
-        return _filename_glob_hint(merged, pattern) if target == "files" else merged
+        return merged
 
     def _search_prune_glob_args(self) -> str:
         """rg globs pruning known heavyweight recursive subtrees. Both forms are
@@ -886,8 +885,8 @@ class SearchMixin:
         ("--hidden --no-ignore", "0 matches in visible files, but {total} match(es) in {n} "
                                  "hidden or gitignored file(s): {paths} — these are excluded by default."),
         ("-F", "0 regex matches, but {total} literal match(es) in {n} file(s): {paths} — the "
-               "pattern contains regex metacharacters; use literal=true for exact text "
-               "or escape them for a regex."),
+               "pattern contains regex metacharacters that likely need escaping "
+               "(or pass a simpler substring)."),
     )
 
     def _zero_match_probe(self, pattern: str, path: str, file_glob: Optional[str], literal: bool = False) -> Optional[str]:
@@ -1449,12 +1448,3 @@ class SearchMixin:
             return (probe.stdout.strip() or "grep error") if probe.exit_code >= 2 else None
         return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True,
                                          folded_error=grep_failed)
-
-
-def _filename_glob_hint(result: SearchResult, pattern: str) -> SearchResult:
-    """Explain likely regex syntax only after an otherwise successful empty glob search."""
-    if not result.error and result.total_count == 0 and (
-            "\\." in pattern or "|" in pattern or pattern.startswith("^") or pattern.endswith("$")):
-        hint = "No filenames matched the glob pattern provided."
-        result.warning = f"{result.warning} {hint}" if result.warning else hint
-    return result

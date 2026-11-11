@@ -52,24 +52,28 @@ def test_dash_leading_pattern_is_search_text(ops, tmp_path, monkeypatch, engine,
     assert not out.get("error") and out["total_count"] == 1, out
 
 
-def test_filename_regex_hint_and_literal_rejection(ops, tmp_path):
+def test_filename_search_rejects_literal_and_keeps_empty_results_bare(ops, tmp_path):
     (tmp_path / "sample.py").write_text("print(1)\n", encoding="utf-8")
     def search(pattern, **args):
         return json.loads(registry.dispatch("search_files", {
             "path": str(tmp_path), "target": "files", "pattern": pattern, **args}, task_id=pattern+str(args)))
-    assert "glob" in search(r".*\.py$")["warning"]
     assert search("*.py")["total_count"] == 1
     assert "glob" in search("*.py", literal=True)["error"]
-    assert "warning" not in search("[ab]*.txt")
-    for name in ["source.bin", "moved.bin"]:
-        (tmp_path / name).write_text("data\n", encoding="utf-8")
-    missed = search("source.bin|moved.bin")
-    assert missed["total_count"] == 0
-    assert missed["warning"] == "No filenames matched the glob pattern provided."
-    assert "target=content" not in missed["warning"]
-    assert "literal=true" not in missed["warning"]
-    assert search("source.bin")["total_count"] == 1
-    assert search("moved.bin")["total_count"] == 1
+    for pattern in [r".*\.py$", "source.bin|moved.bin", "^sample", "[ab]*.txt"]:
+        missed = search(pattern)
+        assert missed["total_count"] == 0 and "warning" not in missed and "error" not in missed, missed
+
+
+def test_regex_zero_match_hint_is_unchanged_without_literal(ops, tmp_path):
+    if not ops._has_command("rg"):
+        pytest.skip("ripgrep unavailable")
+    (tmp_path / "sample.txt").write_text("foo(bar)\n", encoding="utf-8")
+    out = json.loads(registry.dispatch("search_files", {
+        "path": str(tmp_path), "pattern": "foo(bar)"}, task_id="regex-hint"))
+    assert out["total_count"] == 0, out
+    assert out["warning"] == (
+        f"0 regex matches, but 1 literal match(es) in 1 file(s): {tmp_path / 'sample.txt'} — the pattern "
+        "contains regex metacharacters that likely need escaping (or pass a simpler substring).")
 
 
 @pytest.fixture(params=["rg", "grep", "grep_pruned"])

@@ -1,0 +1,10 @@
+name: contagion
+repo: https://github.com/onchaindc/Contagion
+sha: 0fcfebbc8b7dc789c9ef38ddc156ea81a4135116
+description: Taint-aware execution. Once a session reads untrusted content, its commands lose network, secrets and out-of-project writes at the OS layer.
+maintainer: onchaindc
+tier: community
+capabilities:
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call

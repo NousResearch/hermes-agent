@@ -7,6 +7,8 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  handlePagerKey,
+  pagerOffset,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
   shouldDetachEditedHistoryInput,
@@ -239,5 +241,75 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().vaultCode).toBeNull()
     expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
     expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+})
+
+describe('pager key handling', () => {
+  const key = {
+    ...baseKey, leftArrow: false, rightArrow: false, home: false, end: false,
+    return: false, escape: false, ctrl: false, fn: false, tab: false,
+    backspace: false, delete: false, meta: false, super: false
+  }
+
+  const lines = Array.from({ length: 36 }, (_, i) => `line ${i}`)
+
+  it.each([
+    ['space', ' ', {}],
+    ['enter', '', { return: true }],
+    ['page down', '', { pageDown: true }]
+  ])('%s advances and stays open at the last page', (_name, ch, overrides) => {
+    try {
+      patchOverlayState({ pager: { lines, offset: 20 } })
+      handlePagerKey(ch, { ...key, ...overrides }, 10)
+      expect(getOverlayState().pager?.offset).toBe(26)
+      handlePagerKey(ch, { ...key, ...overrides }, 10)
+      expect(getOverlayState().pager?.offset).toBe(26)
+    } finally {
+      resetOverlayState()
+    }
+  })
+
+  it.each([
+    ['q', 'q', {}],
+    ['escape', '', { escape: true }],
+    ['ctrl-c', 'c', { ctrl: true }]
+  ])('%s closes the pager', (_name, ch, overrides) => {
+    try {
+      patchOverlayState({ pager: { lines, offset: 26 } })
+      handlePagerKey(ch, { ...key, ...overrides }, 10)
+      expect(getOverlayState().pager).toBeNull()
+    } finally {
+      resetOverlayState()
+    }
+  })
+})
+
+describe('pagerOffset — a scroll key at the last page never dismisses the report', () => {
+  const LINES = 36
+  const PAGE = 10
+  const LAST = LINES - PAGE
+
+  it('advances by a full page and clamps the partial last page', () => {
+    expect(pagerOffset(LINES, 0, 'page', PAGE)).toBe(PAGE)
+    expect(pagerOffset(LINES, 20, 'page', PAGE)).toBe(LAST)
+  })
+
+  it('holds at the last page instead of leaving the pager', () => {
+    // Regression: Enter/Space/PgDn at the bottom used to close the panel, so
+    // reading /acp (or /acp-cache) to the end and pressing on lost the report.
+    expect(pagerOffset(LINES, LAST, 'page', PAGE)).toBe(LAST)
+  })
+
+  it('keeps line, jump and page-back intents inside [0, last]', () => {
+    expect(pagerOffset(LINES, LAST, 1, PAGE)).toBe(LAST)
+    expect(pagerOffset(LINES, 0, -1, PAGE)).toBe(0)
+    expect(pagerOffset(LINES, 12, 'top', PAGE)).toBe(0)
+    expect(pagerOffset(LINES, 12, 'bottom', PAGE)).toBe(LAST)
+    expect(pagerOffset(LINES, 4, -PAGE, PAGE)).toBe(0)
+  })
+
+  it('pins a panel shorter than one page at offset 0', () => {
+    expect(pagerOffset(4, 0, 'page', PAGE)).toBe(0)
+    expect(pagerOffset(4, 0, 'bottom', PAGE)).toBe(0)
   })
 })

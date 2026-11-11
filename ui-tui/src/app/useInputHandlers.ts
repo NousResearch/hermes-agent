@@ -353,6 +353,30 @@ export function shouldDetachEditedHistoryInput(historyIdx: null | number, histor
   return historyIdx !== null && value !== history[historyIdx]
 }
 
+/** Scroll intents the report pager accepts; `page` is Enter / Space / PgDn. */
+export type PagerIntent = number | 'page' | 'top' | 'bottom'
+
+/**
+ * Next pager offset for `intent`, clamped to the last page.
+ *
+ * Page-down at the last page is a NO-OP, never an exit: Enter/Space/PgDn read as
+ * "keep going", so dismissing the panel on them threw away the report a reader
+ * was still on (owner hit it on /acp and /acp-cache). Only Esc/q/Ctrl+C exit.
+ */
+export function pagerOffset(lines: number, offset: number, intent: PagerIntent, pageSize: number): number {
+  const max = Math.max(0, lines - pageSize)
+
+  if (intent === 'top') {
+    return 0
+  }
+
+  if (intent === 'bottom') {
+    return max
+  }
+
+  return clamp(offset + (intent === 'page' ? pageSize : intent), 0, max)
+}
+
 /** Ctrl+<letter> chords that act without disturbing a typed draft. */
 const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) => void> = {
   // Ctrl+O opens the model picker — the same overlay `/model` opens, but
@@ -369,23 +393,20 @@ const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) =>
 }
 
 /** Keys while the text pager (`overlay.pager`) is open: scroll, page, jump, close. */
-function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
+export function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
   if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
     return patchOverlayState({ pager: null })
   }
 
-  const move = (delta: number | 'top' | 'bottom') =>
+  const move = (intent: PagerIntent) =>
     patchOverlayState(prev => {
       if (!prev.pager) {
         return prev
       }
 
-      const { lines, offset } = prev.pager
-      const max = Math.max(0, lines.length - pagerPageSize)
-      const step = delta === 'top' ? -lines.length : delta === 'bottom' ? lines.length : delta
-      const next = Math.max(0, Math.min(offset + step, max))
+      const next = pagerOffset(prev.pager.lines.length, prev.pager.offset, intent, pagerPageSize)
 
-      return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
+      return next === prev.pager.offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
     })
 
   if (key.upArrow || ch === 'k') {
@@ -409,21 +430,7 @@ function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
   }
 
   if (key.return || ch === ' ' || key.pageDown) {
-    patchOverlayState(prev => {
-      if (!prev.pager) {
-        return prev
-      }
-
-      const { lines, offset } = prev.pager
-      const max = Math.max(0, lines.length - pagerPageSize)
-
-      // Auto-close only when already at the last page — otherwise clamp
-      // to `max` so the offset matches what the line/page-back handlers
-      // can reach (prevents a snap-back jump on the next ↑/↓/PgUp).
-      return offset >= max
-        ? { ...prev, pager: null }
-        : { ...prev, pager: { ...prev.pager, offset: Math.min(offset + pagerPageSize, max) } }
-    })
+    return move('page')
   }
 }
 

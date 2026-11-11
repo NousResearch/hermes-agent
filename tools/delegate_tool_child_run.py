@@ -586,8 +586,11 @@ def _validate_child_output_schema(
         _retry_messages = _retry_result.get("messages")
         if isinstance(_retry_messages, list) and _history is not None:
             # A compaction inside the retry rewrites the history it was given: keep the first turn whole.
-            _last_user = max((i for i, m in enumerate(_retry_messages) if m.get("role") == "user"), default=0)
-            result["messages"] = _history + _retry_messages[_last_user:]
+            # The loop exports where the correction turn starts; a steer inside it adds a later user row.
+            _start = _retry_result.get("current_turn_user_idx")
+            if not isinstance(_start, int):
+                _start = max((i for i, m in enumerate(_retry_messages) if m.get("role") == "user"), default=0)
+            result["messages"] = _history + _retry_messages[_start:]
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 

@@ -8,8 +8,9 @@ The preview is the answer's own message, so the gateway edits it up to the compl
 """
 
 import asyncio
+import inspect
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from gateway.delivery_ledger import flood_wait_seconds, is_flood_error
 from gateway.platforms.base import _SEND_RETRY_INLINE_WAIT_CAP_SECS
@@ -45,13 +46,35 @@ def owns_reconcilable_preview(consumer: Any) -> bool:
         "_egress_declined"))
 
 
+def _accepts_metadata(edit_message: Any) -> bool:
+    """Same compatibility rule as ``StreamTransportMixin._edit_message``: pass routing metadata only
+    to an ``edit_message`` that names it or takes ``**kwargs``."""
+    try:
+        params = inspect.signature(edit_message).parameters
+    except (TypeError, ValueError):
+        return False
+    return "metadata" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, content: str,
-                                metadata: Any = None) -> Any:
+                                metadata: Any = None, *,
+                                still_current: Optional[Callable[[], bool]] = None) -> Any:
     """``edit_message(finalize=True)``, retried after each flood refusal the platform asked to wait
     out for at most the final send's inline cap. A split whose head landed while its tail was refused
     resumes only the certain-undelivered tail, never the head again; a tail that still fails is left
-    to the caller's normal send (a repeated head beats a lost tail)."""
-    result = await adapter.edit_message(chat_id=chat_id, message_id=message_id, content=content, finalize=True)
+    to the caller's normal send (a repeated head beats a lost tail). Routing ``metadata`` rides on
+    every call (a split's continuations stay in the topic). ``still_current`` is re-checked before
+    the first edit and after every wait: a turn ``/new`` or ``/stop`` replaced meanwhile publishes
+    nothing more (``None`` is returned, which callers treat as not delivered)."""
+    def _current() -> bool:
+        return still_current is None or bool(still_current())
+
+    kwargs: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "content": content, "finalize": True}
+    if metadata and _accepts_metadata(adapter.edit_message):
+        kwargs["metadata"] = metadata
+    if not _current():
+        return None
+    result = await adapter.edit_message(**kwargs)
     for _ in range(_MAX_FLOOD_WAITS):
         if getattr(result, "success", True):
             return result
@@ -60,6 +83,9 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
             return result
         logger.info("Streamed preview %s: final edit flood-refused, retrying in %.0fs", message_id, wait)
         await asyncio.sleep(wait + _FLOOD_WAIT_SLACK_SECS)
+        if not _current():
+            logger.info("Streamed preview %s: turn no longer current after the flood wait; not finishing it", message_id)
+            return None
         raw = getattr(result, "raw_response", None)
         if isinstance(raw, dict) and raw.get("partial_overflow"):
             resumed = await adapter._resume_partial_send(chat_id, result, reply_to=None, metadata=metadata)
@@ -67,8 +93,7 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
                 return result
             result = resumed
         else:
-            result = await adapter.edit_message(
-                chat_id=chat_id, message_id=message_id, content=content, finalize=True)
+            result = await adapter.edit_message(**kwargs)
     return result
 
 
@@ -80,10 +105,13 @@ async def edit_streamed_message(consumer: Any, source: Any, response: dict, cont
     ``already_sent`` stays unset so the normal final send delivers the content."""
     try:
         result = await edit_preview_to_final(
-            consumer.adapter, source.chat_id, consumer.message_id, content, getattr(consumer, "metadata", None))
+            consumer.adapter, source.chat_id, consumer.message_id, content, getattr(consumer, "metadata", None),
+            still_current=getattr(consumer, "_run_still_current", None))
     except Exception as edit_err:  # health: allow BLE001 -- any edit failure falls back to the normal final send
         logger.warning(fail_exc, sk, edit_err)
         return
+    if result is None:
+        return  # the turn was replaced: its stale-run discard owns what happens next
     if not getattr(result, "success", True):
         logger.warning(fail_result, sk, getattr(result, "error", None))
         return

@@ -128,6 +128,20 @@ def test_literal_special_text_is_preserved(search_root, pattern):
     assert "multiline" not in out.get("warning", "")
 
 
+@pytest.mark.parametrize("pattern,literal", [("counts = {}", True), ("counts = [{}]+", False)],
+                         ids=["literal", "regex"])
+def test_patterns_containing_braces_match(search_root, pattern, literal):
+    """find's ``-exec ... {} +`` allows one ``{}``; a pattern holding another still searches."""
+    (search_root / "sub").mkdir()
+    (search_root / "sub" / "sample.py").write_text("counts = {}\ndecoy\n", encoding="utf-8")
+    out = json.loads(registry.dispatch("search_files", {
+        "path": str(search_root), "pattern": pattern, "literal": literal,
+    }, task_id="brace-pattern"))
+    assert not out.get("error"), out
+    assert out["total_count"] == 1, out
+    assert out["matches"][0]["content"] == "counts = {}"
+
+
 def test_regex_and_literal_modes_survive_multi_path_recovery(search_root):
     roots = [search_root / "one", search_root / "two"]
     for root in roots:

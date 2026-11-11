@@ -493,7 +493,7 @@ def _pruned_grep_ops(tmp_path, find_output=None):
         real_exec = ops._exec
 
         def fake_exec(command, **kwargs):
-            if command.startswith("set -o pipefail; find "):
+            if " find -H " in command:
                 return ExecuteResult(stdout=find_output, exit_code=1)
             return real_exec(command, **kwargs)
         ops._exec = fake_exec
@@ -529,7 +529,7 @@ def _pruned_grep_ops_with_probe(tmp_path, probe):
     seen = {}
 
     def fake_exec(command, **kwargs):
-        if command.startswith("set -o pipefail; find "):
+        if " find -H " in command:
             return ExecuteResult(stdout=f"find: {root}/locked: Operation not permitted\n", exit_code=1)
         if command.startswith("grep ") and "/dev/null" in command:
             seen["timeout"] = kwargs.get("timeout")

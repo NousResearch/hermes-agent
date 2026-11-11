@@ -1433,7 +1433,11 @@ class SearchMixin:
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
         # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
         # symlinked root answered a confident ``total_count: 0`` on every platform (#116270).
-        find_parts = ["find", "-H", q_root]
+        # GNU find rejects any other ``{}`` in an ``-exec ... {} +`` command, so the
+        # pattern (``counts = {}``) reaches grep through the environment, not find's argv.
+        quoted_pattern = self._escape_shell_arg(pattern, translate_path=False)
+        grep_script = " ".join(["exec", *grep_parts[:-2], '"$HERMES_GREP_PATTERN"', "--", '"$@"'])
+        find_parts = [f"HERMES_GREP_PATTERN={quoted_pattern}", "find", "-H", q_root]
         if protected_paths:
             find_parts.extend([self._prune_expr(protected_paths), "-o"])
         find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])
@@ -1442,7 +1446,8 @@ class SearchMixin:
         # stderr stays attached (``_exec`` merges it into stdout): find's
         # ``Permission denied`` lines must reach the parser so an unreadable
         # subtree beside a readable match is reported, not silently dropped.
-        find_parts.extend(["-exec", *grep_parts, "{}", "+"])
+        find_parts.extend(["-exec", "sh", "-c", self._escape_shell_arg(grep_script, translate_path=False),
+                           "sh", "{}", "+"])
         def grep_failed(result) -> Optional[str]:
             diagnostics, payload = _split_tool_diagnostics(result.stdout or "")
             if payload.strip() or not diagnostics.strip():

@@ -1,17 +1,17 @@
 name: hermes-psfn-avatar
-repo: https://github.com/axAilotl/hermes-psfn-avatar
-sha: 1789d591861f1777e6636e50e3ce5ea9cfd2730e
+repo: https://github.com/CGIC-AI/hermes-psfn-avatar
+sha: c8fa99b2da06e57f36a002ed0588c8e1a0f6f3a3
 title: PSFN 3D VRM Avatar
-description: "3D VRM VTuber and companion avatar overlay for Hermes Desktop and the Web Dashboard (Three.js + @pixiv/three-vrm, default DeepSeek-chan VRM 1.0 + built-in 3D Holo-Rig fallback, 42 baked ARDY humanoid motion clips, 28 GoEmotions mood performances, real-time TTS lip-sync, eye/head gaze, touch reactions, and optional PSFN Lite continuous emotional-state bridge). Disclosure — stores avatar state and user-uploaded .vrm/.glb models under ~/.hermes/plugin-data/hermes-psfn-avatar/ and caches the default VRM in browser IndexedDB; fetches the default DeepSeek-chan VRM 1.0 from raw.githubusercontent.com/tegnike/deepseek-chan-vrm at pinned commit 3aceb037df7a8b8126efea89d3a75664d1af868d (verified by SHA-256 9fa455e48ee2271dc7c2b62f2f2edcd47709406ca89067b6f544979589958f42) and, when the local FastAPI plugin route is absent, fetches baked motion clips from raw.githubusercontent.com/axAilotl/hermes-psfn-avatar at pinned commit 7b9a7f7f677b2fd25ed889b56e5ec83055202463; when psfn_lite_bridge is enabled and ~/.hermes/psfn-lite.json configures a loopback garden endpoint, queries GET <garden.url>/api/lite/overview on localhost using the profile's secret scope; no shell commands, background daemons, or telemetry."
+description: "3D VRM VTuber and companion avatar overlay for Hermes Desktop and the Web Dashboard (Three.js + @pixiv/three-vrm, default Nous-Girl VRM with an on-demand catalog of DeepSeek-chan, Claude and Claude Suit, 42 baked ARDY humanoid motion clips, 28 GoEmotions mood performances, text-driven lip-sync that patches no host audio, eye/head gaze, touch reactions, and optional PSFN Lite continuous emotional-state bridge). Disclosure — stores avatar state and user-uploaded .vrm/.glb models under ~/.hermes/plugin-data/hermes-psfn-avatar/ and caches VRM models in browser IndexedDB; fetches models on demand from raw.githubusercontent.com at pinned commits, each verified by SHA-256 before caching: the default Nous-Girl from CGIC-AI/nous-girl-vrm at 70bfc01c3bbc105267612f94486e0e7ee1b5a7d6 (SHA-256 34c72ebaf068f3d692c29e5b1878b42e0039f63a2b0679aab18bb365b4abc275), and when selected DeepSeek-chan from tegnike/deepseek-chan-vrm at 3aceb037df7a8b8126efea89d3a75664d1af868d (SHA-256 9fa455e48ee2271dc7c2b62f2f2edcd47709406ca89067b6f544979589958f42) and claude.vrm / claude_suit.vrm from SkyeShark/eidoverse-video at 404a00e7db3068af51bd914d61e608e6b8dc9b82 (SHA-256 883eb1d6c63c7409e1cbebb335509af346e92d046c4c9916ebc7695da4c64073 and 7be6286215c0d7e4251633ec741d9f5bde943dc635f05a312ca7d1b45bceaa5d); when the local FastAPI plugin route is absent, fetches baked motion clips from raw.githubusercontent.com/CGIC-AI/hermes-psfn-avatar at pinned commit 7b9a7f7f677b2fd25ed889b56e5ec83055202463; when psfn_lite_bridge is enabled and ~/.hermes/psfn-lite.json configures a loopback garden endpoint, queries GET <garden.url>/api/lite/overview on localhost using the profile's secret scope; the transform_llm_output hook removes the plugin's own ::avatar{} directive lines from replies (strip_directives, on by default); no shell commands, background daemons, or telemetry."
 maintainer: axAilotl
 tier: community
 category: desktop
 version: "0.1.0"
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/axAilotl/hermes-psfn-avatar#readme
+docs_url: https://github.com/CGIC-AI/hermes-psfn-avatar#readme
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [vrm_avatar]
-  provides_hooks: [pre_llm_call, post_llm_call, pre_tool_call, post_tool_call, on_session_end]
+  provides_hooks: [pre_llm_call, post_llm_call, transform_llm_output, pre_tool_call, post_tool_call, on_session_end]
   provides_middleware: []
   requires_env: []

@@ -46,13 +46,21 @@ def _parse_iso(value) -> Optional[datetime]:
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
+# Set on a delegate subagent's row a user explicitly switched a chat onto (``/resume <child> --all``,
+# handoff). ``_delegate_from`` stays: it is lineage (compression continuations, the running worker's
+# publish check), not a routing flag; this marker alone tells the route guard the user chose the row.
+CHAT_ADOPTED_MARKER = "_chat_adopted"
+
+
 def is_delegate_child_row(row: dict) -> bool:
     """A delegate subagent's row: never a chat's route or topic-binding target. A row that also carries
-    ``_reset_from`` is a /new continuation of the chat whose config picked up the marker (#109073) and
-    stays routable (same rule as peer recovery's ``_DELEGATE_CHILD_EXCLUSION_SQL``)."""
+    ``_reset_from`` is a /new continuation of the chat whose config picked up the marker (#109073), and
+    one carrying ``CHAT_ADOPTED_MARKER`` was chosen by the user; both stay routable (same rule as peer
+    recovery's ``_DELEGATE_CHILD_EXCLUSION_SQL``)."""
     from hermes_state_sessions import _parse_model_config
     config = _parse_model_config(row.get("model_config"))
-    return bool(config.get("_delegate_from")) and "_reset_from" not in config
+    return (bool(config.get("_delegate_from")) and "_reset_from" not in config
+            and not config.get(CHAT_ADOPTED_MARKER))
 
 
 def auto_continue_freshness_window() -> float:

@@ -1,13 +1,13 @@
 name: ai-lab
 title: Hermes AI Lab
 repo: https://github.com/BZK-kais/hermes-ai-lab
-sha: b024e5645cf1651ee9b3717a9c24c4b1458d02c4
+sha: 4a11ae951c2c2e1a23283a14a604313bb3b132a8
 description: Prepare experiments, compare local models and activate qualified configurations in Hermes.
 maintainer: BZK-kais
 tier: community
 category: models
-requires_hermes: ">=0.20.1"
-version: "1.0.0"
+requires_hermes: ">=0.23.1"
+version: "1.1.0"
 capabilities:
   provides_tools:
     - ai_lab_status

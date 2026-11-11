@@ -1,9 +1,9 @@
 name: desktop-inbox
 title: Inbox
 repo: https://github.com/Nj07r/hermes-desktop-inbox
-sha: 51b0a363806d6b867e5759567d104a10c9d3660b
+sha: ffae81ff54784ec45b12ed185095d348aa7d1f02
 version: "1.0.0"
-description: "An Inbox pane for Hermes Desktop. Cron jobs, scripts and webhooks file items (Read, Answer, Decide, Do, or your own types) as Hermes-started Desktop conversations, each with one clear ask. The pane is a keyboard-driven triage queue (snooze, undo, OS notifications) that also lists what waits on you elsewhere: chats with a pending question, blocked or triage kanban cards, and failing cron jobs (one click files a Fix item). Items close themselves when the kanban card they started is done. Disclosure: reads state.db, cron/jobs.json, cron/output and every kanban.db read-only; changes sessions only through public SessionDB methods (title, folder, archive state, hiding an item's opening message, its first Hermes message); writes its own files in the inbox folder; runs `hermes chat` once per new item (one model turn), `hermes kanban archive` when you archive a card from the pane, and `gh api user` once when the webhook needs your GitHub login; the optional webhook listener (off by default) binds 127.0.0.1 only; no network calls of its own, no telemetry, no stored credentials."
+description: "An Inbox pane for Hermes Desktop. Cron jobs, scripts and webhooks file items (Read, Answer, Decide, Do, or your own types) as Hermes-started Desktop conversations, each with one clear ask. The pane is a keyboard-driven triage queue (snooze, undo, OS notifications) that also lists what waits on you elsewhere: chats with a pending question, blocked or triage kanban cards, and failing cron jobs (one click files a Fix item). Items close themselves when the kanban card they started is done. Disclosure: reads state.db, cron/jobs.json, cron/output and every kanban.db read-only; changes sessions only through public SessionDB methods (title, folder, archive state, hiding an item's opening message, its first Hermes message); writes its own files in the inbox folder; runs `hermes chat` once per new item (one model turn), `hermes kanban archive` when you archive a card from the pane, and `gh api user` once when the webhook needs your GitHub login; the optional webhook listener (off by default) binds 127.0.0.1 only, refuses posts until its token or GitHub secret is set, and refuses browser (Origin) requests; no network calls of its own, no telemetry, no stored credentials."
 maintainer: Nj07r
 tier: community
 category: desktop
@@ -11,7 +11,7 @@ requires_hermes: ">=0.23.1"
 docs_url: https://github.com/Nj07r/hermes-desktop-inbox
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/Nj07r/hermes-desktop-inbox/51b0a363806d6b867e5759567d104a10c9d3660b/docs/pane.png
+  - https://raw.githubusercontent.com/Nj07r/hermes-desktop-inbox/ffae81ff54784ec45b12ed185095d348aa7d1f02/docs/pane.png
 capabilities:
   provides_tools: []
   provides_hooks: []

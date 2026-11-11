@@ -232,14 +232,16 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
 # --- Child-process environment construction ---
 def _apply_profile_home(env: dict) -> None:
-    """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
+    """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract under the
+    served profile's own ``terminal.home_mode`` (the process env holds the launch profile's)."""
     from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
+    from tools.terminal_scope import terminal_env
     try:
         if value := get_hermes_home_override():
             env["HERMES_HOME"] = value
     except Exception:
         pass
-    apply_subprocess_home_env(env)
+    apply_subprocess_home_env(env, home_mode=terminal_env("TERMINAL_HOME_MODE", "auto"))
 
 
 def _inject_session_context_env(env: dict) -> None:

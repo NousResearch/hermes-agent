@@ -731,15 +731,16 @@ _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile
                       "host": "real", "user": "real", "real_home": "real", "real-home": "real"}
 
 
-def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
+def get_subprocess_home(env: dict[str, str] | None = None, *, home_mode: str | None = None) -> str | None:
     """Subprocess ``HOME`` override, or ``None``.
 
     ``auto``: hosts keep real HOME (repairing a profile-home parent), containers use
     ``{HERMES_HOME}/home``; ``real``: always real HOME; ``profile``: always the profile home.
+    *home_mode* is the served profile's setting; without it the mode is read from *env*.
     """
     env = env or {}
     profile_home = _profile_home_path(env)
-    mode = _env_get(env, "TERMINAL_HOME_MODE", "auto").lower() or "auto"
+    mode = (home_mode if home_mode is not None else _env_get(env, "TERMINAL_HOME_MODE", "auto")).lower() or "auto"
     mode = _HOME_MODE_ALIASES.get(mode, mode)
 
     if mode == "profile":
@@ -757,13 +758,13 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
-def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
+def apply_subprocess_home_env(env: MutableMapping[str, str], *, home_mode: str | None = None) -> None:
     """Apply Hermes' subprocess HOME contract to *env* in-place: ``HOME``/``HERMES_REAL_HOME``
     per the home mode, and the temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
     real_home = get_real_home(env)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
-    home = get_subprocess_home(env)
+    home = get_subprocess_home(env, home_mode=home_mode)
     if home:
         env["HOME"] = home
     apply_scratch_tmp_env(env)

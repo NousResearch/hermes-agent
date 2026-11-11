@@ -1,5 +1,6 @@
 """Tests for blocked-command recovery guidance (parser-limit + backgrounding)."""
 
+import pytest
 
 from tools.approval import _hardline_block_result
 from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION
@@ -78,8 +79,12 @@ class TestRepeatedBackgroundRejection:
     """Through terminal_tool: the fg/bg guidance escalates from the 3rd rejection per agent
     and turn, and only a background=true call resets it."""
 
-    AMP = "python3 server.py &"
-    FIXED_CALL = 'terminal(command="python3 server.py", background=true, notify_on_complete=true)'
+    # Shapes the terminal still refuses (a lone trailing `&` now runs as background=true).
+    AMP = "nohup python3 server.py > server.log 2>&1 &"
+    FIXED_CALL = ('terminal(command="python3 server.py > server.log 2>&1", background=true, '
+                  'notify_on_complete=true)')
+    FAKE_START = {"output": "Background process started", "session_id": "proc_fake", "pid": 1,
+                  "exit_code": 0, "error": None}
 
     @pytest.fixture
     def run(self, tmp_path, monkeypatch):
@@ -90,9 +95,16 @@ class TestRepeatedBackgroundRejection:
         config = {"env_type": "local", "timeout": 30, "cwd": str(tmp_path), "host_cwd": None,
                   "modal_mode": "auto", "docker_image": "", "singularity_image": "",
                   "modal_image": "", "daytona_image": ""}
+        spawned = []
+
+        def fake_spawn(**kw):  # never start a real background process
+            spawned.append(kw)
+            return json.dumps(self.FAKE_START)
+
         with patch("tools.terminal_tool._get_env_config", return_value=config), \
              patch("tools.terminal_tool._start_cleanup_thread"), \
-             patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+             patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}), \
+             patch("tools.terminal_tool.spawn_background_process", side_effect=fake_spawn):
             yield lambda command, **kw: json.loads(terminal_tool(command=command, **kw))
 
     @staticmethod

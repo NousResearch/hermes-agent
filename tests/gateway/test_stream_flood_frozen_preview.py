@@ -152,3 +152,45 @@ async def test_consumer_cancelled_mid_final_leaves_one_complete_message():
 
     assert response.get("already_sent") is True
     assert list(adapter.messages.values()) == [final]
+
+
+@pytest.mark.asyncio
+async def test_turn_replaced_during_the_flood_wait_publishes_nothing(monkeypatch):
+    """``/new`` or ``/stop`` during the flood wait: the old answer is neither edited in nor sent."""
+    monkeypatch.setattr("gateway.run_turn_final_reconcile._FLOOD_WAIT_SLACK_SECS", 0.05)
+    adapter = _FloodedChat(flood_secs=0.6)
+    final = "The answer begins here and then " + "continues with more words " * 8 + "until the end."
+    consumer = await _flood_frozen_turn(adapter, final)
+    current = {"run": True}
+    consumer._run_still_current = lambda: current["run"]
+    frozen = dict(adapter.messages)
+
+    async def reset_mid_wait():
+        await async_wait_until(lambda: adapter.calls[-1][0] == "edit" and adapter._flooded(), timeout=5)
+        current["run"] = False
+
+    response = {"final_response": final}
+    turn_ctx = SimpleNamespace(stream_consumer_holder=[consumer], source=SimpleNamespace(chat_id="chat-1"),
+                               session_key="agent:main:telegram:group:chat-1")
+    await asyncio.wait_for(asyncio.gather(
+        _Harness()._run_agent_mark_streamed_delivery(response, turn_ctx), reset_mid_wait()), timeout=5)
+
+    assert adapter.messages == frozen  # nothing published after the reset
+    assert "already_sent" not in response  # the outer stale-run check discards the result
+
+
+@pytest.mark.asyncio
+async def test_finishing_edit_carries_the_topic_routing_metadata():
+    """A split's continuations are sent by the edit path: without the turn's routing metadata a
+    retried continuation lands outside the topic."""
+    seen = []
+
+    class _Topic(_FloodedChat):
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
+            seen.append(metadata)
+            return await super().edit_message(chat_id, message_id, content, finalize=finalize)
+
+    adapter = _Topic(flood_secs=0.0)
+    from gateway.run_turn_final_reconcile import edit_preview_to_final
+    await edit_preview_to_final(adapter, "chat-1", "1", "answer", {"thread_id": "77"})
+    assert seen == [{"thread_id": "77"}]

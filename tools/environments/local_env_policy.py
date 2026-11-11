@@ -5,7 +5,7 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 import functools
 import os
 import re
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
@@ -331,17 +331,37 @@ def _is_hermes_internal_secret(key: str) -> bool:
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
 
 
+_CONFIG_KEY_ENV_FIELDS = ("key_env", "api_key_env")
+
+
+def _config_declared_key_envs(node: Any) -> set:
+    """Every env name a ``key_env`` / ``api_key_env`` field anywhere in *node* points at. The
+    readers (``model``, ``custom_providers[]``, ``providers.*``, ``auxiliary.<task>``,
+    ``fallback_providers[]``, ``image_gen.*``) all share that field convention, so the walk keys on
+    the field rather than enumerating sections a new reader would be missing from."""
+    if isinstance(node, list):
+        return set().union(*(_config_declared_key_envs(item) for item in node))
+    if not isinstance(node, dict):
+        return set()
+    names = {str(node[k]).strip() for k in _CONFIG_KEY_ENV_FIELDS if isinstance(node.get(k), str)}
+    names.discard("")
+    return names.union(*(_config_declared_key_envs(value) for value in node.values()))
+
+
 def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     """The subset of *names* the ACTIVE profile itself consumes as a credential, for env that is
     forwarded implicitly (no skill, operator or server declared the name). Derived from the
     consumers, not listed: the blocklist and dynamic internal secrets; the tokens a messaging
     adapter connects with (``profile_channels.credential_env_keys``); the numbered siblings
     ``<KEY>_2``.. and the persisted ``env:VAR`` rows the credential pool rotates through
-    (``credential_pool._env_key_var_candidates``); and a ``<NAME>_<PROFILE>`` source name that
-    hydration also applies as ``<NAME>`` (``secret_sources.registry._profile_alias_target``).
-    Resolved per call: pool rows, plugin adapters and the profile differ per served profile."""
+    (``credential_pool._env_key_var_candidates``); the names the profile's config.yaml points a
+    provider key at (``key_env`` / ``api_key_env``, :func:`_config_declared_key_envs`); and a
+    ``<NAME>_<PROFILE>`` source name that hydration also applies as ``<NAME>``
+    (``secret_sources.registry._profile_alias_target``). Resolved per call: pool rows, config,
+    plugin adapters and the profile differ per served profile."""
     from agent.secret_sources.registry import _active_profile_name, _profile_alias_target
     from hermes_cli.auth import read_credential_pool
+    from hermes_cli.config import load_config_readonly
     from hermes_cli.profile_channels import credential_env_keys
     from hermes_constants import get_hermes_home
 
@@ -351,11 +371,12 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
         str(entry.get("source"))[len("env:"):].strip()
         for entries in read_credential_pool().values() if isinstance(entries, list)
         for entry in entries if isinstance(entry, dict) and str(entry.get("source")).startswith("env:")}
+    declared = pool_rows | _config_declared_key_envs(load_config_readonly())
     profile = _active_profile_name(get_hermes_home())
 
     def consumed(name: str) -> bool:
         upper = name.upper()
-        return name in pool_rows or _is_hermes_internal_secret(name) or any(
+        return name in declared or _is_hermes_internal_secret(name) or any(
             _is_provider_env_blocklisted(candidate, registered) or candidate in adapter_keys
             for candidate in (upper, _NUMBERED_SIBLING_RE.sub("", upper)))
 

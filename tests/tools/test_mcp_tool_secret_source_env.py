@@ -94,3 +94,30 @@ def test_secret_source_never_forwards_profile_platform_plugin_secret(monkeypatch
         result = _build_safe_env(None)
 
     assert "CHATX_SIGNING_SECRET" not in result
+
+
+def test_secret_source_never_forwards_config_declared_provider_keys(monkeypatch):
+    """A name the profile's config.yaml points a provider credential at (``key_env`` /
+    ``api_key_env`` on the main model, a custom/named provider, an auxiliary task, a fallback
+    route) is a Hermes credential under that name, so a vault copy of it is withheld too."""
+    from hermes_cli import env_loader
+    from tools.mcp_tool_config import _build_safe_env
+
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        "model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  key_env: MY_LLM_KEY\n"
+        "custom_providers:\n  - name: lab\n    base_url: http://127.0.0.1:9/v1\n    key_env: LAB_KEY\n"
+        "providers:\n  edge:\n    base_url: http://127.0.0.1:9/v1\n    api_key_env: EDGE_KEY\n"
+        "auxiliary:\n  vision:\n    provider: custom\n    key_env: VISION_KEY\n"
+        "fallback_providers:\n  - provider: custom\n    model: m\n    base_url: http://127.0.0.1:9/v1\n"
+        "    key_env: FALLBACK_KEY\n",
+        encoding="utf-8")
+    declared = ["MY_LLM_KEY", "LAB_KEY", "EDGE_KEY", "VISION_KEY", "FALLBACK_KEY"]
+    for name in [*declared, "ALPACA_API_KEY"]:
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "bitwarden")
+    fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "MARKER-third-party",
+                **{name: f"MARKER-{name}" for name in declared}, "HERMES_HOME": os.environ["HERMES_HOME"]}
+    with patch.dict("os.environ", fake_env, clear=True):
+        result = _build_safe_env(None)
+
+    assert not set(declared) & set(result)
+    assert result["ALPACA_API_KEY"] == "MARKER-third-party"

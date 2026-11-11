@@ -78,15 +78,18 @@ async def test_unsent_upload_is_repeated_and_delivered(adapter, tmp_path, first)
 
 
 @pytest.mark.asyncio
-async def test_unsent_retries_are_bounded(adapter, tmp_path):
+@pytest.mark.parametrize("error", [_connect_error, _bad_gateway], ids=["connect-error", "telegram-502-outage"])
+async def test_unsent_retries_are_bounded(adapter, tmp_path, error):
+    """Telegram's 5xx JSON on every try still means nothing was posted: a definite failure with the
+    notice, never reported as maybe-delivered."""
     path = tmp_path / "package.zip"
     path.write_bytes(b"zip-bytes")
-    reads = _uploads(adapter, "send_document", [_connect_error() for _ in range(5)])
+    reads = _uploads(adapter, "send_document", [error() for _ in range(5)])
 
     result = await adapter.send_document("123", str(path))
 
     assert len(reads) == 3
-    assert result.success is False
+    assert result.success is False and not (result.raw_response or {}).get("ambiguous")
     BasePlatformAdapter.send_document.assert_awaited_once()  # the notice, once the budget is spent
 
 
@@ -184,3 +187,26 @@ async def test_standalone_sender_repeats_unsent_and_never_resends_a_lost_upload(
     with pytest.raises(Exception):
         await standalone._telegram_send_one_media(bot, 123, str(path), False, **kw)
     assert len(reads) == 1
+
+
+@pytest.mark.asyncio
+async def test_album_photo_lost_after_the_request_left_is_reported_ambiguous(adapter, monkeypatch):
+    """A refused album falls back photo by photo; a photo whose request may have posted is reported
+    as possibly delivered (``ambiguous``), never as a failure a caller would answer with a resend."""
+    from telegram.error import BadRequest
+
+    calls = []
+
+    async def lost(**kwargs):
+        calls.append(kwargs)
+        raise _read_error()
+
+    adapter._bot.send_media_group = AsyncMock(side_effect=BadRequest("Wrong file identifier/http url specified"))
+    adapter._bot.send_photo = lost
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+
+    result = await adapter.send_multiple_images("123", [("https://example.com/a.png", ""), ("https://example.com/b.png", "")])
+
+    assert len(calls) == 2  # one request per photo, none resent
+    assert result.success is True and result.raw_response["ambiguous"] is True
+    assert result.raw_response["failed"] == []

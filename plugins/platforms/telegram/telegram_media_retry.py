@@ -5,10 +5,11 @@ to the "Couldn't deliver the file attachment" notice (or, for a photo, a re-uplo
 Now the SAME request is repeated, with the text lane's budget, only when the failure proves nothing
 was posted (``telegram_send_errors``: ``UNSENT`` connect/pool failure, ``SERVER_ERROR`` Telegram's
 own 5xx JSON). A flood wait keeps its own recovery (``telegram_media_flood``). A failure after the
-request left (a read error or timeout after the upload, a 504, an HTML 5xx page, or a 5xx once the
-budget is spent) may already be in the chat: it is never resent in any shape and is reported
+request left (a read error or timeout after the upload, a 504, an HTML 5xx page) may already be in
+the chat: it is never resent in any shape and is reported
 ``ambiguous`` (``success`` with ``raw_response["ambiguous"]``, the relay's contract), so neither the
 failure notice nor a consumer that re-sends on failure (the send_message tool, cron) duplicates it.
+Telegram's 5xx JSON on every try is a definite failure: it keeps the notice and the fallback.
 """
 
 from __future__ import annotations
@@ -51,8 +52,10 @@ async def send_media_retrying(
 
 
 def request_may_have_delivered(error: Exception) -> bool:
-    """True when the upload REQUEST raised and may already be in the chat (never resend it)."""
-    return bool(getattr(error, _REQUEST_ERROR_ATTR, False)) and kinds.may_have_delivered(error)
+    """True when the upload REQUEST raised and may already be in the chat (never resend it): only a
+    ``LOST`` request. A ``SERVER_ERROR`` that spent the budget is Telegram's own answer that nothing
+    was posted, a definite failure that keeps the notice / fallback."""
+    return bool(getattr(error, _REQUEST_ERROR_ATTR, False)) and kinds.send_error_kind(error) == kinds.LOST
 
 
 def unconfirmed_media_result(error: Exception, what: str, *, as_failure: bool = False) -> Optional[SendResult]:

@@ -33,7 +33,7 @@ description: |
   cross-origin exfiltration) that is fully contained — the application's own
   audit log shows zero mutating requests arrived.
 repo: https://github.com/HillaryIkhais/Ruse.git
-sha: 92610621bbb0dc4fe078d4ac608dca72e05d235c
+sha: e81a230e9ded745bdd52d603fc6b64f3bac040b2
 tier: community
 category: security
 requires_hermes: ">=0.23.0"

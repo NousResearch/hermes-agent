@@ -93,7 +93,7 @@ is the default route, and `self.settings(config)` is your backend's own block,
 |---|---|---|
 | `name` | yes | The `delegation.backend` value. `default` belongs to the bundled default strategy. |
 | `route_task(task, config)` | yes | Return the route dict for one task. `task` carries `goal`, `context`, `index` and the values the model supplied for your parameters. Raise `DelegationRouteError` to refuse; its message is the tool error the model reads. |
-| `task_parameters(config)` | no | `{name: json_schema}` merged into `tasks.items.properties`. Core enforces `enum` before `route_task` runs and refuses core-owned names (`goal`, `context`, `index`, `output_schema`, `images`, `group`, `role`, `toolsets`, `provider`, `model`, `base_url`, `api_key`, `api_mode`, `acp_command`, `acp_args`). |
+| `task_parameters(config)` | no | `{name: json_schema}` merged into `tasks.items.properties`. Core enforces `enum` before `route_task` runs and refuses core-owned names (`goal`, `context`, `index`, `output_schema`, `images`, `group`, `role`, `toolsets`, `instructions`, `max_iterations`, `provider`, `model`, `base_url`, `api_key`, `api_mode`, `acp_command`, `acp_args`). |
 | `description(config)` | no | Guidance appended to the `delegate_task` description. |
 | `is_available()` | no | No network calls. `False` fails delegation closed while your backend is selected: `delegate_task` returns a tool error naming it and the fix (`/delegation default`, or `hermes config set delegation.backend default`); it never switches to `default` on its own. |
 | `settings(config)` | inherited | `delegation.backends.<name>` as a mapping (empty when unset). Do not override. |
@@ -120,8 +120,10 @@ A route is a dict with any of:
   construction, its credential lease and every conversation turn, the same binding a multiplexed
   gateway applies to a routed turn, so a secret missing from the target profile is never read from
   the launching profile's environment. The child's transcript stays in the launching profile's
-  session database (it is the parent's work) and it keeps the parent's toolset. Other route keys are
-  ignored on a profile route.
+  session database (it is the parent's work). Model route keys are ignored on a profile route.
+- `instructions`: operator-authored text added to the child's system prompt, including on top of a profile's `SOUL.md`.
+- `toolsets`: operator-authored list intersected with core's resolved child toolsets; it can only narrow, including on profile routes (`[]` removes all toolsets).
+- `max_iterations`: positive integer capped by the effective global `delegation.max_iterations`, including on profile routes.
 - `label`: short text identifying the route (an option title, a profile name).
 
 Unknown keys are dropped. On a profile route, `service_tier` and `reasoning_effort` are ignored too.
@@ -150,7 +152,10 @@ Every result entry of a task routed by a non-default backend carries `route`: th
 ```
 
 `reasoning_effort` is `null` when the provider's default applies; `fallback_activated: true` is added
-when a fallback provider took over. The `default` backend's children leave the result entry unchanged.
+when a fallback provider took over. Agent settings appear only when supplied: `instructions` is a boolean
+(never the text), while `toolsets` and `max_iterations` show the effective values. These three keys are
+operator-only routes, never model-facing task parameters. Without them, the `default` backend's children
+leave the result entry unchanged.
 
 ## Picker metadata and switching backends
 

@@ -25,7 +25,10 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
 * ``profile`` - the name of a Hermes profile. Core runs the child as that profile: its config,
   primary model and credentials, skills, ``SOUL.md`` and terminal policy, bound through the same
   scope helpers a multiplexed gateway uses for a routed turn. A profile route ignores the other
-  route keys; the profile's own config decides them.
+  model route keys; the profile's own config decides them.
+* ``instructions`` - operator-authored text added to the child's system prompt, also on profile routes.
+* ``toolsets`` - an operator-authored list intersected with the child's resolved toolsets, never widening them.
+* ``max_iterations`` - a positive integer capped by the effective global ``delegation.max_iterations``.
 * ``label`` - short text shown with the child's progress and result (e.g. the option title).
 
 A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),
@@ -45,12 +48,14 @@ from agent.provider_base import ProviderBase
 RESERVED_TASK_PARAMETERS = frozenset({
     "goal", "context", "index", "output_schema", "images", "group", "role", "toolsets",
     "acp_command", "acp_args", "provider", "model", "base_url", "api_key", "api_mode",
+    "instructions", "max_iterations",
 })
 
 #: Keys a route may carry; anything else in a provider's answer is ignored.
 ROUTE_KEYS = frozenset({
     "model", "provider", "base_url", "api_key", "api_mode", "request_overrides",
     "reasoning_effort", "service_tier", "fallback_providers", "profile", "label",
+    "instructions", "toolsets", "max_iterations",
 })
 
 

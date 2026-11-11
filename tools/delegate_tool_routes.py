@@ -39,12 +39,20 @@ class TaskRoute:
     label: Optional[str] = None
     backend: str = "default"
     error: Optional[str] = None
+    instructions: Optional[str] = None
+    toolsets: Optional[list[str]] = None
+    max_iterations: Optional[int] = None
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
-        if self.backend == "default" and not self.label:
+        options = {"instructions": bool(self.instructions and self.instructions.strip())} if self.instructions is not None else {}
+        if self.toolsets is not None:
+            options["toolsets"] = list(self.toolsets)
+        if self.max_iterations is not None:
+            options["max_iterations"] = self.max_iterations
+        if self.backend == "default" and not self.label and not options:
             return None
-        return {"backend": self.backend, **({"label": self.label} if self.label else {})}
+        return {"backend": self.backend, **({"label": self.label} if self.label else {}), **options}
 
     def refused_entry(self, index: int) -> dict[str, Any]:
         """Result entry for a task this route refused: no child was built for it."""
@@ -241,6 +249,18 @@ def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> Ta
     return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend)
 
 
+def _agent_options(route: Mapping[str, Any]) -> dict[str, Any]:
+    """Only operator routes carry these child settings; malformed settings refuse that task."""
+    instructions, toolsets, limit = (route.get(k) for k in ("instructions", "toolsets", "max_iterations"))
+    if instructions is not None and not isinstance(instructions, str):
+        raise DelegationRouteError("Route instructions must be text.")
+    if toolsets is not None and (not isinstance(toolsets, list) or not all(isinstance(t, str) for t in toolsets)):
+        raise DelegationRouteError("Route toolsets must be a list of names.")
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise DelegationRouteError("Route max_iterations must be a positive integer.")
+    return {"instructions": instructions, "toolsets": toolsets, "max_iterations": limit}
+
+
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
                          config: Optional[Mapping[str, Any]] = None, backend: str = "default") -> TaskRoute:
     label = route.get("label") if isinstance(route.get("label"), str) else None
@@ -249,7 +269,7 @@ def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[s
     key = json.dumps({k: v for k, v in route.items() if k != "label"}, sort_keys=True, default=str)
     if key not in cache:
         cache[key] = _resolve_route(route, parent_agent, backend)
-    return replace(cache[key], label=label)
+    return replace(cache[key], label=label, **_agent_options(route))
 
 
 def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[str, Any]) -> None:

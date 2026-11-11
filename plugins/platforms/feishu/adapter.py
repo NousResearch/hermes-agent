@@ -94,7 +94,9 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
-from plugins.platforms.feishu.adapter_identity import SenderIdentityCache, resolve_sender_profile
+from plugins.platforms.feishu.adapter_identity import (
+    SenderIdentityCache, is_interactive_operator_authorized, resolve_sender_profile,
+)
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -2238,28 +2240,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     def _is_interactive_operator_authorized(
         self, open_id: str, *, user_id: str = "", union_id: str = "", chat_id: str = "",
     ) -> bool:
-        """Return whether this card-action operator may answer gated prompts.
-
-        Feishu admins / FEISHU_ALLOWED_USERS decide when set. With neither (setup's pairing-mode
-        default) the clicker must pass the gateway authorization inbound messages get (pairing
-        store, GATEWAY_ALLOWED_USERS, ...), so a chat member who may not use the bot can't answer.
-        """
-        normalized = str(open_id or "").strip()
-        if not normalized:
-            return False
-        allowed_ids = set(self._admins) | set(self._allowed_group_users)
-        if allowed_ids:
-            # Lists may name a user by any id intake accepts (_sender_identity).
-            operator_ids = {normalized, str(user_id or "").strip(), str(union_id or "").strip()} - {""}
-            return "*" in allowed_ids or bool(operator_ids & allowed_ids)
-        # SessionSource.user_id is the tenant user_id, else open_id (_resolve_sender_profile).
-        principal = str(user_id or "").strip() or normalized
-        # Feishu chat ids don't say DM vs group; "group" is the check's own default.
-        verdict = self._is_sender_authorized(principal, "group", str(chat_id or "") or None)
-        if verdict is None:
-            logger.debug("[Feishu] No gateway authorization check for card operator %s; denying", normalized)
-            return False
-        return verdict
+        return is_interactive_operator_authorized(
+            self, open_id, user_id=user_id, union_id=union_id, chat_id=chat_id,
+        )
 
     @staticmethod
     def _card_response(card_data: Optional[dict[str, Any]] = None) -> Any:

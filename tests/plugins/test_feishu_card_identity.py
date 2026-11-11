@@ -34,9 +34,10 @@ def card_event(open_id="ou_alice", chat_id="oc_dm"):
 
 
 @pytest.mark.asyncio
-async def test_open_id_callback_resolves_paired_requester_and_rechecks_revocation(adapter):
+@pytest.mark.parametrize("paired_id", ["u_alice", "ou_alice", "on_alice"])
+async def test_open_id_callback_resolves_paired_requester_and_rechecks_revocation(adapter, paired_id):
     store = PairingStore()
-    code = store.generate_code("feishu", "u_alice")
+    code = store.generate_code("feishu", paired_id)
     assert store.approve_code("feishu", code)
     adapter.set_authorization_check(lambda user_id, *_args: store.is_approved("feishu", user_id))
     await adapter._resolve_sender_profile(SimpleNamespace(open_id="ou_alice", user_id="u_alice", union_id="on_alice"))
@@ -53,10 +54,15 @@ async def test_open_id_callback_resolves_paired_requester_and_rechecks_revocatio
         assert entry.result == "once"
 
         # An alias is identity evidence, never a cached authorization grant.
-        assert store.revoke("feishu", "u_alice")
+        assert store.revoke("feishu", paired_id)
         assert adapter._validate_card_action(
             event=card_event().event, state={"chat_id": "oc_dm"}, label="approval", ident=2,
         ) is None
+        adapter._approval_state[2] = {"session_key": session, "chat_id": "oc_dm"}
+        await adapter._resolve_approval(
+            2, "once", "Alice", open_id="ou_alice", user_id="u_alice", union_id="on_alice", chat_id="oc_dm",
+        )
+        assert 2 in adapter._approval_state
     finally:
         approval._gateway_queues.pop(session, None)
 

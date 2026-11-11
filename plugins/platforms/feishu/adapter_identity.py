@@ -1,7 +1,11 @@
 """Adapter-local identity aliases learned from authenticated Feishu events."""
 
+import logging
 import threading
 from typing import Any, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 class SenderIdentityCache:
@@ -25,6 +29,51 @@ class SenderIdentityCache:
         with self._lock:
             known = self._identities.get(open_id, ("", ""))
         return user_id or known[0], union_id or known[1]
+
+
+def is_interactive_operator_authorized(
+    adapter: Any, open_id: str, *, user_id: str = "", union_id: str = "", chat_id: str = "",
+) -> bool:
+    """Check each SDK-associated ID live so learning a tenant ID cannot hide an open-ID grant."""
+    normalized = str(open_id or "").strip()
+    if not normalized:
+        return False
+    operator_ids = tuple(dict.fromkeys(value for value in (
+        str(user_id or "").strip(), normalized, str(union_id or "").strip(),
+    ) if value))
+    allowed_ids = set(adapter._admins) | set(adapter._allowed_group_users)
+    if allowed_ids:
+        return "*" in allowed_ids or bool(set(operator_ids) & allowed_ids)
+    canonical_scope = None
+    if adapter.gateway_runner is not None:
+        canonical_scope = _operator_routing_identity(adapter, operator_ids[0], chat_id)
+        if canonical_scope is None:
+            return False
+    # Keep the tenant ID first, matching SessionSource.user_id. An existing pairing may
+    # name an alias, but its lookup must stay in the canonical user's profile.
+    for index, principal in enumerate(operator_ids):
+        if canonical_scope is not None and index and not _alias_uses_authorization_scope(adapter, principal, chat_id, canonical_scope):
+            continue
+        verdict = adapter._is_sender_authorized(principal, "group", str(chat_id or "") or None)
+        if verdict is True:
+            return True
+        if verdict is None:
+            logger.debug("[Feishu] No gateway authorization verdict for card operator %s; denying", principal)
+    return False
+
+
+def _alias_uses_authorization_scope(adapter: Any, user_id: str, chat_id: str, canonical_scope: Any) -> bool:
+    # A dedicated bot's scalar authorization callback is bound to its owner profile,
+    # even when message routing selects another runtime. Keep alias grants in that scope.
+    owner = adapter._owner_transport_profile()
+    if owner is not None and owner != canonical_scope.runtime_profile:
+        return False
+    return _operator_routing_identity(adapter, user_id, chat_id) == canonical_scope
+
+
+def _operator_routing_identity(adapter: Any, user_id: str, chat_id: str) -> Any:
+    source = adapter.build_source(chat_id=str(chat_id or ""), chat_type="group", user_id=user_id)
+    return adapter._canonicalize(source)
 
 
 async def resolve_sender_profile(adapter: Any, sender_id: Any, *, is_bot: bool = False) -> dict[str, Optional[str]]:

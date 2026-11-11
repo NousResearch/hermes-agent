@@ -316,9 +316,10 @@ async def test_failed_tls_through_a_proxy_tunnel_frees_its_pool_slot(tmp_path, m
 def test_pool_size_override_fits_the_process_descriptor_budget(monkeypatch):
     """HERMES_TELEGRAM_HTTP_POOL_SIZE=512 across 2 clients × (fallback IPs + hostname) pools must not
     promise more sockets than a quarter of RLIMIT_NOFILE (#82678); a small override is kept."""
-    import resource
+    from plugins.platforms.telegram import telegram_pool
 
-    soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    soft = 1024  # a common Linux default; the host's own limit may be large enough to need no cap
+    monkeypatch.setattr(telegram_pool, "_nofile_soft_limit", lambda: soft)
     ips = ["149.154.166.110", "149.154.167.220", "149.154.167.221", "149.154.167.222", "149.154.167.223",
            "149.154.167.224"]
     built = []
@@ -333,19 +334,52 @@ def test_pool_size_override_fits_the_process_descriptor_budget(monkeypatch):
     paths = len(transports[0]._fallback_ips) + 1
     assert paths <= 5, "the fallback-address count is unbounded"
     per_pool = [t._transport_kwargs["limits"].max_connections for t in transports]
-    assert sum(per_pool) * paths <= max(soft // 4, 4 * 2 * paths)
+    assert sum(per_pool) * paths <= soft // 4
+    assert all(t._transport_kwargs["limits"].max_keepalive_connections <= p for t, p in zip(transports, per_pool))
 
     # An operator's keepalive-off (HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE=0) survives the cap.
     built.clear()
     monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "0")
     tnet.build_ptb_requests(_Capture, fallback_ips=ips, proxy_url=None, verify=False)
-    assert built[0]["httpx_kwargs"]["transport"]._transport_kwargs["limits"].max_keepalive_connections == 0
+    capped = built[0]["httpx_kwargs"]["transport"]._transport_kwargs["limits"]
+    assert capped.max_connections < 512 and capped.max_keepalive_connections == 0
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE")
 
     built.clear()
     monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "4")
     tnet.build_ptb_requests(_Capture, fallback_ips=ips, proxy_url=None, verify=False)
     assert all(b["httpx_kwargs"]["transport"]._transport_kwargs["limits"].max_connections == 4 for b in built)
+
+
+@pytest.mark.asyncio
+async def test_a_retired_busy_pool_is_released_once_it_drains(monkeypatch):
+    """The grace timer of a pool retired while busy is cancelled when the pool closes, so a drained
+    generation is not kept alive by the timer for the whole grace period."""
+    import gc
+    import weakref
+
+    from plugins.platforms.telegram import telegram_pool
+
+    class _Inner(httpx.AsyncBaseTransport):
+        def __init__(self, **_kwargs):
+            pass
+
+        async def handle_async_request(self, request):
+            return httpx.Response(200, request=request, stream=httpx.ByteStream(b"{}"))
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(telegram_pool.httpx, "AsyncHTTPTransport", _Inner)
+    held = {"generation": telegram_pool.PoolGeneration()}
+    response = await held["generation"].handle_async_request(httpx.Request("POST", "https://api.telegram.org/bot1/getMe"))
+    await held["generation"].retire()  # busy: closes when the response does
+    await response.aclose()
+    await async_wait_until(lambda: held["generation"]._closed, timeout=5, what="retired generation closes")
+    ref = weakref.ref(held.pop("generation"))
+    del response
+    gc.collect()
+    assert ref() is None, "the grace timer still holds the closed generation"
 
 
 @pytest.mark.asyncio

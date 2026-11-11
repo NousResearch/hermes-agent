@@ -51,3 +51,21 @@ async def test_an_explicit_voice_command_overrides_the_legacy_off(tmp_path):
     _, adapter = _restart(tmp_path)
 
     assert _speaks(adapter, "123")
+
+
+@pytest.mark.parametrize(("platform", "chat_id"), [
+    (Platform.MATRIX, "!room:example.org"),  # room ids carry the homeserver after a colon
+    (Platform.SIGNAL, "group:aGVsbG8="),  # Signal group chats are "group:<id>"
+    (Platform.SLACK, "C0123ABCD"),
+    (Platform.TELEGRAM, "-1001234567890"),
+])
+def test_a_legacy_off_holds_for_every_chat_id_shape(tmp_path, platform, chat_id):
+    (tmp_path / "gateway_voice_mode.json").write_text(json.dumps({chat_id: "off"}))
+    runner = _make_runner(tmp_path)
+    runner._voice_mode = runner._load_voice_modes()
+    adapter = SimpleNamespace(platform=platform, _auto_tts_default=False, _owner_profile=None,
+                              _auto_tts_enabled_chats=set(), _auto_tts_disabled_chats=set())
+    with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
+        runner._sync_voice_mode_state_to_adapter(adapter)
+
+    assert not _speaks(adapter, chat_id)

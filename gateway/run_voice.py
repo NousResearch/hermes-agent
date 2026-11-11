@@ -31,6 +31,22 @@ _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
 
 
+def _is_platform_name(segment: str) -> bool:
+    try:
+        Platform(segment)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_legacy_voice_key(key: str) -> bool:
+    """True for a pre-#12542 bare ``chat_id`` key. Chat ids may contain ``:`` themselves (Matrix
+    ``!room:server``, Signal and SimpleX ``group:<id>``), so a key is prefixed only when it starts
+    with ``<platform>:`` or ``<profile>:<platform>:``, never merely because it has a colon."""
+    parts = key.split(":", 2)
+    return not (_is_platform_name(parts[0]) or (len(parts) == 3 and _is_platform_name(parts[1])))
+
+
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -64,7 +80,7 @@ class GatewayVoiceMixin:
         if not isinstance(data, dict):
             return {}
         items = {str(k): m for k, m in data.items() if m in _VOICE_MODES}
-        for key, mode in [(k, m) for k, m in items.items() if ":" not in k]:
+        for key, mode in [(k, m) for k, m in items.items() if _is_legacy_voice_key(k)]:
             # Legacy pre-#12542 key (no platform). Keep ``off``, so a saved ``/voice off`` still
             # suppresses auto-TTS after the upgrade (#14025); drop voice_only/all, which would
             # speak on a platform the user never turned voice on for.
@@ -147,7 +163,7 @@ class GatewayVoiceMixin:
         # come from the default profile's bots; it suppresses where no explicit entry exists.
         legacy_off = set() if prefix != f"{platform.value}:" else {
             key for key, mode in self._voice_mode.items()
-            if mode == "off" and ":" not in key and key not in explicit}
+            if mode == "off" and _is_legacy_voice_key(key) and key not in explicit}
         for chats, modes in chat_sets:
             chats.clear()
             chats.update(key[len(prefix):] for key, mode in self._voice_mode.items()

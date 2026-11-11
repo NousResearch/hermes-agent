@@ -138,7 +138,7 @@ class PoolGeneration(httpx.AsyncBaseTransport):
         self._closed = True
         try:
             await self._inner.aclose()
-        except Exception as exc:  # closing a broken pool must never mask the caller's error
+        except (OSError, RuntimeError, httpx.HTTPError) as exc:  # a broken pool's close never masks the caller's error
             logger.debug("[Telegram] Error closing retired Telegram pool: %s", exc)
 
     async def retire(self) -> None:

@@ -71,11 +71,18 @@ def test_different_chat_does_not_inherit_the_origin_thread():
     assert target["thread_id"] is None
 
 
-def test_other_topic_platforms_inherit_too():
-    """Not a Telegram special case: a Discord thread channel on the origin chat survives."""
-    origin = {"platform": "discord", "chat_id": "42", "thread_id": "77"}
-    target = _resolved(_job("discord:42", origin))
-    assert target["thread_id"] == "77"
+@pytest.mark.parametrize("platform, chat, thread", [
+    ("matrix", "!abc:srv", "$evt1"),
+    ("mattermost", "chan1", "post9"),
+    ("discord", "42", "77"),
+])
+def test_platforms_without_durable_topic_lanes_keep_posting_top_level(platform, chat, thread):
+    """Matrix (auto_thread) and Mattermost (reply_mode: thread) stamp the creation message's own
+    id as the origin thread; inheriting it would move existing room jobs into that message's
+    reply thread with no top-level opt-out. Only Telegram topics and Slack threads inherit."""
+    origin = {"platform": platform, "chat_id": chat, "thread_id": thread}
+    target = _resolved(_job(f"{platform}:{chat}", origin))
+    assert target["thread_id"] is None
 
 
 def test_stale_slack_per_message_thread_is_not_inherited(monkeypatch):

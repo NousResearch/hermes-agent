@@ -623,6 +623,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
         self._command_menu_fingerprint: str = ""  # language + menu payload last pushed via set_my_commands
         self._forum_lock = asyncio.Lock()
+        # (chat_id, message_id) -> topic of the widget messages this adapter sent (a widget_query names none)
+        self._widget_threads = telegram_widgets.WidgetThreads()
         # Status indicator: bot short description "Online"/"Offline" on connect/clean disconnect. Off by
         # default because it mutates the GLOBAL profile; opt in via extra.status_indicator.
         self._status_indicator_enabled: bool = bool(extra.get("status_indicator", False))
@@ -2646,7 +2648,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         chat_type = self._normalize_chat_type(ids["chat_type"], is_forum=ids["is_forum"])
         return self.build_source(
             chat_id=ids["chat_id"], chat_type=chat_type, user_id=ids["user_id"], user_name=ids["user_name"],
-            thread_id=None, message_id=ids["message_id"])
+            thread_id=self._widget_thread_of(query), message_id=ids["message_id"])
+
+    def _widget_thread_of(self, query: dict[str, Any]) -> Optional[str]:
+        """The topic the queried widget was sent into by this adapter, or ``None`` (sent before a restart,
+        elsewhere, or outside a topic)."""
+        threads = getattr(self, "_widget_threads", None)
+        return threads.thread_of(query) if threads is not None else None
 
     def _normalize_platform_event(self, update) -> Optional[dict[str, Any]]:
         """Map a PTB update to a ``{platform, event_type, payload}`` envelope (hooks.md contracts), or
@@ -2657,7 +2665,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return self._normalize_message_edited_event(update)
         query = telegram_widgets.widget_query_of(update)
         if query is not None:
-            return telegram_widgets.normalize_event(query)
+            return telegram_widgets.normalize_event(query, thread_id=self._widget_thread_of(query))
         return None
 
     @staticmethod
@@ -2737,11 +2745,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self, chat_id: str, html: str, *, chat_data: Optional[str] = None, public_data: Optional[str] = None,
         caption: Optional[str] = None, allow_queries: bool = True, disable_notification: bool = False,
         thread_id: Optional[str] = None) -> dict[str, Any]:
-        """``sendWidget``: the raw message dict Telegram returns (its ``message_id`` addresses later edits)."""
-        return await telegram_widgets.send_widget(
+        """``sendWidget``: the raw message dict Telegram returns (its ``message_id`` addresses later edits). The
+        topic Telegram reports for the message is remembered, so a tap on the widget names it again."""
+        sent = await telegram_widgets.send_widget(
             self._bot, normalize_telegram_chat_id(chat_id), html, chat_data=chat_data, public_data=public_data,
             caption=caption, allow_queries=allow_queries, disable_notification=disable_notification,
             thread_id=thread_id)
+        self._widget_threads.remember(sent)
+        return sent
 
     async def edit_widget_data(
         self, chat_id: str, message_id: str, *, chat_data: Optional[str] = None,

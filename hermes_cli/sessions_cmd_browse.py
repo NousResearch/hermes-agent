@@ -51,6 +51,8 @@ def _match(s: dict, query: str) -> bool:
 
 # Layout: [arrow 3] [title/preview flexible] [status 5] [msgs 5] [active 12] [src 6] [id 18]
 _FIXED_COLS = 3 + 5 + 2 + 5 + 2 + 12 + 6 + 18 + 6
+_FIRST_ROW_Y = 3  # screen line of the first session row (header, column header, blank above it)
+_WHEEL_STEP = 3  # rows the cursor moves per wheel notch
 
 
 def _format_row(s: dict, max_x: int) -> str:
@@ -62,6 +64,11 @@ def _format_row(s: dict, max_x: int) -> str:
         f"{_msgs_str(s):>5}  {_relative_time(s.get('last_active'), session_id=s['id']):<10}  "
         f"{s.get('source', '')[:6]:<5} {sid}"
     )
+
+
+def _wheel_down(curses) -> int:
+    """Wheel-down button mask; 0 when curses was built against an ncurses that has no button 5."""
+    return getattr(curses, "BUTTON5_PRESSED", 0)
 
 
 class _CursesBrowser:
@@ -119,7 +126,7 @@ class _CursesBrowser:
                 self.scroll = self.cursor - visible_rows + 1
             tag_x = 3 + max(20, (max_x - 3) - _FIXED_COLS) + 2
             for draw_i, i in enumerate(range(self.scroll, min(len(filtered), self.scroll + visible_rows))):
-                y = draw_i + 3
+                y = draw_i + _FIRST_ROW_Y
                 if y >= max_y - 1:
                     break
                 s, selected = filtered[i], i == self.cursor
@@ -146,6 +153,24 @@ class _CursesBrowser:
                 footer += "   d delete"
         self._put(stdscr, max_y - 1, 0, footer, max_x - 1, footer_attr)
 
+    def _handle_mouse(self) -> bool:
+        """Click selects the row under the pointer, the wheel moves the cursor; True when a row was picked."""
+        c = self.curses
+        try:
+            _id, _x, y, _z, state = c.getmouse()
+        except c.error:
+            return False
+        if state & c.BUTTON1_CLICKED:
+            row = self.scroll + y - _FIRST_ROW_Y
+            if y >= _FIRST_ROW_Y and row < len(self.filtered):
+                self.result = self.filtered[row]["id"]
+                return True
+        elif state & c.BUTTON4_PRESSED and self.filtered:
+            self.cursor = max(self.cursor - _WHEEL_STEP, 0)
+        elif state & _wheel_down(c) and self.filtered:
+            self.cursor = min(self.cursor + _WHEEL_STEP, len(self.filtered) - 1)
+        return False
+
     def _handle_key(self, key) -> bool:
         """Apply one keypress; return True when the picker should exit."""
         c = self.curses
@@ -165,6 +190,8 @@ class _CursesBrowser:
             self._refilter(reset_cursor=False)
             self.flash = "Deleted."
             return not self.sessions
+        if key == c.KEY_MOUSE:
+            return self._handle_mouse()
         if key in (c.KEY_UP, c.KEY_DOWN):
             if self.filtered:
                 self.cursor = (self.cursor + (1 if key == c.KEY_DOWN else -1)) % len(self.filtered)
@@ -201,6 +228,7 @@ class _CursesBrowser:
             palette = (c.COLOR_GREEN, c.COLOR_YELLOW, c.COLOR_CYAN, 8 if c.COLORS > 8 else c.COLOR_WHITE, c.COLOR_RED)
             for n, color in enumerate(palette, 1):
                 c.init_pair(n, color, -1)
+        c.mousemask(c.BUTTON1_CLICKED | c.BUTTON4_PRESSED | _wheel_down(c))
         while True:
             stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()

@@ -1,0 +1,31 @@
+name: fudge
+title: Fudge for Shopify
+repo: https://github.com/fudge-ai/fudge-plugin
+sha: 11f589b9e06952396f3f670481ec9a133a34794f
+description: >-
+  Run a Shopify store with AI through Fudge's hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic
+  client registration and PKCE): store briefs, sales, search and analytics measurement, SEO, AI-search and
+  catalog checks, keyword research, and storefront changes prepared as private drafts that the merchant
+  publishes in Fudge, with six skills bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json +
+  skills/). Disclosure — hosted-only connector with no local code; every tool call goes to Fudge's MCP
+  server at mcp.fudge.ai with the merchant's requests and store data (products, pages, sales and traffic
+  figures), which also reach the user's model provider through the session. Write tools create or edit
+  private drafts and, when asked, hidden Shopify items (draft products, pages, articles, collections);
+  nothing goes live until the merchant publishes in Fudge. Hermes stores and refreshes the OAuth tokens.
+  The tool list comes from Fudge's server at run time, so the pinned commit doesn't cover it. The server
+  accepts a connection without a token so its free tools (design references, page checks, free reports)
+  work before sign-in; store tools need sign-in, which starts the first time one runs.
+maintainer: Fudge
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/fudge-ai/fudge-plugin/blob/11f589b9e06952396f3f670481ec9a133a34794f/README.md
+version: "1.0.1"
+platforms: []
+known_issues:
+  - "Add the server once after installing: hermes mcp add fudge --url https://mcp.fudge.ai/mcp --auth oauth. Sign-in then opens in the browser the first time a store tool runs in an interactive session; hermes mcp login fudge can't start it, because the server answers without a token."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

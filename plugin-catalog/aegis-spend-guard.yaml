@@ -1,6 +1,6 @@
 name: aegis-spend-guard
 repo: https://github.com/georgeonweb3/hermes-aegis-spend-guard
-sha: 766bf7c85d7b1d315ad357907f61ca2d20f6b45d
+sha: e4465cb94275f5b2396ef1e20c36bf2f39aafb2e
 title: Aegis Spend Guard
 description: >-
   Owner-set spend policy for Hermes Agent, enforced in a pre_tool_call hook before any
@@ -29,7 +29,7 @@ tier: community
 category: tools
 docs_url: https://github.com/georgeonweb3/hermes-aegis-spend-guard#readme
 requires_hermes: ">=0.23.0"
-version: "1.1.1"
+version: "1.1.2"
 platforms: []
 capabilities:
   provides_tools:

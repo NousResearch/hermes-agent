@@ -1,0 +1,27 @@
+name: googlehome
+repo: https://github.com/karmsheel/google-home
+sha: 2ad26e99d923969c46c5dc136ced2c931b0df871
+subdir: googlehome
+description: 'Google Home / Nest speaker as the mouth of a Hermes profile: replies are cast over the Cast v2 protocol with zero third-party dependencies, voice arrives from the host microphone through Hermes STT, and one speaker keeps one conversation. Adds googlehome_speak, googlehome_notify, googlehome_status, googlehome_volume and googlehome_devices, a Desktop page with push-to-talk and speaker controls, and hermes googlehome CLI commands. Disclosure: talks to the speaker over the LAN (TLS 8009, mDNS), serves the spoken MP3 from an unauthenticated media server on a pinned port, runs a token-gated loopback control API that can start turns, and spawns PowerShell SAPI or edge-tts for speech.'
+maintainer: karmsheel
+tier: community
+category: platform
+requires_hermes: ">=0.21.5"
+version: "0.4.0"
+title: Google Home
+docs_url: https://github.com/karmsheel/google-home#readme
+screenshots:
+  - https://raw.githubusercontent.com/karmsheel/google-home/2ad26e99d923969c46c5dc136ced2c931b0df871/docs/screenshots/01-bridge.png
+  - https://raw.githubusercontent.com/karmsheel/google-home/2ad26e99d923969c46c5dc136ced2c931b0df871/docs/screenshots/02-controls.png
+platforms: []
+capabilities:
+  provides_tools:
+    - googlehome_speak
+    - googlehome_notify
+    - googlehome_status
+    - googlehome_volume
+    - googlehome_devices
+  provides_hooks:
+    - post_llm_call
+    - post_tool_call
+  requires_env: []

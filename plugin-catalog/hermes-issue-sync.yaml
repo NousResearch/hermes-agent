@@ -1,6 +1,6 @@
 name: hermes-issue-sync
 repo: https://github.com/elijahboston/hermes-issue-sync
-sha: 5d801f510ed19eb90e14693bf9317426c24cd9c7
+sha: ed7dd85c5b4f38df55ac9ecb663ab220b8b1c8cc
 description: >-
   Two-way sync between Hermes kanban cards and Linear or Jira issues. Open issues with a
   chosen label in the projects you pick become cards; card status moves the issue through
@@ -22,7 +22,11 @@ category: automation
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/elijahboston/hermes-issue-sync#readme
 version: "0.1.0"
-screenshots: []
+screenshots:
+  - https://raw.githubusercontent.com/elijahboston/hermes-issue-sync/ed7dd85c5b4f38df55ac9ecb663ab220b8b1c8cc/docs/screenshots/panel-waiting.png
+  - https://raw.githubusercontent.com/elijahboston/hermes-issue-sync/ed7dd85c5b4f38df55ac9ecb663ab220b8b1c8cc/docs/screenshots/linear-question.png
+  - https://raw.githubusercontent.com/elijahboston/hermes-issue-sync/ed7dd85c5b4f38df55ac9ecb663ab220b8b1c8cc/docs/screenshots/linear-done-summary.png
+  - https://raw.githubusercontent.com/elijahboston/hermes-issue-sync/ed7dd85c5b4f38df55ac9ecb663ab220b8b1c8cc/docs/screenshots/panel-boards.png
 platforms: []
 capabilities:
   provides_tools: []

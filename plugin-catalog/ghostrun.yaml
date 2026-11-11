@@ -1,6 +1,6 @@
 name: ghostrun
 repo: https://github.com/kdcyberdude/ghostrun
-sha: 753451da1d233bbb5f86caf8651b0bf10ded0479
+sha: beb37933705847a8ed894008a7c9e562c47ca3fb
 title: GhostRun
 description: "Give Hermes a retro NES game: it discovers and proves a reward from RAM, trains a pixel-only player on thousands of GPU-emulated consoles, self-repairs reward bugs with a training watcher, then rebuilds the game in Three.js (2D, optional 3D) from a black-box oracle it can only observe. Disclosure — `ghostrun_engine_setup` clones https://github.com/hbofz/NeSLE.git at pinned commit 0b04d8b9 and compiles it locally with nvcc/c++; runs git, nvcc, c++, nvidia-smi and the configured Python; starts long-running background processes only on explicit tool calls (GPU training, oracle service, watcher thread that can wake the agent to edit that game's reward reader and restart its training, max 3 fixes per game); reads the ROM path you give it and the configured builder folder; a pre_tool_call hook blocks builder sessions from reaching the reference game. No credentials, no telemetry, no bundled binaries."
 maintainer: kdcyberdude

@@ -1,0 +1,11 @@
+name: deadline-guard
+repo: https://github.com/Snedz/hermes-deadline-guard
+sha: e79b9e96042a73b85aaf3c8187b6a171e3882c74
+description: "Deadline awareness for Hermes: reads a local Markdown deadlines table and exposes check_deadlines, next_founder_steps, and propose_status_update tools. Buckets commitments into overdue / 24h / 72h / 7d, surfaces founder-gated next steps, and refuses to record a 'submitted' status without a receipt URL. Stdlib only, no network, reads only the configured local file."
+maintainer: Snedz
+tier: community
+category: automation
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools: true

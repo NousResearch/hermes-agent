@@ -21,6 +21,7 @@ import mimetypes
 import os
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -80,8 +81,27 @@ class RelayMediaClient:
         return make_upgrade_token(self._gateway_id, self._secret)
 
     def is_relay_media_url(self, url: str) -> bool:
-        """Is ``url`` a connector re-host reference (needs our bearer to GET)?"""
-        return "/relay/media/" in (url or "")
+        """Is ``url`` a connector re-host reference (needs our bearer to GET)?
+
+        Only a URL on the connector's own origin (scheme, host, effective port) under
+        its ``{base path}/relay/media/`` gets the bearer: inbound ``media_urls`` are
+        platform-influenced, so a bare path-substring match would hand the bearer to
+        any host that names that path. Userinfo is refused outright so a parser
+        differential (``https://evil\\@connector/…``) cannot split host and target.
+        """
+        from hermes_cli.urllib_security import url_origin
+
+        try:
+            candidate = urllib.parse.urlsplit(url or "")
+            base = urllib.parse.urlsplit(self._base_url)
+            origin, base_origin = url_origin(url), url_origin(self._base_url)
+        except ValueError:
+            return False
+        if "@" in candidate.netloc or "\\" in candidate.netloc or origin[0] not in ("http", "https"):
+            return False
+        if not origin[1] or origin != base_origin:
+            return False
+        return candidate.path.startswith(f"{base.path.rstrip('/')}/relay/media/")
 
     async def upload(
         self, file_path: str, *, mime: Optional[str] = None, filename: Optional[str] = None

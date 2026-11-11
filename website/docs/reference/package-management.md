@@ -134,6 +134,12 @@ the same lock.
 
 ## Optional Python dependencies and plugins
 
+Selected buildable plugins can depend on one another's Python distributions.
+PM links those distributions through the generated workspace and checks applicable
+requirements against their declared static versions. Python dependencies do not
+enable another plugin's hooks. Declare `requires_plugins` when registration order
+or an enabled plugin is required.
+
 A built-in feature requests a project extra through `pm.ensure_import`.
 Directory plugins declare Python requirements in `pyproject.toml`. Without an
 authored project file, PM combines the legacy `pip_dependencies` and

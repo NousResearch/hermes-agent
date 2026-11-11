@@ -122,6 +122,7 @@ def test_snapshot_reports_the_childs_resolved_provider_and_nonsecret_account(run
         # A provider fallback changes the route while the child keeps running.
         fallback_entry = SimpleNamespace(id="cred-2", runtime_api_key="fallback-credential-value")
         child.provider = "xai-oauth"
+        child.api_key = "fallback-credential-value"
         child._credential_pool = SimpleNamespace(entries=lambda: [fallback_entry], current=lambda: fallback_entry)
         child._credential_pool_entry_id = "cred-2"
         _sync_subagent_provider_metadata("child", child)
@@ -137,6 +138,65 @@ def test_snapshot_reports_the_childs_resolved_provider_and_nonsecret_account(run
         assert call("subagent.list")["result"]["subagents"] == []
     finally:
         _unregister_subagent("child")
+
+
+def test_child_account_identity_rejects_a_stale_entry_and_a_wrong_current_pool_entry():
+    """A stale entry id and a generic ``pool.current()`` fallback are not proof of the route.
+
+    The child's live ``api_key`` is the only credential it actually uses. A pool entry may
+    still be the previous provider's/key's row (or a rotated row), so the published account id
+    must come from the entry only when its runtime key is the child's key; otherwise it is the
+    same fingerprint namespace derived from the actual key, never another account's id.
+    """
+    from types import SimpleNamespace
+
+    from agent.account_usage_cache import _identity_id_for
+    from tools.delegate_tool_child_run import _child_provider_account_id
+
+    actual_key = "child-actual-key"
+    stale = SimpleNamespace(id="stale", runtime_api_key="replaced-key")
+    wrong_current = SimpleNamespace(id="current", runtime_api_key="other-key")
+    pool = SimpleNamespace(
+        provider="deepseek", entries=lambda: [stale, wrong_current], current=lambda: wrong_current,
+    )
+    child = SimpleNamespace(
+        provider="deepseek", api_key=actual_key,
+        _credential_pool=pool, _credential_pool_entry_id="stale",
+    )
+    expected = _identity_id_for(
+        "deepseek", SimpleNamespace(runtime_api_key=actual_key, id=""),
+    )
+    assert expected.startswith("fp:")
+    assert _child_provider_account_id(child, "deepseek") == expected
+    # No explicit entry: pool.current() is still not evidence that it is the child's credential.
+    child._credential_pool_entry_id = None
+    assert _child_provider_account_id(child, "deepseek") == expected
+    # No live key: no account can be proved, so the footer must stay unknown.
+    child.api_key = ""
+    assert _child_provider_account_id(child, "deepseek") is None
+
+
+def test_child_account_identity_uses_a_pool_entry_when_its_key_is_the_childs():
+    """The matching pool row is trusted exactly; a stale explicit id defers to a matching current row."""
+    from types import SimpleNamespace
+
+    from agent.account_usage_cache import _identity_id_for
+    from tools.delegate_tool_child_run import _child_provider_account_id
+
+    actual_key = "child-actual-key"
+    stale = SimpleNamespace(id="stale", runtime_api_key="replaced-key")
+    matching = SimpleNamespace(id="matching", runtime_api_key=actual_key)
+    pool = SimpleNamespace(
+        provider="deepseek", entries=lambda: [stale, matching], current=lambda: matching,
+    )
+    child = SimpleNamespace(
+        provider="deepseek", api_key=actual_key,
+        _credential_pool=pool, _credential_pool_entry_id="matching",
+    )
+    assert _child_provider_account_id(child, "deepseek") == _identity_id_for("deepseek", matching)
+    # A stale explicit id must not win over a current row that does match the live key.
+    child._credential_pool_entry_id = "stale"
+    assert _child_provider_account_id(child, "deepseek") == _identity_id_for("deepseek", matching)
 
 
 def test_provider_metadata_is_session_scoped_and_clears_on_switch(runtime):

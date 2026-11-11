@@ -436,30 +436,51 @@ def _child_provider_account_id(child: Any, provider: Optional[str]) -> Optional[
     """
     if not provider:
         return None
+    child_key = str(getattr(child, "api_key", "") or "").strip()
+
+    def _matches_child_key(candidate: Any) -> bool:
+        """True only when the pool row carries the exact credential the child is using."""
+        if candidate is None or not child_key:
+            return False
+        try:
+            return str(getattr(candidate, "runtime_api_key", "") or "").strip() == child_key
+        except Exception:
+            return False
+
     entry = None
     pool = getattr(child, "_credential_pool", None)
     pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
     # A provider fallback can leave the previous provider's pool attached while the live
     # credential is already the fallback key. Never label that key with the old pool's account.
     if pool is not None and (not pool_provider or pool_provider == provider):
+        candidates = []
         try:
             entry_id = getattr(child, "_credential_pool_entry_id", None)
             if isinstance(entry_id, str) and entry_id:
-                entry = next((e for e in pool.entries() if getattr(e, "id", None) == entry_id), None)
-            if entry is None:
-                entry = pool.current()
+                explicit = next((e for e in pool.entries() if getattr(e, "id", None) == entry_id), None)
+                if explicit is not None:
+                    candidates.append(explicit)
         except Exception:
-            entry = None
+            pass
+        try:
+            current = pool.current()
+        except Exception:
+            current = None
+        if current is not None and all(current is not candidate for candidate in candidates):
+            candidates.append(current)
+        # A stale explicit id and a generic ``current()`` are both only claims: trust either
+        # row only when its runtime key is the live key the child actually sends.
+        entry = next((candidate for candidate in candidates if _matches_child_key(candidate)), None)
     try:
         from agent.account_usage_cache import _identity_id_for
         if entry is not None:
             return _str_or_none(_identity_id_for(provider, entry))
-        # A fixed credential (no shared pool) is still a real account; fingerprint it with the
-        # same helper the inventory uses so an identical key resolves to the identical id.
-        api_key = str(getattr(child, "api_key", "") or "").strip()
-        if api_key:
+        # A fixed credential (no shared pool), or a pool row that no longer matches, is still a
+        # real account; fingerprint the live key with the same helper the inventory uses so an
+        # identical key resolves to the identical id and a different key never reuses another id.
+        if child_key:
             from types import SimpleNamespace
-            return _str_or_none(_identity_id_for(provider, SimpleNamespace(runtime_api_key=api_key, id="")))
+            return _str_or_none(_identity_id_for(provider, SimpleNamespace(runtime_api_key=child_key, id="")))
     except Exception:
         logger.debug("subagent provider account identity unavailable", exc_info=True)
     return None

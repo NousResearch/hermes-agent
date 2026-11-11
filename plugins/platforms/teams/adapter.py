@@ -730,9 +730,13 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         last_message_id = None
+        # A channel-thread conversation id (``…;messageid=<root>``) already targets the thread. reply()
+        # would swap that root for ``reply_to`` (the triggering reply, not the root), which Teams
+        # rejects with 400 before the flat fallback lands in the same thread anyway.
+        threaded_reply = bool(reply_to and reply_to.isdigit() and reply_to != "0" and ";messageid=" not in chat_id)
         for chunk in self.truncate_message(self.format_message(content)):
             try:
-                if reply_to and reply_to.isdigit() and reply_to != "0":
+                if threaded_reply:
                     try:
                         result = await self._app.reply(chat_id, reply_to, chunk)
                     except Exception as reply_err:

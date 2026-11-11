@@ -1,26 +1,27 @@
 name: radar
 repo: https://github.com/Dieguezar/hermes-radar
-sha: 1e76cf175d2a1cff36877424ce1437a5bff5b151
+sha: 80435faed9ced7c48523f125d4f05ed806ef6efb
 subdir: ""
 title: Radar
 description: >-
   Radar — real-time Multi-Agent Squad Mission Control for Hermes across all profiles:
   live Bot Squad Roster with 1-click filtering, aggregate and per-session telemetry
-  (tokens, tool calls, child subagents, git branch), safe 2-step PID interrupt (SIGTERM)
-  for runaway turns, always-on-top OS Picture-in-Picture, and instant EN/ES i18n.
-  Strictly read-only SQLite (?mode=ro), zero external dependencies, Linux and Windows support.
+  (tokens, tool calls, child subagents, git branch), safe 2-click session.interrupt RPC
+  for runaway turns, always-on-top OS Picture-in-Picture, and English-first UI with
+  EN/ES i18n. Strictly read-only SQLite (?mode=ro), zero external dependencies, Linux
+  and Windows support.
 maintainer: Dieguezar
 tier: community
 category: desktop
 requires_hermes: ">=0.22"
 docs_url: https://github.com/Dieguezar/hermes-radar#readme
 version: "0.8.0"
-image: https://raw.githubusercontent.com/Dieguezar/hermes-radar/1e76cf175d2a1cff36877424ce1437a5bff5b151/docs/banner.png
+image: https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/1e76cf175d2a1cff36877424ce1437a5bff5b151/docs/fullpage-en.png
-  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/1e76cf175d2a1cff36877424ce1437a5bff5b151/docs/floating-hud.png
-  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/1e76cf175d2a1cff36877424ce1437a5bff5b151/docs/pip-os.png
-  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/1e76cf175d2a1cff36877424ce1437a5bff5b151/docs/fullpage-es.png
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/fullpage-en.png
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/floating-hud.png
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/pip-os.png
+  - https://raw.githubusercontent.com/Dieguezar/hermes-radar/80435faed9ced7c48523f125d4f05ed806ef6efb/docs/fullpage-es.png
 platforms:
   - linux
   - windows

@@ -838,6 +838,29 @@ class SessionSchemaMixin:
             "FROM gateway_routing_legacy_pk ORDER BY updated_at ASC",
         )
 
+    def _heal_reset_rows_carrying_a_delegate_marker(self, cursor: sqlite3.Cursor) -> None:
+        """Strip ``_delegate_from`` from a chat's /new continuation (``session_key`` set, ``_reset_from``
+        set) that picked it up: the marker hides the row from every session list while the gateway keeps
+        routing the chat into it (#109073). ``_reset_from`` already says what the row is, so the pair is
+        contradictory and the delegate marker is the stray. A keyed row WITHOUT ``_reset_from`` is a real
+        delegate child that captured a route (#138210) and keeps its marker: routing moves the chat off
+        it instead. Idempotent; probes first so a clean store takes no write lock on open."""
+        polluted = (
+            "session_key IS NOT NULL AND session_key != '' AND json_valid(model_config) "
+            f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NOT NULL "
+            f"AND {_sql_json_extract('model_config', '$._reset_from')} IS NOT NULL"
+        )
+        try:
+            if cursor.execute(f"SELECT 1 FROM sessions WHERE {polluted} LIMIT 1").fetchone() is None:
+                return
+            healed = cursor.execute(
+                f"UPDATE sessions SET model_config = json_remove(model_config, '$._delegate_from') WHERE {polluted}"
+            ).rowcount
+        except sqlite3.OperationalError as exc:
+            logger.debug("reset-row delegate-marker heal skipped: %s", exc)
+            return
+        logger.warning("Healed %d chat session(s) hidden by a stray _delegate_from marker (#109073)", healed)
+
     def _heal_session_model_usage_pk(self, cursor: sqlite3.Cursor) -> None:
         """Rebuild ``session_model_usage`` when its PRIMARY KEY lacks ``task``: installs already at
         v22+ when ``task`` landed carry the 5-column PK, the reconciler ADDs ``task`` but
@@ -929,6 +952,7 @@ class SessionSchemaMixin:
         # already at v22+ when the column landed — the version-gated rebuild is unreachable there, #73823).
         # Same PK-rebuild constraint as gateway_routing above.
         self._heal_session_model_usage_pk(cursor)
+        self._heal_reset_rows_carrying_a_delegate_marker(cursor)
 
         # Indexes referencing reconciler-added columns must be created AFTER _reconcile_columns
         # (in SCHEMA_SQL the executescript would fail on legacy DBs).

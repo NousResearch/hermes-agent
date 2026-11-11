@@ -47,8 +47,11 @@ _COMPRESSION_LINEAGE_CTE = f"""
 # parent's source. A ``/branch`` child (``_branched_from``) is NOT excluded: it is a user-facing
 # conversation that owns its route, and its routing columns are written at create on purpose so a
 # crash before ``switch_session`` still recovers it.
+# A row that also carries ``_reset_from`` is a /new continuation of the chat whose config picked up a
+# delegate marker (#109073): it IS the conversation, so it keeps its route.
 _DELEGATE_CHILD_EXCLUSION_SQL = (
-    f"AND COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
+    f"AND (COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
+    f" OR {_sql_json_extract('s.model_config', '$._reset_from')} IS NOT NULL)"
 )
 
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).

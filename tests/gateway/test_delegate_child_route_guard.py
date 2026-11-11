@@ -132,3 +132,18 @@ def test_a_branch_child_still_owns_the_route_it_was_created_on(db: SessionDB):
     )
     db.append_message(branch, "user", "the branched conversation")
     assert _route(db) == branch
+
+
+def test_a_reset_continuation_carrying_a_delegate_marker_keeps_its_route(db: SessionDB):
+    """The #109073 row: the live chat after /new also carries ``_delegate_from``. ``_reset_from``
+    says it is the conversation, so recovery must not move the chat off it."""
+    parent = _parent(db)
+    db.end_session(parent, "session_reset")
+    live = "20261014_060000_" + uuid.uuid4().hex[:6]
+    db.create_session(
+        live, source="telegram", parent_session_id=parent, session_key=PEER["session_key"],
+        chat_id=PEER["chat_id"], chat_type=PEER["chat_type"], thread_id=THREAD_ID, user_id=PEER["user_id"],
+        model_config={"_delegate_from": parent, "_reset_from": parent},
+    )
+    db.append_message(live, "user", "the live chat")
+    assert _route(db) == live

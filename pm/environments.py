@@ -392,7 +392,10 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     tree, and failed *after* a successful update.
     """
     try:
-        for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
+        # Corrupt bytes must not discard the ASCII version lines around them: Windows
+        # has no lib/pythonX.Y to fall back on.
+        text = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig", errors="replace")
+        for line in text.splitlines():
             key, _, value = line.partition("=")
             if key.strip() not in ("version", "version_info"):  # venv / uv, virtualenv
                 continue

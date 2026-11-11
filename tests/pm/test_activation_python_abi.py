@@ -155,3 +155,42 @@ print(not leases.is_dir() or not any(leases.iterdir()))
     else:
         assert result.stdout.splitlines() == expected
     assert ("keeping the Python" in result.stderr) is warns
+
+
+def _windows_style_venv(tmp_path: Path, cfg: bytes) -> Path:
+    """A venv with Lib/site-packages and no lib/pythonX.Y, so only pyvenv.cfg dates it."""
+    venv = tmp_path / "venv"
+    (venv / "Lib" / "site-packages").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_bytes(cfg)
+    return venv
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        b"version_info = 3.99.0\n\xff\xfebad\n",
+        b"\xff\xfebad\nversion_info = 3.99.0\n",
+        b"home = /x/\xff\xfe\nversion = 3.99.1\n",
+        b"\xef\xbb\xbfversion_info = 3.99.0\n\xff\n",
+    ],
+)
+def test_corrupt_pyvenv_cfg_keeps_parseable_version_without_a_posix_lib_dir(tmp_path, cfg):
+    from pm import environments
+
+    venv = _windows_style_venv(tmp_path, cfg)
+    assert environments.venv_python_version(venv) == (3, 99)
+
+
+def test_pm_built_marker_survives_undecodable_pyvenv_cfg_bytes(tmp_path):
+    from pm import extras
+    from pm.environment import PM_BUILT_KEY
+
+    venv = _windows_style_venv(tmp_path, f"{PM_BUILT_KEY} = true\n".encode() + b"\xff\xfebad\n")
+    assert extras._built_by_pm(venv) is True
+
+
+def test_windows_scheduler_cfg_reader_keeps_parseable_lines_through_corrupt_bytes(tmp_path):
+    from cron import scheduler_script
+
+    venv = _windows_style_venv(tmp_path, b"home = C:\\py\nversion = 3.99.1\n\xff\xfebad\n")
+    assert scheduler_script._read_windows_pyvenv_cfg(venv)["version"] == "3.99.1"

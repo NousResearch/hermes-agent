@@ -1,6 +1,6 @@
 name: tether
 repo: https://github.com/Zek-Takai/hermes-tether
-sha: a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06
+sha: adc4bfdc679c0514bc6d26e4241d6975493a8f87
 subdir: plugin/tether
 title: Hermes Tether
 version: "0.1.0"
@@ -10,10 +10,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 platforms: []
-image: https://raw.githubusercontent.com/Zek-Takai/hermes-tether/a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06/docs/media/tether-banner.png
+image: https://raw.githubusercontent.com/Zek-Takai/hermes-tether/adc4bfdc679c0514bc6d26e4241d6975493a8f87/docs/media/tether-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06/docs/media/tether-desktop.png
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06/docs/media/tether-demo.gif
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/adc4bfdc679c0514bc6d26e4241d6975493a8f87/docs/media/tether-desktop.png
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/adc4bfdc679c0514bc6d26e4241d6975493a8f87/docs/media/tether-demo.gif
 known_issues:
   - "Devices must be macOS or Windows; the host must be macOS or Linux (it uses a POSIX file lock and Unix socket). On a device, Hermes must run in the signed-in desktop session so the consent prompt can appear."
   - "Computer use on the device needs the companion plugin tether_screen, installed by hand from plugin/tether_screen in the repository. Its validation stops at the capability probe exactly like Hermes's bundled computer-use plugin."

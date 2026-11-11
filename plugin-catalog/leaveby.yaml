@@ -1,0 +1,16 @@
+name: leaveby
+repo: https://github.com/AloysJehwin/hermes-leaveby
+sha: 267da02ab3d3ac2ecb529a9e4c1ab551198e228a
+description: "Gives Hermes a sense of distance: real travel times right now (Google Maps or TomTom), when to leave to arrive on time, whether a day of stops actually fits, drive times added automatically when a message mentions a saved place with a plan, and background 'leave now' alerts on your chat platform that cost no LLM tokens. Disclosure: sends place search text and coordinates with your key to places.googleapis.com and routes.googleapis.com (Google) or api.tomtom.com (TomTom); stores saved places and watches in plugin-data/leaveby/data.db; the first watch writes HERMES_HOME/scripts/leaveby_check.py and creates one no-agent cron job (leaveby-watch, every 5 min) through Hermes's cron tool; keys are read via secret_scope and reach the cron script only if the user adds them to terminal.env_passthrough; standard library only, no telemetry."
+maintainer: AloysJehwin
+tier: community
+category: tools
+version: "0.1.0"
+title: "leaveby"
+docs_url: https://github.com/AloysJehwin/hermes-leaveby#readme
+readme: true
+capabilities:
+  provides_tools: [leaveby_place, leaveby_eta, leaveby_plan, leaveby_watch]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

@@ -24,6 +24,7 @@ import re
 from typing import Any, Optional
 
 from gateway.platforms.base import SendResult
+from plugins.platforms.telegram.rich_markdown import closes_fence, fence_opener
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,6 @@ logger = logging.getLogger(__name__)
 # uses — so re-joining the parts reproduces the original message byte-for-byte.
 _BLOCK_SEPARATOR = "\n\n"
 
-_FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _DETAILS_OPEN_RE = re.compile(r"<details\b", re.IGNORECASE)
 _DETAILS_CLOSE_RE = re.compile(r"</details\s*>", re.IGNORECASE)
 _TABLE_ROW_RE = re.compile(r"^\s*\|")
@@ -42,9 +42,8 @@ def _starts_details(line: str) -> bool:
 
 
 def _fence_marker(line: str) -> Optional[str]:
-    """The fence run (`` ``` `` / ``~~~``) opening *line*, or ``None``."""
-    match = _FENCE_RE.match(line)
-    return match.group(1) if match else None
+    """The full fence run opening *line* (a ```` ```` ```` block keeps all four), or ``None``."""
+    return fence_opener(line)
 
 
 def _split_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
@@ -63,7 +62,7 @@ def _split_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
             index += 1
             while index < total:
                 block.append(lines[index])
-                closed = lines[index].strip().startswith(marker)
+                closed = closes_fence(lines[index], marker)
                 index += 1
                 if closed:
                     break
@@ -131,7 +130,7 @@ def _fit_fence(block: list[str], limit: int) -> list[str]:
     """Split a fenced block, closing each part's fence and reopening it with the language tag."""
     marker = _fence_marker(block[0]) or "```"
     opener = block[0].rstrip()
-    has_closer = len(block) > 1 and block[-1].strip().startswith(marker)
+    has_closer = len(block) > 1 and closes_fence(block[-1], marker)
     body = block[1:-1] if has_closer else block[1:]
     closer = f"\n{marker}" if has_closer else ""
     budget = limit - len(opener) - len(closer) - 2
@@ -237,14 +236,13 @@ async def send_rich_parts(
 def _fitting_parts(adapter: Any, content: str) -> Optional[list[str]]:
     """Parts whose SENT markdown fits the cap. Normalization grows a part a little (hard breaks,
     paragraph spacer rows, ``\\$`` escapes), so a split whose parts overflow is redone with a
-    smaller budget; ``None`` when even that leaves one part (nothing to split) or an overflow."""
+    smaller budget, including raw text under the cap whose sent markdown is over it (one part at
+    the full cap). ``None`` when even the smallest budget overflows, or one part already fits."""
     cap = adapter.RICH_MESSAGE_MAX_CHARS
     for budget in (cap, cap * 7 // 8, cap * 3 // 4):
         parts = split_rich_parts(content, budget)
-        if len(parts) < 2:
-            return None
         if all(adapter._content_fits_rich_limits(part) for part in parts):
-            return parts
+            return parts if len(parts) > 1 else None
     return None
 
 

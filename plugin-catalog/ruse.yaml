@@ -1,0 +1,40 @@
+name: ruse
+version: 2.0.0
+title: Ruse — Bounded Browser Authority for Hermes
+summary: |
+  Ruse grants Hermes a temporary, owner-approved capability lease over a
+  dedicated authenticated browser profile: one origin, exact pages, one frozen
+  write, commit budget, expiry, and instant revocation. Every outbound browser
+  request is checked at the network boundary; denied requests never reach the
+  application. The model gets structured tools only — no arbitrary code, JS
+  evaluation, or raw CDP.
+description: |
+  **The gap**: Hermes can drive a real browser using the user's authenticated
+  sessions. That gives an agent everything the account can do — not just what
+  the owner intended for the task. Browser work runs through unrestricted
+  surfaces (model-supplied Python, raw CDP), and a page the agent visits acts
+  with the user's real logins.
+
+  **The primitive**: a browser capability lease. The owner grants one origin,
+  exact readable pages, one write operation with allowed fields and values, a
+  TTL and commit budget, and instant revocation. The agent cannot exceed the
+  grant.
+
+  **Enforcement**: the model never touches a free browser. Ruse's broker owns a
+  dedicated Playwright profile and checks every outbound request — navigation,
+  form submit, page fetch, XHR — with a fail-closed decision function before it
+  reaches the application. Writes are prepared (frozen proposal), committed
+  exactly once, and verified by re-reading the record. Receipts log every
+  allow/deny with the server-side fixture proving blocked requests never
+  arrived.
+
+  **Evidence**: 30 decision-matrix tests plus 21 real-Chrome end-to-end tests,
+  including a hostile page script (destructive DELETE, wrong-record write,
+  cross-origin exfiltration) that is fully contained — the application's own
+  audit log shows zero mutating requests arrived.
+repo: https://github.com/HillaryIkhais/Ruse.git
+sha: 759aa655f518348ec48fa996bca83ca66ff20278
+tier: community
+category: security
+requires_hermes: ">=0.23.0"
+manifest_version: v2

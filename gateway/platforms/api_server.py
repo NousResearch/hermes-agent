@@ -1566,6 +1566,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("POST", "/api/sessions/{session_id}/summarize", self._handle_summarize_session),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -2444,7 +2445,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "message_count", "tool_call_count", "input_tokens", "output_tokens",
             "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
             "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
+            "_lineage_root_id", "pinned", "archived", "hidden",
+            # The cached AI summary and its provenance (#45103). The summary
+            # text is a summary of the user's own conversation, so it crosses
+            # the client API like `preview` does; the model name is exposed
+            # alongside it so a client can tell which model produced it.
+            "summary", "summary_updated_at", "summary_model")
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores the flags as 0/1.
         payload.update(
@@ -2725,6 +2731,70 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from gateway.session_ingress_media import collect_unheld_api_images
             await asyncio.to_thread(collect_unheld_api_images, db)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
+
+    @_require_auth
+    async def _handle_summarize_session(self, request: web.Request) -> web.Response:
+        """POST /api/sessions/{session_id}/summarize.
+
+        Force-regenerates the cached AI summary for a session. The
+        background scheduler (the sibling PR) also refreshes the cache on
+        its own cadence; this endpoint lets a client ask for a refresh
+        now (e.g. the Desktop sidebar's refresh action).
+
+        Returns the freshly generated summary plus ``summary_updated_at``
+        and ``summary_model``. On failure it returns 200 with
+        ``summary: null`` and an error code — a cached summary that
+        already exists is left untouched.
+
+        The summarization itself is synchronous and reaches
+        ``agent.auxiliary_client.call_llm`` (1-5 s typical), so it is
+        dispatched through ``asyncio.to_thread``: the aiohttp event loop
+        stays responsive to every other in-flight request for the
+        duration of the generation.
+        """
+        session_id = request.match_info["session_id"]
+        session, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        try:
+            new_summary = await asyncio.to_thread(
+                db.summarize_session, session_id, force=True
+            )
+        except Exception as exc:
+            logger.warning("summarize_session API error for %s: %s", session_id, exc)
+            return web.json_response(
+                {
+                    "object": "hermes.session.summary",
+                    "id": session_id,
+                    "summary": None,
+                    "error": "summarization_failed",
+                },
+                status=200,
+            )
+        if new_summary is None:
+            return web.json_response(
+                {
+                    "object": "hermes.session.summary",
+                    "id": session_id,
+                    "summary": None,
+                    "summary_updated_at": session.get("summary_updated_at"),
+                    "summary_model": session.get("summary_model"),
+                    "error": "no_messages_or_provider_unavailable",
+                },
+                status=200,
+            )
+        # Re-read so the response reflects the just-written columns.
+        refreshed = await asyncio.to_thread(db.get_session, session_id) or session
+        return web.json_response(
+            {
+                "object": "hermes.session.summary",
+                "id": session_id,
+                "summary": refreshed.get("summary"),
+                "summary_updated_at": refreshed.get("summary_updated_at"),
+                "summary_model": refreshed.get("summary_model"),
+            }
+        )
 
     @_require_auth
     async def _handle_session_messages(self, request: web.Request) -> web.Response:

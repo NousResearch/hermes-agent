@@ -37,6 +37,14 @@ discover_plugins()
 from gateway.config import Platform, load_gateway_config
 from gateway.platform_registry import platform_registry
 platform_registry.get("telegram")
+# Before the lazy install finishes, a disconnected adapter must still fail softly.
+from types import SimpleNamespace
+from plugins.platforms.telegram.telegram_flood_window import send_draft as send_draft_unbound
+try:
+    disconnected = asyncio.run(send_draft_unbound(SimpleNamespace(_bot=None), "123", 7, "preview", None))
+    preinstall_disconnected = {"success": disconnected.success, "error": disconnected.error}
+except Exception as exc:
+    preinstall_disconnected = {"raised": f"{type(exc).__name__}: {exc}"}
 sys.meta_path.remove(blocker)  # the on-demand install has landed
 import pm
 pm.ensure_import = lambda name: None
@@ -50,6 +58,7 @@ except Exception as exc:
     outcome = {"raised": f"{type(exc).__name__}: {exc}"}
 print("RESULT " + json.dumps({
     "live_module": type(adapter).__module__,
+    "preinstall_disconnected": preinstall_disconnected,
     "outcome": outcome,
     "parse_modes": [str(c.kwargs.get("parse_mode")) for c in adapter._bot.send_message_draft.await_args_list]}))
 """
@@ -63,5 +72,6 @@ def test_first_draft_after_on_demand_install_goes_out_as_markdown_v2(tmp_path):
     result = json.loads(line[len("RESULT "):])
 
     assert result["live_module"].startswith("hermes_plugins."), "not the production plugin-loading path"
+    assert result["preinstall_disconnected"] == {"success": False, "error": "not_connected"}
     assert result["outcome"] == {"success": True, "error": None}
     assert result["parse_modes"] == ["MarkdownV2"]

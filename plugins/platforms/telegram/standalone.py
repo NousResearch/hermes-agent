@@ -8,6 +8,7 @@ copies of ``tools.send_message_senders``' (private core names a plugin may not i
 
 import asyncio
 import contextlib
+import html
 import logging
 import os
 import re
@@ -372,8 +373,10 @@ def _cap_standalone_chunks(chunks: list, warnings: list, *, formatted: bool) -> 
 
     def notice(chars: int) -> str:
         dropped.append(chars)
-        return (f"⚠️ Message truncated: it exceeded {TelegramAdapter.MAX_SPLIT_MESSAGES} messages, "
-                f"so {chars} characters were not sent.")
+        text = TelegramAdapter.split_cap_notice_text(chars)
+        # The chat's notice is localized like the live adapter's. MarkdownV2 chunks format its
+        # Markdown below; an HTML message would show the ``**`` markers and needs its text escaped.
+        return text if formatted else html.escape(text.replace("**", ""), quote=False)
     escape = TelegramAdapter.__new__(TelegramAdapter).format_message if formatted else (lambda text: text)
     cap = SimpleNamespace(MAX_SPLIT_MESSAGES=TelegramAdapter.MAX_SPLIT_MESSAGES, _split_cap_notice=notice,
                           format_message=escape)

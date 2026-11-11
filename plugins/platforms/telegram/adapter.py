@@ -3514,7 +3514,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _split_cap_notice(self, dropped_chars: int) -> Optional[str]:
         """Raw truncation notice for :func:`cap_split_chunks`; ``None`` when warnings are hidden."""
-        return self.warning_text(t("platform.telegram.limits.response_truncated", max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars)))
+        return self.warning_text(self.split_cap_notice_text(dropped_chars))
+
+    @classmethod
+    def split_cap_notice_text(cls, dropped_chars: int) -> str:
+        """The localized truncation notice (Markdown), also used by one-shot sends with no live adapter."""
+        return t("platform.telegram.limits.response_truncated", max_messages=str(cls.MAX_SPLIT_MESSAGES),
+                 dropped_chars=str(dropped_chars))
 
     @staticmethod
     def _with_partial_send(

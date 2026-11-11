@@ -215,3 +215,34 @@ async def test_a_capped_streamed_final_is_not_sent_again_by_the_gateway():
     assert consumer.final_content_delivered is True
     assert consumer.delivered_final_matches(final) is True
     assert consumer.delivered_final_matches("another answer " + final) is False
+
+
+@pytest.mark.asyncio
+async def test_the_notice_counts_only_the_reply_characters_it_dropped():
+    sent: list = []
+    adapter = _adapter(sent)
+    body = "x" * 36_864  # nine chunks; the escaped markers and their separators are not reply text
+
+    await adapter.send("4242", body)
+
+    delivered = sum(text.count("x") for text, _ in sent[:-1])
+    assert f"{len(body) - delivered} characters" in sent[-1][0].replace("\\", "")
+
+
+def test_a_one_shot_send_notice_is_localized(monkeypatch):
+    from agent.i18n import reset_language_cache
+    from plugins.platforms.telegram.standalone import _cap_standalone_chunks
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    reset_language_cache()
+    try:
+        adapter = _adapter([])
+        chunks = _uncapped_chunks(adapter, _huge_content())
+        kept = _cap_standalone_chunks(chunks, [], formatted=True)
+        html_kept = _cap_standalone_chunks([f"<b>{i}</b>" for i in range(20)], [], formatted=False)
+    finally:
+        monkeypatch.delenv("HERMES_LANGUAGE")
+        reset_language_cache()
+
+    assert "Antwort gekürzt" in kept[-1] and "\\(" in kept[-1]  # German, MarkdownV2-escaped
+    assert "Antwort gekürzt" in html_kept[-1] and "**" not in html_kept[-1]

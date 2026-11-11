@@ -783,6 +783,18 @@ def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None
         _persist_migration(config)
 
 
+def _qwen_meant_the_cli_login(_model: dict[str, Any]) -> bool:
+    """A saved bare ``qwen`` named the Qwen CLI login until v54 made it an Alibaba DashScope alias.
+    Keep it on the login only when that login exists and nothing else answers for ``qwen``: no
+    DashScope key and no configured provider of that name."""
+    from hermes_cli.auth import _qwen_cli_auth_path, has_usable_secret, read_credential_pool
+    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    return (_qwen_cli_auth_path().is_file()
+            and not has_usable_secret(_cfg().get_env_value_prefer_dotenv("DASHSCOPE_API_KEY"))
+            and not read_credential_pool("alibaba")
+            and named_custom_provider_config_path("qwen", read_raw_config()) is None)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -926,6 +938,13 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         section="agent", key="clarify_timeout", old=3600, new=90,
         added="agent.clarify_timeout=90",
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
+    # 53 -> 54: bare ``qwen`` now means Alibaba DashScope everywhere (it meant the Qwen CLI login for
+    # credentials only). A Qwen-CLI-only install keeps its login (see _qwen_meant_the_cli_login).
+    (54, functools.partial(
+        _rewrite_key, section="model", key="provider", match=_lower_is("qwen"), new="qwen-oauth",
+        added="model.provider=qwen-oauth (was: qwen)",
+        message="  ✓ model.provider: qwen → qwen-oauth. Bare `qwen` now means Alibaba DashScope; your Qwen CLI login is kept.",
+        extra_guard=_qwen_meant_the_cli_login)),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -936,8 +955,9 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: decides by a value or an absence that, in such a file, is the user's own choice. v13 is left
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
-#: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52})
+#: provenance the config stamp says nothing about. v54 is in: its guard rewrites a bare ``qwen`` only
+#: when nothing can serve it as the new alias (no DashScope key), so it never overrides a working choice.
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51, 52, 54})
 
 #: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
 #: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch

@@ -1,6 +1,6 @@
 name: proving-ground
 repo: https://github.com/dmustapha/hermes-proving-ground
-sha: "5a2b2bf0c094ea179b1aab91e661474d7687ffdc"
+sha: "11af83a569951bad96d62299c3e23cd7fc515ef4"
 description: "A wiring test for your plugin stack: known, harmless test calls go through every installed plugin in a throwaway child Hermes home with the model never called, and each cell shows which plugin blocked, rewrote, changed the result, gated for approval, or passed it through."
 maintainer: dmustapha
 tier: community
@@ -8,10 +8,10 @@ category: tools
 requires_hermes: ">=0.23.1"
 version: "0.1.0"
 title: "Proving Ground"
-image: "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/5a2b2bf0c094ea179b1aab91e661474d7687ffdc/docs/banner.png"
+image: "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/11af83a569951bad96d62299c3e23cd7fc515ef4/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/5a2b2bf0c094ea179b1aab91e661474d7687ffdc/docs/matrix.png"
-  - "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/5a2b2bf0c094ea179b1aab91e661474d7687ffdc/docs/cell-detail.png"
+  - "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/11af83a569951bad96d62299c3e23cd7fc515ef4/docs/matrix.png"
+  - "https://raw.githubusercontent.com/dmustapha/hermes-proving-ground/11af83a569951bad96d62299c3e23cd7fc515ef4/docs/cell-detail.png"
 readme: true
 platforms: [macos, linux]
 known_issues:

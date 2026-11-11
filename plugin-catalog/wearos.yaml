@@ -1,27 +1,12 @@
 name: wearos
+version: 0.3.4
+description: Hermes Wear Kit — Galaxy Watch companion with wake word, voice, push, and desktop control pane.
+python: true
+desktop: true
+source: git
 repo: https://github.com/borealBytes/hermes-wearos-plugin
-sha: 68826ffafe232193d022e42f5d653bb226083fed
-subdir: ""
-description: Pairs a Wear OS watch with your Hermes gateway over the watch's own embedded Tailscale node — gateway-minted code, whois-bound private lane, full-removal revoke; no phone app, no relay.
-maintainer: borealBytes
-tier: community
-category: platform
-requires_hermes: ">=0.23.0"
-version: "0.3.3"
-image: https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/68826ffafe232193d022e42f5d653bb226083fed/docs/banner.png
-screenshots:
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/68826ffafe232193d022e42f5d653bb226083fed/docs/screenshots/66-wearkit-pane.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/68826ffafe232193d022e42f5d653bb226083fed/docs/screenshots/06-pin-screen.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/68826ffafe232193d022e42f5d653bb226083fed/docs/screenshots/05-aurora-player.gif
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/68826ffafe232193d022e42f5d653bb226083fed/docs/screenshots/07-stop-running.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/68826ffafe232193d022e42f5d653bb226083fed/docs/screenshots/33-approval-card.png
-  - https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/68826ffafe232193d022e42f5d653bb226083fed/docs/screenshots/64-vm-pairing-ceremony.png
-readme: true
-platforms: [linux, macos]
-title: Hermes Wear Kit
-known_issues: []
-capabilities:
-  provides_tools: [watch_command, watch_pair, watch_send, watch_status, watch_tag]
-  provides_hooks: [on_session_end]
-  provides_middleware: []
-  requires_env: []
+rev: "e4d25ddde4cd5591e8bab1c744c15f4803989407"
+subpath: .
+folder_name: wearos
+visibility: public
+tags: [watch, wearos, voice, wake-word, smartwatch, tts, clawdisc]

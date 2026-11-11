@@ -1,14 +1,15 @@
 name: taint-shield
 title: "Taint Shield"
 repo: https://github.com/flabanabba8/taint-shield
-sha: 7b77ed8fd05f2ec9c4c81dc280cde9475e427644
+sha: 3b1aa1112a209abec4dc61f8d30757f167a3efc9
 version: "0.2.2"
 description: "Prompt-injection firewall: tracks what came from untrusted web, browser and file content and stops or asks before the agent acts on it with shell, files or messages. Disclosure: Watches tool calls and results in memory through hooks and keeps a trusted-destination list in plugin storage. It blocks or asks for approval on risky calls and adds no approval bypass. No network calls."
 maintainer: flabanabba8
 tier: community
 category: general
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/taint-shield/blob/7b77ed8fd05f2ec9c4c81dc280cde9475e427644/README.md
+docs_url: https://github.com/flabanabba8/taint-shield/blob/3b1aa1112a209abec4dc61f8d30757f167a3efc9/README.md
+image: https://raw.githubusercontent.com/flabanabba8/taint-shield/3b1aa1112a209abec4dc61f8d30757f167a3efc9/assets/thumbnail.jpg
 platforms: [linux]
 capabilities:
   provides_tools:

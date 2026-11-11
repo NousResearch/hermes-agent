@@ -44,6 +44,12 @@ def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
     return [path for path in paths if path not in duplicates]
 
 
+def stt_enabled_for_turn(runner) -> bool:
+    """Whether the turn transcribes inbound voice: ``GatewayConfig.stt_enabled``, which also honours
+    the legacy ``gateway.json`` ``stt_enabled`` key. The spoken-wake-word gate reads the same value."""
+    return getattr(getattr(runner, "config", None), "stt_enabled", True)
+
+
 # Transcripts the adapters' spoken-wake-word gate already paid for, by clip content: native admission
 # re-captures the clip under a new path and keeps no adapter attributes, so the turn finds it by bytes.
 _GATE_TRANSCRIPTS: OrderedDict[bytes, tuple[Optional[str], str]] = OrderedDict()
@@ -87,7 +93,7 @@ class GatewayInboundTranscriptionMixin:
         (path → ``_transcribe_one_clip`` result) skips clips an earlier pass already transcribed."""
         from gateway.run import _probe_audio_duration
         audio_paths = await asyncio.to_thread(_dedupe_audio_paths, audio_paths)
-        if not getattr(self.config, "stt_enabled", True):
+        if not stt_enabled_for_turn(self):
             notes = []
             for path in audio_paths:
                 abs_path = os.path.abspath(path)

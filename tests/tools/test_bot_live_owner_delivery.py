@@ -211,6 +211,18 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
         db.close()
 
 
+def test_zero_byte_state_db_counts_as_no_store(tmp_path, monkeypatch):
+    """#153048: an interrupted init leaves a 0-byte state.db, which SQLite opens and then fails
+    with "no such table: sessions". The delivery path must read it as "no store" and fall back
+    instead of raising out of discovery."""
+    import hermes_cli.gateway_runtime as runtime
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
+    (tmp_path / "state.db").write_bytes(b"")
+    assert mailbox._bot_chat_tip(tmp_path) is None
+    assert mailbox.find_canonical_live_owner(tmp_path) is None
+
+
 def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 

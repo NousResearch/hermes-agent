@@ -40,10 +40,10 @@ _FAILURE_TYPE_ORDER = (
     ("agent", ("agent", "model", "provider", "inference")),
 )
 MAX_ERROR_CHARS = 500
-# Long errors keep both ends, for the signature and the stored text. A failing script reports its
-# exit code and traceback, so every exception it raises shares the head; the exception is the tail.
-# The signature also keeps the start of the last line: a long URL after the exception's name and
-# status fills the tail on its own.
+# A failing script reports its exit code and traceback, so every exception it raises shares the head;
+# the exception is the last line. The stored text keeps both ends. The signature keeps the head and,
+# for a multi-line error, the start of the last line. Not the tail: a per-request id or a long URL
+# there would split one failure into an incident per run.
 _ERROR_END_CHARS = 200
 # Measured durations ("idle for 603s", "retry in 12.5 seconds") differ run to run for the same
 # failure, so they are masked out of the signature. Status codes and other numbers still count.
@@ -144,11 +144,14 @@ def _signature_text(error: str) -> str:
 
 
 def _error_signature(job_id: str, error: str) -> str:
-    """Dedup key: stable for same job + same normalized error head, last-line start and tail."""
+    """Dedup key: stable for same job + same normalized error head; a multi-line error longer than
+    the head (a traceback) also signs the start of its last line."""
     normalized = _signature_text(error)
-    if len(normalized) > 2 * _ERROR_END_CHARS:
-        last_line = _signature_text(str(error or "").rstrip().rpartition("\n")[2])
-        normalized = _head_and_tail(normalized, 2 * _ERROR_END_CHARS) + "\n" + last_line[:_ERROR_END_CHARS]
+    if len(normalized) > _ERROR_END_CHARS:
+        _, newline, last_line = str(error or "").rstrip().rpartition("\n")
+        normalized = normalized[:_ERROR_END_CHARS]
+        if newline:
+            normalized += "\n" + _signature_text(last_line)[:_ERROR_END_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 

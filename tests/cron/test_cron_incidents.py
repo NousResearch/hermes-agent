@@ -196,6 +196,16 @@ def test_long_url_on_the_last_line_does_not_hide_the_status(monkeypatch, tmp_pat
     assert id3 != id1 and new3 is True, "the tail is all URL here; the status starts the line"
 
 
+def test_single_line_error_signs_on_its_head_only(monkeypatch, tmp_path):
+    inc = _point_db(monkeypatch, tmp_path)
+    error = "RuntimeError: provider returned 429: " + "upstream model overloaded, retry later. " * 10
+
+    id1, _ = inc.upsert_incident("job-1", error + "(ref: 00000000-0000-0000-0000-000000000001)")
+    id2, new2 = inc.upsert_incident("job-1", error + "(ref: 00000000-0000-0000-0000-000000000002)")
+
+    assert (id2, new2) == (id1, False), "a per-request id past the head must not mint an incident per run"
+
+
 # ── Redaction / classification ─────────────────────────────────────────────
 
 

@@ -2,12 +2,7 @@ name: lethe
 title: Lethe
 repo: https://github.com/itsflownium/hermes-lethe
 sha: 8b93e2dce9402648c7e238c1d8c83dc649f2f204
-description: |-
-  Take one chat off the record with /lethe: nothing reaches memory, your profile or skills, the transcript is deleted, and a river shows every write it kept out.
-
-  Use an external memory provider? Copy this into a Hermes chat and replace <PROVIDER> with yours:
-
-  Extend my local Lethe plugin (~/.hermes/plugins/lethe) so off-the-record chats also skip my <PROVIDER> memory provider's per-turn sync, session-end extraction and save tools when store.is_on(session_id) is true. Show me the diff, add a test, then run hermes gateway restart.
+description: "Take one chat off the record with /lethe: nothing reaches memory, your profile or skills, the transcript is deleted, and a river shows every write it kept out.\n\nUse an external memory provider? Copy this into a Hermes chat and replace <PROVIDER> with yours:\n\nExtend my local Lethe plugin (~/.hermes/plugins/lethe) so off-the-record chats also skip my <PROVIDER> memory provider's per-turn sync, session-end extraction and save tools when store.is_on(session_id) is true. Show me the diff, add a test, then run hermes gateway restart. Disclosure — Deletes the off-the-record chat's transcript (and its compression chain) from Hermes's session database via SessionDB.delete_session when the chat ends, on /lethe-end or /lethe-forget, or from the Desktop panel's Delete transcript now (unless keep_transcript is on); while on, it blocks memory, user-profile and skill writes plus provider tools whose names look like saves, and adds a fixed off-the-record note to each turn's context; external memory providers' per-turn sync is not blocked."
 maintainer: itsflownium
 tier: community
 category: memory

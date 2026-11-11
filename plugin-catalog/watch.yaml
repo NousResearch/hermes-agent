@@ -1,0 +1,32 @@
+name: watch
+title: "Watch"
+repo: https://github.com/flabanabba8/watch
+sha: b4177cec68e5d895d6a682c14a4fe9c4f15792a5
+version: "0.1.0"
+description: "Ask Hermes for a show or a film and it streams it on demand in local mpv, with nothing to download first, and remembers where you stopped. Anime, movies and TV series. Disclosure: Anime part contacts hianime.at through ani-cli provider code pinned in the repository. Movies and TV part searches TMDB (api.themoviedb.org) with your own TMDB API key and resolves streams on demand from Cinejoy, VixSrc and LookMovie through a bridge you build yourself from the pinned Luffy source in movies/native/. No compiled binaries are shipped. Stores only your watch position. Linux only. The sites serve third-party content whose licensing you must judge. This product uses the TMDB API but is not endorsed or certified by TMDB."
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/watch/blob/b4177cec68e5d895d6a682c14a4fe9c4f15792a5/README.md
+image: https://raw.githubusercontent.com/flabanabba8/watch/b4177cec68e5d895d6a682c14a4fe9c4f15792a5/assets/thumbnail.jpg
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - anime_search
+    - anime_episodes
+    - anime_play
+    - anime_status
+    - anime_control
+    - anime_history
+    - anime_resume
+    - movies_search
+    - movies_details
+    - movies_play
+    - movies_status
+    - movies_control
+    - movies_history
+    - movies_resume
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

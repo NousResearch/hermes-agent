@@ -1,19 +1,19 @@
 name: greenlight
 repo: https://github.com/Datwebguy/greenlight
-sha: "ce60800809e4b93948129201526caf469970bf04"
+sha: "4b843d14af767b5c6d6d5552d6affa87eae93e25"
 title: Greenlight
-description: "Review and approve every xStocks trade before anything is sent. Ask Hermes for a trade and Greenlight shows what you pay, what you get, the fees, a simple risk check and your daily limit. Only after you approve do you get a link, or a QR code for your phone's wallet, that opens the trade in your own wallet, so Greenlight never holds your keys or funds. Approve in the Hermes Desktop window or with /greenlight in the terminal and chat apps. Optional daily and per-trade limits, a stock allowlist and a price-change tolerance. Every decision is kept in a tamper-evident history. Includes a no-wallet practice trade. Disclosure — talks to api.xstocker.com and xstocker.com, through the official xStocker SDK (bundled unmodified in vendor/agent-sdk and used when Node.js 18+ is installed) or, without Node.js, directly over the same public HTTPS endpoints with Python's standard library; nothing is installed or downloaded at runtime and the plugin never updates itself; with Node.js, a short-lived node process per price request with a fixed command (node sdk-bridge.js), no shell and never an AI-chosen command; writes only to <HERMES_HOME>/plugin-data/greenlight/; reads no credentials; no telemetry; no Python dependencies; Node.js is optional."
+description: "Greenlight is a Hermes Agent plugin that puts you in control of xStocks trading. Hermes can prepare a trade, but nothing is sent until you approve it. Ask for a trade and Greenlight shows what you pay, what you get, the fees, a simple risk check and your daily limit in a Hermes Desktop window. Only after you approve do you get a link, or a QR code for your phone's wallet, to confirm the trade in your own wallet, so Greenlight never holds your keys or funds. Approve in the Hermes Desktop window or with /greenlight in the terminal and chat apps. Optional daily and per-trade limits, a stock allowlist and a price-change tolerance. Every decision is kept in a tamper-evident history. Includes a no-wallet practice trade. Disclosure — talks to api.xstocker.com and xstocker.com, through the official xStocker SDK (bundled unmodified in vendor/agent-sdk and used when Node.js 18+ is installed) or, without Node.js, directly over the same public HTTPS endpoints with Python's standard library; nothing is installed or downloaded at runtime and the plugin never updates itself; with Node.js, a short-lived node process per price request with a fixed command (node sdk-bridge.js), no shell and never an AI-chosen command; writes only to <HERMES_HOME>/plugin-data/greenlight/; reads no credentials; no telemetry; no Python dependencies; Node.js is optional."
 maintainer: Datwebguy
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/Datwebguy/greenlight#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/Datwebguy/greenlight/ce60800809e4b93948129201526caf469970bf04/assets/banner.png
+image: https://raw.githubusercontent.com/Datwebguy/greenlight/4b843d14af767b5c6d6d5552d6affa87eae93e25/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Datwebguy/greenlight/ce60800809e4b93948129201526caf469970bf04/assets/screenshots/approval-pane.png
-  - https://raw.githubusercontent.com/Datwebguy/greenlight/ce60800809e4b93948129201526caf469970bf04/assets/screenshots/approved-state.png
-  - https://raw.githubusercontent.com/Datwebguy/greenlight/ce60800809e4b93948129201526caf469970bf04/assets/screenshots/slash-command.png
+  - https://raw.githubusercontent.com/Datwebguy/greenlight/4b843d14af767b5c6d6d5552d6affa87eae93e25/assets/screenshots/approval-pane.png
+  - https://raw.githubusercontent.com/Datwebguy/greenlight/4b843d14af767b5c6d6d5552d6affa87eae93e25/assets/screenshots/approved-state.png
+  - https://raw.githubusercontent.com/Datwebguy/greenlight/4b843d14af767b5c6d6d5552d6affa87eae93e25/assets/screenshots/slash-command.png
 capabilities:
   provides_tools: [propose_trade, get_trade_status, list_receipts]
   provides_hooks: [pre_tool_call, pre_llm_call]

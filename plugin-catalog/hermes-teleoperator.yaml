@@ -3,11 +3,7 @@ title: Hermes Teleoperator
 repo: https://github.com/Tsurgcom/hermes-teleoperator
 sha: 4dfb08eb0bba00f7c2036613290a9e6da5650d8d
 version: 1.2.0
-description: >-
-  Keep one conversation on the gateway while switching shell, files, skills and
-  explicitly permitted MCP tools between machines over SSH. The standalone Rust
-  receiver needs no Hermes or language runtime. Commands have the destination
-  SSH user's full OS authority; this is not a sandbox.
+description: "Keep one conversation on the gateway while switching shell, files, skills and explicitly permitted MCP tools between machines over SSH. The standalone Rust receiver needs no Hermes or language runtime. Commands have the destination SSH user's full OS authority; this is not a sandbox. Disclosure — Routes this conversation's terminal, file, process, skill and allowlisted MCP tool calls to SSH machines you configure, where the author's Rust receiver runs them with that SSH user's full authority; Hermes' dangerous-command and human-approval prompts run before each routed call, but other plugins' pre_tool_call blocks and the agent's tool guardrails do not see routed calls until core adds a seam (hermes-agent#152963). The optional `python -m hermes_teleoperator.deploy` helper downloads the receiver from the author's GitHub release (SHA256 pinned in the plugin source, build-attested) and installs it on the remote host over SSH; file transfers need approval, and gateway-local transfers stay inside a configured transfer_dir."
 maintainer: Tsurgcom
 tier: community
 category: tools

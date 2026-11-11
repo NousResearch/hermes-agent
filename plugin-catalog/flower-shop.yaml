@@ -16,7 +16,10 @@ description: >-
   Finance estimates labelled as estimates, an AI Team page, and a guided setup
   with removable demo data. The repo also ships an optional matching Hermes
   skin (a light and a dark variant) that the setup offers but never applies on
-  its own. Disclosure - all business data stays in one local
+  its own.
+  Not flower-specific: the same shape - one record of what was ordered,
+  stocked, made, shipped and paid, agents that propose, an owner who
+  approves - fits any small physical business. Disclosure - all business data stays in one local
   SQLite database under the Hermes plugin-data directory; the plugin makes no
   network calls, stores no credentials, runs no shell commands, and sends no
   telemetry. Not an accounting ledger: finance figures are operational estimates

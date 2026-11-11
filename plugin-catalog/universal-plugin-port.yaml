@@ -1,6 +1,6 @@
 name: universal-plugin-port
 repo: https://github.com/friendly-neighborhood-coding-man/hermes-universal-plugin-port
-sha: 86b4e6d3097b4f96e26529e53daa09b9c314fef0
+sha: 1334cbbda8bd37f1a06178b72a533fde59686c06
 description: >-
   Inspect user-selected Claude Code/Cowork, Codex, and OpenClaw plugin sources;
   disclose unsupported capabilities; and stage Hermes-compatible packages while

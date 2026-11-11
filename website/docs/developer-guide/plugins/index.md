@@ -1564,6 +1564,36 @@ The kanban lifecycle hooks fire **after** the board DB change commits, so a call
 
 The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
+### Mandatory human consent from `pre_tool_call`
+
+A policy plugin that requires a fresh human answer can return
+`{"action": "approve", "approval_policy": "mandatory", "message": "...", "rule_key": "..."}`.
+Feature-detect with `from hermes_cli.plugins import VALID_TOOL_APPROVAL_POLICIES`
+and check `"mandatory" in VALID_TOOL_APPROVAL_POLICIES` before relying on it.
+Ordinary `approve` still honors yolo, off mode and remembered grants.
+
+The mandatory policy uses the selected approval transport or the native gateway/CLI
+prompt, offers only once/deny and never persists a session or permanent grant. A missing human
+channel, timeout, cancellation or delivery failure blocks the call. Only a fresh once
+answer permits execution; any plugin veto still wins, and mandatory takes priority over
+ordinary approve. The prompt shows a secret-redacted copy of the effective arguments;
+the same detached argument snapshot is returned to the dispatcher for execution.
+`ctx.session_surface()` identifies the calling session's surface without relying on
+the gateway process's environment.
+
+Gateway mandatory approvals are separate requests, never coalesced or granted by
+generic FIFO `/approve` or `/approve all`. A native card answers only its own request;
+stale or missing IDs resolve nothing. A resolver that supplies an explicit `request_id`
+can answer that request. If native gateway delivery fails or the adapter has no native
+approval prompt, the operation is blocked instead of falling back to ambiguous typed
+approval. Ordinary nonmandatory approvals retain their existing text fallback and FIFO
+behavior. These are in-process accident-prevention controls, not OS isolation.
+
+A concrete consumer is an owner/role policy gate that names the principle its proposed
+file write or delegated operation violates, while keeping all approval UI and transport
+host-owned. It can return block on hosts without the mandatory policy rather than weaken
+its contract to a bypassable ordinary approve.
+
 ### Where each hook fires {#hook-fire-sites}
 
 Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. This table names the function that fires each one, so you can read the exact call and payload. Paths are relative to the repository root. When you add a hook, add its row here in the same change.

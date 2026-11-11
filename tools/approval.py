@@ -149,7 +149,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
-    relayed to the agent in the BLOCKED message. Returns the number resolved.
+    relayed to the agent in the BLOCKED message. Mandatory grants require *request_id*;
+    generic FIFO and aggregate answers can only deny them. Returns the number resolved.
     """
     with _lock:
         queue = _gateway_queues.get(session_key)
@@ -159,12 +160,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
                 return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)
-            queue.clear()
         else:
-            targets = [queue.pop(0)]
+            targets = [queue[0]]
+        # Mandatory consent names one request, not the oldest item in a session or
+        # an aggregate. Deny remains safe without a selector; ordinary approvals keep FIFO.
+        targets = [entry for entry in targets if request_id or choice == "deny"
+                   or entry.data.get("approval_policy") != "mandatory"]
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's
@@ -247,9 +251,11 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
 
 
 def list_gateway_approval_authority(session_key: str) -> list[dict]:
-    """Per unresolved approval: its ``request_id`` and who may answer it (requester, approvers)."""
+    """Per unresolved approval: its request ID, answerers and mandatory selection policy."""
     with _lock:
-        return [{"request_id": e.data.get("request_id"), **e.authority} for e in _gateway_queues.get(session_key, [])]
+        return [{"request_id": e.data.get("request_id"), **e.authority,
+                 **({"approval_policy": "mandatory"} if e.data.get("approval_policy") == "mandatory" else {})}
+                for e in _gateway_queues.get(session_key, [])]
 
 
 def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
@@ -641,10 +647,13 @@ def _gateway_notify_cb(session_key: str):
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, mandatory: bool = False) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
     ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
+    if mandatory:
+        return _blocked("BLOCKED: mandatory approval has no human delivery channel",
+                        pattern_key=pattern_key, description=description)
     pending = {"command": command, "pattern_key": pattern_key}
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
@@ -916,7 +925,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None, mandatory: bool = False) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
@@ -926,13 +935,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     from agent.redact import redact_approval_display
 
     smart_denied = False
-    if smart:
+    if smart and not mandatory:
         result, smart_denied = _smart_gate(spec, command, description, pattern_key, pattern_keys,
                                            session_key, human_present=is_cli or is_gateway or is_ask)
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    allow_permanent = not (smart_denied or mandatory)
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -944,18 +953,17 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        pattern_key=pattern_key, description=description,
                        outcome=outcome, noun=spec.noun, **extra)
 
-    def grant(choice: str) -> dict:
-        # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
-        if not smart_denied:
-            _persist_choice(session_key, choice, pattern_keys)
-        if spec.user_approved:
-            return _user_approved(session_key, description)
-        return _approved()
+    from functools import partial
+    from tools.approval_policy import grant_human_choice
 
-    if spec.transport:
+    grant = partial(grant_human_choice, spec=spec, mandatory=mandatory, smart_denied=smart_denied,
+                    session_key=session_key, pattern_key=pattern_key, pattern_keys=pattern_keys,
+                    description=description)
+
+    if spec.transport or mandatory:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
+            session_key=session_key, allow_session=not (smart_denied or mandatory), allow_permanent=allow_permanent,
             surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
@@ -981,8 +989,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
+                "allow_permanent": not (smart_denied or mandatory),
+                "allow_session": not (smart_denied or mandatory),
+                "approval_policy": "mandatory" if mandatory else "",
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -1020,19 +1029,20 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 display_command, display_description = command, description
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied, mandatory=mandatory,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
     prompt_command, prompt_description = command, description
-    if spec.redact_cli:
+    if spec.redact_cli or mandatory:
         prompt_command = redact_approval_display(command)
         prompt_description = redact_approval_display(description)
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+                                       smart_denied=smart_denied, allow_session=not (smart_denied or mandatory),
+                                       approval_callback=approval_callback)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
@@ -1245,7 +1255,8 @@ def check_dangerous_command(command: str, env_type: str,
     )
 
 
-def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None) -> dict:
+def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None,
+                          approval_policy: str = "", effective_args: dict | None = None) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
     Entry point for a plugin ``pre_tool_call`` hook returning ``{"action": "approve", ...}``:
@@ -1260,6 +1271,13 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     if not rule_key:
         rule_key = f"{tool_name}:{hashlib.sha256(description.encode('utf-8')).hexdigest()[:12]}"
     subject = f"Tool '{tool_name}' requires approval ({description})"
+    if approval_policy not in ("", "mandatory"):
+        return _blocked("BLOCKED: unknown tool approval policy", pattern_key=rule_key, description=description)
+    if approval_policy == "mandatory":
+        from tools.approval_policy import request_mandatory_tool_approval
+        return request_mandatory_tool_approval(
+            tool_name, description, rule_key, effective_args, approval_callback)
+
     return _run_approval_gate(
         # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real
         # command pattern key; the display target is a synthetic label for the display/allowlist layer.

@@ -75,6 +75,7 @@ with a name allows that one name only.
 | `hermes_cli.dashboard_auth` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `hermes_cli.platform_actions` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `hermes_cli.plugins` | `PluginContext` | PluginContext (hermes_cli/plugins_context.py) |
+| `hermes_cli.plugins` | `VALID_TOOL_APPROVAL_POLICIES` | PluginContext (hermes_cli/plugins_context.py) |
 | `hermes_cli.plugins_ledger` | `PluginRegistration` | PluginContext (hermes_cli/plugins_context.py) |
 | `hermes_cli.plugins_state` | `PluginState` | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.runtime_cwd` | `resolve_agent_cwd` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |

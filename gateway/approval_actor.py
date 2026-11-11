@@ -104,7 +104,9 @@ def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Any = 
     answer them: ``(request_ids, None)``, or ``([], requester_name)`` for the first selected one
     they may not. Only the selected entries are checked, so another requester's queued approval
     never blocks this one. Resolving the returned ids (not "the oldest" again) keeps a refused
-    entry that became the oldest in between from being answered unchecked."""
+    entry that became the oldest in between from being answered unchecked. Generic grants
+    omit mandatory entries: a server-inferred FIFO/all ID is not human selection. Explicit
+    request selectors and denial retain their existing behavior."""
     from tools.approval import list_gateway_approval_authority
 
     pending = list_gateway_approval_authority(session_key)
@@ -112,6 +114,10 @@ def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Any = 
         pending = [p for p in pending if p.get("request_id") == request_id]
     elif not resolve_all:
         pending = pending[:1]
+    # FIFO/all IDs inferred by the server are not a person's request selection.
+    # Keep that distinction before returning IDs to typed and sibling handlers.
+    if not request_id and choice != "deny":
+        pending = [p for p in pending if p.get("approval_policy") != "mandatory"]
     commands = approval_commands(choice)
     for entry in pending:
         if not may_answer(entry, actor_id, admin_ids, extra, commands):

@@ -734,11 +734,13 @@ Worker 接收 `$HERMES_TENANT` 并按前缀命名空间化其内存写入。看�
 
 ```bash
 hermes kanban notify-subscribe t_abcd \
-    --platform telegram --chat-id 12345678 --thread-id 7
+    --platform telegram --chat-id 12345678 --thread-id 7 --progress
 hermes kanban notify-list
 hermes kanban notify-unsubscribe t_abcd \
     --platform telegram --chat-id 12345678 --thread-id 7
 ```
+
+传入 `--progress` 还可将 worker 主动编写的 heartbeat note 作为被动进度消息接收。没有 note 的 heartbeat 保持静默；即使订阅的投递模式包含 wake，进度消息也绝不会唤醒目标 agent。现有订阅和新订阅默认都只接收终止事件；重新订阅时传入 `--no-progress` 可关闭进度消息。
 
 订阅在任务达到 `done` 或 `archived` 后自动移除；无需清理。
 

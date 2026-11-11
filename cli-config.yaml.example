@@ -1704,6 +1704,13 @@ platform_toolsets:
 # =============================================================================
 # Text-to-Speech
 # =============================================================================
+# Global gateway auto-TTS is disabled by default. With it enabled, all preserves
+# audio replies to text and voice; voice_only requires voice input. Per-chat
+# /voice off, /voice on, and /voice tts override this global scope.
+# voice:
+#   auto_tts: false
+#   auto_tts_mode: "all"  # "all" (default) | "voice_only"
+#
 # TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.
 # Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
 # can use a hidden auxiliary rewrite pass to insert expressive square-bracket

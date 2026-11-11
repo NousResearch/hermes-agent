@@ -90,7 +90,10 @@ export const zhHantSettings = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
         latestCommit: '最新提交',
-        sourceMoved: sha => (sha ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。` : '自你審閱後儲存庫已變更。正在讀取新版本…'),
+        sourceMoved: sha =>
+          sha
+            ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。`
+            : '自你審閱後儲存庫已變更。正在讀取新版本…',
         legacyBackendConfirm:
           '此後端比本應用程式舊，無法保證安裝的就是你審閱過的版本：如果儲存庫之後有變更，安裝的會是較新的版本。更新後端即可獲得這項保證。',
         installAnyway: '仍要安裝',
@@ -683,7 +686,7 @@ export const zhHantSettings = {
       voice: {
         autoTts: '自動朗讀助手回覆。',
         voiceChatMode:
-          'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',
+          'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。grok-live：全雙工 xAI Grok Voice（grok-voice-latest）。需要 Grok 登入（hermes auth add xai-oauth）或 XAI_API_KEY。訂閱登入可被 realtime client-secret 端點接受；使用 API 金鑰時，語音分鐘仍可能按每分鐘 $0.08 計費。',
         gptLive: {
           voice: 'GPT-Live 模式使用的音色，可填入自訂音色 ID。',
           instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。'
@@ -1041,7 +1044,8 @@ export const zhHantSettings = {
         lanUnencrypted: '連線未加密：同一網路中的其他人可能讀取你傳送和接收的內容。',
         noLan: '這台電腦沒有其他裝置可以連到的網路位址。',
         modePublic: '我自己的網址',
-        modePublicDetail: port => `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
+        modePublicDetail: port =>
+          `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
       }
     },
     keys: {

@@ -1,7 +1,7 @@
 import { backendScopeKey } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { fetchVoiceLiveStatus, type VoiceLiveStatus } from '@/lib/voice-live'
+import { fetchVoiceLiveStatus, type VoiceChatMode, type VoiceLiveStatus } from '@/lib/voice-live'
 import { requestGatewayForActiveRoute } from '@/store/active-route-request'
 import { activeGatewayConnectionId, activeGatewayProfileKey } from '@/store/gateway'
 
@@ -57,8 +57,10 @@ export async function refreshVoiceLiveStatus(): Promise<null | VoiceLiveStatus> 
 }
 
 /** Selected mode. `chained` until the backend answers, or when the backend predates the mode. */
-export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiveStatus.get()): 'chained' | 'gpt-live' {
-  return status?.mode === 'gpt-live' ? 'gpt-live' : 'chained'
+export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiveStatus.get()): VoiceChatMode {
+  const mode = status?.mode
+
+  return mode === 'gpt-live' || mode === 'grok-live' ? mode : 'chained'
 }
 
 /**
@@ -73,7 +75,7 @@ export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiv
  * bare profile name would resolve through this machine's pool, missing a
  * profile served only by a remote gateway.
  */
-export async function setVoiceChatMode(mode: 'chained' | 'gpt-live'): Promise<null | VoiceLiveStatus> {
+export async function setVoiceChatMode(mode: VoiceChatMode): Promise<null | VoiceLiveStatus> {
   // The profile rides in the params too: on a backend shared by several
   // profiles an unscoped write edits its launch profile.
   const profile = activeGatewayProfileKey()

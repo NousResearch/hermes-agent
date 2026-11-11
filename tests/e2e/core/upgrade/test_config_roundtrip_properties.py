@@ -725,7 +725,7 @@ _RPC_CASES = [
     ("approvals.mode", ["off", "smart", "manual"], ("approvals", "mode"), None),
     ("theme", ["dark", "light", "auto"], ("display", "tui_theme"), None),
     ("busy", ["steer", "queue", "interrupt"], ("display", "busy_input_mode"), None),
-    ("voice.voice_chat_mode", ["gpt-live", "chained"], ("voice", "voice_chat_mode"), None),
+    ("voice.voice_chat_mode", ["grok-live", "gpt-live", "chained"], ("voice", "voice_chat_mode"), None),
     ("density", ["on", "off"], ("display", "tui_compact"), {"on": True, "off": False}),
     ("statusbar", ["bottom", "top", "off"], ("display", "tui_statusbar"), None),
     ("mouse", ["wheel", "buttons", "off"], ("display", "mouse_tracking"), None),

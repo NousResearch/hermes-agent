@@ -29,9 +29,9 @@ import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
   gatewayGroupOpen: {
-    opening: "正在打开群聊…",
-    lookupFailed: "无法在网关上查找此群组，请重试。",
-    missing: "此群聊已不存在。"
+    opening: '正在打开群聊…',
+    lookupFailed: '无法在网关上查找此群组，请重试。',
+    missing: '此群聊已不存在。'
   },
   catalog: zhCatalog,
   externalOpenFailed: {
@@ -270,7 +270,8 @@ export const zhOverrides = {
       liveEndedClosed: '实时语音会话已被服务端关闭。',
       liveError: '实时语音',
       liveDelegationFailed: '无法将请求交给 Hermes',
-      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
+      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`,
+      grokUnavailable: reason => `Grok Voice 不可用：${reason}。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -1112,7 +1113,7 @@ export const zhOverrides = {
       voice: {
         autoTts: '自动朗读助手回复。',
         voiceChatMode:
-          'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。',
+          'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。grok-live：全双工 xAI Grok Voice（grok-voice-latest）。需要 Grok 登录（hermes auth add xai-oauth）或 XAI_API_KEY。订阅登录可被 realtime client-secret 接口接受；使用 API 密钥时，语音分钟仍可能按每分钟 $0.08 计费。',
         gptLive: {
           voice: 'GPT-Live 模式使用的音色，可填写自定义音色 ID。',
           instructions: '附加到实时语音人设的句子（语气、语速、语言）。Hermes 保留自己的系统提示词。'
@@ -2525,7 +2526,8 @@ export const zhOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: '无需机器人令牌',
-      intro: (platform: string) => `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
+      intro: (platform: string) =>
+        `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
       link: (platform: string) => `关联 ${platform}`,
       linkAnother: (platform: string) => `关联另一个 ${platform} 账号`,
       linkedAccounts: '已关联账号',
@@ -2543,10 +2545,12 @@ export const zhOverrides = {
       refused: (platform: string) => `${platform} 拒绝了关联。请获取新代码后重试。`,
       qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`,
       managed: '由 Team Gateway 管理',
-      managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
+      managedNote: (platform: string) =>
+        `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
       managedIntro: '此代理的账号在 Nous Portal 中关联。',
       openPortal: '在 Nous Portal 中关联账号',
-      noNewAccount: (platform: string) => `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
+      noNewAccount: (platform: string) =>
+        `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
     },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
@@ -3265,6 +3269,9 @@ export const zhOverrides = {
     voiceEngineChangeFailed: '无法更改语音聊天引擎',
     voiceEngineChainedShort: '语音转文字',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineGrok: 'Grok Voice',
+    voiceEngineGrokNeedsCredential: '需要 Grok 登录或 XAI_API_KEY',
+    voiceEngineGrokShort: 'Grok Voice',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
@@ -4140,12 +4147,9 @@ export const zhOverrides = {
     terminalCloseAll: '关闭全部',
     terminalNewOn: '新建终端于…',
     terminalGatewayRemoved: '已移除的网关',
-    terminalGatewayRemovedBody:
-      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
-    terminalGatewayNoShellBody:
-      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
-    terminalDisconnectedBody:
-      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
+    terminalGatewayRemovedBody: '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody: '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody: '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 

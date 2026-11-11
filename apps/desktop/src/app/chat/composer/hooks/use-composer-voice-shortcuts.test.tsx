@@ -33,6 +33,10 @@ vi.mock('./use-voice-live-conversation', () => ({
   useVoiceLiveConversation: () => ({ end: mocks.endConversation, start: vi.fn(), status: 'idle' })
 }))
 
+vi.mock('./use-grok-voice-conversation', () => ({
+  useGrokVoiceConversation: () => ({ end: mocks.endConversation, start: vi.fn(), status: 'idle' })
+}))
+
 vi.mock('./use-auto-speak-replies', () => ({ useAutoSpeakReplies: vi.fn() }))
 
 vi.mock('@/i18n', () => ({
@@ -57,7 +61,13 @@ vi.mock('@/lib/tts-lease', () => ({
   syncTtsLease: vi.fn(async () => undefined)
 }))
 vi.mock('@/lib/wake-indicator', () => ({ clearWakeIndicator: vi.fn(), syncWakeIndicatorWithVoice: vi.fn() }))
-vi.mock('@/lib/voice-live', () => ({ toLiveHistory: vi.fn(() => []) }))
+vi.mock('@/lib/voice-live', () => ({
+  gptLiveEngineAvailable: () => false,
+  gptLiveEngineReason: () => null,
+  grokLiveEngineAvailable: () => false,
+  grokLiveEngineReason: () => null,
+  toLiveHistory: vi.fn(() => [])
+}))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/voice-live', async () => {
   const { atom } = await import('nanostores')

@@ -30,9 +30,9 @@ import { introEs } from './intro-es'
 
 export const esOverrides = {
   gatewayGroupOpen: {
-    opening: "Abriendo el chat de grupo…",
-    lookupFailed: "No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.",
-    missing: "Este chat de grupo ya no existe."
+    opening: 'Abriendo el chat de grupo…',
+    lookupFailed: 'No se pudo encontrar este grupo en la pasarela. Inténtalo de nuevo.',
+    missing: 'Este chat de grupo ya no existe.'
   },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
@@ -495,7 +495,8 @@ export const esOverrides = {
       liveError: 'Voz en vivo',
       liveDelegationFailed: 'No se pudo pasar la solicitud a Hermes',
       liveUnavailable: reason =>
-        `El chat de voz GPT-Live no está disponible: ${reason}. Se usará voz a texto en su lugar.`
+        `El chat de voz GPT-Live no está disponible: ${reason}. Se usará voz a texto en su lugar.`,
+      grokUnavailable: reason => `Grok Voice no está disponible: ${reason}. Se usará voz a texto en su lugar.`
     },
     native: {
       approvalTitle: 'Se necesita aprobación',
@@ -1396,7 +1397,7 @@ export const esOverrides = {
       voice: {
         autoTts: 'Lee automáticamente en voz alta las respuestas del asistente.',
         voiceChatMode:
-          'chained: voz a texto → Hermes → texto a voz con los proveedores de abajo. gpt-live: un modelo de voz full-duplex de OpenAI (gpt-live-1) escucha y habla, y pasa cada solicitud real a Hermes; el modelo que hayas seleccionado responde con todas las herramientas. Requiere una clave API de OpenAI; la capa de voz cuesta 0,05 US$ por minuto.',
+          'chained: voz a texto → Hermes → texto a voz con los proveedores de abajo. gpt-live: un modelo de voz full-duplex de OpenAI (gpt-live-1) escucha y habla, y pasa cada solicitud real a Hermes; el modelo que hayas seleccionado responde con todas las herramientas. Requiere una clave API de OpenAI; la capa de voz cuesta 0,05 US$ por minuto. grok-live: voz full-duplex de xAI Grok (grok-voice-latest). Requiere iniciar sesión en Grok (hermes auth add xai-oauth) o un XAI_API_KEY. El inicio de sesión de la suscripción lo acepta el endpoint de client secret; los minutos pueden seguir midiéndose a 0,08 US$ por minuto si se usa una clave API.',
         gptLive: {
           voice: 'Voz del modo GPT-Live. Se aceptan ID de voz personalizados.',
           instructions:
@@ -2384,12 +2385,15 @@ export const esOverrides = {
         enabledTitle: 'Navegación con perfil real activada',
         enabledMessage: 'Las sesiones nuevas navegarán con una instantánea de tu perfil predeterminado del navegador.',
         disabledTitle: 'Navegación con perfil real desactivada',
-        disabledMessage: 'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
+        disabledMessage:
+          'Se eliminará la instantánea del perfil y se cerrará su sesión en el navegador integrado; las sesiones nuevas usan un navegador limpio.',
         failedSave: 'No se pudo guardar el ajuste del perfil real',
         reimportSignins: 'Volver a importar inicios de sesión',
         signinsImportedTitle: 'Inicios de sesión del navegador integrado',
-        signinsImported: count => `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
-        signinsRemote: 'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
+        signinsImported: count =>
+          `Se inició sesión en el navegador integrado con ${count} cookie${count === 1 ? '' : 's'} de tu perfil del navegador.`,
+        signinsRemote:
+          'Este backend se ejecuta en otro equipo, así que su perfil del navegador no se importa al navegador integrado.',
         signinsFailed: 'No se pudieron importar los inicios de sesión al navegador integrado',
         prompt: {
           title: 'Mantén la sesión iniciada en tus sitios',
@@ -2988,7 +2992,8 @@ export const esOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Sin token de bot',
-      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      intro: (platform: string) =>
+        `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
       link: (platform: string) => `Vincular ${platform}`,
       linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
       linkedAccounts: 'Cuentas vinculadas',
@@ -3006,10 +3011,12 @@ export const esOverrides = {
       refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
       qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
       managed: 'Gestionado por Team Gateway',
-      managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+      managedNote: (platform: string) =>
+        `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
       managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
       openPortal: 'Vincular cuentas en Nous Portal',
-      noNewAccount: (platform: string) => `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
+      noNewAccount: (platform: string) =>
+        `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
     },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
@@ -3797,6 +3804,9 @@ export const esOverrides = {
     voiceEngineChangeFailed: 'No se pudo cambiar el motor del chat de voz',
     voiceEngineChainedShort: 'voz a texto',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineGrok: 'Grok Voice',
+    voiceEngineGrokNeedsCredential: 'Requiere iniciar sesión en Grok o un XAI_API_KEY',
+    voiceEngineGrokShort: 'Grok Voice',
     voiceDictation: 'Dictado por voz',
     speakReplies: 'Leer las respuestas en voz alta',
     stopSpeakingReplies: 'Dejar de leer las respuestas en voz alta',

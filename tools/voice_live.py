@@ -31,6 +31,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 GPT_LIVE_MODE = "gpt-live"
+GROK_LIVE_MODE = "grok-live"
 CHAINED_MODE = "chained"
 DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
@@ -105,10 +106,14 @@ def _live_section(voice: Optional[dict[str, Any]] = None) -> dict[str, Any]:
 
 
 def voice_chat_mode(voice: Optional[dict[str, Any]] = None) -> str:
-    """``chained`` (default) or ``gpt-live``. Accepts the underscore spelling too."""
+    """``chained`` (default), ``gpt-live``, or ``grok-live``. Accepts the underscore spelling too."""
     raw = (voice if voice is not None else _voice_section()).get("voice_chat_mode")
     mode = str(raw or CHAINED_MODE).strip().lower().replace("_", "-")
-    return GPT_LIVE_MODE if mode in {GPT_LIVE_MODE, "gptlive", "live"} else CHAINED_MODE
+    if mode in {GROK_LIVE_MODE, "groklive"}:
+        return GROK_LIVE_MODE
+    if mode in {GPT_LIVE_MODE, "gptlive", "live"}:
+        return GPT_LIVE_MODE
+    return CHAINED_MODE
 
 
 def _resolve_credentials(live: dict[str, Any]) -> tuple[str, str]:
@@ -130,7 +135,12 @@ def live_instructions(live: Optional[dict[str, Any]] = None) -> str:
 
 def resolve_gpt_live_status() -> dict[str, Any]:
     """Non-secret readiness verdict for the client: which mode is selected and whether GPT-Live
-    can start (a key resolves). Never returns the key."""
+    can start (a key resolves). Never returns the key.
+
+    ``available`` stays the OpenAI-key verdict even when the saved mode is ``grok-live``.
+    The voice-live status route overlays Grok readiness in that case
+    (:func:`resolve_voice_chat_status`).
+    """
     voice = _voice_section()
     mode = voice_chat_mode(voice)
     live = _live_section(voice)
@@ -142,6 +152,36 @@ def resolve_gpt_live_status() -> dict[str, Any]:
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
         "voice": str(live.get("voice") or DEFAULT_LIVE_VOICE),
     }
+
+
+def resolve_voice_chat_status() -> dict[str, Any]:
+    """Status the desktop mode switch reads.
+
+    ``chained`` and ``gpt-live`` keep the GPT-Live fields (``available`` is the OpenAI key).
+    When the saved mode is ``grok-live``, ``available`` / ``reason`` / ``model`` / ``voice``
+    come from Grok Voice instead. Both engines' readiness is always attached so the menu
+    can offer either radio without a second request. No bearer, no client secret.
+    """
+    gpt = resolve_gpt_live_status()
+    from tools.grok_voice import resolve_grok_voice_status
+
+    grok = resolve_grok_voice_status()
+    status = {
+        **gpt,
+        "grok_available": grok["available"],
+        "grok_reason": grok["reason"],
+        "grok_auth": grok["auth"],
+        "gpt_live_available": gpt["available"],
+        "gpt_live_reason": gpt["reason"],
+    }
+    if gpt["mode"] != GROK_LIVE_MODE:
+        return status
+    status["available"] = grok["available"]
+    status["reason"] = grok["reason"]
+    status["model"] = grok["model"]
+    status["voice"] = grok["voice"]
+    status["auth"] = grok["auth"]
+    return status
 
 
 def build_session_config(history: Optional[list] = None) -> dict[str, Any]:

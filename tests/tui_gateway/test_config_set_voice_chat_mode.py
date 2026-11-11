@@ -27,6 +27,9 @@ def test_engine_choice_reaches_the_config_file_and_round_trips(config_home):
     assert _set("gpt-live")["result"] == {"key": "voice.voice_chat_mode", "value": "gpt-live"}
     assert yaml.safe_load(config_home.read_text())["voice"]["voice_chat_mode"] == "gpt-live"
 
+    assert _set("grok-live")["result"] == {"key": "voice.voice_chat_mode", "value": "grok-live"}
+    assert yaml.safe_load(config_home.read_text())["voice"]["voice_chat_mode"] == "grok-live"
+
     assert _set("Chained ")["result"]["value"] == "chained"
     assert yaml.safe_load(config_home.read_text())["voice"]["voice_chat_mode"] == "chained"
 

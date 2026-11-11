@@ -64,6 +64,21 @@ describe('setVoiceChatMode', () => {
     })
   })
 
+  it('persists grok-live through the same profile-scoped write', async () => {
+    const pending = setVoiceChatMode('grok-live')
+
+    await vi.waitFor(() => expect(fetches).toHaveLength(1))
+    fetches[0].resolve(status('grok-live'))
+    await pending
+
+    expect(requestAgent).toHaveBeenCalledWith('conn-a', 'work', 'config.set', {
+      key: 'voice.voice_chat_mode',
+      profile: 'work',
+      value: 'grok-live'
+    })
+    expect($voiceLiveStatus.get()?.mode).toBe('grok-live')
+  })
+
   it('re-reads the status after the write instead of joining a pre-write fetch', async () => {
     void refreshVoiceLiveStatus()
     const pending = setVoiceChatMode('gpt-live')

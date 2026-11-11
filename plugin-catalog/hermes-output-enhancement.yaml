@@ -1,0 +1,17 @@
+name: hermes-output-enhancement
+repo: https://github.com/annipu/hermes-output-enhancement
+sha: 66c26eed53bc394b7828bf7f44bee24f5900638f
+subdir: plugin/hermes-output-enhancement
+description: Display-only Markdown styling for Desktop assistant replies — theme-aware headings, emphasis and readable tables. Reply content is never modified.
+maintainer: ANNIPU
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+version: "0.1.4"
+image: https://raw.githubusercontent.com/annipu/hermes-output-enhancement/66c26eed53bc394b7828bf7f44bee24f5900638f/docs/banner.png
+docs_url: https://github.com/annipu/hermes-output-enhancement/blob/66c26eed53bc394b7828bf7f44bee24f5900638f/README.md
+screenshots:
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/66c26eed53bc394b7828bf7f44bee24f5900638f/snapshots/0.1.2/en-light-off.png
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/66c26eed53bc394b7828bf7f44bee24f5900638f/snapshots/0.1.2/en-light-on.png
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/66c26eed53bc394b7828bf7f44bee24f5900638f/snapshots/0.1.2/en-dark-off.png
+  - https://raw.githubusercontent.com/annipu/hermes-output-enhancement/66c26eed53bc394b7828bf7f44bee24f5900638f/snapshots/0.1.2/en-dark-on.png

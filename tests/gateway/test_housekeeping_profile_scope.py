@@ -68,7 +68,7 @@ def two_homes(tmp_path, monkeypatch):
 
 def _record_credential_chores(monkeypatch):
     """Replace the credential-reading chores with recorders of (home, Nous override) they see."""
-    import agent.curator as curator
+    from agent import curator
     from hermes_cli.auth_nous import _nous_inference_env_override
     from hermes_constants import get_hermes_home
 
@@ -229,7 +229,8 @@ def test_profile_scope_setup_failure_restores_the_callers_home(two_homes, monkey
     def _boom(home):
         raise OSError(f"cannot read {home}/.env")
 
-    monkeypatch.setattr(gateway_run, "_load_profile_secret_scope", _boom)
+    import hermes_cli.env_loader
+    monkeypatch.setattr(hermes_cli.env_loader, "hydrate_profile_secret_sources", _boom)
 
     with pytest.raises(OSError):
         with gateway_run._profile_runtime_scope(b):

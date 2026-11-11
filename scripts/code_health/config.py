@@ -54,6 +54,7 @@ class Rule:
     source: str  # "ruff" | "ast" | "regex"
     exclude: tuple[str, ...] = TESTS
     blocking: bool = True
+    include: tuple[str, ...] = ()  # when set, the rule applies only to these paths
     pattern_id: str = ""  # regex rules: id in scripts/ci/profile_scope_patterns.json
 
 
@@ -126,6 +127,14 @@ RULES: tuple[Rule, ...] = (
     Rule("PS-P06", "raw platform credential getenv", "read it through the profile's secret"
          " scope (`get_secret`)", "regex", exclude=SINGLE_PROFILE,
          blocking=WARN_UNTIL_REPLAYED, pattern_id="P06"),
+    Rule("HX016", "legacy profile setter", "bind a scope:"
+         " `agent.runtime_scope.bind_profile_scope(home)` moves home, secrets and terminal policy"
+         " together (`bind_turn(session_id, turn_id, fence)` inside it for a turn); `bind_state(scope, ...)` for a host"
+         " that binds less on purpose. A raw `set_hermes_home_override` / `set_secret_scope` /"
+         " `set_terminal_scope` / `install_profile_terminal_scope` call blocks only when it is new: an"
+         " existing call stays until someone migrates it", "ast",
+         exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
+                                   "agent/secret_scope.py", "tools/terminal_scope.py")),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"
          " `gateway.status.looks_like_gateway_command_line` /"
@@ -139,6 +148,24 @@ RULES: tuple[Rule, ...] = (
     # Structure.
     Rule("HX011", "if/elif ladder on one name", "use a dict/table -> handler (`_SLASH_DISPATCH`"
          " is the shape)", "ast", exclude=()),
+    # Session store: an fd the lock-safety registry cannot see (closing any raw fd on the file
+    # cancels the process's POSIX locks on it; see `_HEADER_PROBE_FDS` in hermes_state_dbfile.py).
+    Rule("HX015", "untracked sqlite3.connect on state.db", "open it with"
+         " `hermes_cli.sqlite_safe_read.connect_tracked(..., tracking_path=<the db path>)`"
+         " so `has_live_connection()` / `offline_file_access()` see the fd; a deliberately offline"
+         " file (snapshot, scratch copy, quarantined file) takes `# health: allow HX015 -- <why>`",
+         "ast", blocking=WARN_UNTIL_REPLAYED, exclude=TESTS + ("evals/*",)),
+    # Tests: a fixed delay is a race against the runner's load (the usual flake).
+    Rule("HX013", "wall-clock sleep in a test", "wait for the condition, not the clock: an"
+         " Event the code under test sets (`threading.Event` / `asyncio.Event`, `.wait(timeout=)`),"
+         " or poll with `tests.waiting.wait_until(predicate, timeout=...)` (`async_wait_until` in a"
+         " coroutine; a poll loop's interval under a deadline or a `range(n)` bound passes); a stand-in that must hang"
+         " blocks on an Event the test sets at teardown."
+         " `sleep(0)` to yield is fine. A delay that IS the behaviour under test takes"
+         " `# health: allow HX013 -- <why>`", "ast", include=TESTS, exclude=()),
+    Rule("HX014", "private API-error predicate", "use `classify_api_error` (`agent.auxiliary_error_policy`"
+         " on the aux path); add the phrasing to its pattern tables", "ast",
+         include=("agent/auxiliary*.py", "agent/context_compressor*.py", "agent/turn_*.py")),
 )
 
 RULES_BY_ID = {rule.id: rule for rule in RULES}
@@ -151,6 +178,8 @@ def _matches(path: str, globs: tuple[str, ...]) -> bool:
 
 
 def rule_applies(rule: Rule, path: str) -> bool:
+    if rule.include and not _matches(path, rule.include):
+        return False
     return not _matches(path, rule.exclude)
 
 

@@ -372,7 +372,7 @@ def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkey
     def _fake_run(command, timeout, env_passthrough=None):
         try:
             seen.extend(resolve_passthrough_value(k, None) for k in env_passthrough)
-        except Exception as exc:  # noqa: BLE001 — recorded for the assertion
+        except Exception as exc:
             seen.append(exc)
         finally:
             done.set()

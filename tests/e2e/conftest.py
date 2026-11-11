@@ -10,10 +10,11 @@ No LLM, no real platform connections.
 """
 
 import asyncio
+import importlib.util
 import sys
 import uuid
-from datetime import datetime, timezone
-from types import SimpleNamespace
+from datetime import datetime, timezone, UTC
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,11 +34,21 @@ E2E_MESSAGE_SETTLE_DELAY = 0.3
 
 # Platform library mocks
 
-# Ensure telegram module is available (mock it if not installed)
+def _real_module_available(name: str) -> bool:
+    """True when ``name`` is a real importable module, imported yet or not: this conftest runs
+    before any adapter import, so absence from ``sys.modules`` does not mean "not installed"."""
+    if name in sys.modules:
+        return isinstance(sys.modules[name], ModuleType)
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _ensure_telegram_mock():
     """Install mock telegram modules so TelegramAdapter can be imported."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return # Real library installed
+    if _real_module_available("telegram"):
+        return  # Real library installed — never shadow it with a mock
 
     telegram_mod = MagicMock()
     telegram_mod.Update = MagicMock()
@@ -65,8 +76,8 @@ def _ensure_telegram_mock():
 # Ensure discord module is available (mock it if not installed)
 def _ensure_discord_mock():
     """Install mock discord modules so DiscordAdapter can be imported."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return # Real library installed
+    if _real_module_available("discord"):
+        return  # Real library installed — never shadow it with a mock
 
     discord_mod = MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
@@ -97,8 +108,8 @@ def _ensure_discord_mock():
 
 def _ensure_slack_mock():
     """Install mock slack modules so SlackAdapter can be imported."""
-    if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):
-        return  # Real library installed
+    if _real_module_available("slack_bolt") and _real_module_available("slack_sdk"):
+        return  # Real libraries installed — never shadow them with mocks
 
     slack_bolt = MagicMock()
     slack_bolt.async_app.AsyncApp = MagicMock
@@ -124,13 +135,13 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 _ensure_slack_mock()
 
-import discord  # noqa: E402 — mocked above
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import discord
+from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 # Platform-generic factories
@@ -198,7 +209,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
 
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._shutdown_event = asyncio.Event()
     runner._exit_reason = None
     runner._exit_code = None
@@ -212,9 +222,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
-    runner._running_agents_ts = {}
     runner._pending_model_notes = {}
-    runner._update_prompt_pending = {}
     runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
@@ -227,7 +235,6 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> Gatew
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
     runner._emit_gateway_run_progress = AsyncMock()
 
     # Disable destructive slash confirm gate so /new executes immediately
@@ -389,7 +396,7 @@ def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", pare
 
 def make_discord_message(
     *, content: str = "hello", author=None, channel=None, mentions=None,
-    attachments=None, message_id: int = None,
+    attachments=None, message_id: int | None = None,
 ):
     if message_id is None:
         message_id = _next_message_id()
@@ -409,7 +416,7 @@ def make_discord_message(
         guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
-        reference=None, created_at=datetime.now(timezone.utc),
+        reference=None, created_at=datetime.now(UTC),
         create_thread=AsyncMock(),
     )
 

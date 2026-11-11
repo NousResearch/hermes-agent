@@ -1,0 +1,19 @@
+name: postsider
+title: PostSider
+repo: https://github.com/lumizone/postsider-agent-plugin
+sha: 4ddb64abfb18a7ea3d9c38703854b351fb1cfbc0
+version: "1.0.0"
+image: https://raw.githubusercontent.com/lumizone/postsider-agent-plugin/4ddb64abfb18a7ea3d9c38703854b351fb1cfbc0/assets/banner.png
+description: "Plan, draft, schedule, publish and review social media posts across 30+ networks (X, LinkedIn, Instagram, Facebook, TikTok, YouTube, Threads, Pinterest, Bluesky and more) through PostSider's hosted MCP server (Streamable HTTP at https://mcp.postsider.com/mcp, OAuth sign-in, no keys in config): content calendar, channel rules and posting queues, media uploads, drafts and approval requests, failed-post triage, analytics, and an AI post checker and caption rewrite. Bundles the postsider workflow skill (draft first, read back every write, confirm before anything public or permanent). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to PostSider's hosted server (mcp.postsider.com) and acts on the user's own PostSider workspace; the tool set is served by that server at runtime and is not covered by the pinned sha. Write tools can create, edit, schedule and delete posts, and posts created with type now or schedule are published to the user's connected public social accounts; other tools upload and delete media, change channel settings and posting slots, connect or disconnect channels, and pause publishing for the whole organization. Actions count toward the user's PostSider plan, and the AI checker and caption rewrite use its monthly AI allowance. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth; without a stored token, an unattended run fails at Hermes's connect timeout instead of hanging. Users who need longer to sign in, or a headless setup, can replace the server with hermes mcp add postsider --url https://mcp.postsider.com/mcp --auth oauth (or a token header) and keep the skill."
+maintainer: PostSider
+tier: community
+category: tools
+docs_url: https://github.com/lumizone/postsider-agent-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

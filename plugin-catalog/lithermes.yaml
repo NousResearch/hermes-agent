@@ -1,0 +1,39 @@
+name: lithermes
+repo: https://github.com/wjgoarxiv/lithermes
+sha: 3a0d3ee1cd521f5c37e5be2da97fde21f2667d1e
+subdir: packages/lithermes-installer/assets/lithermes-plugin
+description: "Adds lit to Hermes Agent so a request is planned, built with tests and recorded checks, reviewed, and closed with a handoff note. 40 skills. MIT. Disclosure — adds per-turn workflow context and output marks through Hermes hooks (including a ⛔ LIT: not done line when a reply claims completion while a goal's gate is closed or a lit session never opened one, and a pre_verify hook that asks the agent to keep going while the gate is closed) and writes its plans, goals, test baseline, handoff cards and run state under the workspace's .hermes/lithermes/ (default-on knowledge capture, opt-out: LITHERMES_WIKIFY_CAPTURE=0); after every terminal command it appends a signed note there with a redacted 100-character preview of the command and its exit code, and when a goal is open it reads the workspace's git state (rev-parse, ls-tree, ls-files) and scans its test files; keeps a per-install signing key at ~/.hermes/lithermes/litgoal.key; a new session reads other sessions' goal files in the same workspace to offer a resume (LITHERMES_GOAL_RESUME=0 turns it off); a read-only dashboard route, limited to folders inside the home directory and sending no CORS headers, feeds a Hermes Desktop goal pane; /lit-adhd reads recent Hermes session titles, asks and tool names from ~/.hermes/state.db read-only with the sqlite3 CLI; /lit-hijack downloads the URLs and files you name (web pages, PDFs, X posts via api.fxtwitter.com, git clones of github.com repos and gists) into the workspace; bundled skill runtimes install from their own lockfiles when a skill asks; the processes the plugin starts (git, node, a prose detector, pdftotext) get an allowlist environment without provider keys; reads Hermes internals read-only (context compressor, config defaults, model metadata, command registry, working-folder helpers), which can break on a Hermes release."
+maintainer: wjgoarxiv
+tier: community
+category: automation
+version: "1.0.38"
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/wjgoarxiv/lithermes
+capabilities:
+  provides_tools:
+    - goal_status
+    - goal_set
+    - goal_add_criterion
+    - goal_evidence
+    - goal_criterion_status
+    - goal_steer
+    - goal_status_set
+    - goal_checkpoint
+    - goal_complete
+    - lithermes_work_progress
+    - lithermes_knowledge_capture
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - pre_command
+    - post_tool_call
+    - transform_tool_result
+    - post_api_request
+    - subagent_stop
+    - transform_llm_output
+    - pre_verify
+    - on_session_finalize
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

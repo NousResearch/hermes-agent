@@ -58,7 +58,7 @@ def test_skills_tool_load_env_strips_export_prefix(tmp_path, monkeypatch):
     # skills_tool.load_env reads get_hermes_home()/.env directly.
     import importlib
 
-    import tools.skills_tool as skills_tool
+    from tools import skills_tool
 
     importlib.reload(skills_tool)
     with patch.object(skills_tool, "get_hermes_home", return_value=tmp_path):

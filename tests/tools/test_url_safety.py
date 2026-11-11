@@ -11,7 +11,9 @@ from tools.url_safety import (
     is_always_blocked_url,
     normalize_url_for_request,
     redirect_target_from_response,
+    DEFAULT_USER_AGENT,
     create_ssrf_safe_async_client,
+    create_ssrf_safe_client,
     SSRFConnectionBlocked,
     _SSRFGuardedAsyncNetworkBackend,
     _MAX_SSRF_CONNECT_IPS,
@@ -572,7 +574,7 @@ class TestDeclaredFakeIpSentinelRanges:
             assert is_safe_url("http://example.com/") is False
         # ...and the sentinel block itself is blocked again once the declaration is gone.
         _reset_allow_private_cache()
-        with patch("hermes_cli.config.read_raw_config", lambda: {}), _resolves_to("198.18.0.23"):
+        with patch("hermes_cli.config.read_raw_config", dict), _resolves_to("198.18.0.23"):
             assert is_safe_url("https://example.com/file.jpg") is False
 
     @pytest.mark.parametrize(
@@ -602,3 +604,29 @@ class TestDeclaredFakeIpSentinelRanges:
                 assert is_safe_url("https://example.com/") is True
         finally:
             _reset_allow_private_cache()
+
+
+class TestDefaultUserAgent:
+    """CDNs with basic bot detection (upload.wikimedia.org) 403 httpx's bare
+    ``python-httpx/x`` UA, so every SSRF-safe client identifies itself by default."""
+
+    def test_requests_carry_identifying_user_agent_by_default(self):
+        seen = []
+        transport = httpx.MockTransport(lambda req: seen.append(req.headers.get_list("user-agent")) or httpx.Response(200))
+        client = create_ssrf_safe_client(timeout=1)
+        client._transport = transport
+        try:
+            client.get("http://example.invalid/x.jpg")
+        finally:
+            client.close()
+        assert seen == [[DEFAULT_USER_AGENT]]
+
+    @pytest.mark.asyncio
+    async def test_caller_user_agent_wins_and_caller_headers_are_not_mutated(self):
+        caller = {"user-agent": "custom-agent/1.0"}
+        client = create_ssrf_safe_async_client(timeout=1, headers=caller)
+        try:
+            assert client.headers.get_list("user-agent") == ["custom-agent/1.0"]
+        finally:
+            await client.aclose()
+        assert caller == {"user-agent": "custom-agent/1.0"}

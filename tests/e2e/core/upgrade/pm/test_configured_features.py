@@ -35,6 +35,9 @@ from tests.e2e.core.upgrade.pm import _pm as P
 from tests.e2e.core.upgrade.test_upgrade_path import _RETRY_PREFIX, _refs, make_leg
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
+# A main-era install is a release from before PM shipped (pm/ first appears in v0.21.6).
+PRE_PM_GENERATION = "handoff"
+
 pytestmark = [
     pytest.mark.platforms("linux"),
     pytest.mark.live_system_guard_bypass,
@@ -129,14 +132,14 @@ def test_configured_gateway_platform_has_its_sdk_after_update(rebuilt):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated(tmp_path_factory, provider):
-    """Release N-1 installed main-era style (``venv/`` from N-1's own uv.lock with ``[all]``) plus
-    the ``[messaging]`` extra (Telegram, Discord, Slack SDKs) the main-era docs installed, then
-    updated to HEAD."""
-    if not _refs().base_tag:
+def _main_era_leg(tmp_path_factory, provider, name: str):
+    """The newest pre-PM release installed main-era style (``venv/`` from N-1's own uv.lock with ``[all]``) plus
+    the ``[messaging]`` extra (Telegram, Discord, Slack SDKs) the main-era docs installed. Returns the leg and
+    its pre-update import probe."""
+    pre_pm = I.upgrade_base(PRE_PM_GENERATION)
+    if pre_pm is None:
         pytest.skip("no release tag reachable before HEAD (fetch tags)")
-    leg = make_leg(tmp_path_factory.mktemp("pm-legacy") / "leg", None)
+    leg = make_leg(tmp_path_factory.mktemp(name) / "leg", None, base=pre_pm.commit)
     no_cfg = leg.root / "uv-config"
     uv_env = {k: v for k, v in os.environ.items() if k not in ("VIRTUAL_ENV", "UV_NO_CONFIG", "UV_CONFIG_FILE")}
     uv_env.update(UV_PROJECT_ENVIRONMENT=str(leg.install / "venv"), XDG_CONFIG_HOME=str(no_cfg),
@@ -145,7 +148,7 @@ def migrated(tmp_path_factory, provider):
     assert uv is not None
     cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--extra", "messaging",
                          "--python", str(leg.install / "venv" / "bin" / "python")],
-                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800)
+                        cwd=str(leg.install), env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"harness: messaging install into the N-1 venv failed:\n{cp.stderr[-4000:]}"
     with (leg.install / "pyproject.toml").open("rb") as fh:
         assert "messaging" in tomllib.load(fh)["project"]["optional-dependencies"], "harness: N-1 has no messaging extra"
@@ -154,12 +157,37 @@ def migrated(tmp_path_factory, provider):
     probe = "import telegram, discord, mcp.client.streamable_http; print('ok')"
     pre = leg.run("-c", probe, argv0=leg.python)
     I.git("update-ref", "refs/heads/main", _refs().head, cwd=leg.origin)
-    up = leg.run(*_RETRY_PREFIX[1:], leg.hermes, "update", "--yes", "--branch", "main",
-                 argv0=_RETRY_PREFIX[0], timeout=P.UPDATE_TIMEOUT)
-    return {"leg": leg, "pre": pre, "update": up}
+    return leg, pre
 
 
-def test_legacy_venv_features_carry_into_the_first_pm_generation(migrated):
+def _update(leg):
+    return leg.run(*_RETRY_PREFIX[1:], leg.hermes, "update", "--yes", "--branch", "main",
+                   argv0=_RETRY_PREFIX[0], timeout=P.UPDATE_TIMEOUT)
+
+
+@pytest.fixture(scope="module")
+def migrated(tmp_path_factory, provider):
+    """A main-era install updated to HEAD by its own (historical) updater."""
+    leg, pre = _main_era_leg(tmp_path_factory, provider, "pm-legacy")
+    return {"leg": leg, "pre": pre, "update": _update(leg)}
+
+
+@pytest.fixture(scope="module")
+def hand_pulled(tmp_path_factory, provider):
+    """A main-era install whose checkout reached HEAD before any PM sync ran, then ``hermes update``.
+
+    A ``git pull`` by hand: the tree runs HEAD's code from its old venv. Its launch migration never
+    runs, since this install carries no self-update stamp (a custom ``--dir``, not a blessed root)
+    and the harness sets ``HERMES_DISABLE_LAZY_INSTALLS``, so the update's own completion bootstrap
+    builds the first PM generation.
+    """
+    leg, pre = _main_era_leg(tmp_path_factory, provider, "pm-legacy-pulled")
+    I.git("pull", "-q", "--ff-only", "origin", "main", cwd=leg.install)
+    assert I.git("rev-parse", "HEAD", cwd=leg.install) == _refs().head
+    return {"leg": leg, "pre": pre, "update": _update(leg)}
+
+
+def _assert_first_generation_keeps_the_old_venv(migrated):
     leg, up = migrated["leg"], migrated["update"]
     assert migrated["pre"].returncode == 0, "harness: N-1 venv cannot import its features:\n" + H.describe(migrated["pre"])
     assert up.returncode == 0, "hermes update from a main-era venv failed:\n" + H.describe(up)
@@ -176,3 +204,11 @@ def test_legacy_venv_features_carry_into_the_first_pm_generation(migrated):
         f"messaging SDKs the main-era venv carried are gone from the first PM generation: {lost} {cp.stdout}\n"
         + H.describe(up))
     assert '"mcp.client.streamable_http": "ok"' in cp.stdout, cp.stdout
+
+
+def test_legacy_venv_features_carry_into_the_first_pm_generation(migrated):
+    _assert_first_generation_keeps_the_old_venv(migrated)
+
+
+def test_legacy_venv_features_survive_a_hand_pull_then_update(hand_pulled):
+    _assert_first_generation_keeps_the_old_venv(hand_pulled)

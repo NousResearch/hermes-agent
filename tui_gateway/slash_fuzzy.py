@@ -1,5 +1,5 @@
 """Description-aware fuzzy scoring for slash-menu completions (ported from superagent-ai/grok-cli
-``src/ui/slash-menu.ts``; mirrored in ``ui-tui/src/app/slash/fuzzyScore.ts``). Tiers: exact command
+``src/ui/slash-menu.ts``; mirrored in ``apps/shared/src/slash-score.ts``). Tiers: exact command
 token (0), prefix (1), substring (2); the DESCRIPTION is tokenized and matched at +3 (3/4/5), so
 ``/summary`` surfaces a command whose description mentions summaries. Lower wins; ``math.inf`` = miss."""
 

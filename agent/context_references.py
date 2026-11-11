@@ -27,18 +27,22 @@ from hermes_cli.sizefmt import format_bytes
 # provider API (Issue #26193) ---------------------------------------------------------------------------
 BUILTIN_PREFIXES = frozenset({"diff", "staged", "file", "folder", "git", "url"})
 
-_context_reference_providers: dict[str, "ContextReferenceProvider"] = {}
+_context_reference_providers: dict[str, ContextReferenceProvider] = {}
+_context_reference_owners: dict[str, object] = {}  # prefix -> owner given at registration (None: none given)
+_context_reference_lock = threading.Lock()
 
 
+@dataclass(slots=True)
 class ContextCompletionItem:
-    """A single autocomplete result from a context reference provider."""
+    """A single autocomplete result from a context reference provider (a dataclass, so it crosses
+    the plugin-host wire as data)."""
 
-    __slots__ = ("text", "display", "meta")
+    text: str
+    display: str = ""
+    meta: str = ""
 
-    def __init__(self, text: str, display: str = "", meta: str = "") -> None:
-        self.text = text
-        self.display = display or text
-        self.meta = meta
+    def __post_init__(self) -> None:
+        self.display = self.display or self.text
 
 
 class ContextReferenceProvider(ABC):
@@ -56,8 +60,13 @@ class ContextReferenceProvider(ABC):
         """Expand *target* to prompt content.  Return ``None`` to skip."""
 
 
-def register_context_reference_provider(provider: ContextReferenceProvider) -> None:
-    """Register a plugin context reference provider."""
+def register_context_reference_provider(
+    provider: ContextReferenceProvider, *, owner: object = None, reclaim: bool = False,
+) -> Callable[[], bool] | None:
+    """Register a plugin context reference provider; a taken prefix is refused. ``owner`` records who holds
+    the prefix. With ``reclaim``, a prefix the same ``owner`` holds is not refused but staged: nothing changes
+    until the returned callable publishes ``provider`` (a reload that loaded), which it skips if the prefix has
+    changed hands meanwhile."""
     if not isinstance(provider, ContextReferenceProvider):
         raise TypeError("provider must be a ContextReferenceProvider instance")
     prefix = provider.prefix.lower().strip()
@@ -65,9 +74,23 @@ def register_context_reference_provider(provider: ContextReferenceProvider) -> N
         raise ValueError("prefix must be a non-empty string")
     if prefix in BUILTIN_PREFIXES:
         raise ValueError(f"prefix '{prefix}' is reserved for built-in references")
-    if prefix in _context_reference_providers:
-        raise ValueError(f"prefix '{prefix}' is already registered")
-    _context_reference_providers[prefix] = provider
+    with _context_reference_lock:
+        held = _context_reference_providers.get(prefix)
+        if held is None:
+            _context_reference_providers[prefix] = provider
+            _context_reference_owners[prefix] = owner
+            return None
+        if not reclaim or owner is None or _context_reference_owners.get(prefix) != owner:
+            raise ValueError(f"prefix '{prefix}' is already registered")
+
+    def publish() -> bool:
+        with _context_reference_lock:
+            if _context_reference_providers.get(prefix) is not held or _context_reference_owners.get(prefix) != owner:
+                return False
+            _context_reference_providers[prefix] = provider
+            return True
+
+    return publish
 
 
 def get_context_reference_providers() -> dict[str, ContextReferenceProvider]:
@@ -149,7 +172,8 @@ def format_reference_value(value: str) -> str:
     return value
 
 
-def parse_context_references(message: str) -> list[ContextReference]:
+def parse_context_references(message: str, *, plugins: bool = True) -> list[ContextReference]:
+    """``plugins=False`` reads built-in kinds only (a safe-mode / config-bypass session loads no plugins)."""
     refs: list[ContextReference] = []
     if not message:
         return refs
@@ -165,7 +189,7 @@ def parse_context_references(message: str) -> list[ContextReference]:
         refs.append(ContextReference(match.group(0), kind, target, match.start(), match.end(), line_start, line_end))
 
     # Second pass: plugin-registered prefixes the built-in pattern missed.
-    for match in _PLUGIN_REFERENCE_PATTERN.finditer(message) if _context_reference_providers else ():
+    for match in _PLUGIN_REFERENCE_PATTERN.finditer(message) if plugins and _context_reference_providers else ():
         kind = match.group("kind")
         if kind in BUILTIN_PREFIXES or kind not in _context_reference_providers:
             continue
@@ -198,11 +222,15 @@ def preprocess_context_references(
 
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
-    allowed_root: str | Path | None = None,
+    allowed_root: str | Path | None = None, plugins: bool = True,
 ) -> ContextReferenceResult:
-    refs = parse_context_references(message)
+    refs = parse_context_references(message, plugins=plugins)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("context_references", "@-references"):
+        return ContextReferenceResult(message=message, original_message=message, references=refs,
+                                      warnings=[refusal], blocked=True)
     cwd_path = Path(cwd).expanduser().resolve()
     # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
     allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path

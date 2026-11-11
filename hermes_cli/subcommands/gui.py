@@ -34,7 +34,7 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Initial project directory for Desktop chat sessions (sets HERMES_DESKTOP_CWD)")
     gui_parser.add_argument(
         "--skip-build", action="store_true",
-        help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
+        help="Skip pnpm install/package and launch the existing unpacked app from apps/desktop/release",
     )
     gui_parser.add_argument(
         "--local", action="store_true",
@@ -54,6 +54,11 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--identity", default="Hermes Local Signing",
         help="Certificate name to create/use for --setup-tcc-identity (default: Hermes Local Signing)",
     )
+    gui_parser.add_argument(
+        "--install-apparmor-profile", action="store_true",
+        help="Linux only: install an AppArmor profile (sudo) that lets the packaged app use Chromium's "
+            "user-namespace sandbox on hosts with kernel.apparmor_restrict_unprivileged_userns=1 "
+            "(Ubuntu 23.10+), then exit. Survives rebuilds of the same checkout.")
     gui_parser.add_argument(
         "--close-preview",
         action="store_true",

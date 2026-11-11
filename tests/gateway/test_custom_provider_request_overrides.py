@@ -58,16 +58,12 @@ def _make_runner():
     runner._fallback_model = None
     runner._service_tier = None
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
-    runner._pending_approvals = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []
@@ -171,7 +167,7 @@ def test_turn_route_merges_fast_mode_with_provider_request_overrides():
 
 @pytest.mark.asyncio
 async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(monkeypatch):
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
         gateway_run,
@@ -188,7 +184,7 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
     )
     _install_fake_agent(monkeypatch)
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
@@ -226,7 +222,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     service_tier ON TOP, and the following normal turn drops only the stale
     fast-mode key while the provider extra_body survives.
     """
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
         gateway_run,
@@ -243,7 +239,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     )
     _install_fake_agent(monkeypatch)
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
 
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 

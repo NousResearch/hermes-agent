@@ -40,7 +40,7 @@ def test_idle_proof_is_true_only_when_every_ledger_is_provably_empty():
 def test_idle_proof_reads_the_real_cron_and_human_input_ledgers():
     """The probe must see a running cron job (invisible to the renderer) and a pending approval
     or open clarify request in the live process ledgers, not a renderer-published flag."""
-    import cron.scheduler as scheduler
+    from cron import scheduler
     from tools import approval
     from tui_gateway import server_requests
 

@@ -47,7 +47,7 @@ _KNOWN_PATH_FRAGMENTS = (
 
 # Runtimes Hermes provisions into HERMES_HOME and must therefore resolve
 # through a managed-aware helper rather than PATH.
-_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx"})
+_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx", "pnpm"})
 
 # Directories that are not Hermes-owned subprocess code: plugins ship their own
 # resolution policy, tests assert against PATH deliberately, and skills/scripts/
@@ -61,6 +61,7 @@ _EXEMPT_DIRS = (
     "evals",
     "website",
     "node_modules",
+    ".build",
     ".cache",
     ".git",
     ".venv",
@@ -79,24 +80,28 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ),
     ("hermes_cli/main_tui_launch.py", "node"): (
         "PM-composed launch context: `which(node)` runs against the PATH "
-        "pm.ensure('node'|'npm') just composed (store dirs first), not the ambient one."
+        "pm.ensure('node'|'pnpm') just composed (store dirs first), not the ambient one."
     ),
-    ("hermes_cli/main_tui_launch.py", "npm"): (
+    ("hermes_cli/main_tui_launch.py", "pnpm"): (
         "Same PM-composed launch context as the node lookup above."
     ),
     ("hermes_cli/source_build.py", "node"): (
         "PM-composed build context: `which(node)` runs against the PATH pm's "
-        "ensure('npm')/env_for('node') just composed, not the ambient one."
+        "ensure('pnpm')/env_for('node') just composed, not the ambient one."
     ),
-    ("hermes_cli/source_build.py", "npm"): (
+    ("hermes_cli/source_build.py", "pnpm"): (
         "Same PM-composed build context as the node lookup above."
     ),
-    ("hermes_cli/main_desktop.py", "npm"): (
-        "Desktop build resolves npm inside the PM-prepared build_env PATH."
+    ("hermes_cli/main_desktop.py", "pnpm"): (
+        "Desktop build resolves pnpm inside the PM-prepared build_env PATH."
     ),
     ("pm/workspace.py", "npm"): (
         "Plugin workspace installs resolve npm inside the PM runner env that "
         "pm.ensure('npm') just composed."
+    ),
+    ("tools/mcp_tool_config.py", "node"): (
+        "Looks up node only inside the sealed payload's own node dirs (an explicit "
+        "`path=`, never the ambient PATH), to run a package bin on the packaged node."
     ),
     ("apps/desktop/electron/fixtures/source-backend.py", "uv"): (
         "Test fixture drives the real uv deliberately placed on the test "
@@ -226,7 +231,7 @@ def _source_files() -> list[Path]:
     return files
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _is_packaging_copy(top_level: str) -> bool:
     """Whether *top_level* (a dir name under REPO_ROOT) is a build artifact."""
     if top_level in ("build", "dist") or top_level.endswith(".egg-info"):

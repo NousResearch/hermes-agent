@@ -41,5 +41,7 @@ export function revealAction(windowVisible: boolean): 'showInactive' | 'none' {
  * is a foreground pump on Windows and a no-op everywhere else — skip it.
  */
 export function shouldFocusToTakeKeyboard(window: FocusPolicyWindow): boolean {
+  // Call it as a method: BrowserWindow.isFocused reads its native handle from
+  // `this`, and a detached call throws "Object has been destroyed".
   return !window.isFocused()
 }

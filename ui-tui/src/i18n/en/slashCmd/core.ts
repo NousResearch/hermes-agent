@@ -6,6 +6,7 @@ export const slashCmdCoreEn = {
   core: {
     help: {
       skillCommandsAvailable: (count: string) => `${count} skill commands available — /skills to browse`,
+      connectors: 'manage connector accounts (rename, add another, reconnect, remove)',
       detailsGlobal: 'set global agent detail visibility mode',
       detailsSection: 'override one section (thinking/tools/subagents/activity)',
       fortune: 'show a random or daily local fortune',
@@ -28,6 +29,7 @@ export const slashCmdCoreEn = {
       switchSessions: 'switch sessions',
       forgingSession: 'forging session…',
       newSessionStarted: 'new session started',
+      previousKeptRunning: 'new session started · the previous one keeps running in the background (Ctrl+X to switch)',
       cancelLabel: 'No, keep going',
       confirmNew: 'Yes, start a new session',
       confirmClear: 'Yes, clear the session',
@@ -107,6 +109,9 @@ export const slashCmdCoreEn = {
       noConversation: 'no conversation yet',
       noActiveSession: 'no active session — nothing to save',
       saved: (file: string) => `conversation saved to: ${file}`,
+      savedOnHost: (file: string) => `conversation saved as raw JSON on the gateway host: ${file}`,
+      legacyRefused:
+        'not saved: this gateway does not serve /save export (an older gateway, or a sidecar without the session authority), so it cannot write a redacted, named or md/html copy. Attach to the gateway that owns the session or update it, or run plain /save to write raw JSON on the gateway host.',
       failed: 'failed to save'
     },
     focus: {
@@ -131,7 +136,24 @@ export const slashCmdCoreEn = {
     queue: {
       countOne: (count: string) => `${count} queued message`,
       countOther: (count: string) => `${count} queued messages`,
-      queued: (preview: string) => `queued: "${preview}"`
+      queued: (preview: string) => `queued: "${preview}"`,
+      empty: 'Queue is empty.',
+      usage:
+        'Usage: /queue <prompt> | /queue list | /queue edit N <prompt> | /queue rm N | /queue move FROM TO | /queue clear',
+      pendingHeader: (count: string) => `Queue (${count} pending):`,
+      clearedOne: (count: string) => `Cleared ${count} queued prompt.`,
+      clearedOther: (count: string) => `Cleared ${count} queued prompts.`,
+      removed: (index: string, preview: string) => `Removed queue item ${index}: ${preview}`,
+      notFound: (index: string, size: string) => `Queue item ${index} not found. Current size: ${size}`,
+      usageEdit: 'Usage: /queue edit <number> <new prompt>',
+      usageRemove: 'Usage: /queue rm <number>',
+      updated: (index: string, preview: string) => `Updated queue item ${index}: ${preview}`,
+      usageMove: 'Usage: /queue move <from> <to>',
+      moveOutOfRange: (size: string) => `Queue move out of range. Current size: ${size}`,
+      moved: (source: string, destination: string) => `Moved queue item ${source} to ${destination}.`,
+      usageAdd: 'Usage: /queue add <prompt>',
+      gatewayFifo: 'The gateway runs queued prompts in the order they were sent; edit or remove one instead.',
+      alreadyStarted: (index: string) => `Queue item ${index} already started; it runs as it was sent.`
     },
     steer: {
       usage: 'usage: /steer <prompt>',
@@ -146,6 +168,25 @@ export const slashCmdCoreEn = {
     },
     retry: {
       nothing: 'nothing to retry'
+    },
+    rewind: {
+      nothing: 'nothing to rewind to',
+      noPrevious: 'No previous message to edit.',
+      editNotSent: '↺ edit not sent: the session changed before the rewind, so nothing was removed (↑ recalls the text)',
+      editNotSentUnknown:
+        '↺ edit not sent: the session changed while the rewind was in flight, so it may have been applied; check that session (↑ recalls the text)',
+      cancelled: '↺ Rewind cancelled; nothing was removed.',
+      imagesKeptAsNotes: (count: number) =>
+        `${count} image${count === 1 ? '' : 's'} could not be re-attached: the gateway's files are not readable on this machine, so the image notes stay in the text`,
+      unsupported: '/rewind needs the shared gateway (hermes serve)',
+      done: (turn: string, count: string) => `rewound to prompt ${turn} (${count} messages removed)`,
+      forked: (turn: string) => `forked from before prompt ${turn} — edit the prompt and press Enter to send`
+    },
+    // A refused /undo or /retry: main's busy text (tui_gateway/user_messages.py::busy_message).
+    busy: {
+      replying: (command: string) =>
+        `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
+      compressing: (command: string) => `session busy — a /compress is running; run /${command} when it finishes.`
     }
   },
   debug: {

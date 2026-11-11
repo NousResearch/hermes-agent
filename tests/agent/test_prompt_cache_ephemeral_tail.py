@@ -1,9 +1,9 @@
-"""The second system breakpoint sits before the API-time ephemeral tail.
+"""A first call also marks the end of the session prompt, before the API-time ephemeral tail.
 
-A subagent's per-task text (and a personality) is appended to the session's system prompt at
-API time. With the breakpoint after it, sessions that differ only in that tail re-wrote the
-skills index on every first call. These tests pin where the breakpoints land and that the
-request still carries the same bytes.
+Text appended to the session's system prompt at API time (a personality, a task brief) used to
+sit ahead of the only breakpoint after the static tier, so sessions that differ only in that tail
+re-wrote the skills index on every first call. These tests pin where the breakpoints land and
+that the request still carries the same bytes.
 """
 
 from agent.prompt_caching import apply_anthropic_cache_control, strip_anthropic_cache_control
@@ -43,10 +43,26 @@ def test_first_call_marks_session_prompt_end_and_keeps_the_tail_breakpoint():
         [{"role": "system", "content": SESSION}] + history, static_system_prefix=STATIC)
 
 
-def test_real_agent_keeps_one_split_and_moves_the_tail_breakpoint_to_the_conversation(tmp_path):
+def test_a_session_that_starts_with_history_still_marks_the_end_of_the_system_prompt():
+    """A replayed or edited history misses the conversation breakpoints; the tail must not go with it."""
+    history = [{"role": "user", "content": "goal"}, {"role": "assistant", "content": "working"},
+               {"role": "user", "content": "more"}]
+    assert _marked(_plan(history)) == [(0, 0), (0, 2), (2, 0), (3, 0)]
+
+
+def test_three_part_failover_rewrite_keeps_the_unchanged_parts():
+    from agent.conversation_loop import _rewrite_system_content_blocks
+
+    parts = [{"type": "text", "text": x, "cache_control": {"type": "ephemeral"}} for x in ["core", "skills", "old tail"]]
+    assert _rewrite_system_content_blocks({"role": "system", "content": parts}, "coreskillsnew tail")
+    assert [p["text"] for p in parts] == ["core", "skills", "new tail"]
+    assert all("cache_control" in p for p in parts)
+
+
+def test_real_agent_keeps_one_split_and_marks_the_session_prompt_on_the_first_call_only(tmp_path):
     """Through a real AIAgent with an ephemeral prompt: every request sends the same three system
-    parts ending at the session prompt, so nothing is re-written, and only the first request spends
-    a breakpoint on the tail."""
+    parts with the end of the whole prompt marked, so nothing is re-written, and only the first
+    request spends a breakpoint on the session-prompt boundary."""
     import os
     from pathlib import Path
 
@@ -75,6 +91,6 @@ def test_real_agent_keeps_one_split_and_moves_the_tail_breakpoint_to_the_convers
     systems = [r["messages"][0]["content"] for r in requests]
     for parts in systems:
         assert len(parts) == 3 and parts[0]["text"] + parts[1]["text"] == session_prompt
-        assert "task text" in parts[2]["text"] and "cache_control" in parts[0] and "cache_control" in parts[1]
-    assert ["cache_control" in parts[2] for parts in systems] == [True, False, False]
+        assert "task text" in parts[2]["text"] and "cache_control" in parts[0] and "cache_control" in parts[2]
+    assert ["cache_control" in parts[1] for parts in systems] == [True, False, False]
     assert all(str(r).count("cache_control") <= 4 for r in requests)

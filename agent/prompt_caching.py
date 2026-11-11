@@ -178,7 +178,7 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "")
 def _apply_system_cache_markers(
     message: dict, cache_marker: dict, static_system_prefix: str | None, *,
     native_anthropic: bool, mark_suffix: bool = True, fallback_to_whole: bool = True,
-    session_system_prompt: str | None = None, mark_tail: bool = True,
+    session_system_prompt: str | None = None, mark_session_end: bool = True,
 ) -> int:
     """Mark the static system prefix (and optionally the full prompt); returns markers applied.
 
@@ -189,9 +189,10 @@ def _apply_system_cache_markers(
 
     ``session_system_prompt`` is the prompt built once per session, before the API-time
     ephemeral addition (a subagent's per-task text, a personality). When the content carries
-    such a tail the second breakpoint sits at the end of the session prompt, so sessions that
-    differ only in the tail still read the skills index; the tail takes a third marker only when
-    ``mark_tail`` (the caller has a breakpoint to spare).
+    such a tail the request sends three parts. The end of the whole prompt is always marked, as
+    without a tail, so a request whose history changed still reads the tail. The end of the
+    session prompt takes a marker too when ``mark_session_end`` (the caller has a breakpoint to
+    spare), so sessions that differ only in the tail still read the skills index.
     """
     content = message.get("content")
     if isinstance(static_system_prefix, str) and static_system_prefix and isinstance(content, str) and content.startswith(static_system_prefix):
@@ -200,9 +201,9 @@ def _apply_system_cache_markers(
                 and session_system_prompt[len(static_system_prefix):].strip() and content[len(session_system_prompt):].strip()):
             message["content"] = [
                 _text_part(static_system_prefix, cache_marker),
-                _text_part(session_system_prompt[len(static_system_prefix):], cache_marker),
-                _text_part(content[len(session_system_prompt):], cache_marker if mark_tail else None)]
-            return 3 if mark_tail else 2
+                _text_part(session_system_prompt[len(static_system_prefix):], cache_marker if mark_session_end else None),
+                _text_part(content[len(session_system_prompt):], cache_marker)]
+            return 3 if mark_session_end else 2
         if suffix.strip():
             message["content"] = [_text_part(static_system_prefix, cache_marker),
                                   _text_part(suffix, cache_marker if mark_suffix else None)]
@@ -253,6 +254,8 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
         # An UNMARKED split (outside the marker window) only the registry tells from a genuine
         # two-part user message.
         skill_split = first_part_marked or (user_pair and find_stable_prefix(joined) == content[0]["text"])
+        # A system message is built as one string on every surface; two or three plain text parts
+        # are the planner's own split (static / session rest / ephemeral tail).
         if len(content) == 1 or (role == "system" and len(content) in (2, 3)) or skill_split:
             msg["content"] = joined
     return api_messages
@@ -383,11 +386,11 @@ def apply_anthropic_cache_control(
     breakpoints_used = 0
     if messages[0].get("role") == "system":
         messages[0] = copy.deepcopy(messages[0])
-        # The ephemeral tail keeps its own breakpoint while one is spare (a first call has a single
-        # message to mark), so sessions with an identical tail still share it.
+        # The session-prompt boundary takes the breakpoint a first call has spare (it has a single
+        # message to mark): that write is what lets a session with a different tail read the index.
         breakpoints_used = _apply_system_cache_markers(
             messages[0], marker, static_system_prefix, native_anthropic=native_anthropic,
-            session_system_prompt=session_system_prompt, mark_tail=len(non_sys) < 2)
+            session_system_prompt=session_system_prompt, mark_session_end=len(non_sys) < 2)
     for idx in non_sys[-(4 - breakpoints_used):]:
         messages[idx] = copy.deepcopy(messages[idx])
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)

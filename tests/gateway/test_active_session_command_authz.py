@@ -201,3 +201,33 @@ async def test_runner_leaves_a_slash_denied_busy_stop_unmarked():
     assert "⛔" in str(reply)
     runner._interrupt_and_clear_session.assert_not_awaited()
     assert getattr(event, "_interrupt_accepted", False) is False
+
+
+@pytest.mark.asyncio
+async def test_a_pre_gateway_dispatch_rewrite_does_not_hide_an_accepted_stop(monkeypatch):
+    """A plugin's ``rewrite`` hands the runner a copy of the event; the stop handler's verdict must
+    still reach the event the adapter dispatched, or an accepted /stop never cancels the turn."""
+    async def rewrite(name, **kwargs):
+        return [{"action": "rewrite", "text": kwargs["event"].text}] if name == "pre_gateway_dispatch" else []
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", rewrite)
+    runner, event, _reply = await _runner_busy_stop("222")
+    runner._interrupt_and_clear_session.assert_awaited_once()
+    assert getattr(event, "_interrupt_accepted", False) is True
+
+
+@pytest.mark.asyncio
+async def test_held_text_runs_when_the_owner_finishes_during_a_refusal_reply():
+    """The owner's turn ends while the adapter is still sending a refused member's /stop reply: no
+    owner task is left to drain the held follow-up, so it must run now, not sit in the pending slot."""
+    adapter, runner, key, task = await _busy_session()
+    refuse = runner.handle
+
+    async def handle(event):
+        if event.text == "/stop":
+            task.cancel()  # the owner's turn ends while the refusal is in flight
+            await asyncio.wait({task})
+        return await refuse(event)
+    adapter.set_message_handler(handle)
+    await adapter.handle_message(_event(MEMBER, "/stop"))
+    await async_wait_until(lambda: (OWNER, HELD_TEXT) in runner.seen, timeout=5)
+    adapter._session_tasks[key].cancel()

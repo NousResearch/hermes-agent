@@ -1185,7 +1185,7 @@ class GatewayBusySessionMixin:
         return format_status_text()
 
     async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
-        event._interrupt_accepted = True  # past admission and slash access: the adapter may cancel the turn
+        event.accept_interrupt()  # past admission and slash access: the adapter may cancel the turn
         # Hard-kill: a soft interrupt can't reach a truly hung executor thread.
         from gateway.run import _INTERRUPT_REASON_STOP
         await _busy_accepted()

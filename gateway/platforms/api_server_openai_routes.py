@@ -821,6 +821,7 @@ class OpenAICompatRoutesMixin:
                 result = (fut.result() or (None,))[0]
                 status = terminal_run_status(result)[0] if isinstance(result, dict) else "completed"
             self._set_run_status(completion_id, status)
+            self._stopping_run_ids.discard(completion_id)
             self._release_run_owner_if_forgotten(completion_id)
         return _approval_notify, _on_done
 
@@ -963,6 +964,9 @@ class OpenAICompatRoutesMixin:
             run_kwargs["notification_category"] = "diagnostic"
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
+            runner = getattr(self, "gateway_runner", None)
+            admission_future = (asyncio.get_running_loop().create_future()
+                                if getattr(runner, "session_authority", None) is not None else None)
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
             # filtered tools) is dropped rather than orphaned on the wire.
             _started_tool_call_ids: set[str] = set()
@@ -994,7 +998,7 @@ class OpenAICompatRoutesMixin:
             agent_task, agent_ref = self._spawn_stream_agent(
                 _stream_q, on_done=end_stream_run, tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete, approval_notify_callback=approval_notify,
-                approval_session_key=completion_id, **run_kwargs)
+                approval_session_key=completion_id, admission_future=admission_future, **run_kwargs)
             # #13437 identity contract: an explicit-header client keeps addressing the id it
             # sent; the response echoes that stable id while reads/writes adopt the live tip,
             # so a rotation mid-turn (after these headers are prepared) never changes what the
@@ -1003,7 +1007,7 @@ class OpenAICompatRoutesMixin:
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=(provided_session_id or session_id),
-                gateway_session_key=gateway_session_key)
+                gateway_session_key=gateway_session_key, admission_future=admission_future)
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
@@ -1155,12 +1159,28 @@ class OpenAICompatRoutesMixin:
     async def _write_sse_chat_completion(
         self, request: web.Request, completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str | None = None,
-        gateway_session_key: str | None = None) -> web.StreamResponse:
+        gateway_session_key: str | None = None, admission_future=None) -> web.StreamResponse:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
-        response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+            _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
+        from gateway.platforms.api_server_authority_runs import abandon_authority_agent_task
+
+        async def _interrupt_disconnected_turn():
+            requested = await abandon_authority_agent_task(
+                self, completion_id, admission_future, agent_ref, agent_task, "SSE client disconnected")
+            if requested:
+                logger.info("SSE client disconnected; requested interruption of agent turn %s", completion_id)
+            else:
+                logger.info(
+                    "SSE client disconnected; agent turn %s ended without a new interruption request",
+                    completion_id)
+
+        try:
+            response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            await _interrupt_disconnected_turn()
+            raise
 
         def _chunk(delta: dict[str, Any], finish_reason=None, **extra) -> dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
@@ -1235,8 +1255,7 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
-            logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+            await _interrupt_disconnected_turn()
         except Exception:
             # Agent crashed mid-stream: an error chunk beats a TransferEncodingError.
             import traceback as _tb

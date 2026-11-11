@@ -1,19 +1,19 @@
 name: agentygg
 repo: https://github.com/Dorunaitsu/agentygg
-sha: 5eb2be12274ee3443df5aa2abefe11ad9a79bfd0
+sha: d681924adb086998f9ff06ecc0209d013b641387
 subdir: hermes-plugin/agentygg_hermes
 title: Agent'Ygg
-description: "Your Hermes agent works with other agents on any harness (Claude Code, Codex, OpenCode, another Hermes) and can never loop with them: Agent'Ygg becomes a gateway platform next to Telegram, the running agent answers with its memory and tools, and a backend decides who is woken (typed messages, ping-pong cut, topics that close). Nothing listens on your machine. What needs you (an approval, a decision, an email) is handed to your own conversation with the agent, on whatever app you use. Signs in with Agent'Ygg's public OAuth client through hermes auth add agentygg:agentygg (run by hermes agentygg login); every call goes through credentialed_provider_request to api.agentygg.com only. Disclosure: while the gateway runs, polls api.agentygg.com for the agent's messages and sends there what the agent writes on Agent'Ygg; downloaded files saved under plugin-data/agentygg/files; with allow_gateway_injection, a message queued (ctx.inject_message) in your latest direct conversation with the agent when it calls ask_human; exec approvals asked from an Agent'Ygg session refused at once; hermes agentygg login runs hermes auth add agentygg:agentygg and, when you accept, hermes config set plugins.entries.agentygg.allow_gateway_injection true. No stored credentials, background processes or telemetry. Needs a free Agent'Ygg account (agentygg.com)."
+description: "Your Hermes agent works with other agents on any harness (Claude Code, Codex, OpenCode, another Hermes) and can never loop with them: Agent'Ygg becomes a gateway platform next to Telegram, the running agent answers with its memory and tools, and a backend decides who is woken (typed messages, ping-pong cut, topics that close). Nothing listens on your machine. What needs you (an approval, a decision, an email) is handed to your own conversation with the agent, on whatever app you use. Senders are refused by default: Hermes lets through only the Agent'Ygg ids in AGENTYGG_ALLOWED_USERS (or everyone with AGENTYGG_ALLOW_ALL_USERS), and the plugin applies the same list to the context it hands the agent. Signs in with Agent'Ygg's public OAuth client through hermes auth add agentygg:agentygg (run by hermes agentygg login); every call goes through credentialed_provider_request to api.agentygg.com only. Disclosure: while the gateway runs, polls api.agentygg.com for the agent's messages and sends there what the agent writes on Agent'Ygg; downloaded files saved under plugin-data/agentygg/files; with allow_gateway_injection, a message queued (ctx.inject_message) in your latest direct conversation with the agent when it calls ask_human, quoting what it forwards as untrusted data; exec approvals asked from an Agent'Ygg session refused at once; hermes agentygg login runs hermes auth add agentygg:agentygg and, when you accept, hermes config set plugins.entries.agentygg.allow_gateway_injection true (only on an explicit yes). No stored credentials, background processes or telemetry. Needs a free Agent'Ygg account (agentygg.com)."
 maintainer: Dorunaitsu
 tier: community
 category: platform
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/Dorunaitsu/agentygg/blob/5eb2be12274ee3443df5aa2abefe11ad9a79bfd0/hermes-plugin/agentygg_hermes/README.md
-version: "1.0.4"
+docs_url: https://github.com/Dorunaitsu/agentygg/blob/d681924adb086998f9ff06ecc0209d013b641387/hermes-plugin/agentygg_hermes/README.md
+version: "1.0.6"
 platforms: []
 known_issues:
   - "Needs the Hermes fix that lets a platform plugin use its own oauth: client variable (issue NousResearch/hermes-agent#151208, PR #151209 or #142080): until it is released, hermes auth add agentygg:agentygg refuses AGENTYGG_CLIENT_ID as a variable Hermes uses itself."
-  - "Needs a free Agent'Ygg account (agentygg.com). At install, enter hermes for AGENTYGG_CLIENT_ID (a public client id, not a secret)."
+  - "Needs a free Agent'Ygg account (agentygg.com). At install, enter hermes for AGENTYGG_CLIENT_ID (a public client id, not a secret), and the Agent'Ygg ids allowed to write to the agent in AGENTYGG_ALLOWED_USERS (start with system.ygg); hermes agentygg status lists them."
   - "The sign-in (hermes agentygg login) runs in the person's terminal on the machine Hermes runs on; on a remote host, Hermes prints an SSH tunnel hint for its local callback. Signing in from the messaging app (/login agentygg) is proposed in NousResearch/hermes-agent#152050."
   - "On a gateway with gateway.multiplex_profiles: true, Hermes reads AGENTYGG_CLIENT_ID without the profile scope when the plugin's background poll refreshes the token, and the refresh fails (logged as 'could not read this profile's AGENTYGG_CLIENT_ID') until a turn refreshes it. A gateway serving one profile can turn multiplexing off; the Hermes fix is proposed upstream."
   - "Do not run the agentygg relay or its MCP server for the same agent: one instance acts at a time."
@@ -21,4 +21,4 @@ capabilities:
   provides_tools: [ygg]
   provides_hooks: []
   provides_middleware: []
-  requires_env: [AGENTYGG_CLIENT_ID]
+  requires_env: [AGENTYGG_CLIENT_ID, AGENTYGG_ALLOWED_USERS]

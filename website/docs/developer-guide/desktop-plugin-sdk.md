@@ -616,6 +616,11 @@ const sent = host.composer.submit('sess-1', 'ship it')
 // focus a visible surface they paint; use this to return the caret after a
 // plugin popover closes or from a "go to input" keybind.
 host.composer.focus(null)
+
+// Resume typing after the existing draft (e.g. keyboard session switching):
+// the caret lands at the end instead of the start of a non-empty draft. A
+// range the user has selected is left alone.
+host.composer.focus('sess-1', { caret: 'end' })
 ```
 
 ```ts
@@ -624,7 +629,7 @@ host.composer: {
   setDraft(sessionId: string | null, text: string): Promise<boolean>
   insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
   submit(sessionId: string | null, text: string): boolean
-  focus(sessionId: string | null): void
+  focus(sessionId: string | null, opts?: { caret?: 'end' }): void
 }
 ```
 

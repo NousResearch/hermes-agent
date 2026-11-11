@@ -12,36 +12,20 @@ import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
 from itertools import chain
-from typing import Any, Optional
+from typing import Any
 
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
 from hermes_cli.commands import COMMANDS, SUBCOMMANDS
 
-# (config-file signature, personalities) memo for /personality completion.
-_personalities_memo: Optional[
-    tuple[tuple[Optional[str], Optional[int], Optional[int]], dict[str, Any]]
-] = None
-
-
-def _personalities_from_cli_config() -> dict[str, Any]:
-    """``available_personalities(load_cli_config())`` memoised on config path+signature:
-    load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
-    Falls back to a fresh load when the file cannot be stat'ed."""
-    global _personalities_memo
-    from cli import load_cli_config
+def _configured_personalities() -> dict[str, Any]:
+    """Built-in plus configured personalities. Not ``load_cli_config``: that startup loader re-exports
+    TERMINAL_CWD as the process cwd, which moves a ``hermes -w`` session out of its worktree. The
+    read-only config is cached on the file signature, so a per-keystroke call costs a stat."""
+    from hermes_cli.config import load_config_readonly
     from hermes_cli.personality import available_personalities
-    try:
-        from hermes_cli.config import get_config_path
-        from hermes_cli.config_backend import config_cache_version
-        cfg_path = get_config_path()
-        sig = (str(cfg_path), *config_cache_version(cfg_path))
-    except Exception:
-        sig = (None, None, None, None, None)
-    if _personalities_memo is None or _personalities_memo[0] != sig:
-        _personalities_memo = (sig, available_personalities(load_cli_config()))
-    return _personalities_memo[1]
+    return available_personalities(load_config_readonly())
 
 
 def _file_size_label(path: str) -> str:
@@ -103,7 +87,7 @@ def _skin_completions(sub_text: str, sub_lower: str):
 def _personality_completions(sub_text: str, sub_lower: str):
     """/personality — ``none`` plus configured personalities."""
     from hermes_cli.personality import describe_personality
-    personalities = _personalities_from_cli_config()
+    personalities = _configured_personalities()
     rows = chain(
         [("none", "clear personality overlay")],
         ((name, describe_personality(prompt)) for name, prompt in personalities.items()))

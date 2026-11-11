@@ -93,7 +93,6 @@ class ProvisionResult:
     mcp_written: int = 0
     skills_disabled: int = 0
     warnings: list[str] = field(default_factory=list)
-    skills_problems: list[str] = field(default_factory=list)  # why seeding failed (printed unless quiet)
 
 
 @dataclass(frozen=True)
@@ -143,13 +142,10 @@ class CreateReceipt:
         served = _try("served profiles", recorded_served_profiles, None)
         served_now = None if served is None else _try("served profiles", lambda: profiles.normalize_profile_name(
             request.name) in {profiles.normalize_profile_name(p) for p in served}, None)
-        # A quiet create (the gateway's) printed no seeding failure: the terminal that asked shows it.
-        warnings = [*result.warnings, *(line.strip().removeprefix("⚠ ") for line in result.skills_problems
-                                        if request.quiet and line.strip())]
         return cls(
             path=str(path), display_path=display_hermes_home(path), launch_label=launch, source_label=source,
             skills_seeded=result.skills_seeded, alias_path=str(result.alias_path) if result.alias_path else None,
-            alias_collision=result.alias_collision, mirrored=dict(result.mirrored), warnings=warnings,
+            alias_collision=result.alias_collision, mirrored=dict(result.mirrored), warnings=list(result.warnings),
             cloned_plugins=list(plugins), memory_provider=memory, channels_left_behind=list(left_behind),
             shared_channels=list(shared), served_now=served_now)
 
@@ -158,20 +154,55 @@ class CreateReceipt:
 
     @classmethod
     def from_wire(cls, data: Any) -> Optional[CreateReceipt]:
-        """The receipt a gateway sent, or None when it is not a complete one (a gateway that predates
-        a field must not have the rest printed from guesses). Fields this version doesn't know are dropped."""
-        if not isinstance(data, dict) or not isinstance(data.get("path"), str) or not data["path"]:
+        """The receipt a gateway sent, or None unless it is a complete, well-typed one: the contract's
+        ``ProfileCreateReceipt``, strictly (a gateway that predates a field, or sends a wrong type, must
+        not have the rest printed from guesses). Fields this version doesn't know are dropped."""
+        from pydantic import ValidationError
+        from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfileCreateReceipt
+        if not isinstance(data, dict):
             return None
-        if any(name not in data for name in RECEIPT_FIELDS):
+        try:
+            checked = ProfileCreateReceipt.model_validate({k: data[k] for k in RECEIPT_FIELDS if k in data},
+                                                          strict=True)
+        except ValidationError:
             return None
-        if not (isinstance(data["mirrored"], dict) and all(
-                isinstance(data[k], list) for k in ("warnings", "cloned_plugins", "channels_left_behind",
-                                                     "shared_channels"))):
+        if not checked.path or not isinstance((checked.skills_seeded or {}).get("copied", []), list):
             return None
-        return cls(**{name: data[name] for name in RECEIPT_FIELDS})
+        return cls(**{**checked.model_dump(), "mirrored": checked.mirrored.model_dump()})
 
 
 RECEIPT_FIELDS = tuple(f.name for f in fields(CreateReceipt))
+
+#: What a create refuses with: a bad request, nothing made. Every surface maps these to its "refused"
+#: answer (``profiles.create`` 4062, ``hermes profile create``'s ``Error:``); a subclass travels as the
+#: nearest of these (``refusal``), so a ``JSONDecodeError`` from a broken source config stays a refusal.
+CREATE_REFUSALS: tuple[type[Exception], ...] = (FileExistsError, FileNotFoundError, ValueError)
+#: ``gateway_client`` keeps only short strings and short lists of them in ``error.data``.
+_PART, _PARTS = 200, 16
+
+
+def redact_create_text(text: Any) -> str:
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(str(text), force=True, redact_url_credentials=True)
+
+
+def refusal(exc: BaseException) -> tuple[str, dict]:
+    """``(error.message, error.data)`` for a failed create. The message is the whole text, redacted (a
+    parse error can quote a line of the source's config/.env); ``data`` names the nearest
+    :data:`CREATE_REFUSALS` type (none: not a refusal) and repeats the text in the short parts
+    ``gateway_client`` keeps (it drops longer strings whole)."""
+    text = redact_create_text(exc)
+    kind = next((k for k in CREATE_REFUSALS if isinstance(exc, k)), None)
+    return text, {"type": kind.__name__ if kind else type(exc).__name__,
+                  "message_parts": [text[i:i + _PART] for i in range(0, len(text), _PART)][:_PARTS]}
+
+
+def refusal_from(data: dict) -> Optional[Exception]:
+    """The refusal a ``refusal`` ``error.data`` names, re-raised with its text; None when it names none."""
+    parts = data.get("message_parts")
+    text = redact_create_text("".join(p for p in parts if isinstance(p, str))) if isinstance(parts, list) else ""
+    kind = next((k for k in CREATE_REFUSALS if k.__name__ == data.get("type")), None)
+    return kind(text) if kind is not None and text else None
 
 
 def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
@@ -200,8 +231,11 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
             return default
 
     if request.fresh:
+        problems: list[str] = []
         result.skills_seeded = step("bundled skills", lambda: profiles.seed_profile_skills(
-            path, quiet=request.quiet, problems=result.skills_problems))
+            path, quiet=request.quiet, problems=problems))
+        if request.quiet:  # nothing printed them: the caller (a gateway's client) shows them
+            result.warnings.extend(line.strip().removeprefix("⚠ ") for line in problems if line.strip())
     if request.alias:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))

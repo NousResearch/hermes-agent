@@ -193,7 +193,7 @@ def _refuse_create_args(args, clone_from: Optional[str], cloned: bool) -> None:
 
 
 def _profile_create(args):
-    from hermes_cli.profile_provision import CreateReceipt, ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision import CREATE_REFUSALS, CreateReceipt, ProfileCreateRequest, provision_profile
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path
     name = args.profile_name
@@ -217,7 +217,7 @@ def _profile_create(args):
         # A gateway serving this terminal makes the profile (one HERMES_TUI_GATEWAY_URL names always
         # does); with none it is made here. Either way the receipt below is read where it was made.
         made = create_through_gateway(request) or CreateReceipt.of(request, provision_profile(request))
-    except (ValueError, FileExistsError, FileNotFoundError, GatewayCreateError) as e:
+    except (*CREATE_REFUSALS, GatewayCreateError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {made.path}")
     source_label = made.source_label

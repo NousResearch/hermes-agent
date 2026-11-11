@@ -309,11 +309,12 @@ def _(rid, params: dict) -> dict:
     On ``/api/ws`` it runs in the connection's profile (``ws_legacy_fallback.dispatch_legacy`` binds the
     ticket's), so ``--clone`` and the copied keys/model come from the profile the terminal is on. A
     refused create answers 4062 with ``data.type`` / ``data.message_parts`` so a client re-raises it."""
+    from hermes_cli.profile_provision import (
+        CREATE_REFUSALS, CreateReceipt, ProfileCreateRequest, provision_profile, refusal,
+    )
     name = str(params.get("name") or "").strip()
-    if not name:
-        return _err(rid, 4061, "name required")
-    from hermes_cli.profile_provision import CreateReceipt, ProfileCreateRequest, provision_profile
-    from hermes_cli.profile_provision_gateway import refusal
+    if not name:  # the CLI shows its usual empty-name error, never "may have created"
+        return _err(rid, 4061, "name required", data=refusal(ValueError("profile name cannot be empty"))[1])
     clone_from = str(params.get("clone_from") or "").strip() or None
     clone_all = is_truthy_value(params.get("clone_all", False))
     clone_config = is_truthy_value(params.get("clone_config", False)) or (bool(clone_from) and not clone_all)
@@ -335,8 +336,7 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         # The full text (redacted) for Desktop's dialog; ``data`` carries it in the parts a client keeps.
         message, data = refusal(e)
-        code = 4062 if isinstance(e, (ValueError, FileExistsError, FileNotFoundError)) else 5062
-        return _err(rid, code, message, data=data)
+        return _err(rid, 4062 if isinstance(e, CREATE_REFUSALS) else 5062, message, data=data)
     out = {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
            "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings}
     if is_truthy_value(params.get("report", False)):

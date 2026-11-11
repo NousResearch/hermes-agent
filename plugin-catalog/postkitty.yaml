@@ -1,29 +1,31 @@
 name: postkitty
 repo: https://github.com/mertkayacs/postkitty
-sha: 490d8f992387b610c3b6f32cd87d800dc58c8010
+sha: 63ab5e43611055d91b5a532fcc71f2b362cc8735
 title: postkitty
-description: 'One post in, every platform out. Fixes and rewrites your draft for each platform and counts the
-  copy with each platform''s own rule, splitting long posts into threads. Crops photos and reframes landscape video
-  so every face stays in frame; when two people talk, the choice is a split screen, a cut to whoever is talking or
-  the whole wide shot. Checks every file against the platform''s
-  published limits and repairs failures before a file is marked ready. Covers Instagram, TikTok, YouTube Shorts, X,
-  LinkedIn, Threads, Bluesky and Facebook. Runs locally with ffmpeg and OpenCV; no API keys.'
+description: 'One post in, every platform out. Fixes and rewrites your draft for each platform and counts it with each
+  platform''s own rule, splitting long posts into threads. Crops a photo and reframes landscape video so every face
+  stays in frame; when two people talk, the choice is a split screen, a cut to whoever is talking or the whole wide
+  shot. Burns captions from an .srt or .vtt file inside the platform''s safe area. Checks every file against the
+  platform''s published limits and repairs failures before a file is marked ready. /postkitty doctor checks the
+  setup, and the hermes postkitty terminal command runs the same steps from a script. Covers Instagram, TikTok,
+  YouTube Shorts, X, LinkedIn, Threads, Bluesky and Facebook. Runs locally with ffmpeg and OpenCV; no API keys.'
 maintainer: mertkayacs
 tier: community
 category: tools
-version: "0.1.0"
+version: "1.0.0"
 requires_hermes: ">=0.22.7"
 docs_url: https://postkitty.mertkayacs.com
-image: https://raw.githubusercontent.com/mertkayacs/postkitty/490d8f992387b610c3b6f32cd87d800dc58c8010/docs/banner.png
+image: https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/490d8f992387b610c3b6f32cd87d800dc58c8010/docs/board.png
-  - https://raw.githubusercontent.com/mertkayacs/postkitty/490d8f992387b610c3b6f32cd87d800dc58c8010/docs/before-after.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/board.png
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/before-after.jpg
+  - https://raw.githubusercontent.com/mertkayacs/postkitty/63ab5e43611055d91b5a532fcc71f2b362cc8735/docs/assets/readme/split-screen.jpg
 known_issues:
   - Needs ffmpeg and ffprobe on PATH for video.
 capabilities:
   provides_tools:
     - postkitty_scan
-    - postkitty_copy
+    - postkitty_write
     - postkitty_make
     - postkitty_redo
     - postkitty_check

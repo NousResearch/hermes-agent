@@ -29,7 +29,13 @@ import {
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
+import { mainChatOccupied } from './chat/main-occupancy'
+import { reuseFocusedDraftTile } from './chat/reuse-draft-tab'
 import { $workspaceIsPage, sessionRoute } from './routes'
+
+// Re-exported: callers (the sidebar wiring, the palette, Close) have always
+// found it here, and it stays the answer to "is main worth preserving?".
+export { mainChatOccupied }
 
 export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
@@ -40,18 +46,6 @@ export interface OpenSessionWorkspaceScope {
   workspaceMode: WorkspaceMode
   workspaceOwnerKey?: string
   workspaceTabTitle?: string
-}
-
-/**
- * Is the main tab holding a conversation worth preserving?
- *
- * A loaded chat may still be mid-turn, so replacing it with something else
- * throws away work the user can see. A blank draft has nothing to lose, which
- * is what lets the sidebar "+" and a `stack` open take the cheaper main path
- * instead of stacking a tab nobody asked for.
- */
-export function mainChatOccupied(activeSessionId: null | string, selectedStoredSessionId: null | string): boolean {
-  return Boolean(activeSessionId || selectedStoredSessionId)
 }
 
 /** Read modifiers the way session rows do — meta OR ctrl for tab, +shift for
@@ -216,6 +210,14 @@ export function openSession(
   const focused = focusOpenSession(storedSessionId, workspaceScope)
 
   if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
+    // Nothing on screen holds this chat. An untouched "New session" tab in
+    // front is the one the person would have typed into, so it takes the chat
+    // — browser new-tab behaviour — instead of main losing the chat it shows,
+    // which is what a sidebar click used to do while an empty tab sat in front.
+    if (!focused && reuseFocusedDraftTile(storedSessionId)) {
+      return
+    }
+
     navigate(sessionRoute(storedSessionId))
   }
 

@@ -94,7 +94,8 @@ async def test_the_turn_reuses_the_gate_transcript(tmp_path):
         text, transcripts = await runner._enrich_message_with_transcription("", [str(recaptured)])
 
     assert calls == [str(clip)]
-    assert transcripts == ["hermes, what is on today"] and text == '"hermes, what is on today"'
+    assert transcripts == ["hermes, what is on today"] and text.startswith('"hermes, what is on today"')
+    assert "gate.ogg" not in text  # the note is the turn's own, never the gate copy's
 
 
 @pytest.mark.asyncio
@@ -315,3 +316,37 @@ async def test_a_gate_transcript_never_crosses_profiles(tmp_path):
         finally:
             reset_hermes_home_override(token)
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_turn_notes_name_its_own_audio_never_the_gate_copy(tmp_path):
+    """The gate caches transcript text only. A clip whose gate STT failed (the note admitted on
+    another clip) is transcribed again by the turn, and every note is built from the turn's paths:
+    the gate's copy is gone by then (native admission re-captures, a routed profile rehomes)."""
+    import re
+    from gateway.platforms.helpers import spoken_mention_clips
+    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+    gate = [tmp_path / "gate_1.ogg", tmp_path / "gate_2.ogg"]
+    gate[0].write_bytes(OGG)
+    gate[1].write_bytes(OGG + b"2")
+    calls = []
+
+    def transcribe(path, _model=None, _source=None):
+        calls.append(path)
+        with open(path, "rb") as fh:
+            if fh.read().endswith(b"2"):
+                return {"success": False, "error": "provider down"}
+        return {"success": True, "transcript": "hermes, what is on today", "provider": "fake"}
+    runner = GatewayInboundTranscriptionMixin()
+    runner.config = SimpleNamespace(stt_enabled=True)
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe), \
+            patch("tools.transcription_tools.transcribe_audio_local_fallback", return_value={"success": False}):
+        assert await spoken_mention_clips([str(p) for p in gate], [re.compile(p) for p in PATTERNS])
+        turn = [tmp_path / "turn_1.ogg", tmp_path / "turn_2.ogg"]
+        for src, dst in zip(gate, turn):
+            dst.write_bytes(src.read_bytes())
+            src.unlink()
+        text, _ = await runner._enrich_message_with_transcription("", [str(p) for p in turn])
+
+    assert calls[2:] == [str(turn[1])]
+    assert "gate_" not in text and "turn_2.ogg" in text

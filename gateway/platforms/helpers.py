@@ -536,8 +536,9 @@ async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = Non
                 except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
                     logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
             if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):
-                for path, result in results.items():
-                    remember_gate_transcript(path, result)
+                for path, (text, _note) in results.items():
+                    if text is not None:
+                        remember_gate_transcript(path, text)
                 return list(paths)
     except Exception as exc:  # health: allow BLE001 -- an unroutable source is dropped by ingress anyway
         logger.warning("Spoken mention check could not enter the routed profile: %s", exc)

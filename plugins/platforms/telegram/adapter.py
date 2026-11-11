@@ -3775,7 +3775,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         raw_chunks, chunks = split_raw_carrying_emphasis(
             content, self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len,
             formatted_len=(lambda chunk: utf16_len(self.format_message(chunk))) if finalize else None)
+        uncapped_count = len(chunks)
         chunks = cap_split_chunks(self, chunks, formatted=False)
+        capped = len(chunks) < uncapped_count
         raw_chunks = raw_chunks[:len(chunks)]
         if len(chunks) <= 1:
             chunks = [content]  # defensive: a single chunk just edits normally
@@ -3825,7 +3827,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             prev_id = new_id
         last_id = continuation_ids[-1] if continuation_ids else message_id
         logger.debug("[%s] Overflow split delivered %d chunks; last_id=%s", self.name, 1 + len(continuation_ids), last_id)
-        return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids))
+        # ``split_capped``: the tail past the cap was replaced by the notice on purpose, so this delivery can
+        # never match the full final; the stream consumer must not let the gateway send it again.
+        return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
+                          raw_response={"split_capped": True} if capped else None)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal (False).

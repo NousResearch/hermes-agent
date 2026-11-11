@@ -168,12 +168,18 @@ def has_nonblank_dotenv_value(name: str) -> bool:
     """Whether dotenv supplied an override, not merely an empty assignment later filled by YAML.
 
     A known key without a publication receipt is conservatively treated as explicit provenance.
+    On Windows the name matches case-insensitively: a ``telegram_reactions`` line in ``.env`` and
+    ``TELEGRAM_REACTIONS`` are one environment variable there, and two distinct ones elsewhere.
     """
+    from hermes_platform.host.facts import os_family
+
+    fold = str.upper if os_family() == "win32" else str
     with _DOTENV_LOCK:
-        if name not in _LOADED_DOTENV_KEYS and name not in _MANAGED_DOTENV_KEYS:
+        keys = [key for key in (*_LOADED_DOTENV_KEYS, *_MANAGED_DOTENV_KEYS) if fold(key) == fold(name)]
+        if not keys:
             return False
-        published = _DOTENV_PUBLISHED.get(name)
-        return published is None or bool(published[1].strip())
+        published = [_DOTENV_PUBLISHED[key] for key in keys if key in _DOTENV_PUBLISHED]
+        return not published or any(record[1].strip() for record in published)
 
 
 def managed_dotenv_keys() -> frozenset[str]:

@@ -1,0 +1,49 @@
+name: ghostrun
+repo: https://github.com/kdcyberdude/ghostrun
+sha: d0b4ffff9beb1af6b0c63f826fa87085e73df638
+title: GhostRun
+description: "Give Hermes a retro NES game: it discovers and proves a reward from RAM, trains a pixel-only player on thousands of GPU-emulated consoles, self-repairs reward bugs with a training watcher, then rebuilds the game in Three.js (2D, optional 3D) from a black-box oracle it can only observe. Disclosure — `ghostrun_engine_setup` clones https://github.com/hbofz/NeSLE.git at pinned commit 0b04d8b9 and compiles it locally with nvcc/c++; runs git, nvcc, c++, nvidia-smi and the configured Python; starts long-running background processes only on explicit tool calls (GPU training, oracle service, watcher thread that can wake the agent to edit that game's reward reader and restart its training, max 3 fixes per game); reads the ROM path you give it and the configured builder folder; a pre_tool_call hook blocks builder sessions from reaching the reference game. No credentials, no telemetry, no bundled binaries."
+maintainer: kdcyberdude
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/kdcyberdude/ghostrun#readme
+version: "0.1.0"
+platforms: [linux]
+known_issues:
+  - Training needs Linux and an NVIDIA GPU with CUDA (nvcc, a C++20 compiler and PyTorch in the configured Python).
+  - You supply the ROM; none is included.
+capabilities:
+  provides_tools:
+    - ghostrun_init
+    - ghostrun_reward_check
+    - ghostrun_reward_audit
+    - ghostrun_reward_lint
+    - ghostrun_reward_balance
+    - ghostrun_reward_search
+    - ghostrun_engine_setup
+    - ghostrun_engine_parity
+    - ghostrun_train_start
+    - ghostrun_train_stop
+    - ghostrun_train_check
+    - ghostrun_fix_begin
+    - ghostrun_fix_validate
+    - ghostrun_fix_apply
+    - ghostrun_fix_review
+    - ghostrun_assets_import
+    - ghostrun_status
+    - ghostrun_stage_set
+    - ghostrun_isolation_check
+    - ghostrun_compare
+    - ghostrun_gate
+    - ghostrun_reference_enter
+    - ghostrun_builder_enter
+    - ghostrun_oracle_start
+    - ghostrun_oracle_stop
+    - ghostrun_oracle_call
+    - ghostrun_watch_start
+    - ghostrun_watch_stop
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

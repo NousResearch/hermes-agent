@@ -188,14 +188,17 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
     from hermes_constants import get_process_hermes_home
     from tui_gateway.launch_profile_policy import profile_config_scope
     validate_home = validate_in or profile_dir
+    foreign = validate_home.resolve() != get_process_hermes_home().resolve()
+    if foreign:
+        # The key probe may need the home's external secret sources (``op run`` / ``bws``).
+        hydrate_profile_secret_sources(validate_home)
     with contextlib.ExitStack() as stack:
-        if validate_home.resolve() != get_process_hermes_home().resolve():
-            # The key probe may need the home's external secret sources (``op run`` / ``bws``), and
-            # the provider adapters' ambient-credential refusals (Bedrock, Vertex, Entra) apply to a
-            # foreign home under multiplex semantics: bound for this task, not process-wide.
-            hydrate_profile_secret_sources(validate_home)
-            stack.callback(reset_multiplex_context, set_multiplex_context(True))
         stack.enter_context(profile_config_scope(validate_home))
+        if foreign:
+            # The provider adapters' ambient-credential refusals (Bedrock, Vertex, Entra) apply to a
+            # foreign home under multiplex semantics: bound for this task, not process-wide, and
+            # reset before the scope so they never outlive it.
+            stack.callback(reset_multiplex_context, set_multiplex_context(True))
         provider, model = normalize_main_model_assignment(provider, model)
         result = validated_main_model_selection(load_config(), provider, model, base_url)
     with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:

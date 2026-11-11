@@ -438,7 +438,9 @@ Database size: 12.4 MB
 
 ## Session 搜索工具
 
-Agent 内置了 `session_search` 工具，使用 SQLite 的 FTS5 引擎对所有历史对话进行全文搜索，并允许 agent 滚动浏览找到的任何 session。无需 LLM 调用、无需摘要、无截断。每种调用形式都从数据库返回实际消息。
+Agent 内置了 `session_search` 工具，使用 SQLite 的 FTS5 引擎对历史对话进行全文搜索（在消息聊天中默认只搜索当前聊天，见下文），并允许 agent 滚动浏览找到的任何 session。无需 LLM 调用、无需摘要、无截断。每种调用形式都从数据库返回实际消息。
+
+在消息聊天（私信、群组、频道或话题）中，发现和浏览默认**只搜索当前对话**（`scope="chat"`），并在每条搜索路径的 SQL 中过滤。需要跨对话召回时显式传入 `scope="all"`。每个结果都带有 `origin`（平台、聊天类型、聊天名称），在聊天中还带有 `same_origin`。`same_origin=false` 的结果属于其他聊天，转述前请先确认。聊天范围内无结果时会返回 `recall_scope.matches_outside_scope`，用于区分“本聊天没有结果”和“只有其他聊天有匹配”。没有 `chat_id`/`session_key` 的旧 session 只能通过 `scope="all"` 访问。通过 `session_id` 读取是显式操作，不会被缩小范围，只会被标注。CLI、TUI/桌面端、API server、cron 和 kanban session，以及 `profile=` 召回，默认使用 `scope="all"`；在这些场景下显式传入 `scope="chat"` 会缩小到当前对话的 session key。
 
 ### 三种调用形式
 
@@ -495,6 +497,7 @@ session_search()
 
 ### 可选参数
 
+- `scope` — `chat` 或 `all`。在消息聊天中默认为 `chat`，其他情况默认为 `all`。没有聊天来源时显式传入 `scope="chat"` 会返回空结果，而不是扩大到全部。
 - `sort` — `newest` 或 `oldest`，在 FTS5 排名之上排序。省略则仅按相关性排序（默认；适合探索性召回）。对于"我们在哪里停下了 X"的问题使用 `newest`，对于"X 是怎么开始的"的问题使用 `oldest`。
 - `role_filter` — 逗号分隔的角色列表。发现模式默认为 `user,assistant`（工具输出通常是噪音）。传入 `user,assistant,tool` 以包含工具输出（调试工具行为），或传入 `tool` 仅搜索工具输出。
 

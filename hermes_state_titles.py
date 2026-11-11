@@ -263,8 +263,20 @@ class SessionTitlesMixin:
         released = bot_chat_title_released(session["archived"], session.get("auto_archived"), tip.get("end_reason"))
         return None if released else session
 
-    def resolve_session_by_title(self, title: str) -> Optional[str]:
-        """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
+    def resolve_session_by_title(self, title: str, session_key: Optional[str] = None,
+                                 chat_id: Optional[str] = None, source: Optional[str] = None) -> Optional[str]:
+        """Resolve a title to a session ID, preferring the latest "title #N" continuation.
+
+        ``session_key`` (else ``chat_id``), plus ``source`` when given, restricts the lookup to one chat
+        origin BEFORE the winner is chosen, so a same-titled session in another chat or on another
+        platform cannot shadow the current chat's match (session_search scope="chat")."""
+        if session_key or chat_id:
+            rows = self._read_all(
+                "SELECT id FROM sessions WHERE (title = ? OR title LIKE ? ESCAPE '\\') AND "
+                f"{'session_key' if session_key else 'chat_id'} = ? " + ("AND source = ? " if source else "") +
+                "ORDER BY CASE WHEN title = ? THEN 1 ELSE 0 END, started_at DESC",
+                (title, f"{_escape_like(title)} #%", session_key or chat_id, *([source] if source else []), title))
+            return rows[0]["id"] if rows else None
         exact = self.get_session_by_title(title)
         # Exception to the "#N continuation" preference: the canonical Bot Chat's identity
         # IS its exact title (Bot Mode re-resolves it by name on every open, no id pointer).

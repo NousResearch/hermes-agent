@@ -139,7 +139,8 @@ _LIKE_TOKEN_RE = re.compile(r'"[^"]+"|\S+')
 _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
 
 # Column list shared by every search route (snippet + metadata, never content).
-_SEARCH_SELECT_TAIL = "m.timestamp, m.tool_name, s.source, s.model, s.started_at AS session_started"
+_SEARCH_SELECT_TAIL = ("m.timestamp, m.tool_name, s.source, s.model, s.started_at AS session_started, "
+                       "s.session_key, s.chat_id, s.chat_type, s.display_name")
 _LIKE_SNIPPET_SQL = "substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet"
 _LIKE_ANY_COLUMN_SQL = (
     "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
@@ -258,8 +259,9 @@ def _search_select_sql(snippet_sql: str, from_sql: str, where: list[str], order_
 def _search_filter_clauses(
     where: list[str], params: list, *, include_inactive: bool, source_filter: Optional[list[str]],
     exclude_sources: Optional[list[str]], role_filter: Optional[list[str]],
-    after_ts: Optional[int] = None, before_ts: Optional[int] = None) -> None:
-    """Append the visibility/source/role/session-start predicates every search route shares. Live
+    after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+    session_key: Optional[str] = None, chat_id: Optional[str] = None) -> None:
+    """Append the visibility/source/role/session-start/chat-origin predicates every search route shares. Live
     rows (active=1) AND compaction-archived rows (compacted=1) are discoverable; only
     rewind/undo rows (active=0, compacted=0) are hidden. ``after_ts``/``before_ts`` bound
     ``sessions.started_at`` (inclusive / exclusive) inside the query so LIMIT cannot be
@@ -283,13 +285,21 @@ def _search_filter_clauses(
     if before_ts is not None:
         where.append("s.started_at < ?")
         params.append(int(before_ts))
+    # Chat-origin scope (session_search scope="chat"): the gateway session key when known, else the chat id.
+    if session_key:
+        where.append("s.session_key = ?")
+        params.append(session_key)
+    elif chat_id:
+        where.append("s.chat_id = ?")
+        params.append(chat_id)
 
 
 class SessionSearchMixin:
     """See module docstring — mixin for SessionDB (Search cluster)."""
 
     _SEARCH_MESSAGE_RESULT_FIELDS = (
-        "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "session_started", "context"
+        "id", "session_id", "role", "snippet", "timestamp", "tool_name", "source", "model", "session_started",
+        "session_key", "chat_id", "chat_type", "display_name", "context"
     )
 
     @classmethod
@@ -1156,6 +1166,7 @@ class SessionSearchMixin:
         role_filter: list[str] | None = None, limit: int = 20, offset: int = 0, sort: str | None = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
         after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+        session_key: Optional[str] = None, chat_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
         path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
@@ -1165,7 +1176,7 @@ class SessionSearchMixin:
             rows = self._search_messages_impl(
                 query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
                 limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields,
-                after_ts=after_ts, before_ts=before_ts)
+                after_ts=after_ts, before_ts=before_ts, session_key=session_key, chat_id=chat_id)
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
@@ -1179,6 +1190,7 @@ class SessionSearchMixin:
         role_filter: list[str] | None = None, limit: int = 20, offset: int = 0, sort: str | None = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
         after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+        session_key: Optional[str] = None, chat_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """FTS5 search across session messages (keywords, ``"phrases"``, AND/OR/NOT, ``prefix*``).
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
@@ -1186,7 +1198,7 @@ class SessionSearchMixin:
         CJK LIKE fallback ignores it). Rewound rows (``active=0, compacted=0``) are excluded
         by default; compaction-archived rows ARE included; ``include_inactive`` = every row.
         ``after_ts``/``before_ts`` bound ``sessions.started_at`` on every route (FTS5, CJK,
-        trigram, LIKE fallback, unindexed-gap supplement)."""
+        trigram, LIKE fallback, unindexed-gap supplement); so do ``session_key``/``chat_id`` (chat-origin scope)."""
         result_fields = self._search_message_fields(fields)
         if not query or not query.strip():
             return []
@@ -1195,7 +1207,7 @@ class SessionSearchMixin:
             return []
         filters = dict(include_inactive=include_inactive, source_filter=source_filter,
                        exclude_sources=exclude_sources, role_filter=role_filter,
-                       after_ts=after_ts, before_ts=before_ts)
+                       after_ts=after_ts, before_ts=before_ts, session_key=session_key, chat_id=chat_id)
         # New oversized tool results index only a bounded prefix; an explicit tool-role search is the
         # opt-in full-body path and scans canonical rows via LIKE.
         if role_filter and "tool" in role_filter:
@@ -1285,7 +1297,7 @@ class SessionSearchMixin:
         like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
         like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
         filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
-                                         "after_ts", "before_ts")}
+                                         "after_ts", "before_ts", "session_key", "chat_id")}
         _search_filter_clauses(like_where, like_params, **filters)
         # instr() for the snippet uses the first search token.
         return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],

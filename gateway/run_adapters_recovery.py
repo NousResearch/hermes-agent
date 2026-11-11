@@ -52,9 +52,14 @@ _RECONNECT_SUSPEND_GAP_SECS = 60.0
 
 def discount_suspended_wait(entries, waited_from: float, planned: float) -> None:
     """Move each reconnect entry's ``queued_at`` forward by a wait's suspend overrun, so NEEDS_ATTENTION and its
-    backdated ``retrying_since`` count only time the host was awake. Entries queued before the planned wait elapsed may have slept through its overrun; those queued
-    after resume keep their own clock. Only idle waits are
-    measured: time spent in connect attempts is the gateway failing and stays counted."""
+    backdated ``retrying_since`` count only time the host was awake. An entry queued before the planned wait
+    elapsed may have slept through the overrun; one queued after resume keeps its own clock (the clock is then
+    already past ``waited_from + planned + overrun``). Only idle waits are measured: time spent in connect
+    attempts is the gateway failing and stays counted.
+
+    Any overrun above ``_RECONNECT_SUSPEND_GAP_SECS`` reads as a suspend, a starved event loop included. That
+    is deliberate: a loop blocked for over a minute per idle step is already failing in louder ways, and
+    Linux's ``time.monotonic()`` stops during suspend, so there only such stalls ever reach this branch."""
     overrun = time.monotonic() - waited_from - planned
     if overrun <= _RECONNECT_SUSPEND_GAP_SECS:
         return

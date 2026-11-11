@@ -3902,10 +3902,13 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         def build():
             default_hint = t("platform.telegram.prompt.default_hint", default=default) if default else ""
             text = self.format_message(f"☤ *{t('platform.telegram.prompt.update_header')}*\n\n{prompt}{default_hint}")
+            if not hasattr(self, "_update_prompt_counter"):
+                self._update_prompt_counter = prompt_id_counter()
+            prompt_id = next(self._update_prompt_counter)  # an old /update card must not answer this one
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data="update_prompt:y"),
-                InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data="update_prompt:n")]])
-            return text, keyboard, None
+                InlineKeyboardButton(t("platform.telegram.prompt.affirm"), callback_data=f"update_prompt:y:{prompt_id}"),
+                InlineKeyboardButton(t("platform.telegram.prompt.negate"), callback_data=f"update_prompt:n:{prompt_id}")]])
+            return text, keyboard, lambda _msg: setattr(self, "_update_prompt_id", str(prompt_id))
         return await self._send_prompt(
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
@@ -4412,8 +4415,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 state = getattr(self, states).get(chat_id) or {}  # one gate for every picker: admitted, then its opener or an admin
                 if chat_id and await self._callback_authorized(query, cb, _unauthorized()):
                     # Old cards keep their callback_data after a restart; bind taps to the sent message.
-                    if state and (state.get("msg_id") is None
-                                  or str(state["msg_id"]) != str(getattr(query.message, "message_id", None))):
+                    tapped = getattr(query.message, "message_id", None)
+                    if state and None not in (state.get("msg_id"), tapped) and str(state["msg_id"]) != str(tapped):
                         await answer_or_note(self, query, _toast("platform.telegram.picker.expired_rerun"))
                         return
                     if not await refuse_tap(query, picker_refusal(
@@ -4605,11 +4608,17 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: dict[str, Any]) -> None:
-        """``update_prompt:<y|n>`` — forward the answer to the update process."""
-        answer = data.split(":", 1)[1]  # "y" or "n"
+        """``update_prompt:<y|n>[:<id>]`` — forward the answer to the update process."""
+        _, answer, card_id = (data.split(":", 2) + [None])[:3]  # answer is "y" or "n"
         if not await self._callback_authorized(query, cb, _unauthorized()) or await refuse_tap(
                 query, update_prompt_refusal(query.from_user.id, extra=self.config.extra)):
             return
+        current_id = getattr(self, "_update_prompt_id", None)
+        if current_id is not None and (not current_id or card_id != current_id):
+            # A card from an earlier /update (or from before a restart) answers nothing.
+            await answer_callback(query, _toast("platform.telegram.slash_confirm.already_resolved"))
+            return
+        self._update_prompt_id = ""  # answered: no card answers again until the next prompt is sent
         await answer_callback(query, _toast("platform.telegram.prompt.update_sent", answer=answer))
         word = t("platform.telegram.prompt.affirm_word" if answer == "y" else "platform.telegram.prompt.negate_word")
         await self._edit_md_quiet(query, f"☤ {t('platform.telegram.prompt.update_answered', answer=f'*{word}*')}")

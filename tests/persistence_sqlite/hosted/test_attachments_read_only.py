@@ -133,3 +133,21 @@ def test_a_reader_refuses_attachment_tables_older_than_this_version_and_leaves_t
         with pytest.raises(PermanentStoreError, match="a read-only store handle never migrates it"):
             reader.hosted_room_attachments.read(placement="profile", room_id=ROOM, attachment_id=meta["attachment_id"], recipient_member_id="m1", now=140.0)
     assert dump(path, ATTACHMENT_TABLES) == before
+
+
+@pytest.mark.parametrize("placement", PLACEMENTS)
+def test_a_reader_reads_a_published_commitment_the_reconciliation_would_retain(placement):
+    home, path, meta = _seed(placement)
+    # A commitment published before retains were atomic: its event names it, its expiry was never lifted.
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE hosted_room_attachments SET expires_at=125.0 WHERE attachment_id=?", (meta["attachment_id"],))
+    backend_module._STARTED.clear()
+    with open_persistence_reader(home) as reader:
+        seen = _reads(reader, placement, meta["attachment_id"], now=140.0)
+    backend_module._STARTED.clear()
+    writer = make_hosted(PROFILE)
+    try:
+        assert _reads(writer.store, placement, meta["attachment_id"], now=140.0) == seen
+    finally:
+        writer.backend.close()
+    assert seen["describe"][0] == "ok"

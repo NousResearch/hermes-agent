@@ -601,3 +601,24 @@ def test_host_pressure_sample_reads_the_host_and_never_raises():
     assert sample["load1"] >= 0.0
     assert sample["psi_memory_full_avg60"] >= 0.0
     assert sample["mem_available_kib"] > 0
+
+
+@pytest.mark.platforms("linux")
+def test_host_pressure_sample_survives_an_unreadable_lifecycle_ledger(monkeypatch):
+    """The ``never_raises`` half of that name, pinned on the one leg that did not keep it.
+
+    ``os.getloadavg`` and ``_psi_full_avg60`` are each guarded; ``sample_memory()`` was not. And
+    ``_reclaim_dead_workers`` calls the sampler INSIDE ``with _kb.write_txn(conn)``, so one
+    unreadable lifecycle ledger aborted the whole crash sweep — every card on that host lost its
+    reclaim for the cost of one telemetry read. A failed ledger may cost the memory keys and nothing
+    else: the host numbers that did read still have to reach the booking.
+    """
+    import gateway.lifecycle_ledger as ledger
+
+    def _unreadable():
+        raise RuntimeError("lifecycle ledger is unreadable")
+
+    monkeypatch.setattr(ledger, "sample_memory", _unreadable)
+    sample = kbt.host_pressure_sample()
+    assert sample["load1"] >= 0.0, sample
+    assert "mem_available_kib" not in sample, "the failed leg must not be half-claimed"

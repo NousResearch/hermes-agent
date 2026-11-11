@@ -269,9 +269,11 @@ def host_pressure_sample() -> dict[str, Any]:
     "Gateway disconnected" — the misreading that cost this fleet three investigations. Keys match
     what ``reclaim-host-space.sh`` and the gateway heartbeat already print (PSI stall percentages,
     load average, memory/swap in KiB), so a burst lines up against those logs with no translation.
-    """
-    from gateway.lifecycle_ledger import sample_memory
 
+    Every leg is guarded because the caller is not a diagnostics command: ``_reclaim_dead_workers``
+    samples INSIDE its ``write_txn``, so a raise here aborts the crash sweep for every card on the
+    host — the failure mode this lane exists to remove. A leg that fails costs its own keys only.
+    """
     sample: dict[str, Any] = {}
     with suppress(OSError, AttributeError):
         load = os.getloadavg()
@@ -280,7 +282,11 @@ def host_pressure_sample() -> dict[str, Any]:
         value = _psi_full_avg60(resource)
         if value is not None:
             sample[f"psi_{resource}_full_avg60"] = value
-    mem = sample_memory()
+    try:
+        from gateway.lifecycle_ledger import sample_memory
+        mem = sample_memory()
+    except Exception:  # health: allow BLE001 -- best-effort host telemetry inside the reclaim txn
+        return sample
     # ``rss_kib`` is the *sweeping* process's own resident size, not the fleet's: recording it
     # against a burst invites exactly the misreading this sampler exists to prevent.
     mem.pop("rss_kib", None)

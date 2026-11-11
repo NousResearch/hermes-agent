@@ -500,6 +500,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    monkeypatch.setattr(system_prompt, "RESPONSE_LANGUAGE_GUIDANCE", "LANGUAGE")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
     # Production renders this as str(get_hermes_home()) + "/profiles/<name>/",
@@ -516,6 +517,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     expected = "\n\n".join((
         "IDENTITY",
         "HELP",
+        "LANGUAGE",
         "STEER",
         "CODING_STABLE",
         "SYSTEM_MESSAGE",
@@ -544,7 +546,37 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:5])
+
+
+class TestResponseLanguageGuidance:
+    """The reply language follows the user's latest message, with or without tools."""
+
+    @pytest.mark.parametrize("tools", [[], ["read_file"]])
+    def test_stable_prompt_carries_the_reply_language_rule(self, tools):
+        from agent.prompt_builder import RESPONSE_LANGUAGE_GUIDANCE
+
+        agent = _make_agent(valid_tool_names=tools)
+        with (
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+        ):
+            parts = build_system_prompt_parts(agent)
+
+        assert RESPONSE_LANGUAGE_GUIDANCE in parts["stable"]
+        assert "latest message the user wrote themselves" in RESPONSE_LANGUAGE_GUIDANCE
+
+    def test_automated_turns_do_not_flip_the_language_and_instructions_take_precedence(self):
+        from agent.prompt_builder import RESPONSE_LANGUAGE_GUIDANCE
+
+        # Synthetic user-role turns (notifications, /goal continuations, cron
+        # deliveries) are often English; they must not switch a non-English chat.
+        assert "automated turns" in RESPONSE_LANGUAGE_GUIDANCE
+        for kind in ("internal notifications", "goal continuations", "cron deliveries"):
+            assert kind in RESPONSE_LANGUAGE_GUIDANCE
+        # A persona or operator instruction that fixes the reply language wins.
+        assert "your instructions set a reply language" in RESPONSE_LANGUAGE_GUIDANCE
 
 
 class TestTelegramRichMessagesHint:
@@ -893,6 +925,7 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    monkeypatch.setattr(system_prompt, "RESPONSE_LANGUAGE_GUIDANCE", "LANGUAGE")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
     with (

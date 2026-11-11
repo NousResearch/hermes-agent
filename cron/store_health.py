@@ -38,10 +38,22 @@ def describe_error(exc: OSError) -> str:
     return f"{code}: {text}" if code else text
 
 
+def _fix_hint(error: str, store: str) -> str:
+    """Give descriptor exhaustion recovery advice instead of storage/permission remedies."""
+    code = error.partition(":")[0]
+    if code in {"EMFILE", "ENFILE"}:
+        scope = "the process that hit EMFILE" if code == "EMFILE" else "the system"
+        return (
+            f"identify and release open file descriptors in {scope} "
+            "(for example, inspect processes with lsof), then retry"
+        )
+    return FIX_HINT.format(store=store)
+
+
 def _report_fields(store: str, error: str, since: Optional[float]) -> dict:
     """The fields `cron status`, doctor and the home-channel notices print for an unwritable store."""
     since_text = "unknown" if since is None else datetime.fromtimestamp(since).astimezone().isoformat(timespec="seconds")
-    return {"store": store, "error": error, "since": since_text, "fix": FIX_HINT.format(store=store)}
+    return {"store": store, "error": error, "since": since_text, "fix": _fix_hint(error, store)}
 
 
 @dataclass
@@ -130,7 +142,7 @@ def note_unwritable(exc: OSError, consequence: str, site: str, skipped_jobs: Ite
         logger.warning(
             "Cron store %s is unwritable (%s); %s. Scheduled jobs are skipped until it accepts writes "
             "again, then each due job fires once. Fix: %s.", store, exc, consequence,
-            FIX_HINT.format(store=store))
+            _fix_hint(describe_error(exc), store))
         _notify("unwritable", record)
     elif new_site:
         logger.info("Cron store %s still unwritable (%s); %s", store, exc, consequence)

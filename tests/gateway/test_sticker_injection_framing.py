@@ -37,7 +37,7 @@ def test_handle_sticker_frames_a_fresh_vision_transcript(monkeypatch):
     import plugins.platforms.telegram.adapter as tg
     from tools import vision_tools
 
-    async def fetch(_sticker, _what):
+    async def fetch(_sticker, _what, *_a, **_k):
         return None, b"webp"
 
     async def cache_image(_data, ext):

@@ -144,3 +144,37 @@ async def test_successes_do_not_spend_the_failure_wake_budget(tmp_path, monkeypa
         assert len(_notes(authority, target, 'deleg_stepfail')) == 1
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason, resumes', [('cli_close', False), ('new_session', False), ('ws_orphan_reap', True)])
+async def test_close_pending_across_a_restart_still_decides(tmp_path, monkeypatch, reason, resumes):
+    """The user exits while the result is queued (the close waits for the idle FIFO), then the gateway
+    restarts: recovery re-arms the stored close, but the in-memory dispatch refusal is gone."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_viewer_close import _PendingClose, _store_and_settle
+    from hermes_state import AsyncSessionDB, SessionDB
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    target = _target(runner, authority, ref)
+    evt = _process_event(authority, ref, target, 'proc_pending_close')
+    assert await runner._deliver_completion_notification('[finished] RESULT_proc_pending_close', evt) is True
+    authority.pending_closes[ref.session_id] = close = _PendingClose(reason)
+    await _store_and_settle(authority, ref.session_id, authority.sessions[ref.session_id], close)
+    assert authority.db.get_session(target)['ended_at'] is None, 'the queued result holds the close'
+    authority.db.close()
+    delegation._reset_for_tests()  # the next process starts with no refusals
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    runner.session_store._db = db = SessionDB(tmp_path / 'state.db')
+    runner._session_db = AsyncSessionDB(db)
+    restarted = await initialize_session_authority(runner, profile_id='default', instance_id='lc7b', db=db)
+    try:
+        recover_local_sessions(restarted, schedule=True)
+        seen = _turns(runner, restarted, target, 'proc_pending_close')
+        await restarted._drain(ref)
+        assert len(seen) == int(resumes) and len(_notes(restarted, target, 'proc_pending_close')) == 1 - int(resumes)
+        assert restarted.db.get_session(target)['end_reason'] == reason, 'the close settled after it'
+    finally:
+        db.close()

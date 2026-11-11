@@ -1,11 +1,11 @@
 name: visual-workflow
 repo: https://github.com/Printaga/Hermes-Workflow
 sha: 3f7a6a185e489ff4d75a0e8c1a9050c300f602d5
-description: "Visual drag-and-drop agent-workflow designer for Hermes: Trigger, Agent, Condition, Approval, Output nodes on a canvas, executed by a plugin-owned sequential runner."
+description: "Visual drag-and-drop agent-workflow designer for Hermes: Trigger, Agent, Condition, Approval, Output nodes on a canvas, executed by a plugin-owned sequential runner. Disclosure — Workflow Output nodes send text to messaging channels through Hermes's send-message path; a model-started run of a design with a delivering Output node first asks for your approval, and scheduled runs that would send are blocked unless approvals.cron_mode allows them; scheduled workflows run as Hermes cron jobs created from the dashboard; agent steps run Hermes subagents or the plugin LLM facade on your configured models; designs and run records are stored under HERMES_HOME/workflow-designs and HERMES_HOME/workflow-runs."
 maintainer: Printaga Publishing LLC
 tier: community
 category: automation
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.6"
 docs_url: "https://github.com/Printaga/Hermes-Workflow#readme"
 version: "1.1.0"
 screenshots:

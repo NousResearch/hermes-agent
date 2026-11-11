@@ -738,10 +738,16 @@ def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], l
         findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
                             "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
     if suffix == ".py":
-        with suppress(SyntaxError, LookupError):  # an unusable cookie means CPython refuses the file too
-            codec = tokenize.detect_encoding(io.BytesIO(raw).readline)[0]
+        # An unusable cookie (incl. 'undefined', whose codec raises UnicodeError) makes CPython refuse the file.
+        with suppress(SyntaxError, LookupError, UnicodeError):
+            # CPython also breaks lines on a lone CR; detect_encoding splits on LF only.
+            lf_raw = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            codec = tokenize.detect_encoding(io.BytesIO(lf_raw).readline)[0]
             if codec not in ("utf-8", "utf-8-sig"):
-                texts.append(raw.decode(codec, errors='replace'))
+                try:
+                    texts.append(raw.decode(codec, errors='replace'))
+                except UnicodeError:  # e.g. idna refuses 'replace' yet CPython runs it; the finding below still blocks
+                    texts.append(raw.decode('latin-1'))
                 findings.append(Finding("non_utf8_source_encoding", "high", "obfuscation", rel_path, 1,
                                         f"coding: {codec}", f"Python source declares the {codec} encoding "
                                         "(possible encoding-obfuscated payload)"))

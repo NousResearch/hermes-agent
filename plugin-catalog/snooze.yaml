@@ -1,0 +1,44 @@
+name: snooze
+title: Snooze
+repo: https://github.com/AIverflow/hermes-snooze
+sha: 65f4128edcb93812af9edab94740a909276cda9b
+version: "0.3.1"
+description: >-
+  A reminder that repeats in your chat (Telegram, Discord) until you answer it exactly: Ok, your word, an emoji,
+  a Telegram reaction, or one of several choices; reply later to postpone. A wrong answer gets the list of valid
+  answers from the plugin's code, never from the LLM. Then it can hand a follow-up to the
+  agent. Created with /snooze in plain words ("Stop the GPU at 19:00 every 10m then shut it down"), by the agent
+  through the snooze_create tool, or with hermes snooze add. Zero LLM calls per reminder.
+  Disclosure — no network call of its own, no subprocess, no credentials, no telemetry. A timer task runs in the
+  gateway (every 15 s) and sends due reminders through Hermes's send path to the snooze's chat or home channel.
+  Hook pre_gateway_dispatch sees every inbound gateway text message before the agent; it acts only in the chat of
+  a running snooze: an answer, or a message that replies to a reminder or comes first after one, is handled by the
+  plugin and does not reach the agent (an answer with a follow-up is rewritten into the follow-up prompt); everything
+  else passes untouched. Hook gateway_platform_event reads Telegram reactions on
+  reminder messages. A follow-up after a reaction or /snooze ok is queued with ctx.inject_message, which needs the
+  user's allow_gateway_injection. Reads its own settings (ctx.get_config), the session env (HERMES_SESSION_*), TZ,
+  the Hermes pause flag, the gateway liveness and the profile's home channels, read-only. Writes its setting
+  notification_platform with ctx.set_config (/snooze platform) and, in the plugin data dir, snoozes.json and two
+  lock files. Private Hermes names: tools.send_message_tool.send_message_tool (send without an LLM turn) and
+  agent.estop.is_engaged (no reminders while Hermes is paused).
+maintainer: AIverflow
+tier: community
+category: automation
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/AIverflow/hermes-snooze#readme
+screenshots:
+  - https://raw.githubusercontent.com/AIverflow/hermes-snooze/65f4128edcb93812af9edab94740a909276cda9b/docs/snooze-diagram.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "The gateway must be running: the timer lives in the gateway, so a CLI or Desktop session alone sends no reminders."
+  - "Tested on Telegram and Discord; other Hermes chat platforms are untested. Reaction confirms work in Telegram private chats only."
+  - "Uses two private Hermes names (send_message_tool, estop.is_engaged); a Hermes release can break them."
+capabilities:
+  provides_tools:
+    - snooze_create
+  provides_hooks:
+    - pre_gateway_dispatch
+    - gateway_platform_event
+  provides_middleware: []
+  requires_env: []

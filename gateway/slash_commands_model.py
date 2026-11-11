@@ -650,9 +650,9 @@ class GatewayModelCommandsMixin:
         model, route, forced_provider = await asyncio.to_thread(
             channel_override_route, getattr(self, "config", None), source,
         )
-        if model:
+        if model or route or forced_provider:
             ctx.apply_override({
-                "model": model,
+                "model": model or ctx.current_model,
                 **(route or ({"provider": forced_provider} if forced_provider else {})),
             })
         ctx.apply_override(self._session_model_overrides.get(ctx.session_key, {}))

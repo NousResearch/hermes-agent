@@ -52,3 +52,14 @@ def test_same_line_extensionless_tag_before_a_known_one_is_still_delivered(tmp_p
     media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{tmp_path}/Caddyfile MEDIA:{tmp_path}/report.pdf")
 
     assert str((tmp_path / "Caddyfile").resolve()) in [p for p, _ in media]
+
+
+def test_prose_ending_in_a_known_extension_never_hides_the_real_attachment(tmp_path, monkeypatch):
+    """``MEDIA:/x/run.py — exported as out.png`` reads as one known-extension path that is no file;
+    only a real file's span may hide the extensionless match, so run.py is still delivered."""
+    (tmp_path / "run.py").write_text("print(1)", encoding="utf-8")
+    _allow(monkeypatch, tmp_path)
+
+    media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{tmp_path}/run.py — exported as out.png")
+
+    assert str((tmp_path / "run.py").resolve()) in [p for p, _ in media]

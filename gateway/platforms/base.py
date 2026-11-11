@@ -1348,8 +1348,9 @@ def _deliverable_tag_spans(text: str) -> list:
 
 def _extensionless_media_matches(masked: str):
     """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension MEDIA tag in
-    ``masked`` that validates, skipping one inside a known-extension tag (its spaced path cut short, #78383)."""
-    known = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked) if "MEDIA:" not in m.group("path")]
+    ``masked`` that validates, skipping one inside a REAL known-extension file's tag (spaced path, #78383)."""
+    known = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked) if "MEDIA:" not in m.group("path")
+             and _existing_regular_file(_normalize_media_tag_path(m.group("path")))]
     for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
         if path and _path_lacks_deliverable_extension(path) and not any(s <= match.start() < e for s, e in known):

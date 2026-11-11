@@ -109,11 +109,11 @@ _SEGMENT_SPLIT_RE = re.compile(r"([;&|\n]+)")
 # fd redirects (`2>&1`, `&>log`) are not separators. The lookbehind keeps a long digit run from
 # being rescanned at every position.
 _FD_REDIRECT_RE = re.compile(r"(?<!\d)\d*[<>]&(?:\d+|-)?|&>>?")
-_NULL_REDIRECT_RE = re.compile(r"(?<!\d)\d*>>?\s*/dev/null\b")
+_NULL_REDIRECT_RE = re.compile(r"(?<!\d)\d*>>?\s*/dev/null(?![\w./-])")
 # Past this many segments nothing is excused: the command keeps the plain anywhere match, which
 # bounds the cost of a pathological input.
-_MAX_EXCUSABLE_SEGMENTS = 200
-_GIT_PLAIN_GLOBAL_OPTIONS = frozenset({"--no-pager", "-p", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs"})
+_MAX_EXCUSABLE_SEGMENTS = 2000
+_GIT_PLAIN_GLOBAL_OPTIONS = frozenset({"--no-pager", "-P", "-p", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs"})
 
 
 def _blank_fd_redirect(match: re.Match) -> str:
@@ -334,9 +334,7 @@ class _CommandSegments:
         for index in range(len(self.texts) - 2, -1, -1):
             next_seg = self.parsed[index + 1]
             follows[index] = follows[index + 1] or bool(
-                next_seg is not None and next_seg[0] == "tail"
-                and _has_flag(next_seg[1], "fF", ("--follow",))
-            )
+                next_seg is not None and next_seg[0] == "tail" and _DATA_COMMAND_EXCEPTIONS["tail"](next_seg[1]))
         return follows
 
     @functools.cached_property

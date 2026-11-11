@@ -8,6 +8,8 @@ import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
+from typing import Optional
+
 import pytest
 
 from hermes_cli import profiles
@@ -242,11 +244,16 @@ def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, mo
         assert not any(s in str(lost.value) for s in ("owner@", "example", "12", "pw"))
 
 
-def _creating(path: Path):
-    """A gateway that makes *path* during the request and reports it."""
+def _make_profile(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "config.yaml").write_text("{}\n")
+
+
+def _creating(path: Path, reported: Optional[Path] = None):
+    """A gateway that makes the profile *path* during the request and reports *reported* (default *path*)."""
     def answer(params):
-        path.mkdir(parents=True)
-        return {"ok": True, "receipt": _receipt(path=str(path))}
+        _make_profile(path)
+        return {"ok": True, "receipt": _receipt(path=str(reported or path))}
     return answer
 
 
@@ -270,17 +277,24 @@ def test_the_wrapper_is_written_here_only_when_this_create_made_the_local_profil
     # Another machine, same layout: local x already existed, the gateway reports its own x at that path.
     _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(here))})
     assert create_through_gateway(request).alias_path is None
+    # ...or local x is a shell a deleted profile left (no identity), which the other machine never touches.
+    shutil.rmtree(here)
+    here.mkdir()
+    assert create_through_gateway(request).alias_path is None
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:9/api/ws?token=t")
     _gateway(monkeypatch, _creating(root.parent / "container-home" / "profiles" / "x"))
     assert create_through_gateway(ProfileCreateRequest(name="y")).alias_path is None  # loopback, another home
     # Local x appeared during the request (a concurrent local create), but the gateway made its own elsewhere.
     shutil.rmtree(here)
-    def appeared_here(params):
-        here.mkdir(parents=True)
-        return {"ok": True, "receipt": _receipt(path=str(root.parent / "container-home" / "profiles" / "x"))}
-    _gateway(monkeypatch, appeared_here)
+    _gateway(monkeypatch, _creating(here, reported=root.parent / "container-home" / "profiles" / "x"))
     assert create_through_gateway(request).alias_path is None
     assert wrote == ["x", "x"]
+    # A deleted profile's leftover shell is replaced by the create: this create made x, so its command is written.
+    shutil.rmtree(here)
+    here.mkdir()
+    _gateway(monkeypatch, _creating(here))
+    assert create_through_gateway(request).alias_path == "/bin/x"
+    assert wrote == ["x", "x", "x"]
 
     shutil.rmtree(here)
     _gateway(monkeypatch, _creating(here))

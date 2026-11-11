@@ -8,11 +8,13 @@ pass ``allow_network=False`` and never do I/O. A corrupt/empty disk cache is
 quarantined, never served as ``{}``. ``models_dev.url`` in config.yaml = mirror."""
 
 import contextlib
+import contextvars
 import json
 import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +34,14 @@ _MODELS_DEV_FETCH_DEADLINE = 15.0  # whole download; ~600 KB gzipped fits at ~40
 _models_dev_cache: dict[str, Any] = {}
 _models_dev_cache_time: float = 0
 _models_dev_retry_after: float = 0
+# The registry above mirrors one HERMES_HOME's disk cache. (cache file, registry dict) names that
+# home; it is matched by dict identity, so a registry assigned directly (tests) carries no owner and
+# is adopted by the next caller's cache path. Registries of homes switched away from wait in a small
+# LRU stash keyed by cache file, so switching back does not re-parse a multi-MB JSON file.
+_models_dev_cache_scope: Optional[tuple[Path, dict[str, Any]]] = None
+_models_dev_stash: "OrderedDict[Path, tuple[dict[str, Any], float]]" = OrderedDict()
+_MODELS_DEV_STASH_MAX = 4
+_models_dev_scope_lock = threading.Lock()  # guards the slot/scope/stash swap; never held across I/O
 _models_dev_fetch_lock = threading.Lock()
 _models_dev_refresh_lock = threading.Lock()
 _models_dev_refresh_in_flight = False
@@ -388,28 +398,95 @@ def _fetch_models_dev_from_network(*, conditional: bool = False) -> tuple[dict[s
     return data, etag
 
 
-def _mark_stale_cache_grace() -> None:
-    """Give stale cache data a 5-minute in-memory grace before retrying refresh. Only ever moves the
-    timestamp forward, so a background refresh that completed meanwhile keeps its fresh stamp."""
+def _mark_stale_cache_grace(path: Path) -> None:
+    """Give *path*'s stale registry a 5-minute in-memory grace before retrying refresh. Only ever moves
+    the timestamp forward, so a background refresh that completed meanwhile keeps its fresh stamp."""
     global _models_dev_cache_time
-    _models_dev_cache_time = max(_models_dev_cache_time, time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_RETRY_DELAY)
+    grace = time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_RETRY_DELAY
+    with _models_dev_scope_lock:
+        if _owns_active_slot(path):
+            _models_dev_cache_time = max(_models_dev_cache_time, grace)
+        elif path in _models_dev_stash:
+            registry, cache_time = _models_dev_stash[path]
+            _models_dev_stash[path] = (registry, max(cache_time, grace))
 
 
-def _serve_stale(msg: str, *args: Any) -> dict[str, Any]:
-    """Arm the grace window, kick off a background refresh, return the held cache."""
-    _mark_stale_cache_grace()
+def _serve_stale(registry: dict[str, Any], path: Path, msg: str, *args: Any) -> dict[str, Any]:
+    """Arm *path*'s grace window, kick off a background refresh, return *registry* (path's held copy)."""
+    _mark_stale_cache_grace(path)
     _start_background_refresh_models_dev()
     logger.debug(msg, *args)
-    return _models_dev_cache
+    return registry
 
 
-def _commit_registry(data: dict[str, Any], *, etag: str = "", where: str) -> None:
-    """Persist a fetched registry: disk + in-mem + clear backoff. Callers hold ``_models_dev_fetch_lock``
-    so a failing refresh on one path can never stomp state a succeeding refresh just committed."""
-    global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
+def _owns_active_slot(path: Path) -> bool:
+    """True if the active registry belongs to *path*. One without an owner tag (assigned directly)
+    belongs to whichever cache path asks first. Callers hold ``_models_dev_scope_lock``."""
+    scope = _models_dev_cache_scope
+    return scope is None or scope[1] is not _models_dev_cache or scope[0] == path
+
+
+def _held_snapshot(path: Path) -> tuple[dict[str, Any], float]:
+    """(registry, cache time) this process holds for *path* (active slot or stash), or ``({}, 0)``.
+    Ownership check and read happen under one lock, so another home's registry is never returned."""
+    with _models_dev_scope_lock:
+        if _owns_active_slot(path):
+            return _models_dev_cache, _models_dev_cache_time
+        return _models_dev_stash.get(path, ({}, 0.0))
+
+
+def _held_registry(path: Path) -> dict[str, Any]:
+    return _held_snapshot(path)[0]
+
+
+def _stash_locked(path: Path, registry: dict[str, Any], cache_time: float) -> None:
+    _models_dev_stash[path] = (registry, cache_time)
+    _models_dev_stash.move_to_end(path)
+    while len(_models_dev_stash) > _MODELS_DEV_STASH_MAX:
+        _models_dev_stash.popitem(last=False)
+
+
+def _store_registry(path: Path, registry: dict[str, Any], cache_time: float) -> dict[str, Any]:
+    """Install *registry* as *path*'s: in the active slot if *path* owns it, else in the stash, so a
+    refresh that finishes after the process switched homes never becomes the new home's registry."""
+    global _models_dev_cache, _models_dev_cache_time, _models_dev_cache_scope
+    with _models_dev_scope_lock:
+        if _owns_active_slot(path):
+            _models_dev_cache, _models_dev_cache_time = registry, cache_time
+            _models_dev_cache_scope = (path, registry)
+        else:
+            _stash_locked(path, registry, cache_time)
+    return registry
+
+
+def _activate_cache_path(path: Path) -> None:
+    """Make *path*'s registry the active one: stash the previous home's, restore *path*'s from the
+    stash or start empty. Unchanged path is a lock-free identity check."""
+    global _models_dev_cache, _models_dev_cache_time, _models_dev_cache_scope
+    scope = _models_dev_cache_scope
+    if scope is not None and scope[0] == path and scope[1] is _models_dev_cache:
+        return
+    with _models_dev_scope_lock:
+        scope = _models_dev_cache_scope
+        if scope is None or scope[1] is not _models_dev_cache:
+            _models_dev_cache_scope = (path, _models_dev_cache)  # untagged: adopt
+            return
+        if scope[0] == path:
+            return
+        if _models_dev_cache:
+            _stash_locked(scope[0], _models_dev_cache, _models_dev_cache_time)
+        registry, cache_time = _models_dev_stash.pop(path, ({}, 0.0))
+        _models_dev_cache, _models_dev_cache_time = registry, cache_time
+        _models_dev_cache_scope = (path, registry)
+
+
+def _commit_registry(data: dict[str, Any], *, etag: str = "", where: str, path: Optional[Path] = None) -> None:
+    """Persist a fetched registry: disk + in-mem (for *path*, default the caller's cache path) + clear
+    backoff. Callers hold ``_models_dev_fetch_lock`` so a failing refresh on one path can never stomp
+    state a succeeding refresh just committed."""
+    global _models_dev_retry_after
     _save_disk_cache(data, etag)
-    _models_dev_cache = data
-    _models_dev_cache_time = time.time()
+    _store_registry(path or _get_cache_path(), data, time.time())
     _models_dev_retry_after = 0
     logger.debug(
         "Refreshed models.dev registry (%s): %d providers, %d total models", where, len(data),
@@ -417,11 +494,13 @@ def _commit_registry(data: dict[str, Any], *, etag: str = "", where: str) -> Non
     )
 
 
-def _confirm_cache_not_modified(*, where: str) -> None:
+def _confirm_cache_not_modified(*, where: str, path: Optional[Path] = None) -> None:
     """After a 304: clear backoff and re-mark the held cache fresh (disk is untouched — only the
     freshness marker advances). Caller holds the lock."""
-    global _models_dev_cache_time, _models_dev_retry_after
-    if not _models_dev_cache:
+    global _models_dev_retry_after
+    path = path or _get_cache_path()
+    held = _held_registry(path)
+    if not held:
         # Should be unreachable (conditional GETs require a servable cache) but previously caused a
         # permanent empty-registry loop: drop the sidecar and arm the backoff rather than marking {} "fresh".
         _clear_etag()
@@ -429,7 +508,7 @@ def _confirm_cache_not_modified(*, where: str) -> None:
         logger.warning("models.dev returned 304 but no cached registry is held (%s); "
                        "cleared ETag sidecar, will refetch unconditionally", where)
         return
-    _models_dev_cache_time = time.time()
+    _store_registry(path, held, time.time())
     _models_dev_retry_after = 0
     logger.debug("models.dev registry unchanged (304 Not Modified, %s); cache re-confirmed fresh", where)
 
@@ -441,16 +520,17 @@ def _note_refresh_failure(exc: Exception, *, where: str) -> None:
     logger.debug("models.dev refresh failed (%s); retry suppressed for %ds: %s", where, _MODELS_DEV_RETRY_DELAY, exc)
 
 
-def _refresh_locked(where: str) -> Optional[dict[str, Any]]:
-    """One conditional fetch + state update; caller holds ``_models_dev_fetch_lock``. Returns the
-    registry to serve, or None when the fetch failed (backoff armed)."""
+def _refresh_locked(where: str, path: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """One conditional fetch + state update for *path* (default: the caller's cache path); caller holds
+    ``_models_dev_fetch_lock``. Returns the registry to serve, or None when the fetch failed (backoff armed)."""
+    path = path or _get_cache_path()
     try:
-        data, etag = _fetch_models_dev_from_network(conditional=bool(_models_dev_cache))
-        _commit_registry(data, etag=etag, where=where)
+        data, etag = _fetch_models_dev_from_network(conditional=bool(_held_registry(path)))
+        _commit_registry(data, etag=etag, where=where, path=path)
         return data
     except _NotModified:
-        _confirm_cache_not_modified(where=where)
-        return _models_dev_cache
+        _confirm_cache_not_modified(where=where, path=path)
+        return _held_registry(path)
     except Exception as e:
         _note_refresh_failure(e, where=where)
         return None
@@ -479,7 +559,10 @@ def _start_background_refresh_models_dev() -> None:
         if _models_dev_refresh_in_flight:
             return
         _models_dev_refresh_in_flight = True
-    thread = threading.Thread(target=_background_refresh_models_dev, name="models-dev-refresh", daemon=True)
+    # Run in the caller's context so a context-local HERMES_HOME override reaches the worker: it
+    # refreshes, saves and labels the registry for the home that served the stale copy.
+    thread = threading.Thread(target=contextvars.copy_context().run, args=(_background_refresh_models_dev,),
+                              name="models-dev-refresh", daemon=True)
     try:
         thread.start()
     except Exception as e:
@@ -495,56 +578,65 @@ def fetch_models_dev(force_refresh: bool = False, *, allow_network: bool = True)
     beats a foreground timeout) → disk of any age (stale triggers the same background refresh) →
     singleflight foreground fetch. A failed refresh suppresses automatic refreshes for 5 minutes.
     ``force_refresh=True`` bypasses the cache fast paths and the backoff, falling back to cached data
-    only if the call fails. ``allow_network=False`` returns any memory/disk cache and never makes a request."""
-    global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
+    only if the call fails. ``allow_network=False`` returns any memory/disk cache and never makes a request.
+    The in-memory registry is per HERMES_HOME cache file (see ``_models_dev_cache_scope``)."""
+    cache_path = _get_cache_path()
+    _activate_cache_path(cache_path)
+    return _fetch_models_dev_for_current_path(cache_path, force_refresh, allow_network=allow_network)
+
+
+def _fetch_models_dev_for_current_path(path: Path, force_refresh: bool, *, allow_network: bool) -> dict[str, Any]:
+    # Every registry read is a snapshot owned by *path* (or a registry fetched/loaded for it): a lookup
+    # under another home may swap the active slot at any point during this call.
+    held, held_time = _held_snapshot(path)
     if not allow_network:
-        if not _models_dev_cache and (disk_data := _load_disk_cache()):
-            _models_dev_cache = disk_data
+        if not held and (disk_data := _load_disk_cache()):
             disk_age = _disk_cache_age_seconds()
-            _models_dev_cache_time = time.time() - disk_age if disk_age is not None else 0
-        return _models_dev_cache
+            return _store_registry(path, disk_data, time.time() - disk_age if disk_age is not None else 0)
+        return held
     if not force_refresh:
         # Stage 1: fresh in-memory cache — the hot path, no I/O.
-        if _models_dev_cache and (time.time() - _models_dev_cache_time) < _MODELS_DEV_CACHE_TTL:
-            return _models_dev_cache
+        if held and (time.time() - held_time) < _MODELS_DEV_CACHE_TTL:
+            return held
         # Stage 2: stale in-memory cache beats blocking on the network.
-        if _models_dev_cache:
-            return _serve_stale("Using stale in-memory models.dev cache; refreshing in background")
+        if held:
+            return _serve_stale(held, path, "Using stale in-memory models.dev cache; refreshing in background")
         # Stage 3: disk cache (cold-start only). A stale disk cache is deliberately usable so
         # resolution doesn't hang when models.dev is unreachable.
         disk_age = _disk_cache_age_seconds()
         if disk_age is not None and (disk_data := _load_disk_cache()):
-            _models_dev_cache = disk_data
             if disk_age >= _MODELS_DEV_CACHE_TTL:
-                return _serve_stale("Using stale models.dev disk cache (age=%.0fs); refreshing in background", disk_age)
+                _store_registry(path, disk_data, held_time)
+                return _serve_stale(disk_data, path,
+                                    "Using stale models.dev disk cache (age=%.0fs); refreshing in background", disk_age)
             # Anchor the in-mem TTL to the file's age so an aging cache isn't extended by another full TTL.
-            _models_dev_cache_time = time.time() - disk_age
+            _store_registry(path, disk_data, time.time() - disk_age)
             logger.debug("Loaded models.dev from fresh disk cache (%d providers, age=%.0fs)", len(disk_data), disk_age)
-            return _models_dev_cache
+            return disk_data
         # Process-wide backoff: don't make every caller retry an unreachable endpoint while no usable cache exists.
         if time.time() < _models_dev_retry_after:
-            return _models_dev_cache
+            return held
     # Stage 4: singleflight foreground fetch. Recheck state under the lock — another caller may
     # have refreshed or armed the backoff while we waited.
     with _models_dev_fetch_lock:
-        if not force_refresh and (_models_dev_cache or time.time() < _models_dev_retry_after):
-            return _models_dev_cache
+        held = _held_registry(path)
+        if not force_refresh and (held or time.time() < _models_dev_retry_after):
+            return held
         # Cold force_refresh: stages 1-3 were skipped, so hydrate memory from disk first so the
         # conditional GET fires and a 304 can re-confirm it.
-        if force_refresh and not _models_dev_cache and (disk := _load_disk_cache()):
-            _models_dev_cache = disk
-            _models_dev_cache_time = 0  # servable but not fresh
-        served = _refresh_locked("foreground")
+        if force_refresh and not held and (disk := _load_disk_cache()):
+            _store_registry(path, disk, 0)  # servable but not fresh
+        served = _refresh_locked("foreground", path)
         if served is not None:
             return served
         # Stage 5: network failed — serve any stale memory/disk cache. Freshness stays expired;
         # the retry-after timestamp gates the next attempt.
-        if not _models_dev_cache:
-            _models_dev_cache = _load_disk_cache()
-            _models_dev_cache_time = 0
-            if _models_dev_cache:
-                logger.debug("Loaded stale models.dev disk cache (%d providers)", len(_models_dev_cache))
-        return _models_dev_cache
+        held = _held_registry(path)
+        if not held:
+            held = _store_registry(path, _load_disk_cache(), 0)
+            if held:
+                logger.debug("Loaded stale models.dev disk cache (%d providers)", len(held))
+        return held
 
 
 def _registry_provider(mdev_id: str, allow_network: bool) -> Optional[dict[str, Any]]:

@@ -208,6 +208,30 @@ def _bot_chat_only() -> JSONResponse:
     return _refusal("bot_chat_only", "A messaging pass reaches only this agent's Bot Chat.", 403)
 
 
+async def _run_session(client: httpx.AsyncClient, base: str, key: str,
+                       run_id: str) -> tuple[str, Optional[JSONResponse]]:
+    """``(session id, None)`` of an existing run, from its status on the gateway, or ``("", refusal)``.
+    A run with no session (or none the gateway knows) is outside the Bot Chat."""
+    try:
+        found = await client.get(f"{base}/v1/runs/{urllib.parse.quote(run_id, safe='')}",
+                                 headers={"Authorization": f"Bearer {key}"})
+    except httpx.HTTPError as exc:  # a read: safe to retry whatever broke
+        return "", _unreachable(base, exc)
+    if found.status_code == 401:
+        return "", _gateway_auth_refused()
+    if found.status_code == 404:
+        return "", _bot_chat_only()
+    if found.status_code != 200:
+        return "", _unreachable(base, RuntimeError(f"run lookup answered {found.status_code}"))
+    try:
+        session_id = found.json().get("session_id")
+    except (ValueError, AttributeError):
+        session_id = None
+    if not isinstance(session_id, str) or not session_id:
+        return "", _bot_chat_only()
+    return session_id, None
+
+
 async def _outside_the_bot_chat(client: httpx.AsyncClient, base: str, key: str, template: str,
                                 segments: list[str], query: list[tuple[str, str]],
                                 body: Optional[dict]) -> Optional[JSONResponse]:
@@ -226,6 +250,10 @@ async def _outside_the_bot_chat(client: httpx.AsyncClient, base: str, key: str, 
             return _bot_chat_only()
     elif template.startswith("api/sessions/"):
         session_id = segments[2]
+    elif template.startswith("v1/runs/"):  # an existing run: status, events, stop
+        session_id, refused = await _run_session(client, base, key, segments[2])
+        if refused is not None:
+            return refused
     else:
         return None
     try:

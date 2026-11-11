@@ -389,9 +389,13 @@ def _gateway_api_target(profile: str, home: Path) -> tuple[str, str]:
     multiplex, listener_profile, listener_home = listener
     extra = _listener_api_server_extra(listener_home)
     base = _listener_base(profile, listener, extra)
-    if multiplex and profile != "default":
-        return base, _profile_env_value(home, "API_SERVER_KEY")
     from hermes_cli.auth import has_usable_secret
+    if multiplex and profile != "default":
+        # The secret mapping the gateway binds for this profile's requests (its .env plus external
+        # secret sources and managed env), which ``_expected_api_key`` reads through get_secret.
+        from gateway.run import _load_profile_secret_scope
+        key = (_load_profile_secret_scope(home).get("API_SERVER_KEY") or "").strip()
+        return base, key if has_usable_secret(key, min_length=16) else ""
     key = _profile_setting(listener_profile, listener_home, "API_SERVER_KEY").strip()
     if has_usable_secret(key, min_length=16):
         return base, key

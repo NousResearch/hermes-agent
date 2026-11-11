@@ -1,6 +1,6 @@
 name: imprint
 repo: https://github.com/Frazzlesprite/hermes-imprint
-sha: "f8409be7061a6e9a758f606eb0370f6fbce4c51a"
+sha: "f9b4bf9235cf729e29d1e28184c1aa41fd8008a3"
 subdir: ""
 description: Compile a week of Hermes activity into a cited, typeset book with an executive summary.
 maintainer: Frazzlesprite
@@ -21,7 +21,6 @@ capabilities:
     - imprint_compile
     - imprint_preview
     - imprint_status
-    - imprint_burn
     - imprint_import
   provides_hooks:
     - pre_tool_call

@@ -135,29 +135,32 @@ def _build_local_env(*, cwd, timeout, local_config=None, **_):
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
-    from tools.terminal_tool import (_docker_session_isolation_enabled, _has_isolation_overrides,
-                                     _maybe_reap_docker_orphans)
+    from tools.terminal_tool import _maybe_reap_docker_orphans, _session_scoped_task
     # One-shot reaper for labeled containers orphaned by prior Hermes processes that died before
     # atexit (SIGKILL / OOM / closed terminal); ``terminal.docker_orphan_reaper: false`` disables it.
     _maybe_reap_docker_orphans(cc)
     # A session-keyed container must not outlive its session, so cross-process reuse/persist is
     # disabled for it (cleanup_vm()/idle reaper stop+rm it). The shared "default" container and
     # RL/benchmark override sandboxes keep their existing lifecycle.
-    session_scoped = (_docker_session_isolation_enabled() and task_id != "default"
-                      and not _has_isolation_overrides(task_id))
+    session_scoped = _session_scoped_task("docker", task_id)
     kwargs = {out: cc.get(key, default) for out, key, default in _DOCKER_KWARGS}
     if session_scoped:
         kwargs["persist_across_processes"] = False
     docker_env_obj = _DockerEnvironment(image=image, cwd=cwd, timeout=timeout, task_id=task_id, host_cwd=host_cwd,
                                         **_resources(cc), **kwargs)
-    # Marker read by is_persistent_env(): a session-scoped container survives BETWEEN turns (skip
-    # per-turn teardown) but is removed at session close / idle timeout. Test doubles may reject attrs.
     if session_scoped:
-        try:
-            docker_env_obj._session_scoped = True
-        except AttributeError:
-            pass
+        _mark_session_scoped(docker_env_obj)
     return docker_env_obj
+
+
+def _mark_session_scoped(env_obj: Any) -> None:
+    """Stamp the marker is_persistent_env() reads: a session-scoped sandbox survives BETWEEN turns
+    (no per-turn teardown) and is removed at session close / idle timeout. Test doubles may reject
+    attributes."""
+    try:
+        env_obj._session_scoped = True
+    except AttributeError:
+        pass
 
 
 def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
@@ -254,6 +257,12 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
         except AttributeError:
             pass
         _stamp_sandbox_home(env_obj, provider, cwd)
+        # A backend declaring session_isolated_when_nonpersistent creates one sandbox per session in
+        # non-persistent mode, and its cleanup() deletes that sandbox. Without the marker the per-turn
+        # teardown would delete it after every turn and the next turn would start a fresh one.
+        from tools.terminal_tool import _session_scoped_task
+        if _session_scoped_task(env_type, task_id):
+            _mark_session_scoped(env_obj)
         return env_obj
     try:
         from agent.terminal_env_registry import plugin_backend_names

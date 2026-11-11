@@ -104,9 +104,10 @@ async def _telegram_album(tmp_path, monkeypatch, captions):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={"media_group_wait_seconds": 0.05}))
     adapter.handle_message = AsyncMock()
     adapter._is_callback_user_authorized = lambda user_id, **_kw: True
-    for name, caption in zip(("a.txt", "b.txt"), captions):
+    for name, caption in zip(("a.txt", "b.txt", "c.pdf", "d.txt"), captions):
         body = f"SECRETBODY_{name}: 42\n".encode()  # a trailing newline, as real files have
-        doc = _make_document(file_name=name, mime_type="text/plain", file_size=len(body), file_obj=_make_file_obj(body))
+        mime = "application/pdf" if name.endswith(".pdf") else "text/plain"  # a PDF is never inlined
+        doc = _make_document(file_name=name, mime_type=mime, file_size=len(body), file_obj=_make_file_obj(body))
         await adapter._handle_media_message(_make_update(_make_message(document=doc, caption=caption, media_group_id="mg")),
                                             MagicMock())
     await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
@@ -131,3 +132,12 @@ async def test_telegram_album_with_a_command_caption_keeps_sibling_files_as_atta
     assert event.get_command_args() == "summarize both reports"
     assert "SECRETBODY" not in event.text
     assert len(event.media_urls) == 2 and event.media_text_inlined == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_telegram_album_keeps_a_later_items_caption_after_the_command(tmp_path, monkeypatch):
+    """A caption on an item merged after the command one survives later merges."""
+    event = await _telegram_album(tmp_path, monkeypatch, (None, "/goal summarize these", "Use only the 2026 figures", None))
+    assert event.get_command() == "goal"
+    assert "Use only the 2026 figures" in event.get_command_args()
+    assert "SECRETBODY" not in event.text and not any(event.media_text_inlined)

@@ -249,6 +249,46 @@ class TestFormatKanbanEventText:
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
 
+    def test_timed_out_with_limit_seconds_renders_value(self):
+        """Dispatcher wall-clock path: limit_seconds present → rendered."""
+        ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": 3600})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "max_runtime=3600s" in text
+
+    def test_timed_out_without_limit_seconds_falls_back_to_task_column(self):
+        """Worker budget-exhausted path: no limit_seconds in payload → falls
+        back to task.max_runtime_seconds column."""
+        task = SimpleNamespace(
+            title="build the thing", assignee="worker", result=None,
+            max_runtime_seconds=7200,
+        )
+        ev = SimpleNamespace(kind="timed_out", payload={})
+        text = _format_kanban_event_text(self.SUB, task, ev, "")
+        assert "max_runtime=7200s" in text
+
+    def test_timed_out_no_limit_no_column_renders_generic(self):
+        """No limit_seconds in payload AND no max_runtime_seconds on the task
+        → generic message, never 'max_runtime=0s'."""
+        task = SimpleNamespace(
+            title="build the thing", assignee="worker", result=None,
+            max_runtime_seconds=None,
+        )
+        ev = SimpleNamespace(kind="timed_out", payload={})
+        text = _format_kanban_event_text(self.SUB, task, ev, "")
+        assert "timed out" in text
+        assert "max_runtime=0s" not in text
+
+    def test_timed_out_no_limit_zero_column_renders_generic(self):
+        """max_runtime_seconds=0 (unlimited) → generic message, not '0s'."""
+        task = SimpleNamespace(
+            title="build the thing", assignee="worker", result=None,
+            max_runtime_seconds=0,
+        )
+        ev = SimpleNamespace(kind="timed_out", payload={})
+        text = _format_kanban_event_text(self.SUB, task, ev, "")
+        assert "timed out" in text
+        assert "max_runtime=0s" not in text
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.

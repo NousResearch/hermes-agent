@@ -913,6 +913,63 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
+def _single_query_transport(spec: _GateSpec, *, command: str, description: str, pattern_key: str,
+                            session_key: str) -> dict | None:
+    """Single-query (``-q``) workers: let an explicitly selected plugin transport answer the gate.
+
+    ``_presence`` clears every built-in surface for ``-q``, so without this the gate resolves from
+    ``approvals.single_query_mode`` before the operator-selected transport is ever asked. Returns
+    None (caller keeps its unattended handling) unless this is a non-cron single-query run with a
+    non-builtin transport; a transport that is unavailable or declines (raises the typed
+    ``ApprovalTransportDeclined``: nothing was presented) also returns None so plain ``-q`` runs keep
+    their deterministic, instant mode. Any other failure (generic error, busy, request-build failure,
+    timeout, interrupt, stale/invalid answer) is denied with a failure-specific outcome, never
+    attributed to the human.
+    """
+    if not approval_context._is_single_query_approval_context() or approval_context._is_cron_approval_context():
+        return None
+    if approval_context._get_approval_transport_config()[0] == "builtin":
+        return None
+    if is_approved(session_key, pattern_key):
+        return _approved()
+    attempt = _present_with_selected_transport(
+        command=command, description=description, pattern_key=pattern_key, pattern_keys=[pattern_key],
+        session_key=session_key, surface="cli", allow_session=True, allow_permanent=True,
+    )
+    if not attempt.get("selected"):
+        return None
+    failure = attempt.get("failure")
+    # Only failures that provably never presented anything keep the deterministic
+    # single_query_mode: the selected transport is not registered ("unavailable") or its
+    # present() raised ApprovalTransportDeclined before sending ("declined", e.g. a plugin
+    # that only serves particular workers). Every other failure is denied: a generic
+    # "error" may come after the request reached a human, and timeout/interrupt/stale/invalid
+    # answers mean a human may have seen it -- silence is not consent, so
+    # single_query_mode=approve must not run the action. "busy" (worker capacity exhausted)
+    # and a request-build failure are also denied: fail closed rather than guess.
+    if failure in ("unavailable", "declined"):
+        return None
+    if failure:
+        _record_denial(session_key)
+        return _denied(
+            f"BLOCKED: Selected approval transport failed ({failure}); the user has NOT consented "
+            f"to this action. Do NOT retry this command or attempt the same outcome through another "
+            f"route.{_denial_breaker_addendum(session_key)}",
+            pattern_key=pattern_key, description=description, outcome=f"transport_{failure}",
+        )
+    choice = attempt.get("choice")
+    if choice == "deny":
+        _record_denial(session_key)
+        template = spec.transport_denied
+        breaker = _denial_breaker_addendum(session_key) if "{breaker}" in template else ""
+        return _denied(template.format(description=description, breaker=breaker), pattern_key=pattern_key,
+                       description=description, outcome="denied", noun=spec.noun)
+    _persist_choice(session_key, choice, [pattern_key])
+    if spec.user_approved:
+        return _user_approved(session_key, description)
+    return _approved()
+
+
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
@@ -1303,6 +1360,14 @@ def check_all_command_guards(command: str, env_type: str,
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if is_dangerous and not _is_permanently_approved(pattern_key):
+            result = _single_query_transport(
+                _COMMAND_GATE, command=command, description=description,
+                pattern_key=pattern_key, session_key=get_current_session_key(),
+            )
+            if result is not None:
+                return result
         for ctx in _unattended_contexts():
             result = _unattended_deny(command, ctx)
             if result is not None:
@@ -1350,12 +1415,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     The script can call ``subprocess``/``os.system``/``ctypes`` directly, none of which pass
     through ``terminal()`` / ``DANGEROUS_PATTERNS``; in gateway/ask contexts we fail closed by
     approving the script as a whole. Same dict contract as ``check_all_command_guards``.
-    Documented limitation: a purely local non-interactive non-gateway session returns approved
-    (the terminal auto-approve contract); the hardline floor still blocks catastrophic
-    ``terminal()`` commands the script issues.
-
-    See #30882.
-    The hardline floor still blocks catastrophic ``terminal()`` commands the script issues; running
+    Single-query (``-q``) runs with an explicitly selected plugin transport ask that transport
+    first (see :func:`_single_query_transport`); otherwise -q / cron / unattended contexts resolve
+    from their configured mode. The hardline floor still blocks catastrophic ``terminal()`` commands the script issues; running
     arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask surface
     or ``approvals.cron_mode`` to require approval). See #30882.
     """
@@ -1371,10 +1433,17 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     if _yolo_active() or approval_mode == "off":
         return _approved()
 
-    # (-q clears the presence flags, but its unattended context resolves first anyway.)
     approval_callback, is_cli, is_gateway, is_ask = _presence()
-    # No user is present to approve arbitrary code in -q / cron / unattended
-    # sessions: the first active context resolves instantly from its mode.
+    # -q clears the presence flags, so no built-in surface can approve arbitrary code here.
+    # A selected plugin transport answers single-query workers first; when it does not apply
+    # (builtin, cron, unavailable or declined) the first active unattended context resolves
+    # instantly from its mode.
+    result = _single_query_transport(
+        _EXECUTE_CODE_GATE, command=f"execute_code <<'PY'\n{code}\nPY", description=description,
+        pattern_key=pattern_key, session_key=get_current_session_key(),
+    )
+    if result is not None:
+        return result
     for ctx in _unattended_contexts():
         if ctx.mode() == "deny":
             return _denied(

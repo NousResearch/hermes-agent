@@ -110,6 +110,13 @@ class TestHumanWaitTracker:
             state.window_started = time.monotonic() - 86_400.0
             assert approval_human_wait.human_wait_seconds(SESSION) <= 300.0 + 60.0
 
+    def test_selected_transport_window_uses_its_host_owned_timeout(self):
+        with approval_human_wait.human_wait_window(SESSION, timeout_seconds=3_600):
+            state = approval_human_wait._human_wait_states[SESSION]
+            state.window_started = time.monotonic() - 1_000.0
+            assert approval_human_wait.human_wait_seconds(SESSION) >= 999.0
+            assert state.window_ceiling == 3_660.0
+
     def test_eviction_keeps_pending_sessions(self):
         with approval_human_wait.human_wait_window(SESSION):
             for i in range(approval_human_wait._HUMAN_WAIT_MAX_SESSIONS + 8):
@@ -192,6 +199,70 @@ class TestAuthorizationGate:
         assert time.monotonic() - start < 2.0
         release.set()
         holder.join(timeout=5)
+
+    def test_selected_transport_wait_extends_default_authorization_lock(self, monkeypatch):
+        """The generic gate must not abandon serialization at the ordinary prompt deadline."""
+        monkeypatch.setattr("agent.tool_executor._authorization_gate_lock_timeout", lambda: 0.05)
+        gate = _make_gate()
+        holder_in_wait = threading.Event()
+        release = threading.Event()
+        second_ran = threading.Event()
+
+        def _holder():
+            with approval_human_wait.human_wait_window(SESSION, timeout_seconds=1.0):
+                holder_in_wait.set()
+                release.wait(timeout=5)
+
+        holder = threading.Thread(target=lambda: gate.run(_holder), daemon=True)
+        holder.start()
+        assert holder_in_wait.wait(timeout=5)
+
+        second = threading.Thread(target=lambda: gate.run(second_ran.set), daemon=True)
+        second.start()
+        time.sleep(0.15)
+        assert not second_ran.is_set()
+        release.set()
+        holder.join(timeout=5)
+        second.join(timeout=5)
+        assert second_ran.is_set()
+
+    def test_closed_human_wait_reverts_to_ordinary_lock_timeout(self, monkeypatch):
+        """A closed long wait must not leave its deadline stuck on later lock acquisition."""
+        monkeypatch.setattr("agent.tool_executor._authorization_gate_lock_timeout", lambda: 0.05)
+        gate = _make_gate()
+        holder_in_wait = threading.Event()
+        close_wait = threading.Event()
+        wait_closed = threading.Event()
+        release_holder = threading.Event()
+        second_ran = threading.Event()
+
+        def _holder():
+            with approval_human_wait.human_wait_window(SESSION, timeout_seconds=1.0):
+                holder_in_wait.set()
+                close_wait.wait(timeout=5)
+            wait_closed.set()
+            release_holder.wait(timeout=5)
+
+        holder = threading.Thread(target=lambda: gate.run(_holder), daemon=True)
+        holder.start()
+        assert holder_in_wait.wait(timeout=5)
+
+        second = threading.Thread(target=lambda: gate.run(second_ran.set), daemon=True)
+        second.start()
+        try:
+            time.sleep(0.15)
+            assert not second_ran.is_set(), "active human wait did not extend the lock deadline"
+
+            close_wait.set()
+            assert wait_closed.wait(timeout=2)
+            assert second_ran.wait(timeout=2), (
+                "closed human wait left its long deadline stuck on the authorization waiter"
+            )
+        finally:
+            close_wait.set()
+            release_holder.set()
+            holder.join(timeout=5)
+            second.join(timeout=5)
 
     def test_wedged_callback_contributes_nothing_to_exclusion(self):
         """THE #79719 regression: gate residency is not deadline exclusion."""

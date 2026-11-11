@@ -213,7 +213,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
     except Exception:
         # Plugin/discovery exception text may contain plugin-owned secrets.
         logger.warning("Could not resolve selected approval transport %r", name)
-        registered = None
+        return _attempt(name, "deny", "error", fallback)
     if registered is None:
         logger.warning("Selected approval transport %r is unavailable", name)
         return _attempt(name, "deny", "unavailable", fallback)
@@ -222,7 +222,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         from agent.redact import redact_approval_display
         from hermes_cli.approval_transport import ApprovalRequest, invoke_approval_transport
 
-        timeout_seconds = _ctx._get_approval_timeout()
+        timeout_seconds = _ctx._get_approval_transport_timeout()
         request = ApprovalRequest.create(
             command=redact_approval_display(command, force=True),
             description=redact_approval_display(description, force=True), pattern_key=pattern_key,
@@ -242,7 +242,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
     _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
     from tools.human_input_hooks import human_input_request
     with human_input_request("approval", prompt=request.command, session_key=session_key) as human, \
-            human_wait_window(session_key):
+            human_wait_window(session_key, timeout_seconds=timeout_seconds):
         result = invoke_approval_transport(
             registered.present, request, timeout_seconds=timeout_seconds,
             on_poll=activity_heartbeat("waiting for plugin approval transport"),

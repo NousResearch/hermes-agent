@@ -7,6 +7,7 @@ through ``hermes_cli.plugins`` so tests that patch them on the origin keep worki
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import importlib
@@ -64,6 +65,13 @@ def in_plugin_load_worker() -> bool:
     return _IN_PLUGIN_LOAD.get() is not None
 
 
+def _bind_context_task_loop(ctx: "PluginContext", loop: asyncio.AbstractEventLoop | None) -> None:
+    """Bind real PluginContexts while keeping deadline probes/fakes lightweight."""
+    bind = getattr(ctx, "_bind_task_loop", None)
+    if callable(bind):
+        bind(loop)
+
+
 def _resolve_plugin_load_timeout() -> float:
     """Effective per-plugin load deadline from ``plugins.load_timeout_seconds`` (default 10s; ``0`` runs
     loads inline with no deadline; clamped to ``_MAX_LOAD_TIMEOUT_SECS``)."""
@@ -114,11 +122,21 @@ def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[],
     # Re-entrant load on our own deadline worker: run inline; the outer deadline covers it.
     outer_scope = _IN_PLUGIN_LOAD.get()
     if outer_scope is not None:
+        # Nested discovery is already on the outer deadline worker. Carry the loop captured by the
+        # original host thread so a nested plugin gets the same lifecycle owner.
+        _bind_context_task_loop(ctx, getattr(outer_scope[0], "_task_loop", None))
         outer_scope.append(ctx)
         try:
             return fn()
         finally:
             outer_scope.remove(ctx)
+    try:
+        host_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        host_loop = None
+    # Capture before the offload: register() runs on a bounded worker with no running loop, while
+    # plugin background work must remain owned by the gateway/main loop.
+    _bind_context_task_loop(ctx, host_loop)
     timeout = _resolve_plugin_load_timeout()
     if timeout <= 0:
         return fn()

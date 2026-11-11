@@ -11,7 +11,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from tools import approval_context, approval_prompt
+from tools import approval_context, approval_human_wait, approval_prompt
 
 
 def _manifest(name: str = "fixture-approval") -> PluginManifest:
@@ -179,6 +179,20 @@ def test_host_timeout_and_exception_deny_without_waiting_forever():
     assert time.monotonic() - started < 0.5
     assert (timeout.choice, timeout.failure) == ("deny", "timeout")
     assert (exception.choice, exception.failure) == ("deny", "error")
+
+
+def test_host_reports_typed_decline_distinctly_from_error():
+    from hermes_cli.approval_transport import ApprovalTransportDeclined, invoke_approval_transport
+
+    def declines(_request):
+        raise ApprovalTransportDeclined("not for this worker")
+
+    async def declines_async(_request):
+        raise ApprovalTransportDeclined("not for this worker")
+
+    for present in (declines, declines_async):
+        result = invoke_approval_transport(present, _request(), timeout_seconds=1)
+        assert (result.choice, result.failure) == ("deny", "declined")
 
 
 def test_host_transport_wait_is_interruptible_and_pollable():
@@ -368,7 +382,7 @@ def test_transport_failure_denies_without_builtin_fallback(monkeypatch):
     assert builtin_calls == []
 
 
-def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, caplog):
+def test_transport_resolution_error_fails_closed_without_logging_plugin_exception(monkeypatch, caplog):
     from tools import approval
 
     monkeypatch.setattr(
@@ -392,7 +406,7 @@ def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, c
     )
 
     assert result["choice"] == "deny"
-    assert result["failure"] == "unavailable"
+    assert result["failure"] == "error"
     assert "plugin-owned-secret-value" not in caplog.text
 
 
@@ -438,6 +452,159 @@ def test_explicit_builtin_fallback_uses_existing_surface(monkeypatch):
 
     assert result["approved"] is True
     assert builtin_calls == [1]
+
+
+def test_selected_transport_uses_explicit_longer_timeout_for_request_and_invoke(monkeypatch):
+    import hermes_cli.approval_transport as transport_module
+
+    manager = PluginManager()
+    _context(manager).register_approval_transport("phone", lambda request: request.respond("once"))
+    monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_config", lambda: ("phone", None))
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_timeout", lambda: 3_600)
+    seen = {}
+
+    def invoke(present, request, *, timeout_seconds, **kwargs):
+        seen["request_timeout"] = request.timeout_seconds
+        seen["invoke_timeout"] = timeout_seconds
+        seen["wait_ceiling"] = approval_human_wait._human_wait_states["session-a"].window_ceiling
+        return transport_module.ApprovalTransportResult("once")
+
+    monkeypatch.setattr(transport_module, "invoke_approval_transport", invoke)
+
+    result = approval_prompt._present_with_selected_transport(
+        command="rm -rf /tmp/example",
+        description="dangerous",
+        pattern_key="rm_recursive",
+        pattern_keys=["rm_recursive"],
+        session_key="session-a",
+        surface="gateway",
+        allow_session=True,
+        allow_permanent=True,
+    )
+
+    assert result["choice"] == "once"
+    assert seen == {
+        "request_timeout": 3_600,
+        "invoke_timeout": 3_600,
+        "wait_ceiling": 3_660,
+    }
+
+
+def test_builtin_fallback_keeps_normal_prompt_timeout(monkeypatch):
+    from tools import approval
+
+    manager = PluginManager()
+    transport_requests = []
+    _context(manager).register_approval_transport(
+        "phone", lambda request: transport_requests.append(request) or {"choice": "invalid"}
+    )
+    _configure_manual_guard(monkeypatch, approval, manager, fallback="builtin")
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_timeout", lambda: 3_600)
+    builtin_timeouts = []
+    builtin_wait_ceilings = []
+    monkeypatch.setattr(
+        approval_prompt,
+        "_ask_human",
+        lambda command, description, timeout_seconds, *args, **kwargs:
+            builtin_timeouts.append(timeout_seconds)
+            or builtin_wait_ceilings.append(
+                approval_human_wait._human_wait_states[
+                    approval_context.get_current_session_key()
+                ].window_ceiling
+            )
+            or "once",
+    )
+
+    result = approval.check_all_command_guards("rm -rf /tmp/example", "local")
+
+    assert result["approved"] is True
+    assert transport_requests[0].timeout_seconds == 3_600
+    assert builtin_timeouts == [300]
+    assert builtin_wait_ceilings == [360]
+
+
+def test_interrupted_long_transport_closes_custom_human_wait_window(monkeypatch):
+    manager = PluginManager()
+    release = threading.Event()
+    _context(manager).register_approval_transport(
+        "phone", lambda request: release.wait(timeout=5) or request.respond("deny")
+    )
+    monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(approval_context, "_get_approval_transport_config", lambda: ("phone", None))
+    monkeypatch.setattr(approval_context, "_get_approval_transport_timeout", lambda: 3_600)
+    monkeypatch.setattr(approval_prompt, "is_interrupted", lambda: True)
+
+    try:
+        result = approval_prompt._present_with_selected_transport(
+            command="rm -rf /tmp/example",
+            description="dangerous",
+            pattern_key="rm_recursive",
+            pattern_keys=["rm_recursive"],
+            session_key="cancel-session",
+            surface="gateway",
+            allow_session=True,
+            allow_permanent=True,
+        )
+    finally:
+        release.set()
+
+    assert result["failure"] == "interrupted"
+    state = approval_human_wait._human_wait_states["cancel-session"]
+    assert state.pending == 0
+    assert state.window_started is None
+
+
+@pytest.mark.parametrize(
+    ("transport_config", "expected"),
+    [({}, 300), ({"transport_timeout": 3_600}, 3_600)],
+)
+def test_transport_timeout_defaults_to_normal_or_accepts_longer_integer(
+    monkeypatch, transport_config, expected
+):
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"security": {"approval": transport_config}},
+    )
+
+    assert approval_context._get_approval_transport_timeout() == expected
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [-1, 0, True, "forever", float("nan"), float("inf")],
+)
+def test_malformed_transport_timeout_falls_back_to_normal_prompt_timeout(monkeypatch, configured):
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"security": {"approval": {"transport_timeout": configured}}},
+    )
+
+    assert approval_context._get_approval_transport_timeout() == 300
+
+
+def test_oversized_transport_timeout_falls_back_to_normal_prompt_timeout(monkeypatch):
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+    import hermes_cli.config as config_module
+
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 300)
+    monkeypatch.setattr(
+        config_module,
+        "load_config_readonly",
+        lambda: {"security": {"approval": {"transport_timeout": int(MAX_SAFE_TIMEOUT_S) + 1}}},
+    )
+
+    assert approval_context._get_approval_transport_timeout() == 300
 
 
 def test_live_temp_home_fixture_plugin_routes_and_hardline_stays_core_owned(

@@ -1,6 +1,6 @@
 name: vellum
 repo: https://github.com/0xsaltylollipop/vellum
-sha: 8de4363f0d66be6e5f135d9e8e4c351e476a0c49
+sha: 8fda33600c3b04436340fdc6c39bbce2b7633d5b
 description: >-
   Vellum: Hermes draws inside the paper. Highlight a passage in an arXiv paper (HTML version) in Hermes's browser
   and your own Hermes session gives you the gist like a friend at a whiteboard, talking while it sketches a live,
@@ -31,5 +31,11 @@ capabilities:
   provides_hooks: [pre_llm_call, pre_tool_call, on_stream_delta, on_stream_end, post_llm_call]
   provides_middleware: []
   requires_env: []
+image: https://raw.githubusercontent.com/0xsaltylollipop/vellum/27d1757ad821f2d200682b5838541c155a1ad16f/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/a2019ed0b5545f113102b31cd083dfccecc5945e/demo.gif
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/27d1757ad821f2d200682b5838541c155a1ad16f/demo.webp
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/27d1757ad821f2d200682b5838541c155a1ad16f/screenshots/1-attention.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/27d1757ad821f2d200682b5838541c155a1ad16f/screenshots/2-multi-head.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/27d1757ad821f2d200682b5838541c155a1ad16f/screenshots/3-positional-encoding.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/27d1757ad821f2d200682b5838541c155a1ad16f/screenshots/4-scaling-laws.jpg
+  - https://raw.githubusercontent.com/0xsaltylollipop/vellum/27d1757ad821f2d200682b5838541c155a1ad16f/screenshots/5-grpo.jpg

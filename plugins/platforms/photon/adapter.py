@@ -977,6 +977,8 @@ class PhotonAdapter(BasePlatformAdapter):
                     os.remove(path)
             logger.debug("[photon] ignoring group voice note (require_mention=true, no wake word spoken)")
             return
+        if spoken:  # speech admitted it: a DOCUMENT-first envelope must still send its audio to STT
+            mtype = MessageType.VOICE
         if gated:
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)

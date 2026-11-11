@@ -496,6 +496,12 @@ TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
 
 A contact card or location pin you share with the bot reaches the agent as a short text block (name, phone number and vCard for a contact; coordinates and venue for a location), so the agent can act on it.
 
+A **live location** reaches the agent once, when you start sharing it. Telegram then refreshes the position every few seconds to a minute, for as long as the share runs. A refresh becomes a new message to the agent only after you have moved about 75 m from the last position it was told about, or after 15 minutes at the same spot. GPS jitter while you stand still never starts a turn. A static pin (or a venue) always reaches the agent, even when you send the same spot twice.
+
+## Stickers
+
+A static sticker reaches the agent as a short text note: its emoji, its pack name, and a one-to-two-sentence description written by your vision model (`auxiliary.vision`, which defaults to the main model). The description is cached per sticker (by Telegram's `file_unique_id`) in `sticker_cache.json` under the profile's Hermes home, so sending the same sticker again costs no vision call. If the vision call fails, the note falls back to the emoji alone. Animated and video stickers are not analyzed: the agent gets a note with their emoji only.
+
 ## Voice Messages
 
 ### Incoming Voice (Speech-to-Text)

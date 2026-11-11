@@ -539,16 +539,99 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
+def _entry_tail(container, key):
+    """``(node, key, slot)`` of the comment that ends *container[key]*: its deepest last entry.
+    ruamel stores the lines that follow an entry (blank lines, the next section's banner, the
+    next key's description) in that same token, after the entry's own end-of-line comment."""
+    value = container[key]
+    while isinstance(value, (dict, list)) and value and hasattr(value, "ca"):
+        container, key = value, (next(reversed(value)) if isinstance(value, dict) else len(value) - 1)
+        value = container[key]
+    return container, key, 2 if isinstance(container, dict) else 0
+
+
+def _take_following(container, key) -> str:
+    """Detach and return the lines after *container[key]*; its own end-of-line comment stays."""
+    node, k, slot = _entry_tail(container, key)
+    slots = node.ca.items.get(k)
+    token = slots[slot] if slots else None
+    if token is None:
+        return ""
+    own, _, rest = token.value.partition("\n")
+    if rest:
+        if own.strip():
+            token.value = own + "\n"
+        else:
+            slots[slot] = None
+            leaf = node[k]
+            if hasattr(leaf, "ca") and leaf.ca.comment and leaf.ca.comment[0] is token:
+                leaf.ca.comment[0] = None
+    return rest
+
+
+def _give_following(container, key, rest: str) -> None:
+    """Re-attach lines taken by :func:`_take_following` after *container[key]*."""
+    if not rest:
+        return
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    node, k, slot = _entry_tail(container, key)
+    slots = node.ca.items.setdefault(k, [None, None, None, None])
+    token = slots[slot]
+    if token is None:
+        slots[slot] = CommentToken("\n" + rest, CommentMark(0), None)
+    else:
+        token.value = token.value + ("" if token.value.endswith("\n") else "\n") + rest
+
+
+def _rt_remove(container, key) -> str:
+    """Remove ``container[key]``; the lines that followed it move to the previous sibling,
+    or to the next sibling's pre-key comment slot when removing the first key."""
+    rest = _take_following(container, key)
+    keys = list(container) if isinstance(container, dict) else list(range(len(container)))
+    idx = keys.index(key)
+    del container[key]
+    if isinstance(container, dict):
+        container.ca.items.pop(key, None)
+    if not rest:
+        return ""
+    if idx > 0:
+        _give_following(container, keys[idx - 1], rest)
+        return ""
+    if container and isinstance(container, dict):
+        from ruamel.yaml.error import CommentMark
+        from ruamel.yaml.tokens import CommentToken
+
+        nxt = next(iter(container))
+        slots = container.ca.items.setdefault(nxt, [None, None, None, None])
+        slots[1] = [CommentToken(rest, CommentMark(0), None)] + (slots[1] or [])
+        return ""
+    return rest
+
+
 def _rt_assign(container, key, value) -> None:
     """``container[key] = value`` in a round-trip tree. Comment lines between a mapping key and
     its block entries have nothing to precede once the value is an empty ``[]``/``{}``: ruamel
     still writes them, puts the empty collection on its own line and loses the line break before
     a later key. Drop them, as ruamel already does when the new value is a scalar. (A list item
-    keeps its own ``-  # note`` in that slot, and an emptied item dumps fine, so lists are left.)"""
+    keeps its own ``-  # note`` in that slot, and an emptied item dumps fine, so lists are left.)
+    The lines that *followed* the old value (or the old last key when appending a new key) are
+    the next section's banner/description, so they move onto the new tail instead of being dropped
+    or stranded inside an expanded collection."""
+    if key in container or isinstance(container, list):
+        rest = _take_following(container, key)
+    elif container:
+        rest = _take_following(container, next(reversed(container)))
+    else:
+        rest = ""
+    if isinstance(value, (dict, list)) and not hasattr(value, "ca"):
+        value = _rt_value(value)
     container[key] = value
     slots = container.ca.items.get(key)
     if slots and isinstance(container, dict) and isinstance(value, (dict, list)) and not value:
         slots[3] = None
+    _give_following(container, key, rest)
 
 
 def _same_yaml_data(a: Any, b: Any) -> bool:
@@ -622,6 +705,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
     yaml_rt, config = _roundtrip_load(path)
     current = config
     parent = parent_key = None
+    moved = ""
     keys = _split_key_path(key_path)
     i = 0
     while True:
@@ -629,18 +713,24 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
         seg, consumed = _greedy_literal_match(dict(current), remaining) or (remaining[0], 1)
         if i + consumed == len(keys):
             if value is None:
-                current.pop(seg, None)
+                rest = _rt_remove(current, seg) if seg in current else ""
                 if not current and parent is not None:
                     # Removing the last child empties the parent in place, which dumps as
                     # ``key:  # note`` / ``{}`` at column 0 (#148524); a fresh node keeps it valid.
                     _rt_assign(parent, parent_key, CommentedMap())
+                    _give_following(parent, parent_key, rest)
             else:
                 _rt_assign(current, seg, value)
+                _give_following(current, seg, moved)
             break
         next_value = current.get(seg)
-        if not isinstance(next_value, CommentedMap):
+        if not isinstance(next_value, CommentedMap) or not next_value:
             if value is None:
-                return  # nothing to remove under a missing/scalar parent
+                return  # nothing to remove under a missing/scalar/empty parent
+            if seg in current:
+                moved += _take_following(current, seg)
+            elif current:
+                moved += _take_following(current, next(reversed(current)))
             next_value = CommentedMap()
             current[seg] = next_value
         parent, parent_key = current, seg
@@ -705,12 +795,14 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
 
     def _merge_seq(dst: CommentedSeq, src: list) -> None:
         # Element-wise so appending/editing one entry keeps the comments on its siblings.
+        rest = _take_following(dst, len(dst) - 1) if len(src) != len(dst) else ""
         for i, value in enumerate(src):
             if i < len(dst):
                 _merge_item(dst, i, value)
             else:
                 dst.append(_rt_value(value))
         del dst[len(src):]
+        _give_following(dst, len(src) - 1, rest)
 
     def _merge_item(dst, key, value) -> None:
         current = dst[key]
@@ -731,9 +823,9 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
             if key in dst:
                 _merge_item(dst, key, value)
             else:
-                dst[key] = _rt_value(value)
+                _rt_assign(dst, key, _rt_value(value))
         for key in [k for k in dst if k not in src]:
-            del dst[key]
+            _rt_remove(dst, key)
 
     _merge(existing, new_state)
     _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)

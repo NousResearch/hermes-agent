@@ -89,19 +89,69 @@ async def test_overflow_edit_split_leaves_literal_markers_and_a_final_backslash_
     assert shown.count("*") == 1 and shown.endswith("C:\\"), shown[-30:]
 
 
-def test_raw_split_of_a_long_reply_with_many_escapes_stays_linear():
+def _scanned_chars(monkeypatch, content: str) -> tuple[int, list[str], list[str]]:
+    """Characters the raw split's emphasis tokenizer reads to split *content* (work done, not time)."""
+    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+    from plugins.platforms.telegram import telegram_chunking
+
+    scanned = [0]
+    tokens = telegram_chunking._raw_emphasis_tokens
+
+    def counting(text):
+        scanned[0] += len(text)
+        return tokens(text)
+
+    monkeypatch.setattr(telegram_chunking, "_raw_emphasis_tokens", counting)
+    raw, carried = telegram_chunking.split_raw_carrying_emphasis(
+        content, 4096, BasePlatformAdapter.truncate_message, utf16_len)
+    return scanned[0], raw, carried
+
+
+def test_raw_split_of_a_long_reply_with_many_escapes_stays_linear(monkeypatch):
     """A long streamed reply full of escaped ``\\*`` must not rescan the rest of the message at every
-    boundary or re-copy its prefix at every marker: that ran seconds on the gateway's event loop."""
-    import time
-
-    from gateway.platforms.base import BasePlatformAdapter
-    from plugins.platforms.telegram.telegram_chunking import split_raw_carrying_emphasis
-
+    boundary: that ran seconds on the gateway's event loop. Counted in characters read, not seconds."""
     content = ("word \\\\\\*x " * 40 + "plain words " * 200 + "\n") * 160
-    started = time.perf_counter()
-    raw, carried = split_raw_carrying_emphasis(content, 4096, BasePlatformAdapter.truncate_message, len)
+    scanned, raw, carried = _scanned_chars(monkeypatch, content)
     assert len(raw) > 50 and carried == raw
-    assert time.perf_counter() - started < 1.0
+    assert scanned <= 2 * len(content), (scanned, len(content))
+
+
+def test_raw_split_of_one_huge_bold_paragraph_reads_it_a_bounded_number_of_times(monkeypatch):
+    """One bold paragraph cut into dozens of chunks keeps the bold on each, and the carry finds the
+    closing ``**`` once instead of re-reading the remaining reply at every cut."""
+    content = "**" + "word \\* " * 20000 + "end**"
+    scanned, raw, carried = _scanned_chars(monkeypatch, content)
+    assert len(raw) > 30 and all(chunk.startswith("**") for chunk in carried)
+    assert scanned <= 3 * len(content), (scanned, len(content))
+
+
+@pytest.mark.asyncio
+async def test_overflow_edit_split_never_adds_markers_the_reply_does_not_have():
+    """``format_message`` shows ``_..._`` as literal underscores, so closing and reopening ``_`` at a
+    cut added two underscores the reply never had; ``***x***`` keeps bold-italic on both halves."""
+    for wrapper, styled in (("_", ""), ("***", "_*")):
+        bot = _BotApi()
+        content = wrapper + "word " * 1200 + "done" + wrapper
+        result = await _adapter(bot)._edit_overflow_split("4242", "99", content, finalize=True)
+        assert result.success and len(bot.calls) == 2
+        bodies = [re.sub(r" \\\(\d+/\d+\\\)$", "", text) for _, text in bot.calls]
+        visible = " ".join(re.sub(r"\\(.)|[*_]", lambda m: m.group(1) or "", body) for body in bodies)
+        assert visible == (content if wrapper == "_" else content.strip("*")), visible[:12] + visible[-12:]
+        assert all(body.startswith(styled) and body.endswith(styled[::-1]) for body in bodies)
+
+
+@pytest.mark.asyncio
+async def test_overflow_edit_split_chunks_stay_within_telegram_limit_once_escaped():
+    """The overflow edit cuts raw text and formats each chunk after: a reply dense in ``.``/``-``/``!``
+    grows past 4,096 units once MarkdownV2-escaped, and Telegram refuses an over-long message."""
+    from gateway.platforms.base import utf16_len
+
+    bot = _BotApi()
+    content = "**" + "a.b-c! " * 1500 + "**"
+    result = await _adapter(bot)._edit_overflow_split("4242", "99", content, finalize=True)
+    assert result.success and len(bot.calls) > 2
+    assert max(utf16_len(text) for _, text in bot.calls) <= 4096
+    assert all(mode == "MarkdownV2" for mode, _ in bot.calls)
 
 
 def _strip(text: str) -> str:

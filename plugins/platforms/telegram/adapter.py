@@ -3754,7 +3754,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Split an oversized edit across the existing message + continuations: edit ``message_id`` with
         chunk 1, send the rest as replies to the previous chunk, return ``message_id=<last-chunk-id>`` so
         the consumer keeps editing the newest message. ``success=False`` only if the first-chunk edit fails."""
-        raw_chunks, chunks = split_raw_carrying_emphasis(content, self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len)
+        raw_chunks, chunks = split_raw_carrying_emphasis(
+            content, self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len,
+            formatted_len=(lambda chunk: utf16_len(self.format_message(chunk))) if finalize else None)
         if len(chunks) <= 1:
             chunks = [content]  # defensive: a single chunk just edits normally
         first_chunk = chunks[0]

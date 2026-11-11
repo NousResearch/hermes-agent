@@ -1,7 +1,7 @@
 name: innerscape
 title: Innerscape
 repo: https://github.com/KyaniteLabs/Innerscape
-sha: 82f88c84ef9ac141dde91e8ec36bb717f7a768f2
+sha: 709dc6a5ad77f8dd99a4e58e43bf2e450143ce8d
 subdir: plugins/innerscape-hermes
 description: >-
   Gentle check-ins, journaling and an Unstuck Coach with your own Innerscape server: save a
@@ -21,7 +21,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.6"
 version: "0.3.0"
-docs_url: https://github.com/KyaniteLabs/Innerscape/blob/82f88c84ef9ac141dde91e8ec36bb717f7a768f2/plugins/innerscape-hermes/README.md
+docs_url: https://github.com/KyaniteLabs/Innerscape/blob/709dc6a5ad77f8dd99a4e58e43bf2e450143ce8d/plugins/innerscape-hermes/README.md
 readme: true
 platforms: [linux]
 known_issues:

@@ -466,14 +466,19 @@ class StreamTransportMixin:
         stream_is_msg = self._stream_is_message()
         if finalize and not (stream_is_msg and not is_turn_final):
             return None
+        # An adapter that previews drafts as raw text (Telegram ``plain_drafts``) gets the
+        # pre-fence text too: a synthetic closing fence would make each frame a non-prefix.
         preserve_prefix = stream_is_msg or (
-            getattr(type(self.adapter), "DRAFT_STREAM_PREFIX_STABLE", False) is True)
-        frame_text = pre_fence_text if preserve_prefix else text
-        # Strip the cursor: native streams render their own indicator, and
-        # "...text▉" is never a prefix of "...text more▉", which forces the
-        # connector's whole-text re-append on EVERY tick (stacked copies).
+            getattr(self.adapter, "DRAFT_STREAM_PREFIX_STABLE", False) is True)
+        # Strip the cursor BEFORE any display fence closes: native streams render their own
+        # indicator, and "...text▉" is never a prefix of "...text more▉", which forces the
+        # connector's whole-text re-append on EVERY tick (stacked copies). Inside an open code
+        # block the closed text ends in the fence, so a later strip left the cursor in the frame.
+        frame_text = pre_fence_text
         if self.cfg.cursor and frame_text.endswith(self.cfg.cursor):
             frame_text = frame_text[: -len(self.cfg.cursor)]
+        if not preserve_prefix and text != pre_fence_text:
+            frame_text = ensure_closed_code_fences(frame_text)
         if frame_text == self._last_sent_text:
             return True
         # Deliberately NOT _already_sent on success: the gateway's fallback final

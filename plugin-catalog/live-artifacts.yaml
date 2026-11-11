@@ -1,6 +1,6 @@
 name: live-artifacts
 repo: https://github.com/mindsocket/hermes-live-artifacts
-sha: 7ace4fdfc3388b642298779f6c48e17fdd417958
+sha: a5f163e9f403053c3b3886557ca8d84fda5e8fae
 subdir: plugin
 title: Live Artifacts
 description: Create and use interactive artifacts - pages, designs and dashboards - in your sessions.
@@ -11,9 +11,9 @@ requires_hermes: ">=0.21.5"
 docs_url: https://github.com/mindsocket/hermes-live-artifacts#readme
 version: "0.1.0"
 screenshots:
-  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/7ace4fdfc3388b642298779f6c48e17fdd417958/docs/screenshots/review-page.png
-  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/7ace4fdfc3388b642298779f6c48e17fdd417958/docs/screenshots/dashboard.png
-  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/7ace4fdfc3388b642298779f6c48e17fdd417958/docs/screenshots/chat-send.png
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/a5f163e9f403053c3b3886557ca8d84fda5e8fae/docs/screenshots/review-page.png
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/a5f163e9f403053c3b3886557ca8d84fda5e8fae/docs/screenshots/dashboard.png
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/a5f163e9f403053c3b3886557ca8d84fda5e8fae/docs/screenshots/chat-send.png
 platforms: [macos, linux]
 known_issues:
   - "Access to a page is by possession of its link, with no sign-in. Keep the listener on loopback or a private network such as a tailnet."

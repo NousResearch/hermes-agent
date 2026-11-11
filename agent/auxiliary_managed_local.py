@@ -1,4 +1,4 @@
-"""Which endpoint is the llama-server this Hermes manages (sibling of ``auxiliary_client``)."""
+"""Which endpoint is the llama-server this Unitalk manages (sibling of ``auxiliary_client``)."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _managed_local_netloc() -> str:
 
 
 def _is_managed_local_endpoint(base_url: Optional[str]) -> bool:
-    """True when *base_url* targets the llama-server this Hermes manages."""
+    """True when *base_url* targets the llama-server this Unitalk manages."""
     if not base_url:
         return False
     managed = _managed_local_netloc()

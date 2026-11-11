@@ -49,6 +49,16 @@ def test_long_row_and_pipeless_table_split_between_rows_with_header():
     chunks = BasePlatformAdapter.truncate_message(content, 2000)
     assert any(long_row in _body(c).split("\n") for c in chunks), [c[-60:] for c in chunks]
 
+    # Same row after a table already split once: the next chunk's header comes from the carried
+    # prefix, never from the text being split, and the row still moves whole.
+    many_short = "\n".join(f"| s{i} | v |" for i in range(200))
+    content = "Intro\n\n" + HEADER + "\n" + many_short + "\n" + long_row + "\n| tail | end |"
+    chunks = BasePlatformAdapter.truncate_message(content, 2000)
+    assert len(chunks) > 2
+    assert any(long_row in _body(c).split("\n") for c in chunks), [c[-60:] for c in chunks]
+    for chunk in chunks[1:]:
+        assert _body(chunk).split("\n")[2].startswith("| "), chunk[:80]  # a row, not a cut fragment
+
     pipeless_header = "name | value\n--- | ---"
     rows = [f"row{i} | {'y' * 40}" for i in range(120)]
     chunks = BasePlatformAdapter.truncate_message("Results:\n\n" + pipeless_header + "\n" + "\n".join(rows), 2000)

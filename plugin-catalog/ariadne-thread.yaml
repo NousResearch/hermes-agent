@@ -1,19 +1,19 @@
 name: ariadne-thread
 repo: https://github.com/benoit-dev/ariadne-thread
-sha: 537610b5363d330ab82ad291ba3354484eb964d3
+sha: a4ca623e7fe45d5b09e1c313b4f90077b00434de
 title: "Ariadne's Thread"
-description: "n8n-style flows for Hermes Desktop: each cron job, webhook route and skill drawn as a chain of steps, with the scheduler's true cron status, run output, delivery targets and a health bar, plus in-place editing with history and undo. Desktop page plus a dashboard API router; no tools, hooks, middleware or env vars. Disclosure — reads cron/jobs.json, cron/output/<job id>/, webhook_subscriptions.json, every SKILL.md under skills/ and skills.external_dirs, config.yaml (external_dirs only), a script in scripts/ when opened, profiles/ folder names and the gateway channel directory; resolving delivery targets runs Hermes' scheduler code, which reads <PLATFORM>_HOME_CHANNEL values (inside another profile's secret scope when that profile is picked); webhook secrets are never sent to the UI. Writes only on Save, in the active profile only: SKILL.md (atomic, inside skills/ only), files in scripts/, a cron's prompt and deliver through cron.jobs, a webhook prompt through Hermes' webhook store (secret kept); each save first stores the replaced text under plugin-data/ariadne-thread/history (0600, newest 10 per target) and is refused if the file changed since it was opened. Ask agent only drafts a new chat; nothing runs until you send it. No cron runs, no shell commands, no processes, no network beyond the local Hermes backend, no credentials, no telemetry, no self-update. Uses private Hermes core imports (cron.jobs, cron.scheduler_delivery, gateway.channel_directory, hermes_cli.webhook, hermes_cli.web_server_profiles), listed in docs/risk-audit.md."
+description: "n8n-style flows for Hermes Desktop: each cron job, webhook route and skill drawn as a chain of steps, with the scheduler's true cron status, run output, delivery targets and a health bar, plus in-place editing with history and undo. Desktop page plus a dashboard API router; no tools, hooks, middleware or env vars. Disclosure — reads cron/jobs.json, cron/output/<job id>/, every SKILL.md under skills/ and skills.external_dirs, config.yaml (external_dirs only), a script in scripts/ when opened, and profiles/ folder names; reads webhook routes and cron delivery targets from Hermes' own GET /api/webhooks and GET /api/cron/delivery-targets through the raw window.hermesDesktop.api bridge (the plugin SDK has no route to core endpoints), so it never opens webhook_subscriptions.json or enters a profile's secret scope. Writes only on Save, in the active profile only: SKILL.md (atomic, inside skills/ only), files in scripts/, a cron's prompt and deliver through cron.jobs.update_job; each save first stores the replaced text under plugin-data/ariadne-thread/history (0600, newest 10 per target) and is refused if the file changed since it was opened. Webhook prompts are read-only. Ask agent only drafts a new chat; nothing runs until you send it. No cron runs, no shell commands, no processes, no network beyond the local Hermes backend, no credentials, no telemetry, no self-update. Imports cron.jobs (get_job, update_job), listed in docs/risk-audit.md."
 maintainer: benoit-dev
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/benoit-dev/ariadne-thread/blob/537610b5363d330ab82ad291ba3354484eb964d3/README.md
-version: "0.2.1"
-image: "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/537610b5363d330ab82ad291ba3354484eb964d3/docs/banner.png"
+docs_url: https://github.com/benoit-dev/ariadne-thread/blob/a4ca623e7fe45d5b09e1c313b4f90077b00434de/README.md
+version: "0.2.2"
+image: "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/537610b5363d330ab82ad291ba3354484eb964d3/docs/crons.png"
-  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/537610b5363d330ab82ad291ba3354484eb964d3/docs/skill-flow.png"
-  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/537610b5363d330ab82ad291ba3354484eb964d3/docs/webhook-flow.png"
+  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/crons.png"
+  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/skill-flow.png"
+  - "https://raw.githubusercontent.com/benoit-dev/ariadne-thread/a4ca623e7fe45d5b09e1c313b4f90077b00434de/docs/webhook-flow.png"
 readme: true
 platforms: []
 capabilities:

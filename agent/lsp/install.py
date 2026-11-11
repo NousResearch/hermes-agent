@@ -239,6 +239,8 @@ def _node_package_manager() -> Optional[str]:
 def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> Optional[str]:
     """Install with the configured Node package manager into ``<staging>`` and link
     ``node_modules/.bin/<bin_name>`` into ``lsp/bin/``."""
+    import pm as pm_store
+
     pm = _node_package_manager()
     if pm is None:
         return None
@@ -246,8 +248,6 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     pm_bin = find_node_executable(pm)
     if pm_bin is None and pm == "npm":
         try:
-            import pm as pm_store
-
             pm_store.ensure("npm")
             pm_bin = find_node_executable("npm")
         except Exception as exc:
@@ -258,13 +258,23 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
         logger.warning("[install] cannot install %s: lsp.package_manager is %r but no usable %s was found "
                        "(install it, or set lsp.package_manager: npm)", pkg, pm, pm)
         return None
+    from tools.environments.local import hermes_subprocess_env
+
+    try:
+        env = with_hermes_node_path(hermes_subprocess_env(), for_subprocess=pm == "npm")
+        if pm == "npm":
+            pm_bin = shutil.which("npm.cmd" if _is_windows() else "npm", path=env.get("PATH", ""))
+            if pm_bin is None:
+                raise pm_store.InstallError("npm", "npm is missing from the prepared PM environment")
+    except (pm_store.InstallError, OSError) as exc:
+        logger.warning("[install] cannot prepare %s for %s: %s", pm, pkg, exc)
+        return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
     cmd = [pm_bin, *_NODE_PM_ARGV[pm](str(staging)), *install_targets]
     logger.info("[install] %s %s", pm, " ".join(cmd[1:]))
-    from tools.environments.local import hermes_subprocess_env
     # Package install scripts are third-party code: scrubbed env, never Hermes' credentials.
-    if not _run_installer(pm, pkg, cmd, timeout=300, env=with_hermes_node_path(hermes_subprocess_env())):
+    if not _run_installer(pm, pkg, cmd, timeout=300, env=env):
         return None
     found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
     if found is not None:

@@ -136,6 +136,14 @@ def setup_path(request, tmp_path, monkeypatch):
             if name == "photon_cli"
             else module._reinstall_sidecar_deps
         )
+    if name == "lsp_npm":
+        from agent.lsp import install as lsp_install
+
+        monkeypatch.setattr(lsp_install, "_node_package_manager", lambda: "npm")
+        monkeypatch.setattr(lsp_install, "hermes_lsp_bin_dir", lambda: bridge / "bin")
+        return lambda: lsp_install._install_npm(
+            "synthetic-language-server", "synthetic-lsp"
+        )
     from pm.workspace import install_node_sidecar
 
     return lambda: install_node_sidecar(bridge, explicit=True)
@@ -148,6 +156,7 @@ SETUP_PATHS = [
     "photon_gateway",
     "photon_cli",
     "plugin_sidecar",
+    "lsp_npm",
 ]
 
 
@@ -175,15 +184,23 @@ def test_setup_entry_points_use_writable_paired_context(
     assert calls
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        InstallError("node", "synthetic copy refusal"),
+        PermissionError(13, "synthetic copy refusal"),
+    ],
+    ids=["install-error", "os-error"],
+)
 @pytest.mark.parametrize("setup_path", SETUP_PATHS, indirect=True)
 def test_setup_reports_copy_failure_before_launching_npm(
-    packaged_tools, setup_path, monkeypatch, capsys, caplog
+    packaged_tools, setup_path, failure, monkeypatch, capsys, caplog
 ):
     from fastapi import HTTPException
     from pm import user_facing
 
     def refused(*args, **kwargs):
-        raise InstallError("node", "synthetic copy refusal")
+        raise failure
 
     monkeypatch.setattr(user_facing, "writable_copy", refused)
     run = Mock(side_effect=AssertionError("must not launch npm after copy refusal"))
@@ -198,3 +215,42 @@ def test_setup_reports_copy_failure_before_launching_npm(
         in str(result) + captured.out + captured.err + caplog.text
     )
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("setup_path", ["lsp_npm"], indirect=True)
+def test_lsp_automatic_setup_obeys_disabled_lazy_copies(
+    packaged_tools, setup_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: False)
+    run = Mock(
+        side_effect=AssertionError(
+            "automatic LSP setup must respect disabled lazy copies"
+        )
+    )
+    monkeypatch.setattr("subprocess.run", run)
+    assert setup_path() is None
+    assert "lazy installs are disabled" in caplog.text
+    assert not packaged_tools.writable.exists()
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize("manager", ["pnpm", "yarn"])
+@pytest.mark.parametrize("setup_path", ["lsp_npm"], indirect=True)
+def test_lsp_preserves_selected_external_package_manager(
+    packaged_tools, setup_path, manager, tmp_path, monkeypatch
+):
+    from agent.lsp import install as lsp_install
+
+    executable = tmp_path / f"{manager}.cmd"
+    executable.write_text("", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(lsp_install, "_node_package_manager", lambda: manager)
+    calls = []
+
+    def install(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", install)
+    setup_path()
+    assert calls[0][0] == str(executable)

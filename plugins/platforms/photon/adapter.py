@@ -308,7 +308,7 @@ def _reinstall_sidecar_deps() -> None:
         npm = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
         if npm is None:
             raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
-    except pm.InstallError as exc:
+    except (pm.InstallError, OSError) as exc:
         logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows

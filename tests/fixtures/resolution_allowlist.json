@@ -30,6 +30,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "agent/lsp/install.py",
+    "symbol": "_install_npm",
+    "kind": "bare_which"
+  },
+  {
     "path": "agent/lsp/servers.py",
     "symbol": "_which",
     "kind": "bare_which"

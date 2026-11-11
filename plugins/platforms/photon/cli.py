@@ -369,7 +369,7 @@ def _install_sidecar() -> int:
         npm = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
         if npm is None:
             raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
-    except pm.InstallError as exc:
+    except (pm.InstallError, OSError) as exc:
         print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —

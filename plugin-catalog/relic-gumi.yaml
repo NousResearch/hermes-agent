@@ -1,7 +1,7 @@
 name: relic-gumi
 title: RELIC Gumi
 repo: https://github.com/yuzushi-dev/hermes-relic
-sha: "7e1a3809bd47de3d801d0fbfad7391187dc41e35"
+sha: "4742eca03f60d4e939035a50b0064a41ba8cba67"
 version: "0.1.0"
 description: "A local-first companion that gets to know you and supports self-reflection, built on published psychometric instruments (TIPI for the Big Five, ECR-RS for attachment) as a self-report baseline plus consented check-ins, with an output safety critic and Telegram or Desktop onboarding. Not a diagnostic tool; based on the paper arXiv:2611.08504. Disclosure — state lives under $RELIC_HOME (default ~/.relic); the installer creates a dedicated relic-gumi profile with its own .env and cron jobs that stay silent until the user consents during onboarding, and moves a plugin copy found in the base Hermes home into that profile and disables the base entry; secrets come from the process environment Hermes provides, and the only .env the plugin parses is the relic-gumi profile's own file during onboarding to read the Telegram token and user ID (a known rule 11 deviation, follow-up planned: move it behind Hermes' secret scope); detached subprocesses deliver scheduled messages; network is limited to the configured Hermes provider, Telegram, and optional cloud media services (Gemini, Lyria) only if the user enables them; undocumented core imports exist in installer and CLI paths and are listed as warnings by hermes plugins validate; no telemetry, no self-updater."
 maintainer: yuzushi-dev

@@ -1,11 +1,11 @@
 name: wearos
-version: 0.3.4
+version: 0.3.5
 description: Hermes Wear Kit — Galaxy Watch companion with wake word, voice, push, and desktop control pane.
 python: true
 desktop: true
 source: git
 repo: https://github.com/borealBytes/hermes-wearos-plugin
-rev: "e4d25ddde4cd5591e8bab1c744c15f4803989407"
+rev: "c083b3183c7eb882272ce3e78a6d434be4b45c98"
 subpath: .
 folder_name: wearos
 visibility: public

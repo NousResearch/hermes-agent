@@ -30,7 +30,11 @@ def settle_home_online_notice_debt(runner) -> None:
     from gateway.restart_notice import planned_restart_marker_path, write_planned_restart_marker
     outcome = getattr(runner, "_home_shutdown_notice", None)
     if outcome == HOME_NOTICE_MUTED:
-        planned_restart_marker_path().unlink(missing_ok=True)
+        # Best-effort like the write: an undeletable marker costs one extra notice, never the stop.
+        try:
+            planned_restart_marker_path().unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not drop the planned-restart marker after a loop-muted stop", exc_info=True)
     elif outcome == HOME_NOTICE_SENT and not runner._restart_requested:
         write_planned_restart_marker()
 
@@ -72,10 +76,21 @@ class GatewayHomeShutdownNoticeMixin:
                 return "restart loop (gateway.restart_loop_guard)"
         return None
 
-    async def _notify_home_channels_of_shutdown(self, msg: str, notified: set) -> None:
+    def _home_got_active_session_notice(self, delivered: set) -> bool:
+        """True when the active-session pass already told a home chat (a task was running there)."""
+        from gateway.run_shutdown import _delivery_target_key
+        return any(
+            _delivery_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id,
+                                 profile=profile) in delivered
+            for profile, platform, cfg in self._served_home_channel_configs()
+            if cfg.home_channel and cfg.home_channel.chat_id
+        )
+
+    async def _notify_home_channels_of_shutdown(self, msg: str, notified: set, delivered: set) -> None:
         """Send ``msg`` to EVERY served profile's home channel through that profile's OWN bot.
 
-        ``notified`` holds the targets the active-session pass already reached. ``self.adapters`` and
+        ``notified`` holds the targets the active-session pass already handled; ``delivered`` the subset
+        that really got the notice (a home among them is owed "online" like one this pass reaches). ``self.adapters`` and
         ``self.config`` are the launch profile's alone, so iterating them left the secondaries' channels
         silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit a fatal path
         (_handle_fatal) that pops the adapter -> "dictionary changed size during iteration".
@@ -84,7 +99,9 @@ class GatewayHomeShutdownNoticeMixin:
         from gateway.run_shutdown import _delivery_target_key
         from gateway.warning_notifications import present_notification
 
-        reason = self._home_shutdown_broadcast_skip_reason()
+        if self._home_got_active_session_notice(delivered):
+            self._home_shutdown_notice = HOME_NOTICE_SENT
+        reason = self._home_shutdown_broadcast_skip_reason()  # a loop mute overrides the debt above
         if reason is not None:
             logger.info("Home-channel shutdown broadcast suppressed: %s", reason)
             return

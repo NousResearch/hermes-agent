@@ -7,7 +7,7 @@
 
 import asyncio
 import signal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -64,11 +64,20 @@ async def test_supervisor_restart_that_said_goodbye_owes_the_next_boot_a_hello(r
     assert _home_sends(adapter) == 1
     assert planned_restart_marker_path().exists()
 
+    # A task running IN the home chat gets the goodbye from the per-session pass instead: still owed.
+    planned_restart_marker_path().unlink()
+    agent = MagicMock()
+    agent.interrupt.side_effect = lambda *a, **k: runner._running_agents.clear()
+    runner._running_agents = {f"agent:main:telegram:dm:{HOME_CHAT}": agent}
+    await _stop_cycle(runner, adapter)
+    assert _home_sends(adapter) == 2
+    assert planned_restart_marker_path().exists()
+
     # Control: a stop that told the home chat nothing owes it nothing.
     planned_restart_marker_path().unlink()
     runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
     await _stop_cycle(runner, adapter)
-    assert _home_sends(adapter) == 1
+    assert _home_sends(adapter) == 2
     assert not planned_restart_marker_path().exists()
 
 

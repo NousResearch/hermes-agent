@@ -1036,6 +1036,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     restart_source.platform.value, restart_source.chat_id, restart_source.thread_id
                 )
         notified: set[tuple[str, str, Optional[str]]] = set()
+        delivered: set[tuple[str, str, Optional[str]]] = set()  # the subset that really got the notice
         for session_key in self._snapshot_running_agents():
             target = await self._shutdown_notification_target(session_key)
             if target is None:
@@ -1075,6 +1076,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     adapter, chat_id, msg, "active chat", platform_str, metadata=metadata
                 ):
                     notified.add(dedup_key)
+                    delivered.add(dedup_key)
             from gateway.warning_notifications import present_notification
             from gateway.run import _async_profile_runtime_scope
             scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
@@ -1083,7 +1085,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
             if not presented:
                 notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
-        await self._notify_home_channels_of_shutdown(msg, notified)
+        await self._notify_home_channels_of_shutdown(msg, notified, delivered)
 
     # Agent finalization / resource cleanup
     @staticmethod

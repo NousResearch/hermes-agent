@@ -64,17 +64,15 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def _refused_worker(
+def _arm_dead_worker(
     conn, tid: str, pid: int, rc: int, refusal: str, *, session_id: str = "",
 ) -> None:
-    """Claim ``tid`` for a worker that exited ``rc`` after the host refused it.
+    """Make an ALREADY-CLAIMED run look like a worker the host refused: dead pid, and its own trailer.
 
-    Booked the way a real burst books it: the submitter is not a child of this dispatcher process,
-    so its exit reaches the sweep through the trailer it wrote in the task log — and only an
-    admitted submit ever printed the ``Session:`` line the refusal tells the operator to resume.
+    Only the pid/timestamps and the log the sweep reads are written — never a re-claim, so the run
+    under test (and its ``claimed`` event, which carries the source status the resume decision reads)
+    stays the one being judged.
     """
-    host = kb._claimer_id().split(":", 1)[0]
-    kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
     conn.execute(
         "UPDATE tasks SET worker_pid=?, worker_started_at=NULL, started_at=? WHERE id=?",
         (pid, int(time.time()) - 120, tid),
@@ -86,6 +84,20 @@ def _refused_worker(
     lines += [refusal, f"{KANBAN_WORKER_EXIT_TRAILER}{rc}"]
     with open(log, "a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _refused_worker(
+    conn, tid: str, pid: int, rc: int, refusal: str, *, session_id: str = "",
+) -> None:
+    """Claim ``tid`` for a worker that exited ``rc`` after the host refused it.
+
+    Booked the way a real burst books it: the submitter is not a child of this dispatcher process,
+    so its exit reaches the sweep through the trailer it wrote in the task log — and only an
+    admitted submit ever printed the ``Session:`` line the refusal tells the operator to resume.
+    """
+    host = kb._claimer_id().split(":", 1)[0]
+    kb.claim_task(conn, tid, claimer=f"{host}:w{pid}")
+    _arm_dead_worker(conn, tid, pid, rc, refusal, session_id=session_id)
 
 
 def _owner_ledger(path: Path, session_id: str, request_id: str, status: str, outcome: str) -> Path:

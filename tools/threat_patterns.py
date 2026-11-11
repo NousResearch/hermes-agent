@@ -17,6 +17,11 @@ from typing import List, Optional, Tuple
 MAX_SCAN_CHARS = 65_536
 # Bounded filler between key attack words (unbounded ``(?:\w+\s+)*`` backtracks badly).
 _FILLER = r"(?:\w+\s+){0,8}"
+# Separator runs for obfuscation variants (space / underscore / hyphen
+# between the letters of a keyword).  Bounded like _FILLER so adversarial
+# noise can't blow up backtracking.
+_OBF_SEP_MAX = r"[\s_\-]{0,16}"
+_OBF_SEP_MIN = r"[\s_\-]{1,16}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # Verb prefix for "modify agent config" patterns.
@@ -36,6 +41,24 @@ _PATTERNS: list[tuple[str, str, str]] = [
         "all",
     ),
     (rf'do\s+not\s+{_FILLER}tell\s+{_FILLER}the\s+user', "deception_hide", "all"),
+    # ── Injection obfuscation variants (applies everywhere) ──────────
+    # Explicit obfuscated forms of the classic injection payload.  Each
+    # pattern enumerates exact forms — no prefix wildcards — because a
+    # broad ``ign[^\s]*`` matcher also flags benign text such as
+    # "ignition previous instructions" (see the module docstring's
+    # anchoring note).  Separator runs are bounded like _FILLER so
+    # adversarial noise can't blow up backtracking.  NBSP, zero-width and
+    # other invisible codepoints are handled before regex matching
+    # (raw-content invisible-unicode pass + NFKC normalisation) — only
+    # cross-script homoglyphs remain undetectable there, so those get
+    # exact patterns below (Cyrillic г н о р е, and і U+0456).
+    (rf'\bign(?:re|roe|0re)\s+{_FILLER}(?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (rf'\bign[_\-](?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (rf'\bi\.g\.n\.o\.r\.e\s+{_FILLER}(?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (rf'ignore[_\-](?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (rf'\bi{_OBF_SEP_MIN}g{_OBF_SEP_MAX}n{_OBF_SEP_MAX}o{_OBF_SEP_MAX}r{_OBF_SEP_MAX}e\s+{_FILLER}(?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (rf'i\u0433\u043d\u043e\u0440\u0435\s+{_FILLER}(?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
+    (rf'\u0456gnore\s+{_FILLER}(?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
 
     # ── Role-play / identity hijack (scraped web content, poisoned context files) ──
     (rf'you\s+are\s+{_FILLER}now\s+(?:a|an|the)\s+', "role_hijack", "context"),

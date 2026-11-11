@@ -62,12 +62,60 @@ INDICATORS = (
 UNBOUNDED_DEP = re.compile(r'"[a-zA-Z0-9_-]+(?:\[[^\\]\]*\])?>=[ 0-9.]+"')
 
 
+def _diff_args(*pathspec: str) -> tuple[str, ...]:
+    # A file moved to a new path while its old path keeps a forwarding file is a copy, not an
+    # addition: --find-copies diffs it against its old self. -l0: a move of thousands of files
+    # would otherwise skip copy detection.
+    commits = f"{os.environ['_HERMES_PR_BASE_SHA']}...{os.environ['_HERMES_PR_HEAD_SHA']}"
+    return ("--find-copies", "-l0", commits, "--", *pathspec)
+
+
+def _git(*args: str, stdin: bytes | None = None) -> bytes:
+    return subprocess.run(("git", *args), input=stdin if stdin is not None else b"",
+                          stdout=subprocess.PIPE, timeout=300, check=False).stdout
+
+
 def pr_diff(*pathspec: str) -> str:
     """Three-dot diff of the PR; a git failure yields an empty diff, as ``|| true`` did."""
-    commits = f"{os.environ['_HERMES_PR_BASE_SHA']}...{os.environ['_HERMES_PR_HEAD_SHA']}"
-    result = subprocess.run(("git", "diff", commits, "--", *pathspec), stdout=subprocess.PIPE,
-                            stdin=subprocess.DEVNULL, timeout=300, check=False)
-    return result.stdout.decode("utf-8", "surrogateescape")
+    return _git("diff", *_diff_args(*pathspec)).decode("utf-8", "surrogateescape")
+
+
+def _read_at_head(paths: list[str]) -> dict[str, str]:
+    """The text of each path in the PR head, from one ``git cat-file --batch``."""
+    specs = "".join(f"{os.environ['_HERMES_PR_HEAD_SHA']}:{path}\0" for path in paths)
+    out = _git("cat-file", "--batch", "-z", stdin=specs.encode("utf-8", "surrogateescape"))
+    texts, pos = {}, 0
+    for path in paths:
+        end = out.index(b"\n", pos)
+        header, pos = out[pos:end], end + 1
+        if header.endswith(b" missing"):
+            continue
+        size = int(header.split()[2])
+        texts[path] = out[pos:pos + size].decode("utf-8", "surrogateescape")
+        pos += size + 1
+    return texts
+
+
+def copied_lines(*pathspec: str) -> list[str]:
+    """Lines of each copied file that its source still holds in the PR head, as added lines.
+
+    The copy's diff shows them as unchanged context, but the PR does add them in a new place. A
+    line counts as moved, and is not judged, only when it left its source.
+    """
+    fields = _git("diff", "--name-status", "-z", *_diff_args(*pathspec)).decode(
+        "utf-8", "surrogateescape").split("\0")
+    pairs, i = [], 0
+    while i + 1 < len(fields):
+        status = fields[i][:1]
+        if status == "C":
+            pairs.append((fields[i + 1], fields[i + 2]))
+        i += 3 if status in "RC" else 2
+    texts = _read_at_head(sorted({path for pair in pairs for path in pair}))
+    copied = []
+    for source, copy in pairs:
+        kept = set(texts.get(source, "").splitlines())
+        copied += [f"{copy}:+{line}" for line in texts.get(copy, "").splitlines() if line in kept]
+    return copied
 
 
 def numbered_added_lines(diff: str) -> list[str]:
@@ -76,8 +124,8 @@ def numbered_added_lines(diff: str) -> list[str]:
             if line.startswith("+")]
 
 
-def critical_findings(diff: str) -> str:
-    added = numbered_added_lines(diff)
+def critical_findings(diff: str, copied: list[str]) -> str:
+    added = numbered_added_lines(diff) + copied
     findings = ""
     for indicator in INDICATORS:
         hits = [line for line in added if all(p.search(line) for p in indicator.patterns)]
@@ -108,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("scan", choices=("patterns", "dependency-bounds"))
     args = parser.parse_args(argv)
     if args.scan == "patterns":
-        report = critical_findings(pr_diff(".", *LOCKFILE_EXCLUDES))
+        pathspec = (".", *LOCKFILE_EXCLUDES)
+        report = critical_findings(pr_diff(*pathspec), copied_lines(*pathspec))
         report_name = "supply-chain-findings.md"
     else:
         report = "\n".join(unbounded_dependencies(pr_diff("pyproject.toml")))

@@ -146,6 +146,49 @@ def test_supply_chain_scan_flags_payload_lines_but_not_lockfiles(repo, step):
     assert "subprocess with encoded/obfuscated command" in report
 
 
+def _scan_pr(repo: Path, step: Step, base: str, files: dict[str, str]) -> str:
+    """Commit ``files`` on a fresh branch off ``base`` and return the patterns scan's verdict."""
+    git(repo, "checkout", "-q", "--detach", base)
+    head = commit(repo, files)
+    step.output.unlink(missing_ok=True)
+    assert step.run(repo, "scan_supply_chain.py", "patterns", _HERMES_PR_BASE_SHA=base,
+                    _HERMES_PR_HEAD_SHA=head).returncode == 0
+    return step.outputs()["found"]
+
+
+def _module_with_payload() -> tuple[str, str]:
+    """A module that already holds a payload-shaped line, and a different payload line."""
+    decode = "base64." + "b64decode"
+    body = "".join(f"def f{i}():\n    return {i}\n\n" for i in range(20))
+    return body + f"code = exec({decode}(blob))\n", f"x = eval({decode}(other))\n"
+
+
+FORWARD = "from new.pkg.mod import *  # moved to new/pkg/mod.py\n"
+
+
+def test_supply_chain_scan_passes_a_moved_file_whose_old_path_keeps_a_forwarding_file(repo, step):
+    module, _ = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    assert _scan_pr(repo, step, base, {"new/pkg/mod.py": module, "pkg/mod.py": FORWARD}) == "false"
+
+
+def test_supply_chain_scan_flags_a_payload_line_added_to_a_moved_or_new_file(repo, step):
+    module, new_payload = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    assert _scan_pr(repo, step, base, {"new/pkg/mod.py": module + new_payload,
+                                       "pkg/mod.py": FORWARD}) == "true"
+    assert "x = eval(" in (step.runner_temp / "supply-chain-findings.md").read_text(encoding="utf-8")
+    assert _scan_pr(repo, step, base, {"fresh.py": new_payload}) == "true"
+
+
+def test_supply_chain_scan_flags_a_payload_line_copied_from_a_file_that_keeps_it(repo, step):
+    module, _ = _module_with_payload()
+    base = commit(repo, {"pkg/mod.py": module})
+    copied = {"elsewhere/run.py": module, "pkg/mod.py": module + "# touched\n"}
+    assert _scan_pr(repo, step, base, copied) == "true"
+    assert "code = exec(" in (step.runner_temp / "supply-chain-findings.md").read_text(encoding="utf-8")
+
+
 def test_dependency_bounds_report_lists_only_floor_only_specs(repo, step):
     base = commit(repo, {"pyproject.toml": 'deps = [\n  "old>=1",\n]\n'})
     head = commit(repo, {"pyproject.toml": 'deps = [\n  "old>=1",\n  "bounded>=2,<3", "loose>=2.1",\n]\n'})

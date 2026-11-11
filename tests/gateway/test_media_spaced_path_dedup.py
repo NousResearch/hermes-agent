@@ -40,3 +40,15 @@ def test_spaced_path_prefix_that_is_another_file_is_not_attached(tmp_path, monke
 
     assert [os.path.basename(p) for p, _ in media] == ["x.md"]
     assert cleaned == "Here."
+
+
+def test_same_line_extensionless_tag_before_a_known_one_is_still_delivered(tmp_path, monkeypatch):
+    """The known-extension regex reads ``MEDIA:a MEDIA:b.pdf`` as one path; that glued match must not
+    hide the extensionless tag the validated pass delivers."""
+    (tmp_path / "Caddyfile").write_text("localhost {}", encoding="utf-8")
+    (tmp_path / "report.pdf").write_bytes(b"%PDF")
+    _allow(monkeypatch, tmp_path)
+
+    media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{tmp_path}/Caddyfile MEDIA:{tmp_path}/report.pdf")
+
+    assert str((tmp_path / "Caddyfile").resolve()) in [p for p, _ in media]

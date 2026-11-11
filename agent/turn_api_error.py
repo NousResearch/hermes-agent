@@ -325,16 +325,27 @@ def settle_unrecovered_error(
         # Provider self-heal BEFORE fallback: some providers surface a stale credential as a
         # non-auth error (the profile's ``is_stale_credential_error``), not a 401. Fresh
         # credential + client rebuild, one retry, SAME provider.
+        from agent.credential_auth_recovery import agent_pool_runtime_refresh_profile
+        scoped_profile = agent_pool_runtime_refresh_profile(agent)
         if (
             not _retry.provider_stale_refresh_attempted
-            and (profile := _credential_refresh_profile(agent)) is not None
+            and (profile := scoped_profile or _credential_refresh_profile(agent)) is not None
             and ask_on_error_path(
                 profile, "is_stale_credential_error", False,
                 status_code=status_code, message=str(getattr(api_error, "message", "") or api_error),
             )
         ):
             _retry.provider_stale_refresh_attempted = True
-            if agent._try_refresh_provider_runtime_credentials(reason="stale"):
+            if scoped_profile is not None:
+                # Do not resolve an ambient account or bench a healthy grant for a format error.
+                pool = agent._credential_pool
+                refreshed = pool.try_refresh_runtime_matching(
+                    credential_id=getattr(agent, "_credential_pool_entry_id", None),
+                    api_key_hint=getattr(agent, "api_key", None), reason="stale")
+                recovered = refreshed is not None and agent._swap_credential(refreshed) is not False
+            else:
+                recovered = agent._try_refresh_provider_runtime_credentials(reason="stale")
+            if recovered:
                 agent._buffer_vprint("🔐 " + (ask_on_error_path(profile, "credential_refresh_notice", "", reason="stale") or (
                     f"{profile.display_name or profile.name} credential renewed after a "
                     "stale-credential error. Retrying request...")))

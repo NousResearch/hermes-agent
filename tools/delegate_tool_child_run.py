@@ -513,25 +513,36 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
-    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
     from tools.delegate_tool_routes import child_profile_scope
     base_url = getattr(child, "base_url", None)
     with child_profile_scope(child):
         leased_cred_id = child_pool.acquire_lease()
         if leased_cred_id is not None:
+            bound = False
             with _quiet("Failed to bind child to leased credential: %s"):
-                # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
-                # mutable cursor that may already point at someone else's pick.
+                # Resolve by id, not current(): siblings share the pool cursor.
                 leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
-                if not _entry_serves_endpoint(leased_entry, base_url):
+                prepared = child_pool.prepare_runtime_entry(leased_entry, source_base_url=base_url) if leased_entry is not None else None
+                if prepared is None:
+                    leased_entry = None
+                    rejected_id = leased_cred_id
                     child_pool.release_lease(leased_cred_id)
-                    leased_entry = next(
-                        (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
-                        None,
-                    )
-                    leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
+                    leased_cred_id = None
+                    for candidate in child_pool.entries():
+                        if candidate.id == rejected_id or candidate.last_status == "dead":
+                            continue
+                        prepared = child_pool.prepare_runtime_entry(candidate, source_base_url=base_url)
+                        if prepared is None:
+                            continue
+                        leased_cred_id = child_pool.acquire_lease(candidate.id)
+                        if leased_cred_id is not None:
+                            leased_entry = candidate
+                            break
                 if leased_entry is not None and hasattr(child, "_swap_credential"):
-                    child._swap_credential(leased_entry)
+                    bound = child._swap_credential(leased_entry) is not False
+            if not bound and leased_cred_id is not None:
+                child_pool.release_lease(leased_cred_id)
+                leased_cred_id = None
     return child_pool, leased_cred_id
 
 def _merge_late_steer(result: dict[str, Any], subagent_id: Optional[str], child: Any) -> None:

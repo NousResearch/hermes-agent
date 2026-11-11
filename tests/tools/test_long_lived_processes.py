@@ -165,7 +165,7 @@ def test_stopping_a_backend_process_stops_the_service_inside_the_sandbox(tmp_pat
     while not pidfile.read_text().strip():
         assert time.monotonic() < deadline, "the pid file stayed empty"
         time.sleep(0.05)
-    service_pid = int(pidfile.read_text().strip())
+    service_pid = int(pidfile.read_text().split()[0])
     try:
         assert env.stop_process("svc") is True
         assert _wait_gone(service_pid), "stopping killed only the local client; the service still runs"

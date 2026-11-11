@@ -1,8 +1,8 @@
 name: worktree-sandbox
 repo: https://github.com/mahammadbakr/hermes-worktree-sandbox
-sha: 632e37febb62383f0591fb488c35f3244f940ba4
+sha: ac2ed2c0561bc61a94cb2853fc0274e97544e111
 subdir: plugin
-version: "0.1.2"
+version: "0.1.3"
 title: Worktree Sandbox
 description: >-
   Transactional Git-worktree terminal backend and speculative execution arena: every

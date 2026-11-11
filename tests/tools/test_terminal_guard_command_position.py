@@ -59,6 +59,7 @@ FALSE_POSITIVES = [
     "docker compose up -d && sleep 5 && docker compose ps",
     ".venv/bin/python -m pip install uvicorn",
     "git switch -c bump-vite",
+    "grep -q vite package.json 2>/dev/null && npm run build",
     "pip list | column -t | grep uvicorn",
 ]
 
@@ -154,6 +155,8 @@ TRUE_POSITIVES = [
     "docker compose up -d && kubectl logs -f deploy/web",
     "echo npm run dev | tee run.sh | zsh",
     "echo npm run dev > run.sh; sh run.sh",
+    "echo npm run dev &> run.sh; sh run.sh",
+    "git --git-dir .git bisect run npm run dev",
     "docker compose up -d && npm test",
     "git -c core.pager=nodemon log",
     "git rebase -ix nodemon main",

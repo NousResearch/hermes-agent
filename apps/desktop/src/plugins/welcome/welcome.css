@@ -225,6 +225,120 @@
   flex-shrink: 0;
 }
 
+/* ---- Credits bar ---- */
+
+.welcome-credits-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--welcome-border);
+}
+
+.welcome-credits-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.welcome-credits-value {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--welcome-accent);
+}
+
+.welcome-credits-bar {
+  height: 6px;
+  background: var(--welcome-chip-bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.welcome-credits-fill {
+  height: 100%;
+  background: var(--welcome-accent);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.welcome-credits-detail {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  color: var(--welcome-muted);
+}
+
+/* ---- Trial banner ---- */
+
+.welcome-trial-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #FDF5F8;
+  border: 1px solid #F5D9E5;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #8B1A4A;
+}
+
+.welcome-trial-icon {
+  font-size: 1rem;
+}
+
+/* ---- Info actions ---- */
+
+.welcome-info-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--welcome-border);
+}
+
+.welcome-upgrade-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 16px;
+  background: var(--welcome-accent);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--welcome-font);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.welcome-upgrade-btn:hover {
+  background: var(--welcome-accent-hover);
+}
+
+.welcome-credits-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 10px 16px;
+  background: transparent;
+  color: var(--welcome-accent);
+  border: 1.5px solid var(--welcome-accent);
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--welcome-font);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.welcome-credits-btn:hover {
+  background: #FDF5F8;
+}
+
 /* ---- Responsive ---- */
 
 @media (max-width: 800px) {

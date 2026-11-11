@@ -126,23 +126,103 @@ function InfoCard() {
   const model = useValue(host.state.model)
   const profile = useValue(host.state.profile)
 
+  // Credits / trial state — read from host bridge or localStorage.
+  // The gateway writes these into the session context on first connect.
+  const [credits] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem('unitalk-credits')
+      return raw ? Number(raw) : 10000
+    } catch {
+      return 10000
+    }
+  })
+
+  const [daysLeft] = useState(() => {
+    try {
+      const expiry = window.localStorage.getItem('unitalk-trial-expiry')
+      if (expiry) {
+        const ms = new Date(expiry).getTime() - Date.now()
+        return Math.max(0, Math.ceil(ms / 86_400_000))
+      }
+    } catch {
+      // ignore
+    }
+    return 7
+  })
+
+  const handleUpgrade = () => {
+    window.open('https://unitalk.ai/pricing', '_blank')
+  }
+
+  const handleBuyCredits = () => {
+    window.open('https://unitalk.ai/credits', '_blank')
+  }
+
+  const pct = Math.min(100, Math.max(0, credits / 100))
+
   return (
     <div className="welcome-info-card">
       <h2>Votre espace</h2>
+
       <div className="welcome-info-row">
         <span className="welcome-info-dot" />
         <span>
-          Connecté via <strong>{profile || 'Default'}</strong>
+          Connecté via <strong>{profile || 'Unitalk'}</strong>
         </span>
       </div>
+
       {model ? (
         <div className="welcome-info-row">
           <span className="welcome-info-label">Modèle :</span>
           <span>{model}</span>
         </div>
       ) : null}
-      <div className="welcome-info-row" style={{ marginTop: 8 }}>
-        <span className="welcome-info-label">Crédits inclus</span>
+
+      {/* ── Credits bar ── */}
+      <div className="welcome-credits-section">
+        <div className="welcome-credits-header">
+          <span className="welcome-info-label">Crédits</span>
+          <span className="welcome-credits-value">
+            {credits.toLocaleString()} / 10 000
+          </span>
+        </div>
+        <div className="welcome-credits-bar">
+          <div
+            className="welcome-credits-fill"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <p className="welcome-credits-detail">
+          10 000 crédits (5 €) inclus avec votre essai gratuit.
+        </p>
+      </div>
+
+      {/* ── Trial banner ── */}
+      {daysLeft > 0 ? (
+        <div className="welcome-trial-banner">
+          <span className="welcome-trial-icon">⏳</span>
+          <span>
+            Essai gratuit · <strong>{daysLeft} jour{daysLeft > 1 ? 's' : ''} restant{daysLeft > 1 ? 's' : ''}</strong>
+          </span>
+        </div>
+      ) : null}
+
+      {/* ── Actions ── */}
+      <div className="welcome-info-actions">
+        <button
+          className="welcome-upgrade-btn"
+          type="button"
+          onClick={handleUpgrade}
+        >
+          Mettre à niveau
+        </button>
+        <button
+          className="welcome-credits-btn"
+          type="button"
+          onClick={handleBuyCredits}
+        >
+          Acheter des crédits
+        </button>
       </div>
     </div>
   )

@@ -782,14 +782,14 @@ def test_dm_reaction_from_allowlisted_user_is_routed(monkeypatch):
 # --- Generic card clicks (synthetic /card commands) share the gate ---------
 
 
-def _run_card_click(adapter, open_id: str, *, chat_id: str, chat_mode="group"):
+def _run_card_click(adapter, open_id: str, *, chat_id: str, chat_mode="group", user_id="", union_id=""):
     import asyncio
 
     adapter._card_action_tokens = {}
     adapter.get_chat_info = _chat_get_info(chat_id, chat_mode)
     data = SimpleNamespace(event=SimpleNamespace(
         token="", context=SimpleNamespace(open_chat_id=chat_id),
-        operator=SimpleNamespace(open_id=open_id),
+        operator=SimpleNamespace(open_id=open_id, user_id=user_id, union_id=union_id),
         action=SimpleNamespace(tag="button", value={"custom_action": "x"}),
     ))
     asyncio.run(adapter._handle_card_action_event(data))
@@ -851,3 +851,17 @@ def test_dm_card_click_source_is_dm_typed():
     adapter = _reaction_adapter(group_policy="open", allow_all_dm=True)
     routed = _run_card_click(adapter, "ou_anyone", chat_id="oc_dm", chat_mode="p2p")
     assert [e.source.chat_type for e in routed] == ["dm"]
+
+
+def test_card_click_admits_operator_allowlisted_by_tenant_user_id():
+    """The gate sees the callback's user_id, as the text path does for the same person."""
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"u_tenant"})
+    assert len(_run_card_click(adapter, "ou_x", chat_id="oc_g", user_id="u_tenant")) == 1
+
+
+def test_dm_card_click_admits_operator_allowlisted_by_union_id(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._allowed_group_users = frozenset({"on_union"})
+    assert len(_run_card_click(adapter, "ou_x", chat_id="oc_dm", chat_mode="p2p", union_id="on_union")) == 1

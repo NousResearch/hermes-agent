@@ -2518,7 +2518,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
-        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+        # Keep every operator id tier: allowlists may name the tenant user_id or union_id.
+        sender_id = SimpleNamespace(
+            open_id=open_id,
+            user_id=str(getattr(operator, "user_id", "") or "") or None,
+            union_id=str(getattr(operator, "union_id", "") or "") or None,
+        )
         # Same gate as reactions; the callback carries no chat type either.
         chat_type = await self._synthetic_chat_type(chat_id)
         reject = self._admit_synthetic(sender_id, chat_id=chat_id, chat_type=chat_type)

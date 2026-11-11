@@ -1,0 +1,17 @@
+name: model-forge-image
+title: Model Forge Image Backend
+repo: https://github.com/mr-pewpy/model-forge
+sha: 9b5cdba0212a2936a73441f57de41c19969d942a
+subdir: model-forge-image
+description: "Model Forge local image-generation backend — routes Hermes image_generate to any OpenAI-compatible images API (weights broker, vLLM-Omni, SGLang Diffusion, ComfyUI). Companion package for the Model Forge plugin. Disclosure — sends generation requests to the local endpoints the user configures; no third-party network calls, no shell commands, no stored credentials, no telemetry."
+maintainer: mr-pewpy
+tier: community
+category: models
+version: "0.1.0"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

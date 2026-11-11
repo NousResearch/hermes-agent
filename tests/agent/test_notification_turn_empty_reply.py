@@ -150,6 +150,27 @@ class TestNotificationTurnLoop:
             for message in provider_messages
         )
 
+    def test_announced_tool_call_without_payload_is_recovered_not_silenced(self, loop_agent):
+        """finish_reason="tool_calls" with no tool calls is a dropped action, not "nothing to add":
+        the turn keeps the recovery ladder and the model's follow-up is delivered."""
+        def respond(**_kwargs):
+            if loop_agent.client.chat.completions.create.call_count == 1:
+                dropped = _empty_response()
+                dropped.choices[0].finish_reason = "tool_calls"
+                return dropped
+            return _text_response("did the thing")
+
+        loop_agent.client.chat.completions.create.side_effect = respond
+        result = loop_agent.run_conversation(
+            "[process completed] Background task finished.",
+            conversation_history=_completed_tool_round(),
+            persist_user_display_kind="process_complete",
+        )
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"] == "did the thing"
+        assert result.get("turn_exit_reason") != "notification_no_reply"
+
     def test_human_turn_empty_reply_still_retries(self, loop_agent):
         loop_agent.run_conversation(
             "What happened?",

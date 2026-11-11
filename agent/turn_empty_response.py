@@ -247,10 +247,11 @@ def _machinery_quiet_exit(agent: Any, assistant_message: Any, finish_reason: str
     A machinery turn (a self-injected internal_notification or a background-process /
     delegation completion the gateway staged as its own user row) answered empty means
     "nothing to add": no nudge, no paid retries, no provider switch, no sentinel row. Only
-    when no tool ran this turn; a model that acted on the notice is mid-task and keeps the
-    ladder below unchanged.
+    when no tool ran this turn (a model that acted on the notice is mid-task) and the reply
+    did not announce a tool call: ``finish_reason="tool_calls"`` with no payload is a dropped
+    action, so it keeps the ladder below, whose re-prompt recovers it.
     """
-    if not _notification_turn_without_tool_round(messages):
+    if finish_reason == "tool_calls" or not _notification_turn_without_tool_round(messages):
         return False
     logger.info(
         "Empty response on a machinery turn (%s): ending the turn without a reply",

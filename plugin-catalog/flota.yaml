@@ -1,7 +1,7 @@
 name: flota
 title: Flota
 repo: https://github.com/Bto-03/hermes-flota
-sha: 4c2e089f8ab333373baf72b94645993e15fc47c3
+sha: 0b480a64f2e7229169dc3003d029f251d803a5da
 version: "0.2.1"
 description: >-
   Run delegate_task subagents on your own machines over SSH (delegation.backend: flota). Flota
@@ -10,7 +10,11 @@ description: >-
   its last subagent, never a busy one (the model cannot force it). `hermes flota setup
   user@host` detects OS, MAC, broadcast and how the machine can sleep; `doctor` prints fixes;
   `uninstall` undoes it; fleet pairing with two codes (public keys only); a fleet map page for
-  Hermes Desktop and the web dashboard. Python standard library only.
+  Hermes Desktop and the web dashboard. Python standard library only. Disclosure: runs ssh to
+  the machines you configure and your own wake/sleep commands, sends Wake-on-LAN packets on your
+  LAN, can run `sudo -n` for one fixed wake-alarm command only if you allow it, adds one public
+  key line to a ship's authorized_keys at pairing, and keeps auto-sleep timers in the gateway
+  process; no third-party network calls, no telemetry, no stored credentials.
 maintainer: Francisco Bastidas
 tier: community
 category: automation

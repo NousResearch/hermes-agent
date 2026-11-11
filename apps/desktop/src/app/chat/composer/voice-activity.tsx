@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { stopVoicePlayback } from '@/lib/voice-playback'
-import { $voicePlayback } from '@/store/voice-playback'
+import { $voicePlayback, voicePlaybackBelongsTo } from '@/store/voice-playback'
 
 import type { VoiceActivityState } from './types'
 
@@ -205,11 +205,14 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
   )
 }
 
-export function VoicePlaybackActivity() {
+export function VoicePlaybackActivity({ sessionId }: { sessionId?: string | null }) {
   const { t } = useI18n()
   const playback = useStore($voicePlayback)
 
-  if (playback.status === 'idle') {
+  // Only the composer whose session owns the clip paints the pill. Sibling
+  // tiles share this renderer (and the speaker), so an unowned check here lit
+  // "Reading aloud" in every open chat at once.
+  if (playback.status === 'idle' || !voicePlaybackBelongsTo(playback, sessionId)) {
     return null
   }
 

@@ -174,3 +174,32 @@ def test_partial_config_migration_stays_owed_after_update(monkeypatch, capsys, n
     output = capsys.readouterr().out
     assert "✓ Config format updated" not in output
     assert "✓ Configuration updated!" not in output
+
+
+def test_a_sibling_migration_that_stopped_stays_owed_after_update(tmp_path, monkeypatch):
+    """A sibling profile whose pass stopped at a failing step is owed like the active one: the
+    sweep still finishes and the snapshot nets still run, then the update records a follow-up."""
+    from pathlib import Path
+
+    import hermes_yaml as yaml
+    from hermes_cli import update_cmd_config
+
+    root = tmp_path / '.hermes'
+    sibling = root / 'profiles' / 'sibling'
+    sibling.mkdir(parents=True)
+    latest = config.DEFAULT_CONFIG['_config_version']
+    (root / 'config.yaml').write_text(yaml.safe_dump({'_config_version': latest}), encoding='utf-8')
+    (sibling / 'config.yaml').write_text(
+        yaml.safe_dump({'_config_version': 20, 'plugins': {'disabled': [['x']]}}), encoding='utf-8')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    monkeypatch.setattr(config, 'get_missing_env_vars', lambda **_: [])
+    monkeypatch.setattr(config, 'get_missing_config_fields', list)
+    snapshots = []
+    monkeypatch.setattr(update_cmd_config, '_restore_snapshot_safety_nets', snapshots.append)
+
+    with pytest.raises(RuntimeError, match="profile 'sibling' v21"):
+        update_cmd_config._check_and_apply_config_migration(pre_update_snapshot_id='snap')
+    assert snapshots == ['snap']
+    monkeypatch.setenv('HERMES_HOME', str(sibling))
+    assert config.check_config_version()[0] == 20, 'the steps before v21 are kept, v21 stays owed'

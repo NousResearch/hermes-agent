@@ -64,7 +64,7 @@ def test_a_quiet_create_reports_why_seeding_failed(root, monkeypatch):
 def test_a_refused_create_answers_with_its_type_and_whole_text(root, monkeypatch):
     from hermes_cli import profile_provision
     from hermes_cli.gateway_client import rpc_error
-    from hermes_cli.profile_provision_gateway import _refusal_text
+    from hermes_cli.profile_provision import refusal_from
     from tui_gateway import server
     profiles.create_profile("taken", no_alias=True)
     error = server._methods["profiles.create"](1, {"name": "taken", "no_alias": True})["error"]
@@ -75,7 +75,7 @@ def test_a_refused_create_answers_with_its_type_and_whole_text(root, monkeypatch
     monkeypatch.setattr(profile_provision, "provision_profile", _raise(ValueError(long_text)))
     error = server._methods["profiles.create"](1, {"name": "other", "no_alias": True})["error"]
     assert error["message"] == long_text  # Desktop shows it whole
-    assert _refusal_text(rpc_error(error).data) == long_text  # and the CLI gets it whole too
+    assert str(refusal_from(rpc_error(error).data)) == long_text  # and the CLI gets it whole too
 
     secret = "sk-proj-" + "X" * 40
     monkeypatch.setattr(profile_provision, "provision_profile",
@@ -197,29 +197,75 @@ def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, mo
     _gateway(monkeypatch, TimeoutError())  # recovery is checked where the profile was made
     with pytest.raises(GatewayCreateError, match="on the gateway's machine"):
         create_through_gateway(request)
-    # Rejected by urlsplit (fullwidth colon; bad port), hostless, or not a ws URL: never named.
+    # Rejected by urlsplit (fullwidth colon; bad port), hostless, a password an unencoded "/" pushed into
+    # the path, or not a ws URL: never named, never dialed.
     for bad in ("ws://me:pw@gw\uff1a8443/api/ws", "ws://me:pw@gw:99999/api/ws", "wss:me:pw@gw.invalid/api/ws",
-                "https://me:pw@gw.invalid/api/ws"):
+                "https://me:pw@gw.invalid/api/ws", "ws://me:pw/cd@gw.invalid/api/ws", "ws://me:12/pw@gw.invalid/api/ws"):
         monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", bad)
         with pytest.raises(GatewayCreateError) as malformed:
             create_through_gateway(request)
         assert "pw" not in str(malformed.value) and "HERMES_TUI_GATEWAY_URL" in str(malformed.value)
 
 
-def test_the_wrapper_is_written_here_only_for_a_gateway_on_this_machine(root, monkeypatch):
+def test_the_wrapper_is_written_here_only_for_this_machines_profile(root, monkeypatch):
+    """Written when the gateway's profile is the one ``-p x`` selects here (same directory, exists),
+    whatever the URL says: a loopback tunnel or container can serve another home."""
     from hermes_cli.profile_provision_gateway import create_through_gateway
     wrote = []
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: wrote.append(name) or Path("/bin") / name)
     request = ProfileCreateRequest(name="x")
-    _gateway(monkeypatch, {"ok": True, "receipt": _receipt()})
-    assert create_through_gateway(request).alias_path == "/bin/x"  # a discovered local owner
-    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:9/api/ws?token=t")
-    assert create_through_gateway(request).alias_path == "/bin/x"  # loopback URL: the dashboard's terminal
+    here = root / "profiles" / "x"
+    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(here))})
+    assert create_through_gateway(request).alias_path is None  # this path, but nothing there: not ours
+    here.mkdir(parents=True)
+    assert create_through_gateway(request).alias_path == "/bin/x"  # a discovered local owner made it here
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "wss://gw.invalid/api/ws")
-    assert create_through_gateway(request).alias_path is None  # another machine's profile
+    assert create_through_gateway(request).alias_path == "/bin/x"  # any URL, as long as it landed here
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:9/api/ws?token=t")
+    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path="/elsewhere/.hermes/profiles/x")})
+    assert create_through_gateway(request).alias_path is None  # loopback, but another home: no wrapper
     assert wrote == ["x", "x"]
 
+    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(here))})
     monkeypatch.setattr(profiles, "check_alias_collision", _raise(RuntimeError("memory provider lookup failed")))
-    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL")
     made = create_through_gateway(request)  # the profile exists: a wrapper failure is a warning
     assert made.alias_path is None and made.warnings == ["alias wrapper: memory provider lookup failed"]
+
+
+def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
+    """A ``ValueError`` subclass from the create (a broken source config), a missing name and an
+    unavailable profile are refusals: nothing was made, so never "may have created"."""
+    from hermes_cli.gateway_client import GatewayRPCError, rpc_error
+    from hermes_cli.profile_provision import refusal
+    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from tui_gateway import server
+    request = ProfileCreateRequest(name="x", alias=False)
+    import json
+    try:
+        json.loads("{")
+    except json.JSONDecodeError as exc:
+        _gateway(monkeypatch, rpc_error({"code": 4062, "message": str(exc), "data": refusal(exc)[1]}))
+    with pytest.raises(ValueError, match="Expecting property name"):
+        create_through_gateway(request)
+    blank = server._methods["profiles.create"](1, {"name": "  "})["error"]
+    _gateway(monkeypatch, rpc_error(blank))
+    with pytest.raises(ValueError, match="profile name cannot be empty"):
+        create_through_gateway(request)
+    _gateway(monkeypatch, GatewayRPCError("profile_unavailable", 4064))
+    with pytest.raises(GatewayCreateError, match="nothing was created"):
+        create_through_gateway(request)
+    token = "ghp_" + "A" * 36  # a bounded reason code the client keeps, credential-shaped
+    _gateway(monkeypatch, GatewayRPCError(token, -32000))
+    with pytest.raises(GatewayCreateError) as untyped:
+        create_through_gateway(request)
+    assert token not in str(untyped.value)
+
+
+@pytest.mark.parametrize("bad", [{"skills_seeded": "broken"}, {"skills_seeded": {"copied": 1}},
+                                 {"cloned_plugins": [1]}, {"served_now": "false"}, {"display_path": None},
+                                 {"mirrored": {"env": "yes"}}, {"alias_path": 5}])
+def test_a_receipt_with_a_wrong_type_is_an_unknown_outcome(root, monkeypatch, bad):
+    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(**bad)})
+    with pytest.raises(GatewayCreateError, match="may have created 'x'"):
+        create_through_gateway(ProfileCreateRequest(name="x", alias=False))

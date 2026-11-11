@@ -1,6 +1,6 @@
 name: herd
 repo: https://github.com/welliv/hermes-herd
-sha: edb87bf7337e7e57dd9990a8f85ecba44e8c027c
+sha: 7895e856ed7dc575c6e43adc8077eecb284d405d
 requires_hermes: ">=0.23"
 description: >-
   Keep one Hermes across every machine. Settings, skills, memory and SOUL.md
@@ -15,19 +15,22 @@ description: >-
   agent tools (`sync_status`, `sync_diff`, `sync_now`), session hooks that pull
   at start and push at end in interactive sessions, and a `hermes sync` CLI.
   Pairing is one command that prints a 20-character code, valid once for 15
-  minutes. Disclosure — reads the profile's config, memory, SOUL.md and skills
-  and writes the ones that changed; never reads `.env`, `auth.json` or
-  `state.db`; `sync_now` asks for approval and is blocked under cron and other
-  non-interactive sessions, where the session hooks also skip; `sync_status`
-  and `sync_diff` only `git fetch`; the store is any folder or git remote the
-  user names, and nothing is sent anywhere else; `hermes sync pair` writes one
-  sealed `pairing.json` into that store, which the joining machine reads and
-  deletes. Sessions and cron are not synced by default.
+  minutes, written as a sealed `pairing.json` in the store folder. A machine
+  that can see that folder reads and deletes it. The file is not pushed to a
+  git remote, because it wraps the recovery code and would remain in history
+  after deletion; a machine that only has the git remote joins with
+  `hermes sync join <git-url> --code HERD-…`. Disclosure — reads the profile's
+  config, memory, SOUL.md and skills and writes the ones that changed; never
+  reads `.env`, `auth.json` or `state.db`; `sync_now` asks for approval and is
+  blocked under cron and other non-interactive sessions, where the session
+  hooks also skip; `sync_status` and `sync_diff` only `git fetch`; the store is
+  any folder or git remote the user names, and nothing is sent anywhere else.
+  Sessions and cron are not synced by default.
 maintainer: welliv
 tier: community
 category: tools
 docs_url: https://github.com/welliv/hermes-herd#readme
-version: "1.2.0"
+version: "1.2.1"
 platforms: []
 capabilities:
   provides_tools:

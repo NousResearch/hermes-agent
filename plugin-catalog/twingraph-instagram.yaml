@@ -1,0 +1,28 @@
+name: twingraph-instagram
+repo: https://github.com/dalroot/hermes-instagram-twin
+sha: 42f1c2b898ef46671910bcb90d943b7972a32f4c
+description: "Autonomous Instagram Agent for Hermes Agent powered by TwinGraph and Meta Graph API v21.0 Digital Twin architecture. Provides 30-day analytics, reel retention curves, intelligent direct messaging with auto username-to-PK resolution, and zero-footprint ghost mode exploration."
+maintainer: dalroot
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/dalroot/hermes-instagram-twin#readme
+version: "0.1.0"
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - instagram_get_profile
+    - instagram_get_posts
+    - instagram_get_media_metrics
+    - instagram_get_comments
+    - instagram_search
+    - instagram_audit_account
+    - instagram_get_insights
+    - instagram_get_inbox
+    - instagram_send_message
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -17,6 +17,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -292,3 +293,32 @@ def test_an_unreadable_record_degrades_to_the_base_answer(client, home, old_gate
     status_code, body = seen["answers"]["gateway-restart"]
     assert status_code == 200
     assert _answer(body) == NEVER_STARTED
+
+
+_OUT_OF_RANGE = {
+    "a spawn time past any float": {"spawned_at": 10**400},
+    "an infinite spawn time": {"spawned_at": float("inf")},
+    "a pid past any pid": {"action": [10**400, 1]},
+    "a start time past any clock": {"action": [1, 10**400]},
+    "a successor past any pid": {"successor": [10**400, 1]},
+}
+
+
+@pytest.mark.parametrize("damage", [*_OUT_OF_RANGE, "nesting past the parser's depth"])
+def test_a_record_with_unrepresentable_values_degrades_to_the_base_answer(client, home, old_gateway, damage):
+    """Well-formed JSON whose numbers no clock or pid can hold (or that nests past what the parser
+    accepts) reads as no record: the gateway answers 200 with the base answer, never a 500."""
+    from gateway.status import get_process_start_time
+
+    record = home / "logs" / "gateway-restart.record.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    if damage in _OUT_OF_RANGE:
+        # Every other field would qualify this process, so only the damaged value can stop it.
+        me = [os.getpid(), get_process_start_time(os.getpid())]
+        fields = {"action": me, "spawner": [1, 1], "spawned_at": time.time(), "exit_code": None,
+                  "successor": None, **_OUT_OF_RANGE[damage]}
+        record.write_text(json.dumps(fields), encoding="utf-8")
+    else:
+        record.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+
+    assert _status(client) == NEVER_STARTED

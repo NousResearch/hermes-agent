@@ -602,15 +602,21 @@ def _write_restart_record(action_pid: int) -> None:
         _log.warning("Could not drop the previous gateway restart record: %s", exc)
 
 
+# A value past these names no process or moment, and arithmetic on it can overflow: a pid_t, a
+# start-time fingerprint, a Unix time a float holds exactly.
+_MAX_PID, _MAX_START_TIME, _MAX_TIMESTAMP = 2**31 - 1, 2**63 - 1, 2.0**53
+
+
 def _is_identity(value: Any) -> bool:
-    return isinstance(value, list) and len(value) == 2 and all(type(v) is int for v in value)
+    return (isinstance(value, list) and len(value) == 2 and all(type(v) is int for v in value)
+            and 0 < value[0] <= _MAX_PID and 0 <= value[1] <= _MAX_START_TIME)
 
 
 def _read_restart_record() -> Optional[dict[str, Any]]:
     """The record, or None when missing, unreadable or malformed (never raises)."""
     try:
         record = json.loads((_ACTION_LOG_DIR / _RESTART_RECORD_FILE).read_bytes())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if not (isinstance(record, dict) and _is_identity(record.get("action")) and _is_identity(record.get("spawner"))):
         return None
@@ -618,7 +624,8 @@ def _read_restart_record() -> Optional[dict[str, Any]]:
     if not (successor is None or _is_identity(successor)) or not (exit_code is None or type(exit_code) is int):
         return None
     spawned_at = record.get("spawned_at")
-    return record if type(spawned_at) in (int, float) else None
+    # NaN fails both comparisons; infinities and huge ints fail the bound.
+    return record if type(spawned_at) in (int, float) and 0 <= spawned_at <= _MAX_TIMESTAMP else None
 
 
 def _store_restart_record(record: dict[str, Any]) -> bool:

@@ -1,7 +1,7 @@
 name: sidecar
 title: Sidecar
 repo: https://github.com/rkfshakti/hermes-sidecar
-sha: "1b3deab944ab7fb5ab195f77bde51cffc420665d"
+sha: "2a14649b57c6f267fbdcb859ac35957a61e0ee0f"
 version: "1.0.0"
 description: >-
   Remote brain, local hands: a paired execution backend that lets a remote Hermes run
@@ -24,9 +24,9 @@ category: tools
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/rkfshakti/hermes-sidecar
 readme: true
-image: https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/1b3deab944ab7fb5ab195f77bde51cffc420665d/video/slides/01-title.png
+image: https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/2a14649b57c6f267fbdcb859ac35957a61e0ee0f/video/slides/01-title.png
 screenshots:
-  - https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/1b3deab944ab7fb5ab195f77bde51cffc420665d/demo/demo.gif
+  - https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/2a14649b57c6f267fbdcb859ac35957a61e0ee0f/demo/demo.gif
 platforms: [linux, macos]
 capabilities:
   provides_tools: [sidecar_status, sidecar_audit]

@@ -1,13 +1,14 @@
 name: templeos
 title: TempleOS for Hermes
 repo: https://github.com/mojomast/hermes-templeos
-sha: c61d00eb4d36c5e3c7cd57a2985985aed8db42f0
+sha: 0c6ca433283a3a849ade3254d1276f8fd1f2e8a6
 subdir: ""
 description: >-
   TempleOS for Hermes: run a TempleOS-family OS in a local QEMU VM and share one
   live screen with the Hermes agent, which can see, type, click and write HolyC.
-  The default guest is Temple of Hermes 0.1.2; TinkerOS 5.20-rc10, stock
-  TempleOS 5.03 and ZealOS are optional. Four tools: templeos_vm (start, stop,
+  The default guest is Temple of Hermes 0.1.3, booted from a preinstalled
+  disk so C: is writable and persists; TinkerOS 5.20-rc10, stock TempleOS 5.03
+  and ZealOS are optional. Four tools: templeos_vm (start, stop,
   reset, snapshot, restore and doctor the VM), templeos_screen (PNG look, serial
   or on-screen text, wait for idle, frame hash, operator lore), templeos_input
   (type, keys, click, move, HolyC) and templeos_files (list, pull and push files
@@ -19,14 +20,16 @@ description: >-
   640×480 OS beside you. To start, on Linux x86_64 with Hermes 0.23.0 or newer,
   install QEMU (for example sudo apt install qemu-system-x86 qemu-utils), then
   run hermes plugins install templeos --enable and hermes plugins doctor
-  templeos; doctor fetches the default ISO from its official release and checks
-  its SHA-256. Open the TempleOS pane and ask Hermes to start the VM and print a
+  templeos; doctor fetches the default ISO and disk image from their official
+  release and checks their SHA-256. Open the TempleOS pane and ask Hermes to start the VM and print a
   HolyC hello world. KVM is used when /dev/kvm can be opened (usually the kvm
   group), otherwise TCG. Disclosure — spawns qemu-system-x86_64 as a child (KVM
   only when /dev/kvm can be opened, otherwise TCG) with a minimal non-secret
   child environment and keeps that QEMU process running in the background; may
   fetch a pinned ISO from its official HTTPS URL (SHA-256 verified,
-  connection-pinned, no proxy); injects keys and HolyC over QMP/serial;
+  connection-pinned, no proxy); by default also fetches a pinned preinstalled
+  qcow2 disk image the same way and boots it through a copy-on-write overlay,
+  falling back to the ISO (disk_image off disables it); injects keys and HolyC over QMP/serial;
   transfers files over a framed COM1 protocol; and stores disks and ISOs under
   plugin data. Networking is always off (-nic none). QEMU and ISOs are not
   bundled. This is a child hypervisor, not an OS sandbox. Disclosure — an
@@ -34,30 +37,34 @@ description: >-
   destination is the allow-list name bbs and the TLS endpoint comes from host
   config, never from guest text (loopback or private LAN allowed only because
   the operator set them; metadata and link-local are refused). The optional
-  TEMPLEOS_CHAT_BRIDGE_TOKEN is read only through Hermes secret scope.
-  Disclosure — observer hooks animate the Terry companion from session events;
-  they return None and do not approve, modify, or log other tools. The Desktop
+  TEMPLEOS_CHAT_BRIDGE_TOKEN is read only through Hermes secret scope. Code
+  fetched from the BBS holyc board runs only inside the VM (32 KiB / 15 s caps).
+  Disclosure — one pre_llm_call nudge may add a single short context line
+  (pending BBS replies/mail or a project next step; at most twice a day; the
+  nudge setting or TEMPLEOS_NUDGE turns it off). Other observer hooks animate
+  the Terry companion from session events; they return None and do not
+  approve, modify, or log other tools. The Desktop
   pane uses ctx.rest only. Terry is an original fan tribute with no official
   TempleOS affiliation.
 maintainer: mojomast
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
-version: "0.1.1"
+version: "0.2.0"
 docs_url: https://github.com/mojomast/hermes-templeos#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-1920x1240.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-typing.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-narrow.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-agent-log.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-user-driving.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-onboarding.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-1920x1240.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-typing.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-narrow.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-agent-log.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-user-driving.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0c6ca433283a3a849ade3254d1276f8fd1f2e8a6/docs/images/pane-onboarding.png
 known_issues:
   - "FAT floppy push is experimental; bake-off did not see hot-added FAT12 as A: on TinkerOS live CD."
   - "Primary host is Linux x86_64. Apple Silicon and Windows are untested."
-  - "Temple of Hermes 0.1.2 is the default flavor, pinned to the official GitHub release ISO; TinkerOS, TempleOS 5.03, and ZealOS remain optional. No ISO is bundled."
+  - "Temple of Hermes 0.1.3 is the default flavor, pinned to the official GitHub release ISO and a preinstalled disk image; TinkerOS, TempleOS 5.03, and ZealOS remain optional. No ISO is bundled."
 capabilities:
   provides_tools:
     - templeos_vm

@@ -1,11 +1,11 @@
 name: crown
 repo: https://github.com/SAMBAS123/hermes-crown
 sha: fe6b86874190557ef5347c1752e24a6d65f7511a
-description: "One leased speaker and a durable question/answer record for cooperating Hermes instances on one Linux host. A replacement reads the same record. An old token cannot publish after a successor takes the lease. Crown writes only its own local SQLite outlet. It does not silence Hermes chat or Telegram, and it does not follow you to a phone. Disclosure — starts a local heartbeat thread after explicit /crown here; reads and writes the operator-configured shared database outside profile storage; no network calls, no credentials, no model calls."
+description: "One leased speaker and a durable question/answer record for cooperating Hermes instances on one Linux host. A replacement reads the same record. An old token cannot publish after a successor takes the lease. Crown writes only its own local SQLite outlet. It does not silence Hermes chat or Telegram, and it does not follow you to a phone. Disclosure — after explicit /crown here, runs a local heartbeat thread; reads and writes an operator-configured shared SQLite database outside profile storage, and injects recent shared questions/answers written by other participating profiles into each turn's context as quoted data; no network calls, no credentials, no model calls."
 maintainer: SAMBAS123
 tier: community
 category: tools
-requires_hermes: ">=0.22.0"
+requires_hermes: ">=0.22.3"
 docs_url: https://github.com/SAMBAS123/hermes-crown/blob/fe6b86874190557ef5347c1752e24a6d65f7511a/README.md
 version: "0.1.0"
 title: Crown

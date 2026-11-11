@@ -185,9 +185,13 @@ class GatewaySessionCommandsMixin:
                 old_session_id=old_sid, new_session_id=new_sid, session_key=session_key)
             await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
-        # Gateway event-hook registries resolve from the ambient profile home. /new can
-        # arrive on an unscoped callback, so bind the routed session owner for both events.
-        async with self._async_profile_scope_for_source(source):
+        # Gateway event-hook registries resolve from the ambient profile home. /new can arrive on an
+        # unscoped callback, so bind the owner of the session that ended: the key names it, like the
+        # old agent's cleanup; a key with no named owner falls back to the source's routed profile.
+        from gateway.run import _async_profile_runtime_scope
+        store = getattr(self, "session_store", None)
+        owner = store._profile_home_for_key(session_key) if store is not None else None
+        async with _async_profile_runtime_scope(owner) if owner else self._async_profile_scope_for_source(source):
             await self.hooks.emit("session:end", dict(hook_payload))
             await self.hooks.emit("session:reset", dict(hook_payload))
 

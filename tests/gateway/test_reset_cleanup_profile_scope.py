@@ -105,16 +105,19 @@ async def test_unkeyed_in_turn_cleanup_keeps_the_callers_named_profile(tmp_path,
     assert seen["guard"] is not None
 
 @pytest.mark.asyncio
-async def test_reset_gateway_events_reach_only_the_owning_profile_hooks(tmp_path, monkeypatch):
-    """An unscoped /new must not dispatch B's session events to default's installed hooks."""
+@pytest.mark.parametrize("source_profile", ["b", None])
+async def test_reset_gateway_events_reach_only_the_owning_profile_hooks(tmp_path, monkeypatch, source_profile):
+    """An unscoped /new must not dispatch B's session events to default's installed hooks. The key
+    names the owner of the session that ended, so a source that routes elsewhere (no profile on it)
+    must not move the hooks either."""
     from gateway.hooks import HookRegistry, ProfileHookRegistries
     from hermes_constants import hermes_home_key
 
     prof_b = _profile_b(tmp_path, monkeypatch)
     key = "agent:b:telegram:dm:1"
     runner = _runner({key: prof_b})
-    # Canonicalized inbound source resolves to B; the confirm callback itself is unscoped.
-    runner._profile_scope_key_for_source = lambda _source: prof_b
+    # The confirm callback itself is unscoped; the source routes to B, or to the launch profile.
+    runner._profile_scope_key_for_source = lambda _source: prof_b if source_profile else tmp_path / ".hermes"
     runner._finalize_session_off_loop = AsyncMock(return_value=[])
     runner._deliver_session_end_messages = AsyncMock()
     seen = []
@@ -133,7 +136,7 @@ async def test_reset_gateway_events_reach_only_the_owning_profile_hooks(tmp_path
         hooks._by_home[hermes_home_key(home)] = registry
     runner.hooks = hooks
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", user_id="1",
-                           chat_type="dm", profile="b")
+                           chat_type="dm", profile=source_profile)
 
     secret_scope.set_multiplex_active(True)
     try:

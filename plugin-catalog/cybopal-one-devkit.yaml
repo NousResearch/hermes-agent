@@ -1,0 +1,28 @@
+name: cybopal-one-devkit
+title: CyboPal ONE DevKit (unofficial)
+repo: https://github.com/drowzeys/hermes-cybopal-one-devkit
+sha: "781405f1ac08e9f98868ce6994fbdd9831a8bcf7"
+version: "0.1.0"
+description: "Unofficial, not made or endorsed by CyboPal. Drive a CyboPal ONE (a 27-inch 4K screen on a 6-DOF robotic arm with the Pauli companion display) from Hermes: follow, posture presets, exact poses, gestures, both screens, both cameras and an emergency stop. Works today against the open source CyboPal ONE DevKit live simulator. Disclosure: HTTP calls only to the device_url setting (default http://127.0.0.1:5000), never following redirects or environment proxies, no other service and no telemetry; saves camera pictures in HERMES_HOME/plugin-data/cybopal-one-devkit/cameras (keeps the newest 30, deleting only older pictures it took); no secrets, shell commands, subprocesses or background threads; a tool call blocks for at most 10 s settling, or 60 s for a routine. Moves physical hardware when pointed at a real device: motion is refused while E-stopped and only cleared by an explicit clear_estop, and allow_motion off refuses all motion."
+maintainer: drowzeys
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+image: "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/781405f1ac08e9f98868ce6994fbdd9831a8bcf7/assets/catalog/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/781405f1ac08e9f98868ce6994fbdd9831a8bcf7/assets/catalog/01-hermes-driving.jpg"
+  - "https://raw.githubusercontent.com/drowzeys/hermes-cybopal-one-devkit/781405f1ac08e9f98868ce6994fbdd9831a8bcf7/assets/catalog/02-emergency-stop.jpg"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - cybopal_status
+    - cybopal_mode
+    - cybopal_pose
+    - cybopal_display
+    - cybopal_look
+    - cybopal_routine
+    - cybopal_stop
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

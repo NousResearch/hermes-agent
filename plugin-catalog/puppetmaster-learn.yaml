@@ -1,6 +1,6 @@
 name: puppetmaster-learn
 repo: https://github.com/professorpalmer/Puppetmaster
-sha: "9b321fc497a56fa5231b4c6f97223a20ea4a52f8"
+sha: "5dc5fc1ecb9bfcdadf028872cf8d38a27f477ba7"
 subdir: puppetmaster/hermes_plugin/puppetmaster-learn
 version: "0.2.1"
 title: Puppetmaster Learn
@@ -9,7 +9,7 @@ maintainer: professorpalmer
 tier: community
 category: automation
 requires_hermes: ">=0.20.4"
-docs_url: https://github.com/professorpalmer/Puppetmaster/blob/9b321fc497a56fa5231b4c6f97223a20ea4a52f8/puppetmaster/hermes_plugin/puppetmaster-learn/README.md
+docs_url: https://github.com/professorpalmer/Puppetmaster/blob/5dc5fc1ecb9bfcdadf028872cf8d38a27f477ba7/puppetmaster/hermes_plugin/puppetmaster-learn/README.md
 readme: true
 capabilities:
   provides_tools: []

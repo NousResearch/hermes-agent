@@ -1,0 +1,18 @@
+name: twring
+title: Twring
+repo: https://github.com/saasagelabs/twring
+sha: 5a7083e3c9d1cd656f1fd85da771d6eee3d2267a
+subdir: integrations/hermes
+tier: community
+category: platform
+maintainer: saasagelabs
+version: "0.1.1"
+requires_hermes: ">=0.23.1"
+description: "Call your Hermes from your phone and let it call you back, through the Twring app (iPhone and Android): live two-way voice calls and typed chat in one Hermes conversation, dangerous-command approvals answered by voice or tap through Hermes's own approval card, and a phone ring when a scheduled job delivers. Twring does the speech; Hermes keeps its model, memory and tools. Disclosure: while the gateway runs, one outbound WebSocket to the linked Twring server (api.twring.com by default) carries turn text in and Hermes's replies, approval questions (command preview and reason) and cron results out; HTTPS calls to the same server link the account and ring the phone. One link token (TWRING_TOKEN), saved by `hermes twring link` through Hermes's .env route; no files of its own, no shell commands, no telemetry, no self-update."
+docs_url: https://github.com/saasagelabs/twring/blob/5a7083e3c9d1cd656f1fd85da771d6eee3d2267a/integrations/hermes/README.md
+image: https://raw.githubusercontent.com/saasagelabs/twring/5a7083e3c9d1cd656f1fd85da771d6eee3d2267a/integrations/hermes/assets/banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [TWRING_TOKEN]

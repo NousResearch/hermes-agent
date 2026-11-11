@@ -1,8 +1,6 @@
-# Catalog entry draft (sha / image pin to published commits).
-
 name: earnfi
 repo: https://github.com/earnfidotfun/earnfi-hermes-plugin
-sha: "16915f1fea01256462ddff99e74dda464d907684"
+sha: "a5f148157514fb27f9029e8e1ef3d55a9a8984a3"
 description: >-
   Hire humans and agents, fund real-world work via x402, manage escrow,
   and retrieve verifiable receipts — Work + Money for Hermes.
@@ -10,11 +8,11 @@ maintainer: EarnFi
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "1.4.6"
+version: "1.4.7"
 title: EarnFi
 docs_url: https://docs.earnfi.fun
 readme: true
-image: https://raw.githubusercontent.com/earnfidotfun/earnfi-hermes-plugin/16915f1fea01256462ddff99e74dda464d907684/assets/earnfi-banner.jpg
+image: https://raw.githubusercontent.com/earnfidotfun/earnfi-hermes-plugin/a5f148157514fb27f9029e8e1ef3d55a9a8984a3/assets/earnfi-banner.jpg
 capabilities:
   provides_tools:
     - earnfi_doctor

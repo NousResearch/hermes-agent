@@ -1,15 +1,15 @@
 name: prevent-this-next-time
 title: Prevent This Next Time
 repo: https://github.com/AceVikings/prevent-this-next-time
-sha: 4cd09205b61089674dbdceb361af846489398c54
+sha: aaa2126ab7154deb9907905cdfd1613e22cfb919
 subdir: prevent-this-next-time
-version: "0.1.0"
+version: "0.2.0"
 requires_hermes: ">=0.23.1"
 description: "Block configured connector writes or require the owner's approval from Telegram. Disclosure — the plugin's pre_tool_call hook blocks every tool in the profile (core tools included) until `rulebook/config.json` exists and is valid, and every non-rulebook tool when `protected` is on, so install it in a dedicated profile; connector writes declared in that config with no rule are sent by rulebook_write straight away without a Hermes approval prompt (POST/PUT/PATCH/DELETE to the configured HTTPS hosts with the profile's RULEBOOK_* tokens); ask/block rules and approvals are managed only from the owner's Telegram DM."
 maintainer: AceVikings
 tier: community
 category: tools
-docs_url: https://github.com/AceVikings/prevent-this-next-time/blob/4cd09205b61089674dbdceb361af846489398c54/README.md
+docs_url: https://github.com/AceVikings/prevent-this-next-time/blob/aaa2126ab7154deb9907905cdfd1613e22cfb919/README.md
 known_issues:
   - "Chat rule management and approvals require the owner's Telegram DM."
   - "The optional protected profile launcher is tested against Hermes v0.23.1."

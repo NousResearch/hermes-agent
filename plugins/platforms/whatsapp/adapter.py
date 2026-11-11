@@ -285,8 +285,9 @@ from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsap
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
-from gateway.platforms.helpers import cancel_task, caption_is_command
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import caption_is_command
 from utils import env_int
 
 

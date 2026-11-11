@@ -23,7 +23,8 @@ _DENIAL_RE = re.compile(r"\b(access\s+denied|unusual[_\s-]?activity)\b", re.IGNO
 
 
 def is_costar_card(title: str | None, body: str | None) -> bool:
-    return "costar" in f"{title or ''}\n{body or ''}".casefold()
+    text = f"{title or ''}\n{body or ''}".casefold()
+    return "costar" in text or "florida" in text or is_warden_saved_search(title, body)
 
 
 def has_costar_contract(conn: sqlite3.Connection, task_id: str) -> bool:

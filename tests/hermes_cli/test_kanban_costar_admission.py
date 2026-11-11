@@ -71,6 +71,28 @@ def test_costar_user_model_exception_and_warden_luna_exception_are_recorded(kanb
         assert warden_event.payload["kind"] == "warden_saved_search"
 
 
+def test_warden_saved_search_without_costar_text_gets_contract_and_luna_exception(kanban_home: Path) -> None:
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "Warden saved-search hunt",
+        "body": "Refresh active listings.",
+        "assignee": "operator",
+        "model": "gpt-5.6-luna",
+        "provider": "openai-codex",
+    }))
+
+    assert result["ok"] is True, result
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, result["task_id"])
+        assert task is not None
+        assert (task.model_override, task.provider_override) == ("gpt-5.6-luna", "openai-codex")
+        created = next(event for event in kb.list_events(conn, task.id) if event.kind == "created")
+        exception = next(event for event in kb.list_events(conn, task.id) if event.kind == "costar_model_exception")
+        assert created.payload["costar_contract"]["cdp_url"] == "http://127.0.0.1:9224"
+        assert exception.payload["kind"] == "warden_saved_search"
+
+
 def test_do_not_start_card_is_sticky_across_parent_completion_and_recompute(kanban_home: Path) -> None:
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="operator")
@@ -148,7 +170,7 @@ def test_dispatch_refuses_provider_hold_and_second_costar_owner(kanban_home: Pat
         kb.claim_task(conn, blocked)
         assert kb.block_task(conn, blocked, reason="Access Denied", expected_run_id=kb.get_task(conn, blocked).current_run_id)
         waiting = kb.create_task(
-            conn, title="Warden saved-search hunt", body=_costar_body(), assignee="operator",
+            conn, title="Warden saved-search hunt", body="Refresh active listings.", assignee="operator",
             model_override="gpt-5.6-luna", provider_override="openai-codex",
         )
         result = kbd.dispatch_once(conn, spawn_fn=spawn)

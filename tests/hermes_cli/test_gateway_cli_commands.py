@@ -157,6 +157,16 @@ def test_handoff_refusal_from_the_gateway_is_shown_and_nothing_waits(handoff_cli
     assert not [call for call in conn.calls if call[0] == "handoff.state"]
 
 
+def test_a_handoff_refusal_names_what_to_fix_not_its_code(handoff_cli, capsys):
+    """The owner's refusal code (``invalid_params``) is printed with its detail, the actionable part."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    detail = "no home channel configured for telegram; set one with /sethome on the destination chat first"
+    cli, _conn = handoff_cli([], **{"handoff.request": GatewayRPCError(
+        "invalid_params", code=4001, data={"reason": "invalid_params", "field": "platform", "detail": detail})})
+    assert cli.process_command("/handoff telegram") is True
+    assert f"/handoff: {detail}" in capsys.readouterr().out
+
+
 def _save_cli(conn, tmp_path, monkeypatch):
     """A gateway-backed CLI with one said line in its mirror, run from ``tmp_path/work``."""
     from hermes_cli.gateway_session_store import GatewaySessionStore

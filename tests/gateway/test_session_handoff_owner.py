@@ -36,7 +36,8 @@ async def test_handoff_to_telegram_queues_the_row_the_watcher_claims(tmp_path, m
     state = await _call(owner, 'handoff.state', session_id=ref.session_id)
     assert state['result'] == {'state': 'pending', 'platform': 'telegram', 'error': ''}
     again = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='telegram')
-    assert again['error']['message'] == 'session_busy', again
+    assert again['error']['data']['reason'] == 'session_busy', again
+    assert again['error']['message'] == 'a handoff of this session is already in flight; wait for it to settle'
     # A claimed row is the watcher's: the client's timeout cannot fail it.
     assert authority.db.claim_handoff(ref.session_id)
     late = await _call(owner, 'handoff.fail', session_id=ref.session_id, error='client poll timeout')
@@ -51,7 +52,11 @@ async def test_handoff_refuses_before_queueing_what_the_watcher_could_never_deli
     ref = _local(authority, owner, tmp_path)
     for platform, field in (('telegram', 'platform'), ('nowhere', 'platform')):
         reply = await _call(owner, 'handoff.request', session_id=ref.session_id, platform=platform)
-        assert reply['error']['message'] == 'invalid_params' and reply['error']['data']['field'] == field, reply
+        assert reply['error']['data']['reason'] == 'invalid_params' and reply['error']['data']['field'] == field, reply
+    # Desktop shows ``error.message`` as is: it says what to fix, never the bare code.
+    assert reply['error']['message'] == "unknown platform 'nowhere'", reply
+    no_home = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='telegram')
+    assert no_home['error']['message'].startswith('no home channel configured for telegram'), no_home
     unknown = await _call(owner, 'handoff.request', session_id='no-such-session', platform='telegram')
     assert unknown['error']['message'] == 'not_found', unknown
     assert authority.db.list_pending_handoffs() == []
@@ -95,5 +100,5 @@ async def test_handoff_to_a_relay_fronted_platform_is_queued(tmp_path, monkeypat
     monkeypatch.setenv('GATEWAY_RELAY_PLATFORMS', 'slack')  # a platform the relay does not front
     authority.db.fail_handoff(ref.session_id, 'reset')
     refused = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='discord')
-    assert refused['error']['message'] == 'invalid_params', refused
+    assert refused['error']['data']['reason'] == 'invalid_params', refused
     authority.db.close()

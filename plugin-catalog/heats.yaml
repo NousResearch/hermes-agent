@@ -1,6 +1,6 @@
 name: heats
 repo: https://github.com/EconLearn/hermes-heats
-sha: 4ac97f80d6ec74917803eb41bab1533f8054bdfd
+sha: 2bcee10e9ca6489b7fd23bb0362a36eacdae269f
 description: >-
   Your tests, not the model, decide when a fix is done. A pre_verify referee runs the repo's check when
   the agent edited code and is about to finish, and sends it back with the real test output if the check
@@ -12,7 +12,8 @@ description: >-
   approved with /heats trust (none by default; it will not run a check whose defining files the agent
   edited in that turn); heats_run asks for your approval before running a model-supplied or untrusted
   check; checks get a minimal environment (no provider keys); races create and remove git worktrees and
-  branches under <repo>/.heats/, run the check in each worktree and launch N subagents on your delegation
+  branches under <repo>/.heats/, run the check in each worktree (never for an attempt that
+  edited what the check runs) and launch N subagents on your delegation
   model (cost scales with N); saves
   reports and patches under plugin-data/heats; Desktop routes under /api/plugins/heats/; no network calls
   of its own, no telemetry, no credentials.
@@ -21,7 +22,7 @@ tier: community
 category: tools
 docs_url: https://github.com/EconLearn/hermes-heats#readme
 requires_hermes: ">=0.23.0"
-version: "0.4.0"
+version: "0.4.1"
 platforms: [linux, macos]
 capabilities:
   provides_tools: [heats_run, heats_wait, heats_apply]

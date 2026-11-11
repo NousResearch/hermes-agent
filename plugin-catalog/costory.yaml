@@ -1,0 +1,19 @@
+name: costory
+title: Costory FinOps Agent
+repo: https://github.com/costory-io/costory-finops-mcp-skills
+sha: 560ae126a861efcb8bebfb8739e0639e339072e4  # main tip 2026-11-11, squash merge of costory-finops-mcp-skills#38 (v2 copy)
+subdir: plugins/costory
+version: "0.12.9"
+description: "FinOps harness MCP for platform teams. Every cloud, data and LLM bill (AWS, Google Cloud, Azure, Oracle Cloud, Snowflake, Databricks, OpenAI, Anthropic and more) normalized in BigQuery and allocated to your teams. Read-only cloud access. Starter from $300/month, 30-day free trial. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/) connecting Hermes to Costory's hosted MCP at https://app-api.costory.io/mcp (Streamable HTTP, OAuth). Bundles seven FinOps skills: query, cost-change-investigation, virtual-dimensions, dashboards, reports, recipes and bigquery. Disclosure: hosted-only connector with no local code beyond the pin; every tool call goes to app-api.costory.io after browser OAuth (enterprise SSO on Costory Team and above). The tool set is served by the remote server at runtime and is not covered by the pinned sha. Costory has write-capable tools that create or change Costory objects only (alerts, reports, dashboards, events, allocation rules, archives), never cloud resources; plugin.json sets extensions.com.nousresearch.hermes.servers.costory.trust: untrusted so Hermes asks before writes and refuses them in unattended runs. No mcp-remote, no local credentials, no self-updater."
+maintainer: Costory
+tier: community
+category: tools
+docs_url: https://docs.costory.io/features/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

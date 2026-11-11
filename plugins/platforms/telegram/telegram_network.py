@@ -333,8 +333,12 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         async with self._fallback_lock:
             retired.extend(self._fallbacks.values())
             self._fallbacks.clear()
+        # Every detached pool is retired before any close is awaited, and the closes run side by
+        # side: one hung close (cut off by the adapter's bounded drain) must not leave the others
+        # unretired, because nothing could reach them again once both maps are empty.
         for transport in retired:
-            await transport.retire()
+            transport.mark_retired()
+        await asyncio.gather(*(transport.retire() for transport in retired))
 
 
 def _normalize_fallback_ips(values: Iterable[str]) -> list[str]:

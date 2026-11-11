@@ -148,10 +148,14 @@ class PoolGeneration(httpx.AsyncBaseTransport):
         except (OSError, RuntimeError, httpx.HTTPError) as exc:  # a broken pool's close never masks the caller's error
             logger.debug("[Telegram] Error closing retired Telegram pool: %s", exc)
 
+    def mark_retired(self) -> None:
+        """Take no new requests; from here the last request to finish closes the pool."""
+        self._retired = True
+
     async def retire(self) -> None:
         """Close now when idle; otherwise when the last request using it finishes, or after
         ``RETIRE_GRACE_S``."""
-        self._retired = True
+        self.mark_retired()
         if self._active <= 0:
             await self._close()
             return

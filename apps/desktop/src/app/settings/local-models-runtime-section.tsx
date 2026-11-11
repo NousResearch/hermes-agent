@@ -17,6 +17,13 @@ export interface LocalModelsRuntimeSectionProps {
   lastError: LocalRuntimeJob | undefined
 }
 
+// A repin under the same tag (a runtime library joining the archive set) is not "a newer build".
+function updateDescription(copy: LocalModelsActionScope['copy'], status: LocalModelsStatus): string {
+  return status.tag === status.configured_tag
+    ? copy.updateSameBuildDetail(status.tag)
+    : copy.updateDetail(status.configured_tag, status.tag)
+}
+
 export function LocalModelsRuntimeSection({ status, jobs, lastError }: LocalModelsRuntimeSectionProps): ReactElement {
   const scope: LocalModelsActionScope = useLocalModelsActionScope()
   const { client, copy, owner } = scope
@@ -122,7 +129,7 @@ export function LocalModelsRuntimeSection({ status, jobs, lastError }: LocalMode
               {copy.updateAction}
             </Button>
           }
-          description={copy.updateDetail(status.configured_tag, status.tag)}
+          description={updateDescription(copy, status)}
           title={copy.updateTitle}
         />
       )}

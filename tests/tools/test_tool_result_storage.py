@@ -251,8 +251,7 @@ class TestMaybePersistToolResult:
         assert "tc_456.txt" in result
         assert len(result) < len(content)
 
-    def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+    def test_persists_unwrapped_content_via_stdin(self):
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -275,7 +274,7 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args_list[1][1]["stdin_data"] == content
+        assert env.execute.call_args_list[1][1]["stdin_data"].endswith("</tool-result-metadata>\n\n" + raw)
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
@@ -701,12 +700,75 @@ class TestMcpEnvelopeSpillover:
         assert text == markdown
         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
 
-    def test_non_envelope_json_still_verbatim(self):
-        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
-        maybe_persist_tool_result(
-            content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
+    def test_builtin_tool_spills_newlines_and_metadata(self):
+        output = "terminal output line\n" * 2_000
+        content = json.dumps({"output": output, "exit_code": 0, "error": None})
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_terminal_text",
             env=None, threshold=30_000)
-        assert (get_spillover_dir() / "tc_json_verbatim.txt").read_text(encoding="utf-8") == content
+
+        assert PERSISTED_OUTPUT_TAG in result
+        spill = (get_spillover_dir() / "tc_terminal_text.txt").read_text(encoding="utf-8")
+        head, _, text = spill.partition("\n</tool-result-metadata>\n\n")
+        assert text == output
+        assert json.loads(head.removeprefix("<tool-result-metadata>\n")) == {
+            "error": None, "exit_code": 0, "text_field": "output"}
+        assert '"exit_code": 0' in result
+
+    def test_lists_and_dicts_follow_the_text_so_the_preview_shows_it(self):
+        body = "# Big skill\n\n" + "".join(f"Step {i}: do the thing carefully.\n" for i in range(3_000))
+        payload = {
+            "success": True,
+            "name": "big-skill",
+            "description": "Use when testing spill layout.",
+            "tags": ["Testing", "Spill"],
+            "content": body,
+            "skill_dir": "/srv/skills/testing/big-skill",
+            "linked_files": {"references": [f"references/topic-{i}.md" for i in range(60)]},
+            "usage_hint": "To view linked files, call skill_view(name, file_path).",
+            "metadata": {"hermes": {"tags": ["Testing"], "related_skills": []}},
+        }
+        result = maybe_persist_tool_result(
+            content=json.dumps(payload, ensure_ascii=False), tool_name="skill_view",
+            tool_use_id="tc_skill_layout", env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert body[:1_000] in preview
+        assert '"name": "big-skill"' in preview
+        spill = (get_spillover_dir() / "tc_skill_layout.txt").read_text(encoding="utf-8")
+        head, _, rest = spill.partition("\n</tool-result-metadata>\n\n")
+        text, _, tail = rest.partition("\n\n<tool-result-metadata>\n")
+        assert text == body
+        fields = {**json.loads(head.removeprefix("<tool-result-metadata>\n")),
+                  **json.loads(tail.removesuffix("\n</tool-result-metadata>\n"))}
+        assert fields.pop("text_field") == "content"
+        assert fields == {key: value for key, value in payload.items() if key != "content"}
+
+    def test_long_terminal_notes_stay_in_the_preview(self):
+        note = ("Output exceeded the capture window (head+tail shown). Full output saved to "
+                "/srv/logs/" + "build-" * 40 + "out.log — page it with read_file.")
+        content = json.dumps({"output": "build line\n" * 5_000, "exit_code": 2, "error": None,
+                              "truncation_note": note}, ensure_ascii=False)
+        result = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_terminal_note",
+            env=None, threshold=30_000)
+
+        preview = result.split("Preview (first", 1)[1]
+        assert note in preview
+        assert '"exit_code": 2' in preview
+
+    def test_unpageable_json_strings_still_verbatim(self):
+        cases = {
+            "tc_json_short": {"output": "one line", "exit_code": 0, "error": None},
+            "tc_json_nul": {"output": "abcdefghijklmnop\x00\n" * 2_000, "exit_code": 0},
+            "tc_json_minor": {"output": "line\n" * 100, "rows": list(range(2_000))},
+        }
+        for tool_use_id, payload in cases.items():
+            content = json.dumps(payload)
+            maybe_persist_tool_result(
+                content=content, tool_name="terminal", tool_use_id=tool_use_id,
+                env=None, threshold=1)
+            assert (get_spillover_dir() / f"{tool_use_id}.txt").read_text(encoding="utf-8") == content
 
     def test_structured_content_only_result_still_verbatim(self):
         content = json.dumps({"result": {"blob": "z" * 40_000}})

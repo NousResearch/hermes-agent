@@ -51,7 +51,6 @@ class TestCleanShutdownMarker:
         runner._stop_task = None
         runner._running_agents = {}
         runner._pending_messages = {}
-        runner._pending_approvals = {}
         runner._background_tasks = set()
         runner._shutdown_event = MagicMock()
         runner._restart_drain_timeout = 5

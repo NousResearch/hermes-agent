@@ -628,6 +628,7 @@ def finalize_turn(
 
     vetoed = _turn_exit_reason == PRE_LLM_BLOCK_EXIT_REASON  # a pre_llm_call block: no model call at all
 
+    agent._empty_response_retry_hint = None
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,

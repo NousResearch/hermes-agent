@@ -33,13 +33,9 @@ from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
 from hermes_cli.profiles import ProfileIdentitySettlementPending
-from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
-)
 from hermes_cli.web_server_gateway import _strip_session_list_rows
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
 from hermes_cli.web_server_profiles import (
-    _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
+    _fallback_profile_dicts, _hub_action_name,
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
@@ -49,7 +45,8 @@ from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
     ProfileSoulUpdate, ProfileDescriptionUpdate, ProfileModelUpdate, ProfileDescribeAuto,
     SessionPrScanBody)
-from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+from hermes_cli.web_server_profiles import _hermes_home_scope
+from hermes_cli.profile_provision import write_profile_model as _write_profile_model
 
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -107,73 +104,6 @@ def _profile_setup_command(name: str) -> str:
     _resolve_profile_dir(name)
     return "hermes setup" if name == "default" else f"{name} setup"
 
-
-def _scope_profile_name(path: Path) -> Optional[str]:
-    """Map a profile directory onto the query name ``_config_profile_scope`` expects: None for
-    the process home (current-profile semantics: launch secret scope, no home override),
-    ``"default"`` for the default root (its basename -- ``.hermes`` or a custom root -- is not a
-    profile name; launched from ``profiles/<name>`` the root is a *different* profile), the
-    directory name for ``profiles/<name>``."""
-    from hermes_constants import get_default_hermes_root
-    resolved = path.resolve()
-    if resolved == get_process_hermes_home().resolve():
-        return None
-    if resolved == get_default_hermes_root().resolve():
-        return "default"
-    return path.name
-
-
-def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None,
-                         base_url: str = "") -> None:
-    """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped)
-    through the same validated /model shape as ``POST /api/model/set``.
-
-    ``validate_in`` is the home whose ``providers:``/``.env``/catalog vouch for the pick (default:
-    ``profile_dir`` itself). Profile-create passes the dashboard's own home: the picker that offered
-    the model read THAT catalog, and a just-created profile has no credentials yet, so validating
-    in the empty profile rejected every non-env provider (anthropic, ollama, custom).
-
-    Both spans enter ``_config_profile_scope`` (home + secret scope), matching ``/api/model/set``:
-    once the dashboard has served a secondary profile, ``switch_model``'s ``key_env`` probe goes
-    through ``get_secret``, which fails closed without a scope and reports the provider as
-    unconnected (UnscopedSecretError class, #114676).
-
-    ``base_url`` is the endpoint a bare ``custom``/``local`` pick binds to (a fresh profile's config
-    names none); other providers ignore it."""
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.config_backend import refusing_locked_omissions
-    with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
-        provider, model = _normalize_main_model_assignment(provider, model)
-        result = _validated_main_model_selection(load_config(), provider, model, base_url)
-    with _config_profile_scope(_scope_profile_name(profile_dir)), _CONFIG_MUTATION_LOCK:  # RMW span
-        cfg = load_config()
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
-        with refusing_locked_omissions("model"):
-            save_config(cfg)
-
-
-def _disable_unselected_skills(profile_dir: Path, keep: list[str]) -> int:
-    """Disable every installed skill in ``profile_dir`` not in ``keep``; returns how many were
-    newly disabled. Profiles manage activation via a *disabled* list (everything installed is
-    active by default); the builder's skill step has "replace" semantics. Hub skills are
-    installed separately via subprocess and are active on install."""
-    from hermes_cli.config import load_config
-    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    keep_set = {s.strip() for s in keep if s and s.strip()}
-    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
-        skills_root = profile_dir / "skills"
-        installed = ([md.parent.name for md in skills_root.rglob("SKILL.md")]
-                     if skills_root.is_dir() else [])
-        cfg = load_config()
-        disabled = get_disabled_skills(cfg)
-        newly = 0
-        for name in installed:
-            if name not in keep_set and name not in disabled:
-                disabled.add(name)
-                newly += 1
-        if newly:
-            save_disabled_skills(cfg, disabled)
-    return newly
 
 # Returned by the offloaded file readers below to mean "the file is not there", which a plain
 # ``None`` cannot express: ``desktop.json`` may legitimately hold the document ``null``.
@@ -829,62 +759,32 @@ async def list_profiles_endpoint():
 
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
-    from hermes_cli import profiles as profiles_mod
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
         # Clone config/skills/SOUL (or full state when clone_all) from the named source.
-        clone, clone_from, clone_config = True, explicit_source, not body.clone_all
+        clone_from, clone_config = explicit_source, not body.clone_all
     elif body.clone_all:
         # Historical dashboard behavior: clone-all with no explicit source copies default.
-        clone, clone_from, clone_config = True, "default", False
+        clone_from, clone_config = "default", False
     else:
-        clone = body.clone_from_default
-        clone_from = "default" if clone else None
-        clone_config = clone
+        clone_from = "default" if body.clone_from_default else None
+        clone_config = body.clone_from_default
+    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    request = ProfileCreateRequest(
+        name=body.name, clone_from=clone_from, clone_all=body.clone_all, clone_config=clone_config,
+        no_skills=body.no_skills, description=body.description, clone_channels=body.clone_channels,
+        soul=body.soul,
+        model=model, provider=provider, model_validate_in=get_process_hermes_home(),
+        mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills),
+        mirror_credentials=body.mirror_credentials, share_auth=body.share_auth)
     with _profile_errors("POST /api/profiles failed", not_found=(),
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
         # Off the loop: creation asks a live multiplexer to serve the profile now over its control
         # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
-        path = await asyncio.to_thread(
-            profiles_mod.create_profile,
-            name=body.name, clone_from=clone_from, clone_all=body.clone_all,
-            clone_config=clone_config, no_skills=body.no_skills, description=body.description,
-            clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))
-        # Match the CLI flow: fresh named profiles get the bundled skills (cloning already
-        # copied the source's; no_skills wrote the opt-out marker so seeding no-ops) and a
-        # ~/.local/bin wrapper when the alias is safe.
-        if not clone:
-            profiles_mod.seed_profile_skills(path, quiet=True)
-        if not profiles_mod.check_alias_collision(body.name):
-            profiles_mod.create_wrapper_script(body.name)
-
-    # Everything below is best-effort: the profile already exists, so a hiccup must not 500
-    # the whole create — the user can fix it from the dashboard or `<profile> setup`.
-    provider = (body.provider or "").strip()
-    model = (body.model or "").strip()
-    # Validate against THIS dashboard's home (the catalog the picker offered), not the empty
-    # new profile; the write still lands in the new profile. A rejection is reported (not just
-    # logged) so the dialog can say WHY the model was not set.
-    model_error = ""
-
-    def _set_model() -> bool:
-        nonlocal model_error
-        try:
-            _write_profile_model(path, provider, model, validate_in=get_process_hermes_home())
-        except HTTPException as exc:
-            model_error = str(exc.detail)
-            return False
-        return True
-
-    model_set = bool(provider and model) and _best_effort(
-        "Setting model for new profile %s failed", body.name, fn=_set_model, default=False)
-    mcp_written = _best_effort(
-        "Writing MCP servers for new profile %s failed", body.name, default=0,
-        fn=lambda: _write_profile_mcp_servers(path, body.mcp_servers)) if body.mcp_servers else 0
-    # "keep" has replace semantics; skipped when empty (legacy: keep the bundle).
-    skills_disabled = _best_effort(
-        "Applying skill selection for new profile %s failed", body.name, default=0,
-        fn=lambda: _disable_unselected_skills(path, body.keep_skills)) if body.keep_skills else 0
+        result = await asyncio.to_thread(provision_profile, request)
+    path = result.path
 
     # Hub installs spawn async, scoped via `-p <name>` (a fresh subprocess re-binds
     # skills_hub.SKILLS_DIR at import). PIDs go back for the UI to poll.
@@ -898,9 +798,10 @@ async def create_profile_endpoint(body: ProfileCreate):
             fn=lambda: _spawn_install(ident))}
         for ident in ((i or "").strip() for i in body.hub_skills) if ident]
 
-    return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set, "model_error": model_error,
-            "mcp_written": mcp_written, "skills_disabled": skills_disabled,
-            "hub_installs": hub_installs, "soul_set": body.soul is not None}
+    return {"ok": True, "name": body.name, "path": str(path), "model_set": result.model_set,
+            "model_error": result.model_error, "mcp_written": result.mcp_written,
+            "skills_disabled": result.skills_disabled, "hub_installs": hub_installs,
+            "soul_set": body.soul is not None, "warnings": result.warnings}
 
 
 @router.get("/api/profiles/active")
@@ -983,8 +884,8 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
     with _profile_errors("PATCH /api/profiles/%s failed", name,
                          bad_request=(ValueError, FileExistsError)):
-        # Stops a running gateway (10 s poll), renames the directory, rewrites the Honcho
-        # host blocks and regenerates the wrapper script.
+        # Stops a running gateway (10 s poll), renames the directory, lets the profile's memory
+        # provider re-key its state and regenerates the wrapper script.
         path = await run_in_threadpool(profiles_mod.rename_profile, name, body.new_name)
     # For the default profile the rename lands as a presentation-only display_name; the
     # canonical id ("default") is always returned so callers keying on `name` stay correct.
@@ -1078,8 +979,9 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     model = (body.model or "").strip()
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model are required")
+    from hermes_cli.model_assignment import ModelAssignmentRejected
     with _profile_errors("PUT /api/profiles/%s/model failed", name,
-                         not_found=(), bad_request=()):
+                         not_found=(), bad_request=(ModelAssignmentRejected,)):
         await run_in_threadpool(_write_profile_model, profile_dir, provider, model)
     return {"ok": True, "provider": provider, "model": model}
 

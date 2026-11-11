@@ -1,0 +1,23 @@
+name: joust
+repo: https://github.com/mrnetwork0001/Joust
+sha: "b88242eb72f50c6dfa284d1f4335e8b59b30afbf"
+title: Joust
+description: "Races 2 to 4 coding subagents on one task, each in its own Git worktree, judges them with your tests and merges only the best patch after you approve. joust_launch provisions one detached worktree per contender under the profile's plugin-data folder (uncommitted tracked edits are mirrored and committed as the baseline) and, inside an agent turn, launches one Hermes subagent per contender through ctx.subagent_lifecycle, optionally each on its own model. A tool_request middleware rewrites each child session's file paths, V4A patch headers, search roots and terminal workdir into its worktree, and a pre_tool_call hook vetoes escapes. joust_evaluate runs the bout's test command in every worktree through the Hermes terminal tool, 1 to 7 times (Flake Shield: every run must pass, median speed, flaky contenders cannot win), scoring Correctness 60, Speed 25 and Diff minimalism 15. joust_crossfire fires each contender's new tests at every rival worktree, and survival is the first tiebreak. joust_merge applies the winner with git apply behind Hermes's approval gate, after saving a rollback patch and keeping every contender as a joust/<bout>/<contender> branch; joust_report writes a markdown bout report. Also adds /joust, the hermes joust CLI, the joust-arena skill and a Desktop half (/joust page, right pane, status-bar chip, palette command, ::joust-bout inline card). Disclosure — runs local git in the repository you name (rev-parse, worktree add/remove/prune, add -N, diff, apply, apply -R, reset, branch, write-tree and commit-tree; init/add/commit for its demo repo and the copy fallback, which copies the repository into the profile's plugin-data folder), registers worktrees in that repository's .git/worktrees until joust_merge action=cleanup, creates joust/<bout>/<contender> branches (config keep_loser_branches, default on), and writes the approved patch into your working tree. Contender subagents' file paths and terminal workdir are redirected into their worktrees, but their shell commands are not sandboxed beyond Hermes's normal approvals. Test commands (yours or the model's) run only through the Hermes terminal tool, also on a background thread when a contender subagent finishes (auto_evaluate_on_stop, default on); the CLI and dashboard refuse to judge, and only the self-contained demo uses a bounded subprocess with plugin-authored commands. Captured output is secret-scrubbed with a stdlib regex and stored, with diffs, goals and repository paths, in <HERMES_HOME>/plugin-data/joust/joust.db (SQLite); bout snapshots are broadcast to connected Hermes Desktop windows and the Desktop half polls the dashboard API while visible. No network calls, no credentials, no telemetry, no Python dependencies. Linux and macOS."
+maintainer: mrnetwork0001
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/mrnetwork0001/Joust#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/mrnetwork0001/Joust/b88242eb72f50c6dfa284d1f4335e8b59b30afbf/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/b88242eb72f50c6dfa284d1f4335e8b59b30afbf/assets/screenshots/arena-page.png
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/b88242eb72f50c6dfa284d1f4335e8b59b30afbf/assets/screenshots/inline-card.png
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/b88242eb72f50c6dfa284d1f4335e8b59b30afbf/assets/screenshots/flake-shield-output.png
+  - https://raw.githubusercontent.com/mrnetwork0001/Joust/b88242eb72f50c6dfa284d1f4335e8b59b30afbf/assets/screenshots/plugins-tab.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [joust_launch, joust_evaluate, joust_diff, joust_steer, joust_merge, joust_status, joust_crossfire, joust_report]
+  provides_hooks: [pre_tool_call, post_tool_call, subagent_start, subagent_stop]
+  provides_middleware: [tool_request]
+  requires_env: []

@@ -547,7 +547,7 @@ SDK.fetchJSON("/api/plugins/my-plugin/data")
   .catch((err) => console.error("API call failed:", err));
 ```
 
-`fetchJSON` injects the session auth token, surfaces errors as thrown exceptions, and parses JSON automatically.
+`fetchJSON` injects the session auth token, surfaces errors as thrown exceptions, and parses JSON automatically. `fetchJSON` and `authedFetch` only call this dashboard's own origin: an absolute URL to another host is rejected rather than sent the session token, so fetch third-party URLs (CDN assets, a game server) with plain `fetch`.
 
 #### Calling built-in Hermes endpoints
 

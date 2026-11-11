@@ -309,10 +309,15 @@ class SessionTelegramTopicsMixin:
     def bind_telegram_topic(
         self, *, chat_id: str, thread_id: str, user_id: str, session_key: str,
         session_id: str, managed_mode: str = "auto", profile_name: str = "default",
-    ) -> None:
+        expected_session_id: Optional[str] = None, move_session: bool = False,
+    ) -> bool:
         """Bind one Telegram DM topic thread to one Hermes session. A session may be linked to
         only one topic: rebinding the same pair is idempotent; linking the session to a
-        different topic raises ValueError."""
+        different topic raises ValueError, unless ``move_session`` (a handoff moves the
+        conversation) and that topic is in the same profile: its row is dropped in this transaction.
+        ``expected_session_id`` makes the rebind a compare-and-swap: it only replaces a row still
+        naming that id (a concurrent /new or /topic off that rebound or cleared the topic wins).
+        Returns False when the CAS refused."""
         self.apply_telegram_topic_migration()
         now = time.time()
         chat_id, thread_id, user_id = str(chat_id), str(thread_id), str(user_id)
@@ -320,6 +325,14 @@ class SessionTelegramTopicsMixin:
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
 
         def _do(conn):
+            if expected_session_id is not None:
+                current = conn.execute(
+                    "SELECT session_id FROM telegram_dm_topic_bindings "
+                    "WHERE profile_name = ? AND chat_id = ? AND thread_id = ?",
+                    (profile_name, chat_id, thread_id),
+                ).fetchone()
+                if current is None or str(current[0]) != str(expected_session_id):
+                    return False
             existing_session = conn.execute("""
                 SELECT profile_name, chat_id, thread_id
                 FROM telegram_dm_topic_bindings
@@ -328,7 +341,9 @@ class SessionTelegramTopicsMixin:
             if existing_session is not None:
                 linked_profile, linked_chat, linked_thread = existing_session
                 if (str(linked_profile), str(linked_chat), str(linked_thread)) != (profile_name, chat_id, thread_id):
-                    raise ValueError("session is already linked to another Telegram topic")
+                    if not move_session or str(linked_profile) != profile_name:  # never across profiles
+                        raise ValueError("session is already linked to another Telegram topic")
+                    conn.execute("DELETE FROM telegram_dm_topic_bindings WHERE session_id = ?", (session_id,))
             conn.execute("""
                 INSERT INTO telegram_dm_topic_bindings (
                     profile_name, chat_id, thread_id, user_id, session_key, session_id,
@@ -341,7 +356,8 @@ class SessionTelegramTopicsMixin:
                     managed_mode = excluded.managed_mode,
                     updated_at = excluded.updated_at
                 """, (profile_name, chat_id, thread_id, user_id, session_key, session_id, managed_mode, now, now))
-        self._execute_write(_do)
+            return True
+        return self._execute_write(_do)
 
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
         """True if the session is bound to any Telegram DM topic (absent tables → False)."""

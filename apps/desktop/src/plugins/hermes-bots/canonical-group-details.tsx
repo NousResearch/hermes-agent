@@ -64,12 +64,24 @@ export function useStickToBottom() {
 
     if (!el || !content) {return}
 
-    const onScroll = () => { pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48 }
+    let lastTop = el.scrollTop
 
-    const follow = () => { if (pinned.current) {el.scrollTop = el.scrollHeight} }
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+
+      if (el.scrollTop < lastTop || nearBottom) {pinned.current = nearBottom}
+      lastTop = el.scrollTop
+    }
+
+    const follow = () => {
+      if (pinned.current) {el.scrollTop = el.scrollHeight}
+      lastTop = el.scrollTop
+    }
+
     const observer = new ResizeObserver(follow)
     el.addEventListener('scroll', onScroll)
     observer.observe(content)
+    observer.observe(el)
     follow()
 
     return () => { el.removeEventListener('scroll', onScroll); observer.disconnect() }
@@ -134,7 +146,7 @@ export function CanonicalPendingCard({ action, avatar, busy, labels, methods, na
 
   const choices = Array.isArray(action.approval?.choices) ? action.approval.choices : []
 
-  return <div className="mx-3 my-1 flex items-start gap-2.5 rounded-xl bg-(--chrome-action-hover) px-3 py-2" data-member-id={action.member_id} data-pending-action={action.kind} data-task-id={action.task_id}>
+  return <div className="mx-3 my-1 flex items-start gap-2.5 rounded-xl bg-(--chrome-action-hover) px-3 py-2" data-member-id={action.member_id} data-pending-action={action.kind} data-task-id={action.task_id} tabIndex={-1}>
     <div className="mt-0.5 shrink-0">{avatar}</div>
     <div className="grid min-w-0 flex-1 gap-1.5">
       <p className="text-xs text-foreground">{copy ? fill(labels[copy], { name }) : name}</p>

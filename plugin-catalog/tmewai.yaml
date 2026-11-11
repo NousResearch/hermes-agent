@@ -1,0 +1,42 @@
+name: tmewai
+repo: https://github.com/hadialjurdi7-dot/hermes-tmewai
+sha: 14a4c2b8c8942ca742badb481e1d7ee28bc6ba56
+subdir: tmewai
+description: >-
+  Local, offline index for your own Facebook JSON export (Meta's
+  your_activity_across_facebook.zip). Imports messages, comments (including
+  comments_v2), reactions and posts into a seven-table SQLite database without
+  ever extracting the archive to disk, then exposes six tools: archive_scan and
+  archive_ingest validate every ZIP entry in memory (absolute paths, .., drive
+  paths, NUL bytes, duplicate names and symlinks rejected) and give each entry
+  exactly one source_files row so nothing is silently dropped; archive_search
+  runs FTS5 over text folded for Arabic (harakat, alef variants, taa marbuta,
+  alef maqsura, tatweel) while stored text keeps its original spelling;
+  archive_person and archive_overview aggregate over people, conversations,
+  events and attachments; archive_evidence builds a hard-capped bundle (20
+  events, 4000 characters) with a metadata-only consent row that cannot carry
+  excerpt text. Imports are idempotent by content fingerprint. Python standard
+  library only, no network access, no API key, no environment variable; the
+  database lives under $HERMES_HOME/plugin-data/tmewai/ and TMEWAI_DB_PATH
+  overrides it. Disclosure — the plugin reads a personal social export the user
+  points it at and stores it unencrypted in that local SQLite file; it never
+  sends archive content anywhere, and archive_evidence only returns its capped
+  bundle to the agent that requested it.
+maintainer: hadialjurdi7-dot
+tier: community
+category: memory
+docs_url: https://github.com/hadialjurdi7-dot/hermes-tmewai#readme
+version: "1.0.0"
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - archive_scan
+    - archive_ingest
+    - archive_search
+    - archive_person
+    - archive_overview
+    - archive_evidence
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

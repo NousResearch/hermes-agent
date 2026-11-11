@@ -1,0 +1,28 @@
+name: tldr
+repo: https://github.com/ShawnCRMer/hermes-tldr
+sha: "5664d2d0d9499dd4eff9337b815cd316870b9cb0"
+title: TL;DR
+description: "One-click summaries of long agent replies in Hermes Desktop. A card shows status first (Done, Blocked, Running, Waiting on you), what changed with each item marked Shown (backed by a tool step) or Stated only, risks, and the decisions the agent left you, with a recommended option and notes; Insert into chat drops your answers into the message box. Scope: last reply, since you last checked, or the whole session (with optional conflict warnings against earlier instructions); S/M/L length; per-reply history; reminders for skipped questions; optional automatic mode with a daily cap. Runs on its own auxiliary task (tldr_summary), so you can pick a cheap model in Models > Auxiliary without touching the chat model. Disclosure — Sends the selected chat text, tool names with short argument previews (up to 160 characters, e.g. commands, paths, URLs) and your preferences note to the model assigned to its `tldr_summary` auxiliary task (Hermes' auxiliary routing, host-owned credentials), only on click or in the opt-in automatic mode (off by default, 30 per day cap); reads this profile's session database and config read-only; stores settings and answers in Desktop plugin storage; no shell, no credentials, no telemetry."
+maintainer: ShawnCRMer
+tier: community
+category: desktop
+version: "6.0.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ShawnCRMer/hermes-tldr#readme
+image: https://raw.githubusercontent.com/ShawnCRMer/hermes-tldr/5664d2d0d9499dd4eff9337b815cd316870b9cb0/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tldr/5664d2d0d9499dd4eff9337b815cd316870b9cb0/docs/summary.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tldr/5664d2d0d9499dd4eff9337b815cd316870b9cb0/docs/history.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tldr/5664d2d0d9499dd4eff9337b815cd316870b9cb0/docs/settings.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tldr/5664d2d0d9499dd4eff9337b815cd316870b9cb0/docs/reminder.png
+  - https://raw.githubusercontent.com/ShawnCRMer/hermes-tldr/5664d2d0d9499dd4eff9337b815cd316870b9cb0/docs/mobile.png
+readme: true
+platforms: []
+known_issues:
+  - "Needs Hermes Desktop; there is no CLI or TUI surface."
+  - "Evidence labels mean a tool step backs a change, not that the result was correct; TL;DR does not see tool output."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -215,10 +215,9 @@ DEFAULT_CONFIG = {
         # clarify-tool reply; then it unblocks with "[user did not respond within Xm]". 0 or less =
         # unlimited. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
         # top-level ``clarify.timeout`` still wins when explicitly set).
-        # 1h because users step away and a shorter value evicted the entry mid-think so a later
-        # button tap hit a dead entry. Tradeoff: a higher value holds the gateway's running-agent
-        # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
-        "clarify_timeout": 3600,
+        # 90s: an unanswered question must not hold the turn (and the chat) for long. A user who
+        # writes anything instead of answering cancels the question at once and their message runs.
+        "clarify_timeout": 90,
         # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
         # 180 catches spinning weak-model runs before users /restart.
         "gateway_notify_interval": 180,
@@ -968,7 +967,6 @@ DEFAULT_CONFIG = {
         "status_bar": {
             "fields": [],
         },
-        "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
         # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across
         # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.
         "pet": {
@@ -1507,9 +1505,6 @@ DEFAULT_CONFIG = {
             "keep": 2,  # retain last N regular snapshots
         },
     },
-    # Honcho memory plugin (plugin catalog) — ~/.honcho/config.json is the source of truth (apiKey,
-    # workspace, peerName, sessions, enabled); the plugin reads hermes-specific overrides from here.
-    "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
@@ -1672,12 +1667,12 @@ DEFAULT_CONFIG = {
         # After this many consecutive guardian DENYs in a session, the deny message escalates to a
         # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
         "denial_breaker_threshold": 3,
-        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
-        # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
-        # --force*".
+        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo / mode=off.
+        # Quote in YAML when starting with * or containing {}/!/: e.g. "git push --force*".
         "deny": [],
-        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
-        # so the next message re-sends full input). "Always Approve" → false.
+        # Who may answer a chat approval/slash confirm/clarify: ["*"] any admitted member; [] requester + admins (+ ids).
+        "approvers": ["*"],
+        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache). "Always Approve" → false.
         "mcp_reload_confirm": True,
         # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
         # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
@@ -2002,7 +1997,7 @@ DEFAULT_CONFIG = {
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
             "defer": [
                 "computer_use", "session_search", "image_generate",
-                "todo_list", "process_manage", "cronjob_manage", "browser_vault",
+                "todo_list", "process_manage", "cronjob_manage", "browser_vault", "text_to_speech", "manage_connections",
                 # Desktop GUI surface (desktop_ui, project and catalog toolsets)
                 "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
                 "show_tip", "desktop_project", "close_terminal",
@@ -2195,8 +2190,8 @@ DEFAULT_CONFIG = {
         "message_timestamps": {"enabled": False},
         # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
         # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
-        # huge remote URLs can OOM-kill constrained deployments. Enforced in
-        # gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
+        # huge remote URLs (incl. image URLs in agent replies) can OOM-kill constrained deployments.
+        # Enforced in gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
         # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
         # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must
@@ -2703,7 +2698,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 52,  # Config schema version - bump this when adding new required fields
+    "_config_version": 53,  # Config schema version - bump this when adding new required fields
 }
 
 

@@ -304,6 +304,10 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+    # The claim passed the admission gate, which refuses once a drain begins: a wake claimed here was
+    # receipted before any drain and is never re-sent, so a drain starting now runs it rather than
+    # answering it with the drain notice and settling it completed unrun (#138123, authority route).
+    event._admitted_before_drain = event.internal is True
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
@@ -334,7 +338,7 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        async with _admission_scope(authority, home, row, event, captured):
+        async with _admission_scope(authority, ref, home, row, event, captured):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
@@ -407,11 +411,12 @@ def _launch_body_if_launch_owner(authority):
 
 
 @asynccontextmanager
-async def _admission_scope(authority, home, row, event, captured):
+async def _admission_scope(authority, ref, home, row, event, captured):
     """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
+    from agent.runtime_scope import bind_turn, claim_fence
     async with producer_turn(authority, row, event, captured):
-        with await _execution_scope(authority, home):
+        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
             yield
 
 

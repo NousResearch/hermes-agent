@@ -1,0 +1,38 @@
+name: 0xarchive
+title: 0xArchive
+repo: https://github.com/0xArchiveIO/0xarchive-mcp
+sha: 65575eddfa9c33ec429626542455eecd423cf6a5
+description: >-
+  Market data from Hyperliquid and Lighter, two onchain crypto exchanges, through 0xArchive's hosted
+  MCP server (Streamable HTTP, OAuth 2.1 with dynamic client registration and PKCE): current and
+  historical order books, trades, candles, funding, open interest, account positions and data
+  coverage across Hyperliquid perps, HIP-3 builder perps, HIP-4 outcome markets, Hyperliquid Spot
+  and Lighter, plus webhook management. Portable Agent Plugins v1 package (plugin.json + mcp.json),
+  configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to
+  0xArchive's MCP server at mcp.0xarchive.io, signed in as the user through 0xArchive's OAuth
+  sign-in, and counts against that account's 0xArchive plan. Tool results enter the session context
+  and so reach the user's model provider. Write-capable tools: webhook endpoint, subscription and
+  watched-address management (create, change, delete, test, redeliver, and rotate a signing secret,
+  which reveals the new secret), submit_feedback (sends a report to 0xArchive support) and
+  terminal_run (sets up views, levels and price alerts in the user's open 0xArchive Terminal; it
+  never places orders or touches trading keys). The package marks the server untrusted, but the
+  required sign-in step writes a config.yaml entry that replaces the package's own, trust included,
+  unless the user adds trust: untrusted to it. Hermes stores and refreshes the OAuth tokens. The tool
+  list comes from 0xArchive's server at run time, so the pinned commit doesn't cover it. OAuth must
+  be enabled with
+  `hermes mcp add 0xarchive --url https://mcp.0xarchive.io/mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone yields 401.
+maintainer: 0xArchive
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://docs.0xarchive.io/mcp-server
+version: "1.0.0"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add 0xarchive --url https://mcp.0xarchive.io/mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

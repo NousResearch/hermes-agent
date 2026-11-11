@@ -62,10 +62,10 @@ it('flags only the lead of a lead-routed room for the member chips', () => {
   expect(markRoomLead(members, { purpose: '', notes: '', routing: 'everyone', lead_member_id: '' }).some(m => m.lead)).toBe(false)
 })
 
-it('saves the lead picked in Room settings, and Everyone clears it', async () => {
+it('saves the lead picked in Group chat settings, and Everyone clears it', async () => {
   request.mockResolvedValue({})
   render(<CanonicalGroupRoomSettings binding={binding} context={{ purpose: 'Kernel', notes: '', routing: 'everyone', lead_member_id: '' }} members={members} />)
-  fireEvent.click(screen.getByRole('button', { name: 'Room settings' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Group chat settings' }))
   fireEvent.change(screen.getByLabelText('routing'), { target: { value: 'member:m-ada' } })
   fireEvent.click(screen.getByText('Save'))
 
@@ -77,7 +77,7 @@ it('a member whose id is "everyone" can still be made lead', async () => {
   request.mockResolvedValue({})
   const roster = [...members, { member_id: 'everyone', handle: 'evy', display_name: 'Evy', profile: 'evy' }]
   render(<CanonicalGroupRoomSettings binding={binding} context={{ purpose: '', notes: '', routing: 'everyone', lead_member_id: '' }} members={roster} />)
-  fireEvent.click(screen.getByRole('button', { name: 'Room settings' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Group chat settings' }))
   const values = [...(screen.getByLabelText('routing') as HTMLSelectElement).options].map(option => option.value)
   expect(new Set(values).size).toBe(values.length)
   fireEvent.change(screen.getByLabelText('routing'), { target: { value: 'member:everyone' } })
@@ -89,6 +89,6 @@ it('a member whose id is "everyone" can still be made lead', async () => {
 
 it('offers no routing choice to a runtime that does not report one', () => {
   render(<CanonicalGroupRoomSettings binding={binding} context={{ purpose: '', notes: '' }} members={members} />)
-  fireEvent.click(screen.getByRole('button', { name: 'Room settings' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Group chat settings' }))
   expect(screen.queryByLabelText('routing')).toBeNull()
 })

@@ -30,6 +30,8 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
+import { createInterface } from 'node:readline/promises';
+import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
@@ -119,7 +121,19 @@ try {
     .slice(0, 16);
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
+// Exit status the gateway adapter reads as a non-retryable "pair with a passkey first" (PASSKEY_REQUIRED_EXIT in adapter.py).
+const PASSKEY_REQUIRED_EXIT = 78;
 const PAIR_JSON = args.includes('--pair-json');
+const PASSKEY_BROWSER = getArg('passkey-browser', '');
+let passkeySigner;
+try {
+  passkeySigner = await loadPasskeySigner(PASSKEY_BROWSER, {
+    pairOnly: PAIR_ONLY, pairJson: PAIR_JSON, isTTY: process.stdin.isTTY,
+  });
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
@@ -402,6 +416,16 @@ function emitPairEvent(event) {
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
+async function confirmPasskeyCode(code, signal) {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await terminal.question(`Does the code ${code} match your phone? [y/N] `, { signal });
+    if (answer.trim().toLowerCase() !== 'y') throw new Error('Owner declined passkey confirmation');
+  } finally {
+    terminal.close();
+  }
+}
+
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const version = await getWAVersion();
@@ -425,7 +449,29 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
+  attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner, confirmCode: confirmPasskeyCode });
   sock.ev.on('connection.update', (update) => {
+    if (update.passkeyRequired && passkeySigner) {
+      if (!PAIR_JSON) console.log('Complete passkey verification in the browser window.');
+    } else if (update.passkeyRequired && !PAIR_ONLY && (connectionState === 'connected' || state.creds.me?.id)) {
+      // A paired gateway session keeps running, whether open or still logging in after a reconnect (rc13
+      // acked and ignored this request before passkey support): exiting with PASSKEY_REQUIRED_EXIT would
+      // park a working gateway as non-retryable. Pair-only still fails so setup never reports a pairing
+      // the server questioned.
+      console.warn('WhatsApp sent a passkey request to an already connected session; ignoring it.');
+    } else if (update.passkeyRequired) {
+      // The dashboard's pairing watcher only understands error events; no signer is ever loaded there.
+      emitPairEvent({ event: 'error', error: 'passkey_required' });
+      console.error('WhatsApp requires passkey verification. Pair with --passkey-browser and a local Chrome/Edge executable.');
+      process.exit(PAIR_ONLY ? 1 : PASSKEY_REQUIRED_EXIT);
+    }
+    if (update.passkeyError) {
+      // Name and message only: the cause (missing browser, cancelled prompt, declined code, failed query)
+      // is what the user needs; assertion and credential bytes never reach the error text.
+      const { name, message } = update.passkeyError;
+      console.error(`WhatsApp passkey verification failed: ${name || 'Error'}: ${message || 'unknown error'}`);
+      process.exit(1);
+    }
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {

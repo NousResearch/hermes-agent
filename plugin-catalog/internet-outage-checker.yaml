@@ -1,0 +1,19 @@
+name: internet-outage-checker
+title: Internet Outage Checker by FindBroadband
+repo: https://github.com/FindBroadband/mcp
+sha: 452358616b1b8d79d730693c927b1b398203496a
+subdir: plugins/internet-outage-checker
+version: "1.0.0"
+description: "Check whether a UK broadband provider is down right now, where, what the provider has said and how the last 30 days have gone, through FindBroadband's MCP server (Streamable HTTP at https://www.findbroadbanddeals.com/api/mcp/outages, no sign-in, no keys in config). Bundles one skill, uk-broadband-outage-check. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to findbroadbanddeals.com, which logs each call (the tool, the provider matched and the client) for usage statistics, with no IP address or cookies stored. All three tools are read-only and the package marks the server untrusted. Personal, non-commercial use only (findbroadbanddeals.com/terms, section 8). The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: FindBroadband
+tier: community
+category: tools
+docs_url: https://github.com/FindBroadband/mcp/tree/main/plugins/internet-outage-checker
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -816,7 +816,13 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
                      or any(not isinstance(extra, str) for extra in fact["extras"])
                      or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):
             raise InstallError("venv", "recorded dependency selection is incomplete; refusing to change its graph")
-        enabled = list(fact.get("extras", frozen if frozen is not None else ["all"]))
+        if fact:
+            enabled = list(fact["extras"])
+        else:
+            from pm.extras import pre_pm_baseline
+
+            # Nothing recorded yet: a tree still on its main-era venv restores that venv's extras.
+            enabled = frozen if frozen is not None else pre_pm_baseline(package.project_root()) or ["all"]
         stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
@@ -976,6 +982,11 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
                        shipped=shipped, frozen=frozen, evict_incompatible_plugins=evict_incompatible_plugins)
         automatic = [*(automatic or ()), *(carried or ())]  # a carried extra is automatic too
         with _venv_install_lock(patient=explicit or repair):
+            if not repair:
+                from pm.carried_extras import with_pre_pm_baseline
+
+                extras, carried, automatic = with_pre_pm_baseline(package, extras, carried=carried,
+                                                                   automatic=automatic, plugins=plugins)
             extras = _without_new_declines(package, extras, automatic)
             _refuse_declined(package, extras, explicit=explicit)
             recover_publication(paths.repo_root())

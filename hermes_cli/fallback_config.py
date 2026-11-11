@@ -54,6 +54,19 @@ def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     return None
 
 
+def fallback_entry_runtime_kwargs(entry: dict[str, Any]) -> dict[str, Any]:
+    """``resolve_runtime_provider`` kwargs for one fallback entry: its provider pin, model, ``base_url``
+    and :func:`resolve_entry_api_key`. The one shape every resolution-time walker (CLI, gateway, TUI,
+    cron) and ``hermes fallback check`` resolve an entry with, so a readiness verdict is the switch's."""
+    kwargs: dict[str, Any] = {
+        "requested": str(entry.get("provider") or "").strip(), "target_model": str(entry.get("model") or "").strip()}
+    if entry.get("base_url"):
+        kwargs["explicit_base_url"] = entry["base_url"]
+    if entry_key := resolve_entry_api_key(entry):
+        kwargs["explicit_api_key"] = entry_key
+    return kwargs
+
+
 def effective_runtime_provider(
     entry: dict[str, Any] | None, runtime: dict[str, Any] | None
 ) -> str:

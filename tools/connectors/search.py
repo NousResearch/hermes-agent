@@ -95,7 +95,9 @@ def connector_entries_by_group(
                         continue
                 elif prior is not None:
                     continue
-                picked[name] = (slug, _connector_entry(name, str(schema["connector"]), slug, schema))
+                # source_name feeds the available_sources summary, so it carries the
+                # same lowercase slug the composed name is built from.
+                picked[name] = (slug, _connector_entry(name, connector, slug, schema))
             per_query[position] = [entry for _, entry in picked.values()]
     except Exception:
         logger.warning("connector search merge failed (D32)", exc_info=True)

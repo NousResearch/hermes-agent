@@ -637,7 +637,23 @@ def _launch_tui(
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     notices: list[str] = []
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev, notices)
+    # `--native` / HERMES_TUI_NATIVE is Ink primary-buffer mode, set above.
+    # The ratatui client is a separate opt-in and must not read that flag.
+    for key in ("HERMES_TUI_RATATUI", "HERMES_TUI_RATATUI_BIN"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    if "--ratatui" in sys.argv[1:]:
+        env["HERMES_TUI_RATATUI"] = "1"
+    # After HERMES_TUI_RESUME is resolved so a stale shell export cannot leak
+    # into --resume. `--dev` and the dashboard PTY embed stay on Ink.
+    from hermes_cli.launch_native import native_tui_argv
+
+    native = None if tui_dev else native_tui_argv(env)
+    if native:
+        argv, cwd = native, Path(env.get("HERMES_CWD") or os.getcwd())
+    else:
+        argv, cwd = _make_tui_argv(tui_dir, tui_dev, notices)
     code: Optional[int] = None
     try:
         code = _run_tui(argv, cwd, env, notices)
@@ -713,7 +729,7 @@ def _resolve_use_tui(args) -> bool:
     """
     if getattr(args, "cli", False):
         return False
-    if getattr(args, "tui", False) or getattr(args, "tui_native", False):
+    if getattr(args, "tui", False) or getattr(args, "tui_native", False) or getattr(args, "tui_ratatui", False):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):

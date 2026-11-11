@@ -207,7 +207,8 @@ def _wants_tui_early(argv: list[str] | None = None) -> bool:
         argv = sys.argv[1:]
     if "--cli" in argv:
         return False
-    if os.environ.get("HERMES_TUI") == "1" or any(flag in argv for flag in ("--tui", "--native", "--tui-native")):
+    if os.environ.get("HERMES_TUI") == "1" or os.environ.get("HERMES_TUI_RATATUI") == "1" or any(
+            flag in argv for flag in ("--tui", "--native", "--tui-native", "--ratatui")):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):

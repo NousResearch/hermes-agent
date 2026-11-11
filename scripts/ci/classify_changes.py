@@ -216,11 +216,13 @@ _SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
 # electron/update-* starts the Desktop update E2E, which never reads the corpus).
 _FIXTURE_CONSUMER_LANES = ("python", "rust", "frontend", "desktop_updater")
 
-# Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
-# These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
-# ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
-# and the crate's unit tests had never executed in CI at all.
-_RUST_PATHS = ("apps/bootstrap-installer/src-tauri/",)
+# Rust crates — Tauri bootstrap installer (Hermes-Setup) and the opt-in ratatui
+# TUI. The installer lives under ``apps/``. ``crates/tui/`` is a second cargo
+# package; files in that tree that are not ``.rs`` still have to take this lane.
+_RUST_PATHS = (
+    "apps/bootstrap-installer/src-tauri/",
+    "crates/tui/",
+)
 _RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
 
 # The real SSH/Docker backend lane: the backends, the terminal tool that drives

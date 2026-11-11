@@ -1,8 +1,15 @@
-# tui_gateway/ + ui-tui/ — the TUI and its JSON-RPC backend
+# tui_gateway/ + ui-tui/ + crates/tui/ — the TUI and its JSON-RPC backend
 
 Applies on top of the root `AGENTS.md`. The TUI fully replaces the classic prompt_toolkit CLI;
 activate with `hermes --tui` or `HERMES_TUI=1`. `tui_gateway` is ALSO the backend the Desktop app
 and the dashboard `/chat` talk to — changes here have three consumers.
+
+Ink (`ui-tui/`) is the default screen client. `--native` / `--tui-native` /
+`display.tui_native` keep that Ink client and switch it to the terminal's primary buffer.
+An experimental ratatui client (`crates/tui/`, binary `hermes-tui-native`) is a separate
+opt-in via `hermes --tui --ratatui` or `HERMES_TUI_RATATUI=1`. Do not replace Ink or change
+the `hermes --tui` default until that client has soak time. The dashboard PTY embed always
+stays on Ink (`HERMES_TUI_DASHBOARD=1` ignores the ratatui opt-in). `--dev` is Ink-only.
 
 ## Process model
 
@@ -12,6 +19,9 @@ hermes --tui
        │  (URL + single-use ticket:                              ├─ session authority: sessions, AIAgent, tools
        │   ui-tui/scripts/gateway_bootstrap.py)                  └─ tui_gateway handlers (non-session methods)
        └─ renders transcript, composer, prompts, activity
+
+hermes --tui --ratatui
+  └─ hermes-tui-native  ──stdio JSON-RPC──  python -m tui_gateway.entry
 ```
 
 Ink attaches to the profile's shared gateway owner (`hermes gateway run`, started on demand with
@@ -20,8 +30,9 @@ over `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach `hermes 
 --json` gives any other local client. Only `HERMES_TUI_GATEWAY_URL` (the dashboard's `/chat`)
 dials another URL, and then negotiates the wire from that listener's ready frame.
 
-TypeScript owns the screen. Python owns sessions, tools, model calls, and slash-command logic.
-Never move agent behaviour into the renderer.
+The ratatui client still spawns `python -m tui_gateway.entry` over stdio. It is not the Ink
+attach path. The screen client owns drawing. Python owns sessions, tools, model calls, and
+slash-command logic. Never move agent behaviour into the renderer.
 
 ## Transport
 

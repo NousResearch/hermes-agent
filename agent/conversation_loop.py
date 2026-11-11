@@ -1241,10 +1241,10 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     if len(content) == 1:
         content[0]["text"] = effective
         return True
-    if len(content) == 2:
-        head = content[0].get("text") or ""
-        if head and effective.startswith(head) and effective[len(head):]:
-            content[1]["text"] = effective[len(head):]
+    if len(content) in (2, 3):  # [static, volatile] or [static, session rest, ephemeral tail]
+        head = "".join(part.get("text") or "" for part in content[:-1])
+        if all(part.get("text") for part in content[:-1]) and effective.startswith(head) and effective[len(head):]:
+            content[-1]["text"] = effective[len(head):]
             return True
     return False
 
@@ -1325,6 +1325,7 @@ def _redecorate_prompt_cache_for_provider(
             cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
+            session_system_prompt=getattr(agent, "_cached_system_prompt", None),
             direct_native_tool_cache=getattr(
                 agent, "_direct_native_anthropic_tool_cache_capability", lambda: False
             )(),

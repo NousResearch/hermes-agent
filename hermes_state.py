@@ -173,6 +173,12 @@ def _ensure_reaper() -> None:
             _reaper.start()
 
 
+def _search_sort(sort: "Optional[str]", orders: "Any") -> "Any":
+    """The old class's reading of ``sort``: ``newest`` or ``oldest`` in any case and padding, else relevance."""
+    key = sort.strip().lower() if isinstance(sort, str) else ""
+    return {order.value: order for order in orders}.get(key, orders.RELEVANCE)
+
+
 class _SessionDB:
     """``SessionDB`` over one store handle: ``open_persistence`` for a writable store (``db_path`` must name a
     ``state.db``), ``open_persistence_reader`` with ``read_only``. Each method forwards to the handle's repositories
@@ -333,8 +339,9 @@ class _SessionDB:
             include_hidden=include_hidden, include_subagents=include_subagents,
             local_created_sources=tuple(local_created_sources) if local_created_sources else None,
             workspace_key=workspace_key)
-        entries = self._store.sessions.list_sessions(query, SessionWindow(limit=limit, offset=offset),
-                                                     compact_rows=compact_rows)
+        # The old class handed both to SQLite, where a negative LIMIT means every row and a negative OFFSET none.
+        window = SessionWindow(limit=None if limit is not None and limit < 0 else limit, offset=max(offset, 0))
+        entries = self._store.sessions.list_sessions(query, window, compact_rows=compact_rows)
         return [entry.as_list_row() for entry in entries]
 
     @_held
@@ -457,7 +464,7 @@ class _SessionDB:
 
         hits = self._store.search.search_messages(
             query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter, limit=limit,
-            offset=offset, sort=SearchSort.RELEVANCE if sort is None else SearchSort(sort),
+            offset=offset, sort=_search_sort(sort, SearchSort),
             include_inactive=include_inactive, fields=fields, after_ts=after_ts, before_ts=before_ts)
         names = SEARCH_RESULT_FIELDS if fields is None else tuple(f for f in SEARCH_RESULT_FIELDS if f in set(fields))
         return [_hit_dict(hit, names) for hit in hits]

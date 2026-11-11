@@ -267,3 +267,16 @@ def test_a_stand_in_opened_again_after_close_and_dropped_releases_the_new_handle
     finally:
         anchor.close()
     assert _handles(scope) == 0
+
+
+def test_a_release_that_raises_leaves_the_reaper_releasing_the_next_handle():
+    from contextlib import ExitStack
+
+    hermes_state._ensure_reaper()
+    failing, later, released = ExitStack(), ExitStack(), threading.Event()
+    failing.callback(lambda: 1 / 0)
+    later.callback(released.set)
+    hermes_state._collected_stacks.put(failing)
+    hermes_state._collected_stacks.put(later)
+    wait_until(released.is_set, timeout=DEADLINE_S, what="the handle queued after a failed release")
+    assert hermes_state._reaper.is_alive()

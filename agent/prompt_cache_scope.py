@@ -170,6 +170,12 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     fork, else the declared scope, else the compression-lineage root of ``agent.session_id``
     (the physical id without ancestry/DB). Memoized on the agent."""
     inherited = getattr(agent, "_inherited_cache_scope", None)
+    # Two sibling streams under one key evict each other on a slot-keyed route. Read per call:
+    # a child can fall back onto such a route after it was built.
+    if is_sibling_cache_scope(inherited) and is_slot_keyed_cache_route(
+        getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""),
+    ):
+        inherited = None
     if isinstance(inherited, str) and inherited:
         return _apply_fork_tag(agent, inherited)
     sid = str(getattr(agent, "session_id", None) or "")
@@ -194,18 +200,14 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     return _apply_fork_tag(agent, scope)
 
 
-def sibling_cache_scope(parent: Any, child: Any) -> Optional[str]:
+def sibling_cache_scope(parent: Any) -> Optional[str]:
     """One cache scope for every child of *parent* (``sub_<sha256[:24]>`` of the parent's scope).
 
     Providers that cache automatically only match inside the scope the client sends, and a
     scope per child made each sibling pay for the prefix they all share. The scope is not the
-    parent's own, so a delegation tree adds one bucket rather than joining its parent's. None on
-    a slot-keyed route, where two streams under one key evict each other.
+    parent's own, so a delegation tree adds one bucket rather than joining its parent's.
+    ``resolve_prompt_cache_scope`` ignores it while the child is on a slot-keyed route.
     """
-    if is_slot_keyed_cache_route(
-        getattr(child, "provider", ""), getattr(child, "model", ""), getattr(child, "base_url", ""),
-    ):
-        return None
     parent_scope = resolve_prompt_cache_scope_safe(parent)
     if not parent_scope:
         return None

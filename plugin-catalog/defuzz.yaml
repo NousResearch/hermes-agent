@@ -2,7 +2,7 @@
 name: defuzz
 title: Defuzz
 repo: https://github.com/defuzzr/defuzz
-sha: 649634cb2d53a9c5506831996b98a6a79a0090a1
+sha: 86506840a9ba36f6211bd66988ea947c5c464f52
 version: "0.1.0"
 description: "Start projects from templates, organize adopted copies, place new files by folder rules, and run project checks or a read-only Hermes-home audit."
 maintainer: defuzzr
@@ -10,7 +10,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/defuzzr/defuzz#readme
-image: https://raw.githubusercontent.com/defuzzr/defuzz/649634cb2d53a9c5506831996b98a6a79a0090a1/docs/images/project-defuzz-banner.png
+image: https://raw.githubusercontent.com/defuzzr/defuzz/86506840a9ba36f6211bd66988ea947c5c464f52/docs/images/project-defuzz-banner.png
 screenshots: []
 readme: true
 platforms: [linux]

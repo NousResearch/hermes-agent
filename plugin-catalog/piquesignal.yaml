@@ -1,0 +1,34 @@
+name: piquesignal
+title: PiqueSignal
+repo: https://github.com/PiqueSignalLabs/piquesignal-hermes
+sha: 3dd35a30996469181c440550e7fa058a19b5d0f0
+subdir: piquesignal
+description: 'See PiqueSignal''s Solana memecoin board right inside Hermes. Press Deep Check on any coin and Hermes checks it for you: fake volume, the live price, and what people say on X. Open a live chart, ask Hermes about any coin, or listen to a short spoken board update. The free board needs no account; a paid member key adds the live member board. Research only, not financial advice. Nothing trades.'
+maintainer: PiqueSignal
+tier: community
+category: desktop
+version: "1.4.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/PiqueSignalLabs/piquesignal-hermes/tree/3dd35a30996469181c440550e7fa058a19b5d0f0/piquesignal#readme
+image: https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/page-free.png
+  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/deep-check.png
+  - https://raw.githubusercontent.com/PiqueSignalLabs/piquesignal-hermes/3dd35a30996469181c440550e7fa058a19b5d0f0/assets/chart.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - piquesignal_board
+    - piquesignal_point
+    - piquesignal_filters
+    - piquesignal_explain_tag
+    - piquesignal_guide
+    - piquesignal_deep_check
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+    - post_compaction
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

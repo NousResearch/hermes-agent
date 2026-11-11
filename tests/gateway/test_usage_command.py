@@ -48,7 +48,6 @@ def _make_runner(session_key, agent=None, cached_agent=None):
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner.session_store = MagicMock()

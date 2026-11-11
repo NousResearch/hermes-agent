@@ -63,9 +63,12 @@ _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
 
 
 def _page_backend(task_id: str):
-    """The plugin browser holding this task's live page (e.g. Camofox), or None for the CDP session."""
+    """The page this operation runs on when it is not the task's CDP session: the Desktop in-app browser
+    page pinned for a ``target='preview'`` operation, else the plugin browser holding this task's live page
+    (e.g. Camofox), else None."""
     from agent.browser_page_registry import backend_for_task
-    return backend_for_task(task_id)
+    from tools.browser_vault_preview import active_page
+    return active_page() or backend_for_task(task_id)
 
 
 def _page_eval(backend: Any, task_id: str, expression: str, *, secret: bool) -> dict[str, Any]:
@@ -158,7 +161,8 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     # human-length prompt (enter_code waits for the user's code); a takeover during that wait must
     # refuse here, before the credential lands in a page the human is now typing into. The outer
     # epoch check only discards the result, and a fill is a side effect, not a result.
-    if _bot_desktop_browser_session(task_id):
+    from tools.browser_vault_preview import active_page
+    if active_page() is None and _bot_desktop_browser_session(task_id):
         from tools.bot_desktop import lease as _bd_lease
         try:
             _bd_lease.assert_agent_may_act()
@@ -463,7 +467,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 @plugin_errors_as_refusal
-def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
+def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_identifier: bool = False) -> str:
     """Fill the current page's password field from a vault handle.
 
     Password-only: the identifier is agent-visible metadata (see
@@ -509,12 +513,26 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         refusal = snapshot_refusal(backend, handle, meta, page_origin)
         if refusal is not None:
             return json.dumps(refusal)
-        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)
+        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)
 
 
-def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str) -> str:
+def _identifier_fill(classified: list, password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
+    """The username/email/phone control for a user-chosen login (the Desktop key button fills both fields;
+    the agent types the identifier itself). Prefers a control in the password field's form; on an
+    identifier-only step (no password field yet) it is the whole fill."""
+    fields = [c for c in classified if c.token in ("username", "email", "tel")]
+    if not identifier or not fields:
+        return []
+    anchor = password_fill[0]["index"] if password_fill else None
+    form = next((c.control.form_index for c in classified if c.control.index == anchor), None)
+    best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
+    return [{"index": best.control.index, "token": best.token, "value": identifier}]
+
+
+def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str,
+                     with_identifier: bool = False) -> str:
     """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
-    after the origin guard passed."""
+    after the origin guard passed. ``with_identifier`` also writes the login's (non-secret) identifier."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
         ClassifiedLoginControl,
@@ -558,6 +576,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         if meta.kind == "login":
             secret = {"password": backend.resolve_password(handle)}
             fills = select_password_fill(classified, secret["password"])
+            if with_identifier:
+                fills += _identifier_fill(classified, fills, str(meta.identifier or ""))
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
@@ -658,6 +678,9 @@ BROWSER_VAULT_SCHEMA = {
             "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
             "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
+            "target": {"type": "string", "enum": ["browser", "preview"],
+                       "description": "fill / save_login / enter_code: 'preview' = the Desktop in-app browser "
+                                      "page beside the chat, 'browser' = the managed automation browser."},
         },
         "required": ["action"],
     },
@@ -695,6 +718,15 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     if action not in page_ops:
         return json.dumps({"success": False, "error": f"Unknown action {action!r}; use list, fill, save_login, "
                                                        "enter_code or unlock."})
+    target = args.get("target") or "browser"
+    if target == "preview":
+        # The in-app browser is not the Bot Desktop browser; its window owns the page and refuses a
+        # changed tab or document itself. Never retried on another browser.
+        from tools.browser_vault_preview import run_preview_vault
+        return run_preview_vault(kwargs.get("preview_callback"), page_ops[action])
+    if target != "browser":
+        return json.dumps({"success": False, "error_type": "invalid_target",
+                           "error": "target must be 'browser' or 'preview'."})
     return _fenced_page_op(tid, page_ops[action])
 
 

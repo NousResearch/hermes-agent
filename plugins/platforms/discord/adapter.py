@@ -255,9 +255,7 @@ except ImportError:
     Intents = Any
     commands = None
 
-import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 
 def _is_discord_transport_error(exc: BaseException) -> bool:
@@ -301,9 +299,11 @@ except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
 from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
+from gateway.approval_actor import clarify_refusal, refusal_text, slash_confirm_refusal
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    numbered_clarify_choices,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -1159,6 +1159,7 @@ from plugins.platforms.discord.adapter_config_readers import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild,
     _resolve_exec_approval_admin_gate)
 from plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
+from plugins.platforms.discord.adapter_component_auth import opener_refusal
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1380,11 +1381,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return
         except Exception as err:  # pragma: no cover - defensive
             exc = err
-        if exc is None:
-            message = "Discord gateway task exited without an exception"
-        else:
-            message = f"Discord gateway task exited: {exc}"
-        logger.error("[%s] %s", self.name, message, exc_info=exc if exc else False)
+        from gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
+        shown = describe_proxy_error(exc, _proxy("DISCORD_PROXY")) if exc else None  # raw text may echo a proxy secret
+        message = f"Discord gateway task exited: {shown or exc}" if exc else "Discord gateway task exited without an exception"
+        logger.error("[%s] %s", self.name, message, exc_info=exc if exc and not shown else False)
         self._set_fatal_error("discord_gateway_task_exited", message, retryable=True)
 
         async def _notify() -> None:
@@ -1412,10 +1412,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         try:
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
-            # Snapshot gate env inside the owning profile's scope (immune to the first-writer-wins bridge).
-            # Snapshot this profile's gate env vars (issue #72348): connect() runs inside the owning
-            # profile's runtime scope under multiplex, so the snapshot holds THIS adapter's values, immune
-            # to the first-writer-wins process-global env bridge.
+            # Snapshot this profile's gate env vars inside its runtime scope (#72348): immune to the
+            # first-writer-wins process-global env bridge under multiplex.
             self._snapshot_gate_env()
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
@@ -1431,14 +1429,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             intents.voice_states = True
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
+            from gateway.platforms.base import proxy_kwargs_for_bot, resolve_proxy_url, safe_proxy_url_for_log
             proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             if proxy_url:
-                logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
+                logger.info("[%s] Using proxy for Discord: %s", self.name, safe_proxy_url_for_log(proxy_url))
             # proxy= for HTTP, connector= for SOCKS; allowed_mentions per _build_allowed_mentions.
-            # Close any existing client first: a zombie client also fires on_message -> double responses.
-            # Without this, the old client remains connected to Discord gateway and both fire on_message,
-            # causing double responses. See #18187.
+            # Close any existing client first: a zombie client stays connected to the Discord gateway and
+            # also fires on_message -> double responses (#18187).
             if self._client is not None:
                 try:
                     if not self._client.is_closed():
@@ -1584,19 +1581,21 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             return False
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            from gateway.platforms.base import describe_proxy_error, resolve_proxy_url as _proxy
+            proxy_error = describe_proxy_error(e, _proxy(platform_env_var="DISCORD_PROXY"))
+            logger.error("[%s] Failed to connect to Discord: %s", self.name, proxy_error or e, exc_info=not proxy_error)
             # Same zombie-client hazard: client.start() may already run when a later step raises.
             await self._cancel_bot_task()
             self._release_platform_lock()
             # Classify by exception TYPE: auth/permission failures can't self-heal, so
             # retryable=False drops them from the reconnect queue and surfaces them as fatal.
-            code, message, retryable = self._classify_connect_exception(e)
+            code, message, retryable = self._classify_connect_exception(e, shown=proxy_error)
             self._set_fatal_error(code, message, retryable=retryable)
             return False
 
-    def _classify_connect_exception(self, error: Exception) -> tuple:
-        """Map a startup exception to ``(code, message, retryable)`` by TYPE only (never message
-        text); unknown types stay retryable — a false terminal leaves a recovered platform dead."""
+    def _classify_connect_exception(self, error: Exception, shown: str | None = None) -> tuple:
+        """Map a startup exception to ``(code, message, retryable)`` by TYPE only (never message text;
+        ``shown`` replaces it when it may echo a proxy secret); unknown types stay retryable."""
         def _is(type_name: str) -> bool:
             # Class-name check covers mocked discord.py / failed imports; isinstance adds subclasses.
             if error.__class__.__name__ == type_name:
@@ -1610,7 +1609,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if _is("LoginFailure"):
             return (
                 "discord_auth_error",
-                f"Discord bot token rejected: {error}. The token is invalid or "
+                f"Discord bot token rejected: {shown or error}. The token is invalid or "
                 "was revoked — regenerate it in the Discord Developer Portal "
                 "and update DISCORD_BOT_TOKEN.",
                 False,
@@ -1625,7 +1624,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 )
             )
             return ("discord_intents_required", guidance, False)
-        return ("discord_connect_error", f"Discord startup failed: {error}", True)
+        return ("discord_connect_error", f"Discord startup failed: {shown or error}", True)
 
     def _discord_message_admission(self, message: Any, *, claim: bool) -> tuple[bool, bool]:
         """Return ``(admitted, role_authorized)`` for one Discord event."""
@@ -5610,7 +5609,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
             if view is not None:
-                view.live_auth = self._component_live_auth
+                view.live_auth, view.answer_extra = self._component_live_auth, getattr(self.config, "extra", None) or {}
             msg = await channel.send(**send_kwargs)
             if view is not None:
                 view._message = msg
@@ -5643,14 +5642,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     # The reason shares the 2000-char content cap with the command; unbounded it would starve
     # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
+    _EA_CARD_CAP = MAX_MESSAGE_LENGTH
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
-        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
-                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
-                 + len(self._approval_mention_content() or "") + 1)
-        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
+        mention = len(self._approval_mention_content() or "") + 1
+        return max(0, super()._exec_approval_cmd_budget(description, smart_denied) - mention)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
@@ -5661,7 +5658,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
             admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
             allow_session="session" in choices, smart_denied=prompt.smart_denied,
-            request_id=prompt.request_id,
+            request_id=prompt.request_id, allow_once="once" in choices, approval_extra=getattr(self.config, "extra", None),
         )
         # Observe BEFORE sending, so a request that settles while the card is in flight still
         # reports its real reason; ``pending_retire`` holds it until the card exists.
@@ -5759,6 +5756,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
                 hint = t("platform.discord.prompt.clarify_hint_buttons")
+                # Button labels clip past ~40 columns on mobile with no tooltip (#78115): when
+                # any option is that long, the numbered full text goes in the content too.
+                # Capped at half the 2000-char content so the question keeps the rest; every
+                # option keeps its line (shortened) so each button still has one to match.
+                numbered = numbered_clarify_choices(clean_choices, max_label_cols=40, max_chars=1000,
+                                                    escape=lambda s: re.sub(r"([\\*_~`|<>\[\]])", r"\\\1", s))
+                if numbered:
+                    hint = f"{numbered}\n\n{hint}"
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
@@ -6324,8 +6329,8 @@ def _define_discord_view_classes() -> None:
             super().__init__(timeout=timeout)
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
-            # The adapter's live allowlist check, bound in ``_send_prompt``.
-            self.live_auth = None
+            # The adapter's live allowlist check and platform extra, bound in ``_send_prompt``.
+            self.live_auth, self.answer_extra = None, {}
             self.resolved = False
             self._message = None
 
@@ -6334,13 +6339,20 @@ def _define_discord_view_classes() -> None:
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
 
-        async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str) -> bool:
-            """Reject (ephemerally) an already-resolved or unauthorized click; True when it may proceed."""
+        async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str, refusal=None) -> bool:
+            """Reject (ephemerally) an already-resolved or unauthorized click, or one ``refusal(user_id)``
+            (``gateway.approval_actor``) names another requester for; True when it may proceed."""
             if resolved_msg is not None and self.resolved:
                 await interaction.response.send_message(resolved_msg, ephemeral=True)
                 return False
             if not self._check_auth(interaction):
                 await interaction.response.send_message(unauth_msg, ephemeral=True)
+                return False
+            denial = opener_refusal(self, interaction)
+            if denial is None and refusal and (requester := refusal(getattr(interaction.user, "id", ""))):
+                denial = refusal_text(requester)
+            if denial is not None:  # someone else's card or prompt: it stays open for its owner
+                await interaction.response.send_message(denial, ephemeral=True)
                 return False
             return True
 
@@ -6421,10 +6433,8 @@ def _define_discord_view_classes() -> None:
                 cancel="platform.discord.slash_confirm.cancel")
 
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.slash_confirm.already_resolved"),
-                unauth_msg=_unauthorized(),
-            ):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.slash_confirm.already_resolved"), unauth_msg=_unauthorized(),
+                                    refusal=lambda uid: slash_confirm_refusal(self.session_key, self.confirm_id, uid, extra=self.answer_extra)):
                 return
             await self._finalize_embed(
                 interaction, color,
@@ -6458,6 +6468,8 @@ def _define_discord_view_classes() -> None:
     class UpdatePromptView(_HermesView):
         """Yes/No buttons for ``hermes update`` prompts; the answer is written to
         ``.update_response`` for the detached update process to pick up."""
+
+        is_update_prompt = True  # opener_refusal binds it to the /update sender
 
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
@@ -6710,8 +6722,7 @@ def _define_discord_view_classes() -> None:
             self.add_item(select)
 
         async def _on_select(self, interaction: discord.Interaction):
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(_unauthorized(), ephemeral=True)
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
                 return
             if self.resolved:
                 await interaction.response.defer()
@@ -6812,10 +6823,8 @@ def _define_discord_view_classes() -> None:
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
-                unauth_msg=_unauthorized(),
-            ):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
+                                    unauth_msg=_unauthorized(), refusal=lambda uid: clarify_refusal(self.clarify_id, uid, extra=self.answer_extra)):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
             await self._finish(
@@ -6845,10 +6854,8 @@ def _define_discord_view_classes() -> None:
 
         async def _on_other(self, interaction: discord.Interaction) -> None:
             """Flip the clarify entry into text-capture mode."""
-            if not await self._gate(
-                interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
-                unauth_msg=_unauthorized(),
-            ):
+            if not await self._gate(interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
+                                    unauth_msg=_unauthorized(), refusal=lambda uid: clarify_refusal(self.clarify_id, uid, extra=self.answer_extra)):
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.
             try:
@@ -7021,9 +7028,9 @@ async def _standalone_send(
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         auth_headers = {"Authorization": f"Bot {token}"}
         json_headers = {**auth_headers, "Content-Type": "application/json"}
@@ -7066,7 +7073,7 @@ async def _standalone_send(
                                 if err:
                                     return err
                         except Exception as e:
-                            return send_error(f"Discord forum thread upload failed: {e}")
+                            return send_error(f"Discord forum thread upload failed: {describe_proxy_error(e, _proxy) or e}")
                     else:
                         # No media: JSON POST creates the thread with the text starter.
                         async with session.post(
@@ -7131,7 +7138,7 @@ async def _standalone_send(
                                 continue
                             last_data = data
                 except Exception as e:
-                    warning = send_error(f"Failed to send media {media_path}: {e}")["error"]
+                    warning = send_error(f"Failed to send media {media_path}: {describe_proxy_error(e, _proxy) or e}")["error"]
                     logger.error(warning)
                     warnings.append(warning)
         if last_data is None:
@@ -7142,9 +7149,10 @@ async def _standalone_send(
             result["warnings"] = warnings
         return result
     except Exception as e:
-        # Include the exception type: str(TimeoutError()) is empty.
-        logger.error("Discord standalone send failed", exc_info=True)
-        return send_error(f"Discord send failed: {type(e).__name__}: {e}")
+        # Include the exception type: str(TimeoutError()) is empty. The text may echo the proxy URL.
+        shown = describe_proxy_error(e, _proxy)
+        logger.error("Discord standalone send failed%s", f": {shown}" if shown else "", exc_info=not shown)
+        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}")
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

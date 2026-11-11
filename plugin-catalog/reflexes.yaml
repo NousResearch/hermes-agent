@@ -1,0 +1,28 @@
+name: reflexes
+repo: https://github.com/zahmed333/reflexes
+sha: feedfef4057b94892158b5ccee4fb98ac0f2239f
+subdir: reflexes
+title: Reflexes
+version: "0.2.0"
+description: "Senses for your computer: when a file lands in a folder, a USB stick or SD card is connected, or a log file gets a matching line, Hermes starts a turn in the chat that armed the reflex and acts with its normal tools and approvals. Nobody types anything. Durable queue, loop protection (a reflex firing more than 30 times an hour pauses itself), missed firings are logged, never dropped silently. Includes /reflex commands, a bundled skill and a Hermes Desktop page. Disclosure — starts agent turns nobody typed (via ctx.inject_message) in the chat that armed a reflex. Reflexes are armed only by you (/reflex or the Desktop page) or by the model after a Hermes approval prompt. Gateway, TUI and Desktop delivery also needs plugins.entries.reflexes.allow_gateway_injection, but reflexes armed in the classic `hermes chat` terminal run there without that grant and without being displayed. It lists the folders you name about once a second (names, sizes, times) and opens new files briefly only to check they are complete. For log reflexes it reads the bytes appended to the one file you name and sends matching lines (and any /regex/ you give is run on every new line) to your model. It enumerates connected drives and lists the top level of a newly connected one, runs a background thread while Hermes runs, and stores a local SQLite database at <HERMES_HOME>/plugin-data/reflexes/reflexes.db. No network, telemetry, shell commands, subprocesses, credentials or dependencies beyond the Python standard library (uses ctypes on Windows to list drives)."
+maintainer: zahmed333
+tier: community
+category: automation
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/zahmed333/reflexes/tree/feedfef4057b94892158b5ccee4fb98ac0f2239f/reflexes#readme
+readme: true
+platforms: []
+known_issues:
+  - "Tested live on Windows 11 with Hermes 0.22.6 and 0.23.1. macOS and Linux code paths are covered by unit tests only."
+  - "Needs plugins.entries.reflexes.allow_gateway_injection set to true; until then firings are logged but not delivered."
+  - "Runs only while Hermes runs. The classic `hermes chat` terminal runs reflex turns without displaying them."
+capabilities:
+  provides_tools:
+    - reflex_add
+    - reflex_manage
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

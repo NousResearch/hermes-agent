@@ -1,0 +1,52 @@
+name: hotwire
+repo: https://github.com/RohanGlitched/hotwire
+sha: c66a0dd354a034da1bad4fe56bd4945f1e5c8e24
+version: "1.0.1"
+title: Hotwire
+description: >-
+  Analog circuit design bench: Hermes writes a SPICE netlist from plain English,
+  proves it against measurable specs (gain, corner frequencies, distortion, bias,
+  current draw, part stress) with Hotwire's own circuit simulator, plays your
+  guitar riff or WAV through the simulated circuit so you can hear it, runs Monte
+  Carlo yield over real part tolerances, explains what each part does, matches
+  knob settings to a recording of a real pedal, tunes
+  values to standard E-series parts, and lays the result out on a stripboard with
+  a parts list and KiCad export. Ships a verified reference library (filters,
+  transistor, JFET and MOSFET stages, overdrive, fuzz, tone stacks, wah), an
+  analog-design skill, a /hotwire command and a Desktop Bench pane with live
+  knobs. Disclosure — runs entirely locally with numpy (installed with consent);
+  no network calls, no credentials, no shell commands; writes designs, plots and
+  audio under <HERMES_HOME>/plugin-data/hotwire/ and reads only the .cir/.wav
+  files you or the agent name; the Desktop half plays audio in the browser
+  (microphone only after you press Live and grant access).
+maintainer: RohanGlitched
+tier: community
+category: tools
+docs_url: https://github.com/RohanGlitched/hotwire#readme
+readme: true
+image: https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/bench-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/listen-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/live-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/board-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/chat-light.png
+  - https://raw.githubusercontent.com/RohanGlitched/hotwire/c66a0dd354a034da1bad4fe56bd4945f1e5c8e24/docs/desktop/bench-dark.png
+requires_hermes: ">=0.23.0"
+capabilities:
+  provides_tools:
+    - circuit_check
+    - circuit_simulate
+    - circuit_audition
+    - circuit_tune
+    - circuit_explain
+    - circuit_match
+    - circuit_yield
+    - circuit_bom
+    - circuit_build
+    - circuit_export
+    - circuit_library
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

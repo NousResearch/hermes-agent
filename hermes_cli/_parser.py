@@ -110,6 +110,7 @@ Examples:
     hermes fallback [list]        Show fallback provider chain
     hermes fallback add           Add a fallback provider (same picker as `hermes model`)
     hermes fallback remove        Remove a fallback provider from the chain
+    hermes fallback check [--live]  Check each fallback entry can be used (exit 1 if not)
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
@@ -244,8 +245,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "interpreted, so quotes, $(...), and backticks are preserved "
         "verbatim. Mutually exclusive with -q."))
     # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking and its dispatch sites do
-    # `if args.oneshot: _run_and_exit_oneshot(args.oneshot)` — a shared boolean dest would be
-    # passed as the prompt.
+    # read `args.oneshot` as the prompt — a shared boolean dest would be passed as the prompt.
     add("--oneshot", dest="oneshot_exit", action="store_true", default=False, help=(
         "With -q/--query-file: answer the query and exit (legacy "
         "single-query behavior) instead of seeding an interactive "

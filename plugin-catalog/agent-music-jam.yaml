@@ -1,0 +1,25 @@
+name: agent-music-jam
+title: Agent Music Jam
+repo: https://github.com/vdimarco/agent-music-jam
+sha: 009c918b89e7ba98550de0755b47d1e5e7bc96a0
+description: "Conduct a live synthesized band, play along on keys or MIDI, and export your performance. Disclosure — `jam_start` runs a local web server on 127.0.0.1 (random port, bearer token in the launch link) for the life of the session; each direction sends the music state and your text to your configured Hermes model, and from tool calls launches up to eight toolless subagent sessions per direction (`use_subagents`, on by default), which uses model credits."
+maintainer: vdimarco
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.1"
+docs_url: https://github.com/vdimarco/agent-music-jam#readme
+screenshots:
+  - https://raw.githubusercontent.com/vdimarco/agent-music-jam/009c918b89e7ba98550de0755b47d1e5e7bc96a0/docs/screenshots/studio.png
+  - https://raw.githubusercontent.com/vdimarco/agent-music-jam/009c918b89e7ba98550de0755b47d1e5e7bc96a0/docs/screenshots/performance.png
+readme: true
+known_issues:
+  - Saved takes are local to this browser and service port; download important recordings for a permanent backup.
+  - This first ensemble uses D minor and a fixed four-chord progression.
+  - Browser suspension can exhaust the finite audio buffer; WAV takes are capped at 15 minutes.
+  - Physical MIDI hardware and active-turn native child-session execution have not been verified.
+capabilities:
+  provides_tools: [jam_start, jam_inspect, jam_stop, jam_direct, jam_configure, jam_schedule, jam_undo, jam_save, jam_restore, jam_export]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

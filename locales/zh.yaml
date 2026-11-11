@@ -487,8 +487,6 @@ gateway:
     root_new: "要开始一个新的并行 Hermes 聊天，请打开此机器人界面顶部的 All Messages 话题并在其中发送任意消息。Telegram 会为它创建一个新话题。\n\n每个话题都是独立的 Hermes 会话。只有想替换某个话题的当前会话时，才在该话题内使用 /new。"
     new_header: "已在此话题中开始新的 Hermes 会话。\n\n提示：如需并行工作，请打开 All Messages 并在其中发送消息来创建单独的话题，而不是在这里使用 /new。/new 会替换当前话题绑定的会话。"
     help: "/topic——启用多会话私聊模式（一个机器人，多个并行聊天）\n\n用法：\n  /topic             启用话题模式；若已启用则显示状态\n  /topic help        显示本帮助\n  /topic off         关闭话题模式并清除话题绑定\n  /topic <id>        在话题内：按 ID 恢复之前的会话\n\n工作方式：\n1. 在此私聊中运行一次 /topic——Hermes 会检查 BotFather 的 Threads\n   Settings 是否已开启，并切换到多会话模式。\n2. 点击机器人顶部的 All Messages 并发送任意消息。\n   Telegram 会为该消息创建新话题；每个话题都是\n   独立的 Hermes 会话（全新历史、全新上下文）。\n3. 根私聊变为系统大厅——在那里发送 /topic、/status、\n   /help、/usage。普通提示词请在话题内发送。\n4. 在话题内使用 /new 只重置该话题的会话。\n5. 在话题内使用 /topic <id> 可将旧会话恢复到该话题。"
-    system_topic_name: "系统"
-    system_topic_intro: "用于 Hermes 命令和状态的系统话题。"
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "无法确定聊天 ID。"
     mode_not_enabled: "此聊天当前未启用多会话话题模式。"
@@ -516,6 +514,7 @@ gateway:
     not_git_repo: "✗ 不是 git 仓库 — 无法更新。"
     hermes_cmd_not_found: "✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。"
     start_failed: "✗ 启动更新失败：{error}"
+    already_running: "⏳ 已有更新正在运行；只有启动它的人可以回答它的提问。请等它完成后再试一次 /update。"
     starting: "☤ 正在启动 Hermes 更新…… 进度将在此处显示。"
     reply_failed: "✗ 向更新进程发送响应失败：{error}"
     reply_sent: "✓ 已向更新进程发送 `{label}`。"
@@ -625,6 +624,8 @@ gateway:
     action_always: "始终允许"
     action_deny: "拒绝"
     deadline: "如果你在 {window} 内未回应，它将不会运行。"
+    not_requester: "只有 {requester} 可以回应此审批请求。"
+    not_requester_admins_only: "只有管理员或列出的审批人可以回应此审批请求。"
     text_choice_once: "回复 `{prefix}approve` 运行一次"
     text_choice_session: "`{prefix}approve session` 在本会话剩余时间内允许此模式"
     text_choice_always: "`{prefix}approve always` 永久允许"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: "，"
     text_choice_last: "，或 {choice}。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
+    truncated_full_above: "预览已截断：完整命令（{total} 个字符）在上面的消息中。"
+    truncated_deny_only: "预览已截断（{total} 个字符），且无法在此显示完整命令，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
+    text_prompt_deny_only: "完整的批准提示对此平台而言过长，因此只提供拒绝。请在 CLI 或桌面应用中查看。"
   notify:
     media_kind:
       audio: "音频"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒绝。"
     approval_expired: "⌛ 审批已过期——命令未执行（已超时或已在别处处理）。"
-  yuanbao:
-    slow_response_notice: "任务有点复杂，正在努力处理中，请耐心等待..."
-    owner_command_denied: "⚠️ {command} 仅在私聊模式下对创建者可用"
   shared:
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"
@@ -1710,10 +1711,10 @@ slash:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
   backtrack:
-    title: "↺ 回溯 — 选择之前的提示"
-    keys_hint: "↑/↓ 选择 · Enter 编辑并重新发送 · f 从此处分叉 · Esc 关闭"
-    preview_label: "提示 {number} / {total}:"
-    more_lines: "…(还有 {count} 行)"
+    title: "↺ 对话记录 — 选择要编辑的提示"
+    keys_hint: "浏览对话记录 · ↑↓/jk 滚动 · ←→/hl 提示 · ↵ 编辑 · f 分叉 · esc 返回"
+    prime_hint: "再按一次 esc 编辑上一条消息"
+    no_previous: "没有可编辑的上一条消息。"
     editing_hint: "↺ 正在编辑提示 {number} — Enter 回溯到此处并发送 · Esc Esc 取消"
     edit_cancelled: "↺ 已取消回溯;未删除任何内容。"
     rewound: "↺ 已回溯到提示 {number}(已归档 {count} 条消息);正在发送编辑内容。"
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "大型模型：已达{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已达{name}上限（{resets}），在此之前无法运行。"
   large_notice_percent: "大型模型：每条消息消耗更多套餐用量。每月大型模型上限：已用 {percent}。"
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 已撤销回合中更改的文件：{files}。运行 /rollback 列出检查点并恢复其中一个。"
+    more: "另外 {count} 个"

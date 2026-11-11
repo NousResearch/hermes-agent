@@ -892,7 +892,14 @@ export const zhHantSettings = {
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
       webappHostTitle: 'Hermes 主機',
       webappHostDesc:
-        'Webapp 一律使用提供它的 Hermes 主機。如需切換閘道、登入 Hermes Cloud 或管理已儲存的連線，請使用 Hermes Desktop 應用程式。',
+        'Webapp 一律在提供它的 Hermes 主機上執行。下方已儲存的連線是這台機器的清單，與 Hermes Desktop 應用程式共用；其他閘道透過此主機連線。',
+      webappOauthPaste: {
+        title: '完成登入',
+        description: '如果登入分頁停在無法開啟的位址（此瀏覽器不在閘道所在的機器上），請將該位址貼到這裡。',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: '完成',
+        failed: '無法完成登入'
+      },
       title: '閘道連線',
       envOverride: '環境變數覆寫',
       intro:
@@ -1211,6 +1218,8 @@ export const zhHantSettings = {
       updateTitle: '引擎有可用更新',
       updateDetail: (next, current) =>
         `新的 llama.cpp 組建（${next}）可以安裝——目前為 ${current}。下載期間模型仍可正常使用。`,
+      updateSameBuildDetail: tag =>
+        `Hermes 現在為 llama.cpp ${tag} 附帶執行所需的檔案。更新會重新下載引擎，下載期間模型仍可正常使用。`,
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
@@ -1647,15 +1656,20 @@ export const zhHantSettings = {
       browserRealProfile: {
         label: '使用我的真實瀏覽器設定檔',
         description:
-          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，代理使用該快照進行瀏覽。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
+          '將預設瀏覽器的登入資訊與 Cookie 複製到受管理的快照中，代理使用該快照進行瀏覽，應用程式內瀏覽器也會用它們登入。絕不會直接開啟你的真實設定檔。將套用於新工作階段。',
         enabledTitle: '真實設定檔瀏覽：已開啟',
         enabledMessage: '新工作階段將使用預設瀏覽器設定檔的快照進行瀏覽。',
         disabledTitle: '真實設定檔瀏覽：已關閉',
-        disabledMessage: '設定檔快照將被刪除；新工作階段使用乾淨的瀏覽器。',
+        disabledMessage: '設定檔快照將被刪除，應用程式內瀏覽器也會登出這些登入；新工作階段使用乾淨的瀏覽器。',
         failedSave: '無法儲存真實設定檔設定',
+        reimportSignins: '重新匯入登入資訊',
+        signinsImportedTitle: '應用程式內瀏覽器登入',
+        signinsImported: count => `已使用瀏覽器設定檔中的 ${count} 個 Cookie 登入應用程式內瀏覽器。`,
+        signinsRemote: '此後端在另一台機器上執行，因此不會將其瀏覽器設定檔匯入應用程式內瀏覽器。',
+        signinsFailed: '無法將登入資訊匯入應用程式內瀏覽器',
         prompt: {
           title: '讓網站保持登入狀態',
-          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，網站開啟時即已登入。',
+          body: '讓 Hermes 使用預設瀏覽器設定檔的快照進行瀏覽，無論是代理還是應用程式內瀏覽器，網站開啟時即已登入。',
           bulletSnapshot: 'Cookie 與登入資訊會複製到受管理的快照中。',
           bulletLiveProfile: '絕不會直接開啟你的真實瀏覽器設定檔。',
           bulletLocal: '所有資料都不會離開這台電腦。',

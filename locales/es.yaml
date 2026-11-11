@@ -487,8 +487,6 @@ gateway:
     root_new: "Para iniciar un nuevo chat paralelo de Hermes, abre el topic All Messages en la parte superior de esta interfaz del bot y envía cualquier mensaje allí. Telegram creará un topic nuevo para él.\n\nCada topic es una sesión independiente de Hermes. Usa /new dentro de un topic existente solo si quieres reemplazar la sesión actual de ese topic."
     new_header: "Se inició una nueva sesión de Hermes en este topic.\n\nConsejo: para trabajo paralelo, abre All Messages y envía un mensaje allí para crear un topic aparte en lugar de usar /new aquí. /new reemplaza la sesión vinculada al topic actual."
     help: "/topic — activa el modo MD multisesión (un bot, muchos chats paralelos)\n\nUso:\n  /topic             Activa el modo topic, o muestra el estado si ya está activo\n  /topic help        Muestra este mensaje\n  /topic off         Desactiva el modo topic y borra las vinculaciones de topics\n  /topic <id>        Dentro de un topic: restaura una sesión anterior por ID\n\nCómo funciona:\n1. Ejecuta /topic una vez en este MD: Hermes comprueba que Threads\n   Settings esté activado en BotFather y enciende el modo multisesión.\n2. Toca All Messages en la parte superior del bot y envía cualquier mensaje.\n   Telegram crea un topic nuevo para ese mensaje; cada topic es\n   una sesión independiente de Hermes (historial y contexto nuevos).\n3. El MD raíz pasa a ser un lobby del sistema: envía allí /topic, /status,\n   /help, /usage. Los prompts normales van en un topic.\n4. /new dentro de un topic reinicia solo la sesión de ese topic.\n5. /topic <id> dentro de un topic restaura en él una sesión antigua."
-    system_topic_name: "Sistema"
-    system_topic_intro: "Topic del sistema para comandos y estado de Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "No se pudo determinar el ID del chat."
     mode_not_enabled: "El modo topic multisesión no está activado actualmente en este chat."
@@ -516,6 +514,7 @@ gateway:
     not_git_repo: "✗ No es un repositorio git — no se puede actualizar."
     hermes_cmd_not_found: "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
     start_failed: "✗ No se pudo iniciar la actualización: {error}"
+    already_running: "⏳ Ya hay una actualización en curso; solo quien la inició puede responder sus preguntas. Espera a que termine y vuelve a probar /update."
     starting: "☤ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
     reply_failed: "✗ No se pudo enviar la respuesta al proceso de actualización: {error}"
     reply_sent: "✓ Se envió `{label}` al proceso de actualización."
@@ -625,6 +624,8 @@ gateway:
     action_always: "Permitir siempre"
     action_deny: "Denegar"
     deadline: "Si no respondes en {window}, NO se ejecutará."
+    not_requester: "Solo {requester} puede responder a esta aprobación."
+    not_requester_admins_only: "Solo un administrador o un aprobador de la lista puede responder a esta aprobación."
     text_choice_once: "Responde `{prefix}approve` para ejecutarlo una vez"
     text_choice_session: "`{prefix}approve session` para permitir este patrón durante el resto de la sesión"
     text_choice_always: "`{prefix}approve always` para permitirlo de forma permanente"
@@ -632,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", o {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Vista previa acortada: el comando completo ({total} caracteres) está en el mensaje de arriba."
+    truncated_deny_only: "Vista previa acortada ({total} caracteres) y no se pudo mostrar aquí el comando completo, así que solo se ofrece Denegar. Revísalo en la CLI o en la app de escritorio."
+    text_prompt_deny_only: "La solicitud de aprobación completa es demasiado larga para esta plataforma, así que solo se ofrece Denegar. Revísala en la CLI o en la app de escritorio."
   notify:
     media_kind:
       audio: "audio"
@@ -974,9 +978,6 @@ platform:
     approved: "✅ Aprobado."
     denied: "❌ Denegado."
     approval_expired: "⌛ Aprobación expirada — el comando no se ejecutó (ya se agotó el tiempo o se resolvió en otro lugar)."
-  yuanbao:
-    slow_response_notice: "Esta tarea es algo compleja — sigo trabajando en ella, un momento por favor..."
-    owner_command_denied: "⚠️ {command} solo está disponible para el creador en modo de chat privado"
   shared:
     truncated_suffix: "\n...(truncado)"
     unknown: "desconocido"
@@ -1710,10 +1711,10 @@ slash:
     description: "Salir de la CLI (usa --delete para eliminar también el historial de la sesión)"
 cli:
   backtrack:
-    title: "↺ Rebobinar — elige un prompt anterior"
-    keys_hint: "↑/↓ elegir · Enter editar y reenviar · f bifurcar desde aquí · Esc cerrar"
-    preview_label: "Prompt {number} de {total}:"
-    more_lines: "… ({count} líneas más)"
+    title: "↺ Transcripción — elige un prompt para editar"
+    keys_hint: "Explorando la transcripción · ↑↓/jk desplazar · ←→/hl prompts · ↵ editar · f bifurcar · esc volver"
+    prime_hint: "esc otra vez para editar el mensaje anterior"
+    no_previous: "No hay ningún mensaje anterior que editar."
     editing_hint: "↺ Editando el prompt {number} — Enter rebobina hasta aquí y envía · Esc Esc cancela"
     edit_cancelled: "↺ Rebobinado cancelado; no se eliminó nada."
     rewound: "↺ Rebobinado al prompt {number} ({count} mensaje(s) archivado(s)); enviando la edición."
@@ -3981,3 +3982,8 @@ plan_usage:
   large_notice_limit: "Modelo grande: alcanzaste tu límite {name} ({resets})."
   large_notice_limit_stops: "Modelo grande: alcanzaste tu límite {name} ({resets}), así que no se ejecutará hasta entonces."
   large_notice_percent: "Modelo grande: usa más del uso de tu plan por mensaje. Límite mensual de modelos grandes: {percent} usado."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Archivos cambiados en los turnos deshechos: {files}. Ejecuta /rollback para listar los checkpoints y restaurar uno."
+    more: "+{count} más"

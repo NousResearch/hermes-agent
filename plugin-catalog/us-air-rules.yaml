@@ -1,0 +1,23 @@
+name: us-air-rules
+repo: https://github.com/entersidbellad/hermes-us-air-rules
+sha: 397edd530c1bebbdb1ba21e52ee7fdbef0739024
+description: "Does this EPA air rule apply to me? Screen a plant or a household against Title 40 and get applies / check with EHS / skip, with the citation. Compare two plant scenarios with the same bundled pack (changed inputs, changed verdicts, missing facts, unchanged count) without contacting the network. Read or search current eCFR Title 40 text, list recent EPA Federal Register documents for one part, and look up a state's EPA-approved SIP rules in 40 CFR part 52. Disclosure: HTTPS GET only to www.ecfr.gov (title currency, section or subpart XML, part structure, search words) and www.federalregister.gov (part, optional term, date window, document type). No API key. The citation and the search words are sent; a facility or household profile is not. usair_plant_compare makes no request and does not upload a profile. Writes public regulatory responses (JSON, with fetch time) under HERMES_HOME/plugin-data/us-air-rules/cache, capped by cache_max_mb (default 100 MB). Reads only its own plugin settings. At most one request per second per host, 20 s timeout, 10 MB response cap. No hooks, no cron, no background process, no telemetry, no self-update. Screening aid, not a compliance determination and not legal advice. eCFR is an editorial compilation, not the official edition."
+maintainer: entersidbellad
+tier: community
+category: tools
+docs_url: https://github.com/entersidbellad/hermes-us-air-rules#readme
+version: "0.2.1"
+requires_hermes: ">=0.22.2"
+platforms: []
+capabilities:
+  provides_tools:
+    - usair_cfr_get
+    - usair_cfr_search
+    - usair_fr_recent
+    - usair_plant_triage
+    - usair_plant_compare
+    - usair_home_check
+    - usair_sip_lookup
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

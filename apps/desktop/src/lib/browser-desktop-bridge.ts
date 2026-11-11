@@ -1,15 +1,19 @@
-import { externalUrlTarget } from '@hermes/shared'
+import { externalUrlTarget, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
 import { createBrowserConnectionBridge } from '@/lib/browser-connection'
+import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
-import { createBrowserSettings } from '@/lib/browser-settings'
+import { type BrowserSavedConnections, createBrowserSavedConnections } from '@/lib/browser-saved-connections'
+import { browserFolderBasePath, createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
-import { browserApi, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
+import { browserApi, type BrowserBootstrap, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
+import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
@@ -18,6 +22,7 @@ import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
+import { tagRegistrySessionResponse } from '../../electron/profile-session-routing'
 
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
@@ -29,17 +34,69 @@ import { resolveGatewayVersion } from '../../electron/gateway-version'
  * contract onto the same-origin /api + /api/ws surface and deliberately exposes
  * only safe browser equivalents for machine-level capabilities.
  */
+/** The Webapp serves this machine's saved connections; the standalone dashboard does not. */
+function savedConnectionsServed(): boolean {
+  return (window as Window & { __HERMES_UI_SURFACE__?: string }).__HERMES_UI_SURFACE__ === 'webapp'
+}
+
 export function installBrowserDesktopBridge(): boolean {
-  if (window.hermesDesktop) {return false}
+  if (window.hermesDesktop) {
+    return false
+  }
 
   const bootstrap = browserBootstrap()
 
-  if (!bootstrap) {return false}
+  if (!bootstrap) {
+    return false
+  }
 
   // A gated host's opener waits for this window to say it booted (createBrowserWindowOpener).
-  if (!bootstrap.privateSession) {announceWebappWindow()}
+  if (!bootstrap.privateSession) {
+    announceWebappWindow()
+  }
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
+
+  // This machine's saved gateway connections (the list native Desktop keeps): each other gateway's
+  // requests ride `/api/relay/<id>` on this origin (browser-saved-connections.ts). A host that does
+  // not serve the list (the standalone dashboard) reaches only its own origin.
+  const relays: BrowserSavedConnections | null = savedConnectionsServed() ? createBrowserSavedConnections({ api, bootstrap }) : null
+  const bootstrapFor = (connectionId?: null | string) => relays?.bootstrapFor(connectionId) ?? bootstrap
+  const activeConnectionId = () => $connection.get()?.connectionId ?? LOCAL_CONNECTION_ID
+
+  // A request names its connection; untagged, it goes to the one this window is on.
+  const activeApi = <T>(request: HermesApiRequest) =>
+    browserApi<T>(bootstrapFor(request.connectionId ?? activeConnectionId()), request)
+
+  // Members with no connection of their own (host files, uploads) follow the window's connection.
+  const activeBootstrap: BrowserBootstrap = {
+    get authRequired() {
+      return bootstrapFor(activeConnectionId()).authRequired
+    },
+    get basePath() {
+      return bootstrapFor(activeConnectionId()).basePath
+    },
+    get privateSession() {
+      return bootstrapFor(activeConnectionId()).privateSession
+    },
+    get token() {
+      return bootstrapFor(activeConnectionId()).token
+    }
+  }
+
+  // The renderer's REST door, owning session rows the way Electron's main process does: every row
+  // this tab lists comes from the gateway the request went to, the source its sockets and new chats
+  // already name (`local` for the one serving this page). An untagged listed row beside a `local`
+  // new chat read as two owners, which split one gateway's sessions into an unowned group and a
+  // `local` gateway group.
+  const rendererApi = async <T>(request: HermesApiRequest): Promise<T> => {
+    const owner = request.connectionId || LOCAL_CONNECTION_ID
+    const response = await browserApi<T>(bootstrapFor(owner), request)
+
+    return (request.method || 'GET').toUpperCase() === 'GET'
+      ? (tagRegistrySessionResponse(request.path, response, owner) as T)
+      : response
+  }
 
   const currentProfile = () => $connection.get()?.profile?.trim() || windowProfileOverride()
 
@@ -68,18 +125,36 @@ export function installBrowserDesktopBridge(): boolean {
   const openExternal = async (url: string) => {
     const target = externalUrlTarget(url)
 
-    if (target?.kind === 'web') {window.open(target.url, '_blank', 'noopener,noreferrer')}
+    if (target?.kind === 'web') {
+      window.open(target.url, '_blank', 'noopener,noreferrer')
+    }
   }
 
-  const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls, previewUrls })
+  const uploads = createBrowserUploadsBridge({
+    api: activeApi,
+    assetsBasePath: bootstrap.basePath,
+    bootstrap: activeBootstrap,
+    currentProfile,
+    objectUrls,
+    previewUrls
+  })
+
+  const files = createBrowserFilesBridge({
+    api: activeApi,
+    bootstrap: activeBootstrap,
+    bootstrapFor: relays ? bootstrapFor : undefined,
+    currentProfile
+  })
 
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
-    ...createBrowserConnectionBridge({ api, bootstrap }),
-    ...createBrowserFilesBridge({ api, bootstrap, currentProfile }),
+    ...createBrowserConnectionBridge({ api, bootstrap, relays }),
+    ...(relays ? { connections: relays.connections } : {}),
+    ...files,
+    ...createBrowserDesktopPluginsBridge({ api, files }),
     ...uploads,
-    api,
+    api: rendererApi,
     // This renderer is built from the serving checkout, so its version is the
     // server's, read the way native Desktop reads its runtime's.
     getVersion: async () => ({
@@ -94,16 +169,8 @@ export function installBrowserDesktopBridge(): boolean {
 
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
-    notify: async ({ title, body }: { title?: string; body?: string }) => {
-      if (!('Notification' in window)) {return false}
-
-      if (Notification.permission === 'default') {await Notification.requestPermission()}
-
-      if (Notification.permission !== 'granted') {return false}
-      new Notification(title || 'Hermes', { body })
-
-      return true
-    },
+    notify: async payload => showBrowserNotification(payload),
+    onFocusSession: onBrowserFocusSession,
     openExternal,
     openPreviewInBrowser: async url => {
       // Only this install's sandbox wrappers may open as same-origin blobs.
@@ -114,13 +181,21 @@ export function installBrowserDesktopBridge(): boolean {
       }
     },
     openSessionWindow: async (sessionId, opts) => {
+      // A window boots on this page's gateway, which does not hold another gateway's chats.
+      if (opts?.connectionId && opts.connectionId !== LOCAL_CONNECTION_ID) {
+        return { error: 'A chat on another gateway opens in this tab, not in a new window.', ok: false }
+      }
+
       const target = sessionWindowTarget(window.location.href, sessionId, opts)
 
       return target ? openWindow(target) : { error: 'invalid_session_id', ok: false }
     },
-    settings: createBrowserSettings({ basePath: bootstrap.basePath, currentProfile }),
+    settings: createBrowserSettings({ basePath: () => browserFolderBasePath(activeConnectionId()), currentProfile }),
     requestMicrophoneAccess: async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {return false}
+      if (!navigator.mediaDevices?.getUserMedia) {
+        return false
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach(track => track.stop())
 
@@ -129,15 +204,32 @@ export function installBrowserDesktopBridge(): boolean {
     terminal: createBrowserTerminal({
       basePath: bootstrap.basePath,
       currentProfile,
-      websocketUrl: profile => ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
-      defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || '',
+      currentConnection: activeConnectionId,
+      // The host terminal of the gateway the terminal started on, relayed when it is not the serving one.
+      websocketUrl: async (profile, connectionId) => {
+        if (!relays || connectionId === LOCAL_CONNECTION_ID) {
+          return ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile)
+        }
+
+        // A tab restored before this page read its saved connections.
+        if (!relays.gateway(connectionId)) {
+          await relays.gateways()
+        }
+
+        return relays.socketUrl(connectionId, '/api/host-terminal', profile)
+      },
+      defaultCwd: async (profile, connectionId) =>
+        (await activeApi<{ cwd?: string }>({ connectionId, path: '/api/fs/default-cwd', profile })).cwd || '',
       // The chat's sign-in view for a launch-link tab. Behind the sign-in gate the next ticket
       // request already takes the tab to the login page.
       onSignedOut: () => {
-        if (!bootstrap.authRequired) {failDesktopBoot(WEBAPP_LAUNCH_REQUIRED)}
+        if (!bootstrap.authRequired) {
+          failDesktopBoot(WEBAPP_LAUNCH_REQUIRED)
+        }
       }
     }),
     ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),
+    uiPreferences: createBrowserUiPreferences(api),
     zoom: createBrowserZoom(bootstrap.basePath)
   }
 

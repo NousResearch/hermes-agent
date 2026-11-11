@@ -116,6 +116,7 @@ def _session_filter_where(
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+    workspace_key: str | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -142,6 +143,7 @@ def _session_filter_where(
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
+        (_workspace_key_clause(workspace_key) if workspace_key else ("", [])),
         ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
     ):
         if values:
@@ -833,7 +835,7 @@ class SessionSessionsMixin:
 
     def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
         """Get a session by ID (drains queued token deltas first so cost readers see exact totals)."""
-        self.flush_token_counts()
+        self.flush_for_read()
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved, "
             "COALESCE(tp.prompt, s.tool_names) AS _tool_names_resolved "
@@ -859,7 +861,7 @@ class SessionSessionsMixin:
         highest ``api_call_count`` forever, and /status and /usage would keep calling it current.
         ``rowid DESC`` breaks same-timestamp ties toward the route that first appeared later; without
         it SQLite's temp-sort order is unspecified and the retired route can win."""
-        self.flush_token_counts()
+        self.flush_for_read()
         row = self._read_one(
             """SELECT model, billing_provider, billing_base_url, billing_mode,
                       api_call_count
@@ -955,11 +957,15 @@ class SessionSessionsMixin:
         This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
         provenance, so re-activation never un-hides it on the user's behalf. A real
         unarchived -> archived flip fires ``on_session_delete`` (``reason="archive"``) after commit;
-        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere."""
+        ``notify=False`` is for housekeeping that hides a row whose session lives on elsewhere.
+        Archiving the canonical Bot Chat retires its name in the same write
+        (:meth:`_retire_canonical_bot_chat_in_transaction`)."""
         def _do(conn):
             row = conn.execute("SELECT archived FROM sessions WHERE id = ?", (session_id,)).fetchone()
             ids = self._set_lineage_column_in_transaction(
                 conn, "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+            if archived and ids:
+                self._retire_canonical_bot_chat_in_transaction(conn, session_id)
             return ids, bool(archived and ids and row is not None and not row[0])
         ids, newly_archived = self._execute_write(_do)
         if newly_archived and notify:
@@ -1115,50 +1121,6 @@ class SessionSessionsMixin:
             return where_sql, params
         combined = " AND ".join(clauses)
         return (f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"), params
-
-    def _project_compression_tips(self, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
-        """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
-        for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
-        hold a MIDDLE segment's id)."""
-        chain_by_root: dict[str, list[str]] = {}  # only roots whose tip differs from themselves
-        for s in sessions:
-            if s.get("end_reason") == "compression":
-                chain = self.get_compression_chain(s["id"])
-                if chain and chain[-1] != s["id"]:
-                    chain_by_root[s["id"]] = chain
-        tip_rows = (
-            self._get_session_rich_rows_batch(
-                {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
-            ) if chain_by_root else {}
-        )
-        projected = []
-        for s in sessions:
-            chain = chain_by_root.get(s["id"])
-            tip_row = tip_rows.get(chain[-1]) if chain else None
-            if not tip_row:
-                projected.append(s)
-                continue
-            merged = dict(s)
-            for key in (
-                "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
-                "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
-            ):
-                if key in tip_row:
-                    merged[key] = tip_row[key]
-            if merged.get("title") is None:
-                # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
-                # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
-                # canonical "Bot Chat") must still see the lineage under its name (#106165).
-                merged["title"] = s.get("title")
-            merged["_lineage_root_id"] = s["id"]
-            merged["_lineage_ids"] = chain
-            # #121148: the projected row IS an automatic continuation, not a fresh conversation and
-            # not a user branch. The server already classifies the edge (_COMPRESSION_CHILD_SQL) but
-            # only ever used it to hide rows — surface the kind so clients can label the provenance
-            # instead of rendering a sealed-and-rotated chat as a brand-new session.
-            merged["continuation_kind"] = "compression"
-            projected.append(merged)
-        return projected
 
     def list_recent_sessions_bounded(
         self,
@@ -1352,19 +1314,23 @@ class SessionSessionsMixin:
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
         include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
+        workspace_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other
         filters except archived: a pin is an explicit keep, so a pinned row stamped
         archived must still return. ``local_created_sources`` restricts ``source='local'``
-        rows to those surfaces before LIMIT/OFFSET."""
-        self.flush_token_counts()  # rows carry token/cost totals
+        rows to those surfaces before LIMIT/OFFSET. ``workspace_key``: the ``hermes -c`` folder rule.
+
+        Storage interface: port as ``list_sessions_rich`` (``workspace_key`` is ``session.list``'s
+        ``workspace`` filter)."""
+        self.flush_for_read()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
-            local_created_sources=local_created_sources,
+            local_created_sources=local_created_sources, workspace_key=workspace_key,
         )
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1394,12 +1360,28 @@ class SessionSessionsMixin:
             # rows; MAX over the chain gives effective_last_active in SQL. Do NOT
             # require child.started_at >= parent.ended_at: races insert the
             # continuation before ended_at is written.
-            outer_where, id_params = self._chain_search_where(
-                where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
-            )
+            #
+            # The page is ranked and cut on ids alone (``page``); only its rows then
+            # pay for the projection. Projecting in the ranked query made SQLite
+            # build every admitted row's full result — s.*, the resolved system
+            # prompt, the preview subquery over message content — before LIMIT:
+            # 4-11s per page at 25k rows, for LIMIT 1 as much as LIMIT 200.
+            #
+            # Unless a search needs every row's chain (it matches a row's own id and
+            # title through it), only rows that HAVE a child seed the walk. A
+            # childless row's chain is itself alone, so its MAX is just its own
+            # last_active, which the outer COALESCE reads directly. Seeding every
+            # admitted row made the CTE + GROUP BY materialise the whole table on
+            # every page: ~12s of a 13s list on a 25k-session store where 1 row had
+            # a child, at LIMIT 1 or 200.
+            id_needle = (id_query or "").strip().lower()
+            search_needle = (search_query or "").strip().lower()
+            seed_where = where_sql if (id_needle or search_needle) else _where_sql(where_clauses + [
+                "EXISTS (SELECT 1 FROM sessions _seed_c WHERE _seed_c.parent_session_id = s.id)"])
+            outer_where, id_params = self._chain_search_where(where_sql, id_needle, search_needle)
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
-                    SELECT s.id, s.id FROM sessions s {where_sql}
+                    SELECT s.id, s.id FROM sessions s {seed_where}
                     UNION ALL
                     SELECT c.root_id, child.id
                     FROM chain c
@@ -1417,15 +1399,23 @@ class SessionSessionsMixin:
                         MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
                     FROM chain
                     GROUP BY root_id
+                ),
+                page AS (
+                    SELECT s.id AS page_id,
+                        COALESCE(cm.effective_last_active, {_sql_session_last_active("s")},
+                                 {_sql_in_window("s.started_at")}) AS effective_last_active
+                    FROM sessions s
+                    LEFT JOIN chain_max cm ON cm.root_id = s.id
+                    {outer_where}
+                    ORDER BY effective_last_active DESC, s.started_at DESC, s.id DESC
+                    LIMIT ? OFFSET ?
                 )
                 {select_head}{_sql_session_last_active("s")} AS last_active,
-                    COALESCE(cm.effective_last_active, {_sql_in_window("s.started_at")}) AS _effective_last_active
-                FROM sessions s
-                LEFT JOIN chain_max cm ON cm.root_id = s.id
+                    page.effective_last_active AS _effective_last_active
+                FROM page
+                JOIN sessions s ON s.id = page.page_id
                 {prompt_join}
-                {outer_where}
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
-                LIMIT ? OFFSET ?
             """
             params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)
         else:
@@ -1449,6 +1439,7 @@ class SessionSessionsMixin:
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents, local_created_sources=local_created_sources,
+                workspace_key=workspace_key,
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
@@ -1468,7 +1459,8 @@ class SessionSessionsMixin:
                     seen_ids.add(s["id"])
                     sessions.append(s)
         if project_compression_tips and not include_children:
-            sessions = self._project_compression_tips(sessions, compact_rows)
+            from hermes_state_session_list import project_compression_tips
+            sessions = project_compression_tips(self, sessions, compact_rows)
         if heads:
             from hermes_state_local import annotate_local_lineages
             sessions = annotate_local_lineages(sessions, heads)

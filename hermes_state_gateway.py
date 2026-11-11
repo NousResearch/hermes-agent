@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
+from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -172,6 +173,63 @@ def _optional_table_columns(conn) -> dict[str, set[str]]:
 
 
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
+
+
+def _moved_key(key: object, old: str, new: str) -> Optional[str]:
+    """*key* moved from the ``agent:<old>:`` session-key namespace to ``agent:<new>:``, or None when
+    it is not a string in that namespace."""
+    old_ns = f"agent:{old}:"
+    if isinstance(key, str) and key.startswith(old_ns):
+        return f"agent:{new}:" + key[len(old_ns):]
+    return None
+
+
+def _rekey_entry(entry: dict, old: str, new: str) -> bool:
+    """Move one serialized ``SessionEntry`` (a routing row, a session receipt) from profile *old*
+    to *new*: its ``agent:<old>:`` session-key namespace and its ``origin.profile``. True when
+    either changed."""
+    changed = False
+    if (session_key := _moved_key(entry.get("session_key"), old, new)) is not None:
+        entry["session_key"] = session_key
+        changed = True
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and origin.get("profile") == old:
+        origin["profile"] = new
+        changed = True
+    return changed
+
+
+def _rekey_session_receipts(conn, prefix: str, old: str, new: str) -> int:
+    """Rewrite the session receipts under *prefix* a profile rename would strand; returns how many
+    changed.
+
+    Every receipt stores the route it was minted on, as its top-level ``route`` and in its
+    ``entry``. Local resume compares both with the key it derives for the serving profile
+    (``_checked_entry``: ``route mismatch`` / ``entry mismatch`` otherwise); API resume checks ``entry.origin.profile``
+    against the served profile and ``entry.session_key`` against the key derived from it
+    (``restore_api_session``; the API receipt's top-level ``route`` has no reader and moves only to
+    stay equal to its entry). Only the ``agent:<old>:`` namespace and ``origin.profile`` move.
+    ``profile_id`` stays as stored: it is the home that minted the receipt, a local session id hashes
+    it (``local_identity``), and resume binds the profile by route and origin, not by that path
+    (#150633).
+    """
+    rewritten = 0
+    rows = conn.execute("SELECT key, value FROM state_meta WHERE key GLOB ?", (prefix + "*",)).fetchall()
+    for key, raw in rows:
+        if (payload := _receipt(raw)) is None:
+            continue
+        changed = False
+        if (route := _moved_key(payload.get("route"), old, new)) is not None:
+            payload["route"] = route
+            changed = True
+        entry = payload.get("entry")
+        if isinstance(entry, dict) and _rekey_entry(entry, old, new):
+            changed = True
+        if changed:
+            conn.execute("UPDATE state_meta SET value=? WHERE key=?",
+                         (json.dumps(payload, ensure_ascii=False), key))
+            rewritten += 1
+    return rewritten
 
 
 class SessionGatewayMixin:
@@ -473,7 +531,7 @@ class SessionGatewayMixin:
         """List gateway sessions (rows with a session_key): newest row per key, one live
         mapping per routing key. ``platform`` filters on ``source``."""
         # Full rows carry token/cost totals — drain queued async accounting deltas first.
-        self.flush_token_counts()
+        self.flush_for_read()
         query = f"""
             SELECT sessions.*,
                    COALESCE(sp.prompt, sessions.system_prompt)
@@ -671,7 +729,8 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
     def rekey_profile_state(self, old_name: str, new_name: str) -> dict[str, int]:
-        """Atomically rewrite exact profile identity in this state database."""
+        """Atomically rewrite exact profile identity in this state database, the API-binding and
+        local-policy session receipts included (``_rekey_session_receipts``)."""
         old, new = (old_name or "").strip(), (new_name or "").strip()
         counts: dict[str, int] = {}
         if not old or not new or old == new:
@@ -765,16 +824,14 @@ class SessionGatewayMixin:
                     except (ValueError, TypeError):
                         payload = None
                     if isinstance(payload, dict):
-                        if isinstance(payload.get("session_key"), str) and payload["session_key"].startswith(old_ns):
-                            payload["session_key"] = new_ns + payload["session_key"][ns_len:]
-                        origin = payload.get("origin")
-                        if isinstance(origin, dict) and origin.get("profile") == old:
-                            origin["profile"] = new
+                        _rekey_entry(payload, old, new)
                         new_json = json.dumps(payload, ensure_ascii=False)
                 conn.execute(
                     "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
                     (new_session_key, new_json, rowid))
             counts["gateway_routing"] = len(routing)
+            counts["api_binding_receipts"] = _rekey_session_receipts(conn, API_BINDING_PREFIX, old, new)
+            counts["local_policy_receipts"] = _rekey_session_receipts(conn, POLICY_PREFIX, old, new)
 
         self._execute_write(_do)
         return counts

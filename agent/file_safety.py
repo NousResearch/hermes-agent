@@ -12,6 +12,8 @@ from pathlib import Path
 from contextlib import suppress
 from typing import Optional
 
+from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+
 
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
@@ -186,7 +188,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # root: overwriting the root .env leaks credentials across every profile that
     # inherits it, and the root Anthropic PKCE store is still read by default /
     # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; both Bitwarden caches hold Secrets Manager material.
+    # token store; SECRET_CACHE_STORES hold secret values and the Photon sidecar token.
     #
     # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
     # deliberately NOT here: #45947 freed those control files on purpose
@@ -195,8 +197,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     hermes_files = (
         ".env", ".anthropic_oauth.json",
         os.path.join("auth", "google_oauth.json"),
-        os.path.join("cache", "bws_cache.json"),
-        os.path.join("cache", "bws_cache.enc.json"),
+        *SECRET_CACHE_STORES,
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
@@ -344,10 +345,9 @@ _DID_SUFFIX = (
 
 # Exact-file credential stores under HERMES_HOME / <root>. The agent never
 # needs these directly — provider tools consume them through internal channels.
-# bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
 _CREDENTIAL_FILE_NAMES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
-    os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
+    os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
 )
 
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for

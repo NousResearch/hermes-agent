@@ -1,0 +1,24 @@
+name: kujo-hermes
+repo: https://github.com/kujolang/kujo-hermes
+sha: 4f7b27ef0216cf6284af42fb23f5211a22befd0b
+description: "Native discovery and execution of Kujo engineering, context, verification and orchestration tools with explicit human approvals and local execution receipts. Requires separately installed canonical Kujo runtime and source tooling. Disclosure — runs the separately installed `kujo` binary (PATH or `kujo_bin`) and Kujo source checkouts that `hermes kujo setup` clones from github.com/kujolang at commits pinned in `catalog/sources.lock.json` (default `~/.local/share/kujo/hermes-sources`); read-only Abilities run in operator-trusted workspaces without a prompt, and every write/external or extension Ability needs a fresh human Hermes approval."
+maintainer: kujolang
+tier: community
+category: tools
+docs_url: https://github.com/kujolang/kujo-hermes#readme
+version: "0.1.0"
+requires_hermes: ">=0.22.7"
+platforms: [macos, linux]
+capabilities:
+  provides_tools:
+    - kujo_discover
+    - kujo_inspect
+    - kujo_execute
+    - kujo_status
+    - kujo_receipts
+    - kujo_doctor
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

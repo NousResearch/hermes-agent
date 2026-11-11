@@ -268,6 +268,7 @@ _CONFIG_GETTERS = {
     "personality": _cfg_get_personality,
     "reasoning": _cfg_get_reasoning,
     "fast": _cfg_get_fast,
+    "daybreak": lambda params: {"value": (_load_cfg().get("agent") or {}).get("daybreak") is True},
     "busy": lambda params: {"value": _load_busy_input_mode()},
     "approval_mode": lambda params: {"value": _load_approval_mode()},
     "approvals.mode": lambda params: {"value": _load_approval_mode()},
@@ -434,7 +435,7 @@ def _(rid, params: dict) -> dict:
     unknown -> ``ok=False``."""
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import has_usable_secret
+        from hermes_cli.runtime_readiness import missing_credentials_suffix, runtime_has_credentials
         from hermes_cli.main import _has_any_provider_configured
         requested = str(params.get("provider") or "").strip() or None
 
@@ -463,11 +464,7 @@ def _(rid, params: dict) -> dict:
             if (not provider_configured and provider == "bedrock"
                     and source in {"iam-role", "aws-sdk-default-chain"}):
                 return fail("No Hermes provider is configured.", source)
-            api_key = runtime.get("api_key")
-            api_key_text = "" if callable(api_key) else str(api_key or "").strip()
-            if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
-                    or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                from hermes_cli.runtime_readiness import missing_credentials_suffix
+            if not runtime_has_credentials(runtime):
                 return fail(f"No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}",
                             runtime.get("source"))
             from hermes_cli.anon_auth import route_is_welcome_host
@@ -480,7 +477,8 @@ def _(rid, params: dict) -> dict:
         return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
                                 wait_seconds=_READINESS_SHARE_WAIT_SECONDS)
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        from hermes_cli.runtime_readiness import readiness_failure
+        return _ok(rid, readiness_failure(e))
 
 
 def _redact_client_text(text: str, cap: int) -> str:

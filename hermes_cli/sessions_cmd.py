@@ -125,7 +125,7 @@ def _write_output(output, text, summary) -> None:
 
 def _cmd_repair(args):
     from hermes_state import DEFAULT_DB_PATH as db_path, SessionDB
-    from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
+    from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
@@ -133,6 +133,9 @@ def _cmd_repair(args):
     # A missing canonical sessions table is not additive upgrade drift: creating
     # an empty one could hide lost history. Preserve corruption/recovery routing.
     reason = _db_opens_cleanly(db_path)
+    if isinstance(reason, HealthCheckUnavailable):
+        print(f"✗ Could not check {db_path}: {reason}")
+        return 1
     # Opens cleanly but lags SCHEMA_SQL: additive drift (snapshot reconcile), not corruption surgery.
     drift_only = reason is None
     if drift_only:
@@ -1009,7 +1012,7 @@ def _cmd_clean_markers(db, args):
         print(f"✓ Cleared {report['rows_affected']} row(s).")
 
 
-_BACKFILL_LABELS = {"backfill": "Rebuilding index", "backfill_cjk": "Building CJK index"}
+_BACKFILL_LABELS = {"backfill": "Rebuilding index"}
 _COUNTED_PHASES = frozenset({*_BACKFILL_LABELS, "teardown"})
 
 
@@ -1306,6 +1309,37 @@ def _cmd_repair_prompts(db, args):
     return 0
 
 
+def _cmd_refresh_prompts(db, args):
+    """Ask continuing sessions to rebuild their stored system prompt once, on their next turn.
+
+    For operators who update SOUL.md, skills or context files under a running profile: the
+    request is a refresh epoch in this profile's state.db, so it works with the gateway running
+    and survives a restart. History and session ids are untouched.
+    """
+    target = getattr(args, "session", None)
+    session_id = None
+    if target:
+        session_id = db.resolve_session_id(target)
+        if not session_id:
+            print(f"No session matches {target!r}.")
+            return 1
+        # A compressed conversation continues on its tip; a request keyed on the ended root never fires.
+        session_id = db.get_compression_tip(session_id) or session_id
+        row = db.get_session(session_id) or {}
+        count = 1 if row.get("system_prompt") else 0
+    else:
+        count = db.count_sessions_with_stored_prompt()
+    epoch = db.request_prompt_refresh(session_id)
+    if getattr(args, "json", False):
+        print(json.dumps({"epoch": epoch, "session_id": session_id, "sessions": count}))
+        return 0
+    scope = session_id or "every session in this profile"
+    print(f"Requested a system prompt refresh for {scope} ({count} session(s) with a stored prompt).")
+    print("Each rebuilds its prompt from the current SOUL.md, skills and context files on its next turn "
+          "(one prompt-cache miss per session); conversation history is kept.")
+    return 0
+
+
 def _cmd_stats(db, args):
     reader = _surface_reader(db)
     print(f"Total sessions: {db.session_count()}\nTotal messages: {db.message_count()}")
@@ -1353,6 +1387,7 @@ _DB_HANDLERS = {
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
+    "refresh-prompts": _cmd_refresh_prompts,
 }
 
 

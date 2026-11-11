@@ -3,9 +3,9 @@
     "prompt_tokens": {
       "context": 134,
       "stable": 1829,
-      "volatile": 1528
+      "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 10374,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -22,7 +22,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -36,9 +35,9 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1225,
-      "volatile": 1528
+      "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 10374,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -55,7 +54,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -69,9 +67,9 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1646,
-      "volatile": 1527
+      "volatile": 1266
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 10374,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -88,7 +86,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -102,9 +99,9 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 2420,
-      "volatile": 1524
+      "volatile": 1264
     },
-    "tool_tokens": 11398,
+    "tool_tokens": 10530,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -121,7 +118,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -135,9 +131,9 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1225,
-      "volatile": 1528
+      "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 10374,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -154,7 +150,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -168,9 +163,9 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1211,
-      "volatile": 1528
+      "volatile": 1268
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 10374,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -187,7 +182,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -201,9 +195,9 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1473,
-      "volatile": 1529
+      "volatile": 1269
     },
-    "tool_tokens": 11898,
+    "tool_tokens": 11030,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -221,7 +215,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -235,9 +228,9 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1244,
-      "volatile": 1529
+      "volatile": 1269
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 10374,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -254,7 +247,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",
@@ -267,10 +259,10 @@
   "telegram.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1276,
-      "volatile": 1529
+      "stable": 1330,
+      "volatile": 1269
     },
-    "tool_tokens": 11242,
+    "tool_tokens": 10374,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -287,7 +279,6 @@
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
       "tool_call",
       "tool_describe",
       "tool_search",

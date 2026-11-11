@@ -1,0 +1,26 @@
+name: fluent
+repo: https://github.com/Bruno-coder21/fluent
+sha: "2cb24252b26a42cb3282e2faf0d08109c6b3bfbb"
+version: "1.0.2"
+title: fluent
+description: "Your agent becomes fluent in any program: checks the agent's terminal commands against the real --help and man pages of the programs you adopt, before they run. A long option the installed version doesn't have is stopped with the closest real one (--crf → -crf, --ammend → --amend), and subcommands it classifies as destructive (gh repo delete, docker image prune, rsync --delete) go to Hermes's own approval prompt. Adds /fluent (adopt, show, forget, undo, mode), an @cli:<program> context reference and a dashboard tab that draws the agent's tree (a branch per program, a fruit per error caught). Tested on 333 real valid commands (0 blocked) and 22 typical mistakes (22 caught), including the tar macOS ships. Disclosure — /fluent adopt <program> runs that program on the host (not the terminal backend) with --version/-version/version/-V and --help/-h/help, plus <command> --help per subcommand only when the help carries a git, Go/cobra, argparse or click marker (git: --list-cmds and <command> -h; ffmpeg: -h full; curl: --help all; git filter-branch is never run): no shell, closed stdin, empty temp cwd, own process group, filtered environment (PATH, HOME, USER, LOGNAME, TMPDIR, XDG dirs; no keys or tokens), 5 s per call, about 25 s per program; a program that ignores those arguments runs normally. It reads man pages and terminal.backend from config.yaml; in block mode (default) pre_tool_call vetoes commands with options the installed program lacks and escalates destructive ones to Hermes's approval prompt with a per-subcommand rule key, never approving anything (unattended runs follow Hermes policy, default deny); posts one-line notices; writes only under its plugin data directory; makes no network, model or telemetry calls."
+maintainer: Bruno-coder21
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Bruno-coder21/fluent/blob/2cb24252b26a42cb3282e2faf0d08109c6b3bfbb/README.md
+readme: true
+image: https://raw.githubusercontent.com/Bruno-coder21/fluent/2cb24252b26a42cb3282e2faf0d08109c6b3bfbb/docs/banner.png
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/Bruno-coder21/fluent/2cb24252b26a42cb3282e2faf0d08109c6b3bfbb/docs/screenshots/agent-tree.png
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, transform_terminal_output]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Only acts on the local terminal backend and on long options of commands it read with high confidence; it trusts the binary on Hermes's own PATH, so a different copy on a session PATH (venv, nvm, direnv) can be judged against the wrong help."
+  - "Risk classes are name and help-summary heuristics that only add prompts: many destructive forms are not asked about (git stash drop, gh api -X DELETE, rsync --delete-excluded), and its copy of Hermes's own patterns can drift, so a command may occasionally be asked twice."
+  - "In cron and other unattended runs, commands fluent flags as destructive are refused under Hermes's default approval policy; use /fluent risk off or approvals.cron_mode for jobs that must delete."
+  - "Live adoption progress and 'fluent caught' notices need the in-process gateway (default plugins.isolation). Tested on Linux; Windows is untested."

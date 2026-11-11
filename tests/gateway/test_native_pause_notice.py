@@ -31,7 +31,7 @@ async def test_paused_fifo_releases_the_messaging_waiter_with_one_notice_per_epi
     and once the FIFO moves again the next pause is a fresh episode with its own notice."""
     from gateway.platforms.event import MessageEvent
     from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import Principal, Submission
+    from gateway.session_contract import SessionActor, Submission
     from gateway.session_controls import AuthorityConnection
     from gateway.session_ingress import admit_message
     from tests.gateway.test_authority_unknown_resolution import Peer, _restarted_owner_with_unknown_head
@@ -39,7 +39,7 @@ async def test_paused_fifo_releases_the_messaging_waiter_with_one_notice_per_epi
     executed = []
     store, authority, ref, unknown, _follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed)
     try:
-        actor = Principal('human', 'p', frozenset({'session:submit'}), 'fixture')
+        actor = SessionActor('human', 'p', frozenset({'session:submit'}), 'fixture')
 
         async def admit_native(event):
             return await authority.submit(actor, Submission(event.text, ref, {'text': event.text}, 'queue'))

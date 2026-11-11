@@ -274,7 +274,7 @@ test('built web freshness follows shared sources and build inputs, not mtimes or
   expect(productCurrent({ source, product: 'web', out })).toBe(false)
   await buildWeb({ source, icons, out })
   expect(readFileSync(path.join(out, 'favicon.ico'), 'utf8')).toBe('changed prepared icon')
-  for (const input of ['apps/shared/src/client.ts', 'scripts/build/web.mjs', 'assets/icon.svg', 'package-lock.json']) {
+  for (const input of ['apps/shared/src/client.ts', 'scripts/build/web.mjs', 'assets/icon.svg', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
     put(source, input, 'changed input')
     expect(productCurrent({ source, product: 'web', out }), input).toBe(false)
     await buildWeb({ source, icons, out })
@@ -321,13 +321,13 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   put(source, 'ui-tui/src/value.ts', 'export const value: string = "shared source";')
   put(source, 'apps/shared/src/value.ts', 'export { value } from "../../../ui-tui/src/value";')
   put(source, 'ui-tui/src/entry.tsx', 'import { value } from "../../apps/shared/src/value"; console.log(value);')
-  put(source, 'package-lock.json', '{"lockfileVersion":3}')
+  put(source, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n")
   const preservedTimes = new Date('2020-01-01T00:00:00Z')
   const sameLengthChanges = [
     ['ui-tui/src/value.ts', 'shared', 'edited'],
     ['apps/shared/src/value.ts', 'value', 'VALUE'],
     ['package.json', 'true', 'null'],
-    ['package-lock.json', ':3', ':2'],
+    ['pnpm-lock.yaml', '9.0', '6.0'],
   ]
   for (const [name] of sameLengthChanges) utimesSync(path.join(source, name), preservedTimes, preservedTimes)
   await buildTui({ source, out })
@@ -350,7 +350,7 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
     'ui-tui/packages/hermes-ink/src/entry-exports.ts',
     'ui-tui/tsconfig.json', 'ui-tui/packages/hermes-ink/tsconfig.json', 'apps/shared/tsconfig.json',
     'ui-tui/package.json', 'ui-tui/packages/hermes-ink/package.json', 'apps/shared/package.json',
-    'tsconfig.json', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
+    'tsconfig.json', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'pm/lock.json',
     'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
   ]) {
     const file = path.join(source, name)
@@ -384,15 +384,12 @@ test('a browser renderer publish never invalidates the native Desktop inputs', a
 })
 
 function webappSource(source) {
-  put(source, 'package.json', JSON.stringify({ private: true, type: 'module', workspaces: ['apps/*', 'web'] }))
-  put(source, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': { workspaces: ['apps/*', 'web'] },
-    'apps/desktop': { name: 'desktop' }, 'apps/shared': { name: 'shared' }, web: { name: 'web' },
-    'node_modules/desktop': { link: true, resolved: 'apps/desktop' },
-    'node_modules/shared': { link: true, resolved: 'apps/shared' },
-    'node_modules/web': { link: true, resolved: 'web' },
-  } }))
-  put(source, '.npmrc', 'engine-strict=true\n')
+  put(source, 'package.json', JSON.stringify({ private: true, type: 'module' }))
+  put(source, 'pnpm-workspace.yaml', "packages:\n  - apps/*\n  - web\nengineStrict: true\n")
+  put(source, 'pnpm-lock.yaml', ["lockfileVersion: '9.0'", '', 'importers:', '',
+    ...['.', 'apps/desktop', 'apps/shared', 'web'].flatMap(dir => [`  ${dir}: {}`, '']),
+  ].join('\n'))
+  put(source, '.npmrc', 'registry=https://registry.invalid/\n')
   put(source, 'apps/desktop/package.json', '{"name":"desktop","type":"module"}')
   put(source, 'apps/desktop/index.html', '<html><body><script type="module" src="/src/main.ts"></script></body></html>')
   put(source, 'apps/desktop/src/main.ts', 'import { answer } from "../../shared/src/value"; document.body.textContent = answer;')
@@ -428,8 +425,9 @@ test('the Webapp receipt certifies its checkout inputs, not the workspace it com
   for (const [input, content] of [
     ['apps/shared/src/value.ts', 'export const answer: string = "edited shared";'],
     ['apps/desktop/src/main.ts', 'document.body.textContent = "edited desktop";'],
-    ['package-lock.json', readFileSync(path.join(source, 'package-lock.json'), 'utf8').replace('"lockfileVersion":3', '"lockfileVersion":3,"requires":true')],
-    ['.npmrc', 'engine-strict=false\n'],
+    ['pnpm-lock.yaml', `${readFileSync(path.join(source, 'pnpm-lock.yaml'), 'utf8')}\nsettings:\n  autoInstallPeers: true\n`],
+    ['pnpm-workspace.yaml', "packages:\n  - apps/*\n  - web\nengineStrict: false\n"],
+    ['.npmrc', 'registry=https://mirror.invalid/\n'],
     ['pm/lock.json', '{}'],
     ['scripts/build/webapp.mjs', '// compiler changed'],
   ]) {
@@ -513,9 +511,9 @@ test('Webapp builds install privately and never disturb the native Desktop insta
   const prepare = options => {
     installs.push(options.install)
     expect(options.source).toBe(workspace)
-    expect(options.env.npm_config_ignore_scripts).toBe('true')
-    // npm ci validates the whole locked graph, not only the compiled workspaces.
-    expect(existsSync(path.join(workspace, 'web/package.json'))).toBe(true)
+    expect(options.env.pnpm_config_ignore_scripts).toBe('true')
+    // The browser bundle never runs Electron, so its binary is never downloaded.
+    expect(options.electron).toBe(false)
     if (!existsSync(path.join(workspace, 'node_modules/vite'))) dependency(workspace, '', 'vite')
   }
   await buildSourceWebapp({ source, workspace, prepare, install: false })

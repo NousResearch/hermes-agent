@@ -1,7 +1,9 @@
 """Tests for the dashboard-managed file browser API."""
 
+import asyncio
 import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -337,7 +339,12 @@ def test_stream_file_uri_uses_host_resolution_without_bypassing_policy(
         200 if locked else 400
     )
     monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
-    assert client.get("/api/files/stream", params=params).status_code == 413
+    # A player source streams one Range at a time, so the whole-file cap that guards the
+    # base64 read and attachment download never stops a long recording from playing.
+    capped = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+    assert capped.status_code == 206, capped.text
+    assert capped.content == b"ell"
+    assert client.get("/api/files/read", params={"path": str(artifact)}).status_code == 413
 
 
 @pytest.mark.platforms("windows")
@@ -748,6 +755,8 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "webhook_subscriptions.json",
         "bws_cache.json",
         "bws_cache.enc.json",
+        "op_cache.json",
+        "photon-sidecar.json",
     ):
         p = root / name
         p.write_text("SECRET=abc123")
@@ -863,3 +872,85 @@ def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
     # Reading or downloading the broken symlink directly is still an error.
     assert client.get("/api/files/read", params={"path": str(root / "dangling")}).status_code == 404
     assert client.get("/api/files/download", params={"path": str(root / "dangling")}).status_code == 404
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _spy_render(spy):
+    # The multi-MB data URL is rendered off the loop too: returned as a dict, FastAPI serialized it on the loop.
+    from starlette.responses import JSONResponse
+
+    spy(JSONResponse, "render",
+        lambda self, content: isinstance(content, dict) and ({"data_url", "dataUrl"} & content.keys()))
+
+
+def _route_delete(client, seeded, spy):
+    spy(_rt_files.shutil, "rmtree")
+    return client.request("DELETE", "/api/files", json={"path": str(seeded.parent), "recursive": True})
+
+
+def _route_read(client, seeded, spy):
+    _spy_render(spy)
+    spy(Path, "read_bytes", lambda self, *a, **k: self == seeded)
+    return client.get("/api/files/read", params={"path": str(seeded)})
+
+
+def _route_list(endpoint):
+    def _run(client, seeded, spy):
+        spy(_rt_files.os, "scandir", lambda target, *a, **k: Path(target) == seeded.parent)
+        return client.get(endpoint, params={"path": str(seeded.parent)})
+    return _run
+
+
+def _route_data_url(client, seeded, spy):
+    _spy_render(spy)
+    spy(_rt_files, "_fs_read_bytes")
+    return client.get("/api/fs/read-data-url", params={"path": str(seeded)})
+
+
+def _route_default_cwd(client, seeded, spy):
+    spy(_rt_files, "_fs_git_branch")
+    return client.get("/api/fs/default-cwd")
+
+
+def _route_system_stats(client, seeded, spy):
+    psutil = pytest.importorskip("psutil")
+    spy(psutil, "cpu_percent")
+    return client.get("/api/system/stats")
+
+
+_OFF_LOOP_ROUTES = {
+    "delete": _route_delete, "read": _route_read, "list": _route_list("/api/files"),
+    "fs-list": _route_list("/api/fs/list"), "fs-read-data-url": _route_data_url,
+    "fs-default-cwd": _route_default_cwd, "system-stats": _route_system_stats,
+}
+
+
+@pytest.mark.parametrize("route", sorted(_OFF_LOOP_ROUTES))
+def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, monkeypatch, route):
+    """An ``async def`` route runs ON the event loop that also serves /api/ws chat streaming and the PTY: a recursive
+    delete, a multi-MB read, a directory scan, a git subprocess or psutil's 100 ms CPU sample there froze every other
+    request for as long as it ran. The blocking call must happen on a worker thread (#120270; from #120271)."""
+    client, root = forced_files_client
+    seeded = _seed_file(client, root)
+    seen = []
+
+    def spy(owner, name, wanted=lambda *a, **k: True):
+        original = getattr(owner, name)
+
+        def wrapper(*args, **kwargs):
+            if wanted(*args, **kwargs):
+                seen.append(_on_event_loop())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapper)
+
+    response = _OFF_LOOP_ROUTES[route](client, seeded, spy)
+    assert response.status_code == 200, response.text
+    assert seen and not any(seen), seen

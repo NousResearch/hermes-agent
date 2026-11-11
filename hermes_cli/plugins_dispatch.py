@@ -42,7 +42,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
-    "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end", "on_session_open",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
     # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
@@ -53,7 +53,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
 # Hooks whose calls are told apart by another payload field: one session's commands are one
 # sequence, so a still-running callback skips that session's next command, not another session's.
 _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
-    "pre_command": ("session_key",), "post_compaction": ("session_id",),
+    "pre_command": ("session_key",), "post_compaction": ("session_id",), "on_session_open": ("session_id",),
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
@@ -279,7 +279,8 @@ class PluginDispatchMixin:
         what they declare. Each callback is isolated. Bounded hooks and ``pre_tool_call`` run under
         ``plugins.hook_callback_timeout`` (worker abandoned, never joined); ``pre_tool_call`` fails
         closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
-        caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
+        caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject, or
+        ``{"action": "block", "message": "..."}`` to end the turn before any inference request.
         """
         from agent.safe_worker_policy import safe_worker_enabled
 
@@ -751,7 +752,7 @@ class PluginDispatchMixin:
                 call_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key]),
                                original_key: _safe_copy(kwargs[original_key])}
             try:
-                ret = cb(**call_kwargs)
+                ret = cb(**self._hook_callback_kwargs(cb, call_kwargs))  # narrow signatures, as hooks
                 if ret is not None:
                     results.append(ret)
                     if _payload_key and isinstance(ret, dict) and isinstance(ret.get(_payload_key), dict):

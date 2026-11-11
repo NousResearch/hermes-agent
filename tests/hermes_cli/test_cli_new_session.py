@@ -291,9 +291,13 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.compression_count == 0
 
 
-def test_new_session_with_title(capsys):
+def test_new_session_with_title(monkeypatch):
     """new_session(title=...) creates a session and sets the title."""
-    cli = _make_cli()
+    import cli as cli_mod
+
+    cli = _make_cli()  # re-imports cli: patch it after
+    printed = []
+    monkeypatch.setattr(cli_mod, "_cprint", printed.append)
     cli._session_db = MagicMock()
     cli.agent = _FakeAgent("old_session_id", datetime.now())
     cli.conversation_history = []
@@ -306,7 +310,22 @@ def test_new_session_with_title(capsys):
     assert call_args[0][0] == cli.session_id
     assert call_args[0][1] == "My Test Session"
 
-    captured = capsys.readouterr()
-    assert "My Test Session" in captured.out
+    assert any("My Test Session" in line for line in printed)
 
 
+def test_the_new_session_line_is_kept_for_a_resize_to_replay(monkeypatch):
+    """/new's line goes through the CLI's printer like the rest of its output: a resize repaints it,
+    and inside the running CLI the print keeps the footer on the terminal's last rows."""
+    from collections import deque
+
+    import cli as cli_mod
+
+    cli = _make_cli()  # re-imports cli: patch it after
+    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY", deque(maxlen=200))
+    cli._session_db = MagicMock()
+    cli.agent = _FakeAgent("old_session_id", datetime.now())
+    cli.conversation_history = []
+
+    cli.new_session(title="Kept Title")
+
+    assert any("Kept Title" in line for line in cli_mod._OUTPUT_HISTORY)

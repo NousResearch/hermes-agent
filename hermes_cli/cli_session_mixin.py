@@ -560,7 +560,7 @@ class CLISessionMixin:
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
-            CLI_CONFIG, _parse_service_tier_config,
+            CLI_CONFIG, _cprint, _parse_service_tier_config,
             _sync_process_session_id, datetime)
         from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
         old_session_id = self.session_id
@@ -659,10 +659,7 @@ class CLISessionMixin:
                 self._notify_session_boundary("on_session_reset")
 
         if not silent:
-            if title:
-                print(t("cli.session.new_session_titled", title=title))
-            else:
-                print(t("cli.session.new_session"))
+            _cprint(t("cli.session.new_session_titled", title=title) if title else t("cli.session.new_session"))
 
     def _consume_pending_resume_selection(self, text: str) -> bool:
         """Resolve a bare numeric reply following a bare ``/resume`` prompt.

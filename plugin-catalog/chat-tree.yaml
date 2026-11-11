@@ -1,7 +1,7 @@
 name: chat-tree
 title: Chat Tree
 repo: https://github.com/Ronitron007/hermes-chat-tree
-sha: "eb94f1082838db82a85d9b869ef70e443d220374"
+sha: "c1570d5c5e8fcb3b0ac46aba804d9fa734e50884"
 subdir: chat-tree
 description: >-
   One window for branching chats in Hermes Desktop. A side pane draws the open

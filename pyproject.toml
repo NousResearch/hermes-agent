@@ -770,6 +770,7 @@ markers = [
   "real_retry_backoff: opt out of the tests/agent autouse stub that zeroes jittered_backoff",
   "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
   "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
+  "real_container_detection: opt out of the autouse stub that pins gateway Docker autodetection (tools.docker_host_mapping) to off",
   "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
   "platforms(*specs, arch=None, arch_negate=False): run only on hosts matching at least one spec — linux/macos/windows/posix/any, 'not X' negation, optional arch filter",
 ]

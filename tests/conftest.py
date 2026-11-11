@@ -503,6 +503,26 @@ def _neutralize_git_safe_directory_read(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_docker_host_mapping(request, monkeypatch):
+    """Pin gateway self-detection to "not containerized" for every test.
+
+    Test runners that themselves run inside Docker/podman (CI containers) would
+    otherwise let ``tools.docker_host_mapping`` pull a real {container: host} mapping
+    out of ``docker inspect``, making sandbox bind-mount assertions depend on the
+    runner's mount layout. Tests of the feature itself carry
+    ``@pytest.mark.real_container_detection`` or patch the ``resolve_host_mapping``
+    seam directly (the pattern in tests/tools/test_docker_host_mapping.py).
+    """
+    if request.node.get_closest_marker("real_container_detection"):
+        return
+    try:
+        from tools import docker_host_mapping as dhm
+    except Exception:
+        return
+    monkeypatch.setattr(dhm, "is_running_in_docker", lambda: False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _close_leaked_session_dbs():
     """Close every SessionDB a test constructed but forgot to close.
 

@@ -15,7 +15,7 @@ Knowledge comics (知识漫画): educational, biography, tutorial.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/baoyu-comic` |
-| Path | `optional-skills/creative\baoyu-comic` |
+| Path | `optional-skills/creative/baoyu-comic` |
 | Version | `1.56.1` |
 | Author | 宝玉 (JimLiu) |
 | License | MIT |
@@ -89,7 +89,7 @@ Character consistency is driven by **text descriptions** in `characters/characte
 | Images only | Generate images from existing prompts directory |
 | Regenerate N | Regenerate specific page(s) only (e.g., `3` or `2,5,8`) |
 
-Details: [references/partial-workflows.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/partial-workflows.md)
+Details: [references/partial-workflows.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/partial-workflows.md)
 
 ### Art, Tone & Preset Catalogue
 
@@ -107,7 +107,7 @@ Details: [references/partial-workflows.md](https://github.com/NousResearch/herme
 
   Full rules at `references/presets/<preset>.md` — load the file when a preset is picked.
 
-- **Compatibility matrix** and **content-signal → preset** table live in [references/auto-selection.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/auto-selection.md). Read it before recommending combinations in Step 2.
+- **Compatibility matrix** and **content-signal → preset** table live in [references/auto-selection.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/auto-selection.md). Read it before recommending combinations in Step 2.
 
 ## File Structure
 
@@ -185,11 +185,11 @@ Input → Analyze → [Check Existing?] → [Confirm: Style + Reviews] → Story
 
 ### User Questions
 
-Use the `clarify` tool to confirm options. Since `clarify` handles one question at a time, ask the most important question first and proceed sequentially. See [references/workflow.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/workflow.md) for the full Step 2 question set.
+Use the `clarify` tool to confirm options. Put independent questions in one `questions` array (up to 5); ask separately any question whose options depend on an earlier answer. See [references/workflow.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/workflow.md) for the full Step 2 question set.
 
-**Timeout handling (CRITICAL)**: `clarify` can return `"The user did not provide a response within the time limit. Use your best judgement to make the choice and proceed."` — this is NOT user consent to default everything.
+**Timeout handling (CRITICAL)**: `clarify` can return `"outcome": "timed_out"` with responses marked `"status": "unanswered"` — this is NOT user consent to default everything.
 
-- Treat it as a default **for that one question only**. Continue asking the remaining Step 2 questions in sequence; each question is an independent consent point.
+- Treat it as a default **for the unanswered questions only**. Each question is an independent consent point.
 - **Surface the default to the user visibly** in your next message so they have a chance to correct it: e.g. `"Style: defaulted to ohmsha preset (clarify timed out). Say the word to switch."` — an unreported default is indistinguishable from never having asked.
 - Do NOT collapse Step 2 into a single "use all defaults" pass after one timeout. If the user is genuinely absent, they will be equally absent for all five questions — but they can correct visible defaults when they return, and cannot correct invisible ones.
 
@@ -221,15 +221,15 @@ Use Hermes' built-in `image_generate` tool for all image rendering. Its schema a
 
 **Backup rule**: existing `prompts/…md` and `…png` files → rename with `-backup-YYYYMMDD-HHMMSS` suffix before regenerating.
 
-Full step-by-step workflow (analysis, storyboard, review gates, regeneration variants): [references/workflow.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/workflow.md).
+Full step-by-step workflow (analysis, storyboard, review gates, regeneration variants): [references/workflow.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/workflow.md).
 
 ## References
 
 **Core Templates**:
-- [analysis-framework.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/analysis-framework.md) - Deep content analysis
-- [character-template.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/character-template.md) - Character definition format
-- [storyboard-template.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/storyboard-template.md) - Storyboard structure
-- [ohmsha-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/ohmsha-guide.md) - Ohmsha manga specifics
+- [analysis-framework.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/analysis-framework.md) - Deep content analysis
+- [character-template.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/character-template.md) - Character definition format
+- [storyboard-template.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/storyboard-template.md) - Storyboard structure
+- [ohmsha-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/ohmsha-guide.md) - Ohmsha manga specifics
 
 **Style Definitions**:
 - `references/art-styles/` - Art styles (ligne-claire, manga, realistic, ink-brush, chalk, minimalist)
@@ -238,9 +238,9 @@ Full step-by-step workflow (analysis, storyboard, review gates, regeneration var
 - `references/layouts/` - Layouts (standard, cinematic, dense, splash, mixed, webtoon, four-panel)
 
 **Workflow**:
-- [workflow.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/workflow.md) - Full workflow details
-- [auto-selection.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/auto-selection.md) - Content signal analysis
-- [partial-workflows.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\baoyu-comic/references/partial-workflows.md) - Partial workflow options
+- [workflow.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/workflow.md) - Full workflow details
+- [auto-selection.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/auto-selection.md) - Content signal analysis
+- [partial-workflows.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/baoyu-comic/references/partial-workflows.md) - Partial workflow options
 
 ## Page Modification
 

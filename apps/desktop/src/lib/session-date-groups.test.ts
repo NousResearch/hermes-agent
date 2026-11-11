@@ -27,6 +27,28 @@ const dividerKeys = (rows: ReturnType<typeof groupEntriesByRecency>): string[] =
   rows.flatMap(row => (row.kind === 'divider' ? [row.key] : []))
 
 describe('groupEntriesByRecency', () => {
+  it('limits complete Updated groups without splitting bursts or branch clusters', () => {
+    const burst = Array.from({ length: 11 }, (_, i) =>
+      entry(session(`burst-${i}`, { last_active: at(2026, 5, 18, 11) - i * 120 }))
+    )
+
+    const entries = [
+      ...burst,
+      entry(session('yesterday', { last_active: at(2026, 5, 17, 15) })),
+      entry(session('branch', { last_active: at(2026, 4, 1) }), '└'),
+      entry(session('older', { last_active: at(2026, 5, 16, 15) }))
+    ]
+
+    const full = group(entries)
+    const dividers = full.flatMap((row, index) => (row.kind === 'divider' ? [index] : []))
+    const limited = groupEntriesByRecency(entries, NOW, MONDAY, 2)
+
+    expect(limited).toEqual(full.slice(0, dividers[1]))
+    expect(limited.at(-1)).toMatchObject({ entry: { session: { id: 'branch' } } })
+    expect(groupEntriesByRecency(burst, NOW, MONDAY, 2)).toEqual(group(burst))
+    expect(groupEntriesByRecency([], NOW, MONDAY, 2)).toEqual([])
+  })
+
   it('cuts the head after the most recent handful, then divides by coarse ranges', () => {
     // The morning run (30m/30m/4h/30m gaps, then a 14h silence) is the
     // unlabelled head; each older group gets one divider, coarsening with age.

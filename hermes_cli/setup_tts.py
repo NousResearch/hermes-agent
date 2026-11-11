@@ -7,27 +7,22 @@ import shutil
 import subprocess
 import sys
 from tools import tool_backend_helpers
-from hermes_cli import nous_subscription
 
 logger = logging.getLogger("hermes_cli.setup")
 
 
-def _pip_install_tts_package(name: str, pip_args: list, manual_cmd: str) -> bool:
-    """Install a local TTS engine through the canonical uv → pip → ensurepip
-    ladder so pip-less venvs (Ubuntu 25.10 ``python -m venv``, ``uv venv``) work."""
-    from hermes_cli.tools_config import _pip_install
+def _install_tts_extra(extra: str) -> bool:
+    """Record the engine in PM's dependency union; activate it on next launch."""
+    import pm
+
     try:
-        result = _pip_install(pip_args, timeout=300)
-        if result.returncode == 0:
-            _setup.print_success(f"{name} installed successfully")
-            return True
-        err = (result.stderr or "").strip()
-        reason = err[:300] if err else "install failed"
-    except Exception as e:
-        reason = e
-    _setup.print_error(f"Failed to install {name}: {reason}")
-    _setup.print_info(f"Try manually: {manual_cmd}")
-    return False
+        pm.sync_venv([extra], explicit=True)
+    except (pm.InstallError, OSError, ValueError) as exc:
+        _setup.print_error(f"Failed to install {extra}: {exc}")
+        _setup.print_info("Retry with: hermes setup tts")
+        return False
+    _setup.print_success(f"{extra} installed. Restart Hermes to use it.")
+    return True
 
 
 # sys.platform -> (manual install hint, install command); anything else uses "linux".
@@ -40,6 +35,11 @@ _ESPEAK_INSTALL = {
 
 def _install_neutts_deps() -> bool:
     """Install NeuTTS dependencies with user approval. Returns True on success."""
+    from pm.extras import extra_supported
+
+    if not extra_supported("neutts"):
+        _setup.print_error("NeuTTS is not supported by this Python/platform.")
+        return False
     if not (shutil.which("espeak-ng") or shutil.which("espeak")):
         hint, install_cmd = _ESPEAK_INSTALL.get(sys.platform, _ESPEAK_INSTALL["linux"])
         print()
@@ -59,15 +59,13 @@ def _install_neutts_deps() -> bool:
 
     _setup._info(None, "Installing neutts Python package...",
           "This will also download the TTS model (~300MB) on first use.", None)
-    return _pip_install_tts_package("neutts", ["-U", "neutts[all]", "--quiet"], "uv pip install -U 'neutts[all]'")
+    return _install_tts_extra("neutts")
 
 
 def _install_kittentts_deps() -> bool:
     """Install KittenTTS dependencies with user approval. Returns True on success."""
-    wheel_url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
     _setup._info(None, "Installing kittentts Python package (~25-80MB model downloaded on first use)...", None)
-    return _pip_install_tts_package(
-        "kittentts", ["-U", wheel_url, "soundfile", "--quiet"], f"uv pip install -U '{wheel_url}' soundfile")
+    return _install_tts_extra("kittentts")
 
 
 def _xai_oauth_logged_in_for_setup() -> bool:
@@ -118,6 +116,12 @@ _TTS_PROVIDER_CHOICES = [
     ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)")]
 # Short label = menu label minus its parenthetical ("Edge TTS", "Mistral Voxtral TTS", ...).
 _TTS_PROVIDER_LABELS = {key: label.split(" (")[0] for key, label in _TTS_PROVIDER_CHOICES}
+_EDGE_VOICE_CHOICES = [
+    ("en-US-AriaNeural", "English (US) — Aria"),
+    ("zh-CN-XiaoxiaoNeural", "Chinese (Simplified) — Xiaoxiao"),
+    ("zh-TW-HsiaoChenNeural", "Chinese (Traditional) — HsiaoChen"),
+    ("zh-HK-HiuMaanNeural", "Chinese (Hong Kong) — HiuMaan"),
+]
 # provider -> (env vars that satisfy it, env var to save, prompt, success line, pre-prompt hint)
 _TTS_API_KEY_PROVIDERS = {
     "elevenlabs": (("ELEVENLABS_API_KEY",), "ELEVENLABS_API_KEY", "ElevenLabs API key",
@@ -161,8 +165,15 @@ def _tts_api_key_step(selected: str) -> str:
 
 
 def _tts_local_install_step(selected: str) -> str:
-    """Offer to install a local TTS engine; fall back to edge if declined/failed."""
+    """Offer a local engine install; retain an unsupported explicit selection."""
+    from pm.extras import extra_supported
+
     module, name, lines, question, installer = _TTS_LOCAL_PROVIDERS[selected]
+    if not extra_supported(selected):
+        _setup.print_warning(
+            f"{name} is not supported by this Python/platform. "
+            "Your provider selection is saved, but speech requires a supported engine.")
+        return selected
     if _setup._module_installed(module):
         _setup.print_success(f"{name} is already installed")
         return selected
@@ -198,12 +209,13 @@ def _xai_api_key_path():
 
 
 def _tts_xai_step(config: dict) -> str:
-    """xAI TTS auth. Order: existing OAuth tokens (free for SuperGrok) > existing
-    XAI_API_KEY > offer both paths — xAI TTS works with OAuth bearer tokens too."""
-    if _xai_oauth_logged_in_for_setup():
+    """xAI TTS auth. Order: existing XAI_API_KEY > existing OAuth tokens > offer both
+    paths — matches runtime, where an explicit key wins over the subscription OAuth
+    bearer (which 403s on metered /v1/tts). See #87045, #113727."""
+    if _setup.get_env_value("XAI_API_KEY"):
+        _setup.print_success("xAI TTS will use your existing XAI_API_KEY (preferred over xAI Grok OAuth)")
+    elif _xai_oauth_logged_in_for_setup():
         _setup.print_success("xAI TTS will use your xAI Grok OAuth (SuperGrok / Premium+) credentials")
-    elif _setup.get_env_value("XAI_API_KEY"):
-        _setup.print_success("xAI TTS will use your existing XAI_API_KEY")
     else:
         print()
         choice_idx = _setup.prompt_choice(
@@ -226,6 +238,7 @@ def _tts_xai_step(config: dict) -> str:
 
 def _setup_tts_provider(config: dict):
     """Interactive TTS provider selection with install flow for local engines."""
+    from hermes_cli import nous_subscription
     current_provider = config.get("tts", {}).get("provider", "edge")
     current_label = _TTS_PROVIDER_LABELS.get(current_provider, current_provider)
     print()
@@ -253,6 +266,24 @@ def _setup_tts_provider(config: dict):
         selected = _tts_api_key_step(selected)
     elif selected == "xai":
         selected = _tts_xai_step(config)
+    if selected == "edge":
+        edge_config = config.setdefault("tts", {}).setdefault("edge", {})
+        current_voice = edge_config.get("voice", "en-US-AriaNeural")
+        voices = list(_EDGE_VOICE_CHOICES)
+        if current_voice not in {voice for voice, _ in voices}:
+            voices.insert(0, (current_voice, f"Current voice — {current_voice}"))
+        voice_labels = [label for _, label in voices] + ["Other voice (enter voice ID)"]
+        current_idx = next(i for i, (voice, _) in enumerate(voices) if voice == current_voice)
+        # The curses picker clears the screen, so pass the hint as its description too; the
+        # numbered fallback ignores description and relies on the printed line.
+        hint = "Choose a voice matching the language you want to speak."
+        _setup.print_info(hint)
+        voice_idx = _setup.prompt_choice("Select Edge TTS voice:", voice_labels, current_idx, description=hint)
+        if voice_idx == len(voices):
+            voice = (_setup.prompt("Edge TTS voice ID", default=current_voice) or "").strip()
+            edge_config["voice"] = voice or current_voice
+        else:
+            edge_config["voice"] = voices[voice_idx][0]
     config.setdefault("tts", {})["provider"] = selected
     _setup.save_config(config)
     _setup.print_success(f"TTS provider set to: {_TTS_PROVIDER_LABELS.get(selected, selected)}")
@@ -263,4 +294,4 @@ def setup_tts(config: dict):
     _setup_tts_provider(config)
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

@@ -47,11 +47,15 @@ class TestIsSkillDisabled:
     @patch("hermes_cli.config.load_config")
     def test_platform_disabled(self, mock_load):
         mock_load.return_value = {"skills": {
-            "disabled": [],
+            "disabled": ["a/one"],
             "platform_disabled": {"telegram": ["tg-skill"]}
         }}
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
+        # Any of several identifiers (declared name, duplicate's load path) disables.
+        assert _is_skill_disabled("other", "tg-skill", platform="telegram") is True
+        assert _is_skill_disabled("dup-demo", "a/one", platform="cli") is True
+        assert _is_skill_disabled("other", "x", platform="telegram") is False
 
 
 
@@ -131,7 +135,7 @@ class TestGetDisabledSkillNames:
 
 
 # ---------------------------------------------------------------------------
-# _find_all_skills — disabled filtering
+# find_all_skills — disabled filtering
 # ---------------------------------------------------------------------------
 
 class TestFindAllSkillsFiltering:
@@ -147,9 +151,9 @@ class TestFindAllSkillsFiltering:
         import tools.skills_tool as _st
         import agent.skill_utils as _su
         monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
-        monkeypatch.setattr(_su, "get_external_skills_dirs", lambda: [])
-        from tools.skills_tool import _find_all_skills
-        skills = _find_all_skills()
+        monkeypatch.setattr(_su, "get_external_skills_dirs", list)
+        from tools.skills_tool import find_all_skills
+        skills = find_all_skills()
         assert not any(s["name"] == "my-skill" for s in skills)
 
 

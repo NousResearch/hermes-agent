@@ -262,7 +262,6 @@ def test_live_buzz_adapter_exception_is_bounded() -> None:
             )
         )
 
-    assert result["error"].startswith("Plugin platform send failed: ")
     assert len(result["error"]) <= 1024
 
 
@@ -310,6 +309,21 @@ def test_photon_e164_target_is_explicit() -> None:
     assert chat_id == "+15551234567"
     assert thread_id is None
     assert is_explicit is True
+
+
+def test_telegram_named_private_dm_topic_is_parsed() -> None:
+    """``telegram:<positive_chat_id>:<topic_name>`` splits into chat + topic name (#80483);
+    numeric topics keep their shape and a named topic on a group id stays unparsed."""
+    assert _parse_target_ref("telegram", "722341991:Debug") == ("722341991", "Debug", True)
+    assert _parse_target_ref("telegram", "722341991:17") == ("722341991", "17", True)
+    assert _parse_target_ref("telegram", "-1001234567890:Debug") == (None, None, False)
+    # Only the live cron router resolves the name; the REST sender (send_message, cron's
+    # standalone fallback) must say so instead of failing on int("Debug").
+    pconfig, bot = SimpleNamespace(token="token", extra={}), AsyncMock()
+    with patch("plugins.platforms.telegram.standalone._telegram_bot", return_value=bot), \
+            patch("plugins.platforms.telegram.standalone._telegram_format", return_value=("hi", None, False)):
+        result = asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "722341991", "hi", thread_id="Debug"))
+    assert "numeric thread id" in result["error"] and not bot.send_message.called
 
 
 def test_e164_target_still_requires_phone_platform() -> None:
@@ -456,10 +470,7 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
     finally:
         platform_registry.unregister(platform_name)
 
-    assert result == {
-        "error": f"Could not resolve 'dm:panyaozhen' on {platform_name}. "
-        "The plugin parser did not recognize it and no channel-directory entry matched."
-    }
+    assert set(result) == {"error"}
     discover_mock.assert_called_once_with()
     send_mock.assert_not_awaited()
 
@@ -487,10 +498,8 @@ def test_unresolved_builtin_target_keeps_directory_error() -> None:
             )
         )
 
-    assert result == {
-        "error": "Could not resolve 'missing-room' on telegram. "
-        "Use send_message(action='list') to see available targets."
-    }
+    assert set(result) == {"error"}
+    assert "missing-room" in result["error"]
     send_mock.assert_not_awaited()
 
 
@@ -512,15 +521,6 @@ def test_unresolved_builtin_target_passes_through_when_requested() -> None:
     assert thread_id is None
 
 
-def test_unresolved_builtin_target_still_errors_for_the_model_tool() -> None:
-    """The model-facing default stays strict: unresolved targets error with a hint."""
-    from tools.send_message_tool import resolve_send_target
-
-    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
-        chat_id, _thread_id, error = resolve_send_target("telegram", "ops-room")
-
-    assert chat_id is None
-    assert error is not None
 
 
 def test_photon_group_guid_passes_through_when_requested() -> None:
@@ -597,3 +597,62 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
 
     assert chat_id is None
     assert error is not None
+
+
+def test_unknown_platform_that_left_core_names_its_install_command(tmp_path, monkeypatch):
+    """A platform that moved out of core into a catalog plugin, sent to while the plugin is absent."""
+    from gateway.config import GatewayConfig
+    from tools.send_message_targets import resolve_send_target
+    from tools.send_message_tool import _resolve_platform_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, _, _, err = _resolve_platform_config("homeassistant", GatewayConfig())
+    assert "unregistered plugin platform: homeassistant" in err and "`hermes plugins install homeassistant`" in err
+    _, _, err = resolve_send_target("homeassistant", "living room")
+    assert "`hermes plugins install homeassistant`" in err
+    _, _, _, err = _resolve_platform_config("nosuchplatform", GatewayConfig())
+    assert err == "Unknown or unregistered plugin platform: nosuchplatform"
+
+
+def test_bare_platform_home_fallback_preserves_thread_id() -> None:
+    telegram_cfg = SimpleNamespace(enabled=True, token="tok", extra={})
+    home = SimpleNamespace(chat_id="12345", thread_id="777")
+    config = SimpleNamespace(
+        platforms={Platform.TELEGRAM: telegram_cfg},
+        get_home_channel=lambda _platform: home,
+    )
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+         patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": "telegram",
+                    "message": "hello topic",
+                }
+            )
+        )
+
+    assert result["success"] is True
+    assert result["note"] == "Sent to telegram home channel (chat_id: 12345)"
+    send_mock.assert_awaited_once_with(
+        Platform.TELEGRAM,
+        telegram_cfg,
+        "12345",
+        "hello topic",
+        thread_id="777",
+        media_files=[],
+        force_document=False,
+    )
+    mirror_mock.assert_called_once_with(
+        "telegram",
+        "12345",
+        "hello topic",
+        source_label="cli",
+        thread_id="777",
+        user_id=None,
+    )

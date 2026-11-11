@@ -20,7 +20,7 @@ CN_CREDENTIAL_SENTINEL = "FAKE_CN_CREDENTIAL"
 def _fake_minimax_credentials(monkeypatch):
     values = {}
     monkeypatch.setattr(
-        "tools.tts_tool.get_env_value",
+        "hermes_cli.config.get_env_value",
         lambda name, default=None: values.get(name, default),
     )
     return values

@@ -18,7 +18,7 @@ class TestMatrixExecApprovalReactions:
         # Resolve user_id so _is_self_sender doesn't defensively drop all traffic (#15763).
         adapter._user_id = "@bot:example.org"
         adapter._approval_prompts_by_event["$target"] = _MatrixApprovalPrompt(
-            session_key="sess-1", chat_id="!room:example.org", message_id="$target"
+            session_key="sess-1", chat_id="!room:example.org", message_id="$target", request_id="req-1"
         )
         adapter._approval_prompt_by_session["sess-1"] = "$target"
 
@@ -33,6 +33,6 @@ class TestMatrixExecApprovalReactions:
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._on_reaction(event)
 
-        mock_resolve.assert_called_once_with("sess-1", "once")
+        mock_resolve.assert_called_once_with("sess-1", "once", request_id="req-1")
         assert "$target" not in adapter._approval_prompts_by_event
         assert "sess-1" not in adapter._approval_prompt_by_session

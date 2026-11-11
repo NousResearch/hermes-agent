@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
@@ -37,7 +38,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 
 # Providers that want bare names with dots preserved.
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
-    "copilot", "copilot-acp", "openai-codex"})
+    "openai-codex"})
 
 # Providers whose native naming is authoritative -- pass through unchanged.
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
@@ -86,28 +87,19 @@ _CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
 _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi"})
 
-# DeepSeek's direct API only accepts first-class V-series IDs after the 2026-07-24 cut-off (HTTP 400
-# otherwise). Both retired aliases map to deepseek-v4-flash per the official docs (thinking mode is
-# controlled by extra_body.thinking on the profile), so saved configs can't keep sending them.
-_DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
-    "deepseek-chat", "deepseek-reasoner"})
-
-_DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-v4-pro", "deepseek-v4-flash"})
-
-# First-class V-series IDs incl. future ``deepseek-v5-*`` and dated variants
-# (``deepseek-v4-flash-20260423``): verified real model ids, NOT aliases of ``deepseek-chat``.
-_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
+# DeepSeek retired ``deepseek-chat`` / ``deepseek-reasoner`` on 2026-07-24 (HTTP 400 since); saved
+# configs still carry them, so they fold onto the current Flash id (thinking mode is controlled by
+# extra_body.thinking on the profile). Every other id is the user's call and goes to the wire as typed:
+# a shape-based allow-list swallowed the vendor's own ``deepseek-flash`` the day it shipped (#107206),
+# and any new id without a ``v<N>`` marker would have met the same fate.
+_DEEPSEEK_RETIRED_ALIASES: dict[str, str] = {
+    "deepseek-chat": "deepseek-flash", "deepseek-reasoner": "deepseek-flash"}
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map a model input to a DeepSeek-accepted id: canonicals and ``deepseek-v<digit>…`` pass
-    through (future V-series work without a release); retired aliases and everything else become
-    ``deepseek-v4-flash``."""
+    """Fold retired DeepSeek aliases onto their replacement; pass everything else through."""
     bare = _strip_vendor_prefix(model_name).lower()
-    if bare in _DEEPSEEK_CANONICAL_MODELS or _DEEPSEEK_V_SERIES_RE.match(bare):
-        return bare
-    return "deepseek-v4-flash"
+    return _DEEPSEEK_RETIRED_ALIASES.get(bare, bare)
 
 
 def _strip_vendor_prefix(model_name: str) -> str:
@@ -133,13 +125,17 @@ def _normalize_provider_alias(provider_name: str) -> str:
 
 
 def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
-    """Strip ``provider/`` only when the prefix matches the target provider, so arbitrary slash-bearing
-    ids aren't mangled while ``zai/glm-5.1`` is repaired for ``zai``. ``custom`` is a bucket, not a
-    vendor: an alias resolving to it (``ollama``) may be a real LiteLLM-style routing prefix, so only a
-    literal ``custom/`` prefix is redundant there."""
-    if "/" not in model_name:
+    """Strip ``provider/`` or ``provider:`` only when the prefix matches the target provider, so
+    arbitrary slash-bearing ids aren't mangled while ``zai/glm-5.1`` is repaired for ``zai``. The colon
+    form is Hermes's own ``provider:model`` switch syntax (``-m openai-codex:gpt-5.6-sol``); left intact
+    it reaches the wire and the Codex backend rejects it with HTTP 400 (#64787). Only the FIRST separator
+    counts, so an Ollama-style ``qwen3:8b`` tag is never split on a later colon. ``custom`` is a bucket,
+    not a vendor: an alias resolving to it (``ollama``) may be a real LiteLLM-style routing prefix, so
+    only a literal ``custom/`` / ``custom:`` prefix is redundant there."""
+    cut = min((i for i in (model_name.find("/"), model_name.find(":")) if i >= 0), default=-1)
+    if cut < 0:
         return model_name
-    prefix, remainder = model_name.split("/", 1)
+    prefix, remainder = model_name[:cut], model_name[cut + 1:]
     if not prefix.strip() or not remainder.strip():
         return model_name
     normalized_target = _normalize_provider_alias(target_provider)
@@ -231,23 +227,23 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         bare = _strip_matching_provider_prefix(name, provider)
         return bare if "/" in bare else _dots_to_hyphens(bare)
 
-    # Copilot's own normalizer knows the alias table (vendor stripping, dash-to-dot repair for Claude)
-    # and live-catalog lookups; without it dash-notation Claude ids hit HTTP 400 model_not_supported.
-    # See issue #6879.
-    if provider in {"copilot", "copilot-acp"}:
-        try:
-            from hermes_cli.models import normalize_copilot_model_id
+    # A profile that owns its id space (alias table, dash-to-dot repair) answers first; a wrong
+    # notation otherwise hits HTTP 400 model_not_supported. See issue #6879.
+    from providers import get_provider_profile
 
-            normalized = normalize_copilot_model_id(name)
-            if normalized:
-                return normalized
-        except Exception:
-            pass  # fall through to the generic strip-vendor behaviour
+    profile = get_provider_profile(provider)
+    try:
+        normalized = profile.normalize_model_id(name) if profile is not None else None
+    except Exception:  # a plugin hook failing must not break normalization: generic rules take over
+        logging.getLogger(__name__).debug("normalize_model_id(%s) failed", provider, exc_info=True)
+        normalized = None
+    if normalized:
+        return normalized
 
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)
-        if stripped == name and name.startswith("openai/"):
-            return name.split("/", 1)[1]  # openai-codex maps openai/gpt-5.4 -> gpt-5.4
+        if stripped == name and name.startswith(("openai/", "openai:")):
+            return name[len("openai/"):]  # openai-codex maps openai/gpt-5.4 and openai:gpt-5.4 -> gpt-5.4
         return stripped
 
     if provider == "deepseek":

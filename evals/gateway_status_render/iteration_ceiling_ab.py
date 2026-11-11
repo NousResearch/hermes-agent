@@ -44,8 +44,7 @@ async def _busy_ack(agent) -> str:
 
     gr._load_gateway_config = lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}}
     runner = object.__new__(gr.GatewayRunner)
-    runner._running_agents, runner._running_agents_ts = {}, {}
-    runner._pending_messages, runner._busy_ack_ts, runner._queued_events = {}, {}, {}
+    runner._running_agents, runner._pending_messages = {}, {}
     runner._draining, runner._busy_text_mode, runner._busy_input_mode = False, "interrupt", "interrupt"
     runner.adapters, runner.config, runner.session_store = {}, MagicMock(), None
     runner.config.group_sessions_per_user, runner.config.thread_sessions_per_user = True, False
@@ -61,7 +60,7 @@ async def _busy_ack(agent) -> str:
     adapter.config = MagicMock(); adapter.config.extra = {}
     adapter.platform = MagicMock(value="telegram")
     runner._running_agents[sk] = agent
-    runner._running_agents_ts[sk] = time.time() - 600
+    runner._session_state(sk).turn.started_ts = time.time() - 600
     runner.adapters[source.platform] = adapter
     await runner._handle_active_session_busy_message(event, sk)
     return adapter._send_with_retry.call_args.kwargs.get("content", "")
@@ -75,7 +74,7 @@ async def _heartbeat(agent) -> str:
     mixin = GatewayTurnMixin()
     adapter = MagicMock()
     adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb1"))
-    mixin._adapter_for_source = MagicMock(return_value=adapter)
+    mixin._delivery_adapter_for = MagicMock(return_value=adapter)
     mixin._should_emit_long_running_notification = MagicMock(side_effect=[True, False])
     disp = MagicMock()
     disp._display_surface_mode.return_value = "on"

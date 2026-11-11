@@ -20,7 +20,7 @@ env = {'PATH': f'{BASE}/bin:/usr/bin:/bin', 'HOME': str(BASE/'home'),
 for name in ('home', 'hermes', 'bin'):
     (BASE/name).mkdir(exist_ok=True)
 sys.path.insert(0, str(REPO))
-from hermes_cli import banner
+from hermes_cli import source_check
 
 if len(sys.argv) > 1:
     os.environ.clear()
@@ -28,7 +28,7 @@ if len(sys.argv) > 1:
     case = json.loads((BASE/'case.json').read_text())
     os.environ.update(case['env'])
     start = time.monotonic()
-    result = banner._check_via_local_git(BASE/'checkout')
+    result = source_check.check_for_updates(install_root=BASE/'checkout').get('behind')
     print('PRODUCTION_RETURN '+json.dumps({'result': result, 'elapsed': time.monotonic()-start}), flush=True)
     time.sleep(2)
     sys.exit(0)
@@ -146,7 +146,7 @@ finally:
             os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=5)
     log.close()
-result = {'platform': sys.platform, 'production': banner.__file__, 'rows': rows,
+result = {'platform': sys.platform, 'production': source_check.__file__, 'rows': rows,
           'isolation': 'PATH ssh adapter only adds -F fixture config; execs real /usr/bin/ssh; loopback sshd and disposable git repos',
           'server_stopped': server.poll() is not None, 'agent_stopped': agent is None or agent.poll() is not None}
 (BASE/'result.json').write_text(json.dumps(result, indent=2))

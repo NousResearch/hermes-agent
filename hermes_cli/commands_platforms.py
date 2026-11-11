@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from agent.i18n import t
 from hermes_cli.commands import (
     COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
 
@@ -32,10 +33,24 @@ def _requires_argument(args_hint: str) -> bool:
 
 
 def _sanitize_telegram_name(raw: str) -> str:
-    """Telegram allows only ``[a-z0-9_]``: lowercase, hyphens -> ``_``, strip the rest,
-    collapse/strip ``_``."""
-    name = _TG_INVALID_CHARS.sub("", raw.lower().replace("-", "_"))
+    """Telegram allows only ``[a-z0-9_]``: lowercase, hyphens -> ``_``, collapse/strip ``_``.
+    A name that would lose letters (``中文helper`` -> ``helper``) is omitted (``""``): the menu
+    entry could not resolve back to the registered ``/中文helper`` and would answer
+    "Unknown command"."""
+    lowered = raw.lower().replace("-", "_")
+    name = _TG_INVALID_CHARS.sub("", lowered)
+    if any(ch.isalnum() for ch in _TG_INVALID_CHARS.findall(lowered)):
+        return ""
     return _TG_MULTI_UNDERSCORE.sub("_", name).strip("_")
+
+
+_TG_DASHES = re.compile("[\u2012\u2013\u2014\u2015\u2212]")
+
+
+def _normalize_telegram_desc(desc: str) -> str:
+    """Fold Unicode dashes (em/en/figure/horizontal-bar/minus) to ASCII ``-``.
+    BotFather rejects setMyCommands descriptions containing them (#2925)."""
+    return _TG_DASHES.sub("-", desc)
 
 
 def _truncate_desc(desc: str, limit: int) -> str:
@@ -76,11 +91,11 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
     """(command_name, description) pairs for Telegram setMyCommands: sanitized canonical names
     only (no aliases). Built-ins needing arguments are included (their handlers show usage when
     selected bare); plugin commands needing arguments are excluded (may lack a no-arg fallback)."""
-    pairs = [(cmd.name, cmd.description) for cmd in _gateway_available_commands()]
+    pairs = [(cmd.name, cmd.describe()) for cmd in _gateway_available_commands()]
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
-    return [(tg, desc) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
+    return [(tg, _normalize_telegram_desc(desc)) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
 
 
 # Telegram allows 100 BotCommands; the 60-slot default keeps every built-in plus common skill
@@ -215,9 +230,21 @@ def _iter_gateway_skills(platform: str):
         yield cmd_key, info, sp.parent.relative_to(root).parts
 
 
+def _gateway_bundles() -> list[tuple[str, dict]]:
+    """Sorted ``(cmd_key, info)`` skill bundles for a platform catalog; a bundle directory that cannot
+    be scanned (e.g. a hand-edited non-UTF-8 file) is logged and lists none, so it never hides the
+    menu's other commands."""
+    from agent.skill_bundles import get_skill_bundles
+    try:
+        return sorted(get_skill_bundles().items())
+    except Exception:
+        logger.warning("Skill bundles could not be scanned; omitting them from the command catalog", exc_info=True)
+        return []
+
+
 def _collect_gateway_skill_entries(
     platform: str, max_slots: int | None, reserved_names: set[str], desc_limit: int = 100,
-    sanitize_name: "Callable[[str], str] | None" = None,
+    sanitize_name: Callable[[str], str] | None = None,
 ) -> tuple[list[tuple[str, str, str, str]], int]:
     """Collect plugin + skill entries for a gateway platform.
 
@@ -249,19 +276,30 @@ def _collect_gateway_skill_entries(
             meta = plugin_cmds[cmd_name]
             if platform == "telegram" and _requires_argument(str(meta.get("args_hint") or "")):
                 continue
-            yield cmd_name, meta.get("description", "Plugin command"), ""
+            yield cmd_name, meta.get("description") or t("slash.shared.plugin_command_desc"), ""
 
     plugin_entries = _entries(_plugin_rows())
     reserved_names.update(n for n, *_rest in plugin_entries)
+
+    from agent.skill_commands import resolve_slash_key
+    bundles = dict(_gateway_bundles())
+    # A bundle whose menu name was shortened/renamed (32-char clamp) cannot dispatch: the platform
+    # sends the displayed name and bundle lookup resolves full slugs only. Advertise only names that
+    # resolve back to their own bundle.
+    bundle_entries = [e for e in _entries(
+        (cmd_key.lstrip("/"), info.get("description", ""), cmd_key) for cmd_key, info in bundles.items())
+        if resolve_slash_key(e[0], bundles) == e[2]]
+    reserved_names.update(n for n, *_rest in bundle_entries)
     skill_entries = _entries(
         (cmd_key.lstrip("/"), info.get("description", ""), cmd_key)
         for cmd_key, info, _rel in _iter_gateway_skills(platform))
 
+    dynamic_entries = bundle_entries + skill_entries
     if max_slots is None:
-        return plugin_entries + skill_entries, 0
+        return plugin_entries + dynamic_entries, 0
     remaining = max(0, max_slots - len(plugin_entries))
-    hidden_count = max(0, len(skill_entries) - remaining)
-    return (plugin_entries + skill_entries[:remaining])[:max_slots], hidden_count
+    hidden_count = max(0, len(dynamic_entries) - remaining)
+    return (plugin_entries + dynamic_entries[:remaining])[:max_slots], hidden_count
 
 
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
@@ -279,7 +317,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
                    for name, desc, cmd_key, raw in entries]
     candidates = _prioritize_telegram_menu_candidates(candidates)
     overflow_count = max(0, len(candidates) - max_commands)
-    menu = [(name, desc) for name, desc, _source, _raw_name in candidates[:max_commands]]
+    menu = [(name, _normalize_telegram_desc(desc)) for name, desc, _source, _raw_name in candidates[:max_commands]]
     return menu, hidden_count + overflow_count
 
 
@@ -313,9 +351,11 @@ def discord_skill_commands_by_category(
     # reserved-command collision from two skills colliding on the clamp (the rename-worthy case).
     names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
+    bundle_items = [(cmd_key, info, ()) for cmd_key, info in _gateway_bundles()]
     try:
-        for cmd_key, info, rel_parts in _iter_gateway_skills("discord"):
-            # First (alphabetical) skill wins; the loser is dropped from the picker — warn loudly.
+        for cmd_key, info, rel_parts in (*bundle_items, *_iter_gateway_skills("discord")):
+            # Bundles are listed first because gateway dispatch gives them precedence over skills
+            # with the same slug. The loser is dropped from the picker — warn loudly.
             discord_name = cmd_key.lstrip("/")[:32]
             prior = names_used.get(discord_name)
             if prior == "<reserved>":
@@ -368,7 +408,11 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login",
+    # Recovery-only, after a restart lost a turn: `/hermes discard` reaches it.
+    "discard",
+    # One-time answer to the low-disk prompt; `/hermes autoprune on` reaches it.
+    "autoprune"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -382,13 +426,13 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     standalone slash, deduped and clamped to the 50-command cap; Slack built-ins and
     _SLACK_VIA_HERMES_ONLY are skipped. ``/hermes`` is always first for anything dropped."""
     available = _gateway_available_commands()
-    wanted = [(cmd.name, cmd.description, cmd.args_hint or "") for cmd in available]
-    wanted += [(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
-               for cmd in available for alias in cmd.aliases]
+    wanted = [(cmd.name, cmd.describe(), cmd.args_hint or "") for cmd in available]
+    wanted += [(alias, t("slash.shared.slack_alias_for", name=cmd.name, description=cmd.describe()),
+                cmd.args_hint or "") for cmd in available for alias in cmd.aliases]
     wanted += [(name, desc, hint or "") for name, desc, hint in _iter_plugin_command_entries()]
 
     entries: list[tuple[str, str, str]] = [
-        ("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]")]
+        ("hermes", t("slash.hermes.description"), "[subcommand] [args]")]
     seen = {"hermes"}
     for name, desc, hint in wanted:
         slack_name = _sanitize_slack_name(name)
@@ -408,7 +452,7 @@ def slack_app_manifest(
     users configure in the Slack UI); ``request_url`` is schema-required, ignored in Socket Mode."""
     slashes = []
     for name, desc, usage in slack_native_slashes():
-        entry = {"command": f"/{name}", "description": desc or f"Run /{name}",
+        entry = {"command": f"/{name}", "description": desc or t("slash.shared.plugin_default_desc", name=name),
                  "should_escape": False, "url": request_url}
         if usage:
             entry["usage_hint"] = usage

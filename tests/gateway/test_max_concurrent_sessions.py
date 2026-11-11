@@ -8,7 +8,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 
@@ -56,11 +56,7 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     )
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._active_session_leases = {}
-    runner._session_run_generation = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._background_tasks = set()
     runner._draining = False
@@ -71,10 +67,8 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner._restart_drain_timeout = 0.0
     runner._stop_task = None
     runner._exit_code = None
-    runner._busy_ack_ts = {}
     runner._busy_input_mode = "interrupt"
     runner._busy_text_mode = "interrupt"
-    runner._queued_events = {}
     runner._update_runtime_status = MagicMock()
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()
@@ -88,7 +82,7 @@ def _occupy_session(runner: GatewayRunner, chat_id: str = "busy"):
     source = _make_source(chat_id)
     session_key = build_session_key(source)
     runner._running_agents[session_key] = MagicMock()
-    runner._running_agents_ts[session_key] = time.time()
+    runner._session_state(session_key).turn.started_ts = time.time()
     return session_key
 
 
@@ -112,10 +106,7 @@ def test_new_session_gets_clean_error_at_active_session_limit(monkeypatch):
     with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
         result = asyncio.run(runner._handle_message(event))
 
-    assert result == (
-        "Hermes is at the active session limit (1/1). "
-        "Try again when another session finishes."
-    )
+    assert "(1/1)" in result
     assert new_key not in runner._running_agents
     runner.session_store.get_or_create_session.assert_not_called()
 

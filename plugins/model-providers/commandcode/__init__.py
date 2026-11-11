@@ -6,7 +6,8 @@ import json
 import logging
 import urllib.request
 
-from providers import register_provider
+from hermes_cli.urllib_security import open_credentialed_url
+from providers import get_provider_profile, register_provider
 from providers.base import ProviderProfile, _profile_user_agent
 
 logger = logging.getLogger(__name__)
@@ -30,12 +31,32 @@ class CommandCodeProfile(ProviderProfile):
             req = urllib.request.Request(models_url)
             req.add_header("Accept", "application/json")
             req.add_header("User-Agent", _profile_user_agent())
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             return [m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
         except Exception as exc:
             logger.debug("fetch_models(commandcode): %s", exc)
             return None
+
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict, dict]:
+        """DeepSeek ids (``deepseek/deepseek-v4-flash``) get the native DeepSeek wire
+        controls: DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so
+        without them ``/reasoning`` never reaches the request (#95232). Other model
+        families stay a no-op — CommandCode declares no reasoning vocabulary for them."""
+        m = (model or "").strip()
+        if not m.lower().startswith("deepseek/"):
+            return {}, {}
+        # Registry lookup, not a module import: the deepseek shim is only a loader-injected
+        # sys.modules entry, and the registry honours a user override of the profile.
+        native = get_provider_profile("deepseek")
+        if native is None:
+            return {}, {}
+        return native.build_api_kwargs_extras(
+            reasoning_config=reasoning_config, model=m.split("/", 1)[1], **context,
+        )
 
 
 class CommandCodeAnthropicProfile(CommandCodeProfile):

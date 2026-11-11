@@ -14,7 +14,7 @@ Dogfood a real session before a PR:
 
 ```bash
 cargo install --path crates/tui
-hermes --tui --native
+hermes --tui --ratatui
 ```
 
 Or from this directory:

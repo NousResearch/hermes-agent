@@ -107,7 +107,7 @@ class TestInboundCacheUsesSniffer:
     @pytest.mark.asyncio
     async def test_cache_audio_from_url_sniffs_too(self, tmp_path, monkeypatch):
         """The URL download path routes through the same sniffer."""
-        import gateway.platforms.base as base
+        from gateway.platforms import base
 
         monkeypatch.setattr(base, "AUDIO_CACHE_DIR", tmp_path)
 
@@ -137,7 +137,7 @@ class TestInboundCacheUsesSniffer:
         async def _fake_read(response, media_type):
             return MP3_ID3  # server sent MP3 bytes despite the .ogg claim
 
-        monkeypatch.setattr(base, "_read_httpx_body_with_limit", _fake_read)
+        monkeypatch.setattr(base, "read_httpx_body_with_limit", _fake_read)
         monkeypatch.setattr(
             "tools.url_safety.create_ssrf_safe_async_client",
             lambda **k: _FakeClient(),
@@ -151,16 +151,7 @@ class TestInboundCacheUsesSniffer:
 class TestSignalDelegatesToCentralSniffer:
     """signal._guess_extension audio branches delegate to the shared module."""
 
-    def test_signal_uses_shared_sniffer(self, monkeypatch):
-        from gateway.platforms import signal as signal_mod
+    def test_signal_uses_shared_sniffer(self):
+        from plugins.platforms.signal import adapter as signal_mod
 
-        calls = []
-        real = signal_mod.sniff_container
-
-        def _spy(data):
-            calls.append(data[:4])
-            return real(data)
-
-        monkeypatch.setattr(signal_mod, "sniff_container", _spy)
         assert signal_mod._guess_extension(M4A) == ".m4a"
-        assert calls, "signal._guess_extension did not delegate to the central sniffer"

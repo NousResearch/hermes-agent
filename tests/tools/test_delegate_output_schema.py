@@ -24,7 +24,6 @@ from tools.delegate_tool import (
 from tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
-    coerce_output_schema,
     validate_output,
 )
 
@@ -77,26 +76,6 @@ class TestValidateOutput:
         assert errors
 
 
-class TestCoerceOutputSchema:
-    def test_valid_schema_passes(self):
-        schema, err = coerce_output_schema(ADDRESS_SCHEMA)
-        assert schema == ADDRESS_SCHEMA
-        assert err is None
-
-    def test_none_passes_through(self):
-        schema, err = coerce_output_schema(None)
-        assert schema is None
-        assert err is None
-
-    def test_non_dict_is_rejected(self):
-        schema, err = coerce_output_schema("not a schema")
-        assert schema is None
-        assert err
-
-    def test_invalid_json_schema_is_rejected(self):
-        schema, err = coerce_output_schema({"type": 42})
-        assert schema is None
-        assert err
 
 
 class TestPromptPlumbing:
@@ -106,9 +85,6 @@ class TestPromptPlumbing:
         assert "OUTPUT CONTRACT" in out
         assert '"city"' in out
 
-    def test_contract_block_without_prior_context(self):
-        out = append_output_contract(None, ADDRESS_SCHEMA)
-        assert "OUTPUT CONTRACT" in out
 
     def test_retry_message_carries_verbatim_errors(self):
         msg = build_retry_message(["'city' is a required property"])
@@ -122,16 +98,6 @@ class TestPromptPlumbing:
 
 
 class TestToolSchemaSurface:
-    def test_output_schema_on_task_items(self):
-        item_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"][
-            "items"
-        ]["properties"]
-        assert "output_schema" in item_props
-        assert item_props["output_schema"]["type"] == "object"
-        # never required
-        assert "output_schema" not in DELEGATE_TASK_SCHEMA["parameters"][
-            "properties"
-        ]["tasks"]["items"]["required"]
 
     def test_output_schema_advertised_per_task_only(self):
         """output_schema is advertised inside tasks[] items (the only spawn
@@ -263,51 +229,56 @@ class TestRunSingleChildSchemaValidation:
         assert len(child.calls) == 1
         assert entry.get("schema_valid") is False
 
-    def test_schema_failure_reported_as_failed_not_completed(self):
-        """Regression: a final answer that still violates the declared
-        output contract after the bounded retry (here the classic empty
-        ``{}`` fallback) must be reported status="failed", not
-        "completed". Otherwise the batch report prints a ✓ and
-        orchestrators that read only status/icon accept an empty verdict
-        — schema_valid/schema_errors carry the detail, but status must
-        agree with them."""
-        child = _StubChild(["not json at all", "{}"])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-        entry = _run(child)
-        assert entry["schema_valid"] is False
-        assert entry["schema_errors"]
-        assert entry["status"] == "failed"
-        # the failed entry names the schema violation, not the generic
-        # "no response" error — the child DID respond, unusably
-        assert "output_schema" in entry.get("error", "")
-        # the invalid final text is still propagated for debugging
-        assert entry["summary"] == "{}"
-
-    def test_schema_failure_without_retry_reported_as_failed(self):
-        """Same class, first-try path: retry turn raises, leaving the
-        original non-JSON answer in place — status must still be failed."""
-        child = _StubChild(["nope"])
-        child._delegate_output_schema = ADDRESS_SCHEMA
-
-        original = child.run_conversation
-
-        def flaky(user_message, task_id=None, **kw):
-            if child.calls:
-                raise RuntimeError("child died on retry")
-            return original(user_message, task_id=task_id, **kw)
-
-        child.run_conversation = flaky
-        entry = _run(child)
-        assert entry["schema_valid"] is False
-        assert entry["status"] == "failed"
-
-    def test_schema_valid_entry_still_completed(self):
-        """Guard: schema_valid=True keeps status="completed" untouched."""
-        child = _StubChild(['{"city": "Berlin"}'])
+    def test_schema_failure_returns_raw_text_with_schema_valid_false(self):
+        """A final answer that still violates the contract after the bounded retry is NOT discarded: the
+        child did the work (audits of 400-4100 s were written off over a stray fence or one missing
+        field). The parent gets the raw text as ``summary`` with status "completed", ``schema_valid``
+        false, ``schema_errors`` populated and a ``schema_note`` saying the text is unvalidated."""
+        prose = 'Findings:\n```json\n{"town": "Oslo"}\n```\nlet me know.'
+        child = _StubChild([prose, prose])
         child._delegate_output_schema = ADDRESS_SCHEMA
         entry = _run(child)
         assert entry["status"] == "completed"
+        assert entry["summary"] == prose
+        assert entry["schema_valid"] is False
+        assert entry["schema_errors"] and entry["schema_retries"] == 1
+        assert "UNVALIDATED" in entry["schema_note"]
         assert "error" not in entry
+        assert len(child.calls) == 2  # exactly one bounded retry
+
+    def test_prose_wrapped_array_answer_validates(self):
+        """A fenced JSON array with prose around it is the answer, not a violation: the extractor
+        used to slice it to its first..last object and reject every array-shaped result."""
+        text = 'Verdicts below.\n```json\n[{"n": 1}, {"n": 2}]\n```\n'
+        child = _StubChild([text])
+        child._delegate_output_schema = {"type": "array", "items": {"type": "object"}}
+        entry = _run(child)
+        assert entry["schema_valid"] is True and len(child.calls) == 1
+
+
+    def test_retry_turn_runs_in_delegated_child_context(self, monkeypatch):
+        """The retry is a second run_conversation on the child, issued from the parent's
+        thread where HERMES_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
+        so the kanban stop guard nudges the child toward a board tool it does not have
+        (#109735 / #87671)."""
+        from agent.delegation_context import is_delegated_child_context
+        from tools.delegate_tool_child_run import _validate_child_output_schema
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        seen: list = []
+
+        class _Child(_StubChild):
+            session_id = "sess-child"
+
+            def run_conversation(self, user_message, task_id=None, **_kwargs):
+                seen.append(is_delegated_child_context())
+                return super().run_conversation(user_message, task_id, **_kwargs)
+
+        child = _Child(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
+        assert seen == [True]
+        assert is_delegated_child_context() is False
 
 
 # ---------------------------------------------------------------------------

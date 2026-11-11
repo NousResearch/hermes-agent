@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isSectionName, parseDetailsMode, resolveSections, SECTION_NAMES, sectionMode } from '../domain/details.js'
+import { isSectionName, parseDetailsMode, resolveSections, sectionMode } from '../domain/details.js'
 
 describe('parseDetailsMode', () => {
   it('accepts the canonical modes case-insensitively', () => {
@@ -28,10 +28,6 @@ describe('isSectionName', () => {
     expect(isSectionName('bogus')).toBe(false)
     expect(isSectionName('')).toBe(false)
     expect(isSectionName(7)).toBe(false)
-  })
-
-  it('SECTION_NAMES exposes them all', () => {
-    expect([...SECTION_NAMES].sort()).toEqual(['activity', 'subagents', 'thinking', 'tools'])
   })
 })
 

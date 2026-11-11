@@ -38,7 +38,7 @@ def oauth_fixture(mode="success"):
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             wire.append({"path": self.path, "method": "GET"})
             if self.path == "/mcp":
                 if self.headers.get("Authorization") == "Bearer fixture-access":
@@ -46,7 +46,8 @@ def oauth_fixture(mode="success"):
                 return self.reply(401, {}, {"WWW-Authenticate": f'Bearer resource_metadata="{base}/prm"'})
             if self.path == "/prm" or "oauth-protected-resource" in self.path:
                 return self.reply(200, {"resource": base + ("/wrong" if mode == "resource" else "/mcp"),
-                                        "authorization_servers": [base]})
+                                        "authorization_servers": ([base + "/wrong", base]
+                                                                  if mode == "multi_issuer" else [base])})
             if "oauth-authorization-server" in self.path:
                 metadata = {"issuer": base + ("/wrong" if mode == "issuer" else ""),
                             "authorization_endpoint": base + "/authorize", "token_endpoint": base + "/token",
@@ -61,7 +62,7 @@ def oauth_fixture(mode="success"):
                 return self.reply(200, metadata)
             self.reply(404, {})
 
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             data = json.loads(raw) if "json" in self.headers.get("Content-Type", "") else {
                 key: value[0] for key, value in parse_qs(raw.decode()).items()}
@@ -149,7 +150,7 @@ from hermes_cli.main import main
 main()
 ''', "mcp", *command]
         result = subprocess.run(argv,
-                                cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40)
+                                cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40, check=False)
         token_path = home / "mcp-tokens" / "fixture.json"
         refresh_output = None
         if token_path.exists() and not previous:
@@ -157,7 +158,7 @@ main()
             tokens["expires_at"] = time.time() - 60
             token_path.write_text(json.dumps(tokens))
             refreshed = subprocess.run([sys.executable, "-m", "hermes_cli.main", "mcp", "test", "fixture"],
-                                       cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                                       cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
             refresh_output = refreshed.stdout + refreshed.stderr
         return {"mode": mode, "returncode": result.returncode, "output": result.stdout + result.stderr,
                 "token_persisted": token_path.exists(), "refresh_output": refresh_output, "wire": wire,

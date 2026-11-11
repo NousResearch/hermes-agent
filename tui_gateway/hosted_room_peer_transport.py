@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from gateway.hosted_room_driver import TaskIdentity
@@ -24,9 +25,11 @@ class HostedRoomPeerClient(Protocol):
     def prepare(self, *, room_id: str, profile: str, source: str, grant: str, create: bool,
                 expected_session_id: str | None = None) -> Mapping[str, Any] | None: ...
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]: ...
-    def history(self, *, room_id: str, profile: str, session_id: str, grant: str
+    def history(self, *, room_id: str, profile: str, session_id: str, grant: str,
+                task_id: str | None = None, execution_generation: int | None = None,
                 ) -> Sequence[Mapping[str, Any]]: ...
-    def status(self, *, room_id: str, profile: str, session_id: str, grant: str
+    def status(self, *, room_id: str, profile: str, session_id: str, grant: str,
+               task_id: str | None = None, execution_generation: int | None = None,
                ) -> Mapping[str, Any]: ...
     def stop(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any] | None: ...
     def stop_receipt(self, *, task_id: str, execution_generation: int, grant: str
@@ -116,6 +119,23 @@ class PeerMemberRoute:
     execution_policy_digest: str = ""
 
 
+def route_identity(
+    *, db_path: Path | str, home_install_id: str, room_id: str, member_id: str) -> tuple[str, str]:
+    """``(cancellation_scope_id, trace_id)`` for one member route. Both are in every dispatch body,
+    and the target fingerprints that body under its idempotency key, so a route re-registered with
+    a fresh grant must replay an accepted dispatch byte for byte: it keeps the pair already stored
+    for that room and member (a route registered before the pair was derived keeps its random
+    trace). A new route derives it: the trace from home, room and member, and the cancellation
+    scope from the room, as ``hermes serve`` has always named it."""
+    from gateway import hosted_rooms
+    stored = next((row for row in hosted_rooms.list_room_link_records(db_path)
+                   if (row["room_id"], row["member_id"]) == (room_id, member_id)), None)
+    if stored is not None and stored["cancellation_scope_id"] and stored["trace_id"]:
+        return str(stored["cancellation_scope_id"]), str(stored["trace_id"])
+    seed = "\0".join((home_install_id, room_id, member_id)).encode("utf-8")
+    return f"cancel-{room_id}", "trace-" + hashlib.sha256(seed).hexdigest()[:32]
+
+
 def build_member_dispatch(
     *, binding: HostedRoomBinding, route: PeerMemberRoute, room_id: str, task_id: str,
     target_profile: str, execution_generation: int, source_event_seq: int, prompt: str,
@@ -135,6 +155,8 @@ def build_member_dispatch(
 
 class PeerHostedRoomTransport(InternalSessionRPC):
     """Translate runtime session operations into recipient-validated peer RPC."""
+
+    accepts_attachments = False  # a member dispatch has no field for files
 
     def __init__(
         self, *, binding: HostedRoomBinding, route: PeerMemberRoute,
@@ -194,7 +216,13 @@ class PeerHostedRoomTransport(InternalSessionRPC):
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        member_id: str | None = None, attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
+        if attachments:  # the driver refuses files before submit on this route
+            raise ValueError("attachments_unsupported_on_route: peer route cannot carry files")
+        # The signed route names one member: a task for another member reached the wrong route.
+        if member_id is not None and member_id != self.route.member_id:
+            raise ValueError("peer room transport member does not match its grant")
         self._validate_coordinates(profile=profile, source=source)
         if self._session_id not in {None, session_id}:
             raise ValueError("peer room session changed during admission")
@@ -204,6 +232,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             source_event_seq=self.source_event_seq, prompt=prompt,
             trace_id=self.route.trace_id or f"trace-{uuid.uuid4().hex}")
         self._dispatch = dispatch
+        self.task_id, self.execution_generation = task.task_id, execution_generation
         self._session_id = session_id
         result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)
         if result.get("status") in {"settled", "failed", "cancelled"}:
@@ -212,11 +241,15 @@ class PeerHostedRoomTransport(InternalSessionRPC):
 
     def history(self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]:
         self._validate_coordinates(profile=profile, source=source)
-        return self.client.history(**self._scoped(profile=profile, session_id=session_id))
+        return self.client.history(**self._scoped(
+            profile=profile, session_id=session_id,
+            task_id=self.task_id, execution_generation=self.execution_generation))
 
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]:
         self._validate_coordinates(profile=profile, source=source)
-        return self.client.status(**self._scoped(profile=profile, session_id=session_id))
+        return self.client.status(**self._scoped(
+            profile=profile, session_id=session_id,
+            task_id=self.task_id, execution_generation=self.execution_generation))
 
     def interrupt(
         self, *, profile: str, session_id: str, source: str, expected_task_id: str

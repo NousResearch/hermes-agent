@@ -42,6 +42,18 @@ def _reason(help: str):
     return _arg("--reason", help=help)
 
 
+def _nonnegative_int(value: str) -> int:
+    """argparse type for retention days: a negative window builds a future cutoff
+    that matches every row, so reject it at the CLI boundary before any sweep."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("retention days must be >= 0 (0 disables that sweep)")
+    return parsed
+
+
 def _run_state_args(type_help: str):
     return (
         _arg("--state-type", choices=("status", "outcome"), help=f"With --state-name: {type_help}"),
@@ -148,10 +160,15 @@ _SPECS = [
     _cmd("create", [
         _arg("title", help="Task title"),
         _arg("--body", help="Optional opening post"),
+        _arg("--body-file", metavar="PATH",
+             help="Read the opening post from a file ('-' = stdin), so bodies with embedded "
+                  "newlines or flag-like lines survive shell quoting. "
+                  "Mutually exclusive with --body."),
         _arg("--assignee", help="Profile name to assign"),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
-        _arg("--workspace", default="scratch",
-             help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch)"),
+        _arg("--workspace",
+             help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
+                  "an explicit 'scratch' also opts out of a project-scoped board's project)"),
         _arg("--branch", help="Branch name for worktree tasks, e.g. wt/t6-wire"),
         _arg("--project",
              help="Link to a project (id or slug). Anchors the task's "
@@ -283,12 +300,18 @@ _SPECS = [
         _arg("--metadata",
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
+        _arg("--force", action="store_true",
+             help="Override the live-claim guard: complete a running, claimed task "
+                  "even without owning its run (closes the worker's run)."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,
-        _arg("--result", required=True, help="Backfilled task result text for a done task"),
+        _arg("--title", help="Replace the task title"),
+        _arg("--body", help="Replace the task body"),
+        _arg("--priority", type=int, help="Replace the task priority"),
+        _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
-    ], help="Edit recovery fields on an already-completed task"),
+    ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("block", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason (also appended as a comment)"),
@@ -328,7 +351,6 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Audit-trail reason (recorded on the task_events row)"),
         _bulk_ids("promote"),
-        _arg("--force", action="store_true", help="Promote even if parent dependencies are not yet done/archived"),
         _arg("--dry-run", action="store_true", help="Validate the promotion without mutating state"),
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
@@ -373,6 +395,10 @@ _SPECS = [
              help="Originating source chat_type, recorded so the active-wake delivery "
                   "modes resolve the operator's real session. Omit to leave an "
                   "existing sub unchanged (new subs default to 'dm')."),
+        _arg("--parent-chat-id",
+             help="Parent channel ID for a thread or forum post, used for multiplex profile routing."),
+        _arg("--guild-id",
+             help="Discord guild ID, used for multiplex profile routing."),
         _arg("--notifier-profile",
              help="Profile gateway that owns/delivers this subscription (default: active profile)"),
         # choices: single source of truth shared with the DB/watcher enum.
@@ -409,9 +435,10 @@ _SPECS = [
               "to specify-style single-task promotion when the task "
               "doesn't benefit from fan-out. Uses auxiliary.kanban_decomposer."),
     _cmd("gc", [
-        _arg("--event-retention-days", type=int, default=30,
-             help="Delete task_events older than N days for terminal tasks (default: 30)"),
-        _arg("--log-retention-days", type=int, default=30, help="Delete worker log files older than N days (default: 30)"),
+        _arg("--event-retention-days", type=_nonnegative_int, default=30,
+             help="Delete task_events older than N days for terminal tasks (default: 30; 0 disables)"),
+        _arg("--log-retention-days", type=_nonnegative_int, default=30,
+             help="Delete worker log files older than N days (default: 30; 0 disables)"),
     ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",
@@ -435,8 +462,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         description="Durable SQLite-backed task board shared across Hermes profiles. "
                     "Tasks are claimed atomically, can depend on other tasks, and "
                     "are executed by a named profile in an isolated workspace. "
-                    "See https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban "
-                    "or docs/hermes-kanban-v1-spec.pdf for the full design.",
+                    "See https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban.",
     )
     # --board scopes every subcommand to one board's DB; when omitted the
     # resolution is HERMES_KANBAN_BOARD, then the persisted current-board

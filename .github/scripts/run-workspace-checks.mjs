@@ -5,7 +5,7 @@
 // plain `check` gives that. This is the same selection rule the old CI matrix
 // used, so the set of commands is unchanged. Only the schedule is different.
 //
-// This is not `npm run --ws check`, because that command is serial and stops
+// This is not `pnpm -r run check`, because that command stops
 // at the first workspace that fails. This runs every unit and fails at the
 // end with the full list.
 //
@@ -17,23 +17,30 @@
 // `--concurrency N` sets the limit. `--list` prints the units and exits.
 
 import { execFileSync, spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
+import { join, relative } from 'node:path'
 
 const IS_CI = Boolean(process.env.GITHUB_ACTIONS)
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const PNPM = 'pnpm'
 
 /** @returns {{pkg: string, script: string}[]} */
 function discoverUnits() {
-  const raw = execFileSync(NPM, ['query', '.workspace'], {
+  const raw = execFileSync(PNPM, ['ls', '--recursive', '--depth', '-1', '--json'], {
     encoding: 'utf-8',
     shell: process.platform === 'win32',
   })
-  /** @type {{location: string, scripts?: Record<string,string>}[]} */
-  const pkgs = JSON.parse(raw)
+  /** @type {{path: string}[]} */
+  const projects = JSON.parse(raw)
+  const root = process.cwd()
 
   /** @type {{pkg: string, script: string}[]} */
   const units = []
-  for (const pkg of pkgs) {
+  for (const project of projects) {
+    const location = relative(root, project.path).split('\\').join('/')
+    // The root's `check` runs every workspace's check: it is not a unit.
+    if (!location) continue
+    const pkg = { location, ...JSON.parse(readFileSync(join(project.path, 'package.json'), 'utf-8')) }
     const scripts = pkg.scripts || {}
     const subs = Object.keys(scripts).filter((s) => /^check:.+$/.test(s))
     if (subs.length > 0) {
@@ -49,7 +56,7 @@ function discoverUnits() {
 function runUnit(unit) {
   return new Promise((resolve) => {
     const started = Date.now()
-    const child = spawn(NPM, ['run', '--prefix', unit.pkg, unit.script], {
+    const child = spawn(PNPM, ['--dir', unit.pkg, 'run', unit.script], {
       // Buffer, and do not inherit. Children that share one stdout
       // interleave their lines, and a failure is then hard to read.
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -133,7 +140,9 @@ async function main() {
   if (failed.length > 0) {
     for (const r of failed) console.error(`::error::${r.unit.pkg} :: ${r.unit.script} failed`)
     console.error(`::error::${failed.length} of ${results.length} checks failed`)
-    process.exit(1)
+    // Not process.exit(): it drops what stdout still buffers, which is the failing check's output.
+    process.exitCode = 1
+    return
   }
   console.log(`\nall ${results.length} checks passed`)
 }

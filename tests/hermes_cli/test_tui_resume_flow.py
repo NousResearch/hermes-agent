@@ -1,10 +1,7 @@
 from argparse import Namespace
 import os
 from pathlib import Path
-import subprocess
 import sys
-import textwrap
-import types
 
 import pytest
 from hermes_cli import main_tui_launch
@@ -33,44 +30,7 @@ def main_mod(monkeypatch):
     import hermes_cli.main as mod
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
-    # Reset the idempotency guard so each test starts fresh.
-    monkeypatch.setattr(mod, "_oneshot_cleanup_done", False)
     return mod
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def test_termux_skips_bundled_skill_sync_when_stamp_fresh(monkeypatch, tmp_path, main_mod):
-    calls = []
-
-    monkeypatch.setenv("TERMUX_VERSION", "1")
-    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
-    main_mod._mark_termux_bundled_skills_synced()
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.skills_sync",
-        types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
-    )
-
-    assert main_mod._sync_bundled_skills_for_startup() is False
-    assert calls == []
-
-
-
-
 
 
 def test_exit_after_oneshot_flushes_stdio_and_calls_os_exit(
@@ -103,126 +63,13 @@ def test_exit_after_oneshot_flushes_stdio_and_calls_os_exit(
     assert flushed == ["stdout", "stderr"]
 
 
-
-
-
-
-def test_oneshot_subprocess_exits_without_teardown_abort():
-    program = textwrap.dedent(
-        """
-        import hermes_cli.oneshot as oneshot
-        from hermes_cli.main import _exit_after_oneshot
-
-        oneshot._run_agent = lambda *args, **kwargs: ("ok", {"final_response": "ok"})
-        _exit_after_oneshot(oneshot.run_oneshot("hello"))
-        """
-    )
-
-    result = subprocess.run(
-        [sys.executable, "-c", program],
-        cwd=Path(__file__).resolve().parents[2],
-        capture_output=True,
-        timeout=10,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert result.stdout == b"ok\n"
-    # Don't demand byte-empty stderr — an import-time warning from the heavy
-    # CLI import chain shouldn't fail this. What matters is no crash traceback.
-    assert b"Traceback" not in result.stderr
-
-
-
-
-
-
-
-
-def _stub_plugin_discovery(monkeypatch):
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
-    )
-
-
-
-
-def test_oneshot_wires_session_db_for_recall(monkeypatch):
-    """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
-    from hermes_cli.oneshot import _run_agent
-
-    captured = {}
-    sentinel_db = object()
-
-    class FakeAgent:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self.suppress_status_output = False
-            self.stream_delta_callback = object()
-            self.tool_gen_callback = object()
-
-        def run_conversation(self, prompt, **_kwargs):
-            captured["prompt"] = prompt
-            return {"final_response": "ok", "failed": False, "partial": False}
-
-    class FakeSessionDB:
-        def __new__(cls):
-            return sentinel_db
-
-    def mod(name, **attrs):
-        module = types.ModuleType(name)
-        for key, value in attrs.items():
-            setattr(module, key, value)
-        return module
-
-    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "hermes_state", mod("hermes_state", SessionDB=FakeSessionDB))
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.models",
-        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.runtime_provider",
-        mod(
-            "hermes_cli.runtime_provider",
-            resolve_runtime_provider=lambda **_kwargs: {
-                "api_key": "k",
-                "base_url": "u",
-                "provider": "p",
-                "api_mode": "chat_completions",
-                "credential_pool": None,
-            },
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.tools_config",
-        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
-    )
-
-    text, result = _run_agent("recall this")
-    assert text == "ok"
-    assert not result.get("failed")
-    assert captured["session_db"] is sentinel_db
-    assert captured["enabled_toolsets"] == ["session_search"]
-    assert captured["prompt"] == "recall this"
-
-
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
     captured = {}
     active_path_during_call = None
 
     monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
-        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+        lambda tui_dir, tui_dev, notices=None: (["node", "dist/entry.js"], Path(".")),
     )
 
     def fake_call(argv, cwd=None, env=None):
@@ -253,35 +100,118 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_launch_tui_prefers_launch_cwd_over_inherited_hermes_cwd(monkeypatch, main_mod, tmp_path):
+    """The directory `hermes --tui` was run from outranks an inherited HERMES_CWD.
+
+    A shell export - or an outer `hermes --tui` - leaves HERMES_CWD naming a real but stale
+    directory, and the gateway Ink's client starts runs the session in whatever it names,
+    so the session reads files and completions from the wrong project (#49637).
+    """
+    stale = tmp_path / "stale-project"
+    launch = tmp_path / "launch-project"
+    stale.mkdir()
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_CWD", str(stale))
+    monkeypatch.chdir(launch)
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev, notices=None: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    handed_to_tui = Path(captured["env"]["HERMES_CWD"]).resolve()
+    assert handed_to_tui == launch.resolve(), "the TUI gateway must start where the user launched"
+    assert handed_to_tui != stale.resolve()
 
 
-def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
-    tui_dir = tmp_path / "ui-tui"
-    tsx = tui_dir / "node_modules" / ".bin" / "tsx"
-    ink_dir = tui_dir / "packages" / "hermes-ink"
-    tsx.parent.mkdir(parents=True)
-    ink_dir.mkdir(parents=True)
-    tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+def test_launch_tui_worktree_still_outranks_the_launch_cwd(monkeypatch, main_mod, tmp_path):
+    """`--worktree` names an explicit destination, so it keeps precedence over the launch cwd."""
+    worktree = tmp_path / "worktree"
+    launch = tmp_path / "launch-project"
+    worktree.mkdir()
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_CWD", str(tmp_path))
+    monkeypatch.chdir(launch)
 
-    monkeypatch.setattr(main_tui_launch, "_ensure_tui_node", lambda: None)
-    monkeypatch.setattr(main_tui_launch, "_tui_need_npm_install", lambda _tui_dir: False)
-    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
-    monkeypatch.setattr(main_mod.shutil, "which", lambda bin_name: f"/usr/bin/{bin_name}")
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_setup_tui_worktree", lambda: {"path": str(worktree)})
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev, notices=None: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
 
-    calls = []
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(worktree=True)
 
-    def fake_run(cmd, cwd=None, **_kwargs):
-        calls.append((cmd, cwd))
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
-
-    argv, cwd = main_tui_launch._make_tui_argv(tui_dir, tui_dev=True)
-
-    assert argv == [str(tsx), "src/entry.tsx"]
-    assert cwd == tui_dir
-    assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
+    assert captured["env"]["HERMES_CWD"] == str(worktree)
+    assert captured["env"]["TERMINAL_CWD"] == str(worktree)
+    assert Path(captured["env"]["HERMES_CWD"]).resolve() != launch.resolve()
 
 
+@pytest.mark.parametrize("backend", ["local", "docker"])
+def test_launch_tui_local_session_starts_in_launch_dir_not_terminal_cwd(monkeypatch, main_mod, tmp_path, backend):
+    """A local TUI follows the classic CLI rule: the launch dir beats an absolute terminal.cwd (#84015).
 
+    Remote backends keep terminal.cwd: the launch dir names nothing on the sandbox.
+    """
+    configured = tmp_path / "configured-home"
+    launch = tmp_path / "launch-project"
+    configured.mkdir()
+    launch.mkdir()
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        f"terminal:\n  backend: {backend}\n  cwd: {configured}\n", encoding="utf-8")
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_TUI_CWD", str(tmp_path))  # stale, from an outer launcher
+    monkeypatch.chdir(launch)
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev, notices=None: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    env = captured["env"]
+    if backend == "local":
+        assert Path(env["HERMES_TUI_CWD"]).resolve() == launch.resolve()
+        assert Path(env["TERMINAL_CWD"]).resolve() == launch.resolve()
+    else:
+        assert "HERMES_TUI_CWD" not in env
+        assert Path(env["TERMINAL_CWD"]).resolve() == configured.resolve()
+
+
+@pytest.mark.parametrize("flag", ["HERMES_SAFE_MODE", "HERMES_IGNORE_USER_CONFIG"])
+def test_launch_tui_bypass_without_model_refuses_before_the_tui_starts(monkeypatch, main_mod, capsys, flag):
+    """`hermes --tui --safe-mode` (or an exported HERMES_IGNORE_USER_CONFIG=1) reads no profile
+    default model: the owner refuses session.create with bare invalid_params, so the launcher must
+    say "pass --model" before spawning the TUI, as classic chat does."""
+    monkeypatch.setenv(flag, "1")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)  # never resolve a python over the real PATH
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+                        lambda tui_dir, tui_dev, notices=None: (["node", "dist/entry.js"], Path(".")))
+    spawned = []
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda argv, cwd=None, env=None: spawned.append(env) or 0)
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui()
+    assert exc.value.code == 1 and spawned == []
+    assert "pass --model explicitly" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(model="stub-model")
+    assert spawned and spawned[-1][flag] == "1" and spawned[-1]["HERMES_MODEL"] == "stub-model"

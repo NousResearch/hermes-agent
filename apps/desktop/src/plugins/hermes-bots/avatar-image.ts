@@ -10,6 +10,10 @@ import { getPluginCtx } from './shared'
 
 // ── image avatars: upload from device + generate via image.generate ─────────
 
+/** Interactive bound for one avatar render — room for provider variance
+ *  without letting the dialog wait for minutes. */
+export const IMAGE_GENERATE_TIMEOUT_MS = 90_000
+
 /** Downscale to a small square so plugin storage stays light. */
 export function normalizeAvatarImage(dataUrl: string, edge = 256): Promise<string> {
   return new Promise(resolve => {
@@ -107,12 +111,18 @@ export async function generateAvatarImage(
 ): Promise<string | undefined> {
   const who = [title || bot, description].filter(Boolean).join(' — ')
 
-  const res = await host.request<GeneratedImage>('image.generate', {
-    prompt:
-      `Cute minimal robot avatar for an AI agent named "${who}". ` +
-      'Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.',
-    aspect_ratio: 'square'
-  })
+  // Remote image backends routinely take 40–60 s; the socket's generic 30 s
+  // deadline discarded renders the backend then completed (#86161).
+  const res = await host.request<GeneratedImage>(
+    'image.generate',
+    {
+      prompt:
+        `Cute minimal robot avatar for an AI agent named "${who}". ` +
+        'Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.',
+      aspect_ratio: 'square'
+    },
+    IMAGE_GENERATE_TIMEOUT_MS
+  )
 
   if (!res?.success) {
     throw new Error(res?.error || 'generation failed')

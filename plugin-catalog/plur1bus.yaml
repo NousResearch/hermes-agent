@@ -1,0 +1,22 @@
+name: plur1bus
+title: PLUR1BUS Memory Engine
+repo: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory
+sha: 59d31b693d13091358ce3401bfac707279097c08
+subdir: catalog/plur1bus
+version: "7.19.3-hermes.1"
+requires_hermes: ">=0.23.0"
+description: "Profile-scoped long-term memory and Langzeitgedächtnis for Hermes: Memory Engine, semantic search and recall, automatic capture, embeddings, reranking, Semantic Lens, Layer 1.5 (Schicht 1.5), Continuity Engine, Emotion and memory dynamics, Persona Voice, consolidation, Dream Echo, Obsidian and Skill Workshop. Includes a Desktop memory browser, model and storage settings, and diagnostics. Disclosure — records and indexes live in the active profile by default; configured remote embedding, reranker and model routes (OpenAI-compatible hosts, api.cohere.com, a local oMLX server by default) receive the text needed for their task; opt-in Jev automatic chunking sends capture text (up to 60,000 characters per message) to api.typesafe.ai; model setup downloads weights from huggingface.co; approved Skill Workshop proposals are written as skills into the profile's skills folder; the separate OpenClaw migration commands can rewrite the profile's SOUL.md and install per-user launchd/systemd/Task Scheduler jobs; an optional, user-run script builds a separately patched copy of Hermes Desktop (the plugin works without it)."
+maintainer: Cyb3rb1ade
+tier: community
+category: memory
+docs_url: https://github.com/Cyb3rb1ade/openclaw-plur1bus-memory/blob/59d31b693d13091358ce3401bfac707279097c08/catalog/plur1bus/README.md
+platforms: [linux, macos, windows]
+known_issues:
+  - Enable PLUR1BUS and select it as the persistent memory provider in each intended profile after installation.
+  - On Windows ARM64 use the separately published native installer; the catalog source contains no bundled native wheels.
+  - On macOS use Apple Silicon. The standalone installer includes a workaround for the Hermes 0.23.0 filesystem synchronization issue.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

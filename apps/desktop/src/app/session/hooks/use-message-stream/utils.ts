@@ -1,5 +1,6 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import type { ErrorSurface } from '@/lib/error-surface'
 import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
@@ -7,7 +8,17 @@ import type { ClientSessionState } from '../../../types'
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'reasoningEffortPending'
+    | 'reasoningEffortWire'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -36,6 +47,11 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
   if (typeof payload?.reasoning_effort === 'string') {
     patch.reasoningEffort = payload.reasoning_effort
+    patch.reasoningEffortPending = false
+  }
+
+  if (typeof payload?.reasoning_effort_wire === 'string') {
+    patch.reasoningEffortWire = payload.reasoning_effort_wire
   }
 
   if (typeof payload?.service_tier === 'string') {
@@ -72,6 +88,11 @@ export function applySessionInfoStatePatch(
     (patch.personality === undefined || patch.personality === state.personality) &&
     (patch.provider === undefined || patch.provider === state.provider) &&
     (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
+    // The wire level can change alone: an optimistic paint already holds the new
+    // model/effort, so skipping here kept the previous route's clamp ("Medium→Max") forever.
+    (patch.reasoningEffortWire === undefined || patch.reasoningEffortWire === state.reasoningEffortWire) &&
+    (patch.reasoningEffortPending === undefined ||
+      patch.reasoningEffortPending === Boolean(state.reasoningEffortPending)) &&
     (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
     (patch.yolo === undefined || patch.yolo === state.yolo)
   ) {
@@ -125,6 +146,50 @@ export function completionErrorText(finalText: string): string | null {
   const text = finalText.trim()
 
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
+}
+
+// A provider safety-filter refusal (agent/error_classifier.py
+// FailoverReason.content_policy_blocked). The gateway stamps it on the terminal
+// message.complete frame as `failure_reason` and/or the error_surface `code`.
+export const CONTENT_POLICY_REFUSAL_CODE = 'content_policy_blocked'
+
+export function isContentPolicyRefusal(
+  failure: { surface?: ErrorSurface | null } | undefined,
+  failureReason: string | undefined
+): boolean {
+  return failureReason === CONTENT_POLICY_REFUSAL_CODE || failure?.surface?.code === CONTENT_POLICY_REFUSAL_CODE
+}
+
+/**
+ * Replace a live safety-refused turn with the SAME greyed display row stored
+ * hydration builds (toChatMessages for a `content_refused` row): the user's own
+ * prompt — plus any assistant/tool rows it produced — collapse into ONE
+ * non-interactive `system` row that carries the user's text and the
+ * `contentRefused` marker. So an active chat shows the greyed block the instant
+ * the refusal lands, not only after a reload. The live frame carries no notice
+ * text, so the marker is left empty and the renderer fills the i18n fallback —
+ * exactly what a stored row from an older backend does.
+ */
+export function replaceTurnWithContentRefused(messages: ChatMessage[], occurredAt: number): ChatMessage[] {
+  const userIndex = messages.findLastIndex(message => message.role === 'user')
+
+  if (userIndex < 0) {
+    return messages
+  }
+
+  const prompt = messages[userIndex]
+
+  const refused: ChatMessage = {
+    id: `content-refused-${occurredAt}-${userIndex}`,
+    role: 'system',
+    parts: [textPart(chatMessageText(prompt), occurredAt)],
+    timestamp: prompt.timestamp ?? occurredAt,
+    completedAt: occurredAt,
+    contentRefused: {},
+    ...(prompt.rowId !== undefined ? { rowId: prompt.rowId } : {})
+  }
+
+  return [...messages.slice(0, userIndex), refused]
 }
 
 export const SUBAGENT_EVENT_TYPES = new Set([

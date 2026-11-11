@@ -1,10 +1,12 @@
-"""Opt-in native TUI launch for `_launch_tui`.
+"""Opt-in ratatui TUI launch for `_launch_tui`.
 
-Ink (`ui-tui/`) stays the default. Set HERMES_TUI_NATIVE=1 or pass --native
-to run `hermes-tui-native` with the same env `_launch_tui` already builds.
+Ink (`ui-tui/`) stays the default. `--native` / `HERMES_TUI_NATIVE` select
+Ink's primary-buffer scrollback mode and do not launch this client.
 
-If the binary is missing, return None so the caller falls back to Ink.
-Dashboard PTY embeds (`HERMES_TUI_DASHBOARD=1`) always stay on Ink.
+Set HERMES_TUI_RATATUI=1 or pass --ratatui to run `hermes-tui-native` with the
+same env `_launch_tui` already builds. If the binary is missing, return None
+so the caller falls back to Ink. Dashboard PTY embeds
+(`HERMES_TUI_DASHBOARD=1`) always stay on Ink.
 """
 
 from __future__ import annotations
@@ -21,17 +23,17 @@ def wants_native(
 ) -> bool:
     if env is None:
         env = os.environ
-    if env.get("HERMES_TUI_NATIVE") == "1":
+    if env.get("HERMES_TUI_RATATUI") == "1":
         return True
     if argv is None:
         argv = sys.argv[1:]
-    return "--native" in argv
+    return "--ratatui" in argv
 
 
 def native_tui_bin(env: Mapping[str, str] | None = None) -> str | None:
     if env is None:
         env = os.environ
-    explicit = (env.get("HERMES_TUI_NATIVE_BIN") or "").strip()
+    explicit = (env.get("HERMES_TUI_RATATUI_BIN") or "").strip()
     if explicit and os.path.isfile(explicit) and os.access(explicit, os.X_OK):
         return explicit
     path = shutil.which("hermes-tui-native", path=env.get("PATH"))
@@ -41,7 +43,7 @@ def native_tui_bin(env: Mapping[str, str] | None = None) -> str | None:
 
 
 def native_tui_argv(env: Mapping[str, str]) -> list[str] | None:
-    """Return argv for the native client, or None to fall back to Ink."""
+    """Return argv for the ratatui client, or None to fall back to Ink."""
     if env.get("HERMES_TUI_DASHBOARD") == "1":
         return None
     if not wants_native(env=env):
@@ -49,9 +51,9 @@ def native_tui_argv(env: Mapping[str, str]) -> list[str] | None:
     bin_path = native_tui_bin(env)
     if not bin_path:
         print(
-            "HERMES_TUI_NATIVE=1 but hermes-tui-native was not found.\n"
+            "HERMES_TUI_RATATUI=1 but hermes-tui-native was not found.\n"
             "Build it: cargo install --path crates/tui\n"
-            "Or set HERMES_TUI_NATIVE_BIN=/path/to/hermes-tui-native\n"
+            "Or set HERMES_TUI_RATATUI_BIN=/path/to/hermes-tui-native\n"
             "Falling back to the Ink TUI.",
             file=sys.stderr,
         )

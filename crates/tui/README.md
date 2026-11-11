@@ -4,7 +4,7 @@ Native **Hermes TUI 2.0**: Rust owns the screen, Python still owns the agent.
 
 Binary: `hermes-tui-native` (avoids colliding with the npm package `hermes-tui` in `ui-tui/`).
 
-This crate is a second, opt-in screen client for the Ink TUI (`ui-tui/`). It is not a second agent and does not replace `hermes --tui`. Native is `hermes --tui --native` or `HERMES_TUI_NATIVE=1`. It speaks the same newline-delimited JSON-RPC:
+This crate is a second, opt-in screen client for the Ink TUI (`ui-tui/`). It is not a second agent and does not replace `hermes --tui`. Launch it with `hermes --tui --ratatui` or `HERMES_TUI_RATATUI=1`. `--native` is Ink's primary-buffer mode, not this client. It speaks newline-delimited JSON-RPC:
 
 ```text
 hermes-tui
@@ -40,7 +40,7 @@ Caduceus gold, a live stream, `/theme`, `/model`.
 
 ```bash
 cargo install --path crates/tui
-hermes --tui --native
+hermes --tui --ratatui
 ```
 
 From this crate (directory that contains `tui_gateway/entry.py`):
@@ -58,7 +58,7 @@ hermes-tui-native [--python PATH] [--src-root PATH] [--hermes-home PATH] [--cwd 
 
 `--resume` / `HERMES_TUI_RESUME` matches Ink. Interpreter resolution matches `ui-tui/src/gatewayClient.ts`.
 
-Ink stays `hermes --tui`. Native is opt-in (`HERMES_TUI_NATIVE=1` / `--native`). If the binary is missing, the CLI falls back to Ink. See `CONTRIBUTING.md`.
+Ink stays `hermes --tui`. This client is opt-in (`HERMES_TUI_RATATUI=1` / `--ratatui`). If the binary is missing, the CLI falls back to Ink. See `CONTRIBUTING.md`.
 
 ## Surfaces (gateway)
 

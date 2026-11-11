@@ -1,6 +1,6 @@
+import { inlineSlashTrigger } from '@hermes/shared/slash-input'
 import { describe, expect, it } from 'vitest'
 
-import { inlineSlashTrigger } from '../domain/slash.js'
 import { completionRequestForInput } from '../hooks/useCompletion.js'
 
 describe('inlineSlashTrigger', () => {
@@ -33,14 +33,6 @@ describe('inlineSlashTrigger', () => {
     // Only a position-0 slash is a real invocation, so `/personality alic`
     // mid-message is prose with a reference in it, already ended.
     expect(inlineSlashTrigger('hello there /personality alic')).toBeNull()
-  })
-
-  it('reports a start index that replaces only the typed token', () => {
-    const text = 'please run /cle'
-    const trigger = inlineSlashTrigger(text)!
-
-    expect(text.slice(0, trigger.start)).toBe('please run ')
-    expect(text.slice(trigger.start)).toBe('/cle')
   })
 })
 

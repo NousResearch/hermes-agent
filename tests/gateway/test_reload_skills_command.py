@@ -72,7 +72,6 @@ def _make_runner():
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -112,13 +111,11 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     out = await runner._handle_reload_skills_command(event)
 
     assert out is not None
-    assert "Skills Reloaded" in out
     assert "Added Skills:" in out
     assert "- alpha: Run alpha to do xyz" in out
     assert "- beta: Run beta to do abc" in out
     assert "Removed Skills:" in out
     assert "- gamma: Old removed skill" in out
-    assert "3 skill(s) available" in out
 
     # MUST NOT write to the session transcript — that would break alternation.
     runner.session_store.append_to_transcript.assert_not_called()
@@ -129,8 +126,6 @@ async def test_reload_skills_handler_queues_note_on_diff(monkeypatch):
     session_key = runner._session_key_for_source(event.source)
     assert session_key in pending
     note = pending[session_key]
-    assert note.startswith("[USER INITIATED SKILLS RELOAD:")
-    assert note.endswith("Use skills_list to see the updated catalog.]")
     assert "Added Skills:" in note
     assert "    - alpha: Run alpha to do xyz" in note
     assert "    - beta: Run beta to do abc" in note

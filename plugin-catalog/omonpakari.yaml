@@ -1,0 +1,24 @@
+name: omonpakari
+title: omonpakari
+repo: https://github.com/tamamo510/omonpakari
+sha: 8da1d8ab1a45de362c2491146f0946e8b4467045
+description: "Considerate health context for Hermes Agent: barometric pressure (OpenWeather), a typed journal (symptoms, medications, supplements, food, notes), menstrual-cycle windows returned as date ranges, sourced absorption-interaction checks against logged times, the person's own life notes and alternatives, per-rhythm wave states (pressure, cycle, symptoms, sleep, nutrition) and long-term patterns - assembled by a pre_llm_call hook into a short quiet picture before each reply, so suggestions are weighed against the person's body and habits first. No reminders, no pestering; a quiet first word on the host's own scheduled turns is opt-in. Disclosure — Stores a health journal (symptoms, medications, supplements, food, menstrual-cycle marks, life notes) locally in the plugin's own database and adds a short summary of it as context before each reply on attended turns, including gateway turns from any approved sender in shared chats, so the configured model provider receives it and the model may repeat it to other chat participants; scheduled cron turns get it only when first_word_turns is enabled. With an OpenWeather API key and coordinates set, it calls api.openweathermap.org (key and coordinates in the request) from the pressure tool and from at most one background refresh thread per hour during user turns. No telemetry, shell commands or self-updating."
+maintainer: tamamo510
+tier: community
+category: general
+requires_hermes: ">=0.22.0"
+version: "0.2.0"
+capabilities:
+  provides_tools:
+    - omonpakari_pressure
+    - omonpakari_log
+    - omonpakari_cycle
+    - omonpakari_interactions
+    - omonpakari_life
+    - omonpakari_waves
+    - omonpakari_correlate
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - OPENWEATHER_API_KEY

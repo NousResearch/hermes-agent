@@ -77,7 +77,6 @@ def _make_runner():
         get_or_create_session=lambda source: SimpleNamespace(session_id="session-1"),
         load_transcript=lambda session_id: [],
     )
-    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     runner._enrich_message_with_vision = AsyncMock(return_value="ENRICHED")
     runner._gateway_loop = None
     return runner
@@ -97,10 +96,9 @@ def _setup_monkeypatches(monkeypatch, tmp_path):
     (tmp_path / "config.yaml").write_text("agent:\n  model: test-model\n", encoding="utf-8")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(
         gateway_run,
-        "_load_gateway_runtime_config",
+        "_load_gateway_config",
         lambda: {"agent": {"model": "test-model"}},
     )
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "test-model")
@@ -115,7 +113,7 @@ def _setup_monkeypatches(monkeypatch, tmp_path):
         },
     )
 
-    import hermes_cli.tools_config as tools_config
+    from hermes_cli import tools_config
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
 
@@ -134,7 +132,7 @@ def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):
     # finalisation path still runs with streaming_tts_consumer_holder[0]=None.
     monkeypatch.setattr(
         gateway_run.GatewayRunner,
-        "_adapter_for_source",
+        "_delivery_adapter_for",
         lambda self, source: None,
     )
 

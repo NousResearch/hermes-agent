@@ -1,0 +1,21 @@
+name: inboxapp
+title: Inboxapp
+repo: https://github.com/InboxHQ/inboxapp-ai-toolkit
+sha: 6717bf13bcdbb187bc02f06967a0d6516d0ed613
+version: "0.1.0"
+description: "Inboxapp, the shared inbox and CRM for X, LinkedIn and WhatsApp DMs, through Inboxapp's official MCP server (Streamable HTTP at https://mcp.inboxapp.com/mcp): list, search and read threads; send, edit, unsend and react to messages from the user's connected accounts; update contacts (status, tags, notes, valuation, assignee); archive, assign and delete threads; manage the team's tags and statuses. Bundles four skills: inboxapp (connect and pick the right skill), triage, reply and pipeline. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code; every tool call goes to Inboxapp's server at mcp.inboxapp.com, and the tool set is served by that server at runtime, so it is not covered by the pinned sha. It sends, edits and unsends real messages from the user's linked X, LinkedIn and WhatsApp accounts and can delete threads, tags and statuses; the agent gets the same access as the user in the chosen team. Sign-in is by OAuth on inboxapp.com (token kept by Hermes) or an Inboxapp API token. The package marks the server untrusted, so Hermes asks before every tool not annotated read-only and refuses those tools in unattended runs; the skills may also read docs.inboxapp.com."
+maintainer: Inboxapp
+tier: community
+category: tools
+docs_url: https://docs.inboxapp.com/v2/mcp-server
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+known_issues:
+  - "Hermes runs OAuth for a remote MCP server only when config.yaml sets auth: oauth, which a package cannot set. Add mcp_servers.inboxapp with url https://mcp.inboxapp.com/mcp, auth: oauth and trust: untrusted to ~/.hermes/config.yaml, then run hermes mcp login inboxapp. That entry replaces the package's server, so keep trust: untrusted in it."
+  - "Needs an Inboxapp team with API v2 access, which is in private rollout; the server answers 404 for teams without it."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

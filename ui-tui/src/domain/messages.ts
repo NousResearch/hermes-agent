@@ -1,6 +1,9 @@
+import type { SessionInfo } from '@hermes/shared/gateway-types'
+
 import { LONG_MSG } from '../config/limits.js'
+import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
-import type { Msg, SessionInfo } from '../types.js'
+import type { Msg } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
@@ -13,8 +16,12 @@ export const userDisplay = (text: string) => {
   const words = first.split(/\s+/).filter(Boolean)
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
-  return `${prefix || '(message)'} [long message]`
+  return t('libText.messages.longMessage', prefix || t('libText.messages.messageFallback'))
 }
+
+/** A resumed user row's durable message row (backtrack browsing finds its prompt by it). */
+const storedRowId = (role: string, rowId: unknown): Pick<Msg, 'rowId'> =>
+  role === 'user' && Number.isSafeInteger(rowId) && (rowId as number) > 0 ? { rowId: rowId as number } : {}
 
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
   if (!Array.isArray(rows)) {
@@ -29,7 +36,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, display_kind, name, role, text, timestamp } = row as TranscriptRow
+    const { context, display_kind, name, role, row_id, text, timestamp } = row as TranscriptRow
 
     const createdAt =
       typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
@@ -51,34 +58,41 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (display_kind === 'model_switch') {
-      out.push({ kind: 'event', role: 'system', text: 'model changed' })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.modelChanged') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'auto_continue') {
-      out.push({ kind: 'event', role: 'system', text: 'resumed interrupted turn' })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.resumedInterruptedTurn') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'personality_switch') {
-      out.push({ kind: 'event', role: 'system', text: 'personality changed' })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.personalityChanged') })
       pending = []
 
       continue
     }
 
-    if (display_kind === 'async_delegation_complete') {
+    if (display_kind === 'async_delegation_complete' || display_kind === 'process_complete') {
       const meta = (row as TranscriptRow).display_metadata
       const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
 
       const label =
-        count === undefined
-          ? 'background agent work finished'
-          : `${count} background agent${count === 1 ? '' : 's'} finished`
+        display_kind === 'process_complete'
+          ? t('libText.messages.backgroundProcessFinished')
+          : count === undefined
+            ? t('libText.messages.backgroundAgentWorkFinished')
+            : t(
+                count === 1
+                  ? 'libText.messages.backgroundAgentsFinishedOne'
+                  : 'libText.messages.backgroundAgentsFinishedOther',
+                count
+              )
 
       out.push({
         kind: 'event',
@@ -94,7 +108,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
-      out.push({ role, text, ...(createdAt !== undefined && { createdAt }) })
+      out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...storedRowId(role, row_id) })
       pending = []
     }
   }
@@ -117,6 +131,7 @@ interface TranscriptRow {
   display_metadata?: { task_count?: number; [key: string]: unknown }
   name?: string
   role?: string
+  row_id?: number
   text?: string
   timestamp?: number
 }

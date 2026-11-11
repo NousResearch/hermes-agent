@@ -6,9 +6,10 @@ import path from 'node:path'
 const repo = process.argv[2],
   out = process.argv[3],
   scenario = process.argv[4] || 'approved'
-const require = createRequire(path.join(repo, 'package.json'))
+// esbuild and Playwright come from the desktop workspace that declares them.
+const require = createRequire(path.join(repo, 'apps/desktop/package.json'))
 const { build } = require('esbuild')
-const { chromium } = require('playwright')
+const { chromium } = require('@playwright/test')
 const requests = []
 const rpcCalls = []
 const nativeCalls = []
@@ -59,12 +60,13 @@ wss.on('connection', ws =>
 )
 const entry = `import React from 'react'; import {createRoot} from 'react-dom/client';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
-import {McpTab} from '${repo}/apps/desktop/src/app/skills/mcp-tab.tsx';
+import {McpTab} from '${repo}/apps/desktop/src/app/capabilities/mcp/mcp-tab.tsx';
 import {setApiRequestProfile,setApiRequestConnection} from '${repo}/apps/desktop/src/api/client.ts';
 setApiRequestProfile('profile-b');setApiRequestConnection('fixture-remote');
 const queryClient=new QueryClient({defaultOptions:{queries:{retry:false}}});function Probe(){const [profile,setProfile]=React.useState('profile-b');const [shown,setShown]=React.useState(true);window.cancelFlow=()=>setProfile('profile-c');window.unmountFlow=()=>setShown(false);return <QueryClientProvider client={queryClient}>{shown && <McpTab gateway={null} profile={{connectionId:'fixture-remote',profile}} />}</QueryClientProvider>};createRoot(document.getElementById('root')).render(<Probe/>);`
 const bundle = await build({
-  stdin: { contents: entry, resolveDir: repo, loader: 'tsx' },
+  // The probe's bare imports (react, react-query) resolve like the desktop's own sources.
+  stdin: { contents: entry, resolveDir: path.join(repo, 'apps/desktop'), loader: 'tsx' },
   bundle: true,
   write: false,
   format: 'esm',
@@ -89,7 +91,9 @@ const server = http.createServer(async (req, res) => {
   )
 })
 await new Promise(r => server.listen(0, '127.0.0.1', r))
+// pm's Chromium: PLAYWRIGHT_BROWSERS_PATH (from `hermes pm env`) is where channel 'chromium' finds it.
 const browser = await chromium.launch({
+  channel: 'chromium',
   headless: true,
   args: ['--no-sandbox'],
   ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {})

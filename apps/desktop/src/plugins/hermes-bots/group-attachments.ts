@@ -8,6 +8,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
+import { botsText } from './i18n'
 import type { Attachment, AttachmentKind } from './types'
 
 // ── group-chat attachments: pick/paste/drop files the room's members see ────
@@ -27,10 +28,11 @@ function groupAttachmentKind(file: File): AttachmentKind {
 
 /** File objects → [{ name, data, kind }] (data URLs), oversized files skipped
  *  with a toast. Images are downscaled; PDFs and other files ride as raw data
- *  URLs for the gateway's pdf.attach / file.attach staging. Shared by the
- *  picker button, the composer paste handler, and room drag & drop. */
+ *  URLs for the gateway's file.attach staging. Shared by the picker button,
+ *  the composer paste handler, and room drag & drop. */
 export async function filesToGroupAttachments(files: File[] | FileList | null | undefined): Promise<Attachment[]> {
   const picked: Attachment[] = []
+  const labels = botsText().group
 
   for (const file of [...(files || [])]) {
     if (!file) {
@@ -40,7 +42,7 @@ export async function filesToGroupAttachments(files: File[] | FileList | null | 
     if (file.size > 15_000_000) {
       host.notify({
         kind: 'error',
-        message: `${file.name || 'attachment'}: too large (max 15MB).`
+        message: labels.attachmentTooLarge(file.name || labels.attachmentFallback)
       })
 
       continue
@@ -59,7 +61,7 @@ export async function filesToGroupAttachments(files: File[] | FileList | null | 
 
     const kind = groupAttachmentKind(file)
     picked.push({
-      name: file.name || (kind === 'image' ? 'pasted image' : 'attachment'),
+      name: file.name || (kind === 'image' ? labels.pastedImage : labels.attachmentFallback),
       data: kind === 'image' ? await normalizeGroupAttachment(data) : data,
       kind
     })

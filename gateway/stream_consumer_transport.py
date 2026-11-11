@@ -13,8 +13,14 @@ from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from hermes_cli.observability.shared_metrics_gateway import stops_reply_clock
 
 logger = logging.getLogger("gateway.stream_consumer")
+
+# Longest interim-edit interval flood backoff may reach. Interim edits are skipped (not slept)
+# until the interval elapses, so honouring a 30s Telegram retry_after costs nothing but a
+# stale preview; anything longer is left to the strike counter and the fallback send path.
+_MAX_EDIT_BACKOFF_SECS = 30.0
 
 
 class StreamTransportMixin:
@@ -174,6 +180,19 @@ class StreamTransportMixin:
             if getattr(result, "success", False):
                 self._last_sent_text = text  # parity with the edit-based no-op skip
                 return True
+            # P5(b): an AUTHORIZATION decline is terminal for the whole run, not
+            # merely "drafts are unusable". Disabling drafts alone routes the
+            # turn-final to _first_send — a plain send into the chat the
+            # connector just refused. Verified: ops were ['draft', 'send'].
+            from gateway.relay.egress import declined_send
+
+            if declined_send(result):
+                logger.warning(
+                    "send_draft DECLINED by the connector's egress guard; "
+                    "suppressing every later send for this run (the destination "
+                    "is not approved for this connection)"
+                )
+                self._egress_declined = True
             logger.debug("send_draft returned success=False, disabling draft transport: %s",
                          getattr(result, "error", "unknown"))
         self._draft_failures += 1
@@ -266,13 +285,22 @@ class StreamTransportMixin:
                 chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
-            return False
+            if not await self._uncertain_send_fully_shown(e):
+                return False
+            result = e  # a raised timeout may have landed too: same handling as a returned one
         if not getattr(result, "success", False):
-            return False
+            if not await self._uncertain_send_fully_shown(result):
+                return False
+            # The fresh final may be on screen with no id: editing the preview up to the same
+            # text would show the answer twice. Keep the preview (no id to clean up against).
+            logger.warning("Fresh-final send may have landed; not re-delivering it by edit")
+            self._edit_supported = False
+            self._delivery_ambiguous = is_turn_final
+            stale_ids, result = (), None
         new_message_id = getattr(result, "message_id", None)
-        # Best-effort preview cleanup; never delete the message just sent.
-        await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
-        self._preview_message_ids = set()
+        if stale_ids:  # best-effort preview cleanup; never delete the message just sent
+            await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
+            self._preview_message_ids = set()
         self._adopt_message_id(new_message_id)
         self._already_sent = True
         self._last_sent_text = text
@@ -290,6 +318,7 @@ class StreamTransportMixin:
             self._message_id = "__no_edit__"
             self._message_created_ts = None
 
+    @stops_reply_clock
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
@@ -313,9 +342,16 @@ class StreamTransportMixin:
             return True  # cursor-only / whitespace-only update
         # Don't open a new message for 1-2 tokens + cursor (rapid tool-calling): if
         # the cursor-strip edit is then rate-limited, "X ▉" stays forever.
-        if (self._message_id is None and self.cfg.cursor and self.cfg.cursor in text
-                and len(visible_stripped) < self._MIN_NEW_MSG_CHARS):
-            return True  # too short for a standalone message — accumulate more
+        # A segment-break finalize never carries the cursor, so gate it too or a 1-2 token
+        # preamble lands durably at every tool boundary and resets the progress anchor
+        # (#99026).  Turn finals are exempt: a short complete answer must be delivered.
+        # Tradeoff: on non-cumulative transports the held preamble is DROPPED, not
+        # carried — _end_segment sees update_visible=True and resets the segment.
+        preamble_finalize = finalize and not is_turn_final
+        if (self._message_id is None and len(visible_stripped) < self._MIN_NEW_MSG_CHARS
+                and (preamble_finalize or (self.cfg.cursor and self.cfg.cursor in text))):
+            # Mid-stream: accumulate more.  Segment-break finalize: dropped (see above).
+            return True
 
         # A failed native/draft transport disables itself and falls through so the
         # accumulated text still reaches the user via edit/send.
@@ -331,7 +367,11 @@ class StreamTransportMixin:
         self._last_edit_overflowed = False
         try:
             if self._message_id is None:
-                return await self._first_send(text, finalize=finalize)
+                if not self._edit_supported and not finalize:
+                    # A failed send disabled edits: a preview sent now could never be updated and
+                    # would stay on screen truncated next to the final reply. Send only the final.
+                    return False
+                return await self._first_send(text, finalize=finalize, raw_text=pre_fence_text)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
@@ -415,12 +455,32 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
-        """First send, threaded to the user's message (correct topic/thread)."""
-        result = await self.adapter.send(
-            chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+    async def _first_send(self, text: str, *, finalize: bool, raw_text: Optional[str] = None,
+                          ) -> bool:
+        """First send, threaded to the user's message (correct topic/thread). ``raw_text`` is
+        ``text`` before display-only fence closing."""
+        if getattr(self, "_egress_declined", False):
+            # The connector refused this destination earlier in the run (see
+            # _send_draft_frame). This is where every fallback path converges,
+            # so the check belongs here rather than at each caller.
+            logger.warning(
+                "suppressing the plain-send fallback: the connector already "
+                "declined this destination for this run"
+            )
+            return False
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
+                metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+        except Exception as exc:
+            logger.error("Stream first send error: %s", exc, exc_info=True)
+            if await self._uncertain_send_fully_shown(exc):
+                return self._hold_ambiguous_first_send(text, raw_text, finalize=finalize)
+            self._edit_supported = False
+            return False
         if not result.success:
+            if await self._uncertain_send_fully_shown(result):
+                return self._hold_ambiguous_first_send(text, raw_text, finalize=finalize)
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -459,6 +519,12 @@ class StreamTransportMixin:
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("skipped"):
+            # Adapter deferred the edit (Telegram's shared send+edit slot was busy): nothing
+            # changed on screen, so the visible prefix and flood state stay as they were and the
+            # next tick retries with the newer text.
+            return True
         self._already_sent = True
         self._track_preview_ids_from_result(result)
         # Oversized edit split across continuations: message_id is now the LAST
@@ -476,6 +542,31 @@ class StreamTransportMixin:
         self._flood_strikes = 0
         return True
 
+    def _hold_ambiguous_first_send(self, text: str, raw_text: Optional[str], *, finalize: bool,
+                                   ) -> bool:
+        """A first send failed in a way that may still have landed: count ``text`` as shown and
+        never open a second message with it. A preview leaves only its unseen tail for got_done;
+        a final is the turn's delivery, and ``_delivery_ambiguous`` keeps the gateway's normal
+        final send from repeating it."""
+        logger.warning("Stream send may have landed (timed out after the request left); "
+                       "treating it as shown instead of sending it again")
+        self._last_sent_text = text
+        if finalize:
+            self._delivery_ambiguous = True
+        else:
+            self._preview_uncertain = True
+            # The seen prefix is the RAW stream: a fence closed only for display is not in the
+            # final, so a prefix carrying it never matches and the whole answer would go again.
+            raw = raw_text if raw_text is not None else text
+            if self.cfg.cursor and raw.endswith(self.cfg.cursor):
+                raw = raw[: -len(self.cfg.cursor)]
+            self._enter_fallback_mode(raw)
+        self._edit_supported = False
+        self._already_sent = True
+        # Sentinel so a later finalize does not call _first_send again.
+        self._message_id = "__no_edit__"
+        return True
+
     def _enter_fallback_mode(self, prefix: str) -> None:
         """Edits are over for this stream: send only the missing tail at got_done."""
         self._fallback_prefix = prefix
@@ -487,6 +578,22 @@ class StreamTransportMixin:
                                ) -> bool:
         """Classify a failed edit: partial overflow, flood backoff, or fallback mode.  Always
         False; the caller's finalize path may still deliver the tail."""
+        # P5(b): an AUTHORIZATION decline is terminal for the run. Every branch
+        # below treats a failed edit as "editing is unavailable" and hands the
+        # unseen tail to the fallback, which SENDS it as a new message to the
+        # chat the connector just refused. Measured: ops were
+        # ['edit', 'edit', 'send'].
+        from gateway.relay.egress import declined_send
+
+        if declined_send(result):
+            logger.warning(
+                "edit DECLINED by the connector's egress guard; suppressing "
+                "every later send for this run (the destination is not "
+                "approved for this connection)"
+            )
+            self._egress_declined = True
+            self._edit_supported = False
+            return False
         turn_final = finalize and is_turn_final
         if (turn_final and self.cfg.cursor and self._last_sent_text.endswith(self.cfg.cursor)
                 and self._visible_prefix() == text):
@@ -517,12 +624,18 @@ class StreamTransportMixin:
                 self._notify_new_message()
             return False
 
-        # Flood control: adaptive backoff (double the interval); disable edits only
+        # Flood control: adaptive backoff (double the interval, or the server's own
+        # retry_after when Telegram hands one back — the penalty is usually 9s+, so
+        # doubling 0.8s → 1.6s → 3.2s burns all strikes inside it); disable edits only
         # after _MAX_FLOOD_STRIKES in a row.
         immediate_final_fallback = False
         if self._is_flood_error(result):
             self._flood_strikes += 1
-            self._current_edit_interval = min(self._current_edit_interval * 2, 10.0)
+            backoff = min(self._current_edit_interval * 2, 10.0)
+            retry_after = getattr(result, "retry_after", None)
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                backoff = max(backoff, min(float(retry_after), _MAX_EDIT_BACKOFF_SECS))
+            self._current_edit_interval = backoff
             logger.debug("Flood control on edit (strike %d/%d), backoff interval → %.1fs",
                          self._flood_strikes, self._MAX_FLOOD_STRIKES, self._current_edit_interval)
             immediate_final_fallback = (

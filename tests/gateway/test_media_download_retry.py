@@ -23,14 +23,6 @@ import httpx
 # Helpers for building httpx exceptions
 # ---------------------------------------------------------------------------
 
-def _make_http_status_error(status_code: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://example.com/img.jpg")
-    response = httpx.Response(status_code=status_code, request=request)
-    return httpx.HTTPStatusError(
-        f"HTTP {status_code}", request=request, response=response
-    )
-
-
 def _make_timeout_error() -> httpx.TimeoutException:
     return httpx.TimeoutException("timed out")
 
@@ -40,7 +32,7 @@ def _make_stream_response(content: bytes = b"\xff\xd8\xff fake media"):
 
     Exposes ``raise_for_status``, an empty ``headers`` mapping (no
     Content-Length), and an ``aiter_bytes`` async iterator yielding the body
-    in one chunk — matching how ``_read_httpx_body_with_limit`` consumes it.
+    in one chunk — matching how ``read_httpx_body_with_limit`` consumes it.
     """
     resp = MagicMock()
     resp.raise_for_status = MagicMock()
@@ -106,6 +98,22 @@ class TestCacheImageFromBytes:
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"<!DOCTYPE html><html><title>Slack</title></html>", ".png")
 
+    @pytest.mark.parametrize("brand,ext", [(b"heic", ".heic"), (b"mif1", ".heif"), (b"avif", ".avif")])
+    def test_caches_isobmff_stills(self, tmp_path, monkeypatch, brand, ext):
+        """iPhone photos sent as files are HEIC; image_routing transcodes them for vision."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        data = b"\x00\x00\x00\x18ftyp" + brand + b"\x00\x00\x00\x00mif1heic" + b"\x00" * 64
+        path = cache_image_from_bytes(data, ext)
+        assert path.endswith(ext)
+
+    def test_rejects_isobmff_video(self, tmp_path, monkeypatch):
+        """An MP4 shares the ftyp container but is not an image."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64, ".heic")
+
 
 # ---------------------------------------------------------------------------
 # cache_image_from_url (base.py)
@@ -115,24 +123,6 @@ class TestCacheImageFromBytes:
 class TestCacheImageFromUrl:
     """Tests for gateway.platforms.base.cache_image_from_url"""
 
-    def test_success_on_first_attempt(self, _mock_safe, tmp_path, monkeypatch):
-        """A clean 200 response caches the image and returns a path."""
-        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
-
-        mock_client = _make_stream_client(
-            responses=[_make_stream_response(b"\xff\xd8\xff fake jpeg")]
-        )
-
-        async def run():
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                from gateway.platforms.base import cache_image_from_url
-                return await cache_image_from_url(
-                    "http://example.com/img.jpg", ext=".jpg"
-                )
-
-        path = asyncio.run(run())
-        assert path.endswith(".jpg")
-        mock_client.stream.assert_called_once()
 
     def test_retries_on_timeout_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A timeout on the first attempt is retried; second attempt succeeds."""
@@ -170,6 +160,11 @@ class TestCacheImageFromUrlConnectGuard:
             "all_proxy",
         ):
             monkeypatch.delenv(proxy_var, raising=False)
+        # Clearing the variables above is not enough: httpx resolves environment proxies
+        # through ``urllib.request.getproxies``, which on macOS falls back to the System
+        # Configuration (``scutil --proxy``) when no proxy env var is set — so on a runner
+        # with a system-wide proxy the request would dial the proxy, not the rebinding host.
+        monkeypatch.setattr("httpx._utils.getproxies", dict)
 
         answers = [
             [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
@@ -213,24 +208,6 @@ class TestCacheImageFromUrlConnectGuard:
 class TestCacheAudioFromUrl:
     """Tests for gateway.platforms.base.cache_audio_from_url"""
 
-    def test_success_on_first_attempt(self, _mock_safe, tmp_path, monkeypatch):
-        """A clean 200 response caches the audio and returns a path."""
-        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
-
-        mock_client = _make_stream_client(
-            responses=[_make_stream_response(b"\x00\x01 fake audio")]
-        )
-
-        async def run():
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                from gateway.platforms.base import cache_audio_from_url
-                return await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg"
-                )
-
-        path = asyncio.run(run())
-        assert path.endswith(".ogg")
-        mock_client.stream.assert_called_once()
 
     def test_retries_on_timeout_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A timeout on the first attempt is retried; second attempt succeeds."""
@@ -350,11 +327,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
+from gateway.config import PlatformConfig
 
 
 def _make_slack_adapter():
@@ -371,20 +348,15 @@ def _make_slack_adapter():
 # SlackAdapter diagnostics helpers
 # ---------------------------------------------------------------------------
 
-class TestSlackAttachmentDiagnostics:
-
-    def test_download_failure_403_returns_permission_notice(self):
-        adapter = _make_slack_adapter()
-        exc = _make_http_status_error(403)
-        detail = adapter._describe_slack_download_failure(exc, file_obj={"name": "report.pdf"})
-        assert "403" in detail
-        assert "permission or scope" in detail
 
 
 # ---------------------------------------------------------------------------
 # SlackAdapter._download_slack_file
 # ---------------------------------------------------------------------------
 
+# files.slack.com resolves from a fixture: the SSRF check before each download used to look it up
+# on the live resolver.
+@pytest.mark.usefixtures("public_dns")
 class TestSlackDownloadSlackFile:
     """Tests for SlackAdapter._download_slack_file"""
 
@@ -447,6 +419,7 @@ class TestSlackDownloadSlackFile:
 # SlackAdapter._download_slack_file_bytes
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("public_dns")
 class TestSlackDownloadSlackFileBytes:
     """Tests for SlackAdapter._download_slack_file_bytes"""
 

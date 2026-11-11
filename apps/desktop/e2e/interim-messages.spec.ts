@@ -34,7 +34,7 @@
  *       The test pins that converged single-message shape: every text
  *       appears exactly once, inside a single assistant message root.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { expect, type Page, test } from '@playwright/test'
@@ -44,7 +44,7 @@ import {
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import { INTERIM_TEXTS, restartMockServer } from './mock-server'
+import { INTERIM_TEXTS, restartMockServer } from '../../../tests-js/scripts/mock-server'
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 

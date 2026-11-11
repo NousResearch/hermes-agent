@@ -3,27 +3,22 @@
   "version": "1.0.0",
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
-  "workspaces": [
-    "apps/*",
-    "ui-tui",
-    "ui-tui/packages/*",
-    "web",
-    "tests-js"
-  ],
   "scripts": {
-    "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
-    "install:root": "npm install --workspaces=false",
-    "install:web": "npm install --workspace web",
-    "install:tui": "npm install --workspace ui-tui",
-    "install:desktop": "npm install --workspace apps/desktop",
-    "audit:root": "npm audit --workspaces=false",
-    "audit:web": "npm audit --workspace web",
-    "audit:tui": "npm audit --workspace ui-tui",
-    "audit:fix:root": "npm audit fix --workspaces=false",
-    "audit:fix:web": "npm audit fix --workspace web",
-    "audit:fix:tui": "npm audit fix --workspace ui-tui",
-    "check": "npm run --ws check",
-    "fix": "npm run --ws fix"
+    "preinstall": "node -e \"const ua=(process.env.npm_config_user_agent||'').split(' ')[0];let pin,why;try{pin=require('./pm/lock.json').packages.pnpm.version}catch(e){why=e.code||e.message}if(typeof pin==='string'&&ua==='pnpm/'+pin)process.exit(0);console.error(typeof pin==='string'?'This repository installs with pnpm '+pin+' (pm/lock.json), found '+(ua||'no user agent')+': source ./activate (PowerShell: . ./activate.ps1) provides it, then run pnpm install --frozen-lockfile':'pm/lock.json pins no pnpm'+(why?' ('+why+')':'')+': restore it from git');process.exit(1)\"",
+    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
+    "install:root": "pnpm install --filter .",
+    "install:web": "pnpm install --filter web...",
+    "install:tui": "pnpm install --filter hermes-tui...",
+    "install:desktop": "pnpm install --filter hermes...",
+    "audit:root": "pnpm audit --filter .",
+    "audit:web": "pnpm audit --filter web",
+    "audit:tui": "pnpm audit --filter hermes-tui",
+    "audit:fix:root": "pnpm audit --fix --filter .",
+    "audit:fix:web": "pnpm audit --fix --filter web",
+    "audit:fix:tui": "pnpm audit --fix --filter hermes-tui",
+    "check": "pnpm -r check",
+    "fix": "pnpm -r fix",
+    "prepare": "node -e \"const {existsSync}=require('fs');const {spawnSync}=require('child_process');if(existsSync('.git'))spawnSync('lefthook',['install'],{stdio:'inherit',shell:true})\""
   },
   "repository": {
     "type": "git",
@@ -36,40 +31,22 @@
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
-    "typescript-eslint": "8.64.0",
-    "eslint-plugin-perfectionist": "5.10.0",
+    "eslint": "10.12.0",
+    "eslint-plugin-perfectionist": "5.12.1",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-unused-imports": "4.4.1",
-    "globals": "17.7.0"
-  },
-  "overrides": {
-    "lodash": "4.18.1",
-    "yauzl": "^3.3.1",
-    "protobufjs": "^8.7.1",
-    "brace-expansion": "5.0.9",
-    "mermaid": "11.16.1",
-    "dompurify": "3.4.13",
-    "ip-address": "10.3.1",
-    "nanoid@^3": "3.3.18",
-    "nanoid@^6": "6.0.0",
-    "js-yaml@^4": "4.3.1",
-    "undici@^6": "6.28.0",
-    "undici@^7": "7.29.0",
-    "postcss": "8.5.23",
-    "tar": "7.5.22"
+    "globals": "17.13.0",
+    "lefthook": "2.2.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1"
   },
   "engines": {
-    "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
-    "npm": "<11.10.0 || >=11.17.0"
+    "node": ">=26",
+    "pnpm": "^12",
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
   },
-  "allowScripts": {
-    "unicode-animations": false,
-    "esbuild@0.28.1": true,
-    "node-pty@1.1.0": true,
-    "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
-    "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true,
-    "get-windows@9.3.0": true
+  "dependencies": {
+    "js-yaml": "4.3.2",
+    "semver": "7.7.4"
   }
 }

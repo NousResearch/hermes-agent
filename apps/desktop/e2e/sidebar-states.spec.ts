@@ -6,7 +6,7 @@
  * real (trivial commands + real subagent delegations). The tests assert the
  * sidebar states driven by real gateway events.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { expect, test, type Page } from '@playwright/test'
@@ -21,7 +21,7 @@ import {
   restartMockServer,
   SIDEBAR_CROSS_TEXTS,
   SIDEBAR_TEXTS,
-} from './mock-server'
+} from '../../../tests-js/scripts/mock-server'
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'

@@ -1,6 +1,6 @@
 name: hermes-studio
 repo: https://github.com/PabloTheThinker/hermes-studio
-sha: 7a9d3325a17a08cb61af5dccbc0b8cfce60a1f5f
+sha: 4bce1b010db09ae084108f0d234a4a0deabca1dc
 subdir: hermes_plugin/hermes-studio
 title: Hermes Studio
 description: >-
@@ -19,14 +19,14 @@ category: tools
 requires_hermes: ">=0.19.0"
 docs_url: https://github.com/PabloTheThinker/hermes-studio#readme
 version: "0.6.1"
-image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/7a9d3325a17a08cb61af5dccbc0b8cfce60a1f5f/docs/catalog/banner.png
+image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/4bce1b010db09ae084108f0d234a4a0deabca1dc/docs/catalog/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/7a9d3325a17a08cb61af5dccbc0b8cfce60a1f5f/docs/catalog/01-timeline.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/7a9d3325a17a08cb61af5dccbc0b8cfce60a1f5f/docs/catalog/02-clips-library.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/7a9d3325a17a08cb61af5dccbc0b8cfce60a1f5f/docs/catalog/05-edit-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/4bce1b010db09ae084108f0d234a4a0deabca1dc/docs/catalog/01-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/4bce1b010db09ae084108f0d234a4a0deabca1dc/docs/catalog/02-clips-library.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/4bce1b010db09ae084108f0d234a4a0deabca1dc/docs/catalog/05-edit-timeline.jpg
 platforms: []
 known_issues:
-  - Needs the Hermes Studio engine installed (curl install script or uv tool install) so agent tools can invoke the hermes-studio CLI.
+  - Needs the Hermes Studio engine installed (curl install script or uv tool install) so agent tools can invoke the hermes-studio CLI. If the CLI is missing, each tool returns a missing_dependency error with those install commands.
 capabilities:
   provides_tools:
     - hermes_studio_run

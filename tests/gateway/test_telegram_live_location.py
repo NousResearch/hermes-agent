@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from tests.gateway.test_telegram_group_gating import _group_location_message, _make_adapter
+from tests.gateway.test_telegram_group_gating import _FakeSessionStore, _group_location_message, _make_adapter
 
 _T0 = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)
 
@@ -62,3 +62,21 @@ def test_static_pins_and_separate_live_shares_each_reach_the_agent():
         _pin(52.52, message_id=4),  # a second live share, its own message
     ])
     assert turns == ["latitude: 52.52"] * 4
+
+
+def test_observed_group_records_a_live_share_once():
+    """In a group that observes unmentioned messages, the refreshes of one live share must not
+    each append a transcript row: the in-place check runs before the observe step."""
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], group_allowed_chats=["-100"],
+                            observe_unmentioned_group_messages=True)
+    adapter.handle_message = AsyncMock()
+    store = adapter._session_store = _FakeSessionStore()
+    updates = [_pin(52.52, update_id=1),
+               *[_pin(52.52 + 0.00001 * i, edited_after=30 * i, update_id=1 + i) for i in range(1, 5)]]
+    for update in updates:
+        update.message.chat = SimpleNamespace(id=-100, type="group", title="Test Group", is_forum=False)
+
+    _deliver(adapter, updates)
+
+    adapter.handle_message.assert_not_awaited()
+    assert len(store.messages) == 1

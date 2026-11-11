@@ -40,7 +40,9 @@ async def admit_media(adapter: Any, msg: Any) -> Optional[list[str]]:
     except Exception as exc:  # health: allow BLE001 -- a failed fetch leaves the note gated, as before
         logger.warning("[%s] Could not fetch a group voice note for the spoken mention check: %s", adapter.name, exc)
         return None
-    clips = await spoken_mention_clips([path], adapter._mention_patterns)
+    from gateway.platforms.event import MessageType
+    source = adapter._build_message_event(msg, MessageType.VOICE).source
+    clips = await spoken_mention_clips([path], adapter._mention_patterns, adapter=adapter, source=source)
     logger.info("[%s] Group voice note %s: spoken wake word %s", adapter.name, getattr(msg, "message_id", None),
                 "matched" if clips else "not found")
     return clips or None

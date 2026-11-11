@@ -598,7 +598,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return _ok()
             text = self._clean_mention_text(text)
         media_urls, media_types, msg_type = await self._collect_attachments(record)
-        if spoken and not await spoken_mention_clips(media_urls, self._mention_patterns):
+        if spoken and not await spoken_mention_clips(
+                media_urls, self._mention_patterns, adapter=self, source=self.build_source(
+                    chat_id=session_chat_id, chat_name=chat_identifier or sender, chat_type="group",
+                    user_id=sender, user_name=sender, chat_id_alt=chat_identifier)):
             logger.debug("[bluebubbles] ignoring group voice memo (require_mention=true, no wake word spoken)")
             return _ok()
         if not text and media_urls:

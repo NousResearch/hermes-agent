@@ -80,6 +80,56 @@ def test_remote_create_only_with_and_without_python3(remote_ops, tmp_path, monke
     assert not list(tmp_path.rglob(".hermes-create-*"))
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("python", ["local", "hermes-missing-python3", None])
+def test_create_only_gives_new_files_the_umask_default_mode(ops, tmp_path, monkeypatch, python):
+    """Not mkstemp's 0600: a created file gets 0666 minus the umask, like a plain write."""
+    import os
+    import stat
+    import sys
+
+    if python != "local":
+        monkeypatch.setattr(ops, "_lsp_local_only", lambda: False)
+        monkeypatch.setattr(ops, "_python_interpreter_cmd", lambda: python or sys.executable)
+    target = tmp_path / "new.txt"
+    previous = os.umask(0o022)
+    try:
+        assert ops.write_file(str(target), "body\n", create_only=True).error is None
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("python", ["local", "hermes-missing-python3", None])
+def test_create_only_keeps_non_bmp_filenames(ops, tmp_path, monkeypatch, python):
+    import sys
+
+    if python != "local":
+        monkeypatch.setattr(ops, "_lsp_local_only", lambda: False)
+        monkeypatch.setattr(ops, "_python_interpreter_cmd", lambda: python or sys.executable)
+    target = tmp_path / "notes-\U0001F600.md"
+    result = ops.write_file(str(target), "body\n", create_only=True)
+    assert result.error is None, result
+    assert target.read_bytes() == b"body\n"
+
+
+def test_execute_code_write_file_binds_its_advertised_positional_parameters():
+    """A positional argument the doc line advertises must reach that parameter, not cross_profile."""
+    import inspect
+    import re
+
+    from tools.code_execution_tool import _TOOL_DOC_LINES, generate_hermes_tools_module
+
+    namespace = {"__name__": "hermes_tools"}
+    exec(compile(generate_hermes_tools_module(["write_file"], transport="file"), "hermes_tools.py", "exec"), namespace)
+    advertised = re.match(r"\s*write_file\((.*?)\)", dict(_TOOL_DOC_LINES)["write_file"]).group(1)
+    positional = [p.split(":")[0].split("=")[0].strip() for p in advertised.split("*")[0].split(",") if p.strip()]
+    params = inspect.signature(namespace["write_file"]).parameters
+    assert list(params)[:len(positional)] == positional
+    assert params["create_only"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
 def test_create_only_is_an_optional_boolean_defaulting_to_false():
     params = ft.WRITE_FILE_SCHEMA["parameters"]
     assert params["properties"]["create_only"]["type"] == "boolean"

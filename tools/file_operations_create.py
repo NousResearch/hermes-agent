@@ -1,6 +1,5 @@
 """Publish complete new files without ever replacing an existing directory entry."""
 
-import json
 
 # POSIX shell twin of the Python helper for backends without python3: link(1)
 # makes the same link(2) call as os.link, so every existing entry (dangling
@@ -41,7 +40,7 @@ def atomic_create(ops, path, content):
         "for signum in (getattr(signal, 'SIGTERM', None), getattr(signal, 'SIGHUP', None)):\n"
         "    if signum:  # exit through the finally below, which removes the temp file\n"
         "        signal.signal(signum, lambda n, f: sys.exit(128 + n))\n"
-        f"path = {json.dumps(path)}\n"
+        f"path = {path!r}\n"
         "parent = os.path.dirname(path) or '.'\n"
         "os.makedirs(parent, exist_ok=True)\n"
         "fd, tmp = tempfile.mkstemp(prefix='.hermes-create-', dir=parent)\n"

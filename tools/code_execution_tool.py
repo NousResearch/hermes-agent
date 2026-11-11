@@ -129,7 +129,7 @@ _TOOL_STUBS = {
     "read_file": ("path: str, offset: int = 1, limit: int = 2000",
         '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
         '{"path": path, "offset": offset, "limit": limit}'),
-    "write_file": ("path: str, content: str, cross_profile: bool = False, create_only: bool = False",
+    "write_file": ("path: str, content: str, cross_profile: bool = False, *, create_only: bool = False",
         '"""Write content to a file; create_only refuses existing entries atomically. Returns dict with write results."""',
         '{"path": path, "content": content, "cross_profile": cross_profile, "create_only": create_only}'),
     "search_files": ('pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, order: str = "discovery"',
@@ -868,7 +868,7 @@ _TOOL_DOC_LINES = [
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000)\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
-    ("write_file", "  write_file(path: str, content: str, create_only=False)\n    create_only atomically refuses existing entries. Otherwise overwrites the entire file; an existing file must be read_file'd first or the write is refused."),
+    ("write_file", "  write_file(path: str, content: str, *, create_only=False)\n    create_only atomically refuses existing entries. Otherwise overwrites the entire file; an existing file must be read_file'd first or the write is refused."),
     ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\")\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False)"),

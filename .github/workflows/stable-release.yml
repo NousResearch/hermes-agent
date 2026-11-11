@@ -92,6 +92,7 @@ jobs:
     uses: ./.github/workflows/docker.yml
     permissions:
       contents: read
+      id-token: write
     secrets: inherit
     with:
       commit: ${{ needs.admit.outputs.commit }}

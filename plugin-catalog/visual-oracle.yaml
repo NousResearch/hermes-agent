@@ -1,0 +1,20 @@
+name: visual-oracle
+repo: https://github.com/valenciayuna/hermes-plugin-visual-oracle
+sha: 4aaec6157ef35a28dbdb9bf874e631106f2f14c7
+description: "Makes a UI claim measurable before an agent reports success: captures a page as a baseline, then pixel-diffs later renders and answers PASS, FAIL or REVIEW with independent change regions (bbox, pixel count, area, density), a diff image, an overlay and per-region crops. Waits for document.fonts.ready, an optional selector and two identical frames so a capture is settled, records the Chrome version and viewport that produced it, and refuses to guess when rendering never stabilises. An optional visual change contract declares expected changes and protected regions so a declared change can pass while an undeclared one fails; selectors name locations, not meaning. Masks accept rectangles or CSS selectors and are applied before capture, a selector matching nothing is an error, and masks may not cover more than half the viewport. Only public http and https are rendered: file://, data:, private ranges and the cloud metadata address are refused on the URL and on every request the page makes, redirects included, with localhost, 127.0.0.1 and ::1 allowed and VO_ALLOW_HOSTS for anything else. Disclosure - renders the URL you give it in a local Chrome over the DevTools protocol (no Selenium, Playwright or pip install), so the page's own network requests happen in that browser; reads the PNGs it produced and writes baselines, diffs, overlays, crops and report.json under HERMES_HOME/plugin-data/; runs no shell command of its own and no background service; the baseline is never updated automatically; image input must be a real PNG and a header claiming more than 8192 px on a side is refused before decompression; no telemetry. Disclosure — renders the http(s) URL you give it in a local headless Chrome over the DevTools protocol (no Selenium, Playwright or pip install), so the page's own network requests happen from your machine; refuses non-http(s) schemes and private, link-local and cloud-metadata addresses on the URL and on every request the page makes (localhost, 127.0.0.1 and ::1 allowed, more via VO_ALLOW_HOSTS); launches Chrome with --no-sandbox only when running as root, without user namespaces, or with VO_NO_SANDBOX=1; reads the PNGs you point it at and writes baselines, diffs, overlays, crops and report.json under HERMES_HOME/plugin-data/visual-oracle/; a failing or REVIEW check keeps the agent's turn open through the pre_verify hook; runs no shell command of its own and no background service; the baseline is never updated automatically; no telemetry."
+maintainer: valenciayuna
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/valenciayuna/hermes-plugin-visual-oracle#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+  - visual_base
+  - visual_check
+  - visual_list
+  provides_hooks:
+  - pre_verify
+  provides_middleware: []
+  requires_env: []

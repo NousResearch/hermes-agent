@@ -1,0 +1,26 @@
+name: rich-paste
+repo: https://github.com/ZhenningLang/rich-paste
+sha: 1e3ec4bb45ce016aee1ce3e4d07d1d19fcc46e16
+description: "Paste web pages, screenshots and Finder files into Hermes Desktop with their structure, and send each image to the model where it sits in your text. Web HTML becomes Markdown (headings, links, lists, tables, code) with its images downloaded and attached; an llm_request middleware moves each image block next to its label instead of after all the text (kimi-k3, several images per paragraph: 18/30 today, 30/30 interleaved). Also: screenshot chips placed after what you typed, Finder files and folders as Desktop blocks, TIFF/HEIC/BMP/AVIF sent as PNG, pasted audio transcribed with Hermes's own STT, Markdown preview. Disclosure — network calls only to download the images of pages you paste (http/https; loopback, private, link-local and reserved addresses refused on every redirect, except DNS answers in 198.18.0.0/15 for proxy fake-ip setups; the pasted page's URL is sent as Referer; at most 50 images per paste and 20 MB each); no telemetry. Runs /usr/bin/osascript once per file paste to read file URLs on the macOS clipboard. Reads image attachments you add (hashes them, converts TIFF/HEIC/BMP/AVIF to PNG) and Desktop's saved long-paste files. Writes only under its cache folder. Pasted audio is transcribed with Hermes's own STT, which uploads it to your configured cloud STT provider when one is set (the plugin asks first). An llm_request middleware reorders the image blocks of every user message that carries its markers in the outgoing request."
+maintainer: ZhenningLang
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.2.1"
+title: Rich Paste
+image: "https://raw.githubusercontent.com/ZhenningLang/rich-paste/1e3ec4bb45ce016aee1ce3e4d07d1d19fcc46e16/assets/catalog/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/ZhenningLang/rich-paste/1e3ec4bb45ce016aee1ce3e4d07d1d19fcc46e16/assets/catalog/1-compare.png"
+  - "https://raw.githubusercontent.com/ZhenningLang/rich-paste/1e3ec4bb45ce016aee1ce3e4d07d1d19fcc46e16/assets/catalog/2-screenshots-in-place.png"
+  - "https://raw.githubusercontent.com/ZhenningLang/rich-paste/1e3ec4bb45ce016aee1ce3e4d07d1d19fcc46e16/assets/catalog/3-markdown-preview.png"
+  - "https://raw.githubusercontent.com/ZhenningLang/rich-paste/1e3ec4bb45ce016aee1ce3e4d07d1d19fcc46e16/assets/catalog/4-finder-files.png"
+  - "https://raw.githubusercontent.com/ZhenningLang/rich-paste/1e3ec4bb45ce016aee1ce3e4d07d1d19fcc46e16/assets/catalog/5-transcribe.png"
+platforms: []
+known_issues:
+  - "Tested on macOS only. Pasting Finder files needs macOS; elsewhere, drag files into the composer."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+  requires_env: []

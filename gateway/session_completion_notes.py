@@ -10,7 +10,9 @@ viewer attached (the authority's own subscriber records) the executor records it
 history, where the next turn sees it, and settles the admission without a model call. Queue order, restart survival and
 exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was,
 except a local cron result, which is always a note; messaging, Kanban, ``/loop`` and heartbeat wakes
-never reach here.
+never reach here. An async delegation whose final result has a failed child (``wakes_parent``) runs as
+a turn with no viewer too, so the parent can recover (re-dispatch, another model) without waiting for a
+human to come back: at most ``UNATTENDED_WAKE_LIMIT`` times in a row, and never in a chat its viewer closed.
 """
 import json
 from functools import partial
@@ -21,6 +23,10 @@ _NOTED_PRODUCERS = frozenset({'async_delegation', 'completion', 'watch_match', '
 # A cron result for a local chat (``session_cron.deliver_to_local_chat``) is finished text: a note
 # with or without a viewer, since a turn over it would only spend a model call (#143547 CRON-11).
 _ALWAYS_NOTED = frozenset({'cron'})
+# Failed-delegation wakes one session may run in a row with nobody watching. A woken parent that
+# re-dispatches into the same failure (billing, a usage limit) would otherwise wake itself forever; past
+# the limit the failure is a note again until a viewer attaches or the user sends something.
+UNATTENDED_WAKE_LIMIT = 3
 
 
 def _producer(identity):
@@ -31,9 +37,24 @@ def _producer(identity):
 
 
 def noted_completion(row):
-    """*row* is a local completion admission: a note when it runs with no viewer attached."""
+    """*row* is a local completion admission: a note when it runs with no viewer attached (unless it
+    wakes its parent, which ``note_if_unviewed`` decides when it runs)."""
     descriptor = (row or {}).get('payload', {}).get('local_automation_v1')
     return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS | _ALWAYS_NOTED
+
+
+def _wakes_unviewed_parent(authority, session_id, live, descriptor):
+    """A failed async delegation (``wakes_parent``) with no viewer attached: the parent dispatched that
+    work and is waiting on it, so it runs as the parent's turn instead of stalling until a human returns.
+    Not in a chat its viewer closed (exit or /new): that ended the session's work, and its re-dispatch
+    would be refused the background and run inside the wake turn. Not past ``UNATTENDED_WAKE_LIMIT``."""
+    if not descriptor.get('wakes_parent'):
+        return False
+    from tools.async_delegation import refused_for_session
+    if refused_for_session((authority.profile_id, session_id)) or live.unattended_wakes >= UNATTENDED_WAKE_LIMIT:
+        return False
+    live.unattended_wakes += 1
+    return True
 
 
 async def reopen_for_turn(authority, ref):
@@ -53,12 +74,15 @@ async def note_if_unviewed(authority, ref, row):
     """The claimed *row*'s response when it was written as a note instead of running, else None.
     It is the FIFO head, so the note lands after every input committed before it and before every
     input committed after; the viewer check and the decision share one loop step."""
+    live = authority.sessions.get(ref.session_id)
+    if live is not None and (live.subscribers or 'local_automation_v1' not in row['payload']):
+        live.unattended_wakes = 0  # someone is watching, or the user sent this: recoveries count afresh
     if not noted_completion(row):
         return None
     from gateway.session_runtime_workers import tracked_write
-    live = authority.sessions.get(ref.session_id)
     descriptor = row['payload']['local_automation_v1']
-    if live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED):
+    if (live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED)
+            or _wakes_unviewed_parent(authority, ref.session_id, live, descriptor)):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
         await reopen_for_turn(authority, ref)
         return None

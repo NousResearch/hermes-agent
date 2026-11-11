@@ -293,6 +293,14 @@ class BaseEnvironment(ABC):
     # scanner flags in plugin code.
     _passwordless_sudo_probe_supported: bool = False
 
+    # Whether background processes spawned through this env are gone, for this env object, once
+    # cleanup() returns: ended with the sandbox, or no longer reachable through it (persist-mode
+    # Docker drops its container id, so the old object can't poll the job). Teardown then
+    # settles them as lost so their pollers stop. A backend whose processes outlive cleanup()
+    # and stay reachable through the same object (SSH reconnects) sets False so the poller keeps
+    # collecting the real result. Plugin contract: website/docs/developer-guide/terminal-environment-plugin.md.
+    cleanup_stops_processes: bool = True
+
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
     _profile_scoped_passthrough: bool = False
@@ -338,7 +346,9 @@ class BaseEnvironment(ABC):
 
     @abstractmethod
     def cleanup(self):
-        """Release backend resources (container, instance, connection)."""
+        """Release backend resources (container, instance, connection). Raise only while the
+        sandbox may still be live: once it is destroyed, log later failures instead, since a
+        raise skips settling its background processes (see ``cleanup_stops_processes``)."""
         ...
 
     # --- File extraction (backend -> host) ---

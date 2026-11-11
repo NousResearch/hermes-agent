@@ -1,0 +1,34 @@
+# Community catalog entry — prompt-firewall
+#
+# Owner-submitted (rule 5): the PR author (`Gaijin-01`) owns and maintains the
+# repository below. Exact-SHA pin (40-hex) at a commit that passed
+# `hermes plugins validate --install-deps` locally and in an anonymous clone of
+# the published repository: manifest, loadable, capability probe, security scan
+# SAFE, no core override. No self-updating code: the plugin is plain Python
+# that registers three Hermes plugin hooks and never fetches, downloads or
+# replaces its own files.
+#
+# The sha is the release: bump it (and `version`) in the same PR.
+name: prompt-firewall
+title: Prompt Firewall
+description: "Community security-preview plugin that detects and quarantines selected prompt-injection patterns in tool results and evaluates risky tool actions; limited to hook/Core enforcement semantics. Disclosure — Rewrites tool results the agent sees: spans that match its injection heuristics are replaced with `[QUARANTINED:<category>]` markers, and output past its scan budget (or output it fails to scan) is withheld with a notice; may block or escalate to the Hermes approval prompt writes to protected config/instruction/credential paths, endpoint changes and commands that disable prompt-firewall; adds a fixed trust-boundary notice to every turn; appends metadata-only audit records (tool name, target path, reason) to `<HERMES_HOME>/logs/prompt-firewall.jsonl`. No network."
+repo: https://github.com/Gaijin-01/prompt-firewall
+sha: 9b63a4b81648ace74d2f12db77d5ae90a69164e6
+maintainer: Gaijin-01
+tier: community
+category: tools
+version: "1.1.4"
+requires_hermes: ">=0.22.7"
+readme: true
+platforms: []
+known_issues:
+  - "Security preview, not a sandbox; detection is heuristic and incomplete."
+  - "Approval decisions depend on Hermes Core and can be bypassed by auto-approval settings."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

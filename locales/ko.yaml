@@ -514,6 +514,7 @@ gateway:
     not_git_repo: "✗ git 저장소가 아닙니다 — 업데이트할 수 없습니다."
     hermes_cmd_not_found: "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
     start_failed: "✗ 업데이트 시작 실패: {error}"
+    already_running: "⏳ 이미 업데이트가 진행 중이에요. 업데이트 질문에는 시작한 사람만 답할 수 있어요. 끝난 뒤 /update를 다시 시도해 주세요."
     starting: "☤ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
     reply_failed: "✗ 업데이트 프로세스에 응답을 보내지 못했어요: {error}"
     reply_sent: "✓ 업데이트 프로세스에 `{label}`을(를) 보냈어요."

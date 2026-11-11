@@ -514,6 +514,7 @@ gateway:
     not_git_repo: "✗ Git deposu değil — güncellenemiyor."
     hermes_cmd_not_found: "✗ `hermes` komutu bulunamadı. Hermes çalışıyor, ancak güncelleme komutu yürütülebilir dosyayı PATH'te veya mevcut Python yorumlayıcısı aracılığıyla bulamadı. Terminalde `hermes update` komutunu manuel olarak çalıştırmayı deneyin."
     start_failed: "✗ Güncelleme başlatılamadı: {error}"
+    already_running: "⏳ Zaten bir güncelleme çalışıyor; sorularını yalnızca onu başlatan kişi yanıtlayabilir. Bitmesini bekleyin, sonra /update komutunu yeniden deneyin."
     starting: "☤ Hermes güncellemesi başlatılıyor… İlerlemeyi buraya akıtacağım."
     reply_failed: "✗ Yanıt güncelleme sürecine gönderilemedi: {error}"
     reply_sent: "✓ `{label}` güncelleme sürecine gönderildi."

@@ -1,0 +1,31 @@
+name: computer-view
+repo: https://github.com/bhoot1234567890/computer-view
+sha: be3c169c5053b79e11cc6667f92ee3480db2499c
+subdir: integrations/hermes-native
+description: "Private Telegram desktop viewing and user takeover with cooperative tool fencing. Disclosure — Exposes a dedicated Linux virtual desktop to the owner's phone through a user-run HTTPS proxy/tunnel: it uses the profile's `TELEGRAM_BOT_TOKEN` to send a single-use 5-minute bearer link (30-minute session) to the configured owner's private Telegram chat via api.telegram.org, and anyone holding a live link can watch and, after \"Take control\", type and click on that desktop; while enabled its tool_execution middleware refuses browser_exec, computer_use and browser_vault in every session of the profile whenever the user holds control, before `hermes computer-view setup` has run, when `plugins.isolation` is not `in_process`, and after any failed browser action until the owner runs `hermes computer-view recover --local-owner`; `hermes computer-view assets` downloads a SHA-256-pinned noVNC archive from codeload.github.com."
+maintainer: bhoot1234567890
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+version: "0.1.0"
+title: Computer View
+screenshots:
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-watch.png
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-control.png
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-handback.png
+  - https://github.com/bhoot1234567890/computer-view/releases/download/demo-2026-11-10/demo-revoked.png
+known_issues:
+  - Requires explicitly selected in_process isolation and a separately provisioned Linux desktop and HTTPS proxy.
+platforms:
+  - linux
+capabilities:
+  provides_tools:
+    - computer_view_open
+    - computer_view_status
+    - computer_view_revoke
+    - computer_view_handoff
+    - computer_view_observe
+  provides_hooks: []
+  provides_middleware:
+    - tool_execution
+  requires_env: []

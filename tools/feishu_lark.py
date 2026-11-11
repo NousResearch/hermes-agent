@@ -1,26 +1,30 @@
 """Shared lark_oapi plumbing for the feishu_doc / feishu_drive tool modules.
 
-Holds the per-thread client handle, the cheap availability probe, and the generic
+Holds the comment-scoped client handle, the cheap availability probe, and the generic
 ``BaseRequest`` builder + response unpacking (same pattern as feishu_comment.py).
 No ``registry.register`` here on purpose: tool discovery must not import this module.
 """
 
+import contextvars
 import json
-import threading
 
-# The lark client is injected per-thread by the feishu_comment event handler right
-# before it runs the agent, so concurrent comment events never see each other's client.
-_local = threading.local()
+# The comment handler injects the client, then tool calls run on a worker thread.
+# ``tools.thread_context.propagate_context_to_thread`` copies ContextVars into that
+# worker. ``threading.local`` stays empty there, so a valid comment-context client
+# disappears and the tool reports "Feishu client not available".
+_client_context: contextvars.ContextVar = contextvars.ContextVar(
+    "feishu_lark_client", default=None,
+)
 
 
 def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
-    _local.client = client
+    """Store the comment-context lark client for this execution (called by feishu_comment)."""
+    _client_context.set(client)
 
 
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return the lark client for this execution context, or None."""
+    return _client_context.get()
 
 
 def _check_feishu():

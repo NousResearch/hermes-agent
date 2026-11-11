@@ -157,6 +157,8 @@ _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
 
 # ${VAR_NAME} interpolation; any non-} chars allowed so MY-VAR / my.var work.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+# Same, but an optional leading ``$`` captures an explicit ``$${VAR}`` escape.
+_ESCAPABLE_ENV_VAR_PATTERN = re.compile(r"(\$)?\$\{([^}]+)\}")
 
 
 def _workspace_folder() -> str:
@@ -561,11 +563,13 @@ def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
     return node, [str(manifest.parent / bin_field), *rest[1:]]
 
 
-def _interpolate_env_vars(value):
+def _interpolate_env_vars(value, *, unescape: bool = False):
     """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
     refs resolve from the active profile's secret scope when multiplexing (the routed profile's
     value, not another profile's in ``os.environ``). Unset (or empty) vars keep the literal placeholder;
-    a templated string comes back as a ``_RenderedStr`` recording how it resolved."""
+    a templated string comes back as a ``_RenderedStr`` recording how it resolved. With ``unescape``,
+    ``$${VAR}`` becomes a literal ``${VAR}`` for a child process to expand (and is final: a re-render
+    leaves it alone); otherwise ``$${VAR}`` keeps its legacy ``$value`` interpolation."""
     from agent.secret_scope import get_secret as _get_secret
     if isinstance(value, str):
         if isinstance(value, _RenderedStr) and not value.missed:
@@ -574,22 +578,35 @@ def _interpolate_env_vars(value):
         missed = []
 
         def _replace(m):
-            resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
+            escaped = m.group(1) is not None
+            ref = m.group(2)
+            if escaped and unescape:
+                return "${" + ref + "}"
+            resolver = _CONTEXT_VAR_RESOLVERS.get(ref.strip())
             if resolver is not None:
-                return resolver()
-            resolved = _get_secret(_env_ref_name(m.group(1)), None)
+                resolved = resolver()
+                return "$" + resolved if escaped else resolved
+            resolved = _get_secret(_env_ref_name(ref), None)
             if not resolved:
                 missed.append(m.group(0))
-            return resolved or m.group(0)
-        if not _ENV_VAR_PATTERN.search(template):
+                return m.group(0)
+            return "$" + resolved if escaped else resolved
+        if not _ESCAPABLE_ENV_VAR_PATTERN.search(template):
             return value
-        text = _ENV_VAR_PATTERN.sub(_replace, template)
+        text = _ESCAPABLE_ENV_VAR_PATTERN.sub(_replace, template)
         return _RenderedStr(text, template, missed=bool(missed), unset_ref=missed == [template])
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, unescape=unescape) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v) for v in value]
+        return [_interpolate_env_vars(v, unescape=unescape) for v in value]
     return value
+
+
+def _interpolate_mcp_server_config(config: Any) -> Any:
+    """Interpolate one server config, unescaping ``$${VAR}`` in ``args`` (child-owned argv refs)."""
+    if not isinstance(config, dict):
+        return _interpolate_env_vars(config)
+    return {k: _interpolate_env_vars(v, unescape=k == "args") for k, v in config.items()}
 
 
 def _require_rendered_remote(server_name: str, config: dict) -> dict:
@@ -696,7 +713,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
                 # Rendered like native entries: a raw ``${VAR}`` here reads as a changed definition
                 # on every transport rebuild and swaps the running header for the literal placeholder.
                 try:
-                    safe_servers[name] = _interpolate_env_vars(dict(cfg))
+                    safe_servers[name] = _interpolate_mcp_server_config(dict(cfg))
                 except UnscopedSecretError:
                     # Unscoped multiplex load: keep the raw templates (as before rendering here) rather
                     # than end the merge; connect re-renders under the owner's scope and fails closed.
@@ -726,7 +743,7 @@ def _load_mcp_config() -> dict[str, dict]:
         servers = servers if isinstance(servers, dict) else {}
         kept = _filter_suspicious_mcp_servers(servers)
         for name, cfg in kept.items():
-            interpolated = _interpolate_env_vars(cfg)
+            interpolated = _interpolate_mcp_server_config(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated

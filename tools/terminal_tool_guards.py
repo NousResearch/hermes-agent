@@ -177,7 +177,8 @@ def _git_runs_command(args: list) -> bool:
 # Data commands stop being data when an argument makes them run a command or never exit.
 _DATA_COMMAND_EXCEPTIONS = {
     "find": lambda args: any(a in ("-exec", "-execdir", "-ok", "-okdir") for a in args),
-    "tail": lambda args: _has_flag(args, "fF", ("--follow",)),
+    # `--f…` can only abbreviate `--follow` among tail's long options.
+    "tail": lambda args: _has_flag(args, "fF") or any(a.startswith("--f") for a in args),
     "git": _git_runs_command,
     "fd": lambda args: _has_flag(args, "xX", ("--exec", "--exec-batch")),
     "rg": lambda args: _has_flag(args, long=("--pre", "--hostname-bin")),

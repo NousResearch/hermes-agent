@@ -24,6 +24,7 @@ from hermes_dir_acl import make_user_dir
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
+from tools.computer_use.tool_clipboard import _do_clipboard_read, _do_clipboard_write, _summarize_clipboard_write
 
 logger = logging.getLogger(__name__)
 
@@ -454,26 +455,6 @@ def _summarize_click(action: str, args: dict[str, Any], fg: str) -> str:
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
     return f"{action}{where}{fg}"
 
-_CLIPBOARD_PAYLOAD_KEYS = ("text", "image_path", "file_path")
-
-def _clipboard_response(res: ActionResult) -> str:
-    # No verify→escalate verdict: the clipboard has no on-screen effect to re-capture. ``types`` (always) and
-    # ``text`` (read; None when the clipboard holds no plain text) come straight from the driver payload.
-    return json.dumps({"ok": res.ok, "action": res.action, **_present(message=res.message, code=res.code),
-                       **{k: res.meta[k] for k in ("types", "text") if k in res.meta}})
-
-def _do_clipboard_write(backend, action, args, **_):
-    given = {k: args[k] for k in _CLIPBOARD_PAYLOAD_KEYS if args.get(k) is not None}
-    if len(given) != 1:
-        return json.dumps({"error": "clipboard_write takes exactly one of `text`, `image_path` (absolute path), "
-                                    "`file_path` (absolute path)"})
-    return _clipboard_response(backend.clipboard_write(**given))
-
-def _summarize_clipboard_write(action: str, args: dict[str, Any], fg: str) -> str:
-    if (text := args.get("text")) is not None:
-        return f"replace the clipboard with text {text[:60]!r}" + ("..." if len(text) > 60 else "")
-    return f"replace the clipboard with {args.get('image_path') or args.get('file_path')!r}"
-
 # One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
 # guard). ``destructive``: needs the approval prompt — every action that mutates user-visible state, plus
 # `clipboard_read`: the clipboard routinely holds the password or token the user last copied, so exposing it to
@@ -506,7 +487,7 @@ _ACTIONS: dict[str, _ActionSpec] = {
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
-    "clipboard_read": _ActionSpec(lambda backend, action, args, **_: _clipboard_response(backend.clipboard_read()), destructive=True,
+    "clipboard_read": _ActionSpec(_do_clipboard_read, destructive=True,
                                   summarize=lambda a, args, fg: "read the clipboard (returns whatever the user last copied)"),
     "clipboard_write": _ActionSpec(_do_clipboard_write, destructive=True, summarize=_summarize_clipboard_write),
 }

@@ -85,3 +85,26 @@ def test_cua_mixin_refuses_only_after_discovery_proves_absence_and_forwards_incl
     new.clipboard_read()
     new.clipboard_write(image_path="/home/u/shot.png")
     assert new.actions == [("clipboard_read", {"include_text": True}), ("clipboard_write", {"image_path": "/home/u/shot.png"})]
+
+
+def test_clipboard_actions_are_refused_through_the_public_handler_without_approval(monkeypatch):
+    # Through handle_computer_use (the registered handler), not _dispatch: with nobody to ask both actions are
+    # BLOCKED before the backend sees anything; with approval bypass on they reach it.
+    from tools import approval
+    from tools.computer_use import tool as cu_tool
+
+    for name in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
+    monkeypatch.setattr("tools.terminal_tool._get_approval_callback", lambda: None)
+    backend = _Backend()
+    backend.start = backend.stop = lambda: None
+    backend.is_available = lambda: True
+    cu_tool.reset_backend_for_tests()
+    cu_tool._backend = backend
+    for args in ({"action": "clipboard_read"}, {"action": "clipboard_write", "text": "x"}):
+        out = json.loads(cu_tool.handle_computer_use(args))
+        assert out["error"].startswith("BLOCKED") and backend.calls == [], out
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", True)
+    cu_tool.handle_computer_use({"action": "clipboard_read"})
+    assert [name for name, _ in backend.calls] == ["clipboard_read"]

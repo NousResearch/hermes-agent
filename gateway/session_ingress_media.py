@@ -205,12 +205,25 @@ _ARRIVAL_EVENT_FIELDS = ('channel_context',)
 
 
 def _committed_arrival_context(payload, retained):
-    """*payload* with the committed row's arrival-derived event fields (present or absent) in place."""
-    event = {key: value for key, value in payload['native_text_v1'].get('event', {}).items()
+    """Keep committed arrival context and native Slack's re-fetched sender display name."""
+    envelope = payload['native_text_v1']
+    event = {key: value for key, value in envelope.get('event', {}).items()
              if key not in _ARRIVAL_EVENT_FIELDS}
     committed = retained['native_text_v1'].get('event', {})
     event.update({key: committed[key] for key in _ARRIVAL_EVENT_FIELDS if key in committed})
-    return {**payload, 'native_text_v1': {**payload['native_text_v1'], 'event': event}}
+    envelope = {**envelope, 'event': event}
+    source = envelope.get('source', {})
+    prior = retained['native_text_v1'].get('source', {})
+    # Slack resolves this label from users.info on each fresh process. It is not sender
+    # identity. Never replace IDs or other source fields, nor a relay's sealed source.
+    if (source.get('platform') == prior.get('platform') == 'slack'
+            and source.get('user_id') and source['user_id'] == prior.get('user_id')
+            and 'relay' not in envelope.get('provenance', {})):
+        source = {key: value for key, value in source.items() if key != 'user_name'}
+        if 'user_name' in prior:
+            source['user_name'] = prior['user_name']
+        envelope['source'] = source
+    return {**payload, 'native_text_v1': envelope}
 
 
 def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload, raw=None):
@@ -228,7 +241,9 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
     fetch with local time, so the committed row's ``timestamp`` stands in before any comparison. The
     same holds for the thread history an adapter re-fetches for the first reply of a thread in a fresh
     process (Slack's ``channel_context``, after a restart): the committed row's stands in (or its
-    absence does), so a provider's redelivery of the message is the admission it already is."""
+    absence does), so a provider's redelivery of the message is the admission it already is.
+    Native Slack also re-fetches the sender's display name: with the same user id, the committed
+    source's ``user_name`` stands in. Sender IDs and relay-sealed sources are never substituted."""
     fresh = payload.get('native_text_v1', {}).get('media') or []
     with db._read_ctx() as conn:
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '

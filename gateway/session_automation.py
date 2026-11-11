@@ -500,9 +500,8 @@ def wake_route_envelope(authority, entry, requester_user_id=None):
     the fresh conversation is refused ``not_found`` and dropped after its delivery budget.
 
     A shared multi-user route (a Slack channel or a shared group thread) does not put the sender in
-    its session key. There the borrowed source must match the producer's authenticated user, and an
-    automation envelope cannot be reused without that proof, or a result could be addressed to the
-    predecessor's last speaker.
+    its session key. There a predecessor's envelope is borrowed only for the producer's authenticated
+    user, or a result could be addressed to the predecessor's last speaker.
     """
     from gateway.session import is_shared_multi_user_session
     config = getattr(getattr(authority.runner, 'session_store', None), 'config', None)
@@ -516,12 +515,11 @@ def wake_route_envelope(authority, entry, requester_user_id=None):
     prefer_human = requester is not None
     envelope = committed_route_envelope(authority, entry, human_only=prefer_human, user_id=requester)
     if envelope is not None:
-        # A shared route without a producer identity must not reuse a borrowed wake's own envelope.
-        if shared and requester is None and 'automation' in envelope:
-            return None
+        # The conversation's own latest envelope, as before: a route-owned wake (/loop, Kanban, cron)
+        # names no requester and keeps borrowing it tick after tick, its own automation one included.
         return envelope
     if shared and requester is None:
-        return None
+        return None  # a predecessor's last speaker on a shared route is nobody this wake can prove
     current = authority.logical_owner(entry.session_id)
     seen = {entry.session_id, current}
     for _ in range(_MAX_RESET_ANCESTORS):

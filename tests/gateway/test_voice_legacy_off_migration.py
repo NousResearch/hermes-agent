@@ -69,3 +69,11 @@ def test_a_legacy_off_holds_for_every_chat_id_shape(tmp_path, platform, chat_id)
         runner._sync_voice_mode_state_to_adapter(adapter)
 
     assert not _speaks(adapter, chat_id)
+
+
+def test_a_prefixed_key_for_a_platform_not_registered_yet_survives_loading(tmp_path):
+    """A named profile's plugin platform is discovered after the voice file loads: its explicit
+    ``<profile>:<platform>:<chat>`` setting must not be mistaken for a legacy key and dropped."""
+    (tmp_path / "gateway_voice_mode.json").write_text(json.dumps({"work:notyetloaded:42": "voice_only"}))
+
+    assert _make_runner(tmp_path)._load_voice_modes() == {"work:notyetloaded:42": "voice_only"}

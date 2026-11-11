@@ -80,7 +80,10 @@ class GatewayVoiceMixin:
         if not isinstance(data, dict):
             return {}
         items = {str(k): m for k, m in data.items() if m in _VOICE_MODES}
-        for key, mode in [(k, m) for k, m in items.items() if _is_legacy_voice_key(k)]:
+        # Only a colon-free key is certainly legacy here: a plugin platform that only a named profile
+        # installs is not registered yet at load time, so its ``<profile>:<platform>:`` key must stay.
+        # A colon-bearing legacy key (Matrix ``!room:server``) is kept as is and read in the sync.
+        for key, mode in [(k, m) for k, m in items.items() if ":" not in k]:
             # Legacy pre-#12542 key (no platform). Keep ``off``, so a saved ``/voice off`` still
             # suppresses auto-TTS after the upgrade (#14025); drop voice_only/all, which would
             # speak on a platform the user never turned voice on for.

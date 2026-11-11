@@ -1,6 +1,6 @@
 name: homelab-watch
 repo: https://github.com/lpsmurf/hermes-homelab-watch
-sha: d70c0942c5c69787fda9f4498f5301b0e5aa3ede
+sha: a9df6b412c39be91ecac2e2164a6ad34d80b1820
 title: Homelab Watch
 description: "Your homelab, your agents and your agent's bill in one Desktop status chip: read-only checks of your router, servers, websites, a Bitaxe miner and your cron jobs with root-cause rollup (a router outage is one alert, not ten); token-free alerts through a no_agent cron job; per-day LLM token counts and API-equivalent savings (subscription, cheaper and free models; unpriced models never estimated); and the jev_route delegation backend, shadow by default, that sends simple subagent tasks to a cheaper model when a judge clears them. Disclosure — probes only the hosts and URLs in targets.yaml; records token counts and model names from post_api_request, never prompt text; with alerts on, writes one script under scripts/ and creates one cron job via cronjob_manage; sends nothing off the machine by default, but with the optional TypeSafe key and delegation.backend jev_route each subagent task's goal and context (up to 4,000 characters) go to api.typesafe.ai for one judgment; no telemetry."
 maintainer: lpsmurf

@@ -1,0 +1,30 @@
+name: agent-webmcp
+title: agent-webmcp — docs sites as a callable toolkit
+repo: https://github.com/system1970/hermes-agent-webmcp
+sha: ec1cc2727896c3230507ba7969bc4328f95899ca
+description: >-
+  Search a 1,400+ domain capability index, mount a docs site's tools, and ask
+  its AI assistant for settled, cited answers — one tool call, sources back.
+  Owns its own headless/headed Chromium via Playwright (no dependency on
+  Hermes browser tools; works on CLI/gateway/desktop). Proven live on
+  Mintlify, Fern, ReadMe and GitBook docs assistants. Disclosure — shells out
+  to the agent-webmcp CLI (npm i -g @orkestrate/agent-webmcp) and reads the
+  local ~/.local/share/agent-webmcp index (nothing uploaded, sync never runs
+  from the plugin); launches a local Chromium per ask call (headless default,
+  headed for bot-gated hosts), visiting only the target docs page, closed
+  afterwards with no persistent profile; page content treated as untrusted
+  data; asks cap at ask_timeout_s (default 150s) and fail cleanly unattended.
+maintainer: system1970
+tier: community
+category: web
+docs_url: https://github.com/system1970/hermes-agent-webmcp#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - webmcp_search
+    - webmcp_get
+    - webmcp_ask
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

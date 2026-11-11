@@ -1,7 +1,7 @@
 name: breadcrumbs
 title: breadcrumbs
-repo: https://github.com/jnorthrup/hermes-breadcrumb-plugin
-sha: "fa07bd02fb3e2c9aef8b53fe4b32c0605fffced4"
+repo: https://github.com/breadcrumbs-agency/hermes-breadcrumb-plugin
+sha: "b8975645e5174edbcc00d5dc86a78e536bce938b"
 version: "0.4.1"
 description: >-
   Memory and a context engine in which every line has an address. Each turn,
@@ -31,11 +31,11 @@ maintainer: jnorthrup
 tier: community
 category: memory
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/jnorthrup/hermes-breadcrumb-plugin#readme
-image: https://raw.githubusercontent.com/jnorthrup/hermes-breadcrumb-plugin/fa07bd02fb3e2c9aef8b53fe4b32c0605fffced4/docs/img/hero.png
+docs_url: https://github.com/breadcrumbs-agency/hermes-breadcrumb-plugin#readme
+image: https://raw.githubusercontent.com/breadcrumbs-agency/hermes-breadcrumb-plugin/b8975645e5174edbcc00d5dc86a78e536bce938b/docs/img/hero.png
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/jnorthrup/hermes-breadcrumb-plugin/172098c9565e9b7db61a184dfaf78e8e9df75174/zoom.png
+  - https://raw.githubusercontent.com/breadcrumbs-agency/hermes-breadcrumb-plugin/b8975645e5174edbcc00d5dc86a78e536bce938b/docs/media/zoom.png
 platforms: [linux, macos, windows]
 known_issues:
   - "Select it: `hermes config set memory.provider breadcrumbs`, and `hermes config set context.engine breadcrumbs` for the context engine. An install alone turns nothing on."

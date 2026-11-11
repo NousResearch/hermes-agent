@@ -245,9 +245,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _deliver_media_from_response(
-        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None
-    ) -> None:
+        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[dict[str, Any]] = None,
+        footer_line: str = "",
+    ) -> bool:
         """Deliver explicit attachments from an already-streamed response (text already delivered).
+        Returns True when ``footer_line`` rode the last photo's caption (``runtime_footer``, #74547).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
         path in a streamed reply is shown text or stale inspected content, and promoting it sent
         files the model never asked for. MEDIA tags are NOT deduped against prior turns (a final-reply
@@ -257,6 +259,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         non-streaming chain turns into attachments. See #20834 and #141806.
         """
         from urllib.parse import quote as _quote
+        from gateway.runtime_footer import caption_with_footer
+        captioned = False
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
@@ -297,8 +301,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if image_paths or url_images:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    images.extend(url_images)
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    images, captioned = caption_with_footer(adapter, [*images, *url_images], footer_line)
+                    result = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    captioned = captioned and bool(getattr(result, "success", False))
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
@@ -314,6 +319,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+        return captioned
 
 
     async def _deliver_queued_first_response(

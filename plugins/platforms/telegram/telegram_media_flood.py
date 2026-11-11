@@ -97,6 +97,8 @@ class _KnownFloodWindow(Exception):
 class TelegramMediaFloodMixin:
     """Native local-file upload shell + flood recovery shared by every media sender."""
 
+    media_caption_limit = 1024  # a photo's caption cap: the runtime footer may ride it (gateway.runtime_footer)
+
     async def _send_media(
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]], media_label: str,
         reset_media: Optional[Any] = None, **media_kwargs: Any) -> Any:

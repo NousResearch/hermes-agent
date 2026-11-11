@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.runtime_footer import footer_onto_photo_caption
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -4357,9 +4358,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                                "no attachment; delivering recovered original to %s", self.name,
                                len(pre_extract), event.source.chat_id)
                 text_content = _recovered
-        return _ExtractedResponse(
-            text_content=text_content, images=images, media_files=media_files,
-            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
+        return footer_onto_photo_caption(self, _ExtractedResponse(text_content=text_content, images=images, media_files=media_files,
+            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract), _IMAGE_EXTS)  # #74547
 
     async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is

@@ -114,7 +114,8 @@ class HostedFiles:
         self._steps = steps
 
     def path(self, placement: HostedPlacement) -> Path:
-        """The database file ``placement`` names."""
+        """The database file ``placement`` names; raises ``RuntimeError`` once the store's backend has closed."""
+        self._store.require_open()
         if placement == "profile":
             return Path(self._store.store_path)
         if placement == "shared":

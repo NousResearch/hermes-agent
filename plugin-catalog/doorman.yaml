@@ -1,7 +1,7 @@
 name: doorman
 title: Doorman
 repo: https://github.com/TwoRobotsinaTrenchcoat/Hermes-Doorman
-sha: b954ca3e95166910ceddfb8bff4906ae2df148fa
+sha: 63e952acea779e16d4e73aa584318f3c72d2fd8c
 description: >-
   Wake-on-LAN doorman for sleeping inference backends. When an API request targets a
   host from a config-driven host map that is asleep, Doorman broadcasts a UDP magic
@@ -12,7 +12,7 @@ description: >-
   hold so the host is not woken for a request nobody is waiting on. Pure Python, no
   dependencies, config re-read per hook fire. Disclosure
   — sends UDP magic packets and TCP connect probes to the local hosts listed in its own
-  `provider_wol:` block in config.yaml only, never to third parties; the keep-alive
+  `doorman:` block in config.yaml only, never to third parties; the keep-alive
   runs on one background daemon thread per plugin instance, with holds bounded by a
   leak cap (default 7200s) and torn down on completion or turn cancellation; no
   telemetry, no shell commands, no credentials or secrets, no self-updating code.
@@ -21,7 +21,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.22"
 docs_url: https://github.com/TwoRobotsinaTrenchcoat/Hermes-Doorman#readme
-version: "0.2.2"
+version: "0.2.3"
 platforms: []
 capabilities:
   provides_tools: []

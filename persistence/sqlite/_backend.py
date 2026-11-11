@@ -175,6 +175,8 @@ class SQLiteBackend:
         self.executor = _store_executor()
         self._lock = threading.Lock()
         self._holders: dict[str, StoreHolder] = {}
+        # Holders a replacement of their file superseded, kept for the handles that opened them until close.
+        self._retired: list[StoreHolder] = []
         self._lent = False
         self._closed = False
         self.capabilities = dataclasses.replace(_BASE_CAPABILITIES, **_CAPABILITY_OVERRIDES)
@@ -203,44 +205,50 @@ class SQLiteBackend:
         # A registry sweep (profile delete) clears the ownership flag of the holders it closes.
         return holder is not None and (self.read_only or holder._shared_registry_owned)
 
-    def _holder(self, key: str, *, reacquire: bool = True) -> StoreHolder:
+    def _holder(self, key: str, *, reacquire: bool = True, held: Optional[StoreHolder] = None) -> StoreHolder:
         """The open holder for one served store, acquired on first touch and, unless ``reacquire`` is False, again after
-        a registry sweep. The holder that replaces one the shutdown sweep (``close_all``) closed logs the reopen
-        warning on its first read or write; after a profile sweep (``close_all_under``) the store opens again
+        a registry sweep. ``held`` is the holder the asking handle already uses: it keeps it while this backend holds
+        it, so a handle stays fenced once its file is replaced, as main's open instance does. A handle without one
+        gets the registry's current generation, so a handle opened after the file was replaced uses the new file while
+        older handles keep the old. The holder that replaces one the shutdown sweep (``close_all``) closed logs the
+        reopen warning on its first read or write; after a profile sweep (``close_all_under``) the store opens again
         silently, as the gateway's re-serve of that profile does."""
         path = self._stores[key]
-        replaced = False
-        while True:
-            with self._lock:
-                if self._closed:
-                    raise RuntimeError("SQLite backend used after close")
-                current = self._holders.get(key)
-                if self._lent or self._usable(current) or (current is not None and not reacquire):
-                    break
-                replaced = replaced or (current is not None and current._closed_by_close_all)
-                self._holders.pop(key, None)
-            with translated():
-                fresh = (StoreHolder(path, read_only=True, read_patience_s=self._read_patience_s) if self.read_only
-                         else _registry.acquire(path))
-            with self._lock:
-                current = self._holders.get(key)
-                publish = not self._closed and not self._usable(current)
-                if publish:
-                    self._holders[key] = fresh
-            if publish:
-                current = fresh
-                break
-            _registry.release_or_close(fresh)
-        if replaced:
-            current._reopen_notice = True
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("SQLite backend used after close")
+            if self._lent:
+                return self._holders[key]
+            current = self._holders.get(key)
+            if held is not None and (held is current or held in self._retired) and (self._usable(held) or not reacquire):
+                return held
+            if current is not None and (self.read_only or not reacquire):
+                return current
+        with translated():
+            fresh = (StoreHolder(path, read_only=True, read_patience_s=self._read_patience_s) if self.read_only
+                     else _registry.acquire(path))
+        with self._lock:
+            current = self._holders.get(key)
+            closed = self._closed
+            if not closed and fresh is not current and not (self.read_only and current is not None):
+                if current is not None and self._usable(current):
+                    self._retired.append(current)
+                elif current is not None and current._closed_by_close_all:
+                    fresh._reopen_notice = True
+                self._holders[key] = fresh
+                return fresh
+        _registry.release_or_close(fresh)
+        if closed:
+            raise RuntimeError("SQLite backend used after close")
         return current
 
     def _release_holders(self) -> None:
         with self._lock:
             if self._lent:
                 return
-            holders = list(self._holders.values())
+            holders = list(self._holders.values()) + self._retired
             self._holders.clear()
+            self._retired = []
         for holder in holders:
             _registry.release_or_close(holder)
 
@@ -288,6 +296,7 @@ class SQLiteStore:
         self.capabilities = backend.capabilities
         self.executor = backend.executor
         self._backend = backend
+        self._held: Optional[StoreHolder] = None
         self.aio = AwaitableStore(self)
         for attribute in CAPABILITY_ATTRIBUTES:
             factory = _REPOSITORY_FACTORIES.get(attribute)
@@ -297,7 +306,8 @@ class SQLiteStore:
     def holder(self, *, reacquire: bool = True) -> StoreHolder:
         """The open holder for this profile's store, acquired on first touch. ``reacquire=False`` keeps the holder a
         registry sweep closed, so a read through it with ``reopen=False`` refuses instead of opening the store again."""
-        return self._backend._holder(self.scope.hermes_home_key, reacquire=reacquire)
+        self._held = self._backend._holder(self.scope.hermes_home_key, reacquire=reacquire, held=self._held)
+        return self._held
 
     def ready(self) -> None:
         """Open the store now, so an unopenable store raises its typed error here instead of on the first verb."""

@@ -1,0 +1,79 @@
+# Flower Shop - catalog entry. Schema: plugin-catalog/README.md (entry schema).
+
+name: flower-shop
+repo: https://github.com/k-reeeee/hermes-flower-shop
+sha: "d11b0c63c38bc3db8a909f67f09e6d7906798843"
+title: Flower Shop
+description: >-
+  An AI business operating workspace inside Hermes Desktop for a small flower
+  shop: a business manager plus sales, inventory, production, finance, and
+  logistics agents work from one SQLite record of orders, stock, production,
+  deliveries, and money. Agents propose, the owner approves - order confirmation,
+  stock receipts, adjustments, wastage, payments, and expenses create a pending
+  approval decided from an inline chat card, the Approvals inbox, or an explicit
+  chat relay. Includes Overview, Orders, Inventory and recipes, Production board,
+  a read-only low-poly 3D Shop Floor fed by live production state, Delivery,
+  Finance estimates labelled as estimates, an AI Team page, and a guided setup
+  with removable demo data. Disclosure - all business data stays in one local
+  SQLite database under the Hermes plugin-data directory; the plugin makes no
+  network calls, stores no credentials, runs no shell commands, and sends no
+  telemetry. Not an accounting ledger: finance figures are operational estimates
+  plus recorded payments and expenses. Single shop, single user; no WhatsApp
+  parsing, no bouquet canvas, no multi-branch support.
+maintainer: k-reeeee
+tier: community
+category: desktop
+requires_hermes: '>=0.22.0'
+docs_url: https://github.com/k-reeeee/hermes-flower-shop#readme
+version: "0.1.0"
+screenshots:
+
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/d11b0c63c38bc3db8a909f67f09e6d7906798843/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/d11b0c63c38bc3db8a909f67f09e6d7906798843/docs/screenshots/orders.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/d11b0c63c38bc3db8a909f67f09e6d7906798843/docs/screenshots/production.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/d11b0c63c38bc3db8a909f67f09e6d7906798843/docs/screenshots/shop-floor-3d.png
+  - https://raw.githubusercontent.com/k-reeeee/hermes-flower-shop/d11b0c63c38bc3db8a909f67f09e6d7906798843/docs/screenshots/approval-card.png
+readme: true
+platforms: []
+onboarding: false
+known_issues:
+  - Finance figures are operational estimates plus recorded payments and expenses, not an accounting ledger.
+  - Single shop and single user; no multi-branch or multi-staff access control.
+  - WhatsApp intake relies on the existing Hermes gateway; no special parsing in the plugin.
+  - The bouquet canvas is not implemented; design references are images attached to orders.
+capabilities:
+  provides_tools:
+    - flowershop_team_playbook
+    - flowershop_get_briefing
+    - flowershop_get_business_profile
+    - flowershop_update_business_profile
+    - flowershop_list_orders
+    - flowershop_get_order
+    - flowershop_create_order_draft
+    - flowershop_update_order_draft
+    - flowershop_check_availability
+    - flowershop_estimate_order
+    - flowershop_request_order_confirmation
+    - flowershop_request_order_cancellation
+    - flowershop_list_inventory
+    - flowershop_get_inventory_item
+    - flowershop_create_inventory_item
+    - flowershop_propose_stock_receipt
+    - flowershop_propose_stock_adjustment
+    - flowershop_propose_wastage
+    - flowershop_list_recipes
+    - flowershop_create_recipe
+    - flowershop_list_production_tasks
+    - flowershop_update_production_status
+    - flowershop_schedule_delivery
+    - flowershop_update_delivery_status
+    - flowershop_list_deliveries
+    - flowershop_get_financial_summary
+    - flowershop_propose_payment
+    - flowershop_propose_expense
+    - flowershop_list_approvals
+    - flowershop_decide_approval
+    - flowershop_attach_design_reference
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,14 +1,15 @@
 name: skill-miner
 title: "Skill Miner"
 repo: https://github.com/flabanabba8/skill-miner
-sha: 500d5d874f8e9b55e3b5a989be4c90686816a168
+sha: a64ac9b846ce4b39ba7ca18cfbef48238cb3b8c5
 version: "0.2.1"
 description: "Find workflows you repeat across sessions, check each on held-out sessions, draft a skill, then let the host agent diagnose, refine and check it automatically; installing needs your approval. Disclosure: Reads the Hermes session database read-only and stores proposals in plugin storage; installing a skill writes one file into the skills folder after your approval. One pre_tool_call hook for that approval. No network calls."
 maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/skill-miner/blob/500d5d874f8e9b55e3b5a989be4c90686816a168/README.md
+docs_url: https://github.com/flabanabba8/skill-miner/blob/a64ac9b846ce4b39ba7ca18cfbef48238cb3b8c5/README.md
+image: https://raw.githubusercontent.com/flabanabba8/skill-miner/a64ac9b846ce4b39ba7ca18cfbef48238cb3b8c5/assets/thumbnail.jpg
 platforms: [linux]
 capabilities:
   provides_tools:

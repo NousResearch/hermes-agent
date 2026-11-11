@@ -3050,7 +3050,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
-        from gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
+        from gateway.platforms.api_server_authority_runs import store_error_response
+        from persistence import AuthorityRefusal
         try:
             result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
             # One policy-gated re-run of a transiently failed turn, as the local (``tools.bot_mode_dm``)
@@ -3061,7 +3062,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, resume_unanswered_turn=True, **ctx["run_kwargs"])
-        except RuntimeStoreError as exc:  # e.g. a chat-platform-owned session: /v1/runs' 409, not a 500
+        except AuthorityRefusal as exc:  # e.g. a chat-platform-owned session: /v1/runs' 409, not a 500
             return store_error_response(_openai_error, exc)
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id

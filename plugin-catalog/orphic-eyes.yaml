@@ -16,7 +16,7 @@ category: tools
 version: "0.3.0"
 docs_url: https://github.com/Ilham-Musyafa/Orphic-Eyes#readme
 readme: true
-platforms: [linux]
+platforms: [linux, windows]
 known_issues:
   - Requires Python 3.12 or newer, Pillow and an installed Edge/Chrome/Chromium browser.
   - Windows/Edge, macOS and a live Hermes host are not covered by automated tests.

@@ -2,16 +2,7 @@ name: hermes-continuum
 repo: https://github.com/mohamad-shafeez/hermes-continuum
 sha: 5da4774fb7453447aeae61f3d3288dbbf20d914c
 version: "0.3.0"
-description: >-
-  An integrated nine-system plugin for Hermes Agent that provides task
-  continuity, review-first episodic memory, environment reality checks,
-  evidence tracking, goal integrity, trust-aware tool policies, impact
-  previews, retry-loop protection, and verified workflow distillation.
-  Its systems share an append-only SQLite Event Spine and a Continuum
-  Console for Hermes Desktop. Includes 12 tools, 11 lifecycle hooks,
-  checkpoint export, and a review-first approach to generated artifacts.
-  Live verification and test coverage are documented in the repository;
-  not every capability has been verified in a live host workflow.
+description: "An integrated nine-system plugin for Hermes Agent that provides task continuity, review-first episodic memory, environment reality checks, evidence tracking, goal integrity, trust-aware tool policies, impact previews, retry-loop protection, and verified workflow distillation. Its systems share an append-only SQLite Event Spine and a Continuum Console for Hermes Desktop. Includes 12 tools, 11 lifecycle hooks, checkpoint export, and a review-first approach to generated artifacts. Live verification and test coverage are documented in the repository; not every capability has been verified in a live host workflow. Disclosure — Records every tool call, approval prompt/response and session event (with redacted argument previews) in a local plugin database; its pre_tool_call policy can block tool calls or escalate them to Hermes' approval prompt, labels web/browser results as untrusted, injects recalled memory facts (including unreviewed candidates) and an auto-built task charter into each turn, and its model-callable continuum_forge tool can register new plugin skills and automation blueprints distilled from session traces when called with confirm: true."
 maintainer: mohamad-shafeez
 tier: community
 category: desktop

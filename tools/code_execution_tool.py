@@ -658,14 +658,15 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
 
 
 def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[list[str]],
-                    reset: bool = False) -> str:
+                    reset: bool = False, timeout_s: Optional[int] = None) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
     from tools.terminal_tool import _resolve_container_task_id
     from tools.terminal_tool_lifecycle import _call_in_flight
     _cfg = _load_config()
-    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout, max_tool_calls = (min(timeout_s, _cfg.get("timeout", DEFAULT_TIMEOUT))
+                               if timeout_s else _cfg.get("timeout", DEFAULT_TIMEOUT)), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     with _call_in_flight(_resolve_container_task_id(effective_task_id)):
@@ -709,12 +710,15 @@ def execute_code(
     task_id: Optional[str] = None,
     enabled_tools: Optional[list[str]] = None,
     reset: bool = False,
+    timeout_s: Optional[int] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
     the security envelope (env scrubbing, tool whitelist + call budget, output redaction), not an
     isolation jail: default `project` mode runs in the session's cwd with the project venv.
-    ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first."""
+    ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first.
+    ``timeout_s`` (1-300) is an optional per-call ceiling that SHORTENS the configured timeout;
+    when absent, the configured timeout applies unchanged."""
     if not SANDBOX_AVAILABLE:
         return tool_error("execute_code sandbox is unavailable in this environment. "
                           "Use normal tool calls (terminal, read_file, write_file, ...) instead.")
@@ -785,7 +789,7 @@ def execute_code(
         clear_current_thread_interrupt()
     from hermes_cli.observability.shared_metrics_loop import record_execution_backend
     if env_type != "local":
-        return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
+        return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset), timeout_s=timeout_s))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
@@ -796,7 +800,7 @@ def execute_code(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
-        timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
+        timeout=min(timeout_s, _cfg.get("timeout", DEFAULT_TIMEOUT)) if timeout_s else _cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
     ))
@@ -915,7 +919,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         "work instead of re-loading it. A timed-out or interrupted call loses that state.\n\n"
         "Available via `from hermes_tools import ...` (each returns a dict):\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
+        "Limits: default timeout 300 s (config `code_execution.timeout`); the optional "
+        "`timeout_s` (1-300) SHORTENS one call (min of both limits) — on any timeout the session "
+        "kernel is killed and its state is lost. Max 50 tool calls per call. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"
         "Helpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. "
@@ -933,6 +939,11 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
                          "description": "Python code to execute; print your final result to stdout."},
                 "reset": {"type": "boolean", "description": (
                     "Discard the kernel's persistent state and start fresh before running this code.")},
+                "timeout_s": {"type": "integer", "minimum": 1, "maximum": 300, "description": (
+                    "Optional per-call ceiling in seconds (1-300). When provided, the call runs "
+                    "on min(configured, timeout_s) - it can only SHORTEN the configured timeout, "
+                    "never extend it. On timeout the session kernel is killed and its state is "
+                    "lost. Absent = configured timeout applies.")},
             },
             "required": ["code"],
         },
@@ -944,8 +955,13 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 def _execute_code_handler(args: dict, **kwargs) -> str:
-    """Redirect misdirected calls (terminal's ``command`` arg, non-string ``code``) with an
-    actionable error before dispatching to ``execute_code``."""
+    """Validate the call's keys, then dispatch to ``execute_code``.
+
+    Contract (Élya3 timeout prototype): ``code`` + optional ``reset`` and
+    ``timeout_s`` (1-300 s, per-call ceiling that shortens the configured
+    timeout). Any other key is rejected BEFORE execution — a silently ignored
+    parameter once made a model believe a 5 s limit was enforced (06/11 audit).
+    """
     if "code" not in args and "command" in args:
         logger.warning("execute_code received 'command' instead of the required 'code' argument")
         return tool_error("execute_code received a 'command' parameter, but it requires "
@@ -955,8 +971,19 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
     if code is not None and not isinstance(code, str):
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
+    unknown = sorted(set(args) - {"code", "reset", "timeout_s"})
+    if unknown:
+        return tool_error(f"execute_code received unknown parameter(s) {unknown}; accepted keys "
+                          "are 'code', 'reset' and 'timeout_s' (integer, 1-300 seconds). "
+                          "This tool rejects unknown arguments instead of ignoring them.")
+    timeout_s = args.get("timeout_s")
+    if timeout_s is not None and (isinstance(timeout_s, bool) or not isinstance(timeout_s, int)
+                                  or not 1 <= timeout_s <= 300):
+        return tool_error("execute_code 'timeout_s' must be an integer between 1 and 300 "
+                          f"seconds (seconds, ceiling per call); got {timeout_s!r}.")
     return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)),
+                        timeout_s=timeout_s)
 
 
 registry.register(

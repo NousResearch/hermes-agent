@@ -24,6 +24,7 @@ import re
 from typing import Any, Optional
 
 from gateway.platforms.base import SendResult
+from gateway.platforms.helpers import TABLE_SEPARATOR_RE
 from plugins.platforms.telegram.rich_markdown import closes_fence, fence_opener
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,12 @@ _BLOCK_SEPARATOR = "\n\n"
 _DETAILS_OPEN_RE = re.compile(r"<details\b", re.IGNORECASE)
 _DETAILS_CLOSE_RE = re.compile(r"</details\s*>", re.IGNORECASE)
 _TABLE_ROW_RE = re.compile(r"^\s*\|")
+
+
+def _starts_table(lines: list[str], index: int) -> bool:
+    """A pipe row, or a header row without outer pipes whose next line is the separator."""
+    return bool(_TABLE_ROW_RE.match(lines[index])) or (
+        "|" in lines[index] and index + 1 < len(lines) and bool(TABLE_SEPARATOR_RE.match(lines[index + 1])))
 
 
 def _starts_details(line: str) -> bool:
@@ -81,9 +88,10 @@ def _split_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
                     break
             blocks.append(("details", block))
             continue
-        if _TABLE_ROW_RE.match(line):
-            block = []
-            while index < total and _TABLE_ROW_RE.match(lines[index]):
+        if _starts_table(lines, index):
+            block, piped = [], bool(_TABLE_ROW_RE.match(line))
+            while index < total and lines[index].strip() and (
+                    _TABLE_ROW_RE.match(lines[index]) or (not piped and "|" in lines[index])):
                 block.append(lines[index])
                 index += 1
             blocks.append(("table", block))
@@ -93,7 +101,7 @@ def _split_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
         while index < total and lines[index].strip() and not (
             _fence_marker(lines[index]) is not None
             or _starts_details(lines[index])
-            or _TABLE_ROW_RE.match(lines[index])
+            or _starts_table(lines, index)
         ):
             block.append(lines[index])
             index += 1
@@ -260,6 +268,14 @@ async def send_rich_parts(
             return _with_delivered_prefix(
                 await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata), content, parts, sent)
         if not result.success:
+            raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+            if raw.get("delivery_uncertain") and index + 1 < len(parts):
+                # The part in flight may show; the parts after it never left, so the stream
+                # consumer sends them (``unattempted_chunks``) before counting the reply shown.
+                result.raw_response = {**raw, "unattempted_chunks": tuple(
+                    _legacy_chunks(adapter, _BLOCK_SEPARATOR.join(parts[index + 1:])))}
+            if not sent:
+                return result  # nothing landed: the caller's normal retry still owns the message
             return _with_delivered_prefix(_partial_failure(result, sent, len(parts)), content, parts, sent)
         sent.append(result)
     logger.info("Telegram: delivered an oversized rich message in %d parts (%d chars)", len(parts), len(content))

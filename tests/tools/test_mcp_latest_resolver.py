@@ -163,37 +163,14 @@ class TestRealLoadAndLaunchChain:
         assert command == sys.executable  # command passes through untouched
         assert cwd is None or os.path.isdir(str(cwd))  # a host-valid cwd for the spawn
 
-    def test_security_gate_sees_raw_entry_not_resolved_paths(self, tmp_path, monkeypatch):
-        """The IOC/shape gate (validate_mcp_server_entry, run by _load_mcp_config before
-        interpolation) inspects the RAW entry text: a ${latest:...} ref is no more
-        opaque to it than a ${VAR} ref, and the gate is not bypassed by resolution."""
-        cache = _plugin_cache(tmp_path, "15.15.2")
-        home = tmp_path / "hermes-home"
-        home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        (home / "config.yaml").write_text(
-            "mcp_servers:\n"
-            "  claude-mem:\n"
-            f"    command: '{sys.executable}'\n"
-            f"    args: ['${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}']\n"
-        )
-        from hermes_cli.mcp_security import validate_mcp_server_entry
-        from tools.mcp_tool_config import _load_mcp_config
-
-        raw_entry = {"command": sys.executable,
-                     "args": [f"${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}"]}
-        assert validate_mcp_server_entry("claude-mem", raw_entry) == []  # clean: no shape hit
-        loaded = _load_mcp_config()
-        assert loaded["claude-mem"]["args"] == [str(cache / "15.15.2" / "scripts" / "mcp-server.cjs")]
-
-
     def test_gate_runs_pre_interpolation_discriminating(self, tmp_path, monkeypatch):
-        """Discriminating twin of the raw-entry test: the RAW arg is a clean glob, the
-        RESOLVED path contains an IOC substring. If the security gate ran AFTER
-        interpolation the entry would be dropped and this test fails — so passing
-        proves the gate runs on raw entry text (mcp_tool_config.py: _load_mcp_config
-        filters suspicious entries before _interpolate_env_vars renders them)."""
-        from hermes_cli.mcp_security import _IOC_SUBSTRINGS
+        """Discriminating order proof: the RAW arg is a clean glob, the RESOLVED path
+        contains an IOC substring. If the security gate ran AFTER interpolation the
+        entry would be dropped and this test fails — so passing proves the gate runs
+        on raw entry text (mcp_tool_config.py: _load_mcp_config filters suspicious
+        entries before _interpolate_env_vars renders them), and that a ${latest:...}
+        placeholder is no more opaque to the gate than a ${VAR} ref."""
+        from hermes_cli.mcp_security import _IOC_SUBSTRINGS, validate_mcp_server_entry
         ioc = next((s for s in _IOC_SUBSTRINGS if re.fullmatch(r"[A-Za-z0-9._\-]+", s)), None)
         if ioc is None:
             pytest.skip("no filename-safe IOC string in the blocklist")
@@ -209,6 +186,9 @@ class TestRealLoadAndLaunchChain:
             f"    args: ['${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}']\n"
         )
         from tools.mcp_tool_config import _load_mcp_config
+
+        raw_arg = f"${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}"
+        assert validate_mcp_server_entry("claude-mem", {"command": sys.executable, "args": [raw_arg]}) == []
 
         loaded = _load_mcp_config()
         assert "claude-mem" in loaded, "entry dropped — gate would be running post-interpolation"

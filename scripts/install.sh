@@ -707,6 +707,50 @@ stable_unreachable() {
     fail "$1$(native_detail). Rerun the installer to retry, or pass --channel main to install main's tip" git_fetch_failed
 }
 
+# A blobless clone's checkout lazy-fetches the files from the promisor remote; some networks and
+# GitHub edges refuse that request (HTTP 400, #153258) while an ordinary clone works. Re-clone the
+# one commit being installed without a filter into the same unpublished staging dir ($1/tree), and
+# keep it only when it resolves to the commit the partial clone named for the pin or release tag.
+# Reads stage_repository's $release and $progress. Returns non-zero, tree removed, on any failure.
+unfiltered_clone_fallback() {
+    local tree="$1/tree" want="" target=HEAD got
+    if [ -n "$INSTALL_COMMIT$release" ]; then
+        target="${INSTALL_COMMIT:-$release}"
+        want="$(git -C "$tree" rev-parse --verify --quiet "$target^{commit}")" || want=""
+        [ -n "$want" ] || return 1
+    fi
+    log_warn "checkout of the partial clone failed; downloading ${INSTALL_COMMIT:-${release:-$BRANCH}} again without a filter"
+    rm -rf "$tree"
+    if ! run_logged --may-fail "Cloning $REPO_URL ($BRANCH) without a filter" git clone ${progress[@]+"${progress[@]}"} \
+        --depth 1 --no-checkout --branch "$BRANCH" "$REPO_URL" "$tree"; then
+        rm -rf "$tree"
+        return 1
+    fi
+    # --depth implies --single-branch; keep the refspec a normal clone has so branch switches work.
+    git -C "$tree" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || { rm -rf "$tree"; return 1; }
+    if [ -n "$release" ]; then
+        run_logged --may-fail "Fetching $release" \
+            git -C "$tree" fetch --depth 1 origin "+refs/tags/$release:refs/tags/$release" || { rm -rf "$tree"; return 1; }
+    elif [ -n "$INSTALL_COMMIT" ]; then
+        run_logged --may-fail "Fetching $INSTALL_COMMIT" \
+            git -C "$tree" fetch --depth 1 origin "$want" || { rm -rf "$tree"; return 1; }
+        target="$want"
+    fi
+    # Revalidate: the tag (or pin) must still name the commit the partial clone resolved.
+    got="$(git -C "$tree" rev-parse --verify --quiet "$target^{commit}")" || got=""
+    if [ -z "$got" ] || { [ -n "$want" ] && [ "$got" != "$want" ]; }; then
+        log_warn "the unfiltered clone resolves $target to ${got:-nothing}, not $want; not publishing it"
+        rm -rf "$tree"
+        return 1
+    fi
+    if [ "$target" = HEAD ]; then
+        run_logged --may-fail "Checking out files" git -C "$tree" reset --hard HEAD || { rm -rf "$tree"; return 1; }
+    else
+        run_logged --may-fail "Checking out $target" \
+            git -C "$tree" checkout --force --detach "$target" || { rm -rf "$tree"; return 1; }
+    fi
+}
+
 stage_repository() {
     local pinned=false channel="" release="" origin
     # An interrupted clone from an older installer can leave a .git with no
@@ -949,6 +993,15 @@ stage_repository() {
                 fi
                 [ "$attempt" = 2 ] || sleep 5
             done
+            if [ "$cloned" = false ]; then
+                local checkout_error="$RUN_LOGGED_ERROR"
+                if unfiltered_clone_fallback "$staged"; then
+                    cloned=true
+                    [ -z "$INSTALL_COMMIT" ] || pinned=true
+                else
+                    RUN_LOGGED_ERROR="$checkout_error"
+                fi
+            fi
             if [ "$cloned" = false ]; then
                 rm -rf "$staged"
                 fail "could not check out ${INSTALL_COMMIT:-the cloned tree}; no checkout published$(native_detail)" git_checkout_failed

@@ -1,6 +1,6 @@
 name: dossier
 repo: https://github.com/Frazzlesprite/hermes-dossier
-sha: d2e57cf1ea3a2b07f8e07e4a30d9b05a4e6c5db2
+sha: ddce23165df1488331f04e980713393bacba81b0
 description: >-
   Sourced, dated, refreshable dossiers on organisations and people in a
   professional capacity, framed for the meeting you actually have: interview,
@@ -24,11 +24,11 @@ category: tools
 docs_url: https://github.com/Frazzlesprite/hermes-dossier#readme
 version: "0.2.0"
 requires_hermes: ">=0.23"
-image: https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/d2e57cf1ea3a2b07f8e07e4a30d9b05a4e6c5db2/docs/screenshots/00-banner.png
+image: https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/ddce23165df1488331f04e980713393bacba81b0/docs/screenshots/00-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/d2e57cf1ea3a2b07f8e07e4a30d9b05a4e6c5db2/docs/screenshots/01-brief.png
-  - https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/d2e57cf1ea3a2b07f8e07e4a30d9b05a4e6c5db2/docs/screenshots/02-two-readings.png
-  - https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/d2e57cf1ea3a2b07f8e07e4a30d9b05a4e6c5db2/docs/screenshots/03-ready.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/ddce23165df1488331f04e980713393bacba81b0/docs/screenshots/01-brief.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/ddce23165df1488331f04e980713393bacba81b0/docs/screenshots/02-two-readings.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-dossier/ddce23165df1488331f04e980713393bacba81b0/docs/screenshots/03-ready.png
 capabilities:
   provides_tools:
     - dossier_build

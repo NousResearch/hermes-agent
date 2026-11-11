@@ -151,6 +151,34 @@ async def test_photon_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("spoken,admitted", [("hermes, what is on today", True), ("just chatting about lunch", False)])
+async def test_photon_grouped_voice_payload_matches_spoken_wake_word(tmp_path, monkeypatch, spoken, admitted):
+    """Photon's ``group`` envelope can carry the voice item (with a photo beside it): only the audio is
+    transcribed, and a rejected envelope leaves none of its cached files behind."""
+    import base64
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    adapter.handle_message = AsyncMock()
+    transcribe, calls = _stt(spoken)
+    content = {"type": "group", "items": [
+        {"content": {"type": "attachment", "name": "p.png", "mimeType": "image/png", "data": base64.b64encode(b"\x89PNG").decode()}},
+        {"content": {"type": "voice", "name": "voice.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}}]}
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._dispatch_inbound({
+            "messageId": "grouped-v1", "space": {"id": "group-guid", "type": "group", "phone": None},
+            "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
+
+    assert len(calls) == 1 and calls[0].endswith(".ogg")
+    assert adapter.handle_message.await_count == int(admitted)
+    cached = [p for p in tmp_path.rglob("*") if p.is_file() and p.suffix in (".png", ".ogg")]
+    assert len(cached) == (2 if admitted else 0)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("spoken,admitted", [("hermes, what is on today", True), ("lunch?", False)])
 async def test_bluebubbles_group_voice_memo_wakes_on_the_spoken_wake_word(tmp_path, monkeypatch, spoken, admitted):
     import asyncio

@@ -1,0 +1,33 @@
+name: art98
+title: "art98 (Windows 98)"
+repo: https://github.com/StanLukuvka/98artware-hermes
+sha: 812dee0a7e23109948acf4dbf17c01b754362288
+description: "Drive a real Windows 98 SE VM through art98 (screenshots, pointer, keys, windows, Win32 calls) and render scene scripts to video, with a dashboard tab that has a live view. Disclosure — art98_render runs the agent's scene script as Python on the Hermes machine, in a child process outside the terminal backend and not sandboxed (it can read HOME and the VM token); it refuses unless the allow_render setting is on (off by default) and Hermes's execute_code approval guard allows it, which does not prompt in local CLI/TUI/Desktop sessions and refuses in -q and cron runs by default. The dashboard's own Render button skips that approval. art98_win32 is off unless allow_win32 is on. Network is loopback only: the art98 VM's control API (token-authenticated) and optionally its view-only VNC port. One stored credential, the VM token, kept by Hermes as the vm_token secret. Needs ffmpeg and ffprobe for art98_combine, and the user's own Windows 98 SE install via the art98 repo; no Windows files ship with the plugin."
+maintainer: StanLukuvka
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: "https://github.com/StanLukuvka/98artware-hermes/blob/812dee0a7e23109948acf4dbf17c01b754362288/README.md"
+platforms: [linux]
+known_issues:
+  - "Needs a running art98 VM (github.com/StanLukuvka/98artware) and your own Windows 98 SE disc and key; the art98-install skill walks through it."
+  - "art98_render uses Hermes's private tools.approval.check_execute_code_guard (no public approval call for plugin tools yet); if a release moves it, renders are refused, never run unasked."
+capabilities:
+  provides_tools:
+    - art98_status
+    - art98_media
+    - art98_screenshot
+    - art98_click
+    - art98_type
+    - art98_key
+    - art98_windows
+    - art98_open
+    - art98_win32
+    - art98_revert
+    - art98_save_scene
+    - art98_render
+    - art98_combine
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

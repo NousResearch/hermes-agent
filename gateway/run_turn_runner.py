@@ -288,16 +288,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.
         stts = ctx.streaming_tts_consumer_holder[0]
-        scfg = getattr(getattr(self._runner, 'config', None), 'streaming', None)
-        profile_streaming = (
-            ctx.user_config.get("streaming") if isinstance(ctx.user_config, dict) else None
-        )
-        if isinstance(profile_streaming, dict) and profile_streaming:
-            from gateway.config import StreamingConfig
-            scfg = StreamingConfig.from_dict(profile_streaming)
-        elif scfg is None:
-            from gateway.config import StreamingConfig
-            scfg = StreamingConfig()
+        from gateway.run_config_loaders import streaming_config_for_source
+        scfg = streaming_config_for_source(self._runner, ctx.source)
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
         # A loaded ``hold_stream`` transform rewrites this session's reply before the user may see it:

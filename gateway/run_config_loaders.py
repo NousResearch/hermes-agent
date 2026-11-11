@@ -61,6 +61,23 @@ DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
 
 
+def streaming_config_for_source(runner, source):
+    """The ``StreamingConfig`` of the profile that runs ``source``'s turn. Under ``multiplex_profiles``
+    ``runner.config`` is the launch profile's alone, so a served profile's own ``streaming`` block was
+    ignored (#136972). A served profile reads the GatewayConfig the multiplexer loaded for it (the
+    same loader as the launch one: ``gateway.streaming`` and gateway.json fallbacks included); the
+    launch profile, and a profile whose config is not cached, keep ``runner.config``."""
+    from gateway.config import StreamingConfig
+    from gateway.session_identity import identity_of
+    config = getattr(runner, "config", None)
+    if getattr(config, "multiplex_profiles", False) is True and source is not None:
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (getattr(source, "profile", None) or None)
+        if runtime and runtime != (getattr(runner, "_primary_profile_name", None) or "default"):
+            config = (getattr(runner, "_profile_configs", None) or {}).get(runtime, config)
+    return getattr(config, "streaming", None) or StreamingConfig()
+
+
 class GatewayConfigLoadersMixin:
     """Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner."""
 

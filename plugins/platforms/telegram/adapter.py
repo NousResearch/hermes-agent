@@ -329,7 +329,7 @@ def check_telegram_requirements() -> bool:
     return True
 
 
-from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links, escape_rich_currency_dollars, to_markdown_v2
+from plugins.platforms.telegram.telegram_markdown import compact_rich_tables, degrade_unrenderable_links, escape_rich_currency_dollars, to_markdown_v2
 from plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
 
@@ -539,6 +539,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
+        # Bot API 10.3 is_compact: rewrite GFM tables as <table compact> rich HTML (opt-in, like every
+        # other rich feature; off keeps the plain-markdown table path upstream tests pin).
+        self._rich_compact_tables: bool = self._coerce_bool_extra("rich_compact_tables", False)
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: dict[str, float] = {}
@@ -1292,9 +1295,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
-        escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math."""
-        payload: dict[str, Any] = {"markdown": degrade_unrenderable_links(
-            escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(content))))}
+        escaping destroys table pipes. Currency ``$`` is escaped so two amounts never pair as inline math.
+        With the ``rich_compact_tables`` extra, GFM tables become ``<table compact>`` rich HTML (Bot API
+        10.3 is_compact) as the final step: the currency/link passes above have already normalized cell
+        text, and markdown is not parsed inside block HTML tags, so the converter must run last."""
+        markdown = degrade_unrenderable_links(escape_rich_currency_dollars(rich_normalize_linebreaks(escape_literal_hash_prefixes(content))))
+        if getattr(self, "_rich_compact_tables", False):
+            markdown = compact_rich_tables(markdown)
+        payload: dict[str, Any] = {"markdown": markdown}
         if skip_entity_detection or RICH_EMAIL_TOKEN_RE.search(content):
             payload["skip_entity_detection"] = True
         return payload

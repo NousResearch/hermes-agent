@@ -479,3 +479,109 @@ def _escape_prose_dollars(prose: str) -> str:
     if '$' not in prose:
         return prose
     return _RICH_DOLLAR_RE.sub(lambda m: m.group(0) if m.group('keep') else '\\$', prose)
+
+
+# --- Rich Block API 10.3: compact tables -------------------------------------
+# sendRichMessage markdown mode parses GFM pipe tables into RichBlockTable blocks
+# without is_compact; the flag is only reachable via inline rich HTML (<table
+# compact>, which markdown mode accepts verbatim). These helpers rewrite detected
+# GFM tables into that HTML so wide tables render compact on clients (Bot API 10.3).
+
+# Same table shape the adapter protects in _RICH_PROTECTED_REGION_RE: header row
+# with a pipe, a delimiter row, then data rows. Fences are matched first so a
+# table-looking block inside a code fence is never rewritten.
+_RICH_TABLE_REGION_RE = re.compile(
+    r'(?:```[^\n]*\n[\s\S]*?```)'  # fenced code block (kept verbatim)
+    r'|(?:^[^\n]*\|[^\n]*\n'
+    r'[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*'
+    r'(?:\n[^\n]*\|[^\n]*)*)',
+    re.MULTILINE)
+
+# Telegram caps RichBlockTable at 20 columns; wider tables stay markdown (the
+# server renders them as text, same as before this feature).
+_RICH_TABLE_MAX_COLUMNS = 20
+
+_RICH_CELL_SPLIT_RE = re.compile(r'(?<!\\)\|')
+_RICH_ALIGN_RE = re.compile(r'^:?-+:?$')
+
+
+def _rich_cell_align(delim_cell: str) -> str:
+    cell = delim_cell.strip()
+    left, right = cell.startswith(':'), cell.endswith(':')
+    if left and right:
+        return "center"
+    if right:
+        return "right"
+    if left:
+        return "left"
+    return ""
+
+
+def _rich_split_row(line: str) -> list:
+    row = line.strip().removeprefix('|')
+    if row.endswith('|') and not row.endswith('\\|'):
+        row = row[:-1]
+    return [c.strip() for c in _RICH_CELL_SPLIT_RE.split(row)]
+
+
+def _rich_cell_html(cell: str) -> str:
+    """Cell markdown -> rich HTML: HTML-escape first, then map the inline markers
+    that survive escaping. Markdown is not parsed inside block HTML tags, so every
+    construct must arrive as HTML. ``\\$`` (rich currency escape) is reverted: math
+    is markdown syntax and never pairs inside HTML cells."""
+    text = cell.replace('\\$', '$')
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+    text = re.sub(r'\*\*([^*\n]+)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', text)
+    text = re.sub(r'~~([^~\n]+)~~', r'<s>\1</s>', text)
+    text = re.sub(r'\[([^\]\n]*)\]\(([^)\s]+)\)', r'<a href="\2">\1</a>', text)
+    return text.replace('\\|', '|')
+
+
+def _rich_table_html(region: str) -> str:
+    lines = region.rstrip('\n').split('\n')
+    if len(lines) < 2:
+        return region
+    header = _rich_split_row(lines[0])
+    delim = _rich_split_row(lines[1])
+    if not all(_RICH_ALIGN_RE.sub('-', d).strip('-') == '' or set(d) <= set('-: ') for d in delim if d):
+        return region
+    if len(header) > _RICH_TABLE_MAX_COLUMNS or len(delim) != len(header):
+        return region
+    aligns = [_rich_cell_align(d) if d else "" for d in delim]
+    aligns += [""] * (len(header) - len(aligns))
+
+    def row_html(cells, tag):
+        attrs = []
+        for i in range(len(header)):
+            cell = cells[i] if i < len(cells) else ""
+            align = aligns[i] if i < len(aligns) else ""
+            align_attr = f' align="{align}"' if align else ''
+            attrs.append(f'<{tag}{align_attr}>{_rich_cell_html(cell)}</{tag}>')
+        return f'<tr>{"".join(attrs)}</tr>'
+
+    body = [row_html(header, 'th')]
+    body.extend(row_html(_rich_split_row(line), 'td') for line in lines[2:])
+    trailing = '\n' if region.endswith('\n') else ''
+    return f'<table compact>{"".join(body)}</table>{trailing}'
+
+
+def compact_rich_tables(markdown: str) -> str:
+    """Rewrite GFM pipe tables into ``<table compact>`` rich HTML (Bot API 10.3
+    ``is_compact``) so sendRichMessage renders them in compact layout. Fenced code
+    and tables over the 20-column cap are left untouched."""
+    if '|' not in markdown:
+        return markdown
+    out, pos = [], 0
+    for m in _RICH_TABLE_REGION_RE.finditer(markdown):
+        region = m.group(0)
+        if region.startswith('```'):
+            continue  # fences stay verbatim; handled by the untouched gaps
+        out.append(markdown[pos:m.start()])
+        out.append(_rich_table_html(region))
+        pos = m.end()
+    if not out:
+        return markdown
+    out.append(markdown[pos:])
+    return ''.join(out)

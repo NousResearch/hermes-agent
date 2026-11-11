@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from pathlib import Path
 from typing import Any, Optional
 
 from gateway import status as _status
@@ -22,18 +23,33 @@ def scoped_lock_pid_is_ours(record: dict[str, Any]) -> bool:
     return persistent_record_pidns_checkable(record.get("pidns"))
 
 
+def _foreign_owner_is_live(existing: dict[str, Any]) -> bool:
+    """A gateway in another PID namespace holds its home's ``gateway.lock`` flock for as long as it
+    lives, and that flock answers from here where its PID cannot. No home, or a process-kind owner
+    (setup worker, dashboard) that never takes that flock, stays live: unknown is not dead."""
+    from gateway.runtime_ownership import runtime_lock_held_elsewhere
+    home, metadata = existing.get("hermes_home"), existing.get("metadata")
+    if not isinstance(home, str) or not home.strip():
+        return True
+    if isinstance(metadata, dict) and metadata.get("owner_kind") == "process":
+        return True
+    return runtime_lock_held_elsewhere(Path(home))
+
+
 def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optional[int]) -> bool:
     """Recover dead/reused/stopped owners. Gateway locks also validate gateway argv.
 
     An explicitly process-owned reservation can belong to a dashboard or setup
-    worker. Unknown identity stays reserved instead of guessing that it is dead,
-    and so does an owner in another PID namespace (its PID cannot be probed here).
+    worker. Unknown identity stays reserved instead of guessing that it is dead.
+    An owner in another PID namespace is judged by its home's runtime flock, never its PID.
     """
     if existing_pid is not None and not scoped_lock_pid_is_ours(existing):
+        if not _foreign_owner_is_live(existing):
+            return True  # its gateway.lock is free: that gateway is gone (SIGKILL, OOM, container kill)
         _status.logger.warning(
-            "Scoped lock for %s is held by PID %s in another PID namespace (%s), which cannot be "
-            "checked from here; treating it as live. If that gateway is gone, delete the lock file "
-            "in %s.", existing.get("scope") or "?", existing_pid, existing.get("pidns"), _status._get_lock_dir())
+            "Scoped lock for %s is held by PID %s in another PID namespace (%s), whose gateway.lock "
+            "in %s is held or cannot be checked; treating it as live.", existing.get("scope") or "?",
+            existing_pid, existing.get("pidns"), existing.get("hermes_home") or "an unrecorded home")
         return False
     if existing_pid is None or not _status._pid_exists(existing_pid):
         return True

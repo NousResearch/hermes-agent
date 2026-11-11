@@ -51,8 +51,9 @@ _MACRO_RE = re.compile(
     r"(?<![\w:/\\.~%])\\(" + _MACRO_NAMES + r")(?![A-Za-z-]|\\(?!(?:" + _MACRO_NAMES + r")(?![A-Za-z]))\w)")
 # Inside a confirmed ``$...$`` span a macro may follow a letter (``$x\leq y$``): no path guard there.
 _MATH_MACRO_RE = re.compile(r"(?<!\\)\\(" + _MACRO_NAMES + r")(?![A-Za-z])")
-# A closing ``$`` before a digit opens an amount (``$5 \to $ 10``), so that pair is not math.
-_INLINE_MATH_RE = re.compile(r"(?<![\\$\w])\$([^$\n]{1,120}?)\$(?![\w$]|\s?\d)")
+_INLINE_MATH_RE = re.compile(r"(?<![\\$\w])\$([^$\n]{1,120}?)\$(?![\w$])")
+# Two amounts on one line (``$5 \to $ 10``) are currency, not math: an amount after each ``$``.
+_AMOUNT_AFTER_RE = re.compile(r"[ \t]?\d")
 # Link targets and bare URLs are addresses, never prose: ``?q=\to`` must reach the server verbatim.
 _URL_RE = re.compile(r"\]\([^)\n]*\)|(?:https?|ftp)://[^\s<>]+|www\.[^\s<>]+", re.IGNORECASE)
 
@@ -77,6 +78,8 @@ def _replace_macros(text: str) -> str:
 
 def _inline_math(m: re.Match) -> str:
     body = m.group(1)
+    if body[:1].isdigit() and _AMOUNT_AFTER_RE.match(m.string, m.end()):
+        return m.group(0)
     if not _MATH_MACRO_RE.search(body):
         return m.group(0)  # no known macro: an amount pair or real math we can't render; leave it
     converted = _MATH_MACRO_RE.sub(lambda mm: _MACROS[mm.group(1)], body)

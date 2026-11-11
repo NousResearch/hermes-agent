@@ -225,8 +225,11 @@ class StreamTransportMixin:
     async def _abandon_native_stream(self) -> None:
         """Seal an orphaned draft stream on turn death (stale exit / cancel): else the live
         indicator stays forever and armed interception state leaks into the next turn.
-        Never sets delivery flags."""
+        Never sets delivery flags. The edit transport has no draft to seal, but its preview still
+        ends in the live cursor: re-edit the text already on screen without it."""
         if not self._use_draft_streaming:
+            if self.cfg.cursor and self.cfg.cursor in (self._last_sent_text or ""):
+                await self._try_strip_cursor()
             return
         if getattr(type(self.adapter), "abandon_open_draft", None) is None:
             return

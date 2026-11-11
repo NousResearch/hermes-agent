@@ -110,6 +110,9 @@ async def test_pending_followup_acks_after_stall_timeout(monkeypatch):
     assert "Still starting this turn" in result
     assert "6 min" in result
     assert "queued" in result.lower()
+    # /stop discards the queued follow-ups too (_hm_stop_owner_turn): the ack must say so, like
+    # the running-turn ack's "use /stop to cancel everything".
+    assert "/stop to cancel it and everything queued" in result
 
 
 @pytest.mark.asyncio

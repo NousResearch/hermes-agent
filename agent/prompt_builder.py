@@ -746,7 +746,7 @@ WSL_ENVIRONMENT_HINT = (
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
-_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
+_REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal", "kubernetes"})
 
 # Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
@@ -762,6 +762,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # rebuilds; the home key because the probe runs against the profile's own terminal.* backend
 # (docker image / ssh host) and one multiplexed process serves several profiles.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
+_BACKEND_PROBE_CACHE_LOCK = threading.Lock()
 
 
 def _plugin_backend_attr(backend: str, attr: str, default=None):
@@ -850,9 +851,8 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
         container_config=(_container_config_from_config(config)
                           if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
-        # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
-        # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,
-        # and its later __del__ would sync_back() and close the master shared with the agent's own env.
+        # SSH uses an isolated ControlMaster; SSH/Kubernetes skip setup, file sync and snapshots.
+        # Uploading the whole cache just to run uname can stall prompt construction for minutes.
         probe_only=True,
     )
     try:
@@ -882,25 +882,28 @@ def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
     from hermes_constants import hermes_home_key
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
-    formatted = _BACKEND_PROBE_CACHE.get(cache_key)
-    if formatted is None:
-        formatted = ""
-        try:
-            from tools import terminal_tool  # heavy; only needed for non-local backends
-        except Exception as e:
-            logger.debug("Backend probe unavailable (import failed): %s", e)
-        else:
+    # Concurrent first turns must not upload into or tear down the same probe pod.
+    with _BACKEND_PROBE_CACHE_LOCK:
+        formatted = _BACKEND_PROBE_CACHE.get(cache_key)
+        if formatted is None:
+            formatted = ""
             try:
-                formatted = _format_backend_probe(_run_backend_probe(env_type, terminal_tool))
+                from tools import terminal_tool  # heavy; only needed for non-local backends
             except Exception as e:
-                logger.debug("Backend probe failed: %s", e)
-        _BACKEND_PROBE_CACHE[cache_key] = formatted
+                logger.debug("Backend probe unavailable (import failed): %s", e)
+            else:
+                try:
+                    formatted = _format_backend_probe(_run_backend_probe(env_type, terminal_tool))
+                except Exception as e:
+                    logger.debug("Backend probe failed: %s", e)
+            _BACKEND_PROBE_CACHE[cache_key] = formatted
     return formatted or None
 
 
 def _clear_backend_probe_cache() -> None:
     """Test helper — drop the backend probe cache so monkeypatched backends take effect."""
-    _BACKEND_PROBE_CACHE.clear()
+    with _BACKEND_PROBE_CACHE_LOCK:
+        _BACKEND_PROBE_CACHE.clear()
 
 
 def _local_host_hints() -> list[str]:

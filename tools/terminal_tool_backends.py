@@ -49,7 +49,7 @@ def terminal_backend_unavailable_reason() -> Optional[str]:
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, docker, modal, daytona, vercel_sandbox, kubernetes, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -65,6 +65,7 @@ _CONTAINER_KEYS = (
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
     ("docker_image_pinned", False),
+    ("kubernetes", {}),
 )
 _DOCKER_KWARGS = (
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
@@ -233,6 +234,23 @@ def _stamp_sandbox_home(env_obj, provider, cwd) -> None:
             pass
 
 
+def _build_kubernetes_env(*, cwd, timeout, cc, task_id, probe_only=False, **_):
+    from tools.environments import kubernetes as k8s
+    kcfg = k8s.merge_kubernetes_config(cc.get("kubernetes"))
+    k8s.resolve_provisioner_kind(kcfg)
+    errors, _warnings = k8s.preflight_spec(kcfg)
+    if errors:
+        raise ValueError("terminal.kubernetes.spec cannot serve a session: " + " ".join(errors))
+    core_api = k8s.load_core_api(kcfg)
+    namespace = k8s.resolve_namespace(kcfg)
+    owner_ref = k8s.resolve_owner_reference(core_api, namespace, kcfg)
+    provisioner = k8s.PodProvisioner(kcfg, namespace, api=core_api, owner_reference=owner_ref)
+    return k8s.KubernetesEnvironment(
+        provisioner=provisioner, task_id=task_id, cwd=cwd, timeout=timeout, api=core_api,
+        probe_only=probe_only,
+    )
+
+
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
@@ -268,7 +286,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
 _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "modal": _build_modal_env,
                  "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
-                 "ssh": _build_ssh_env}
+                 "kubernetes": _build_kubernetes_env, "ssh": _build_ssh_env}
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
@@ -277,8 +295,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         host_cwd: Optional[str] = None, probe_only: bool = False):
     """Create an execution environment (instance with ``execute()``) for *env_type*. ``image`` is ignored
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
-    the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
-    connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
+    the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` skips session setup and
+    file sync for the SSH/Kubernetes prompt probe. Unknown types fall through to plugin backends."""
     builder = _ENV_BUILDERS.get(env_type)
     kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
                   ssh_config=ssh_config, local_config=local_config, host_cwd=host_cwd, probe_only=probe_only)
@@ -356,6 +374,10 @@ _BACKEND_SPECS: dict[str, dict[str, Any]] = {
               "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
+    "kubernetes": {"module": (
+        "kubernetes",
+        "kubernetes backend selected but the client is not installed: pip install 'hermes-agent[kubernetes]'",
+    )},
 }
 
 

@@ -900,6 +900,35 @@ class TestEnvironmentHints:
         assert created["probe_only"] is True
         assert calls == ["cleanup"]
 
+    def test_concurrent_first_turns_share_one_backend_probe(self, monkeypatch):
+        """Two uncached turns must not create/tear down the same Kubernetes probe pod."""
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+        import threading
+        import agent.prompt_builder as pb
+
+        pb._clear_backend_probe_cache()
+        started, release = threading.Event(), threading.Event()
+        calls = []
+
+        def probe(*args):
+            calls.append(1)
+            started.set()
+            assert release.wait(5)
+            return "os=Linux\nkernel=test\n"
+
+        monkeypatch.setattr(pb, "_run_backend_probe", probe)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(pb._probe_remote_backend, "kubernetes")
+            try:
+                assert started.wait(5)
+                second = pool.submit(pb._probe_remote_backend, "kubernetes")
+                with pytest.raises(FutureTimeout):
+                    second.result(timeout=2)
+            finally:
+                release.set()
+            assert first.result(timeout=5) == second.result(timeout=5)
+        assert len(calls) == 1
+
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
         import agent.prompt_builder as _pb
@@ -1045,3 +1074,41 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+
+@pytest.mark.parametrize("probe_only", [True, False])
+def test_factory_probe_skips_file_sync_and_login_snapshot(monkeypatch, probe_only):
+    """A prompt-time uname probe must not enumerate or upload the gateway cache."""
+    from unittest.mock import MagicMock
+    import tools.environments.kubernetes as k8s
+    from tools.terminal_tool_backends import _create_environment
+
+    api = MagicMock()
+    api.api_client.configuration = None
+    provisioner = MagicMock()
+    provisioner.ensure.return_value = k8s.PodRef("hermes", "probe", "workspace")
+    monkeypatch.setattr(k8s, "preflight_spec", lambda _: ([], []))
+    monkeypatch.setattr(k8s, "load_core_api", lambda _: api)
+    monkeypatch.setattr(k8s, "resolve_namespace", lambda _: "hermes")
+    monkeypatch.setattr(k8s, "resolve_owner_reference", lambda *a: None)
+    monkeypatch.setattr(k8s, "PodProvisioner", lambda *a, **kw: provisioner)
+    sync = MagicMock()
+    snapshot = MagicMock()
+    monkeypatch.setattr(k8s, "FileSyncManager", sync)
+    monkeypatch.setattr(k8s.KubernetesEnvironment, "init_session", snapshot)
+
+    env = _create_environment(
+        env_type="kubernetes", image="", cwd="/workspace", timeout=4,
+        container_config={},
+        task_id="prompt-backend-probe", probe_only=probe_only,
+    )
+    try:
+        assert bool(sync.call_count) is not probe_only
+        assert bool(snapshot.call_count) is not probe_only
+        if probe_only:
+            assert env._prefer_nonlogin is True
+            assert env._sync_manager is None
+            sync.assert_not_called()
+    finally:
+        env.cleanup()
+    provisioner.destroy.assert_called_once()

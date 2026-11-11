@@ -493,3 +493,87 @@ def test_prune_cache_preserves_downloaded_wheels_unless_ci(tmp_path, build_tools
         second = build_requirements_environment([requirement], out=out, cache=cache, env=build_tools, offline=True, explicit=True)
         assert _run([str(second), "-I", "-c", "import cached_dep; print(cached_dep.__version__)"],
                     cwd=tmp_path, env=build_tools) == "1.0"
+
+
+_STUBBED_LOCK_CHECK = '''
+import os
+import pm.environment as _environment
+_failure = _environment.RetrievalFailure(
+    "venv",
+    "uv lock exited 2: error: Failed to generate package metadata for `kittentts==0.8.1`\\n"
+    "  cause: Failed to fetch: https://github.com/KittenML/KittenTTS/releases/download/0.8.1/"
+    "kittentts-0.8.1-py3-none-any.whl\\n"
+    "  cause: HTTP status server error (504 Gateway Timeout)",
+    _environment.RETRIEVAL_HINT)
+def _check_lock(self, source):
+    # "offline-only": the offline check settles it, the network does not.
+    if os.environ.get("PM_TEST_LOCK_BEHAVIOR") == "offline-only" and self.offline:
+        return None
+    raise _failure
+_environment.PythonEnvironment.check_lock = _check_lock
+'''
+
+
+@pytest.fixture
+def stubbed_lock_validation(client, isolated_python, monkeypatch):
+    """Stand in for uv inside the PM worker: the fetch fails, the cache answers or it does not.
+
+    The real shape is measured end to end by the blackholed `run_tests.sh` proof; here
+    the point is which of the two answers the fallback gives, without a release host.
+    """
+    from tests.pm._fixtures import worker_toolchain
+
+    worker_toolchain(client, monkeypatch, isolated_python, injection=_STUBBED_LOCK_CHECK)
+    return client
+
+
+def _project(tmp_path):
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        '[project]\nname="direct-url-root"\nversion="1"\nrequires-python=">=3.11"\n', encoding="utf-8")
+    return source
+
+
+def test_a_fetch_failure_validates_the_lock_offline(tmp_path, build_tools,
+                                                    stubbed_lock_validation, monkeypatch, capfd):
+    """A 504 on one pinned wheel must not fail a validation the lock can settle."""
+    from pm import check_project_lock
+
+    monkeypatch.setenv("PM_TEST_LOCK_BEHAVIOR", "offline-only")
+    check_project_lock(_project(tmp_path), python=Path(sys.executable), cache=tmp_path / "cache",
+                       env=build_tools, explicit=True)
+    err = capfd.readouterr().err
+    assert "⚠ lock validation is offline" in err
+    assert "HTTP status server error (504 Gateway Timeout)" in err
+    assert "uv.lock matches pyproject.toml" in err
+    assert "the pinned remote artifacts were not re-downloaded" in err
+
+
+def test_a_fetch_failure_the_offline_check_cannot_settle_names_the_network(
+        tmp_path, build_tools, stubbed_lock_validation, monkeypatch, capfd):
+    """Nothing reachable and the lock itself does not settle: fail on the network cause, never as a conflict."""
+    from pm import check_project_lock
+
+    monkeypatch.setenv("PM_TEST_LOCK_BEHAVIOR", "always")
+    with pytest.raises(InstallError) as excinfo:
+        check_project_lock(_project(tmp_path), python=Path(sys.executable), cache=tmp_path / "cache",
+                           env=build_tools, explicit=True)
+    assert "and the offline retry failed too" in excinfo.value.cause
+    assert "the network fetch failed" in excinfo.value.remedy
+    assert "restore network access" in excinfo.value.remedy
+    assert "⚠ lock validation is offline" not in capfd.readouterr().err
+
+
+def test_a_stale_lock_still_fails_and_never_falls_back(locked_source, tmp_path, build_tools, capfd):
+    """Only a fetch failure retries: a lock that no longer matches the manifest keeps failing."""
+    from pm import check_project_lock
+
+    manifest = locked_source / "pyproject.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace('version="1"', 'version="2"'),
+                        encoding="utf-8")
+    with pytest.raises(InstallError) as excinfo:
+        check_project_lock(locked_source, python=Path(sys.executable), cache=tmp_path / "cache",
+                           env=build_tools, explicit=True)
+    assert "offline retry" not in excinfo.value.cause
+    assert "⚠ lock validation is offline" not in capfd.readouterr().err

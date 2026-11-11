@@ -49,6 +49,18 @@ _RESOLVER_MARKERS = (
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
 
+# uv never reached the bytes it needed (index, direct URL, GitHub release asset):
+# no dependency was judged, so this is not a verdict on the requested set. Kept
+# after the build markers on purpose — a failed native build's traceback carries
+# download-looking lines, and only _BUILD_MARKERS tells the two apart.
+_RETRIEVAL_MARKERS = (
+    "failed to fetch",           # "Failed to fetch: <url>"
+    "request failed after",      # "Request failed after 3 retries in 45.8s"
+    "http status server error",  # "HTTP status server error (504 Gateway Timeout)"
+    "http status client error",  # 404 on a direct URL (moved/removed release asset)
+    "network connectivity is disabled",  # uv --offline with nothing cached
+)
+
 # The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
 # cannot date the file. uv words it as "no solution", but the index is at fault,
 # not the requested set, so it must never read as a dependency conflict (#135589).
@@ -60,6 +72,14 @@ UNDATED_INDEX_HINT = ("the package index did not report upload times, which lock
                       "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
                       "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
 
+# A fetch that never completed says nothing about the requirement set: retrying
+# is the remedy, and a current lock can still be validated offline, which only
+# compares uv.lock against pyproject.toml.
+RETRIEVAL_HINT = ("uv could not download a pinned file (index or release host unreachable); "
+                  "the lock is unchanged and nothing was resolved. Retry when the network "
+                  "recovers, or validate offline (`--offline`), which compares uv.lock with "
+                  "pyproject.toml.")
+
 # uv's own English diagnostic. A localized Windows tail (os error 1224) rides
 # along, but the marker that means "packages may be installed, only the
 # optional compile step failed" is this line. #124268
@@ -69,7 +89,11 @@ _BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
 # to ride the same path or repair/bootstrap never sees the retry signal, and so
 # does the build marker: a failed native build's traceback runs far past 2000
 # characters, and without it the failure reads as a fetch error, not a verdict.
-_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS)
+# The retrieval markers ride it too: a fetch failure followed by a verbose tail
+# would otherwise read as a plain tooling error, and the offline lock retry in
+# check_project_lock would never fire (reported by @kvnloo on #151231).
+_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS,
+                                            *_RETRIEVAL_MARKERS)
 
 # Retries after purging corrupt cached packages. Each round must name a package
 # not purged before, so this bounds a cache with several damaged entries, never
@@ -85,6 +109,15 @@ class ResolutionConflict(InstallError):
 
 class BuildFailure(InstallError):
     """A package's build backend ran and failed."""
+
+
+class RetrievalFailure(InstallError):
+    """uv could not fetch what it needed; nothing was resolved, so nothing is settled.
+
+    Distinct from :class:`ResolutionConflict`: the lock or the requirement set was
+    never judged. Callers that only *validate* a lock can retry offline against
+    uv's cache instead of failing a whole install on a flapping release host.
+    """
 
 
 def _is_bytecode_compile_failure(result: subprocess.CompletedProcess) -> bool:
@@ -105,8 +138,8 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     """Turn a failed `uv <stage>` into the right classified error.
 
     Resolver-conflict output → ResolutionConflict; a build backend that ran and
-    failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
-    with the tail of the output.
+    failed → BuildFailure; a fetch that never completed → RetrievalFailure;
+    anything else (tooling) → plain InstallError with the tail of the output.
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
@@ -118,7 +151,35 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
         from pm.build_compilers import missing_compiler_remedy
 
         return BuildFailure("venv", cause, missing_compiler_remedy(output))
+    if any(marker in lowered for marker in _RETRIEVAL_MARKERS):
+        return RetrievalFailure("venv", cause, RETRIEVAL_HINT)
     return InstallError("venv", cause)
+
+
+def retrieval_reason(text: str) -> str:
+    """Name a fetch failure in one short clause, from uv's tail or an error's cause.
+
+    ``HTTP status server error (504 Gateway Timeout)`` says more than the URL it
+    failed on, and a retry count says more than the URL too, so those lines win
+    over ``Failed to fetch: <url>``. The rest of uv's retry stack is noise in a
+    single-line warning.
+    """
+    lines = []
+    for line in text.splitlines():
+        cleaned = line.strip()
+        for prefix in ("cause: ", "error: "):
+            cleaned = cleaned.removeprefix(prefix)
+        if any(marker in cleaned.lower() for marker in _RETRIEVAL_MARKERS):
+            lines.append(cleaned)
+    for preferred in ("http status server error", "http status client error", "request failed after"):
+        for line in lines:
+            if preferred in line.lower():
+                return _shorten(line)
+    return _shorten(lines[0]) if lines else "the fetch failed"
+
+
+def _shorten(line: str, limit: int = 160) -> str:
+    return line if len(line) <= limit else line[:limit - 1] + "…"
 
 
 def _project_name(source: Path) -> str:

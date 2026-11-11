@@ -342,6 +342,25 @@ def test_classify_network_failure_stays_generic():
     assert not isinstance(err, ResolutionConflict)
 
 
+def test_classify_fetch_failure_keeps_the_network_cause():
+    """A 504 on a pinned wheel is a retrieval failure: nothing was resolved, retrying helps."""
+    from pm.environment import BuildFailure, RetrievalFailure, classify_uv_failure, retrieval_reason
+
+    output = ("error: Failed to generate package metadata for `kittentts==0.8.1 @ "
+              "direct+https://github.com/KittenML/KittenTTS/releases/download/0.8.1/"
+              "kittentts-0.8.1-py3-none-any.whl`\n"
+              "  cause: Failed to fetch: https://github.com/KittenML/KittenTTS/releases/download/"
+              "0.8.1/kittentts-0.8.1-py3-none-any.whl\n"
+              "  cause: HTTP status server error (504 Gateway Timeout)")
+    err = classify_uv_failure("lock", 2, output)
+    assert isinstance(err, RetrievalFailure)
+    assert "offline" in err.remedy
+    assert retrieval_reason(err.cause) == "HTTP status server error (504 Gateway Timeout)"
+    # A build that ran and failed outranks the download-looking lines in its traceback.
+    build = output + "\n  error: the build backend returned an error"
+    assert isinstance(classify_uv_failure("sync", 1, build), BuildFailure)
+
+
 def test_core_only_generation_carries_no_release_age_cutoff(layout):
     """A core-only install (hermes update) is a frozen sync: the cutoff there only gates the build
     tools uv fetches, and a mirror without upload times rejects every one of them (#135589)."""

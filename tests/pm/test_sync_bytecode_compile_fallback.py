@@ -75,3 +75,30 @@ def test_sync_does_not_retry_an_unrelated_uv_failure(tmp_path, monkeypatch):
         _env(tmp_path).sync(tmp_path)
     assert len(calls) == 1
     assert "--compile-bytecode" in calls[0]
+
+
+def test_streamed_lock_fetch_failure_preserves_offline_retry_signal(tmp_path, monkeypatch):
+    """Verbose output after a fetch error must not hide the offline-check trigger.
+
+    A lost retrieval marker makes check_lock raise a plain InstallError, so
+    check_project_lock never retries offline and the install fails on a 504.
+    """
+    fake_uv = tmp_path / "fake_uv.py"
+    fake_uv.write_text(
+        "print('error: Failed to fetch: https://example.invalid/pinned.whl')\n"
+        "print('N' * 4000)\n"
+        "raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    real_stream = environment._run_streaming
+
+    def spawn_fake_uv(command, **kwargs):
+        return real_stream([sys.executable, str(fake_uv), *command[1:]], **kwargs)
+
+    monkeypatch.setattr(environment, "_run_streaming", spawn_fake_uv)
+    monkeypatch.setattr(environment, "verbose_output", lambda: False)
+    # Without the retrieval markers in _STREAM_TAIL_MARKERS this raises a plain
+    # InstallError: the 4 000-character flood has evicted the only fetch line,
+    # so check_project_lock would never retry offline. The class is the assertion.
+    with pytest.raises(environment.RetrievalFailure):
+        _env(tmp_path, output=io.StringIO()).check_lock(tmp_path)

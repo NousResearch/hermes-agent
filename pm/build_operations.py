@@ -24,8 +24,20 @@ def check_project_lock(
     ``quiet`` captures uv's output instead of reporting it: for a caller that
     expects a stale lock and says so itself, the red failure tail is noise.
     The error still carries uv's message.
+
+    A validation that fails on a *fetch* is retried once with ``--offline``.
+    Validating rewrites nothing, and with a current lock the offline check only
+    compares ``uv.lock`` against ``pyproject.toml`` — both local — so a GitHub
+    release host returning 504 for an opt-in extra must not fail a test
+    environment whose venv is current. It compares the lock, it does not re-read
+    the pinned artifacts: a real install still downloads those. The retry
+    announces itself (stderr, always — a silent downgrade would hide that the
+    check was offline) and an offline check that fails too reports the network
+    cause, never a dependency conflict.
     """
-    from pm.environment import managed_environment
+    from dataclasses import replace
+
+    from pm.environment import RetrievalFailure, managed_environment, retrieval_reason
     from pm.operations import _require_install_allowed
 
     if not offline:
@@ -38,7 +50,29 @@ def check_project_lock(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=None if quiet else sys.stderr,
     )
-    environment.check_lock(source)
+    try:
+        environment.check_lock(source)
+    except RetrievalFailure as failure:
+        if offline:
+            raise
+        # Offline, validating a current lock needs no fetch: uv compares uv.lock
+        # against pyproject.toml, both local, so the verdict is the same without the
+        # network. That says nothing about the pinned remote artifacts — only a real
+        # install re-downloads those. Output is captured: a second red tail would read
+        # as a second failure.
+        try:
+            replace(environment, offline=True, output=None).check_lock(source)
+        except InstallError as offline_failure:
+            raise RetrievalFailure(
+                "venv",
+                f"{failure.cause}\nand the offline retry failed too: {offline_failure.cause}",
+                f"the network fetch failed ({retrieval_reason(failure.cause)}) and the offline "
+                f"check failed too; restore network access, then retry.",
+            ) from failure
+        print(f"⚠ lock validation is offline: {retrieval_reason(failure.cause)}; uv.lock matches "
+              f"pyproject.toml — validated without the network; the pinned remote artifacts were "
+              f"not re-downloaded (a real install still does)",
+              file=sys.stderr, flush=True)
 
 
 def export_requirements(

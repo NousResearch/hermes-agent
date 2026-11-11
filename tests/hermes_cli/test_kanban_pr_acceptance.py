@@ -23,7 +23,7 @@ def github(tmp_path, monkeypatch):
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                        {"context": "required", "app": {"databaseId": state.get("required_app", 1)}}]}}}}}}
             elif "/rules/branches/" in self.path:
                 value = [[]]
             elif "/check-runs" in self.path:
@@ -125,15 +125,20 @@ def test_newest_same_name_run_per_app_decides_acceptance(github):
         ([run(41, "success", old), run(42, "failure", new)], False),
         ([run(41, "success", old), run(42, None, None, status="queued")], False),
     ]
+    # Unpinned context: newest is per app, so one app's newer success never hides another's failure.
+    cases.append(([run(41, "failure", old, app=1), run(42, "success", new, app=2)], False))
     with connect() as conn:
         for runs, accepted in cases:
             github["runs"] = runs
+            github["required_app"] = None if len({r["app"]["id"] for r in runs}) > 1 else 1
             tid = kb.create_task(conn, title="rerun", completion_contract="acme/repo")
             assert kb.complete_task(conn, tid, result="done", metadata={
                 "published_pr": "https://github.com/acme/repo/pull/7"}) is accepted, runs
             receipt = json.loads(conn.execute(
                 "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
-            assert [c["id"] for c in receipt["checks"]] == [42]
+            expected = [41, 42] if github["required_app"] is None else [42]
+            assert sorted(c["id"] for c in receipt["checks"]) == expected
+        github.pop("required_app")
 
 
 @pytest.mark.platforms("linux")

@@ -142,6 +142,14 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 
 ### Runners
 
+The Unitalk Docker-only release path (`stable-release.yml`, `docker.yml`, and
+`stable-release-publication.yml`) and `sandbox-image.yml` use GitHub-hosted
+Ubuntu runners. Image builds use `ubuntu-24.04` for amd64 and
+`ubuntu-24.04-arm` for native arm64, with the standard Actions checkout and
+Docker Buildx/build-push actions. Main image builds allow 180 minutes on the
+smaller hosted machines; sandbox builds allow 90 minutes.
+Other CI and native desktop lanes still use the runner labels described below.
+
 `blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
 `32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
 `windows-latest-32-core` and `windows-latest-32-arm-core` are GitHub-hosted.

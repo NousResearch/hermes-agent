@@ -8,6 +8,7 @@ import pytest
 
 from agent.think_scrubber import THINK_TAG_NAMES
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer_transport import StreamTransport
 
 
 
@@ -1468,7 +1469,7 @@ class TestConfirmedFinalDeliveryConsultsCommentaryRecord:
         adapter.send_draft = AsyncMock(return_value=SimpleNamespace(success=True))
         adapter.send = AsyncMock(return_value=SimpleNamespace(success=False, message_id=None, error="429"))
         c = GatewayStreamConsumer(adapter=adapter, chat_id="c1")
-        c._use_draft_streaming, c._draft_id = True, "d1"
+        c._transport, c._draft_id = StreamTransport.DRAFT, "d1"
         text = "Native compaction is active."
 
         async def stream_then_finalize():

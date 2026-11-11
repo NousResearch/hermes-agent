@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import logging
 import time
+import enum
 from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
@@ -21,6 +22,14 @@ logger = logging.getLogger("gateway.stream_consumer")
 # until the interval elapses, so honouring a 30s Telegram retry_after costs nothing but a
 # stale preview; anything longer is left to the strike counter and the fallback send path.
 _MAX_EDIT_BACKOFF_SECS = 30.0
+
+
+class StreamTransport(enum.Enum):
+    """How progressive output reaches the chat this run. Resolved once in run(); a failed draft or
+    native transport falls back to EDIT for the rest of the run and never comes back."""
+    EDIT = enum.auto()  # first send, then edits (or one buffered send)
+    DRAFT = enum.auto()  # animated adapter.send_draft frames; the final is a first send
+    NATIVE = enum.auto()  # the platform's own stream message (WeCom msgtype "stream"), the ONLY channel
 
 
 class StreamTransportMixin:
@@ -83,7 +92,7 @@ class StreamTransportMixin:
     def _degrade_native_to_buffered_send(self) -> None:
         """Leave native mode; buffer_only so post-boundary output is ONE send() at got_done
         (mid-stream flushes would create multiple messages on non-editable platforms)."""
-        self._use_native_streaming = False
+        self._transport = StreamTransport.EDIT
         self._close_native_state()
         self.cfg.buffer_only = True
 
@@ -167,8 +176,8 @@ class StreamTransportMixin:
         """Emit one draft frame; any failure permanently disables drafts for this run.
         Drafts have no message_id and clear on the client when the final send lands."""
         if self._draft_id is None:
-            # Should never happen (set in tandem with _use_draft_streaming in run()).
-            self._use_draft_streaming = False
+            # Should never happen (set in tandem with StreamTransport.DRAFT in run()).
+            self._transport = StreamTransport.EDIT
             return False
         try:
             result = await self.adapter.send_draft(
@@ -196,14 +205,14 @@ class StreamTransportMixin:
             logger.debug("send_draft returned success=False, disabling draft transport: %s",
                          getattr(result, "error", "unknown"))
         self._draft_failures += 1
-        self._use_draft_streaming = False
+        self._transport = StreamTransport.EDIT
         return False
 
     async def _abandon_native_stream(self) -> None:
         """Seal an orphaned draft stream on turn death (stale exit / cancel): else the live
         indicator stays forever and armed interception state leaks into the next turn.
         Never sets delivery flags."""
-        if not self._use_draft_streaming:
+        if self._transport is not StreamTransport.DRAFT:
             return
         if getattr(type(self.adapter), "abandon_open_draft", None) is None:
             return
@@ -326,7 +335,7 @@ class StreamTransportMixin:
         if not visible_stripped:
             # Native streams MUST still get a finalize frame (placeholder) to close
             # the thinking bubble, e.g. for a MEDIA-only response.
-            if (finalize and self._use_native_streaming and self._native_stream_opened
+            if (finalize and self._transport is StreamTransport.NATIVE and self._native_stream_opened
                     and await self._try_frame(self._send_frame("✅", finalize=True),
                                               "Finalize empty stream failed: %s")):
                 self._mark_final_delivered()
@@ -346,11 +355,11 @@ class StreamTransportMixin:
 
         # A failed native/draft transport disables itself and falls through so the
         # accumulated text still reaches the user via edit/send.
-        if self._use_native_streaming:
+        if self._transport is StreamTransport.NATIVE:
             ok = await self._native_push(text, finalize=finalize, is_turn_final=is_turn_final)
             if ok is not None:
                 return ok
-        if self._use_draft_streaming and self._message_id is None:
+        if self._transport is StreamTransport.DRAFT and self._message_id is None:
             ok = await self._draft_push(text, pre_fence_text, finalize=finalize,
                                         is_turn_final=is_turn_final)
             if ok is not None:
@@ -376,7 +385,7 @@ class StreamTransportMixin:
         a boundary.  None when native was disabled (seed/frame failure) → caller falls through."""
         if not self._native_stream_opened and text:
             if not await self._try_seed_frame("Re-seed failed, disabling native streaming: %s"):
-                self._use_native_streaming = False
+                self._transport = StreamTransport.EDIT
                 return None
             self._native_stream_opened = True
             self._awaiting_reopen_after_boundary = False
@@ -413,7 +422,7 @@ class StreamTransportMixin:
             self._delivered_final_text = None
         # Subsequent frames take the edit/send fallback; the adapter marks the chat
         # expired so it doesn't retry the dead stream.
-        self._use_native_streaming = False
+        self._transport = StreamTransport.EDIT
         # Best-effort close of an opened bubble (the seed frame has zero length but
         # still opens it).  DO NOT mark delivered: the frame closes the bubble but
         # WeCom may not render the content (errcode 6000 race).

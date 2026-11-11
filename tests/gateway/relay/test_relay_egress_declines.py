@@ -631,7 +631,7 @@ def test_declined_INITIAL_draft_is_not_retried_as_a_plain_send():
     StreamTransportMixin: ops were ['draft', 'send'].
     """
     from gateway.platforms.base import SendResult
-    from gateway.stream_consumer_transport import StreamTransportMixin
+    from gateway.stream_consumer_transport import StreamTransport, StreamTransportMixin
 
     adapter, connector = _code_only_adapter()
 
@@ -640,7 +640,7 @@ def test_declined_INITIAL_draft_is_not_retried_as_a_plain_send():
             self.adapter = adapter
             self.chat_id = "C1"
             self._draft_id = 1
-            self._use_draft_streaming = True
+            self._transport = StreamTransport.DRAFT
             self._draft_failures = 0
             self._initial_reply_to_id = None
             self._already_sent = False
@@ -708,7 +708,7 @@ def test_declined_stream_edit_does_not_send_the_unseen_tail():
     """
     from gateway.platforms.base import SendResult
     from gateway.stream_consumer_fallback import StreamFallbackMixin
-    from gateway.stream_consumer_transport import StreamTransportMixin
+    from gateway.stream_consumer_transport import StreamTransport, StreamTransportMixin
 
     adapter, connector = _code_only_adapter()
 
@@ -722,7 +722,7 @@ def test_declined_stream_edit_does_not_send_the_unseen_tail():
             self._last_sent_text = ""
             self._final_content_delivered = False
             self._draft_id = None
-            self._use_draft_streaming = False
+            self._transport = StreamTransport.EDIT
             self._draft_failures = 0
             self._fallback_prefix = ""
             self._flood_strikes = 0
@@ -853,7 +853,7 @@ def test_declined_draft_frame_is_terminal_for_the_run():
     classifier it missed exactly this reply.
     """
     from gateway.platforms.base import SendResult
-    from gateway.stream_consumer_transport import StreamTransportMixin
+    from gateway.stream_consumer_transport import StreamTransport, StreamTransportMixin
 
     class _Adapter:
         def __init__(self, result):
@@ -869,7 +869,7 @@ def test_declined_draft_frame_is_terminal_for_the_run():
             self.adapter = adapter
             self.chat_id = "C1"
             self._draft_id = "d1"
-            self._use_draft_streaming = True
+            self._transport = StreamTransport.DRAFT
             self._draft_failures = 0
             self._last_sent_text = None
             self._egress_declined = False
@@ -889,7 +889,7 @@ def test_declined_draft_frame_is_terminal_for_the_run():
     consumer2 = _Consumer(adapter2)
     assert asyncio.run(consumer2._send_draft_frame("partial")) is False
     assert consumer2._egress_declined is False
-    assert consumer2._use_draft_streaming is False
+    assert consumer2._transport is StreamTransport.EDIT
 
 
 # ── round 10 blockers ──────────────────────────────────────────────────────

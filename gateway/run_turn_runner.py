@@ -561,7 +561,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         prompt) must finalize the current stream first, or post-interaction output keeps updating the
         OLD bubble above the prompt. Runs on the agent thread; the consumer serializes via its queue."""
         sc = self._stream_consumer()
-        if not (sc and getattr(sc, "_use_native_streaming", False)):
+        if not (sc and getattr(sc, "accepts_tool_progress", False)):
             return True
         cancelled_flag = None
         try:

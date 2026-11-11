@@ -264,7 +264,7 @@ class TestNativeStreamingFallback:
         consumer.finish()
         await task
 
-        assert consumer._use_native_streaming is False
+        assert consumer.accepts_tool_progress is False
         adapter.send.assert_awaited()
 
     @pytest.mark.asyncio
@@ -289,8 +289,7 @@ class TestNativeStreamingFallback:
         consumer.finish()
         await task
 
-        assert consumer._use_native_streaming is True
-        assert consumer._use_draft_streaming is False
+        assert consumer.accepts_tool_progress is True
         adapter.send_draft.assert_not_awaited()
 
 
@@ -400,7 +399,7 @@ class TestClarifyReopenBoundary:
         await asyncio.wait_for(fut, timeout=1.0)
 
         # Native must stay enabled and buffer_only must NOT be set.
-        assert consumer._use_native_streaming is True
+        assert consumer.accepts_tool_progress is True
         assert consumer.cfg.buffer_only is False
         assert consumer._native_stream_opened is False  # finalized, awaiting reopen
 
@@ -484,7 +483,7 @@ class TestClarifyReopenBoundary:
         fut = boundary[0] if isinstance(boundary, tuple) else boundary
         await asyncio.wait_for(fut, timeout=1.0)
 
-        assert consumer._use_native_streaming is False
+        assert consumer.accepts_tool_progress is False
         assert consumer.cfg.buffer_only is True
 
         consumer.finish()
@@ -561,7 +560,7 @@ class TestClarifyEagerReseed:
         # State: reopen-pending, no stream open, native still live.
         assert consumer._awaiting_reopen_after_boundary is True
         assert consumer._native_stream_opened is False
-        assert consumer._use_native_streaming is True
+        assert consumer.accepts_tool_progress is True
         # No eager seed yet (request_reopen_seed not called).  Only the initial
         # seed + the boundary finalize should exist — no NEW empty seed.
         seed_frames = [
@@ -748,13 +747,13 @@ class TestClarifyEagerReseed:
         consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
 
         task = await self._to_reopen_pending(consumer, adapter)
-        assert consumer._use_native_streaming is True  # still on after boundary
+        assert consumer.accepts_tool_progress is True  # still on after boundary
 
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)  # process _REOPEN_SEED → seed fails
 
         assert await self._wait_until(
-            lambda: consumer._use_native_streaming is False
+            lambda: consumer.accepts_tool_progress is False
         ), "failed eager seed must disable native streaming"
         assert consumer.cfg.buffer_only is True
         assert consumer._native_stream_opened is False
@@ -852,7 +851,7 @@ class TestClarifyEagerReseed:
 
     @pytest.mark.asyncio
     async def test_degraded_post_answer_lands_single_bubble(self):
-        """eager 再次 seed 失败降级（_use_native_streaming=False + buffer_only=True）
+        """eager 再次 seed 失败降级（StreamTransport.EDIT + buffer_only=True）
         后，继续喂 post-answer 内容并 finish，内容必须以恰好一次 send() 落地为单气泡，
         且绝不重发 pre-clarify 的旧内容（boundary 时 _reset_segment_state 已清空 buffer）。
 
@@ -911,7 +910,7 @@ class TestClarifyEagerReseed:
         await self._drain(consumer, 0.05)  # _REOPEN_SEED → 第二次 seed 失败 → 降级
 
         assert await self._wait_until(
-            lambda: consumer._use_native_streaming is False
+            lambda: consumer.accepts_tool_progress is False
         ), "eager seed 失败必须关闭 native streaming"
         assert consumer.cfg.buffer_only is True
 
@@ -1021,7 +1020,7 @@ class TestClarifyEagerReseed:
         # 第二轮 boundary 后：回到 reopen-pending，stream 已关。
         assert consumer._awaiting_reopen_after_boundary is True
         assert consumer._native_stream_opened is False
-        assert consumer._use_native_streaming is True
+        assert consumer.accepts_tool_progress is True
         # NOTE: 与 task 预期不同 —— 产品代码在 boundary 处理里并不重置
         # _reopen_seeded_eagerly（见 code-review 观察点 O2：consumer 每 turn 新建，
         # 残留无害）。这里断言真实行为（残留 True），并在下方证明该残留不会
@@ -1060,8 +1059,8 @@ class TestNativeCommentaryPreservesAccumulated:
 
     Drives the exact ``on_delta -> on_commentary -> on_delta`` sequence on a
     real BasePlatformAdapter subclass so the
-    ``isinstance(BasePlatformAdapter)`` + ``_use_native_streaming`` gate is
-    satisfied and the new ``elif self._use_native_streaming`` branch runs.
+    ``isinstance(BasePlatformAdapter)`` + ``StreamTransport.NATIVE`` gate is
+    satisfied and the new ``elif`` native-transport branch runs.
     """
 
     async def _wait_until(self, predicate, timeout: float = 1.0) -> bool:

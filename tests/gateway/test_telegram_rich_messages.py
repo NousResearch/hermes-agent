@@ -19,6 +19,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer_transport import StreamTransport
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
 
@@ -407,7 +408,7 @@ async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
         "12345",
         StreamConsumerConfig(transport="auto", chat_type="dm", cursor=""),
     )
-    consumer._use_draft_streaming = True
+    consumer._transport = StreamTransport.DRAFT
 
     delivered = await consumer._send_or_edit(RICH_CONTENT, finalize=True)
 

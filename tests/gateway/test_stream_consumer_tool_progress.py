@@ -16,6 +16,7 @@ from gateway.stream_consumer import (
     GatewayStreamConsumer,
     StreamConsumerConfig,
 )
+from gateway.stream_consumer_transport import StreamTransport
 
 
 def _make_native_streaming_adapter(*, supports_native: bool = True):
@@ -67,7 +68,7 @@ def _make_consumer(*, native_streaming: bool = True) -> GatewayStreamConsumer:
     cfg = StreamConsumerConfig(chat_type="dm", cursor="▌")
     consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
     # Force native streaming resolution
-    consumer._use_native_streaming = native_streaming
+    consumer._transport = StreamTransport.NATIVE if native_streaming else StreamTransport.EDIT
     return consumer
 
 

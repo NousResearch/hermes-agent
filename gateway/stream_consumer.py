@@ -34,7 +34,7 @@ from gateway.response_filters import (
     strip_trailing_silence_marker as _strip_trailing_silence_marker)
 from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
-from gateway.stream_consumer_transport import StreamTransportMixin
+from gateway.stream_consumer_transport import StreamTransport, StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
 
@@ -169,17 +169,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._before_finalize_notified = False
         self._reset_message_state()
 
-        # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
-        # the final still uses first-send; the first failure disables drafts.  Native
-        # (WeCom msgtype "stream"): the ONLY channel — any failure falls back to edit/send.
-        self._use_draft_streaming = False
+        # Transport, resolved in run() (see StreamTransport).
+        self._transport = StreamTransport.EDIT
         self._draft_id: Optional[int] = None
         self._draft_failures = 0
         # TERMINAL authorization refusal for THIS RUN (see _send_draft_frame).
         # Per-run state, constructed fresh each turn, so a refusal can never
         # mute a healthy destination on a later turn.
         self._egress_declined = False
-        self._use_native_streaming = False
         self._native_stream_opened = False  # seed sent: bubble open, zero content
         self._native_last_pushed_len = 0    # throttle under WeCom's 30 frames/min
         # Boundary state from close_for_approval_prompt() (boundaries are processed
@@ -246,7 +243,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     @property
     def accepts_tool_progress(self) -> bool:
         """True only when native streaming is active (gates in-stream tool progress)."""
-        return self._use_native_streaming
+        return self._transport is StreamTransport.NATIVE
 
     def on_tool_progress(self, line: str) -> None:
         """Thread-safe: overlay a tool-progress line in the native bubble until the next delta."""
@@ -398,7 +395,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         with contextlib.suppress(RuntimeError):
             loop = asyncio.get_running_loop()
         boundary_future = loop.create_future() if loop else concurrent.futures.Future()
-        if not self._use_native_streaming:
+        if self._transport is not StreamTransport.NATIVE:
             boundary_future.set_result(True)
             return boundary_future
         # Instance attributes are race-free: boundaries are processed one at a time.
@@ -427,7 +424,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _reopen_seed_pending(self) -> bool:
         """Native stream, reopen requested after a boundary, nothing open yet."""
-        return (self._use_native_streaming and self._awaiting_reopen_after_boundary
+        return (self._transport is StreamTransport.NATIVE and self._awaiting_reopen_after_boundary
                 and not self._native_stream_opened)
 
     def request_reopen_seed(self) -> None:
@@ -472,7 +469,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Telegram-shaped drafts: bump draft_id so the next segment animates as a fresh
         # preview below the tool-progress bubbles.  Stream-is-the-message adapters keep
         # ONE stream per turn — a bump there left one frozen message per segment.
-        if self._use_draft_streaming and not self._stream_is_message():
+        if self._transport is StreamTransport.DRAFT and not self._stream_is_message():
             self._bump_draft_id()
 
     def _bump_draft_id(self) -> None:
@@ -586,7 +583,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     self._accumulated = _strip_trailing_silence_marker(self._accumulated)
 
                 if self._should_edit(tick) and (
-                    self._accumulated or (self._use_native_streaming and self._tool_progress_active)
+                    self._accumulated or (self._transport is StreamTransport.NATIVE and self._tool_progress_active)
                 ):
                     # Seal first: it clears the message id, so a remainder still over the limit
                     # is split again below. A plain first send would let the adapter split it and
@@ -595,7 +592,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     await self._seal_overflow_heads()
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
-                    if not self._use_native_streaming and self._first_send_overflows():
+                    if self._transport is not StreamTransport.NATIVE and self._first_send_overflows():
                         if await self._split_first_send(tick):
                             return
                         if self._first_send_overflows():
@@ -647,22 +644,21 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _start_transports(self) -> None:
         """Resolve native/draft transport; native wins (adapters declaring it can't edit).
         The empty seed frame shows "typing" before the first token; on failure → edit path."""
-        self._use_native_streaming = self._resolve_native_streaming()
-        if self._use_native_streaming:
+        if self._resolve_native_streaming():
+            self._transport = StreamTransport.NATIVE
             logger.debug("Stream consumer using native-stream transport (chat=%s)", self.chat_id)
             if await self._try_seed_frame("Native streaming seed frame raised; disabling native",
                                           exc_info=True):
                 self._native_stream_opened = True
-                self._use_draft_streaming = False
                 return
-            self._use_native_streaming = False
-        self._use_draft_streaming = self._resolve_draft_streaming()
-        # Native draft streaming: bump the draft_id so the next text segment animates as a fresh preview
-        # below the tool-progress bubbles, not over the prior segment's already-finalized draft. This is how
-        # we avoid the "inter-tool-call text leak" failure mode openclaw documented in their issue #32535 —
-        # each text block becomes its own visible message via the finalize, then a new draft animates for
-        # the next one.
-        if self._use_draft_streaming:
+            self._transport = StreamTransport.EDIT
+        if self._resolve_draft_streaming():
+            self._transport = StreamTransport.DRAFT
+            # Native draft streaming: bump the draft_id so the next text segment animates as a fresh preview
+            # below the tool-progress bubbles, not over the prior segment's already-finalized draft. This is
+            # how we avoid the "inter-tool-call text leak" failure mode openclaw documented in their issue
+            # #32535 — each text block becomes its own visible message via the finalize, then a new draft
+            # animates for the next one.
             self._bump_draft_id()
             logger.debug("Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                          self.chat_id, self._draft_id)
@@ -690,7 +686,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
             elif kind is _TOOL_PROGRESS:  # keep draining to batch simultaneous lines
-                if self._use_native_streaming:
+                if self._transport is StreamTransport.NATIVE:
                     self._tool_progress_lines.append(item[1])
                     self._tool_progress_active = True
             elif kind is _APPROVAL_BOUNDARY:
@@ -776,7 +772,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return True
         if self.cfg.buffer_only:
             return False
-        if self._use_native_streaming:
+        if self._transport is StreamTransport.NATIVE:
             # No platform edit-rate limit: push every delta immediately.
             should_edit = bool(self._accumulated) or self._tool_progress_active
         else:
@@ -877,7 +873,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
-            if self._use_native_streaming:
+            if self._transport is StreamTransport.NATIVE:
                 display_text = self._compose_frame_content()
                 if display_text and self.cfg.cursor:
                     display_text += self.cfg.cursor
@@ -886,7 +882,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
         # A got_done FRESH send via the draft transport already carries finalize=True,
         # unlike an EDIT, which REQUIRES_EDIT_FINALIZE adapters still need a pass for.
-        tick.draft_final_fresh_send = (tick.got_done and self._use_draft_streaming
+        tick.draft_final_fresh_send = (tick.got_done and self._transport is StreamTransport.DRAFT
                                        and self._message_id is None)
         # Segment break finalizes so platforms needing explicit closure (DingTalk AI
         # Cards) don't leave the segment stuck loading; it closes a preamble, not the
@@ -914,7 +910,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             await self._close_empty_native_bubble("Eager-seed empty finalize failed: %s")
             logger.debug("Eager reopen seed but no post-answer content — "
                          "closed empty typing bubble (turn=%s)", self._turn_id)
-        elif self._use_native_streaming:
+        elif self._transport is StreamTransport.NATIVE:
             # Native streams MUST close with finish=true even when empty (tool-only
             # turns) — placeholder if needed.
             if not tick.update_visible:
@@ -961,8 +957,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _cumulative_transport(self) -> bool:
         """Stream-is-the-message drafts and WeCom native: one append-only stream per turn."""
-        stream_draft = self._stream_is_message() and self._use_draft_streaming
-        return stream_draft or self._use_native_streaming
+        stream_draft = self._stream_is_message() and self._transport is StreamTransport.DRAFT
+        return stream_draft or self._transport is StreamTransport.NATIVE
 
     async def _deliver_commentary(self, commentary_text: str) -> None:
         """Post commentary as its own message.  Cumulative transports keep the stream going —

@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer_transport import StreamTransport
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ async def test_approval_boundary_finalizes_and_disables_native(mock_adapter, con
         config=consumer_config,
     )
 
-    consumer._use_native_streaming = True
+    consumer._transport = StreamTransport.NATIVE
     consumer._native_stream_opened = True
     consumer._turn_id = "turn_123"
     consumer._initial_reply_to_id = "msg_456"
@@ -71,7 +72,7 @@ async def test_approval_boundary_finalizes_and_disables_native(mock_adapter, con
     assert finalize_text == "下面我来执行：先确认最新分区"
 
     # Native streaming must be disabled for post-approval output
-    assert consumer._use_native_streaming is False, (
+    assert consumer.accepts_tool_progress is False, (
         "Native streaming must be disabled — post-approval goes via send()"
     )
     assert consumer._native_stream_opened is False
@@ -94,7 +95,7 @@ async def test_approval_boundary_uses_placeholder_when_no_accumulated(mock_adapt
         config=consumer_config,
     )
 
-    consumer._use_native_streaming = True
+    consumer._transport = StreamTransport.NATIVE
     consumer._native_stream_opened = True
     consumer._turn_id = "turn_123"
     consumer._accumulated = ""  # No text accumulated
@@ -137,7 +138,7 @@ async def test_boundary_uses_custom_placeholder_when_no_accumulated(mock_adapter
         config=consumer_config,
     )
 
-    consumer._use_native_streaming = True
+    consumer._transport = StreamTransport.NATIVE
     consumer._native_stream_opened = True
     consumer._turn_id = "turn_123"
     consumer._accumulated = ""  # No text accumulated
@@ -161,7 +162,7 @@ async def test_boundary_uses_custom_placeholder_when_no_accumulated(mock_adapter
     assert finalize_text == "💬 等待你的选择..."
 
     # Native streaming disabled so post-answer output opens a fresh bubble.
-    assert consumer._use_native_streaming is False
+    assert consumer.accepts_tool_progress is False
     assert consumer.cfg.buffer_only is True
 
     consumer.finish()
@@ -187,7 +188,7 @@ async def test_approval_boundary_post_approval_one_shot_send(mock_adapter, consu
         config=consumer_config,
     )
 
-    consumer._use_native_streaming = True
+    consumer._transport = StreamTransport.NATIVE
     consumer._native_stream_opened = True
     consumer._turn_id = "turn_123"
     consumer._accumulated = "Pre-approval text"
@@ -203,7 +204,7 @@ async def test_approval_boundary_post_approval_one_shot_send(mock_adapter, consu
 
     # Verify buffer_only is set
     assert consumer.cfg.buffer_only is True, "Must set buffer_only after boundary"
-    assert consumer._use_native_streaming is False
+    assert consumer.accepts_tool_progress is False
 
     # Send post-approval content — should NOT trigger any immediate send
     mock_adapter.send_stream_frame.reset_mock()
@@ -255,7 +256,7 @@ async def test_approval_boundary_stream_not_opened_at_boundary_time(mock_adapter
 
     # Let run() do its normal seed (which sets _native_stream_opened=True)
     # Then manually close it before boundary processes
-    consumer._use_native_streaming = True
+    consumer._transport = StreamTransport.NATIVE
     consumer._native_stream_opened = True
     consumer._turn_id = "turn_123"
     consumer._accumulated = "Some text"
@@ -275,7 +276,7 @@ async def test_approval_boundary_stream_not_opened_at_boundary_time(mock_adapter
 
     assert result is True
     # Native streaming should be disabled after boundary
-    assert consumer._use_native_streaming is False
+    assert consumer.accepts_tool_progress is False
 
     consumer.finish()
     await asyncio.sleep(0.05)
@@ -295,7 +296,7 @@ async def test_approval_boundary_finalize_fails_fallback_send_succeeds(mock_adap
         config=consumer_config,
     )
 
-    consumer._use_native_streaming = True
+    consumer._transport = StreamTransport.NATIVE
     consumer._native_stream_opened = True
     consumer._turn_id = "turn_123"
     consumer._accumulated = "Pre-approval text"
@@ -335,7 +336,7 @@ async def test_approval_boundary_finalize_and_fallback_both_fail(mock_adapter, c
         config=consumer_config,
     )
 
-    consumer._use_native_streaming = True
+    consumer._transport = StreamTransport.NATIVE
     consumer._native_stream_opened = True
     consumer._turn_id = "turn_123"
     consumer._accumulated = "Pre-approval text"

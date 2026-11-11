@@ -221,7 +221,7 @@ class TestDraftFallbackOnFailure:
 
         # The consumer attempted draft, hit failure, disabled drafts.
         assert consumer._draft_failures >= 1
-        assert consumer._use_draft_streaming is False
+        assert len(adapter.draft_calls) == 1
         # Final message delivered via the regular send path.
         adapter.send.assert_awaited()
 

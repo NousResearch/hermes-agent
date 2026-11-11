@@ -678,3 +678,20 @@ def test_mcp_freeform_param_stays_open_through_both_stages():
     assert props["maybe"]["additionalProperties"] is True
     assert props["sealed"]["additionalProperties"] is False
     assert "additionalProperties" not in props["shaped"]
+
+
+def test_object_shaped_by_other_keywords_is_not_reopened():
+    """An object closed or shaped without a direct ``properties`` map (``allOf`` +
+    ``unevaluatedProperties: false``, ``$ref``, ``patternProperties``) is not free-form:
+    adding ``additionalProperties: true`` would let extra keys through. Both stages."""
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    source = {"type": "object", "properties": {
+        "closed": {"type": "object", "allOf": [{"properties": {"a": {"type": "string"}}}],
+                   "unevaluatedProperties": False},
+        "patterned": {"type": "object", "patternProperties": {"^x_": {"type": "string"}}},
+        "ref": {"type": "object", "$ref": "#/$defs/Shape"},
+    }, "$defs": {"Shape": {"type": "object", "properties": {"b": {"type": "integer"}}}}}
+    for params in (copy.deepcopy(source), _normalize_mcp_input_schema(copy.deepcopy(source))):
+        props = sanitize_tool_schemas([_tool("t", params)])[0]["function"]["parameters"]["properties"]
+        for name in ("closed", "patterned", "ref"):
+            assert "additionalProperties" not in props[name], (name, props[name])

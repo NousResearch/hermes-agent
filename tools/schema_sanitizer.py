@@ -299,11 +299,19 @@ def _keep_freeform_open(source: Any, sanitized: Any) -> None:
 
     ``_sanitize_node`` gives it ``properties: {}`` for llama.cpp, which some models read as
     "no fields" and answer with ``{}`` on every call. The marker keeps "any keys allowed"
-    while the empty map stays for llama.cpp. An explicit ``additionalProperties`` wins."""
-    declared = isinstance(source, dict) and isinstance(source.get("properties"), dict)
-    if (not declared and isinstance(sanitized, dict) and sanitized.get("type") == "object"
-            and "additionalProperties" not in sanitized):
+    while the empty map stays for llama.cpp. Free-form = the source names no shape keyword
+    at all; one that shapes or closes the object elsewhere (``allOf`` + ``unevaluatedProperties:
+    false``, ``$ref``, ``patternProperties``, an explicit ``additionalProperties``) is left alone."""
+    shaped = isinstance(source, dict) and bool(source.keys() & _OBJECT_SHAPE_KEYS)
+    if (not shaped and isinstance(sanitized, dict)
+            and sanitized.get("type") == "object" and "additionalProperties" not in sanitized):
         sanitized["additionalProperties"] = True
+
+
+_OBJECT_SHAPE_KEYS = frozenset({
+    "properties", "additionalProperties", "patternProperties", "unevaluatedProperties",
+    "propertyNames", "dependentSchemas", "dependencies", "allOf", "anyOf", "oneOf", "not",
+    "if", "then", "else", "$ref", "$dynamicRef"})
 
 
 def _sanitize_node(node: Any, path: str) -> Any:

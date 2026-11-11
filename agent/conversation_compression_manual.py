@@ -165,4 +165,6 @@ def render_compress_result(result: CompressResult, *, prefix: str = "") -> list[
     if result.status == "nothing_to_do":
         return [f"{prefix}Nothing to compress yet."]
     summary = result.summary or {}
-    return [f"{prefix}{line}" for line in (summary.get("headline"), summary.get("token_line"), summary.get("note")) if line]
+    return [f"{prefix}{line}" for line in (
+        summary.get("headline"), summary.get("token_line"), summary.get("note"), summary.get("receipt_line"),
+    ) if line]

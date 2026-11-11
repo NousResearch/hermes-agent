@@ -1,0 +1,30 @@
+name: ownmachine
+title: OwnMachine
+repo: https://github.com/rbur0425/ownmachine
+sha: a93fbfec22281a01031a62629294e280fca4115b
+subdir: plugin
+description: A persistent private macOS VM workspace for Hermes with SSH/MCP and human-controlled browser access.
+maintainer: rbur0425
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.7.0"
+docs_url: https://github.com/rbur0425/ownmachine#readme
+readme: true
+platforms: [linux, macos] # Hermes runtime; guest host still requires Apple Silicon macOS.
+screenshots:
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/a93fbfec22281a01031a62629294e280fca4115b/docs/media/catalog/human-control.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/a93fbfec22281a01031a62629294e280fca4115b/docs/media/catalog/agent-control.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/a93fbfec22281a01031a62629294e280fca4115b/docs/media/catalog/google-task.png
+known_issues:
+  - Declares websockets==15.0.1 for same-profile authenticated gateway scheduling; Hermes requests dependency consent during installation.
+  - Manual Mac/guest setup, firewall installation and macOS permission grants are required.
+  - Independent ALF-only random-port blocking and reboot persistence of the new security setup are unverified.
+  - One initial guest boot hung; later restart checks passed.
+  - Model-driven pixel-click acceptance is deferred; cloud Mac hosting is unverified.
+  - PolyForm Noncommercial 1.0.0; commercial use outside its permissions requires a separate license.
+capabilities:
+  provides_tools: [ownmachine_status]
+  provides_hooks: [on_session_open]
+  provides_middleware: [tool_execution]
+  requires_env: []

@@ -1,0 +1,34 @@
+name: rung
+repo: https://github.com/CalQuity/rung
+sha: 970be4f506c496586a7fec8b818491ceab602e4b
+subdir: hermes-plugin
+description: >-
+  A verification kit for agent-written code, enforced inside Hermes. Rung builds the kit for a repository
+  (linters and type checkers, tests, property tests that must catch planted bugs, security gates, a
+  feature map the person approves with app-driving scripts, TLA+ and Lean models) and records every
+  verdict against the exact bytes it checked; a verdict expires when those bytes change. Before Hermes
+  ends a turn in which it edited code, a pre_verify hook asks Rung's local ledger whether the checks
+  covering those files have a fresh pass, and sends Hermes back with the check ids when they do not (at
+  most two continuations per turn). Tools rung_check, rung_plan, rung_kit and rung_map return the CLI's
+  JSON views; feature decisions are /rung slash commands only, never tools; a bundled skill sets the kit
+  up. Every verdict comes from a tool, never from a model. Disclosure: the tools run the Rung CLI as a
+  subprocess (argument list, no shell); rung_check then runs the commands in the project's own
+  rung.toml (its test, lint and build commands and installed scanners) without Hermes's per-command
+  approval prompt, inheriting Hermes's environment; the hook only reads the ledger. rung_map drafting
+  calls the model CLI chosen in rung.toml (claude, codex or an OpenAI-compatible endpoint), which reads
+  the project's source. No network calls from the plugin itself; checks may make them (osv-scanner
+  queries OSV, the deps check queries PyPI or npm). Nothing waits for a person. Rung writes verdicts
+  under .rung/ in the project. No credentials, no telemetry. Requires rung-cli 0.4.
+maintainer: CalQuity
+tier: community
+category: tools
+requires_hermes: ">=0.20"
+docs_url: https://github.com/CalQuity/rung/tree/main/hermes-plugin#readme
+version: "0.4.0"
+title: Rung
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [rung_check, rung_plan, rung_kit, rung_map]
+  provides_hooks: [pre_verify]
+  provides_middleware: []
+  requires_env: []

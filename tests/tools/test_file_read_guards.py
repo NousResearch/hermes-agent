@@ -728,6 +728,26 @@ class TestOverlappingReadDedup(unittest.TestCase):
         self.assertNotIn("dedup", again)
         self.assertIn("brand-new 1", again["content"])
 
+    def test_seen_secret_line_keeps_a_whole_read_redacted_for_the_write_guard(self):
+        """Omitting a seen line is presentation only: a whole-file read whose page holds a
+        redacted secret still grants no overwrite baseline, so write_file is refused."""
+        with open(self._tmpfile, "w", encoding="utf-8", newline="\n") as f:
+            f.write("token=SECRET\npublic two\npublic three\n")
+
+        def fake_redact(text, **_):
+            return text.replace("SECRET", "«redacted»")
+
+        with patch("tools.file_tools.redact_sensitive_text", side_effect=fake_redact):
+            self.assertIn("«redacted»", self._read(1, 1)["content"])
+            whole = self._read(1, 3)
+        self.assertEqual(whole.get("omitted_lines"), "1")
+        self.assertNotIn("SECRET", json.dumps(whole))
+        written = json.loads(write_file_tool(self._tmpfile, "token=«redacted»\npublic two\npublic three\n",
+                                             task_id="ov"))
+        self.assertIn("Refusing to overwrite", written.get("error", ""), written)
+        with open(self._tmpfile, encoding="utf-8") as f:
+            self.assertIn("SECRET", f.read())
+
     def test_edit_makes_the_whole_window_readable_again(self):
         self._read(2158, 15)
         # write_file_tool would refuse this: the task only read a partial view, and

@@ -1,15 +1,15 @@
 name: signal-atlas
 title: Dive In
 repo: https://github.com/RahmelJackson/dive-in-hermes
-sha: 03ce9f71d5608cf2ca6270efc0ddb14bf1115760
-version: "0.26.0"
+sha: 77951108d13142f1c9d72f6c9f30644bc89ec217
+version: "0.26.1"
 description: Turn a public source into a visual investigation with source-linked claims, charts, and follow-ups.
 maintainer: RahmelJackson
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
 screenshots:
-  - https://raw.githubusercontent.com/RahmelJackson/dive-in-hermes/03ce9f71d5608cf2ca6270efc0ddb14bf1115760/docs/big-picture.png
+  - https://raw.githubusercontent.com/RahmelJackson/dive-in-hermes/77951108d13142f1c9d72f6c9f30644bc89ec217/docs/big-picture.png
 capabilities:
   provides_tools:
     - signal_atlas_studio_action

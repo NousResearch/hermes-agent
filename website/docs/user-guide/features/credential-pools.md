@@ -174,6 +174,7 @@ credential_pool_strategies:
 | `fill_first` (default) | Use the first healthy key until it's exhausted, then move to the next; order is each credential's `priority` (`hermes auth priority` changes it) |
 | `round_robin` | Cycle through keys evenly, rotating after each selection |
 | `least_used` | Always pick the key with the lowest request count |
+| `usage_balanced` | Codex: weight new selections by remaining allowance and reset time; otherwise round-robin |
 | `random` | Random selection among healthy keys |
 
 ### Demoting a healthy credential {#demoting-a-healthy-credential}
@@ -196,6 +197,38 @@ exhausted, so it is never touched by the Codex quota-reset probe and there is no
 credential ahead of it is benched.
 Sessions that already hold a credential keep it until they rotate; new sessions (and the next
 gateway start) follow the new order.
+
+### Usage-aware Codex balancing
+
+```yaml
+credential_pool_strategies:
+  openai-codex: usage_balanced
+```
+
+For each account, Hermes divides the fraction of allowance remaining by the fraction of its
+window remaining, then takes the lowest result across the active windows. Both the short and
+weekly limit therefore constrain selection. A window with half its allowance left and only a
+quarter of its time left gets a weight of 2; one with a tenth left and half its time left gets
+0.2. The remaining-time fraction has a floor of 0.05 so a nearly due reset cannot create an
+unbounded weight. New selections draw randomly in proportion to these weights, spreading
+simultaneous session starts rather than sending all of them to the highest-weight account.
+Percentages do not reveal absolute plan capacities: this balances allowance pacing, not tokens
+per dollar or an estimate of how much a new session will consume.
+
+Existing conversations keep their credentials. Cooldowns, credential refresh, reclaiming the
+original account and provider fallback work as before. A known fully used account gets zero
+weight while another candidate has headroom or unknown usage. When every candidate is fully
+used, the existing request/error-driven exhaustion path still decides cooldowns and fallback.
+
+Usage reads reuse the account-usage cache and its read-only background fetcher; they never
+refresh OAuth tokens. Reads are throttled to once per account every two minutes within a
+process. Numeric window readings are also saved under the profile's `cache/credential-usage/`
+directory, with hashed identity filenames and no tokens, email addresses or raw provider
+responses. Fresh CLI processes can use these readings and skip a fetch while they are recent.
+A cold start waits at most two seconds for the background reader, outside the credential-pool
+lock. Missing or invalid readings, readings older than 15 minutes, and windows whose reset has
+passed use round-robin until fresh data arrives. Known fully used accounts remain excluded
+from that fallback when another candidate exists. Other providers use round-robin.
 
 ## Error Recovery
 

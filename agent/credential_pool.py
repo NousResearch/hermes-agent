@@ -119,11 +119,13 @@ STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
 STRATEGY_LEAST_USED = "least_used"
+STRATEGY_USAGE_BALANCED = "usage_balanced"
 SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
+    STRATEGY_USAGE_BALANCED,
 }
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
@@ -1958,6 +1960,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     # ---- selection ---------------------------------------------------------
 
     def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        if self._strategy == STRATEGY_USAGE_BALANCED:
+            from agent.credential_pool_usage import prepare_selection
+            prepare_selection(self.provider, self.entries())
         entry, pending_refresh = self._select_under_lock(model=model)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
@@ -2125,40 +2130,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
     ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
-        """Select the best available entry; returns ``(entry, pending_refresh)``.
+        from agent.credential_pool_selection import select_unlocked
 
-        ``count=False`` skips the ``request_count`` bump for selections that are
-        not going to serve a request (a forced-refresh target lookup).
-        """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
-        if not available:
-            self._current_id = None
-            self._log_no_available_entries()
-            return None, pending_refresh
-
-        # The pool recovered; re-arm the throttle so a later re-exhaustion
-        # logs immediately.
-        self._last_no_entries_log_at = None
-
-        if self._strategy == STRATEGY_RANDOM:
-            entry = random.choice(available)
-        elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
-            entry = min(available, key=lambda e: e.request_count)
-        else:
-            entry = available[0]
-        # Count the selection under every strategy. The counter is ``least_used``'s
-        # baseline and reaches auth.json on the next persist (exhaustion, rotation,
-        # refresh); it used to move only while ``least_used`` was active.
-        if count:
-            entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
-        if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
-            rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
-            rotated.append(replace(entry, priority=len(self._entries) - 1))
-            self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
-            self._persist()
-            entry = self._find(lambda candidate: candidate.id == entry.id) or entry
-        self._current_id = entry.id
-        return entry, pending_refresh
+        return select_unlocked(self, refresh=refresh, count=count, model=model)
 
     def peek(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:  # the current entry, else the first available; with ``model``: the current one if available

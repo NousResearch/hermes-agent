@@ -73,7 +73,7 @@ class Run:
 
     @classmethod
     def open(cls, db: str, *, root: Optional[str] = None, out: str = "postmortem_out") -> Run:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn = sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         sessions = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM sessions")}
         children: dict[Optional[str], list[str]] = collections.defaultdict(list)

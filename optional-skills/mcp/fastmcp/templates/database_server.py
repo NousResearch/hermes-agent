@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
@@ -16,7 +17,7 @@ TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _connect() -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{DATABASE_PATH}?mode=ro", uri=True)
+    return sqlite3.connect(Path(DATABASE_PATH).resolve().as_uri() + "?mode=ro", uri=True)
 
 
 def _reject_mutation(sql: str) -> None:

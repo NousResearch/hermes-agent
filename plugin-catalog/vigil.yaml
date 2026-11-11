@@ -1,0 +1,48 @@
+name: vigil
+title: Vigil Shield
+repo: https://github.com/nesaon03/vigil-shield
+sha: c8b7fb22911a9dd1ecfd9058dceade645e91cb2c
+version: "0.4.0"
+description: >-
+  Watches model replies for refusals and off-topic deflections, and when one is
+  detected marks that reply content_filter so Hermes runs its own configured
+  fallback chain — the plugin never picks or reorders a route. Records what the
+  next attempt on the same turn actually returned (another route answered,
+  refused again, returned a tool call, or the same route retried) and labels an
+  unobserved attempt as unobserved rather than a success. Keeps an owner-scoped
+  review memory keyed on a hash of the full conversation plus provider, model
+  and base_url, so a confirmed false positive changes only that exact context
+  and can be revoked; plain-text operator phrase rules soften heuristic
+  detections only and never clear an explicit refusal. Ships a Desktop page at
+  /shield with per-bot confidence modes, the detection log, the review memory
+  and the phrase rules. Derived from the catalog's `refusal` plugin
+  (0ldev/refusal, MIT, upstream copyright retained in LICENSE); this fork adds
+  the review memory with per-context revocation, retry-outcome classification,
+  the Desktop review surface and phrase rules. Disclosure — llm_execution and
+  llm_request middleware, registered for the active profile only; it writes
+  refusal_shield.json, refusal_styles.json, refusal_memory.json,
+  refusal_phrases.json, refusal_exceptions.json and refusal_decisions.jsonl
+  under the active Hermes home, keeps up to 25 recent detections with a
+  68-character reply excerpt and a hashed prompt, keeps truncated excerpts of
+  the last decisions in refusal_decisions.jsonl, and stores per-context review
+  hashes (sensitive metadata, not anonymous) plus plain-text phrase rules that
+  the operator typed. A triggered fallback resends the conversation to the
+  fallback provider and spends tokens there; with no fallback configured Hermes
+  substitutes its standard safety notice, so a false positive discards a valid
+  answer. The optional retry context adds one short note to the next request on
+  a flagged turn and is off by default. No network calls, no telemetry, no
+  background processes, no self-updater.
+maintainer: nesaon03
+tier: community
+category: models
+docs_url: https://github.com/nesaon03/vigil-shield#readme
+requires_hermes: ">=0.22.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_execution
+    - llm_request
+  requires_env: []

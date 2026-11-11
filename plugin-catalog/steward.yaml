@@ -1,6 +1,6 @@
 name: steward
 repo: https://github.com/imprint-hash/steward
-sha: "ce4603c6a59c20950a14b8d204cc1cfb40701358"
+sha: "b7c484f8e4c3737ec4569c80254fb5c4b30ae88a"
 version: "1.0.0"
 title: Steward
 description: Your chief of staff in the team chat. Collects every department's weekly update in its own group (voice note in any language, text, photo or file), nudges only late teams, and gives the founder one weekly pack in their language with promised-vs-done, a stuck radar and a voice brief. Founder says "send" and all staff get the update.
@@ -8,7 +8,7 @@ maintainer: imprint-hash
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/imprint-hash/steward/blob/ce4603c6a59c20950a14b8d204cc1cfb40701358/README.md
+docs_url: https://github.com/imprint-hash/steward/blob/b7c484f8e4c3737ec4569c80254fb5c4b30ae88a/README.md
 readme: true
 capabilities:
   provides_tools: [steward_setup, steward_checkin, steward_read_file, steward_record_report, steward_status, steward_build_pack, steward_publish]

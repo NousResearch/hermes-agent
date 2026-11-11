@@ -106,6 +106,7 @@ hermes skills uninstall <skill-name>
 | [**pinggy-tunnel**](../user-guide/skills/optional/devops/devops-pinggy-tunnel.md) | Zero-install localhost tunnels over SSH via Pinggy. |
 | [**setup-wizard-generator**](../user-guide/skills/optional/devops/devops-setup-wizard-generator.md) | Generate a bash wizard guiding a human through manual setup. |
 | [**watchers**](../user-guide/skills/optional/devops/devops-watchers.md) | Poll RSS, JSON APIs, and GitHub with watermark dedup. |
+| [**wsl2-localhost-fetch-stalls**](../user-guide/skills/optional/devops/devops-wsl2-localhost-fetch-stalls.md) | Diagnose WSL2 localhost fetch stalls that fake timing-test failures. |
 
 ## dogfood
 

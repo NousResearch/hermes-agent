@@ -1,0 +1,29 @@
+name: signet
+repo: https://github.com/Wecko-ai/hermes-signet
+sha: 056dbb437536a58357501313c0e76c79329fcfc3
+title: Signet
+description: "An email leaves your agent only with your seal on that exact message. signet_send_mail shows the real recipients, sender, subject, text and attachments in Hermes's own approval prompt, ties your yes to their SHA-256 and sends nothing else: a recipient added or a word changed after the prompt has no seal. YOLO mode, approvals off, timeouts and scheduled runs cannot seal; those emails are held for /signet send, which shows the email in full first. Direct mailers (himalaya, msmtp, sendmail, mail, SMTP scripts, mail SDKs and API send endpoints) are blocked in terminal, execute_code and process input, and the card flags look-alike domains, new recipients, secrets and odd links. Disclosure — no network unless you choose the smtp transport (your server; password read through Hermes's secret scope); the command transport runs the one mailer you configured, without a shell, with the approved message on stdin; reads the attachments an email names (credential files and private keys refused); stores held drafts, a ledger and outbox .eml files under plugin-data/signet with owner-only permissions; blocks tool calls that would send mail directly (guard: block, configurable) and fails closed on its own hook errors; trusted_recipients, when you set it, sends to your own listed addresses without a prompt; no telemetry, no background processes; adds an approval prompt and never answers one."
+maintainer: Wecko-ai
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Wecko-ai/hermes-signet#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Wecko-ai/hermes-signet/056dbb437536a58357501313c0e76c79329fcfc3/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Wecko-ai/hermes-signet/056dbb437536a58357501313c0e76c79329fcfc3/docs/screenshots/01-approval-card.png
+  - https://raw.githubusercontent.com/Wecko-ai/hermes-signet/056dbb437536a58357501313c0e76c79329fcfc3/docs/screenshots/02-sent-and-ledger.png
+  - https://raw.githubusercontent.com/Wecko-ai/hermes-signet/056dbb437536a58357501313c0e76c79329fcfc3/docs/screenshots/03-yolo-held-then-sealed.png
+  - https://raw.githubusercontent.com/Wecko-ai/hermes-signet/056dbb437536a58357501313c0e76c79329fcfc3/docs/screenshots/04-direct-mailer-blocked.png
+  - https://raw.githubusercontent.com/Wecko-ai/hermes-signet/056dbb437536a58357501313c0e76c79329fcfc3/docs/screenshots/05-back-through-the-seal.png
+platforms: []
+capabilities:
+  provides_tools:
+    - signet_send_mail
+    - signet_outbox
+  provides_hooks:
+    - pre_tool_call
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

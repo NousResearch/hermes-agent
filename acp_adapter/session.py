@@ -517,6 +517,7 @@ class SessionManager:
 
         from run_agent import AIAgent
         from agent.skill_utils import parse_config_string_list
+        from agent.pareto_router import min_coding_score
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
@@ -549,6 +550,8 @@ class SessionManager:
             # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
             # models). Resolved against the session's model so per-model overrides apply.
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
+            # Pareto Code floor, as the CLI/TUI/gateway/cron pass it (#153086).
+            "openrouter_min_coding_score": min_coding_score(config),
         }
         resolve_error: Exception | None = None
         try:

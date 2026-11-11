@@ -2190,6 +2190,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
         session ``/model`` override, disables the fallback chain and fails closed."""
         from run_agent import AIAgent
+        from agent.pareto_router import min_coding_score
         from gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
@@ -2232,9 +2233,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
             "enabled_toolsets": enabled_toolsets, "session_id": session_id,
-            "platform": "api_server",
-            "stream_delta_callback": stream_delta_callback,
-            "tool_progress_callback": tool_progress_callback,
+            "platform": "api_server", "openrouter_min_coding_score": min_coding_score(user_config),  # pareto floor
+            "stream_delta_callback": stream_delta_callback, "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
             "interim_assistant_callback": interim_assistant_callback,

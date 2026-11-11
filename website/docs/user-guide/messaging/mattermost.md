@@ -345,7 +345,7 @@ For more information on securing your Hermes Agent deployment, see the [Security
 
 ## Approval buttons
 
-When a dangerous command needs your OK, the adapter can render Approve Once / Approve Session / Always Approve / Deny **buttons** on a card in the chat (instead of the plain-text `/approve` prompt). A button press is verified against `MATTERMOST_ALLOWED_USERS` and resolves the pending approval directly — the card rewrites itself with the decision and the buttons disappear.
+When a dangerous command needs your OK, the adapter can render Approve Once / Approve Session / Always Approve / Deny **buttons** on a card in the chat (instead of the plain-text `/approve` prompt). A press follows the same rules as every other button adapter: it answers only the request its card was rendered for (a card whose request already settled resolves nothing — never the next one queued in the session), the presser must be allowed to answer it (the requester, anyone in `approvals.approvers`, or a chat admin — exactly as for typed `/approve`), and a card that could not show the whole command offers Deny only. A settled press rewrites the card with the decision and the buttons disappear; a refused press answers the presser alone and leaves the card live for whoever may answer.
 
 The buttons need a small HTTP endpoint the Mattermost *server* can call back. Configure under `platforms.mattermost` in `config.yaml`:
 

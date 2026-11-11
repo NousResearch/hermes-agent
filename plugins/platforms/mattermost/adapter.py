@@ -35,6 +35,7 @@ from plugins.platforms.mattermost.exec_approval import (
     action_response as _action_response, approval_actions_config as _approval_actions_config,
     build_approval_props as _build_approval_props, build_ntfy_escalation as _build_ntfy_escalation,
     callback_path as _approval_callback_path, parse_action_payload as _parse_action_payload,
+    DENY_ONLY_NOTICE as _DENY_ONLY_NOTICE,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,10 +133,10 @@ class MattermostAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator()
         # Exec-approval cards: config, tracked cards, HTTP endpoint lifecycle.
         self._approval_cfg = _approval_actions_config(getattr(config, "extra", {}) or {})
-        self._approval_cards: Dict[str, Dict[str, Any]] = {}  # post_id → card state
+        self._approval_cards: dict[str, dict[str, Any]] = {}  # post_id → card state
         self._approval_runner: Any = None  # aiohttp web.AppRunner for action callbacks
         self._approval_site: Any = None
-        self._approval_team_names: Dict[str, str] = {}  # channel_id → team name (permalink cache)
+        self._approval_team_names: dict[str, str] = {}  # channel_id → team name (permalink cache)
 
     # --- Exec-approval cards (Mattermost Blocks buttons) ---
 
@@ -158,7 +159,7 @@ class MattermostAdapter(BasePlatformAdapter):
             prompt, cfg["url"] + _approval_callback_path(cfg["secret"]))
         # Short post message + full wording inside the attachment: clients render both, so
         # the message must not duplicate the attachment text.
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "channel_id": prompt.chat_id,
             "message": "⚠️ Approval needed",
             "props": {**props, **_MATTERMOST_DISABLE_MENTIONS_PROPS},
@@ -173,7 +174,7 @@ class MattermostAdapter(BasePlatformAdapter):
         if not post_id:
             return SendResult(success=False, error="failed to post approval card")
 
-        card: Dict[str, Any] = {
+        card: dict[str, Any] = {
             "post_id": post_id, "chat_id": prompt.chat_id, "session_key": prompt.session_key,
             "message": prompt.text,  # full wording — the ntfy escalation message body
             "resolved": False,
@@ -212,33 +213,43 @@ class MattermostAdapter(BasePlatformAdapter):
                     cfg["port"])
         return True
 
-    def _approval_allowed_user_ids(self) -> set:
-        """MATTERMOST_ALLOWED_USERS as a set; empty set means open access (matches the gateway)."""
-        raw = _get_scoped_secret("MATTERMOST_ALLOWED_USERS", "") or ""
-        return {u.strip() for u in raw.split(",") if u.strip()}
-
     async def _handle_approval_action(self, request):
-        """Post-action callback from the Mattermost server: authorize the presser, resolve the
-        pending approval, and answer with a card update that clears the buttons."""
+        """Post-action callback from the Mattermost server: check the presser's authority over the
+        request the card was rendered for, resolve that request only, and answer with a card
+        update that clears the buttons (or, when refused, a note to the presser alone)."""
         import aiohttp.web
         try:
             payload = await request.json()
         except Exception:
             return aiohttp.web.json_response({}, status=400)
-        verdict, fields = _parse_action_payload(payload, self._approval_allowed_user_ids())
-        if verdict == "ok":
-            from tools.approval import resolve_gateway_approval  # lazy: keep adapter light
-            try:
-                count = resolve_gateway_approval(fields["session_key"], fields["choice"])
-            except Exception as exc:
-                logger.error("Mattermost: resolve_gateway_approval failed for session %s: %s",
-                             fields["session_key"], exc)
-                count = 0
-            if count <= 0:
-                verdict = "already"
+        verdict, fields = _parse_action_payload(payload)
+        refusal = ""
+        if verdict == "ok" and fields:
+            from gateway.approval_actor import approval_refusal, refusal_text
+            from tools.approval import list_gateway_approvals, resolve_gateway_approval_card
+            session_key, choice, request_id = fields["session_key"], fields["choice"], fields["request_id"]
+            extra = self.config.extra
+            requester = approval_refusal(session_key, fields["user_id"], extra=extra,
+                                         request_id=request_id, choice=choice)
+            if requester:
+                verdict, refusal = "refused", refusal_text(requester)
             else:
-                self._mark_approval_card_resolved(fields.get("post_id") or "")
-        body = _action_response(verdict, fields, fields.get("choice", "") if fields else "")
+                try:
+                    count = resolve_gateway_approval_card(session_key, choice, request_id,
+                                                          actor_id=fields["user_id"], extra=extra)
+                except Exception as exc:
+                    logger.error("Mattermost: resolve_gateway_approval_card failed for session %s: %s",
+                                 session_key, exc)
+                    count = 0
+                if count > 0:
+                    self._mark_approval_card_resolved(fields.get("post_id") or "")
+                elif any(a.get("request_id") == request_id for a in list_gateway_approvals(session_key)):
+                    # Still pending yet unresolved: a choice this card never offered (Deny-only).
+                    # Answer the presser alone; the card's Deny button stays live.
+                    verdict, refusal = "refused", _DENY_ONLY_NOTICE
+                else:
+                    verdict = "already"
+        body = _action_response(verdict, fields, fields.get("choice", "") if fields else "", refusal)
         return aiohttp.web.json_response(body)
 
     def _mark_approval_card_resolved(self, post_id: str) -> None:
@@ -263,7 +274,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._approval_team_names[chat_id] = team_name
         return team_name
 
-    async def _escalate_approval(self, card: Dict[str, Any], delay_s: float) -> None:
+    async def _escalate_approval(self, card: dict[str, Any], delay_s: float) -> None:
         """After ``delay_s`` with no answer, publish an ntfy doorbell deep-linking to the card."""
         try:
             await asyncio.sleep(delay_s)
@@ -304,7 +315,7 @@ class MattermostAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Mattermost: approval escalation ntfy publish failed: %s", exc)
 
-    async def _expire_approval_card(self, card: Dict[str, Any], timeout_s: float) -> None:
+    async def _expire_approval_card(self, card: dict[str, Any], timeout_s: float) -> None:
         """When the window lapses unanswered, patch the card so no zombie buttons remain."""
         try:
             await asyncio.sleep(timeout_s)

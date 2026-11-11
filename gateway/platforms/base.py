@@ -1799,7 +1799,10 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
+from gateway.platforms.base_activity import SessionActivityMixin
+
+
+class BasePlatformAdapter(SessionActivityMixin, _SessionModelSettingsMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3340,12 +3343,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     def resume_typing_for_chat(self, chat_id: str) -> None:
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
-
-    async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata=None) -> None:
-        """Signal the active session loop to stop and clear typing immediately."""
-        if session_key and session_key in self._active_sessions:
-            self._active_sessions[session_key].set()
-        await self._stop_typing_quietly(chat_id, metadata)
 
     def register_post_delivery_callback(
         self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:

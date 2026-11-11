@@ -1,6 +1,6 @@
 name: mandate
 repo: https://github.com/JoeProAI/mandate
-sha: 5ff1aaf8c734843e4a7e4a69f17f78371bdc3d23
+sha: 4313f6196b6b8f0ccf35fd3bf499182d7814a7bf
 subdir: ""
 description: Learned least-privilege for cron jobs. Observes what a job does, proposes an argument-level mandate, and after human approval blocks out-of-mandate tool calls.
 maintainer: JoeProAI

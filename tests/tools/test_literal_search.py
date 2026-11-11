@@ -27,12 +27,29 @@ def test_literal_search_dispatch_preserves_exact_text(ops, tmp_path, monkeypatch
         monkeypatch.setattr(ops, "_has_command", lambda command: False if command == "rg" else original(command))
     root = tmp_path / (".hidden" if engine == "grep_pruned" else "visible")
     root.mkdir()
-    (root / "sample.txt").write_text("-x[1].a\n-x1za\n-x[1].a\n", encoding="utf-8")
+    (root / "sample.txt").write_text("x[1].a\nx1za\nx[1].a\n", encoding="utf-8")
     out = json.loads(registry.dispatch("search_files", {
-        "path": str(root), "pattern": "-x[1].a", "literal": True, "output_mode": mode,
+        "path": str(root), "pattern": "x[1].a", "literal": True, "output_mode": mode,
         "limit": 20, "context": 0}, task_id=engine+mode))
     assert not out.get("error"), out
     assert out["total_count"] == (1 if mode == "files_only" else 2), out
+
+
+@pytest.mark.parametrize("engine", ["rg", "grep", "grep_pruned"])
+@pytest.mark.parametrize("literal", [True, False])
+def test_dash_leading_pattern_is_search_text(ops, tmp_path, monkeypatch, engine, literal):
+    """Covered by the ``-e PATTERN --`` delimiter, not by literal mode itself."""
+    if engine == "rg" and not ops._has_command("rg"):
+        pytest.skip("ripgrep unavailable")
+    if engine.startswith("grep"):
+        original = ops._has_command
+        monkeypatch.setattr(ops, "_has_command", lambda command: False if command == "rg" else original(command))
+    root = tmp_path / (".hidden" if engine == "grep_pruned" else "visible")
+    root.mkdir()
+    (root / "sample.txt").write_text("-x1\nx1\n", encoding="utf-8")
+    out = json.loads(registry.dispatch("search_files", {
+        "path": str(root), "pattern": "-x1", "literal": literal}, task_id=f"{engine}{literal}"))
+    assert not out.get("error") and out["total_count"] == 1, out
 
 
 def test_filename_regex_hint_and_literal_rejection(ops, tmp_path):

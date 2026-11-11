@@ -270,3 +270,51 @@ async def test_platform_queued_early_in_idle_is_not_aged_by_suspend(monkeypatch)
     assert queued_during_idle, "test never queued a second platform during watcher idle"
     assert checked == [False], "a real two-hour outage must be awake time, not host suspend"
     assert not [(key, kw) for key, kw in writes if key == "discord" and kw.get("needs_attention")]
+
+
+@pytest.mark.asyncio
+async def test_platform_queued_during_the_empty_queue_wait_is_not_aged_by_suspend(monkeypatch):
+    """The watcher idles up to 30 s while nothing is queued. A fatal queued in that wait just
+    before the host sleeps must not count the suspend either (#153439 review)."""
+    _set_threshold(monkeypatch, 7200)
+    runner = _make_runner()
+    writes = []
+    monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda key, **kw: writes.append((key, kw)))
+    clock = _Clock(suspend_at=-1)
+    _install_clock(monkeypatch, clock)
+    cfg = PlatformConfig(enabled=True, token="t")
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, config:
+                        StubAdapter(platform=platform, fatal_error="network down"))
+    real_flag = runner._flag_reconnect_needs_attention
+    checked = []
+
+    def flag(platform, info, now, **kwargs):
+        flagged = real_flag(platform, info, now, **kwargs)
+        if info["attempts"] >= 1:
+            checked.append(flagged)
+            runner._running = False
+        return flagged
+
+    monkeypatch.setattr(runner, "_flag_reconnect_needs_attention", flag)
+    real_sleep = asyncio.sleep
+    queued = False
+
+    async def fake_sleep(seconds):
+        nonlocal queued
+        clock.sleep(seconds)
+        if seconds == 1 and clock.sleeps == 4 and not queued:
+            # Past the startup delay, the queue is empty: a fatal lands, then the laptop sleeps.
+            runner._failed_platforms[Platform.TELEGRAM] = runner._reconnect_queue_entry(
+                Platform.TELEGRAM, StubAdapter(), cfg, attempts=0, delay=0)
+            queued = True
+            clock.t += _SUSPEND
+        if clock.sleeps > 400:
+            runner._running = False
+        await real_sleep(0)
+
+    with patch("asyncio.sleep", side_effect=fake_sleep):
+        await asyncio.wait_for(runner._platform_reconnect_watcher(), timeout=10)
+
+    assert queued, "test never queued a platform during the empty-queue wait"
+    assert checked == [False], "the suspend in the empty-queue wait counted as outage time"
+    assert not [kw for _key, kw in writes if kw.get("needs_attention")]

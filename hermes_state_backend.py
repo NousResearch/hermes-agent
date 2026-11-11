@@ -57,7 +57,7 @@ def resolve_database_settings(db_path: str | Path | None = None) -> DatabaseSett
     except FileNotFoundError:
         database_url = None
     if home == get_process_hermes_home().expanduser().resolve():
-        database_url = os.environ.get("HERMES_DATABASE_URL", database_url)
+        database_url = os.environ.get("HERMES_DATABASE_URL", database_url)  # health: allow HX002 -- per-profile credential (masked DSN in the profile's .env), not a behavioural knob
     if not database_url or not database_url.strip():
         raise ValueError(f"PostgreSQL requires HERMES_DATABASE_URL in {env_path}")
 

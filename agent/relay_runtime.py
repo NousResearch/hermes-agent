@@ -155,6 +155,8 @@ def _same_handle(a: Any, b: Any) -> bool:
 _RelayPluginConfigurationState = Enum(
     "_RelayPluginConfigurationState", "UNINITIALIZED DISABLED ACTIVE FOREIGN FAILED"
 )
+# A RelayRuntime refuses new work once it leaves OPEN; only SHUTDOWN_FAILED accepts another shutdown().
+_RuntimePhase = Enum("_RuntimePhase", "OPEN CLOSING CLOSED SHUTDOWN_FAILED")
 
 
 class _RelayPluginConfigurationLoadError(RuntimeError):
@@ -412,7 +414,7 @@ class RelayRuntime:
         # keyed by handle uuid: the drain that later reclaims the scope closes it with this output.
         self._deferred_scope_outputs: dict[str, dict[str, Any]] = {}
         self._deferred_scope_outputs_lock = threading.Lock()
-        self._closing = self._shutdown_started = False
+        self._phase = _RuntimePhase.OPEN
         self._shutdown_complete, self._operations_idle = threading.Event(), threading.Event()
         self._operations_idle.set()
         self._active_operations = 0
@@ -502,7 +504,7 @@ class RelayRuntime:
         if not session_id:
             return None
         with self._sessions_lock:
-            if self._closing:
+            if self._phase is not _RuntimePhase.OPEN:
                 return None
             session = self._sessions.get(session_id)
             if session is None:
@@ -568,7 +570,7 @@ class RelayRuntime:
         if turn is not None and turn.handle is not None and turn.lease.host is self:
             parent_handle = turn.handle
         with self._sessions_lock:
-            if self._closing:
+            if self._phase is not _RuntimePhase.OPEN:
                 return None
             self._subagent_parents[child_session_id] = parent_session_id
             if parent_handle is not None:
@@ -595,7 +597,7 @@ class RelayRuntime:
     def get_session(self, session_id: str) -> RelaySession | None:
         """Return an active Hermes Relay session without creating one."""
         with self._sessions_lock:
-            session = None if self._closing else self._sessions.get(str(session_id or ""))
+            session = None if self._phase is not _RuntimePhase.OPEN else self._sessions.get(str(session_id or ""))
         if session is None:
             return None
         with session.lock:
@@ -676,7 +678,7 @@ class RelayRuntime:
     def _begin_operation(self) -> None:
         """Admit one Relay call while keeping process plugins alive."""
         with self._sessions_lock:
-            if self._closing:
+            if self._phase is not _RuntimePhase.OPEN:
                 raise RuntimeError("Hermes Relay runtime is shutting down")
             self._active_operations += 1
             self._operations_idle.clear()
@@ -798,9 +800,9 @@ class RelayRuntime:
     def shutdown(self) -> None:
         """Close core scopes and release process plugin configuration."""
         with self._sessions_lock:
-            if self._shutdown_started:
+            if self._phase in (_RuntimePhase.CLOSING, _RuntimePhase.CLOSED):
                 return
-            self._shutdown_started = self._closing = True
+            self._phase = _RuntimePhase.CLOSING
             has_active_operations = self._active_operations > 0
         if not has_active_operations:
             self._finish_shutdown()
@@ -813,7 +815,7 @@ class RelayRuntime:
             thread.start()
         except Exception:
             with self._sessions_lock:
-                self._shutdown_started = False
+                self._phase = _RuntimePhase.SHUTDOWN_FAILED
             logger.warning("Hermes Relay deferred shutdown could not start", exc_info=True)
 
     def _finish_shutdown(self) -> None:
@@ -831,10 +833,11 @@ class RelayRuntime:
                     atexit.unregister(self.shutdown)
         except Exception:
             with self._sessions_lock:
-                self._shutdown_started = False
+                self._phase = _RuntimePhase.SHUTDOWN_FAILED
             logger.warning("Hermes Relay shutdown failed", exc_info=True)
             return
         with self._sessions_lock:
+            self._phase = _RuntimePhase.CLOSED
             self._shutdown_complete.set()
 
 

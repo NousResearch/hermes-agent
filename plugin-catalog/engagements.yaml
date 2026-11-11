@@ -1,0 +1,40 @@
+name: engagements
+title: Hermes Engagements
+repo: https://github.com/latentoperator/hermes-engagements-plugin
+sha: 673dec5d2c04d55376f8c81c8afdf5c018a44076
+version: "1.0.0-rc1"
+description: >-
+  A client notebook for your Hermes agents. Each client and project is a plain Markdown record on
+  your machine: who they are, who to talk to, how they like to work and where the real documents and
+  repos live. Add a client by talking or pasting notes, link a chat to it, and the agent keeps the
+  record current with a dated source for every change. Includes a read-only Clients page for Hermes
+  Desktop and the web dashboard.
+  Disclosure: local files only, no network requests, no telemetry, no shell commands, no background
+  processes and no stored credentials. Reads and writes Markdown records under the library folder
+  you choose (default is the profile's plugin-data folder), and reads the session's working
+  directory, id and surface to link a chat to a project. Installs PyYAML 6.x.
+maintainer: latentoperator
+tier: community
+category: memory
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/latentoperator/hermes-engagements-plugin/blob/673dec5d2c04d55376f8c81c8afdf5c018a44076/README.md
+readme: true
+platforms: []
+known_issues:
+  - Client scoping organizes context. It is not isolation between clients; use a fresh session per client when confidentiality matters.
+  - Runtime evidence is from Linux. Windows reads and writes are covered by native CI only, and macOS has not been exercised.
+  - Messaging gateways and Hermes Desktop SSH remote mode are not verified.
+capabilities:
+  provides_tools:
+    - engagements_find
+    - engagements_bind
+    - engagements_context
+    - engagements_create
+    - engagements_update
+  provides_hooks:
+    - pre_llm_call
+    - post_compaction
+    - on_session_reset
+    - on_session_delete
+  provides_middleware: []
+  requires_env: []

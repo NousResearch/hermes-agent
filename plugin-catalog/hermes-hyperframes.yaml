@@ -7,7 +7,7 @@ description: >-
   hyperframes_* agent tools (lint, managed Studio preview lifecycle, timeline
   readback, frame snapshots for visual verification, Studio-selection context
   bridge, MP4 render) plus a dashboard tab with project switching, the live
-  Studio preview embedded, an agent chat bound to a real Hermes gateway session (async turns with polled status), — the same conversation a terminal sees via `hermes chat --resume`.
+  Studio preview embedded, an agent chat bound to a real Hermes gateway session (async turns with polled status) — the same conversation a terminal sees via `hermes chat --resume`.
   Wraps a pinned local Hyperframes CLI (no npx) and talks only to loopback
   services: the local CLI and the gateway's own api_server.
 maintainer: wesleymatosdev

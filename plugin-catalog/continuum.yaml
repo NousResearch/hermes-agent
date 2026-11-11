@@ -1,40 +1,45 @@
 name: continuum
-title: Continuum — Unified Self-Improving Agent Engine
+title: Continuum
 repo: https://github.com/aidonerightcorp/continuum
-sha: 1df00676e5f8bc997c1aeda44e209c01a6da0513
+sha: 765aad799e520ce7f9cb60329b0d60675fa82c4b
 description: >-
-  OmniNode-encased self-improving agent engine connecting five native Hermes
-  surfaces (ContextEngine, MemoryProvider, DelegationProvider, 18 continuum_*
-  agent tools with 4 lifecycle hooks and /continuum command, plus Hermes Desktop
-  SDK and Web Dashboard views) over 30 cooperating cybernetic engines (112
-  sub-engines), static AST CARD descriptors with .omni/cas SHA-256 lockfile
-  integrity, declarative >> // | @ pipeline shape composition emitting canonical
-  grid/1 cell receipts, shared 4-space nested embeddings (16d/32d/64d/128d),
-  Matryoshka Top-K JumpReLU SAE & Crosscoder latent probing with ELK
-  layer-divergence detection, surgical Null(A_anchor) activation steering (0.0
-  anchor drift), a 172-axis TT-Cross adaptive grid with zero-token offline
-  exploration, Cellular Sheaf consistency auditing, Split Conformal + Online ACI
-  prediction sets, Kronecker HyperLoRA, atomic SQLite task leasing with maker !=
-  checker verification, and portable compilation across 9 zero-dependency
-  runtimes (bare-metal #![no_std] Rust, WebGL2 GLSL, JS, Python, SQL, C99,
-  in-memory WASM, WAT, and WGSL, plus safetensors). Disclosure — runs 100%
-  locally in-process over profile-scoped SQLite WAL and .omni/ storage; zero
-  outbound network calls, zero background daemons, and zero external API keys
-  required.
+  Hermes sizes itself to each Task. Continuum fingerprints every Task, finds
+  similar past Tasks in its local records, and sends the Task to the cheapest
+  of your own models that your marks on similar Tasks support (no marks: no
+  change). It records every model
+  attempt, returns a failed turn to your own model, and checks its own policy
+  on held-out records. Disclosure: with your consent (llm.model_override) it
+  changes your provider request: the model and its request settings, one added
+  context block with your own recorded answer to a near-identical Task
+  (recall), and, when you set size_tools on, the tool list. With
+  llm.side_question it asks your own model one PASS or FAIL question on a
+  share of the cheaper model's turns, which spends that model's tokens; a FAIL
+  counts against the cheaper model, a PASS is weak evidence. By default it stores Task
+  text and replies in one SQLite file in its own plugin data folder
+  (text is removed after 90 days; store_text false keeps fingerprints and
+  outcomes only; mode off stores nothing). No network call of its own, no
+  subprocess, no credentials.
 maintainer: aidonerightcorp
 tier: community
-category: tools
+category: models
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/aidonerightcorp/continuum#readme
 readme: true
-image: https://raw.githubusercontent.com/aidonerightcorp/continuum/1df00676e5f8bc997c1aeda44e209c01a6da0513/docs/continuum-overview.png
-version: "1.3.0"
+image: https://raw.githubusercontent.com/aidonerightcorp/continuum/765aad799e520ce7f9cb60329b0d60675fa82c4b/docs/continuum-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/aidonerightcorp/continuum/765aad799e520ce7f9cb60329b0d60675fa82c4b/docs/continuum-overview.png
+  - https://raw.githubusercontent.com/aidonerightcorp/continuum/765aad799e520ce7f9cb60329b0d60675fa82c4b/docs/continuum-dashboard.png
+version: "2.0.0"
 platforms:
   - linux
   - macos
   - windows
+known_issues:
+  - A model switch inside a session loses the provider's prompt cache for that turn; /continuum pin keeps a session on one model.
+  - When the provider refuses a request for the cheaper model and Hermes does not try again, that one turn ends with the provider's error and the session stays on your own model. A model the provider does not know or does not allow is then blocked until /continuum unblock.
 capabilities:
   provides_tools:
+    - continuum_recall
     - continuum_fission_dag
     - continuum_claim_and_fence
     - continuum_verify_record
@@ -54,9 +59,13 @@ capabilities:
     - continuum_steer_nullspace_vector
     - continuum_compose_omninode
   provides_hooks:
-    - on_session_start
-    - pre_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - post_api_request
+    - api_request_error
     - post_tool_call
     - on_session_end
-  provides_middleware: []
+    - on_session_finalize
+  provides_middleware:
+    - llm_request
   requires_env: []

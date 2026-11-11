@@ -1,0 +1,1374 @@
+"""Hermes Plugin System — discovers, loads, and manages plugins.
+
+Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
+and ``context_engine/`` have their own discovery), user ``~/.hermes/plugins/<name>/``, project
+``./.hermes/plugins/<name>/`` (opt-in via ``HERMES_ENABLE_PROJECT_PLUGINS``), and pip packages in
+the ``hermes_agent.plugins`` entry-point group. A directory plugin needs a ``plugin.yaml`` manifest
+and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks for ``VALID_HOOKS``
+(core fires ``invoke_hook(name, **kwargs)``) and tools via ``PluginContext.register_tool()``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib.metadata
+import json
+import logging
+import os
+import queue
+import re
+import sys
+import threading
+import types
+from contextlib import suppress
+from dataclasses import dataclass, field
+from functools import cached_property, wraps
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+
+from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
+from registration_lifecycle import replacement_coordinator
+from utils import env_var_enabled
+from hermes_cli.config import load_config_readonly
+from hermes_cli.middleware import VALID_MIDDLEWARE
+from hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
+# Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
+from hermes_cli.plugins_manifest import (
+    _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_data_namespace,
+    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
+    validate_config_schema,
+)
+from hermes_cli.plugins_discovery import (
+    ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
+    discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
+    scan_directory,
+)
+from hermes_cli.plugins_loader import (
+    PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
+    _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
+)
+from hermes_cli.plugins_dispatch import (
+    DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
+    MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
+    SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
+    _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
+    _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
+    RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
+    is_valid_system_prompt_section_id, resolve_plugin_command_result,
+)
+from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_cli.plugins_state import (
+    PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
+    _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
+)
+# PluginContext lives in plugins_context.py; this facade stays its public import path.
+from hermes_cli.plugins_context import PluginContext, _UNSET, _ignore_after_abandoned_load
+
+
+def get_bundled_plugins_dir() -> Path:
+    """Bundled ``plugins/`` dir: ``HERMES_BUNDLED_PLUGINS`` (Nix wrapper / packaged installs, read-only
+    store paths) first, else the in-repo path."""
+    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
+    if env_override:
+        return Path(env_override)
+    return Path(__file__).resolve().parent.parent / "plugins"
+
+
+class PluginToolOverrideError(PermissionError):
+    """Plugin tried to override a built-in tool without ``plugins.entries.<id>.allow_tool_override``."""
+
+
+logger = logging.getLogger(__name__)
+
+# ``HERMES_PLUGINS_DEBUG=1`` tees verbose discovery logs to stderr in addition to agent.log. Read
+# once at import; tests flip it mid-process via ``_install_plugin_debug_handler(force=True)``.
+_PLUGINS_DEBUG = env_var_enabled("HERMES_PLUGINS_DEBUG")
+_DEBUG_HANDLER_INSTALLED = False
+
+
+def _install_plugin_debug_handler(force: bool = False) -> None:
+    """When HERMES_PLUGINS_DEBUG is on, tee plugin logs to stderr at DEBUG (once per process)."""
+    global _DEBUG_HANDLER_INSTALLED, _PLUGINS_DEBUG
+    if force:
+        _PLUGINS_DEBUG = env_var_enabled("HERMES_PLUGINS_DEBUG")
+    if not _PLUGINS_DEBUG or _DEBUG_HANDLER_INSTALLED:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("[plugins] %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = True
+    _DEBUG_HANDLER_INSTALLED = True
+    logger.debug("HERMES_PLUGINS_DEBUG=1 — verbose plugin discovery logging enabled")
+
+
+_install_plugin_debug_handler()
+
+# The function that fires each name is listed in website/docs/developer-guide/plugins/index.md
+# ("Where each hook fires"); add a row there when you add a hook.
+VALID_HOOKS: set[str] = {
+    "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
+    # transform_llm_output: return a replacement string (first non-None wins) or None.
+    "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
+    # normalized text/lifecycle and cannot transform the stream.
+    "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
+    # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
+    # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
+    # going; anything else finishes. Bounded by agent.max_verify_nudges.
+    "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
+    # pre/post_auxiliary_call: once per physical provider attempt of an auxiliary LLM call
+    # (agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload
+    # shape as pre/post_api_request plus ``aux_task``; distinct events so turn-scoped
+    # ``*_api_request`` subscribers never receive auxiliary traffic (#79733). Observers; fail-open.
+    "pre_auxiliary_call", "post_auxiliary_call",
+    # transform_api_error_classification: once per failed API call BEFORE
+    # agent/error_classifier.classify_api_error(). Kwargs: provider, model, status_code, error_type,
+    # error_code, error_message, error_body, error, approx_tokens, context_length, num_messages.
+    # Return None or {"reason": <FailoverReason name> (required), "retryable"/"should_compress"/
+    # "should_rotate_credential"/"should_fallback": bool, "message": str, "error_context": dict}.
+    # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
+    # error_body may be unredacted.
+    "transform_api_error_classification", "on_session_start", "on_session_end",
+    "on_session_finalize", "on_session_reset", "on_session_delete",
+    # on_session_open: local session created/opened, before its first turn. Kwargs: session_id, platform, reason.
+    "on_session_open",
+    # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
+    "on_skill_lifecycle", "subagent_start", "subagent_stop",
+    # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
+    # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
+    # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
+    "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
+    # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
+    # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
+    # platform, reason, invalidation_reason. Return values are ignored.
+    "agent_loop_stopped",
+    # Approval observers (returns ignored; veto via pre_tool_call). Kwargs: command, description, pattern_key,
+    # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
+    # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
+    "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
+    # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
+    # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
+    # path (agent.plugin_stream_hooks); never written to the durable room log. Kwargs: those
+    # coordinates + kind, seq, payload (the client-safe session event payload, approvals redacted).
+    "on_room_member_activity",
+    # pre_transcription: after provider resolution, BEFORE any backend runs. Kwargs: file_path,
+    # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
+    # model (registration order, last-writer-wins; file_path is read-only).
+    "pre_transcription",
+    # Kanban task observers (hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
+    # holds the SQLite write lock; returns ignored. claimed fires in the DISPATCHER right before
+    # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
+    # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
+    "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
+    # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
+    # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
+    # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):
+    #   worker_pid, workspace_path (privacy: project layout/usernames).
+    # worker_exited (tick-derived on dead-PID reclaim): worker_pid, exit_kind ("clean_exit" |
+    #   "rate_limited" | "nonzero_exit" | "signaled" | "unknown"), exit_code, outcome, retry_status.
+    # worker_stale_claim (TTL-expired claim reclaimed; live-PID extensions do NOT fire):
+    #   worker_pid, heartbeat_stale, retry_status.
+    # task_updated (committed task-row write outside claim/complete/block, in whichever process
+    #   committed it): changed_fields — field NAMES only, never values.
+    # dispatch_tick (once per dispatch_once, strictly AFTER the dispatch lock is released): board,
+    #   profile_name, dry_run, outcome ("ok"|"skipped_locked"|"idle"), result: DispatchResult
+    #   (privacy: task ids, assignees, workspace paths).
+    "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
+    "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
+    # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
+    # only together with real fire-sites.
+    # on_kanban_dispatch_tick fires once per dispatcher tick in dispatch_once, strictly AFTER the board's
+    # single-writer dispatch lock has been released (the #56066 original fired inside the lock — the #64231
+    # disposition mandates the post-lock re-port), so a slow subscriber can never extend the writer critical
+    # section. Kwargs: board: str | None, profile_name: str, dry_run: bool, outcome: "ok" | "skipped_locked"
+    # | "idle", result: hermes_cli.kanban_db.DispatchResult (spawned, reclaimed, promoted,
+    # reconciled_orphans, crashed, stale, timed_out, auto_blocked, rate_limited, auto_assigned_default,
+    # respawn_guarded, skipped_per_profile_capped, skipped_unassigned, skipped_nonspawnable,
+    # skipped_locked). Privacy: result carries task ids, assignees, and workspace paths.
+    # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
+    # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
+    # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",
+    # "thread_renamed". Each event type carries its own event-local additive payload contract (see
+    # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
+    # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
+    "gateway_platform_event",
+    # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
+    # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
+    # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape
+    # hatches. Kwargs: surface, command (canonical), alias_used, args_raw, session_key, platform.
+    # Observer-first (#64204, #64182 rule 3); a directive-shaped return gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
+    "pre_command",
+    "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
+    # post_curator_run: after a curator pass wrote logs/curator/<run>/ (run.json + REPORT.md). Kwargs:
+    # run_dir, run_json_path, report_md_path, dry_run. Observer; returns ignored.
+    "post_curator_run",
+}
+
+# Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
+# the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+
+_env_enabled = env_var_enabled  # imported by plugins/memory
+
+
+@dataclass
+class LoadedPlugin:
+    """Runtime state for a single loaded plugin."""
+
+    manifest: PluginManifest
+    module: Optional[types.ModuleType] = None
+    tools_registered: list[str] = field(default_factory=list)
+    hooks_registered: list[str] = field(default_factory=list)
+    middleware_registered: list[str] = field(default_factory=list)
+    commands_registered: list[str] = field(default_factory=list)
+    enabled: bool = False
+    error: Optional[str] = None
+    # Bundled platform recorded as a not-yet-imported loader (see _register_deferred_platform).
+    deferred: bool = False
+
+
+def _resolve_hook_callback_timeout() -> float:
+    """Effective hook-callback timeout from ``plugins.hook_callback_timeout`` (default 30s; ``<= 0``
+    disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``).
+
+    ``invoke_hook`` calls this once per hook invocation; ``load_config_readonly()`` serves cache hits
+    without ``_CONFIG_LOCK``, so this is a stat + dict lookup per call and needs no memo of its own.
+    """
+    default = _HOOK_CALLBACK_TIMEOUT_SECS
+    try:
+        plugins_cfg = (load_config_readonly() or {}).get("plugins")
+        if not isinstance(plugins_cfg, dict) or plugins_cfg.get("hook_callback_timeout") is None:
+            return default
+        timeout = float(plugins_cfg["hook_callback_timeout"])
+    except (TypeError, ValueError):
+        logger.warning("plugins.hook_callback_timeout is not a number; using default %gs", default)
+        return default
+    except Exception:
+        return default
+    if timeout < 0:
+        logger.warning("plugins.hook_callback_timeout=%g is negative; using default %gs", timeout, default)
+        return default
+    if timeout > _MAX_HOOK_CALLBACK_TIMEOUT_SECS:
+        logger.warning("plugins.hook_callback_timeout=%g exceeds max %gs; clamping", timeout,
+                       _MAX_HOOK_CALLBACK_TIMEOUT_SECS)
+        return _MAX_HOOK_CALLBACK_TIMEOUT_SECS
+    return timeout
+
+
+class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
+    """Central manager that discovers, loads, and invokes plugins."""
+
+    def __init__(self, scope_key: Optional[str] = None) -> None:
+        # Capture the home immutably. Unload can run from a different ambient
+        # profile context, but every inverse must target the registration's
+        # original scope.  Normalize through hermes_home_key so the scope
+        # matches the key the registries store under (normcase on Windows).
+        self.scope_key = hermes_home_key(scope_key)
+        self.home_path = Path(self.scope_key)
+        self._discovery_lock = threading.RLock()
+        self._discovered: bool = False
+        # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
+        # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
+        # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
+        self._plugin_secret_sources_reconciled: bool = False
+        self._cli_ref = None  # Set by CLI after plugin discovery
+        self._gateway_message_injector: tuple[object, Callable] | None = None
+        # Ink TUI / desktop. Must not alias ``_gateway_message_injector``: a live
+        # messaging gateway and a TUI in one process would otherwise clobber each other.
+        self._tui_message_injector: tuple[object, Callable] | None = None
+        self._context_engine = None  # Set by a plugin via register_context_engine()
+        # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
+        # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
+        # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
+        # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
+        self._plugins: dict[str, LoadedPlugin] = {}
+        self._hooks: dict[str, list[Callable]] = {}
+        # Fallback hooks registered by a memory provider before general discovery.
+        self._memory_hook_registrations: dict[tuple[str, str], list[PluginRegistration]] = {}
+        self._middleware: dict[str, list[Callable]] = {}
+        self._plugin_tool_names: set[str] = set()
+        self._plugin_platform_names: set[str] = set()
+        self._cli_commands: dict[str, dict] = {}
+        self._plugin_commands: dict[str, dict] = {}
+        self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
+        self._plugin_skills: dict[str, dict[str, Any]] = {}
+        self._plugin_rpc_methods: dict[str, Callable] = {}  # "plugin.<plugin_id>.<name>" -> handler
+        self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
+        self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
+        self._portable_mcp_server_plugins: dict[str, str] = {}
+        self._aux_tasks: dict[str, dict[str, Any]] = {}
+        self._approval_transports: dict[str, Any] = {}
+        self._slack_action_handlers: list[tuple] = []
+        self._platform_handler_factories: dict[str, list[tuple]] = {}
+        # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().
+        self._plugin_loaded_listeners: list[Callable] = []
+        # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
+        # registration order while emitters never block; per-worker chain depth caps mutual emitters.
+        self._subscriptions: dict[str, list[_EventSubscription]] = {}
+        self._event_lock = threading.RLock()
+        self._event_idle = threading.Condition(self._event_lock)
+        self._event_generation = 0
+        self._event_pending_by_generation: dict[int, int] = {0: 0}
+        self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
+        self._event_worker: Optional[threading.Thread] = None
+        self._emit_depth = threading.local()
+        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb), call_identity)
+        # so a stuck policy hook cannot spawn a new abandoned thread on every fire.
+        self._hook_running_callbacks: dict[tuple, object] = {}
+        self._hook_abandoned: dict[tuple, set] = {}
+        self._hook_timeout_suppressed_until: dict[tuple, float] = {}
+        self._hook_timeout_lock = threading.Lock()
+        self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.
+        self._hook_failures_reported: set = set()
+        # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
+        # global registries are shared across profiles while several managers coexist, so the ledger
+        # is keyed per (hermes_home, plugin_id) and every inverse is identity-conditional — one
+        # profile's unload can never clear another's. Persistent registrations that survived an
+        # unload-all park in ``_persistent_carryover`` until force re-discovery evicts the stale ones.
+        # Registration handles are kept both per plugin (ownership lookup) and globally (reverse-order
+        # teardown for overrides spanning plugins). Registry overlays keyed by scope_key (see
+        # tools/registry.py and gateway/platform_registry.py) carry the profile dimension; anything still
+        # process-global is guarded by the identity checks. TODO(#64178): extend explicit profile keying to
+        # any remaining process-global slots when the symmetric force-reload lands.
+        self._ownership_ledger: dict[str, list[PluginRegistration]] = {}
+        self._registration_order: list[PluginRegistration] = []
+        # Force re-discovery drains this via _evict_stale_persistent_registrations(): entries whose plugin
+        # re-registered the same (kind, key) are kept (the upsert rotated them in place), the rest are
+        # disposed so a disabled/removed auth plugin's provider does not outlive its plugin (#91701
+        # follow-up).
+        self._persistent_carryover: list[PluginRegistration] = []
+        # Deferred platforms whose client tools registered at discovery (see
+        # _register_deferred_platform_tools): imported package (don't re-execute on materialize)
+        # and contributed tool names (so `hermes plugins list` still attributes them).
+        self._predeclared_modules: dict[str, types.ModuleType] = {}
+        self._predeclared_tools: dict[str, list[str]] = {}
+
+    @property
+    def has_gateway_message_injector(self) -> bool:
+        """Return whether a live gateway can accept plugin-triggered turns."""
+        return self._gateway_message_injector is not None
+
+    def set_gateway_message_injector(self, owner: object, injector: Callable[..., bool]) -> None:
+        """Publish a live gateway injector and its lifecycle owner."""
+        self._gateway_message_injector = (owner, injector)
+
+    def clear_gateway_message_injector(self, owner: object) -> None:
+        """Clear the injector only when it still belongs to ``owner``."""
+        if self._gateway_message_injector is not None and self._gateway_message_injector[0] is owner:
+            self._gateway_message_injector = None
+
+    def inject_gateway_message(self, **kwargs: Any) -> bool:
+        """Submit a plugin-triggered turn to the live gateway."""
+        registered = self._gateway_message_injector
+        return registered is not None and bool(registered[1](**kwargs))
+
+    @property
+    def has_tui_message_injector(self) -> bool:
+        """Return whether a live Ink TUI / desktop host can accept plugin-triggered turns."""
+        return self._tui_message_injector is not None
+
+    def set_tui_message_injector(self, owner: object, injector: Callable[..., bool]) -> None:
+        """Publish a live TUI/desktop injector. Does not touch the messaging-gateway slot."""
+        self._tui_message_injector = (owner, injector)
+
+    def clear_tui_message_injector(self, owner: object) -> None:
+        """Clear the TUI injector only when it still belongs to ``owner``."""
+        if self._tui_message_injector is not None and self._tui_message_injector[0] is owner:
+            self._tui_message_injector = None
+
+    def inject_tui_message(self, **kwargs: Any) -> bool:
+        """Submit a plugin-triggered turn to the live TUI/desktop host."""
+        registered = self._tui_message_injector
+        return registered is not None and bool(registered[1](**kwargs))
+
+    def discover_and_load(self, force: bool = False) -> None:
+        """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
+        changes / new bundled backends become visible in long-lived sessions."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled() or plugin_discovery_suppressed():
+            # Safe workers never discover; a config-only read of a profile this process must not
+            # load plugins for is suppressed too.
+            return
+        if self._discovered and not force and in_plugin_load_worker():
+            # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
+            # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
+            # whole sweep, so return where the locked re-entry used to. Every other caller still waits.
+            return
+        with self._discovery_lock, _plugin_home_scope(self.home_path):
+            if self._discovered and not force:
+                return
+            # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
+            # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
+            loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
+            if force:
+                self.unload()  # the ledger owns teardown of process-global registries
+            if env_var_enabled("HERMES_SAFE_MODE"):
+                logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
+                self._discovered = True
+                return
+            # Flag set up front as a re-entrancy guard (register() can trigger discovery again) but
+            # reset on failure so a failed scan is NOT cached as "discovered with an empty registry"
+            # — callers swallow the exception and would be stranded on the early return above.
+            self._discovered = True
+            try:
+                self._discover_and_load_inner()
+                # Now that plugins have had their chance to re-register, dispose the ones whose plugin did
+                # not come back (disabled, removed, or omitted from this discovery pass) so e.g. a disabled
+                # auth plugin's provider does not stay live process-wide until restart. See #91701.
+                self._evict_stale_persistent_registrations()
+                # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull.
+                # Plugin secret sources register during discover; the initial load_hermes_dotenv() already
+                # ran at import time. Re-pull so the first process sees plugin backends (tracking #64177).
+                self._refresh_secret_sources_after_discovery()
+                if force:
+                    # config.yaml shell hooks / outbound webhooks live in ``_hooks`` but are
+                    # config-owned; unload() wiped them and cannot restore them.
+                    # Re-register so force-reload is symmetric (#60036; tracking #64178 — salvaged from PR
+                    # #64188; outbound webhooks added per #92682 review).
+                    self._re_register_config_hooks_after_force()
+            except BaseException:
+                self._discovered = False
+                raise
+        # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
+        self._notify_plugin_loaded(loaded_before)
+
+    def _re_register_config_hooks_after_force(self) -> None:
+        """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded
+        independently so one failing does not skip the other."""
+        for label, module_name in (("shell-hook", "agent.shell_hooks"),
+                                   ("outbound-webhook", "agent.outbound_webhooks")):
+            try:
+                importlib.import_module(module_name).re_register_config_hooks()
+            except Exception as exc:
+                logger.debug("force-reload %s re-register skipped: %s", label, exc)
+
+    def _refresh_secret_sources_after_discovery(self) -> None:
+        """If any plugin secret source is enabled (per its own ``is_enabled(cfg)``, honoring custom
+        activation), reset the cache and re-apply. Fail-open: never raises into discover_and_load."""
+        try:
+            from agent.secret_sources.registry import list_plugin_sources
+            from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+            plugin_sources = list_plugin_sources()
+        except Exception:
+            return
+        enabled_names: list[str] = []
+        if plugin_sources:
+            try:
+                from hermes_cli.config import load_config
+                secrets = (load_config() or {}).get("secrets") or {}
+            except Exception:
+                secrets = {}
+
+            def _enabled(source) -> bool:
+                section = secrets.get(getattr(source, "name", ""))
+                try:
+                    return bool(source.is_enabled(section if isinstance(section, dict) else {}))
+                except Exception:
+                    return False  # mirrors the orchestrator: a raising is_enabled() is skipped
+
+            enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
+        if not enabled_names:
+            # Nothing enabled now. If an earlier discovery re-applied plugin sources for this home, the
+            # snapshot and installed scope still carry that plugin's names (force-reload unloads the
+            # registration first, so this is exactly the "last plugin source removed" path) — reconcile
+            # once so they drop out. A home that never had one stays a no-op: no re-pull, no re-load.
+            if not self._plugin_secret_sources_reconciled:
+                return
+            # The marker is cleared only AFTER the cleanup below succeeds: reset/reload/refresh are
+            # fallible, and clearing first left the stale credential active with no retry on the next
+            # discovery (review on f5f88d5058).
+        else:
+            self._plugin_secret_sources_reconciled = True
+        try:
+            # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
+            # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
+            # wiped their snapshots; a routed discovery must rebuild the profile it just dropped.
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            reset_secret_source_cache(home)
+            load_hermes_dotenv(hermes_home=home)
+            # A scope installed for this home was frozen BEFORE these sources existed — a routed cron
+            # fire builds its scope in run_one_job and only then, on its first agent build, discovers
+            # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
+            # into the installed scope or THIS fire never sees the plugin credential.
+            from agent.secret_scope import refresh_installed_secret_scope
+            refresh_installed_secret_scope(Path(home))
+            if not enabled_names:
+                self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
+            logger.debug("Re-applied secret sources after plugin discovery for: %s",
+                         ", ".join(sorted(enabled_names)) or "<none — reconciled removed plugin sources>")
+        except Exception as exc:
+            logger.debug("secret source re-apply after discovery failed: %s", exc)
+
+    def _discover_and_load_inner(self) -> None:
+        """The actual discovery sweep — see :meth:`discover_and_load`."""
+        manifests: list[PluginManifest] = self._collect_directory_manifests()
+        # Entry points are separate from the directory scan: the startup MCP probe must not import
+        # or register them.
+        # An installed directory plugin keeps its identity when its own pip dependency also ships an
+        # entry point under the same name (the pyproject wrapper shape): the directory is what the
+        # user installed, carries catalog provenance and is what update/remove act on.
+        directory_keys = {manifest_key(m) for m in manifests}
+        ep_manifests = [m for m in self._scan_entry_points() if manifest_key(m) not in directory_keys]
+        logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
+        manifests.extend(ep_manifests)
+        disabled = _get_disabled_plugins()
+        enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
+        stale_relay_keys = legacy_relay_plugin_keys(enabled)
+        if stale_relay_keys:
+            logger.warning("Removed Hermes plugin %s is still listed in plugins.enabled; "
+                           "remove it and configure a standard user or system Relay plugins.toml, or use %s "
+                           "for an explicit user-file override",
+                           ", ".join(stale_relay_keys), RELAY_PLUGINS_CONFIG_ENV)
+        # Later sources win on key collision (project > user > bundled) except a flat impostor claiming a
+        # bundled key from another directory (resolve_manifest_winners); gate the winners, then
+        # load survivors in requires_plugins order (see resolve_plugin_load_order).
+        winners = resolve_manifest_winners(manifests)
+        to_load = {k: m for k, m in winners.items() if self._gate_manifest(m, disabled, enabled)}
+        for lookup_key in resolve_plugin_load_order(to_load):
+            manifest = to_load[lookup_key]
+            self._warn_python_dependencies(manifest)
+            self._validate_plugin_config_schema(manifest)
+            self._load_plugin(manifest)
+        if manifests:
+            logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
+                        sum(1 for p in self._plugins.values() if p.enabled))
+
+    def _gate_manifest(
+        self, manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]],
+    ) -> bool:
+        """Route one winning manifest per :func:`gate_manifest`: load now, defer, or record as
+        skipped (introspection-only placeholder). Returns True only for plugins that go through the
+        dependency-ordered load pass."""
+        verdict = gate_manifest(manifest, disabled, enabled)
+        if verdict.action == "load":
+            return True
+        if verdict.action == "load_now":
+            self._load_plugin(manifest)
+        elif verdict.action == "defer":
+            self._register_deferred_platform(manifest)
+        else:
+            self._plugins[manifest_key(manifest)] = LoadedPlugin(
+                manifest=manifest, enabled=verdict.enabled, error=verdict.error)
+        if verdict.log:
+            logger.log(*verdict.log)
+        return False
+
+    def register_approval_transport(self, name: str, present_fn: Callable, *, plugin_id: str) -> None:
+        """Manager-level registration (public API kept for out-of-tree plugins); the PluginContext
+        method is the tracked path plugins normally use. Same validation, no unload tracking."""
+        from hermes_cli.approval_transport import RegisteredApprovalTransport
+        clean = str(name).strip().lower()
+        if clean == "builtin":
+            raise ValueError("approval transport name 'builtin' is reserved")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
+            raise ValueError("approval transport name must match [a-z0-9][a-z0-9_-]{0,63}")
+        if not callable(present_fn):
+            raise TypeError("approval transport present_fn must be callable")
+        if clean in self._approval_transports:
+            owner = self._approval_transports[clean].plugin_id
+            raise ValueError(f"approval transport {clean!r} is already registered by {owner!r}")
+        self._approval_transports[clean] = RegisteredApprovalTransport(
+            name=clean, present=present_fn, plugin_id=plugin_id, profile_home=str(get_hermes_home().resolve()),
+        )
+        logger.info("Plugin %s registered approval transport: %s", plugin_id, clean)
+
+    def get_approval_transport(self, name: str):
+        """Return a transport only inside the profile that registered it."""
+        registered = self._approval_transports.get(str(name).strip().lower())
+        if registered is None or registered.profile_home != str(get_hermes_home().resolve()):
+            return None
+        return registered
+
+    def _collect_directory_manifests(self) -> list[PluginManifest]:
+        """Directory manifests in full-discovery order (see :func:`collect_directory_manifests`)."""
+        return collect_directory_manifests()
+
+    def has_enabled_portable_mcp(self, raw_config: Mapping[str, Any]) -> bool:
+        """Probe enabled portable MCP packages without loading plugins (shares the full-discovery
+        manifest collection so precedence/gating cannot diverge)."""
+        if _env_enabled("HERMES_SAFE_MODE"):
+            return False
+        plugins_config = raw_config.get("plugins")
+        if not isinstance(plugins_config, dict):
+            return False
+
+        def _names(value: Any) -> set[str]:
+            return {v for v in value if isinstance(v, str)} if isinstance(value, list) else set()
+
+        enabled = _names(plugins_config.get("enabled"))
+        disabled = _names(plugins_config.get("disabled", []))
+        if not enabled:
+            return False
+        for lookup_key, manifest in {manifest_key(m): m for m in self._collect_directory_manifests()}.items():
+            names = {lookup_key, manifest.name}
+            if not manifest.portable or names & disabled or not names & enabled:
+                continue
+            try:  # lazy: this is a startup probe, keep agent_plugins unimported unless needed
+                from hermes_cli.agent_plugins import _discover_mcp
+                if _discover_mcp(Path(manifest.path), get_hermes_home() / "plugin-data"
+                                 / (manifest.data_namespace or lookup_key), [], create_data=False):
+                    return True
+            except (OSError, RuntimeError, ValueError):
+                continue  # fail closed on an unreadable package; full discovery reports it
+        return False
+
+    def _scan_directory(
+        self, path: Path, source: str, skip_names: Optional[set[str]] = None,
+    ) -> list[PluginManifest]:
+        """Read manifests under *path* (see :func:`scan_directory`)."""
+        return scan_directory(path, source, skip_names=skip_names)
+
+    def _scan_entry_points(self) -> list[PluginManifest]:
+        """Read installed plugin entry points (see :func:`discover_entrypoint_manifests`)."""
+        return discover_entrypoint_manifests()
+
+    def get_slack_action_handlers(self) -> list[tuple]:
+        """``(action_id, callback, plugin_name)`` tuples for the Slack adapter to wire at connect."""
+        return list(self._slack_action_handlers)
+
+    def get_platform_handler_factories(self, platform: str) -> list[tuple]:
+        """``(factory, plugin_name)`` tuples for one platform; adapters call ``factory(native,
+        adapter)`` at connect (see :meth:`PluginContext.register_platform_handler`)."""
+        return list(self._platform_handler_factories.get((platform or "").strip().lower(), []))
+
+    def get_telegram_handler_factories(self) -> list[tuple]:
+        """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
+        return self.get_platform_handler_factories("telegram")
+
+    def list_plugins(self) -> list[dict[str, Any]]:
+        """Return a list of info dicts for all discovered plugins."""
+        return [
+            {
+                "name": p.manifest.name, "key": manifest_key(p.manifest), "kind": p.manifest.kind,
+                "version": p.manifest.version, "description": p.manifest.description,
+                "source": p.manifest.source, "enabled": p.enabled, "tools": len(p.tools_registered),
+                "hooks": len(p.hooks_registered), "middleware": len(p.middleware_registered),
+                "commands": len(p.commands_registered), "error": p.error,
+            } for _key, p in sorted(self._plugins.items())
+        ]
+
+    def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
+        """Return the ``Path`` to a plugin skill's SKILL.md, or ``None``."""
+        entry = self._plugin_skills.get(qualified_name)
+        return entry["path"] if entry else None
+
+    def list_plugin_skills(self, plugin_name: str) -> list[str]:
+        """Return sorted bare names of all skills registered by *plugin_name*."""
+        prefix = f"{plugin_name}:"
+        return sorted(e["bare_name"] for qn, e in self._plugin_skills.items() if qn.startswith(prefix))
+
+    def list_plugin_skill_metadata(self) -> list[dict[str, Any]]:
+        """Return progressive-disclosure metadata for registered plugin skills."""
+        return [
+            {
+                "name": qualified, "description": str(entry.get("description", "")),
+                "category": "plugin", "frontmatter": dict(entry.get("frontmatter", {})),
+            } for qualified, entry in sorted(self._plugin_skills.items())
+        ]
+
+    def list_automation_blueprints(self) -> list[Any]:
+        """Plugin-registered ``AutomationBlueprint``s, sorted by key."""
+        return [bp for _key, bp in sorted(self._automation_blueprints.items())]
+
+    def has_portable_mcp_servers(self) -> bool:
+        return bool(self._portable_mcp_servers)
+
+    def get_portable_mcp_servers(self) -> dict[str, dict[str, Any]]:
+        """Return a defensive copy of enabled portable MCP server configs."""
+        return {name: dict(config) for name, config in self._portable_mcp_servers.items()}
+
+    def get_portable_mcp_server_plugins(self) -> dict[str, str]:
+        return dict(self._portable_mcp_server_plugins)
+
+    def remove_plugin_skill(self, qualified_name: str) -> None:
+        """Remove a stale registry entry (silently ignores missing keys)."""
+        self._plugin_skills.pop(qualified_name, None)
+
+
+# ``PluginContext.__init__`` annotates ``manager: PluginManager``; typing.get_type_hints resolves it in
+# plugins_context's namespace, which cannot import this module at load time.
+sys.modules[PluginContext.__module__].PluginManager = PluginManager
+
+
+# Module-level singleton & convenience functions.
+
+# Legacy single-slot "current" manager, kept so tests that monkeypatch ``_plugin_manager`` keep
+# working — ``get_plugin_manager()`` still reads/writes this name.
+_plugin_manager: Optional[PluginManager] = None
+
+# Resolved Hermes home -> PluginManager. A process can switch profiles via
+# ``set_hermes_home_override()``; a single slot would leak one profile's plugin/context-engine state
+# into another, and keying by resolved home lets a re-entered profile reuse its imported modules.
+_plugin_managers_by_home: dict[Path, PluginManager] = {}
+_plugin_managers_lock = threading.RLock()
+
+# Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
+# isolated in per-profile managers, so every manager in this process must see the same live host.
+_published_gateway_message_injector: tuple[object, Callable] | None = None
+_published_gateway_host_lock = threading.Lock()
+
+# Process-wide Ink TUI / desktop host. Not the messaging-gateway slot. Stamped onto
+# each profile's manager so a multiplexed desktop process does not drop injects
+# aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
+_published_tui_message_injector: tuple[object, Callable] | None = None
+_published_tui_host_lock = threading.Lock()
+
+
+def _plugin_home_key() -> Path:
+    """Resolved active Hermes home — the key for per-profile plugin managers (plugins capture the
+    home at registration, so a process serving several profiles cannot share one manager)."""
+    try:
+        return get_hermes_home().expanduser().resolve()
+    except Exception:
+        return get_hermes_home().expanduser()
+
+
+def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
+    """Purge ``sys.modules`` entries for this manager's directory plugins (package AND submodules —
+    otherwise a same-slug plugin in another profile reuses the previous profile's submodule state).
+    """
+    if manager is None:
+        return
+    for loaded in getattr(manager, "_plugins", {}).values():  # tolerates test-double managers
+        module_name = getattr(getattr(loaded, "module", None), "__name__", None)
+        if not module_name or not module_name.startswith(f"{_NS_PARENT}."):
+            continue
+        _evict_modules(module_name)
+        with _MODULE_NAMESPACE_LOCK:
+            if _BARE_MODULE_SCOPE.get(module_name) == manager.scope_key:
+                _BARE_MODULE_SCOPE.pop(module_name, None)
+
+
+def _known_plugin_managers() -> list[PluginManager]:
+    with _plugin_managers_lock:
+        managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
+        if _plugin_manager is not None and _plugin_manager not in managers:
+            managers.append(_plugin_manager)
+    return managers
+
+
+def publish_gateway_message_host(owner: object, injector: Callable[..., bool]) -> None:
+    """Remember the process gateway host and stamp managers that already exist."""
+    global _published_gateway_message_injector
+    # Keep publication + stamping atomic with owner-safe clear. Managers created concurrently are
+    # registered before _attach_published_gateway_host(), which takes this same lock.
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = (owner, injector)
+        for manager in _known_plugin_managers():
+            manager.set_gateway_message_injector(owner, injector)
+
+
+def clear_published_gateway_message_host(owner: object) -> None:
+    """Forget this owner's process gateway host without clobbering a newer runner."""
+    global _published_gateway_message_injector
+    with _published_gateway_host_lock:
+        if (_published_gateway_message_injector is not None
+                and _published_gateway_message_injector[0] is owner):
+            _published_gateway_message_injector = None
+        for manager in _known_plugin_managers():
+            manager.clear_gateway_message_injector(owner)
+
+
+def _attach_published_gateway_host(manager: PluginManager) -> None:
+    """Give a newly resolved profile manager the live process gateway host, if any."""
+    with _published_gateway_host_lock:
+        host = _published_gateway_message_injector
+        if host is not None and manager._gateway_message_injector is None:
+            manager.set_gateway_message_injector(*host)
+
+
+def publish_tui_message_host(owner: object, injector: Callable[..., bool]) -> None:
+    """Remember the process TUI/desktop host and stamp managers that already exist.
+
+    Does not call ``set_gateway_message_injector``.
+    """
+    global _published_tui_message_injector
+    with _published_tui_host_lock:
+        _published_tui_message_injector = (owner, injector)
+    for manager in _known_plugin_managers():
+        manager.set_tui_message_injector(owner, injector)
+
+
+def clear_published_tui_message_host(owner: object) -> None:
+    """Forget the process TUI host and clear it where this owner still holds the slot."""
+    global _published_tui_message_injector
+    with _published_tui_host_lock:
+        if (_published_tui_message_injector is not None
+                and _published_tui_message_injector[0] is owner):
+            _published_tui_message_injector = None
+    for manager in _known_plugin_managers():
+        manager.clear_tui_message_injector(owner)
+
+
+def _attach_published_tui_host(manager: PluginManager) -> None:
+    """Give a newly resolved manager the process TUI host, if one is installed and the slot is empty."""
+    with _published_tui_host_lock:
+        host = _published_tui_message_injector
+    if host is not None and manager._tui_message_injector is None:
+        manager._tui_message_injector = host
+
+
+def get_plugin_manager() -> PluginManager:
+    """Return the plugin manager for the active Hermes profile/home (cached per resolved home; a
+    profile switch gets its own manager and plugin submodules)."""
+    global _plugin_manager
+    current_home = _plugin_home_key()
+    with _plugin_managers_lock:
+        # Tests/embedders monkeypatch ``_plugin_manager`` directly: adopt a single-slot manager the
+        # keyed cache doesn't know about at all.
+        if _plugin_manager is not None and _plugin_manager not in _plugin_managers_by_home.values():
+            _plugin_managers_by_home[current_home] = _plugin_manager
+            manager = _plugin_manager
+        else:
+            manager = _plugin_managers_by_home.get(current_home)
+            if manager is None:
+                manager = PluginManager(scope_key=hermes_home_key(current_home))
+                _plugin_managers_by_home[current_home] = manager
+            _plugin_manager = manager
+    _attach_published_gateway_host(manager)
+    _attach_published_tui_host(manager)
+    return manager
+
+
+def _reset_plugin_managers_for_tests() -> None:
+    """Test-only: drop every cached manager and its submodules for a fully clean slate."""
+    global _plugin_manager, _published_gateway_message_injector, _published_tui_message_injector
+    with _plugin_managers_lock:
+        managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
+        if _plugin_manager is not None and _plugin_manager not in managers:
+            managers.append(_plugin_manager)
+        for manager in managers:
+            _clear_plugin_submodules(manager)
+            try:
+                manager.unload()
+            except Exception:
+                logger.debug("test plugin-manager unload failed", exc_info=True)
+        _plugin_managers_by_home.clear()
+        _plugin_manager = None
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = None
+    with _published_tui_host_lock:
+        _published_tui_message_injector = None
+    # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
+    # reset must clear that process-global registry explicitly or a test's provider leaks.
+    try:
+        from hermes_cli.dashboard_auth.registry import clear_providers
+        clear_providers()
+    except Exception:
+        logger.debug("dashboard-auth registry clear failed", exc_info=True)
+
+
+def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
+    """Whether config enables a portable package with MCP servers (manifest-only scan on a fresh
+    manager; imports nothing, mutates no registry)."""
+    return PluginManager().has_enabled_portable_mcp(raw_config)
+
+
+def discover_plugins(force: bool = False) -> None:
+    """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
+    background discovery instead of racing a second scan."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
+    _join_background_discovery()
+    get_plugin_manager().discover_and_load(force=force)
+
+
+_background_discovery_thread: Optional[threading.Thread] = None
+_background_discovery_lock = threading.Lock()
+
+
+def start_background_plugin_discovery() -> None:
+    """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
+    synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
+    registry. No-op when already done or in flight."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
+    global _background_discovery_thread
+    manager = get_plugin_manager()
+    if manager._discovered:
+        return
+    with _background_discovery_lock:
+        if _background_discovery_thread is not None and _background_discovery_thread.is_alive():
+            return
+
+        def _run() -> None:
+            try:
+                manager.discover_and_load()
+                _persist_plugin_toolset_keys()
+            except Exception:
+                logger.warning("background plugin discovery failed", exc_info=True)
+
+        _background_discovery_thread = threading.Thread(target=_run, name="plugin-discovery", daemon=True)
+        _background_discovery_thread.start()
+
+
+def _join_background_discovery(timeout: float = 30.0) -> bool:
+    """Wait for an in-flight background discovery (no-op from its own thread or a plugin-load worker it
+    spawned — that worker's parent is blocked waiting on it). True when the wait timed out."""
+    t = _background_discovery_thread
+    if t is None or not t.is_alive() or t is threading.current_thread() or in_plugin_load_worker():
+        return False
+    t.join(timeout=timeout)
+    return t.is_alive()
+
+
+def _plugin_toolset_keys_cache_path() -> Path:
+    return get_hermes_home() / "cache" / "plugin_toolset_keys.json"
+
+
+def _persist_plugin_toolset_keys() -> None:
+    """Persist discovered plugin toolset keys + portable MCP names (best-effort)."""
+    try:
+        from utils import atomic_json_write
+        keys = sorted({ts_key for ts_key, _, _ in get_plugin_toolsets()})
+        try:
+            portable = sorted(get_plugin_manager().get_portable_mcp_servers())
+        except Exception:
+            portable = []
+        atomic_json_write(_plugin_toolset_keys_cache_path(), {"toolset_keys": keys, "portable_mcp": portable}, indent=None, mode=0o600)
+    except Exception:
+        logger.debug("plugin toolset key persist failed", exc_info=True)
+
+
+def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], set[str]]) -> set[str]:
+    """Shared body of the ``*_nowait`` probes: live registry, else last launch's cache, else block."""
+    manager = get_plugin_manager()
+    t = _background_discovery_thread
+    in_flight = t is not None and t.is_alive()
+    if manager._discovered and not in_flight:
+        return live(manager)
+    if in_flight:
+        with suppress(Exception):
+            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8-sig"))
+            values = blob.get(cache_field) if isinstance(blob, dict) else None
+            if isinstance(values, list) and all(isinstance(v, str) for v in values):
+                return set(values)
+    discover_plugins()
+    return live(manager)
+
+
+def get_plugin_toolset_keys_nowait() -> set[str]:
+    """Plugin toolset keys without blocking on in-flight discovery: live registry when done, last
+    launch's persisted set while a background scan runs (callers only EXCLUDE these keys, so a stale
+    set is harmless and self-heals), else block via discover_plugins()."""
+    return _nowait_plugin_set("toolset_keys", lambda _m: {ts_key for ts_key, _, _ in get_plugin_toolsets()})
+
+
+def get_portable_mcp_server_names_nowait() -> set[str]:
+    """Portable MCP server names; same contract as :func:`get_plugin_toolset_keys_nowait`."""
+    return _nowait_plugin_set("portable_mcp", lambda m: set(m.get_portable_mcp_servers()))
+
+
+_delivery_join_abandoned = False
+
+
+def _delivery_manager() -> PluginManager:
+    """Active manager, lazily discovering if it never ran — delivery must not depend on WHICH
+    surface imported us (dashboards/TUI/cron never import model_tools: #50776, #64178).
+    ``getattr`` default ``True`` leaves test doubles untouched."""
+    global _delivery_join_abandoned
+    manager = get_plugin_manager()
+    # ``_discovered`` flips when a scan STARTS (re-entrancy guard), so an in-flight background scan
+    # must be joined first or a hook fired during startup sees a half-loaded registry. A scan still
+    # running after one full join is hung (a plugin's register() blocked): later hooks stop waiting.
+    if not _delivery_join_abandoned:
+        _delivery_join_abandoned = _join_background_discovery()
+    if not getattr(manager, "_discovered", True):
+        manager.discover_and_load()
+    return manager
+
+
+def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
+    """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results.
+
+    Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the policy hook ``pre_tool_call`` are
+    bounded by ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker is abandoned (not
+    joined) so we do not reintroduce the #6622 hang. Timed-out or still-running ``pre_tool_call`` callbacks
+    fail closed with a block directive; other bounded hooks fail open (skip).
+    Ensures plugins are discovered on first invocation so callers in processes that never explicitly call
+    ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
+    callbacks registered by user plugins (tracking #64178).
+    """
+    return _delivery_manager().invoke_hook(hook_name, **kwargs)
+
+
+async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
+    """:func:`invoke_hook` for callers on an event loop: ``async def`` callbacks are awaited
+    there instead of bridged through a helper thread (see ``PluginManager.ainvoke_hook``)."""
+    return await _delivery_manager().ainvoke_hook(hook_name, **kwargs)
+
+
+def render_system_prompt_sections(session_info: Mapping[str, Any]) -> list[RenderedPluginSystemPromptSection]:
+    """Render plugin prompt sections after idempotent plugin discovery."""
+    return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
+
+
+def invoke_middleware(kind: str, **kwargs: Any) -> list[Any]:
+    """Invoke registered middleware callbacks (lazy-discovers like :func:`invoke_hook`).
+
+    Lazy-discovers plugins on first use — same delivery-parity guarantee as :func:`invoke_hook` (tracking
+    #64178).
+    """
+    return _delivery_manager().invoke_middleware(kind, **kwargs)
+
+
+def has_middleware(kind: str) -> bool:
+    """True when middleware is registered for ``kind``; lazy-discovers first since callers gate
+    :func:`invoke_middleware` on it.
+
+    Lazy-discovers first: callers use this as a gate before :func:`invoke_middleware`, so a pre-discovery
+    ``False`` here would silently skip delivery on surfaces that never ran discovery (#64178).
+    """
+    manager = _delivery_manager()
+    method = getattr(manager, "has_middleware", None)
+    if callable(method):
+        return bool(method(kind))
+    return bool(getattr(manager, "_middleware", {}).get(kind))
+
+
+def has_hook(hook_name: str) -> bool:
+    """True when a loaded plugin handles a hook (lazy-discovers first, like :func:`has_middleware`).
+
+    Lazy-discovers first — same gate-before-invoke rationale as :func:`has_middleware` (tracking #64178).
+    """
+    return _delivery_manager().has_hook(hook_name)
+
+
+def hook_unused_nowait(hook_name: str) -> bool:
+    """True when this home's plugins are loaded and none handles *hook_name*. Never discovers or
+    waits (an unloaded home, or one whose (re)load is still running on another thread, answers False:
+    unknown, not unused), so it is safe on an event loop."""
+    manager = get_plugin_manager()
+    # ``_discovered`` is set before a sweep finishes and a force reload clears ``_hooks`` first, so a
+    # sweep in flight could read as "no consumer": treat a held discovery lock as unknown.
+    if not manager._discovery_lock.acquire(blocking=False):
+        return False
+    try:
+        return manager._discovered and not manager.has_hook(hook_name)
+    finally:
+        manager._discovery_lock.release()
+
+
+def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
+    """Return a stable snapshot of callbacks registered for a hook."""
+    return get_plugin_manager().iter_hook_callbacks(hook_name)
+
+
+def fire_pre_command_hook(
+    *, surface: str, command: str, alias_used: str, args_raw: str,
+    session_key: Optional[str] = None, platform: Optional[str] = None,
+) -> None:
+    """Fire the observer-only ``pre_command`` hook; never raises. Directive-shaped returns are
+    logged at debug so future block/rewrite adopters are discoverable."""
+    try:
+        manager = get_plugin_manager()
+        if not manager.has_hook("pre_command"):
+            return
+        results = manager.invoke_hook(
+            "pre_command", surface=surface, command=command, alias_used=alias_used,
+            args_raw=args_raw, session_key=session_key, platform=platform,
+        )
+        for result in results:
+            if isinstance(result, dict) and ("action" in result or "decision" in result):
+                logger.debug("pre_command is observer-only in v1: ignoring directive %r for /%s (surface=%s). "
+                             "Block/rewrite will arrive with the command middleware variant (#64204/#64231).",
+                             result, command, surface)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("pre_command hook dispatch failed (non-fatal): %s", exc)
+
+
+_thread_tool_whitelist = threading.local()
+
+
+@dataclass(frozen=True)
+class _PreToolCallDirective:
+    action: Optional[str] = None
+    message: Optional[str] = None
+    rule_key: Optional[str] = None
+    modified_args: Optional[dict[str, Any]] = None
+
+
+def set_thread_tool_whitelist(
+    allowed: Optional[set[str]],
+    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+) -> None:
+    _thread_tool_whitelist.allowed = allowed
+    _thread_tool_whitelist.fmt = deny_msg_fmt
+
+
+def clear_thread_tool_whitelist() -> None:
+    _thread_tool_whitelist.allowed = None
+
+
+def _get_pre_tool_call_directive_details(
+    tool_name: str, args: Optional[dict[str, Any]], task_id: str = "", session_id: str = "",
+    tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
+    middleware_trace: Optional[list[dict[str, Any]]] = None, conversation_id: str = "",
+) -> _PreToolCallDirective:
+    """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
+    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
+    human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). Precedence is
+    ``block`` > ``approve`` > none, not registration order: any plugin's valid veto wins over an
+    earlier plugin's request for human confirmation (#87420); among approves the first valid one
+    wins. Irrelevant returns are ignored."""
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    if allowed is not None and tool_name not in allowed:
+        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
+        return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
+    from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
+    hook_results = invoke_lifecycle_hook(
+        "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
+        task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=list(middleware_trace or []), conversation_id=conversation_id,
+    )
+    modified_args: Optional[dict[str, Any]] = None
+    first_approve: Optional[tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = result.get("action")
+        # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
+        # so modify directives are visible even when a later hook blocks. Each modify directive
+        # shallow-merges its keys into one accumulated dict built from the original args.
+        if action == "modify":
+            partial = result.get("args")
+            if isinstance(partial, dict) and partial:
+                modified_args = {**(modified_args if modified_args is not None else
+                                    (args if isinstance(args, dict) else {})), **partial}
+            continue
+        if action not in ("block", "approve"):
+            continue
+        message = result.get("message")
+        message = message if isinstance(message, str) and message else None
+        # A block directive requires a message (it becomes the tool result); approve's is optional.
+        if action == "block" and not message:
+            continue
+        if action == "block":
+            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
+        # approve is held back until the whole list has been scanned for a veto.
+        if first_approve is None:
+            rule_key = result.get("rule_key")
+            first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
+    if first_approve is not None:
+        return _PreToolCallDirective(action="approve", message=first_approve[0], rule_key=first_approve[1],
+                                     modified_args=modified_args)
+    return _PreToolCallDirective(modified_args=modified_args)
+
+
+def get_pre_tool_call_directive(
+    tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
+) -> tuple[Optional[str], Optional[str]]:
+    """Back-compat: ``(directive, message)`` with directive ``"block"`` / ``"approve"`` / ``None``.
+    ``hook_kwargs`` are the observability ids of :func:`_get_pre_tool_call_directive_details`."""
+    details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
+    return (details.action, details.message)
+
+
+def get_pre_tool_call_block_message(
+    tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
+) -> Optional[str]:
+    """Deprecated shim: only the ``block`` message (or ``None``); ``approve`` is invisible here."""
+    directive, message = get_pre_tool_call_directive(tool_name, args, **hook_kwargs)
+    return message if directive == "block" else None
+
+
+def resolve_pre_tool_block(
+    tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
+) -> Optional[str]:
+    """Resolve the pre_tool_call directive to a final block message (or ``None`` to proceed),
+    running the human-approval gate for ``approve``. See :func:`_resolve_block_from_details`."""
+    return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
+
+
+def _resolve_block_from_details(
+    details: _PreToolCallDirective, tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
+    session_id: str = "",
+) -> Optional[str]:
+    """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
+    ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
+    if details.action == "block":
+        return details.message
+    if details.action != "approve":
+        return None
+    try:
+        from tools.approval import request_tool_approval
+        from tools.approval_context import reset_current_observability_context, set_current_observability_context
+        approval_tokens = None
+        with suppress(Exception):
+            approval_tokens = set_current_observability_context(
+                turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
+        try:
+            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+        finally:
+            if approval_tokens is not None:
+                with suppress(Exception):
+                    reset_current_observability_context(approval_tokens)
+    except Exception:
+        # Fail-closed: if the gate itself errors, block rather than silently execute an action a
+        # plugin flagged for approval.
+        return f"BLOCKED: plugin approval gate failed for {tool_name}"
+    if not result.get("approved"):
+        return str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
+    return None
+
+
+def _dispatch_pre_tool_call_hooks(
+    tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
+) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
+    block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
+    details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
+    block_msg = _resolve_block_from_details(
+        details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
+    return (block_msg, details.modified_args)
+
+
+def get_pre_verify_continue_message(
+    *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
+    attempt: int = 0, final_response: str = "", changed_paths: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
+    ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
+    other return lets the turn finish. ``coding``/``attempt`` let hooks scope and self-throttle."""
+    hook_results = invoke_hook(
+        "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
+        attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
+    )
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        message = result.get("message") or result.get("reason")
+        if action in ("continue", "block") and isinstance(message, str) and message.strip():
+            return message.strip()
+    return None
+
+
+def get_plugin_error_classification(
+    *, provider: str = "", model: str = "", status_code: Optional[int] = None, error_type: str = "",
+    error_code: str = "", error_message: str = "", error_body: Optional[dict[str, Any]] = None,
+    error: Optional[BaseException] = None, approx_tokens: int = 0, context_length: int = 0,
+    num_messages: int = 0,
+) -> Optional[dict[str, Any]]:
+    """Consult ``transform_api_error_classification`` hooks BEFORE the built-in classifier.
+    Run-all-then-pick-first: the first valid result in registration order wins, losing valid results
+    warn (conflicts visible, not shadowed). Returns a sanitized dict (``reason`` -> ``FailoverReason``,
+    hint flags -> bool, ``message`` capped at 500) or ``None``. Privacy: inputs may be unredacted.
+
+    A callback returns ``None`` to decline, or a dict with a required ``"reason"`` (a
+    :class:`agent.error_classifier.FailoverReason` member or its string name) plus optional recovery-hint
+    overrides. Dispatch is run-all-then-pick-first: ``invoke_hook`` runs every registered callback with
+    failures isolated, then the first result carrying a valid reason wins in registration order — mirroring
+    :func:`get_pre_tool_call_block_message`, invalid or irrelevant returns are silently ignored so a
+    misbehaving plugin degrades to a no-op. When more than one callback returns a valid classification, the
+    losing results are skipped with a runtime warning (the #64714 skipped-transform rule) so conflicting
+    provider plugins are visible in logs instead of silently shadowed.
+    """
+    from agent.error_classifier import FailoverReason
+    hook_results = invoke_hook(
+        "transform_api_error_classification", provider=provider, model=model,
+        status_code=status_code, error_type=error_type, error_code=error_code,
+        error_message=error_message, error_body=error_body if isinstance(error_body, dict) else {},
+        error=error, approx_tokens=approx_tokens, context_length=context_length,
+        num_messages=num_messages,
+    )
+
+    def _reason(result: Any) -> Any:
+        reason = result.get("reason") if isinstance(result, dict) else None
+        if isinstance(reason, str):
+            with suppress(ValueError):
+                return FailoverReason(reason.strip().lower())
+            return None
+        return reason if isinstance(reason, FailoverReason) else None
+
+    valid = [(result, reason) for result in hook_results if (reason := _reason(result)) is not None]
+    if not valid:
+        return None
+    result, reason = valid[0]
+    winner: dict[str, Any] = {"reason": reason}
+    for key in ("retryable", "should_compress", "should_rotate_credential", "should_fallback"):
+        if key in result:
+            winner[key] = bool(result[key])
+    message = result.get("message")
+    if isinstance(message, str) and message.strip():
+        winner["message"] = message.strip()[:500]
+    if isinstance(result.get("error_context"), dict):
+        winner["error_context"] = result["error_context"]
+    if len(valid) > 1:
+        logger.warning("transform_api_error_classification: skipped %d valid classification(s) after the "
+                       "first result in registration order won (run-all-then-pick-first)", len(valid) - 1)
+    return winner
+
+
+def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
+    """Return the global manager after idempotent (or ``force``d) discovery."""
+    manager = get_plugin_manager()
+    manager.discover_and_load(force=force)
+    return manager
+
+
+def get_plugin_context_engine():
+    """Return the plugin-registered context engine, or None."""
+    return _ensure_plugins_discovered()._context_engine
+
+
+def get_plugin_command_handler(name: str) -> Optional[Callable]:
+    """Return the handler for a plugin-registered slash command, or ``None``."""
+    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
+    return entry["handler"] if entry else None
+
+
+def get_plugin_commands() -> dict[str, dict]:
+    """Plugin commands dict (name -> {handler, description, plugin}) after idempotent discovery."""
+    return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_auxiliary_tasks() -> list[dict[str, Any]]:
+    """Plugin auxiliary-task registration dicts sorted by ``key`` (after idempotent discovery)."""
+    manager = _ensure_plugins_discovered()
+    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
+
+
+def get_plugin_toolsets() -> list[tuple]:
+    """Plugin toolsets as ``(key, label, description)`` tuples for the ``hermes tools`` TUI."""
+    manager = get_plugin_manager()
+    if not manager._plugin_tool_names:
+        return []
+    try:
+        from tools.registry import registry
+    except Exception:
+        return []
+    # Group plugin tool names by their toolset, then map each toolset back to the plugin that
+    # registered it (first owner wins) for the description.
+    toolset_tools: dict[str, list[str]] = {}
+    for tool_name in manager._plugin_tool_names:
+        entry = registry.get_entry(tool_name)
+        if entry:
+            toolset_tools.setdefault(entry.toolset, []).append(entry.name)
+    toolset_plugin: dict[str, LoadedPlugin] = {}
+    for loaded in manager._plugins.values():
+        for tool_name in loaded.tools_registered:
+            entry = registry.get_entry(tool_name)
+            if entry and entry.toolset in toolset_tools:
+                toolset_plugin.setdefault(entry.toolset, loaded)
+    result = []
+    for ts_key in sorted(toolset_tools):
+        plugin = toolset_plugin.get(ts_key)
+        desc = (plugin.manifest.description if plugin else "") or ", ".join(sorted(toolset_tools[ts_key]))
+        result.append((ts_key, f"🔌 {ts_key.replace('_', ' ').title()}", desc))
+    return result

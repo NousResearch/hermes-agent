@@ -1,0 +1,5 @@
+name: kilocode-provider
+kind: model-provider
+version: 1.0.0
+description: Kilo Code
+author: Nous Research

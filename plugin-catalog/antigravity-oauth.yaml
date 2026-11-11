@@ -1,0 +1,20 @@
+name: antigravity-oauth
+repo: https://github.com/neerazz/hermes-antigravity-oauth
+sha: 466fafb9b6e8099735d79ed32f97005a477ba144
+description: "Sign in to Google Antigravity with `hermes auth add antigravity-oauth` (or one command, `npx hermes-antigravity-oauth`) and run Hermes on the Antigravity plan: Gemini 3.x, Claude 4.6, GPT-OSS. Every request is made by Google's official agy CLI under agy's own login. The plugin writes your Hermes SOUL.md and system prompt into agy's workspace GEMINI.md so the persona carries over. When a model reaches for an agy-native tool (run_command, view_file, grep_search, and so on) the call is re-issued as the matching Hermes tool, which then runs under Hermes approvals. agy never executes tools on the host, and unmapped native tools are blocked. Disclosure: inference counts against the Antigravity/Gemini subscription agy is signed in to. The plugin never reads, copies or uploads the OAuth token. It symlinks agy's antigravity-oauth-token file, and on macOS ~/Library/Keychains, into a per-session private temp HOME, which is deleted on close. It also probes the OS keyring (security / secret-tool / cmdkey) for credential presence only. Derived from antigravity-subscription-directsdk (MIT). Disclosure — inference counts against the Antigravity/Gemini subscription agy is signed in to. The plugin does not read or upload the OAuth token itself; it symlinks (hard-links, or as a last resort copies) agy's antigravity-oauth-token file, and on macOS ~/Library/Keychains, into a per-session private temp HOME that is deleted on close, probes the OS keyring (security / secret-tool / cmdkey) for credential presence only, and writes the full Hermes system prompt into that temp workspace as GEMINI.md each turn. Derived from antigravity-subscription-directsdk (MIT)."
+maintainer: neerazz
+tier: community
+category: models
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/neerazz/hermes-antigravity-oauth#readme
+version: "0.1.2"
+readme: true
+platforms:
+- linux
+- macos
+- windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

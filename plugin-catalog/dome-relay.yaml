@@ -1,0 +1,25 @@
+name: dome-relay
+repo: https://github.com/nerdcakes/hermes-dome-relay
+sha: 4d7672b869bd2b5cd7582132c7b70e5b3a537d6f
+subdir: ""
+title: Dome Relay
+description: "Escalate a task to another established agent through an always-on callback relay and read the result back in the conversation that sent it. Registers jobs with tools dome_relay_escalate, dome_relay_status, and dome_relay_cancel; a worker polls the relay; the relay (not this plugin) wakes a Grok Bot executive. Disclosure — sends each escalated job (task text, target name, optional https reference links) to the HTTPS relay you configure in `relay_url` (no default host; you deploy the relay from this repo's `relay/` folder), which forwards it to your Grok Bot webhook and spends Grok Bot usage on each successful wake; the model can queue a job without an approval prompt, and jobs leave the machine only while you run `hermes dome-relay worker` (a long-running poller you start yourself); stores job metadata and results in the active profile's plugin-data database; its only secret is DOME_RELAY_KEY, read through Hermes secret scope and sent only to that relay; optional settings (off by default) add finished results from the relay to the next turn's context."
+maintainer: nerdcakes
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/nerdcakes/hermes-dome-relay#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - dome_relay_escalate
+    - dome_relay_status
+    - dome_relay_cancel
+  provides_hooks:
+    - pre_llm_call
+    - post_compaction
+  provides_middleware: []
+  requires_env:
+    - DOME_RELAY_KEY

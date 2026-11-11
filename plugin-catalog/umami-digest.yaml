@@ -1,0 +1,22 @@
+name: umami-digest
+title: Umami Digest
+repo: https://github.com/TakeshiTGAL/hermes-plugin-umami-digest
+sha: b20529c1c87791749b49c3b3f03838dcb62397cd
+description: "Each morning one letter arrives with yesterday's pageviews, visitors, day-over-day change, the top five pages by pageviews, and a surge flag from the Umami instance you already run, with no model. Umami 3.4.1 returns expanded paths 500 at a time in visitor order. The letter sends limit 500 and walks offset until a short page, or 20 pages, then ranks by pageviews. A day that hits the cap says the five are the top 5 among the first N paths. Disclosure — GET only to the origin in UMAMI_URL with Authorization Bearer UMAMI_API_KEY; plain http only to loopback, otherwise https; the plugin downloads nothing at runtime; umami_digest is read-only and asks for no approval; anyone you allow on a gateway can call it; turn a surface off with hermes tools; hermes umami-digest schedule writes a no-agent cron script that costs 0 tokens with no daily cap; empty stdout sends nothing; run unschedule before removal; a leftover job stops with hermes cron remove <id>; after hermes plugins remove, hermes cron remove <id> leaves scripts/umami-digest.py and you delete that file yourself; state stays in plugin-data/umami-digest; schedule uses hermes_constants.get_hermes_home, so an update can stop it."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: '>=0.21.4'
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-umami-digest#readme
+version: '0.1.0'
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-umami-digest/b20529c1c87791749b49c3b3f03838dcb62397cd/assets/catalog-banner.png
+platforms: []
+capabilities:
+  provides_tools:
+  - umami_digest
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - UMAMI_URL
+  - UMAMI_API_KEY
+  - UMAMI_WEBSITE_ID

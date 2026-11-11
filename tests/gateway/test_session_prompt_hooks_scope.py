@@ -136,3 +136,32 @@ def test_without_a_gateway_api_a_request_frame_runs_in_the_askers_scope(profiles
     asker.join(10)
     beta.plugin.wait(SETTLED)
     assert profiles.alpha.plugin.calls == []
+
+
+@pytest.mark.parametrize("asked_from", ["unbound", "other profile"])
+def test_params_are_scrubbed_of_the_owning_profiles_vault_values(profiles, monkeypatch, asked_from):
+    """A password-manager value registered for the owning profile only never reaches its plugins, even
+    when the prompt is asked from a thread bound to another profile or to none."""
+    from agent.redact import clear_vault_redaction_values, redact_approval_display, register_vault_redaction_value
+    from gateway import run_api
+    from gateway.session_server_requests import ask_viewer, resolve
+    monkeypatch.setattr(run_api, "_ACTIVE_RUNNER", profiles.runner)  # the gateway API is up
+    beta, secret = profiles.beta, "orchard violet river lantern"
+    home = None if asked_from == "unbound" else profiles.alpha.home
+    _in_scope(beta.home, lambda: register_vault_redaction_value(secret))
+    try:
+        assert secret in _in_scope(home, lambda: redact_approval_display(secret, force=True))  # not the asker's value
+        beta.live.event_stream.fanout.attach(_Peer())
+        params = {"site": "example", "note": f"save {secret}?", "fields": [{"value": secret}]}
+        out = {}
+        asker = threading.Thread(target=lambda: out.setdefault("value", _in_scope(
+            home, lambda: ask_viewer(beta.live.event_stream, "s", "vault.save_login", params))))
+        asker.start()
+        [opened] = beta.plugin.wait(OPENED)
+        assert opened["home"] == beta.home and opened["params"]["site"] == "example"
+        assert secret not in repr(opened["params"])
+        assert resolve({"jsonrpc": "2.0", "id": opened["prompt_id"], "result": {"value": "yes"}})
+        asker.join(10)
+        assert out["value"] == "yes"
+    finally:
+        _in_scope(beta.home, clear_vault_redaction_values)

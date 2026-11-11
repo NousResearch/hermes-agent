@@ -11,7 +11,8 @@ Observers only: return values are ignored and a failing plugin never affects the
 order on one worker thread, so plugin code never runs under ``event_stream.lock`` or
 ``session_server_requests._lock``, on the agent thread or on the event loop; each runs in the owning
 profile's scope (``session_authorities.owner_scope``). ``params`` is a deep copy with every string
-force-redacted (as ``tools/human_input_hooks.py`` redacts its ``prompt``) and never holds an answer.
+force-redacted (as ``tools/human_input_hooks.py`` redacts its ``prompt``) inside that owner scope, so
+the owning profile's registered vault values are scrubbed too, and never holds an answer.
 """
 from __future__ import annotations
 
@@ -137,13 +138,13 @@ def _drain() -> None:
 def _dispatch(hook_name, authority, payload) -> None:
     from hermes_cli.config_backend import ConfigBackendUnavailable
     try:
-        if "params" in payload:
-            payload = {**payload, "params": _redacted(payload["params"])}
         scope = contextlib.nullcontext()
         if authority is not None:
             from gateway.session_authorities import owner_scope
             scope = owner_scope(authority)
         with scope:
+            if "params" in payload:  # in the owner's scope: its registered vault values are scrubbed too
+                payload = {**payload, "params": _redacted(payload["params"])}
             from hermes_cli.lifecycle import invoke_hook
             invoke_hook(hook_name, **payload)
     except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- observers never break a prompt

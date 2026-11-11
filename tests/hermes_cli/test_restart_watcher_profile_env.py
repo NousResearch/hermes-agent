@@ -66,9 +66,12 @@ def test_sibling_profile_without_a_token_never_gets_the_updaters(homes, monkeypa
 
 
 @pytest.mark.platforms("posix")
-def test_updater_on_the_same_profile_keeps_its_exported_token(homes, monkeypatch):
+@pytest.mark.parametrize("unit", [False, True], ids=["shell", "unit"])
+def test_updater_on_the_same_profile_keeps_its_exported_token(homes, monkeypatch, unit):
     _root, api1 = homes
-    # `hermes -p api1 update` with a token exported in the shell, api1's .env declaring none.
+    # `hermes -p api1 update` with a token exported in the shell (or a unit's Environment=), api1's .env declaring none.
+    if unit:
+        monkeypatch.setenv("INVOCATION_ID", "unit-invocation")
     monkeypatch.setenv("HERMES_HOME", str(api1))
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "exported-api1-token-333")
     assert _watcher_env(monkeypatch, "api1").get("TELEGRAM_BOT_TOKEN") == "exported-api1-token-333"
@@ -98,3 +101,14 @@ def test_a_unit_injected_root_token_never_follows_a_sibling(homes, monkeypatch):
     monkeypatch.setenv("INVOCATION_ID", "unit-invocation")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "unit-injected-token")
     assert _watcher_env(monkeypatch, "api1").get("TELEGRAM_BOT_TOKEN") is None
+
+
+@pytest.mark.platforms("posix")
+def test_the_root_dotenv_model_key_never_follows_a_sibling(homes, monkeypatch):
+    """A key in the root's ``.env`` is the root's, not the shell's: a manual ``hermes -p api1`` never had it."""
+    root, _api1 = homes
+    from hermes_cli.env_loader import load_hermes_dotenv
+    (root / ".env").write_text(f"TELEGRAM_BOT_TOKEN={_ROOT_TOKEN}\nOPENROUTER_API_KEY=root-or-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")  # recorded, so teardown also removes what the load sets
+    load_hermes_dotenv(hermes_home=root)
+    assert _watcher_env(monkeypatch, "api1").get("OPENROUTER_API_KEY") is None

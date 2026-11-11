@@ -56,25 +56,26 @@ def _launch_bot_token_names() -> set[str]:
 
 
 def _profile_gateway_watcher_env(home: Optional[str]) -> Optional[dict[str, str]]:
-    """The respawned profile gateway's env: the updater's, minus the launch profile's bot tokens and
-    authorization gates, plus the target profile's own secrets on top.
+    """The respawned profile gateway's env: the updater's minus everything the LAUNCH profile supplied
+    (its ``.env``, loaded dotenvs, secret sources, bridged ``TERMINAL_*``, authorization gates:
+    ``strip_launch_profile_env``) and, under a service manager, every adapter secret; then the target
+    profile's own secrets on top. A key only the user's shell exported survives: a blanket credential
+    scrub dropped it, and the sibling came back from ``hermes update`` unable to call its model.
 
     A gateway respawned on the launcher's OWN named profile keeps the launcher's environment (an
-    exported bot token may be its only credential): None. A blanket credential scrub here also dropped
-    keys that live only in the user's shell, and the sibling came back from ``hermes update`` unable to
-    call its model (#153478 review), so only the names :func:`_launch_bot_token_names` lists go.
+    exported bot token may be its only credential): None.
     """
     if not home:
         return None
     from agent.secret_scope import build_profile_secret_scope
     from hermes_constants import apply_scratch_tmp_env, get_default_hermes_root, get_routing_process_hermes_home
-    from tools.environments.local_env_policy import strip_profile_gate_env
+    from tools.environments.local import strip_launch_profile_env
     target = Path(home).resolve()
     if target != get_default_hermes_root().resolve() and target == get_routing_process_hermes_home().resolve():
         return None
     strip = _launch_bot_token_names()
     env = {k: v for k, v in os.environ.items() if k.upper() not in strip and k != "_HERMES_GATEWAY"}
-    strip_profile_gate_env(env)  # the launch profile's allowlists are not the sibling's (#113270)
+    strip_launch_profile_env(env, target)  # what the launch .env/sources supplied, and its gates (#113270)
     env["HERMES_HOME"] = str(target)
     apply_scratch_tmp_env(env)
     env.update((k, v) for k, v in build_profile_secret_scope(target).items() if v is not None)

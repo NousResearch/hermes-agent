@@ -1,0 +1,53 @@
+name: paranoy
+repo: https://github.com/DeleganceAI/hermes-plugin-paranoy
+sha: "e03c602d917d81930f7da4be8658c3125962e4d7"
+version: "0.4.0"
+title: Paranoy
+description: "Read and write a Paranoy evidence ledger from Hermes: search, file and link claims, evidence and contradictions in shared collections, with roles (Scout, Claim Miner, Linker, Gap Finder, Fool, Ponder, Ledger) and optional capture of chat messages as evidence. The agent's Nostr key stays in Hermes as a declared secret; writes are signed in-process and the model never holds the key. Disclosure — calls go over HTTPS to {server_url}/mcp (default https://paranoy.org/mcp); paranoy_fetch_url asks that server to fetch a public http(s) URL; writes ask a person first by default and are refused in cron unless allow_unattended_writes is on; capture (off by default) auto-publishes human messages and extracted claims when enabled; rejects, journal, role checkpoints and overview.md are written under the plugin data directory. No telemetry, shell commands, background processes, self-update or core overrides."
+maintainer: DeleganceAI
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://paranoy.org/docs
+readme: true
+capabilities:
+  provides_tools:
+    - paranoy_list_collections
+    - paranoy_list_members
+    - paranoy_list_delegations
+    - paranoy_search_claims
+    - paranoy_list_claims
+    - paranoy_list_evidence
+    - paranoy_get_event
+    - paranoy_get_links
+    - paranoy_search_contradictions
+    - paranoy_check_proof
+    - paranoy_fetch_url
+    - paranoy_status
+    - paranoy_add_evidence
+    - paranoy_add_claim
+    - paranoy_add_link
+    - paranoy_add_contradiction
+    - paranoy_log_reject
+    - paranoy_journal
+    - paranoy_set_active_role
+    - paranoy_set_topic
+    - paranoy_add_members
+    - paranoy_remove_members
+    - paranoy_set_admins
+    - paranoy_create_collection
+    - paranoy_update_overview
+    - paranoy_set_collection_agents
+    - paranoy_set_account_agents
+    - paranoy_set_profile
+    - paranoy_set_collection
+    - paranoy_set_mode
+    - paranoy_set_roles
+    - paranoy_set_capture
+    - paranoy_whoami
+    - paranoy_schedule_job
+  provides_hooks: [pre_llm_call, pre_tool_call, post_tool_call, pre_gateway_dispatch, subagent_start, subagent_stop]
+  provides_middleware: [llm_execution]
+  requires_env: []
+known_issues:
+  - "Needs a Paranoy account and an agent key from https://paranoy.org/connect. Without PARANOY_BOT_SECRET_HEX the plugin loads but signed calls fail."

@@ -1,0 +1,36 @@
+name: "comfy-recipe"
+title: "Comfy Recipe"
+repo: "https://github.com/dotroza/hermes-comfy-recipe"
+sha: "6fb92768c869445f5127f18ae9c279c3e85a52e2"
+subdir: "plugin"
+description: "Visible ComfyUI sessions, consent-based setup, workflow tools and media preparation inside Hermes."
+maintainer: "dotroza"
+tier: "community"
+category: "desktop"
+requires_hermes: ">=0.23.1"
+version: "0.4.0"
+docs_url: "https://github.com/dotroza/hermes-comfy-recipe/blob/6fb92768c869445f5127f18ae9c279c3e85a52e2/README.md"
+readme: true
+platforms: []
+screenshots:
+  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/6fb92768c869445f5127f18ae9c279c3e85a52e2/docs/screenshots/visible-session-cat-generation.png"
+  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/6fb92768c869445f5127f18ae9c279c3e85a52e2/docs/screenshots/visible-session-image-editing.png"
+  - "https://raw.githubusercontent.com/dotroza/hermes-comfy-recipe/6fb92768c869445f5127f18ae9c279c3e85a52e2/docs/screenshots/visible-session-pet-sheet.png"
+known_issues:
+  - "Windows 11 verified; macOS and Linux paths are implemented but not live-verified."
+  - "Workflow models, suitable hardware and optional custom nodes are separate requirements; cloud runs need ComfyUI sign-in, credits and consent."
+capabilities:
+  provides_tools:
+    - "comfy_setup"
+    - "comfy_onboarding"
+    - "comfy_downloads"
+    - "comfy_instances"
+    - "comfy_workflows"
+    - "comfy_templates"
+    - "comfy_run"
+    - "comfy_result"
+    - "comfy_media"
+  provides_hooks:
+    - "pre_llm_call"
+  provides_middleware: []
+  requires_env: []

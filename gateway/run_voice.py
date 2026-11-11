@@ -64,11 +64,20 @@ class GatewayVoiceMixin:
         if not isinstance(data, dict):
             return {}
         items = {str(k): m for k, m in data.items() if m in _VOICE_MODES}
-        for key in (k for k in items if ":" not in k):  # legacy unprefixed key: warn and skip
+        for key, mode in [(k, m) for k, m in items.items() if ":" not in k]:
+            # Legacy pre-#12542 key (no platform). Keep ``off``, so a saved ``/voice off`` still
+            # suppresses auto-TTS after the upgrade (#14025); drop voice_only/all, which would
+            # speak on a platform the user never turned voice on for.
+            if mode == "off":
+                logger.info(
+                    "Keeping legacy unprefixed voice mode key %r (off) as an auto-TTS suppression "
+                    "fallback; any /voice command on that chat writes a prefixed entry that wins.", key)
+                continue
+            del items[key]
             logger.warning(
-                "Skipping legacy unprefixed voice mode key %r during migration. "
-                "Re-enable voice mode on that chat to rebuild the prefixed key.", key)
-        return {k: m for k, m in items.items() if ":" in k}
+                "Skipping legacy unprefixed voice mode key %r (mode=%s) during migration. "
+                "Re-enable voice mode on that chat to rebuild the prefixed key.", key, mode)
+        return items
 
     def _save_voice_modes(self) -> None:
         try:
@@ -133,10 +142,18 @@ class GatewayVoiceMixin:
             else:
                 adapter._auto_tts_default = auto_tts_default
         prefix = self._voice_key(platform, "", profile=getattr(adapter, "_owner_profile", None))
+        explicit = {key[len(prefix):] for key in self._voice_mode if key.startswith(prefix)}
+        # A legacy unprefixed ``off`` row predates platform and profile keys, so it can only have
+        # come from the default profile's bots; it suppresses where no explicit entry exists.
+        legacy_off = set() if prefix != f"{platform.value}:" else {
+            key for key, mode in self._voice_mode.items()
+            if mode == "off" and ":" not in key and key not in explicit}
         for chats, modes in chat_sets:
             chats.clear()
             chats.update(key[len(prefix):] for key, mode in self._voice_mode.items()
                          if mode in modes and key.startswith(prefix))
+            if "off" in modes:
+                chats.update(legacy_off)
 
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:

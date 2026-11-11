@@ -568,12 +568,17 @@ class GatewayBusySessionMixin:
         return (enriched_text or text).strip() if successful_transcripts else text
 
     def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
-        """Keep event origin in this injection, never in the cached system prompt."""
+        """Keep event origin in this injection, never in the cached system prompt. In a shared
+        session the text carries the same ``[Name]`` sender label a turn-opening message gets."""
         if not text.strip():
             return text
         import json
+        from gateway.session import label_shared_sender
 
         source = event.source
+        text = label_shared_sender(
+            source, text, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
         origin = {
             "platform": source.platform.value,
             **{key: getattr(source, key) for key in (
@@ -582,6 +587,7 @@ class GatewayBusySessionMixin:
             )},
             "message_id": event.message_id,
             "source_message_id": source.message_id,
+            "from_bot": True if source.is_bot else None,  # a bot/integration post, not the person helped
         }
         origin = {key: value for key, value in origin.items() if value not in (None, "")}
         from gateway.run import _load_gateway_config
@@ -597,7 +603,7 @@ class GatewayBusySessionMixin:
                 "chat_id": _hash_chat_id, "chat_id_alt": _hash_chat_id,
                 "parent_chat_id": _hash_chat_id,
             }
-            origin = {key: (value if key in ("platform", "chat_type") else
+            origin = {key: (value if key in ("platform", "chat_type", "from_bot") else
                             hashers.get(key, _hash_id)(value)) for key, value in origin.items()}
         # JSON preserves identifiers exactly (including colons/whitespace) instead of
         # normalizing them into another destination. Escape marker delimiters too.

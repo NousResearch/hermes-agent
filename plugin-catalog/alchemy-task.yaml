@@ -1,6 +1,6 @@
 name: alchemy-task
 repo: https://github.com/Darengb/alchemy-task
-sha: 5ba2b1567b0554c24982830431272b33e3b22d34
+sha: ddb6036c8d45f5f38a7019bca21b95ebf151a3fa
 description: "Alchemy Task does the work before the work: it turns messy real-world work into finely researched tasks, ready for your agent to do for you. Disclosure: research and discovery start read-only Hermes subagents on your model (a pre_tool_call hook blocks write, shell, send and credential reads) and use only sources already connected to your agent; task files are Markdown in a Git workspace you choose, committed and pushed with local git (no shell, no stored credentials); scheduled jobs are created only after you approve them; Start in chat can post into your messaging chat only if you grant allow_gateway_injection; optional iPhone Reminders sync uses the Hermes mobile connector. No telemetry. Full disclosures in the README."
 maintainer: Darengb
 title: "Alchemy Task"
@@ -8,16 +8,17 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 version: "0.1.0"
+image: https://raw.githubusercontent.com/Darengb/alchemy-task/ddb6036c8d45f5f38a7019bca21b95ebf151a3fa/docs/cover.jpg
 platforms:
   - linux
   - macos
 known_issues:
   - "iPhone Reminders sync needs the Hermes mobile app (beta) with Reminders access; the current app beta does not offer it for Nous Cloud agents."
 screenshots:
-  - https://raw.githubusercontent.com/Darengb/alchemy-task/5ba2b1567b0554c24982830431272b33e3b22d34/docs/screenshots/task-research.png
-  - https://raw.githubusercontent.com/Darengb/alchemy-task/5ba2b1567b0554c24982830431272b33e3b22d34/docs/screenshots/discovery.png
-  - https://raw.githubusercontent.com/Darengb/alchemy-task/5ba2b1567b0554c24982830431272b33e3b22d34/docs/screenshots/phone.png
-  - https://raw.githubusercontent.com/Darengb/alchemy-task/5ba2b1567b0554c24982830431272b33e3b22d34/docs/screenshots/tasks-week.png
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/ddb6036c8d45f5f38a7019bca21b95ebf151a3fa/docs/screenshots/task-research.png
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/ddb6036c8d45f5f38a7019bca21b95ebf151a3fa/docs/screenshots/discovery.png
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/ddb6036c8d45f5f38a7019bca21b95ebf151a3fa/docs/screenshots/phone.png
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/ddb6036c8d45f5f38a7019bca21b95ebf151a3fa/docs/screenshots/tasks-week.png
 capabilities:
   provides_tools:
     - task_create

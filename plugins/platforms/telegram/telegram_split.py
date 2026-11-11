@@ -10,21 +10,13 @@ delivery, so a partial send's resumable remainder never includes the dropped tai
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
-
-from agent.i18n import t
+from typing import Any
 
 # The ``(N/M)`` marker ``truncate_message`` appends: raw on edit-overflow chunks, MarkdownV2-escaped
 # (``\(N/M\)``, possibly moved onto its own line after a closing fence) on send chunks.
 _RAW_INDICATOR_RE = re.compile(r" \((\d+)/(\d+)\)$")
 _MDV2_INDICATOR_RE = re.compile(r"\\\((\d+)/(\d+)\\\)$")
 _MDV2_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
-
-
-def _notice(adapter: Any, dropped_chars: int) -> Optional[str]:
-    """The raw truncation notice; ``None`` when the chat hides warnings."""
-    return adapter.warning_text(t("platform.telegram.limits.response_truncated",
-                                  max_messages=str(adapter.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars)))
 
 
 def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool) -> list[str]:
@@ -40,7 +32,7 @@ def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool) -> lis
     dropped_text = (marker.sub("", chunk) for chunk in dropped)
     if formatted:
         dropped_text = (_MDV2_ESCAPE_RE.sub(r"\1", chunk) for chunk in dropped_text)
-    notice = _notice(adapter, sum(len(chunk) for chunk in dropped_text))
+    notice = adapter._split_cap_notice(sum(len(chunk) for chunk in dropped_text))
     tail = [adapter.format_message(notice) if formatted else notice] if notice else []
     total = len(kept) + len(tail)
     if formatted:

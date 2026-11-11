@@ -93,7 +93,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import send_chunks
+from gateway.platforms.helpers import prompt_id_counter, send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
@@ -1344,9 +1344,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._pending_media_batch_tasks = self._media_batch_state.tasks
         # Button-card state: id → {session_key, message_id, chat_id}
         self._approval_state: dict[int, dict[str, str]] = {}
-        self._approval_counter = itertools.count(1)
+        self._approval_counter = prompt_id_counter()
         self._update_prompt_state: dict[int, dict[str, str]] = {}
-        self._update_prompt_counter = itertools.count(1)
+        self._update_prompt_counter = prompt_id_counter()
         self._init_choice_card_state()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()

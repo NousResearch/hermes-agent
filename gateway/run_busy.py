@@ -1664,8 +1664,8 @@ class GatewayBusySessionMixin:
         # object.__new__ test runners lack the counter; fall back to a local one.
         counter = getattr(self, "_slash_confirm_counter", None)
         if counter is None:
-            import itertools as _itertools
-            counter = self._slash_confirm_counter = _itertools.count(1)
+            from gateway.platforms.helpers import prompt_id_counter
+            counter = self._slash_confirm_counter = prompt_id_counter()
         confirm_id = f"{next(counter)}"
 
         # Register FIRST so a fast button click cannot race the send_slash_confirm return. The

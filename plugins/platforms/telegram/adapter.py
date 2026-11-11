@@ -353,7 +353,7 @@ from plugins.platforms.telegram.telegram_chunking import (
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, prompt_id_counter)
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
@@ -3944,10 +3944,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
         def build():
-            # Short monotonic ids in callback_data map back to session_key.
-            import itertools
+            # Short ids in callback_data map back to session_key; restart-unique (prompt_id_counter).
             if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
+                self._approval_counter = prompt_id_counter()
             approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]

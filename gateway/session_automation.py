@@ -517,7 +517,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         # is attached (gateway/session_completion_notes.py). Only ``True`` is stored, so an older
         # admission's fingerprint is unchanged.
         if event.metadata['completion_wakes_parent'] is not True:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         descriptor['wakes_parent'] = True
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author

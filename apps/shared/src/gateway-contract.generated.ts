@@ -3358,6 +3358,7 @@ export interface SessionActivateResult {
 export interface SessionListParams {
   profile?: string | null
   title?: string | null
+  title_prefix?: string | null
   limit?: number | null
   include_hidden?: boolean
 }
@@ -5250,6 +5251,7 @@ export interface CanonicalListParams {
   scope?: 'live' | 'stored'
   limit?: number
   title?: string | null
+  title_prefix?: string | null
   include_hidden?: boolean
   workspace?: string | null
   picker?: boolean

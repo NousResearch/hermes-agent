@@ -9225,6 +9225,18 @@
             "default": null,
             "title": "Title"
           },
+          "title_prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Prefix"
+          },
           "include_hidden": {
             "default": false,
             "title": "Include Hidden",
@@ -38873,6 +38885,18 @@
             ],
             "default": null,
             "title": "Title"
+          },
+          "title_prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Prefix"
           },
           "limit": {
             "anyOf": [

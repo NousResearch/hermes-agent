@@ -577,17 +577,20 @@ class AuthorityConnection:
         if 'session:read' not in self.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         limit, workspace, picker = params.get('limit', 200), params.get('workspace'), params.get('picker', False)
-        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker'} or type(limit) is not int
-                or not 1 <= limit <= 200 or (workspace is not None and not (isinstance(workspace, str) and workspace))
+        prefix = params.get('title_prefix')
+        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace', 'picker', 'title_prefix'}
+                or type(limit) is not int or not 1 <= limit <= 200
+                or any(v is not None and not (isinstance(v, str) and v) for v in (workspace, prefix))
                 or type(picker) is not bool):
             raise RuntimeStoreError('invalid_params')
         if (params.get('scope', 'live') not in {'live', 'stored'}
-                or ('title' in params and ('scope' in params or workspace is not None or picker))):
+                or ('title' in params and ('scope' in params or workspace is not None or picker or prefix))):
             raise RuntimeStoreError('invalid_params')
         if params.get('scope') == 'stored':
             from gateway.session_listing import stored_picker_sessions
             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
-                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker)
+                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace, picker=picker,
+                title_prefix=prefix)
         if 'title' in params:
             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
@@ -617,7 +620,8 @@ class AuthorityConnection:
             # finite one-shot runs are not conversations, as on every other picker. Closed by its last
             # viewer and idle: main lists it as resumable (the stored feed), not as a live session.
             if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed or (
-                    not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
+                    not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))) or (
+                    prefix and not (row.get('title') or '').startswith(prefix)):
                 continue
             sessions.append({'session_id': entry.session_id, 'id': entry.session_id, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),

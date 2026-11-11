@@ -180,6 +180,9 @@ class CanonicalListParams(ProfileParams):
     scope: Literal['live', 'stored'] = 'live'
     limit: int = 200
     title: str | None = None
+    # Only conversations whose title starts with this (case-sensitive, unstripped), matched before
+    # ``limit``; not combinable with the exact ``title`` lookup.
+    title_prefix: str | None = None
     include_hidden: bool = False
     # Only conversations of this folder, judged on each conversation's first row by the classic CLI's
     # ``hermes -c`` rule (``hermes_state_sessions.workspace_key``): its git repo root equals this, or

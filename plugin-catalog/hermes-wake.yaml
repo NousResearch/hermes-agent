@@ -1,0 +1,30 @@
+name: hermes-wake
+repo: https://github.com/getaskclaw/hermes-wake
+sha: e536325a309c4b0a757e0173b42217619cd2a98e
+description: >-
+  Wakes the exact chat session (Matrix room, Telegram forum topic, ...) that
+  started detached background work (systemd-run unit, PID or file) when that
+  work ends, so the agent reports back on its own instead of the human asking
+  "any updates?". Tools: wake_me_when, wake_list. Disclosure: runs the public
+  'hermes kanban' CLI (board hermes-wake, notify-subscribe --delivery-mode wake)
+  and systemctl show; a daemon thread polls watches every 15s; stores watch
+  targets, notes and origin ids in local SQLite under plugin-data/hermes-wake;
+  makes no network calls of its own; adds a one-line hint to terminal output
+  of detached commands via transform_terminal_output.
+maintainer: getaskclaw
+tier: community
+category: general
+docs_url: https://github.com/getaskclaw/hermes-wake#readme
+version: "0.1.0"
+requires_hermes: ">=0.23.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - wake_me_when
+    - wake_list
+  provides_hooks:
+    - transform_terminal_output
+  provides_middleware: []
+  requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/getaskclaw/hermes-wake/e536325a309c4b0a757e0173b42217619cd2a98e/demo/wake.png

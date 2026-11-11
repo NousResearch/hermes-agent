@@ -14,6 +14,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+# Load the entry-point dependency during collection, before per-test home I/O isolation.
+# SessionDB's display identity lazily imports this module on the first user row.
+import agent.conversation_loop  # noqa: F401
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from hermes_state import SessionDB
 

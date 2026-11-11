@@ -13,6 +13,7 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 
 import json
 import logging
+import socket
 import threading
 import time
 from contextvars import ContextVar
@@ -20,7 +21,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -112,9 +113,10 @@ def skills_hub_http_session() -> Iterator[None]:
 
 
 class SkillsHubFetchBlocked(httpx.TransportError):
-    """A hop failed URL safety, website policy, or the connect-time SSRF check.
+    """A hop was refused by URL safety, website policy, or the connect-time SSRF check.
 
-    A transport error, so every caller's existing ``httpx.HTTPError`` handling covers it."""
+    A transport error, so every caller's existing ``httpx.HTTPError`` handling covers it. An
+    unresolvable host is not a refusal: it raises a retryable ``httpx.ConnectError``."""
 
 
 _CREDENTIAL_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
@@ -134,8 +136,25 @@ def _hop_headers(headers: Optional[dict[str, str]], origin_url: str,
     return {k: v for k, v in headers.items() if k.lower() not in _CREDENTIAL_HEADERS}
 
 
+def _unresolvable(url: str) -> bool:
+    from tools import url_safety
+
+    host = urlsplit(url).hostname
+    if not host:
+        return False
+    try:
+        url_safety._getaddrinfo(host)
+    except socket.gaierror:
+        return True
+    return False
+
+
 def _check_hop(url: str) -> None:
     if not is_safe_url(url):
+        # A name that does not resolve is refused too, but it is transient: surface it as a
+        # retryable ConnectError, not as a policy refusal callers stop on.
+        if _unresolvable(url):
+            raise httpx.ConnectError(f"DNS resolution failed for {url}")
         logger.warning("Blocked unsafe Skills Hub URL: %s", url)
         raise SkillsHubFetchBlocked(f"unsafe URL: {url}")
     blocked = check_website_access(url)
@@ -156,18 +175,21 @@ def _skills_hub_http_get(url: str, *, timeout: float = _DEFAULT_HTTP_TIMEOUT,
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
-    for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
-        _check_hop(current_url)
-        try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout,
-                                       headers=_hop_headers(headers, url, current_url), params=params)
-        except SSRFConnectionBlocked as exc:
-            raise SkillsHubFetchBlocked(str(exc)) from exc
-        location = resp.headers.get("location") if resp.status_code in _REDIRECT_STATUS_CODES else None
-        if not location:
-            return resp
-        current_url = urljoin(current_url, location)
-        params = None
+    with skills_hub_http_session():  # one client for the whole chain, not one per hop
+        for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
+            _check_hop(current_url)
+            try:
+                resp = _ssrf_safe_http_get(current_url, timeout=timeout,
+                                           headers=_hop_headers(headers, url, current_url), params=params)
+            except SSRFConnectionBlocked as exc:
+                if isinstance(exc.__cause__, socket.gaierror):
+                    raise httpx.ConnectError(str(exc)) from exc
+                raise SkillsHubFetchBlocked(str(exc)) from exc
+            location = resp.headers.get("location") if resp.status_code in _REDIRECT_STATUS_CODES else None
+            if not location:
+                return resp
+            current_url = urljoin(current_url, location)
+            params = None
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
     raise httpx.TooManyRedirects(f"more than {_MAX_SKILL_FETCH_REDIRECTS} redirects from {url}")
 

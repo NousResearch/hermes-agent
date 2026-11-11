@@ -579,9 +579,9 @@ class GitHubSource(SkillSource):
         raw.githubusercontent.com first: the same bytes at the same commit, outside the REST rate
         limit. Through the Contents API every file in a skill folder cost one call, so an anonymous
         user (60/h) could never install a skill with more than ~58 files. A private repo or a raw
-        miss falls back to the API. A transport failure (DNS-poisoned or NXDOMAIN raw host surfaces as
-        SkillsHubFetchBlocked, a dropping firewall as a 15 s timeout) also falls back, and marks raw
-        unusable for the rest of this source's flow."""
+        miss falls back to the API. A transport failure (a DNS-poisoned raw host surfaces as
+        SkillsHubFetchBlocked, NXDOMAIN as ConnectError, a dropping firewall as a 15 s timeout) also
+        falls back, and marks raw unusable for the rest of this source's flow."""
         if ref and not self._raw_unusable:
             try:
                 raw = hub()._skills_hub_http_get(

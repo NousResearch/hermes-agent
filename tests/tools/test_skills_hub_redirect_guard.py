@@ -107,3 +107,44 @@ def test_blocked_github_hop_is_not_retried(transport, monkeypatch):
 
     assert GitHubSource(MagicMock(spec=GitHubAuth))._github_get(api, headers={}) is None
     assert (len(seen), sleeps) == (1, [])
+
+
+def test_dns_failure_stays_retryable(transport, monkeypatch):
+    """Unresolvable is transient, not a refusal: the GitHub GET retries it like any transport error."""
+    import socket
+
+    from tools import url_safety
+
+    _routes, seen = transport
+
+    def no_dns(host, port=None):
+        raise socket.gaierror("temporary failure in name resolution")
+
+    monkeypatch.setattr(url_safety, "_getaddrinfo", no_dns)
+    monkeypatch.setattr(url_safety, "_proxy_is_configured", lambda: False)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    sleeps = []
+    monkeypatch.setattr("tools.skills_hub_github.time.sleep", sleeps.append)
+
+    with pytest.raises(httpx.ConnectError) as exc_info:
+        hub._skills_hub_http_get("https://api.github.com/repos/o/r")
+    assert not isinstance(exc_info.value, hub.SkillsHubFetchBlocked)
+
+    assert GitHubSource(MagicMock(spec=GitHubAuth))._github_get(
+        "https://api.github.com/repos/o/r", headers={}) is None
+    assert len(sleeps) == 2 and seen == []
+
+
+def test_redirect_chain_reuses_one_client(transport, monkeypatch):
+    routes, seen = transport
+    monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    made = []
+    factory = hub.create_ssrf_safe_client
+    monkeypatch.setattr(hub, "create_ssrf_safe_client", lambda **kw: made.append(kw) or factory(**kw))
+    routes["https://hub.example/a"] = httpx.Response(302, headers={"location": "/b"})
+    routes["https://hub.example/b"] = httpx.Response(302, headers={"location": "/c"})
+    routes["https://hub.example/c"] = httpx.Response(200, text="ok")
+
+    assert hub._skills_hub_http_get("https://hub.example/a").text == "ok"
+    assert (len(seen), len(made)) == (3, 1)

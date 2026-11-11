@@ -1,0 +1,13 @@
+name: caduceus-governance
+title: Caduceus Governance
+description: "Deterministic, model-free admission control for what Hermes writes into its own skills: content lanes, operator-owned executable checks, a provenance lane for writes made after untrusted web/browser/MCP content, a tamper-evident ledger, and operator release/rollback. Observe by default."
+repo: https://github.com/Epistetechnician/caduceus
+subdir: plugin/caduceus_governance
+sha: "85123c90ad38dbac91af32d6f17705ee4a0a70f9"
+tier: community
+maintainer: Epistetechnician
+version: "0.1.0"
+capabilities:
+  provides_hooks: [pre_tool_call, transform_tool_result, post_tool_call, on_skill_lifecycle]
+# Disclosure (rule 13): reads and writes only under $HERMES_HOME/skills, memories, config.yaml and $HERMES_HOME/caduceus; the dashboard API's one state-changing route (POST /approve) acts only on a valid signature from an operator-enrolled device; no network, no model calls; optional operator-registered check commands run
+# under macOS Seatbelt (no network, no writes outside a copy) and are Unavailable (quarantined, never passed) elsewhere; boundary mode can restore the skills directory to its last admitted state.

@@ -7,7 +7,8 @@ from dataclasses import replace
 
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
-from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
+from gateway.session_producer_lifecycle import (
+    close_observed_turn, close_producer_turn, close_settled_turn, producer_turn)
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
 from hermes_state_runtime import RuntimeStoreError
@@ -463,7 +464,7 @@ async def deliver_settled(authority, admission_id):
             # Fenced unknown: no answer is owed, so no later boot may deliver one either.
             await _release_turn_marker(authority, held)
         # Settled with nothing (left) to send: its reply streamed, or it had none.
-        await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
+        await close_settled_turn(authority, admission_id)
         return
     adapter, event, session_key, response, home = delivery
     delivered = False
@@ -509,9 +510,10 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     released before its commit is held until it commits or its handler ends, and a serial reader's
     next command waits for that too (``burst_gate``): a non-burst busy input (a second video, a voice
     note, text outside queue mode) has no burst commit task to wait on."""
-    # No adapter task brackets this turn either (``observe`` only awaits its reply): the executor runs
-    # its processing lifecycle once the row starts executing, as for a producer's (``producer_turn``).
-    event._producer_delivery = True
+    # No adapter task brackets this turn either: the executor opens its processing lifecycle once
+    # the row starts executing, as for a producer's (``producer_turn``), and ``observe`` closes it
+    # by its own send's result.
+    event._producer_delivery = event._busy_observed = True
     delivery_event = replace(event, source=replace(event.source))
     accepted = asyncio.get_running_loop().create_future()
     committed = asyncio.get_running_loop().create_future()
@@ -520,12 +522,13 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
         # Like the first message's lifecycle, this sender adopts the turn's crash marker and
         # releases it only once the reply is ledgered (the marker moves onto ``event``).
         event._turn_marker_handoff = getattr(adapter, 'gateway_runner', None) is not None
+        delivered = False
         try:
             response = await adapter._message_handler(event)
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
-            await deliver_response(adapter, delivery_event, session_key, response)
+            delivered = await deliver_response(adapter, delivery_event, session_key, response)
         except Exception as exc:
             if not accepted.done():
                 raise  # nothing was queued: the receive loop sees the failure as before
@@ -533,6 +536,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             await adapter._notify_turn_error(delivery_event, exc)
         finally:
             settle_busy_arrival(event)
+            await close_observed_turn(event, delivered)
             # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)

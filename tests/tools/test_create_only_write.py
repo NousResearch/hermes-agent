@@ -114,6 +114,21 @@ def test_create_only_keeps_non_bmp_filenames(ops, tmp_path, monkeypatch, python)
     assert target.read_bytes() == b"body\n"
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("python", ["local", "hermes-missing-python3", None])
+def test_create_only_creates_and_refuses_under_a_non_bmp_parent(ops, tmp_path, monkeypatch, python):
+    import sys
+
+    if python != "local":
+        monkeypatch.setattr(ops, "_lsp_local_only", lambda: False)
+        monkeypatch.setattr(ops, "_python_interpreter_cmd", lambda: python or sys.executable)
+    target = tmp_path / "dir-\U0001F600" / "notes-\U0001F680.md"
+    assert ops.write_file(str(target), "body\n", create_only=True).error is None
+    assert target.read_bytes() == b"body\n"
+    assert ops.write_file(str(target), "other\n", create_only=True).status == "already_exists"
+    assert target.read_bytes() == b"body\n" and not list(tmp_path.rglob(".hermes-create-*"))
+
+
 def test_execute_code_write_file_binds_its_advertised_positional_parameters():
     """A positional argument the doc line advertises must reach that parameter, not cross_profile."""
     import inspect

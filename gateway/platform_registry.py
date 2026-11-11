@@ -220,6 +220,10 @@ class PlatformRegistry:
         # A failed loader is no longer discoverable, but its identity remains
         # until ownership teardown can CAS-restore the displaced predecessor.
         self._consumed_loaders: dict[_LoadKey, _Loader] = {}
+        # Loads that ended without registering, kept even when the plugin manager's failure path
+        # disposes the registration (which cancels the load, so it is never "consumed"): the config
+        # loader must not read that platform's absence as its YAML keys being deleted.
+        self._failed_loads: set[_LoadKey] = set()
         # Manifest-declared env names per deferred platform (``requires_env``), recorded without
         # importing the adapter so ``gateway.platform_activation`` can tell a configured platform
         # from an unconfigured one. A hint only: a stale entry costs one extra import, never a miss.
@@ -353,6 +357,8 @@ class PlatformRegistry:
             with self._lock:
                 was_cancelled = load_key in self._cancelled_inflight
                 entries, deferred = self._scope_maps(load_key[0])
+                if name not in entries:
+                    self._failed_loads.add(load_key)
                 if not was_cancelled and name not in entries and name not in deferred:
                     self._consumed_loaders[load_key] = loader
                 self._inflight.pop(load_key, None)
@@ -406,6 +412,7 @@ class PlatformRegistry:
             scope = self.current_scope_key()
             entries = list({**self._entries, **self._scoped_entries.get(scope, {})}.values())
             unresolved = {name for (owner, name) in self._consumed_loaders if owner in (None, scope)}
+            unresolved.update(name for (owner, name) in self._failed_loads if owner in (None, scope))
             unresolved.difference_update(entry.name for entry in entries)
         if any(wanted(name) for name in unresolved):
             # Failed lazy loaders stay consumed on later passes; absence is not key deletion.
@@ -430,6 +437,7 @@ class PlatformRegistry:
             # A concrete registration supersedes any pending deferred loader.
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, entry.name), None)
+            self._failed_loads.discard((scope, entry.name))
             deferred.pop(entry.name, None)
             prev = entries.get(entry.name)
             if prev is not None:

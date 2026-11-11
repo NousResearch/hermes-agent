@@ -1,6 +1,6 @@
 name: doom
 repo: https://github.com/SilentKnight87/hermes-doom
-sha: 1d261085c8329b2ef7d1a561f02c063acc687a5a
+sha: 5f9faadd1ba346c52d79bfd9c07c7f3c1908ff38
 title: Doom
 description: Play Doom in a dashboard tab. The GPL engine runs as plain JavaScript on Freedoom or your own WAD.
 maintainer: SilentKnight87
@@ -10,7 +10,7 @@ requires_hermes: ">=0.23.0"
 version: "0.1.0"
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/SilentKnight87/hermes-doom/1d261085c8329b2ef7d1a561f02c063acc687a5a/docs/doom-in-hermes.png
+  - https://raw.githubusercontent.com/SilentKnight87/hermes-doom/5f9faadd1ba346c52d79bfd9c07c7f3c1908ff38/docs/doom-in-hermes.png
 platforms: []
 known_issues:
   - No sound yet, and saved games last only until the tab is reloaded.

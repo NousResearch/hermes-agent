@@ -123,3 +123,86 @@ async def test_a_first_word_fragment_whose_send_timed_out_is_continued_not_repea
     # The fragment cannot be deleted (its id is unknown), so the whole answer must not follow it.
     joined = "".join(shown)
     assert joined.count("<<x") == 1 and joined.count("<<end>>") == 1, shown
+
+
+class _NoDeleteAdapter:
+    """An edit adapter with no delete API (Discord, Matrix, Mattermost, WhatsApp, DingTalk inherit the
+    base ``delete_message``): every edit after the first send is refused."""
+
+    MAX_MESSAGE_LENGTH = 4096
+    SUPPORTS_MESSAGE_EDITING = True
+
+    def __init__(self):
+        self.messages: dict[str, str] = {}
+        self._next = 100
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self._next += 1
+        self.messages[str(self._next)] = content
+        return SimpleNamespace(success=True, message_id=str(self._next), raw_response=None)
+
+    async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
+        return SimpleNamespace(success=False, message_id=None, raw_response=None,
+                               error="Bad Request: message can't be edited")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer, size", [
+    ("<<" + "x" * 60 + ">> q000 q001 q002 <<end>>", 12),
+    # Unspaced CJK prose: the preview has no boundary either, and whitespace follows later.
+    ("这是一个很长的中文段落" * 17 + "\n\n第二段落结束了。", 20),
+], ids=["first-word-fragment", "cjk-paragraph"])
+async def test_a_fragment_that_cannot_be_deleted_is_continued_not_repeated(answer, size):
+    adapter = _NoDeleteAdapter()
+
+    await _stream(adapter, _pieces(answer, size))
+
+    shown = list(adapter.messages.values())
+    preview = shown[0].removesuffix(CURSOR)
+    # Nothing the preview already shows is sent again: the preview plus the continuation is the answer.
+    assert len(shown) == 2, shown
+    assert preview + shown[1] == answer, shown
+
+
+class _FlakyDeleteAdapter(_NoDeleteAdapter):
+    """Can delete, but the first delete is refused the way Telegram reports it: ``False``, no raise."""
+
+    def __init__(self):
+        super().__init__()
+        self.delete_calls = 0
+
+    async def delete_message(self, chat_id, message_id):
+        self.delete_calls += 1
+        if self.delete_calls == 1:
+            return False
+        self.messages.pop(message_id, None)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_a_refused_delete_of_the_replaced_fragment_is_retried():
+    answer = "<<" + "x" * 60 + ">> q000 q001 q002 <<end>>"
+    adapter = _FlakyDeleteAdapter()
+
+    await _stream(adapter, _pieces(answer, 12))
+
+    assert list(adapter.messages.values()) == [answer]
+
+
+class _RefusingDeleteAdapter(_FlakyDeleteAdapter):
+    """Can delete in principle, but every delete is refused (a flood window, a message too old)."""
+
+    async def delete_message(self, chat_id, message_id):
+        self.delete_calls += 1
+        return False
+
+
+@pytest.mark.asyncio
+async def test_a_fragment_whose_delete_is_refused_is_continued_not_repeated():
+    answer = "<<" + "x" * 60 + ">> q000 q001 q002 <<end>>"
+    adapter = _RefusingDeleteAdapter()
+
+    await _stream(adapter, _pieces(answer, 12))
+
+    shown = list(adapter.messages.values())
+    assert len(shown) == 2 and shown[0].removesuffix(CURSOR) + shown[1] == answer, shown

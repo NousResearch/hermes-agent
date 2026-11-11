@@ -142,6 +142,35 @@ class TestCliResumeRestoresCwd:
         mock_chdir.assert_called_once_with(recorded)
 
 
+class TestSessionsCommandDelegation:
+    def test_bare_sessions_delegates_to_resume(self):
+        cli_obj = _make_cli()
+        cli_obj._handle_resume_command = MagicMock()
+
+        cli_obj._handle_sessions_command("/sessions")
+
+        cli_obj._handle_resume_command.assert_called_once_with("/resume ")
+
+    @pytest.mark.parametrize("arg", ["list", "ls", "browse"])
+    def test_list_spellings_print_the_table(self, arg):
+        cli_obj = _make_cli()
+        cli_obj._handle_resume_command = MagicMock()
+        cli_obj._show_recent_sessions = MagicMock(return_value=True)
+
+        cli_obj._handle_sessions_command(f"/sessions {arg}")
+
+        cli_obj._show_recent_sessions.assert_called_once_with(reason="sessions")
+        cli_obj._handle_resume_command.assert_not_called()
+
+    def test_explicit_target_still_delegates(self):
+        cli_obj = _make_cli()
+        cli_obj._handle_resume_command = MagicMock()
+
+        cli_obj._handle_sessions_command("/sessions my title")
+
+        cli_obj._handle_resume_command.assert_called_once_with("/resume my title")
+
+
 class TestPendingResumeNumberedSelection:
     """Bare `/resume` arms a one-shot prompt so the next bare number resumes.
 

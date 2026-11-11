@@ -86,44 +86,131 @@ def _strip_quotes(command: str) -> str:
     return re.sub(r"`[^`]*`", "``", result)
 
 
-# A bare binary name (``vite``, ``uvicorn``, and friends) only means "this starts
-# a server" when it sits in COMMAND POSITION: at the start of a command segment,
-# optionally behind sudo/a package-manager runner and a path prefix. Anywhere
-# else the token is an argument or a path component: ``ls node_modules/vite``,
-# ``pip show uvicorn``, ``grep -rn nodemon package.json``. Those must not trip
-# the guard. An unanchored ``\bvite(?:\s|$)`` blocked all of them.
-_COMMAND_POSITION = (
-    r"(?:^|[;&|\n]\s*)"                                    # segment start
-    r"(?:sudo\s+(?:-[ug]\s+\S+\s+|-\S+\s+)*)?"             # sudo, incl. -u USER / -g GROUP
-    r"(?:"                                                 # optional launcher prefix:
-    r"(?:npx|pnpm|yarn|bunx|npm)\s+(?:exec\s+|dlx\s+)?"    #   runners
-    r"|exec\s+"                                            #   exec
-    r")?"
-    r"(?:python(?:3)?\s+-m\s+)?"                           # python -m <module>
-    r"(?:\S*[/\\])?"                                       # ./node_modules/.bin/ or C:\...\Scripts\
-)
+# A server binary only means "this starts a server" in COMMAND POSITION: the first word of a
+# command segment, after env assignments, shell keywords, wrappers (sudo, env, timeout…) and
+# runners (npx, poetry run…). Anywhere else it is an argument or a path component
+# (`pip show uvicorn`, `ls node_modules/vite`, `grep -rn nodemon .`), which must run. Tokens are
+# walked rather than regex-matched so cost stays linear on any input.
+_SEGMENT_SPLIT_RE = re.compile(r"[;&|\n(){}]+")
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*=")
+_WIN_LAUNCHER_SUFFIX_RE = re.compile(r"\.(?:exe|cmd|bat|ps1)$")
+_SHELL_KEYWORDS = frozenset({"then", "do", "else", "elif", "if", "while", "until", "time", "!", "exec", "command"})
+# wrapper → (flags that take a separate value, leading positional arguments before the command)
+_COMMAND_WRAPPERS = {
+    "sudo": ({"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"}, 0),
+    "env": ({"-u", "-C", "-S"}, 0),
+    "nice": ({"-n"}, 0),
+    "ionice": ({"-c", "-n", "-p"}, 0),
+    "stdbuf": ((), 0),
+    "timeout": ({"-s", "-k"}, 1),
+    "xargs": ({"-I", "-n", "-P", "-L", "-d", "-E", "-s"}, 0),
+    "ssh": ({"-p", "-i", "-o", "-l", "-F", "-J"}, 1),  # the positional is the host
+}
+_RUNNERS = {  # runner → subcommand that must follow it (None: the next word is the command)
+    "npx": None, "bunx": None, "pnpx": None,
+    "poetry": "run", "uv": "run", "pipenv": "run", "pdm": "run", "hatch": "run",
+}
+_JS_PACKAGE_MANAGERS = frozenset({"npm", "pnpm", "yarn", "bun"})
+_JS_PM_VALUE_FLAGS = frozenset({"--prefix", "-C", "--cwd", "--dir", "--filter", "-F", "-w", "--workspace"})
+_JS_PM_SERVER_SCRIPTS = frozenset({"dev", "start", "serve", "watch"})
+_COMPOSE_VALUE_FLAGS = frozenset({"-f", "--file", "-p", "--project-name", "--project-directory", "--profile", "--env-file"})
+_DOCKER_EXEC_VALUE_FLAGS = frozenset({"-e", "--env", "-u", "--user", "-w", "--workdir", "--env-file"})
+_SERVER_BINARIES = frozenset({"vite", "nodemon", "uvicorn", "gunicorn"})
+_SERVER_MODULES = frozenset({"uvicorn", "gunicorn", "http.server"})
+_BOUNDED_SERVER_ARGS = {"vite": ("build", "optimize"), "gunicorn": ("--check-config",)}
 
-# Windows launcher suffixes name the same command: ``uvicorn.exe``, ``vite.cmd``,
-# ``npm.cmd``. Strip them before matching so one set of patterns covers every
-# platform instead of doubling each token with an optional ``.exe``.
-_WIN_LAUNCHER_SUFFIX = re.compile(r"\b(\w+)\.(?:exe|cmd|bat|ps1)\b", re.IGNORECASE)
+
+def _word(token: str) -> str:
+    """Basename of *token* without a Windows launcher suffix (`.\\Scripts\\uvicorn.exe` → `uvicorn`)."""
+    return _WIN_LAUNCHER_SUFFIX_RE.sub("", re.split(r"[/\\]", token.lower())[-1])
 
 
-def _command_position(*binaries: str) -> str:
-    """Anchor a bare binary name to command position (see ``_COMMAND_POSITION``)."""
-    return _COMMAND_POSITION + r"(?:" + "|".join(binaries) + r")(?:\s|$)"
+def _skip_flags(tokens: list, i: int, value_flags=()) -> int:
+    """Index of the first non-flag token at or after *i*; a flag in *value_flags* also consumes its value."""
+    while i < len(tokens) and tokens[i].startswith("-"):
+        i += 2 if tokens[i] in value_flags else 1
+    return i
 
 
-_LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
-    _command_position(r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)"),
-    _command_position(r"docker\s+compose\s+up"),
-    _command_position(r"next\s+dev"),
-    _command_position(r"vite"),
-    _command_position(r"nodemon"),
-    _command_position(r"uvicorn"),
-    _command_position(r"gunicorn"),
-    _command_position(r"python(?:3)?\s+-m\s+http\.server"),
-))
+def _command_start(tokens: list) -> int:
+    """Index of the word the shell will execute, past assignments, keywords, wrappers and runners."""
+    i = 0
+    while i < len(tokens):
+        word = _word(tokens[i])
+        if _ENV_ASSIGNMENT_RE.match(tokens[i]) or word in _SHELL_KEYWORDS:
+            i += 1
+        elif word in _COMMAND_WRAPPERS:
+            value_flags, positionals = _COMMAND_WRAPPERS[word]
+            i = _skip_flags(tokens, i + 1, value_flags) + positionals
+        elif word in _RUNNERS and (_RUNNERS[word] is None or tokens[i + 1:i + 2] == [_RUNNERS[word]]):
+            i = _skip_flags(tokens, i + (1 if _RUNNERS[word] is None else 2))
+        elif word in _JS_PACKAGE_MANAGERS and tokens[i + 1:i + 2] and tokens[i + 1] in ("exec", "dlx", "x"):
+            i = _skip_flags(tokens, i + 2)
+        else:
+            break
+    return i
+
+
+def _server_binary_runs(word: str, args: list) -> bool:
+    """A server binary serves unless a bounded subcommand follows (`vite build`)."""
+    return not any(arg in _BOUNDED_SERVER_ARGS.get(word, ()) for arg in args)
+
+
+def _js_script_serves(args: list) -> bool:
+    script = args[_skip_flags(args, 0, _JS_PM_VALUE_FLAGS):]
+    if script[:1] in (["run"], ["run-script"]):
+        script = script[1:]
+    if not script:
+        return False
+    # `yarn vite` / `pnpm vite` run the local binary of that name.
+    return script[0] in _JS_PM_SERVER_SCRIPTS or (
+        script[0] in _SERVER_BINARIES and _server_binary_runs(script[0], script[1:]))
+
+
+def _compose_up_attached(args: list) -> bool:
+    """`compose up` holds the terminal unless detached, which returns once containers start."""
+    args = args[_skip_flags(args, 0, _COMPOSE_VALUE_FLAGS):]
+    return args[:1] == ["up"] and not any(a in ("-d", "--detach") for a in args[1:])
+
+
+def _python_runs_server_module(args: list) -> bool:
+    return "-m" in args and any(m in _SERVER_MODULES for m in args[args.index("-m") + 1:args.index("-m") + 2])
+
+
+def _docker_holds_terminal(args: list) -> bool:
+    if args[:1] == ["compose"]:
+        return _compose_up_attached(args[1:])
+    if args[:1] == ["exec"]:  # `docker exec [flags] <container> <command…>`
+        return _segment_starts_server(args[_skip_flags(args, 1, _DOCKER_EXEC_VALUE_FLAGS) + 1:])
+    return False
+
+
+_SERVER_COMMANDS = {
+    **{name: (lambda args, name=name: _server_binary_runs(name, args)) for name in _SERVER_BINARIES},
+    **{name: _js_script_serves for name in _JS_PACKAGE_MANAGERS},
+    "docker": _docker_holds_terminal,
+    "docker-compose": _compose_up_attached,
+    "next": lambda args: args[:1] == ["dev"],
+}
+
+
+def _segment_starts_server(tokens: list) -> bool:
+    i = _command_start(tokens)
+    if i >= len(tokens):
+        return False
+    word, args = _word(tokens[i]), tokens[i + 1:]
+    if re.fullmatch(r"python[\d.]*|py", word):
+        return _python_runs_server_module(args)
+    check = _SERVER_COMMANDS.get(word)
+    return bool(check and check(args))
+
+
+def _starts_long_lived_server(unquoted: str) -> bool:
+    # A bare `--` hands the rest to another program (`doppler run -- npm run dev`), so what
+    # follows it is checked as a command of its own.
+    return any(_segment_starts_server(part.split())
+               for seg in _SEGMENT_SPLIT_RE.split(unquoted) for part in re.split(r"(?:^|\s)--(?:\s|$)", seg))
+
 
 # Ordered (predicate on the unquoted command, guidance) — first hit wins.
 _FOREGROUND_GUIDANCE = (
@@ -141,7 +228,7 @@ _FOREGROUND_GUIDANCE = (
         "for bounded jobs — then run health checks and tests in follow-up terminal calls.",
     ),
     (
-        lambda s: any(p.search(s) for p in _LONG_LIVED_FOREGROUND_PATTERNS),
+        _starts_long_lived_server,
         "This foreground command appears to start a long-lived server/watch process. "
         "Run it with background=true, verify readiness (health endpoint/log signal), "
         "then execute tests in a separate command.",
@@ -165,8 +252,7 @@ def _foreground_background_guidance(command: str) -> str | None:
     backgrounding (it should be a managed background session), else None."""
     if _looks_like_help_or_version_command(command):
         return None
-    # Windows launchers are the same command: `npx.cmd vite` == `npx vite`.
-    unquoted = _WIN_LAUNCHER_SUFFIX.sub(r"\1", _strip_quotes(command))
+    unquoted = _strip_quotes(command)
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 

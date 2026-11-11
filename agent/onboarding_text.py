@@ -100,7 +100,7 @@ _NVIDIA = {
 
 
 def facts_block(facts: Facts) -> str:
-    whose = ("the computer running Unitalk, which is not the one in front of the user"
+    whose = ("the computer running Hermes, which is not the one in front of the user"
              if facts.facts_source == "remote" else "this computer")
     lines = [f"What you know about {whose}: {facts.os} on {facts.arch or 'an unknown architecture'}, "
              f"a {facts.machine_kind}."]
@@ -116,7 +116,7 @@ def facts_block(facts: Facts) -> str:
 def opening_prompt(facts: Facts) -> str:
     """The hidden first turn of the onboarding chat: every rule of the run."""
     dimensions = "\n".join(f"- {name}: {buckets}" for name, buckets in PROFILE_DIMENSIONS)
-    return f"""[System note: This is the user's first time opening the Unitalk desktop app. You run their first-run onboarding in this chat. The beats, in order: their name, the theme (accent colour; light or dark only if they ask), the layout, connectors, plugins, a tour, then the first thing you build for them.
+    return f"""[System note: This is the user's first time opening the Hermes desktop app. You run their first-run onboarding in this chat. The beats, in order: their name, the theme (accent colour; light or dark only if they ask), the layout, connectors, plugins, a tour, then the first thing you build for them.
 
 How it works:
 - setup_beat shows a beat's card and waits for the user. setup_beat(beat="next") shows the next beat. Its result carries their answer and a reminder of what to do next. Follow the reminder.
@@ -231,7 +231,7 @@ _OS_LINES = {
 _ARM_WINDOWS = ("On Windows on Arm, read arm64 vs x64 from winget's install output, not the manifest, and say when "
                 "an app is x64 only.")
 _SPARK_LINE = "This machine is built for local models; say so once when it fits what they asked."
-_REMOTE_LINE = "Unitalk runs on another computer than the user's: say which machine anything is installed on."
+_REMOTE_LINE = "Hermes runs on another computer than the user's: say which machine anything is installed on."
 
 
 def _task_prompt(option: str, label: str, resolve_skill: Callable[[str], str | None]) -> list[str]:

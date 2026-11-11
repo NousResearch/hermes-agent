@@ -15,7 +15,7 @@ from typing import Any, Callable, List, Optional, Tuple
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
-from agent.turn_failure_copy import exit_reason_failure, stamp_failure
+from agent.turn_failure_copy import content_policy_copy, exit_reason_failure, provider_label_for, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
@@ -169,6 +169,11 @@ def _resolve_budget_fallback(
                 interrupted = True
                 _turn_exit_reason = interrupted_during_api_call_reason(agent)
                 final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
+            except PermissionError as error:
+                _turn_exit_reason = "content_policy_blocked"
+                final_response = content_policy_copy(
+                    label=provider_label_for(getattr(agent, "provider", "")), summary=str(error)
+                )
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the

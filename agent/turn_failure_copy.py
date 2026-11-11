@@ -147,6 +147,7 @@ _EXIT_REASON_FAILURES: tuple[tuple[str, str, bool, bool], ...] = (
     ("context_compression_timeout", "context_overflow", False, True),
     ("context_compression_exhausted", "context_overflow", False, True),
     ("ollama_runtime_context_too_small", "context_overflow", False, True),
+    ("content_policy_blocked", FailoverReason.content_policy_blocked.value, False, True),
     # Advisory: the loop ends these as an incomplete (not failed) turn with an explainer.
     ("redirect_restart_limit_exceeded", "loop_error", True, False),
     ("rebuilt_restart_limit_exceeded", "loop_error", True, False),

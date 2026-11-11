@@ -628,3 +628,53 @@ def test_failed_agent_flush_with_handle_falls_back_to_gateway_writer(tmp_path):
         db.close()
 
     asyncio.run(check())
+
+
+def test_failed_tool_round_after_turn_start_flush_writes_the_user_row_once(tmp_path):
+    """A turn-start flush that already wrote the user row stays the row's writer when a later
+    tool-round flush fails: the gateway must not append it again, even for an event with no
+    platform message id (watch notifications), where its dedupe cannot see the first copy."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import _agent_persisted_flag
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = object()
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="tool-round", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        db.append_message(sid, "user", "watch fired")  # the agent's turn-start flush
+        messages = [{"role": "user", "content": "watch fired", "_db_persisted": True},
+                    {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]}]
+        failed = {"failure_reason": "session_persistence_failed:locked", "messages": messages}
+        agent = SimpleNamespace(_session_db=object(), _persist_user_message_idx=0)
+        result = {"failed": True, "final_response": "", "history_offset": 0, "last_prompt_tokens": 0,
+                  **failed, "agent_persisted": _agent_persisted_flag(failed, agent)}
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="watch fired", source=source),
+            source=source, session_entry=entry, session_key=entry.session_key,
+            agent_result=result, agent_messages=messages,
+            prepared=runner._PreparedTurn([], "", "watch fired", None, None, None, sid, "owner"),
+            response="", agent_failed_early=True, hidden_reasoning_incomplete=False,
+            is_context_overflow_failure=False,
+        )
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [(m["role"], m["content"]) for m in rows if m["role"] == "user"] == [("user", "watch fired")]
+        assert rows[-1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
+        db.close()
+
+    asyncio.run(check())

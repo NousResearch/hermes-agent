@@ -112,11 +112,17 @@ def _agent_persisted_flag(result, agent) -> bool:
     explicit = result.get("agent_persisted")
     if explicit is not None:
         return bool(explicit)
-    # A DB handle is not evidence of a successful flush. Incremental write failures
-    # are returned as a failed turn, but the gateway still owns the retryable user row.
-    if str(result.get("failure_reason") or "").startswith("session_persistence_failed:"):
+    if agent is None or getattr(agent, "_session_db", None) is None:
         return False
-    return agent is not None and getattr(agent, "_session_db", None) is not None
+    # A DB handle is not evidence of a successful flush: on a persistence failure the gateway owns the
+    # retryable user row only when the agent never wrote it. The turn-start flush stamps the row it wrote
+    # (``_db_persisted``), and a later tool-round failure must not get a second copy of that row.
+    if str(result.get("failure_reason") or "").startswith("session_persistence_failed:"):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        idx, messages = getattr(agent, "_persist_user_message_idx", None), result.get("messages") or []
+        user_row = messages[idx] if isinstance(idx, int) and 0 <= idx < len(messages) else None
+        return isinstance(user_row, dict) and bool(user_row.get(_DB_PERSISTED_MARKER))
+    return True
 
 
 class _NoStreamConsumer(RuntimeError):

@@ -140,3 +140,27 @@ async def test_busy_followup_released_by_a_pause_keeps_its_lifecycle_when_it_run
     await _wait_for(lambda: _statuses(authority).get('two') == 'terminal', 15)
     await _wait_for(lambda: ('m2', 'complete', ProcessingOutcome.SUCCESS) in adapter.hooks)
     assert [h for h in adapter.hooks if h[0] == 'm2'] == [('m2', 'start'), ('m2', 'complete', ProcessingOutcome.SUCCESS)]
+
+@pytest.mark.asyncio
+async def test_rewritten_busy_followup_preserves_processing_hooks(monkeypatch):
+    """A pre_gateway_dispatch rewrite must retain a busy follow-up's executor-owned lifecycle."""
+    from gateway.platforms.event import MessageEvent, ProcessingOutcome
+
+    async def rewrite(name, **kwargs):
+        if name == 'pre_gateway_dispatch' and kwargs['event'].text == 'two':
+            return [{'action': 'rewrite', 'text': 'rewritten two'}]
+        return []
+
+    monkeypatch.setattr('hermes_cli.lifecycle.ainvoke_hook', rewrite)
+    adapter = HookAdapter()
+    authority, source, gate = await _busy_hook_owner(monkeypatch, adapter)
+    await adapter.handle_message(MessageEvent(text='one', source=source, message_id='m1'))
+    await _wait_for(lambda: _statuses(authority).get('one') == 'started')
+    await asyncio.wait_for(adapter.handle_message(
+        MessageEvent(text='two', source=source, message_id='m2')), 5)
+    await _wait_for(lambda: _statuses(authority).get('rewritten two') == 'queued')
+    assert not any(h[0] == 'm2' for h in adapter.hooks)
+    gate.set()
+    await _wait_for(lambda: 'reply to rewritten two' in adapter.sent and not adapter._background_tasks, 15)
+    assert [h for h in adapter.hooks if h[0] == 'm2'] == [
+        ('m2', 'start'), ('m2', 'complete', ProcessingOutcome.SUCCESS)]

@@ -371,15 +371,15 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else []
-        if len(chunks) > 1 and not _has_html:
-            # truncate_message appends a raw " (1/2)" suffix after format_message escaped the text;
-            # escape the MarkdownV2-special parentheses, as the live adapter does (#74004).
-            from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
-            chunks = [
-                _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
-                for chunk in chunks
-            ]
+        if not formatted.strip():
+            chunks = []
+        elif _has_html:
+            chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len)
+        else:
+            # Same split as the live adapter: entities cut by a split are closed and reopened, and the
+            # " (1/2)" markers come back MarkdownV2-escaped (#74004).
+            from plugins.platforms.telegram.telegram_chunking import split_formatted_mdv2
+            chunks = split_formatted_mdv2(formatted, 4096, BasePlatformAdapter.truncate_message, utf16_len)
         for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         if album := _telegram_album_paths(media_files, force_document, _tg_caption):

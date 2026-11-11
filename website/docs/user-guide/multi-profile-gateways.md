@@ -865,7 +865,9 @@ profile's job targeting an unrouted chat (or a chat routed to another profile)
 is never sent through the shared bot. Guild-only routes do not qualify a cron
 target; add a `chat_id` route for the delivery channel. Routes declaring
 `user_id` do not qualify either: cron has no authenticated inbound sender, so
-they need a separate location-only route. The routed profile does not need its
+they need a separate location-only route. Telegram DMs are the exception: a
+Telegram DM's chat id is the user's id, so a `user_id` route qualifies cron
+delivery to that user's DM without an extra route. The routed profile does not need its
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
 

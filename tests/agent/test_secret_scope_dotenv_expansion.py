@@ -6,6 +6,8 @@ and so cron home-channel delivery, as the literal template. Real files, real sco
 
 from __future__ import annotations
 
+import os
+
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 
 
@@ -28,3 +30,17 @@ def test_cron_home_target_resolves_a_dotenv_reference(tmp_path, monkeypatch):
     finally:
         reset_secret_scope(token)
     assert scope["DEFAULTED"] == "fallback" and scope["PLAIN"] == "lit$eral"
+
+
+def test_satellite_reference_never_resolves_against_the_launch_profiles_secret(tmp_path, monkeypatch):
+    launch, satellite = tmp_path / "launch", tmp_path / "launch" / "profiles" / "sat"
+    satellite.mkdir(parents=True)
+    (satellite / ".env").write_text(
+        "OPENAI_API_KEY=${OPENAI_API_KEY:-satellite-default}\nOWN_HOME=${HOME}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("OPENAI_API_KEY", "launch-profile-key")  # the gateway's own shell export
+
+    scope = build_profile_secret_scope(satellite)
+
+    assert scope["OPENAI_API_KEY"] == "satellite-default"
+    assert scope["OWN_HOME"] == os.environ["HOME"]  # process-global vars still resolve

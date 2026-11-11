@@ -47,7 +47,6 @@ _DESKTOP_APPLY_MODES = {
     "electron-updater": "package", "app-installer": "package", "microsoft-store": "package",
     "windows-handoff": "git", "posix-handoff": "git",
 }
-# ---- iuf c1 ----
 # ``finalize_pending_update_receipt`` stores ``f"{type(exc).__name__}: {exc}"`` as the stop reason of
 # a run that ended on an exception (main.cmd_update, update_completion._finish). Only the leading
 # type name is read, never the message; other stop reasons ("sys.exit(1)", "completion exited 1",
@@ -77,10 +76,8 @@ _STOP_REASON_PREFIX_CLASSES = (
 # An OSError that ended the run, read by its errno token alone (never the text after it):
 # ENOSPC (28 on every platform), Windows ERROR_HANDLE_DISK_FULL (39) / ERROR_DISK_FULL (112).
 _DISK_FULL_ERRNO = re.compile(r"[A-Z][A-Za-z0-9_]*: \[(?:Errno 28|WinError (?:39|112))\]")
-# ---- end iuf c1 ----
 
 
-# ---- iuf c1 ----
 def _fleet_bad(receipt: dict[str, Any]) -> bool:
     fleet = receipt.get("fleet")
     return isinstance(fleet, list) and any(
@@ -172,7 +169,6 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
     if not reason and exit_code is None:
         return "git_failed"
     return "aborted_before_apply"
-# ---- end iuf c1 ----
 
 
 def _epoch(value: Any) -> float | None:
@@ -203,14 +199,12 @@ def _receipt_stages(receipt: dict[str, Any]) -> list[dict[str, Any]]:
     fleet = receipt.get("fleet")
     # The fleet matrix is only passed to finalize by the post-restart verification.
     if isinstance(fleet, list) and fleet and not any(s["name"] == "verify" for s in stages):
-        # ---- iuf c1 ----
         # ``partial`` is written only by update_cmd_fleet._verify_fleet_after_update, which also
         # writes it for a failed build or restart; with no failed stage mark, verification itself
         # failed even when every fleet row reads current (zero rows expected, an unaccounted
         # runtime, a dashboard that did not come back, a Windows resume failure).
         bad = _fleet_bad(receipt) or (
             receipt.get("outcome") == "partial" and not any(s.get("outcome") == "failed" for s in stages))
-        # ---- end iuf c1 ----
         stages.append({
             "name": "verify", "outcome": "failed" if bad else "success",
             "duration_ms": _elapsed_ms(previous, receipt.get("finished_at")),
@@ -228,11 +222,9 @@ def _failed_stage(stages: list[dict[str, Any]]) -> str:
     terminal = last["name"] == "verify" or (last["name"] == "restart" and last.get("outcome") == "skipped")
     if last.get("outcome") == "failed" or terminal:
         failed = [s["name"] for s in stages if s.get("outcome") == "failed"]
-        # ---- iuf c1 ----
         # A failed run whose last mark is a skipped restart failed AT the restart: the completion
         # exits 1 when a skipped restart leaves the fleet owing one, or the Windows resume fails.
         return failed[-1] if failed else last["name"]
-        # ---- end iuf c1 ----
     index = UPDATE_STAGE_ORDER.index(last["name"])
     return UPDATE_STAGE_ORDER[index + 1] if index + 1 < len(UPDATE_STAGE_ORDER) else "other"
 
@@ -284,9 +276,7 @@ def update_receipt_fields(receipt: dict[str, Any]) -> tuple[dict[str, str], list
         "from_version_age_bucket": version_age_bucket(age_ms),
         "kind": "desktop" if receipt.get("initiator") == "desktop" else "cli",
         "outcome": outcome,
-        # ---- iuf c1 ----
         "failure_class": failure_class,
-        # ---- end iuf c1 ----
     }
     if run["outcome"] == "refused" and not stages:
         run["failed_stage"] = "none"
@@ -443,10 +433,8 @@ def desktop_update_fields(
         "from_version_age_bucket": version_age_bucket(age_ms),
         "kind": "desktop",
         "outcome": outcome_value,
-        # ---- iuf c1 ----
         # The Desktop RPC carries a stage, never a reason.
         "failure_class": "unknown" if outcome_value in {"failed", "refused"} else "none",
-        # ---- end iuf c1 ----
     }
 
 

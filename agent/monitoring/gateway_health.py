@@ -129,23 +129,9 @@ def _coerce_pid(raw: Any) -> Optional[int]:
     return pid if pid > 0 else None
 
 
-def _gateway_status(name: str, fallback: Callable[[], Any], /, **kwargs: Any) -> Any:
-    """Prefer ``gateway.status.<name>`` (the runtime-status contract); fall back to the local approximation."""
-    try:
-        from gateway import status
-        return getattr(status, name)(**kwargs)
-    except Exception:
-        return fallback()
-
-
 def _parse_active_agents(raw: Any) -> int:
-    def fallback() -> int:
-        try:
-            return max(0, int(raw))
-        except (TypeError, ValueError):
-            return 0
-
-    return _gateway_status("parse_active_agents", fallback, raw=raw)
+    from gateway.status import parse_active_agents
+    return parse_active_agents(raw)
 
 
 def _dict_or_empty(raw: Any) -> dict[str, Any]:
@@ -164,14 +150,9 @@ def build_gateway_health_snapshot(
     runtime = runtime or {}
     gateway_state = _bounded_state(runtime.get("gateway_state"), allowed=_KNOWN_GATEWAY_STATES)
     active_agents = _parse_active_agents(runtime.get("active_agents", 0))
-    running = gateway_running and gateway_state == "running"
-    busy = _gateway_status(
-        "derive_gateway_busy", lambda: bool(running and _parse_active_agents(active_agents) > 0),
-        gateway_running=gateway_running, gateway_state=gateway_state, active_agents=active_agents,
-    )
-    drainable = _gateway_status(
-        "derive_gateway_drainable", lambda: bool(running), gateway_running=gateway_running, gateway_state=gateway_state
-    )
+    from gateway.status import derive_gateway_busy, derive_gateway_drainable
+    busy = derive_gateway_busy(gateway_running=gateway_running, gateway_state=gateway_state, active_agents=active_agents)
+    drainable = derive_gateway_drainable(gateway_running=gateway_running, gateway_state=gateway_state)
     platforms = _platforms_of(runtime)
     mode = str(supervision_mode or "unknown").lower()
     base = {

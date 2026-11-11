@@ -430,7 +430,6 @@ FEATURE_DISABLED_EVENTS = frozenset({"disabled", "re_enabled"})
 FEATURE_DISABLED_NAME_MAX_LENGTH = 64
 # ---- end v5 signals ----
 
-# ---- iuf c1 ----
 # Why an extension install failed, named at each failure exit of the three emitters
 # (hermes_cli/skills_hub.py::_install_skill, hermes_cli/plugins_cmd_install.py::recorded_install,
 # hermes_cli/mcp_catalog.py::recorded_catalog_install / record_mcp_install); ``none`` on success.
@@ -547,8 +546,6 @@ UPDATE_STOP_CLASSES = frozenset({
     "zip_failed",             # the ZIP fallback swap failed and was rolled back
 })
 UPDATE_FAILURE_CLASSES |= UPDATE_STOP_CLASSES
-# ---- end iuf c1 ----
-# ---- iuf c2 ----
 # One fresh-install run of scripts/install.sh / install.ps1, from the local receipt the installer
 # leaves (the installer itself never sends); counted by a later Hermes start while collection is on.
 INSTALL_RUN_MARK = INSTALL_RUN_METRIC = "hermes.install.run"
@@ -567,7 +564,6 @@ INSTALL_RUN_FAILURE_CLASSES = frozenset({
     "libstdcxx_missing", "local_changes_blocked", "none", "other", "products_build_failed",
     "python_install_failed", "setup_failed", "unsupported_platform", "uv_unusable",
 })
-# ---- end iuf c2 ----
 
 
 def update_duration_bucket(duration_ms: Any) -> str:
@@ -933,9 +929,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     EXTENSION_INSTALL_METRIC: {
         "kind": EXTENSION_KINDS, "name": EXTENSION_NAMES, "outcome": EXTENSION_OUTCOMES,
         "source": EXTENSION_SOURCES,
-        # ---- iuf c1 ----
         "failure_class": EXTENSION_FAILURE_CLASSES, "registry": EXTENSION_REGISTRIES,
-        # ---- end iuf c1 ----
     },
     # ---- v4 loop ----
     MEMORY_OP_METRIC: {
@@ -981,9 +975,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "apply_mode": UPDATE_APPLY_MODES, "duration_bucket": UPDATE_DURATION_BUCKETS,
         "failed_stage": UPDATE_FAILED_STAGES, "from_version_age_bucket": VERSION_AGE_BUCKETS,
         "kind": UPDATE_KINDS, "outcome": UPDATE_RUN_OUTCOMES,
-        # ---- iuf c1 ----
         "failure_class": UPDATE_FAILURE_CLASSES,
-        # ---- end iuf c1 ----
     },
     UPDATE_STAGE_METRIC: {
         "duration_bucket": UPDATE_DURATION_BUCKETS, "outcome": UPDATE_STAGE_OUTCOMES, "stage": UPDATE_STAGES,
@@ -1054,13 +1046,11 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "event": FEATURE_DISABLED_EVENTS, "kind": FEATURE_DISABLED_KINDS, "surface": FEATURE_DISABLED_SURFACES,
     },
     # ---- end v5 signals ----
-    # ---- iuf c2 ----
     INSTALL_RUN_METRIC: {
         "duration_bucket": UPDATE_DURATION_BUCKETS, "failed_stage": INSTALL_RUN_FAILED_STAGES,
         "failure_class": INSTALL_RUN_FAILURE_CLASSES, "installer": INSTALL_RUN_INSTALLERS,
         "outcome": INSTALL_RUN_OUTCOMES,
     },
-    # ---- end iuf c2 ----
     # ---- v4 connectors ----
     TOOL_SEARCH_METRIC: {"hits_bucket": COUNT_BUCKETS, "outcome": TOOL_SEARCH_OUTCOMES, "scope": TOOL_SEARCH_SCOPES},
     TOOL_BATCH_METRIC: {"connector_share": CONNECTOR_SHARES, "size_bucket": COUNT_BUCKETS},
@@ -1159,13 +1149,11 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
 # ---- v5 engagement ----
 _LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
 # ---- end v5 engagement ----
-# ---- iuf c1 ----
 # Rows recorded before the failure_class / registry split drain as they were counted.
 _LEGACY_METRIC_FIELDS[EXTENSION_INSTALL_METRIC] = (
     _METRIC_FIELDS[EXTENSION_INSTALL_METRIC] - {"failure_class", "registry"},
 )
 _LEGACY_METRIC_FIELDS[UPDATE_RUN_METRIC] = (_METRIC_FIELDS[UPDATE_RUN_METRIC] - {"failure_class"},)
-# ---- end iuf c1 ----
 _LEGACY_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] = (_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] - {BUSY_PEAK_FIELD},)  # busy-wait
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
@@ -1218,9 +1206,7 @@ _DECISION_MARK_METRICS = {
     TOOL_UNAVAILABLE_MARK: TOOL_UNAVAILABLE_METRIC, PROVIDER_SETUP_MARK: PROVIDER_SETUP_METRIC,
     FEATURE_DISABLED_MARK: FEATURE_DISABLED_METRIC,
     # ---- end v5 signals ----
-    # ---- iuf c2 ----
     INSTALL_RUN_MARK: INSTALL_RUN_METRIC,
-    # ---- end iuf c2 ----
     TOOL_SEARCH_MARK: TOOL_SEARCH_METRIC, TOOL_BATCH_MARK: TOOL_BATCH_METRIC,
     CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC, PREPARED_COMPACTION_MARK: PREPARED_COMPACTION_METRIC,
     BUSY_ARRIVAL_METRIC: BUSY_ARRIVAL_METRIC,  # busy-wait: the gateway marks under the metric's own name
@@ -1243,7 +1229,6 @@ def counter_dimensions_are_valid(metric_name: str, dimensions: dict[str, Any]) -
     ) and _extension_install_fields_agree(metric_name, dimensions)
 
 
-# ---- iuf c1 ----
 def _extension_install_fields_agree(metric_name: str, dimensions: dict[str, Any]) -> bool:
     """Cross-field rule the per-field enums cannot state: an install row's ``failure_class`` is in
     its kind's set and is ``none`` exactly on success; only skill rows name a registry."""
@@ -1255,7 +1240,6 @@ def _extension_install_fields_agree(metric_name: str, dimensions: dict[str, Any]
         and (failure_class == "none") == (dimensions["outcome"] == "success")
         and (kind == "skill" or dimensions["registry"] == "none")
     )
-# ---- end iuf c1 ----
 
 
 def _relay_metadata(

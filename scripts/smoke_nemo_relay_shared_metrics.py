@@ -301,7 +301,6 @@ telemetry:
     )
 
 
-# ---- iuf c1 ----
 # The final receipt of an update whose fetch failed before the checkout moved: the plan and snapshot
 # stages carry end marks, the apply stage it died in carries none.
 UPDATE_RECEIPT: dict[str, Any] = {
@@ -349,7 +348,6 @@ def _validate_failure_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
     stages = sorted((row["dimensions"]["stage"], row["dimensions"]["outcome"]) for row in rows["hermes.update.stage"])
     if stages != expected_update_stages():
         raise AssertionError(f"Unexpected update stages: {rows['hermes.update.stage']}")
-# ---- end iuf c1 ----
 
 
 # One interactive turn (2 model calls, 1 read_file) on the canary custom model: the v5 per-turn,
@@ -404,7 +402,7 @@ def _validate_gateway_turn_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
 EXPECTED_METRIC_NAMES = frozenset({
     "hermes.client.active",
     "hermes.context_peak.count",
-    "hermes.extension.install.count",  # iuf c1
+    "hermes.extension.install.count",
     "hermes.gateway.reply_latency",
     "hermes.install.milestone",
     "hermes.install.snapshot",
@@ -428,8 +426,8 @@ EXPECTED_METRIC_NAMES = frozenset({
     "hermes.tool_enabled_unused.count",
     "hermes.tool_output_truncation.count",
     "hermes.tool_overhead.count",
-    "hermes.update.run",  # iuf c1
-    "hermes.update.stage",  # iuf c1
+    "hermes.update.run",
+    "hermes.update.stage",
 })
 
 
@@ -636,7 +634,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         raise AssertionError(f"Unexpected skill load counters: {loads}")
     _validate_v5_rows(by_name)
     _validate_gateway_turn_rows(by_name)
-    _validate_failure_rows(by_name)  # iuf c1
+    _validate_failure_rows(by_name)
     return counters
 
 
@@ -759,7 +757,7 @@ def _validate_packages(
         raise AssertionError(f"Unexpected skill load metrics: {loads}")
     _validate_v5_rows(metrics)
     _validate_gateway_turn_rows(metrics)
-    _validate_failure_rows(metrics)  # iuf c1
+    _validate_failure_rows(metrics)
     return package_paths, packages
 
 

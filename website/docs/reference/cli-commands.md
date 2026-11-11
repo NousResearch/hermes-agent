@@ -1105,7 +1105,7 @@ Upload a debug report (system info + recent logs) to a paste service and get a s
 | Option | Description |
 |--------|-------------|
 | `--lines <N>` | Number of log lines to include per log file (default: 200). |
-| `--expire <days>` | Paste expiry in days (default: 7). |
+| `--expire <days>` | Retention in days for pastes that fall back to dpaste.com (default: 1, minimum 1). paste.rs pastes are always deleted after 6 hours. |
 | `--nous` | Upload to Nous-internal diagnostics storage instead of a public paste service. Use this when Nous support asks for a private diagnostic bundle. |
 | `--local` | Print the report locally instead of uploading. |
 | `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
@@ -1119,7 +1119,7 @@ Default uploads use public paste services tried in order: paste.rs, dpaste.com. 
 ```bash
 hermes debug share              # Upload debug report, print URL
 hermes debug share --lines 500  # Include more log lines
-hermes debug share --expire 30  # Keep paste for 30 days
+hermes debug share --expire 7   # dpaste.com fallback pastes live 7 days
 hermes debug share --nous       # Upload a private diagnostics bundle for Nous support
 hermes debug share --local      # Print report to terminal (no upload)
 ```
@@ -1270,7 +1270,7 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `--session <ID>` | Filter lines containing a session ID substring. |
 | `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
-| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
+| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`, `gui`. |
 
 A line without its own timestamp, such as a traceback frame or the rest of a multi-line message, is shown or hidden together with the timestamped line above it.
 
@@ -1308,7 +1308,7 @@ Filters can be combined. When multiple filters are active, a log line must pass 
 hermes logs --level WARNING --since 2h --session tg-12345
 ```
 
-Lines without a parseable timestamp are included when `--since` is active (they may be continuation lines from a multi-line log entry). Lines without a detectable level are included when `--level` is active.
+Lines without a detectable level are included when `--level` is active.
 
 ### Log rotation
 

@@ -561,7 +561,6 @@ def _install_plugin_core(
     return target, installed_manifest, installed_manifest.get("name") or target.name
 
 
-# ---- iuf c1 ----
 def _publish_failure_class(exc: BaseException) -> str:
     """Why publication failed, from the exception TYPE at this raise site. Publication is the PM
     dependency sync (plugins_transaction.publish_plugin -> pm.client.sync_venv): a consent refusal
@@ -578,7 +577,6 @@ def _publish_failure_class(exc: BaseException) -> str:
     if isinstance(exc, OSError) and not isinstance(exc, (ConnectionError, TimeoutError)):
         return "filesystem_error"
     return "deps_failed"
-# ---- end iuf c1 ----
 
 
 def recorded_install(install: Callable[[], tuple], *, catalog_name: Optional[str], identifier: str) -> tuple:

@@ -189,9 +189,7 @@ def slash_command_fields(*, command: Any, surface: Any) -> dict[str, str]:
 
 def extension_install_fields(
     *, kind: Any, source: Any, name: Any, outcome: Any,
-    # ---- iuf c1 ----
     failure_class: Any = None, registry: Any = None, error: Any = None,
-    # ---- end iuf c1 ----
 ) -> dict[str, str] | None:
     kind_value = _norm(kind)
     if kind_value not in contract.EXTENSION_KINDS:
@@ -203,14 +201,11 @@ def extension_install_fields(
         "name": catalog.extension_metric_name(kind_value, name),
         "outcome": outcome_value,
         "source": source_value if source_value in contract.EXTENSION_SOURCES else "other",
-        # ---- iuf c1 ----
         "failure_class": extension_failure_class(kind_value, outcome_value, failure_class, error),
         "registry": extension_registry(kind_value, registry),
-        # ---- end iuf c1 ----
     }
 
 
-# ---- iuf c1 ----
 # Exceptions from these top-level packages are transport failures, whatever their class name.
 _NETWORK_MODULES = frozenset({"aiohttp", "h11", "h2", "httpcore", "httpx", "requests", "ssl", "urllib3", "websockets"})
 
@@ -266,7 +261,6 @@ def extension_registry(kind: str, registry: Any) -> str:
     value = _norm(registry) or "none"
     value = _SOURCE_ID_ALIASES.get(value, value)
     return value if value in contract.EXTENSION_REGISTRIES else "other"
-# ---- end iuf c1 ----
 
 
 def _long_session(d: dict[str, str]) -> bool:

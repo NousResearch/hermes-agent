@@ -255,11 +255,9 @@ def _report_dead_markers(home: Path, own: Path) -> None:
 
         report_pending_updates()
         report_abandoned_setups(home)
-        # ---- iuf c2 ----
         from .shared_metrics_install_run import report_pending_installs
 
         report_pending_installs(home)
-        # ---- end iuf c2 ----
     except Exception:
         logger.debug("Dead process markers not reported", exc_info=True)
     finally:

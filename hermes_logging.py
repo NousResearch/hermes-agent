@@ -24,7 +24,7 @@ from hermes_constants import (
     get_config_path, get_hermes_home, mkdir_under_hermes_home, named_profile_is_deleted,
 )
 
-# setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
+# setup_logging() is idempotent per resolved log path; _logging_initialized only guards the root-level step.
 _logging_initialized = False
 
 # True only when CLH was rejected at import because portalocker cannot take a
@@ -365,7 +365,8 @@ def setup_logging(
 ) -> Path:
     """Configure the Hermes logging subsystem; returns the ``logs/`` directory.
 
-    Safe to call multiple times; the second call is a no-op unless *force*. Level and
+    Safe to call repeatedly: handlers are added once per resolved path, a new home is adopted into
+    profile routing, and *force* only re-applies the root level. Level and
     rotation defaults come from config.yaml ``logging.*``. ``mode="gateway"`` adds
     ``gateway.log`` and ``mode="gui"`` adds ``gui.log``.
     """
@@ -452,8 +453,6 @@ def setup_verbose_logging() -> None:
     if root.level > logging.DEBUG:
         root.setLevel(logging.DEBUG)
     _quiet_noisy_loggers()
-    # rex-deploy at INFO for sandbox status.
-    logging.getLogger("rex-deploy").setLevel(logging.INFO)
 
 
 def _quietly(fn) -> None:

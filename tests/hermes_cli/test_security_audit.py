@@ -173,13 +173,6 @@ class TestExitCodes:
 
 
 
-    def test_unknown_fail_on_value_exits_two(self, tmp_path: Path, monkeypatch, capsys):
-        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
-        code = sa.cmd_security_audit(self._build_args(fail_on="garbage"))
-        assert code == 2
-        err = capsys.readouterr().err
-        assert "fail-on" in err.lower()
-
     def test_json_output_shape(self, tmp_path: Path, monkeypatch, capsys):
         monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
         fake_comp = sa.Component(

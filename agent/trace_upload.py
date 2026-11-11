@@ -31,7 +31,7 @@ _NO_TOKEN_MESSAGE = (
     "   (New token -> type \"Write\" -> copy it).\n"
     "2. Add it to your environment as HF_TOKEN (e.g. in ~/.hermes/.env):\n"
     "     HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx\n"
-    "3. Run /upload-trace again (or `hermes trace upload`)."
+    "3. Run `hermes sessions export --format trace --upload` again."
 )
 _TOKEN_ENV_VARS = ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN")
 
@@ -240,7 +240,7 @@ def upload_session_trace(
     session_id: str, *, model: str = "", cwd: str = "", redact: bool = True, private: bool = True,
     dataset_name: str = DEFAULT_DATASET_NAME, db_path=None, token: Optional[str] = None,
 ) -> str:
-    """CLI/gateway entry point: load, convert, upload to ``{user}/hermes-traces``. Status string, never raises."""
+    """CLI entry point: load, convert, upload to ``{user}/hermes-traces``. Status string, never raises."""
     if not session_id:
         return "No active session to upload."
     token = token or _resolve_hf_token()

@@ -483,20 +483,8 @@ def build_debug_share(
     failures: list[str] = []
     # The summary report is required (raises so callers can fall back); full logs are optional.
     urls = {"Report": upload_to_pastebin(report, expiry_days=expiry)}
-    # Full logs to upload (the source of this list is checked by tests to ensure
-    # new logs aren't silently skipped).
-    for label in (
-        "agent.log",
-        "gateway.log",
-        "gui.log",
-        "desktop.log",
-        # Update-failure diagnostics: the only files holding the root cause
-        # of a failed update/Desktop rebuild (#100874).
-        "update.log",
-        "desktop-update-handoff.log",
-    ):
-        content = bundle.get(label)
-        if not content:
+    for label, content in bundle.items():
+        if label == "report" or not content:
             continue
         try:
             urls[label] = upload_to_pastebin(content, expiry_days=expiry)
@@ -538,20 +526,13 @@ def run_debug_share(args):
         print("Collecting debug report...")
         bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
         print(bundle["report"])
-        for title, label in (
-            ("FULL agent.log", "agent.log"),
-            ("FULL gateway.log", "gateway.log"),
-            ("FULL gui.log", "gui.log"),
-            ("FULL desktop.log", "desktop.log"),
-            ("FULL update.log", "update.log"),
-            ("FULL desktop-update-handoff.log", "desktop-update-handoff.log"),
-        ):
-            body = bundle.get(label)
-            if body:
-                print(f"\n\n{'=' * 60}")
-                print(title)
-                print(f"{'=' * 60}\n")
-                print(body)
+        for label, body in bundle.items():
+            if label == "report" or not body:
+                continue
+            print(f"\n\n{'=' * 60}")
+            print(f"FULL {label}")
+            print(f"{'=' * 60}\n")
+            print(body)
         return
 
     if getattr(args, "nous", False):

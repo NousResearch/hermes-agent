@@ -1,7 +1,7 @@
 """On-demand supply-chain audit for Hermes Agent installs.
 
 Vulnerabilities are looked up against OSV.dev (``api.osv.dev/v1/querybatch`` + ``/v1/vulns/{id}``).
-Single-shot, on-demand, never daily — see ``references/security-disclosure-triage.md``.
+Single-shot, on-demand, never daily.
 """
 
 from __future__ import annotations
@@ -296,9 +296,6 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
     home = Path(get_hermes_home())
     output_json = bool(getattr(args, "json", False))
     fail_on = (getattr(args, "fail_on", None) or "critical").upper()
-    if fail_on not in SEVERITY_ORDER:
-        print(f"unknown --fail-on value: {fail_on.lower()} (choose from: low, moderate, high, critical)", file=sys.stderr)
-        return 2
 
     skips = {k: bool(getattr(args, k, False)) for k in ("skip_venv", "skip_plugins", "skip_mcp")}
     components = _discover_components(hermes_home=home, **skips)

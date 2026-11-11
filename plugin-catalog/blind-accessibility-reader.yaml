@@ -1,7 +1,7 @@
 name: blind-accessibility-reader
 title: Blind Accessibility Video and Image Reader
 repo: https://github.com/ella0333/hermes-blind-accessibility-reader
-sha: e63ed9163ca9dc7f656573a54e2d9f303eca5a5b
+sha: 04891de3962644b0666c29b5b85b981645762432
 description: >-
   Describes the images and videos on any website for blind and low vision
   people, through their screen reader or an AI voice. A bundled Chrome
@@ -12,14 +12,14 @@ description: >-
   local server on 127.0.0.1:47823 that answers only the bundled extension;
   sends downscaled images and video frames to the vision model configured for
   its auxiliary task (OpenRouter by default) using the key held by Hermes;
-  may download an image from its page address; fetches OpenRouter's public
+  fetches OpenRouter's public
   price list with no key. No shell commands, telemetry, stored credentials
   or self-updater.
 maintainer: ella0333
 tier: community
 category: web
 requires_hermes: ">=0.22.7"
-version: "0.2.0"
+version: "0.2.1"
 docs_url: https://github.com/ella0333/hermes-blind-accessibility-reader#readme
 readme: true
 platforms: []

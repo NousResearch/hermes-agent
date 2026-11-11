@@ -262,17 +262,20 @@ def test_registry_namespace_survives_a_remount(tmp_path, monkeypatch):
     ``st_dev`` changed) keeps its identity; a copy on a new inode still differs (#84969 review)."""
     store = ReuseOwners(tmp_path)
     namespace = store.namespace
-    store_parent = tmp_path / "runtime"  # the directory whose stat feeds the namespace
+    store_parent = store.path.parent  # the directory whose stat feeds the namespace
     real_stat = Path.stat
+    remounted_paths = []
 
     def remounted(self, *args, **kwargs):
         result = real_stat(self, *args, **kwargs)
         if self == store_parent:
-            return SimpleNamespace(st_dev=987654, st_ino=result.st_ino)
+            remounted_paths.append(self)
+            return SimpleNamespace(st_mode=result.st_mode, st_dev=987654, st_ino=result.st_ino)
         return result
 
     monkeypatch.setattr(Path, "stat", remounted)
     assert ReuseOwners(tmp_path).namespace == namespace
+    assert remounted_paths
 
 
 def test_busy_ownership_database_defers_recovery_instead_of_raising(monkeypatch):

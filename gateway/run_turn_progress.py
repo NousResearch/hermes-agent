@@ -489,6 +489,14 @@ class GatewayTurnProgressMixin:
         if getattr(result, "success", False) and getattr(result, "message_id", None):
             st.fallback_msg_id = str(result.message_id)
 
+    async def _task_card_native_publish(self, st):
+        """The native-lane send; an extension point for richer card publishers."""
+        ctx = self._ctx
+        return await st.adapter.send_native_task_card_progress(
+            chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
+            reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
+        )
+
     async def _task_card_publish(self, st) -> None:
         ctx = self._ctx
         if not st.tasks:
@@ -509,10 +517,7 @@ class GatewayTurnProgressMixin:
             if st.publication_suppressed:
                 return
         if not st.native_failed:
-            result = await st.adapter.send_native_task_card_progress(
-                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
-                reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
-            )
+            result = await self._task_card_native_publish(st)
             if getattr(result, "success", False):
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The

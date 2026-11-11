@@ -105,5 +105,8 @@ class TurnContext:
     # callbacks are published by TurnRunner (like voice_ack_callback above) so tool starts and completions
     # correlate by real tool-call ID instead of tool name.
     _native_slack_task_cards: bool = False
+    # Rich cards (display.tool_progress_native, on top of the native cards above); closed once cleanup starts.
+    _rich_slack_task_cards: bool = False
+    _task_cards_closed: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None

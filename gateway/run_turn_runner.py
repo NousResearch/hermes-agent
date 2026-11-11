@@ -26,6 +26,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
+from gateway.run_turn_task_cards import TaskCardMixin, card_reasoning_callback, rich_cards_enabled
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from hermes_cli.plugins_dispatch import stream_held
@@ -196,7 +197,7 @@ def _observed_turn_persist_message(run_message, override, live_text):
         return [{**first, "text": override + first["text"][len(live_text):]}, *run_message[1:]]
     return run_message
 
-class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+class TurnRunner(TaskCardMixin, GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
     # ``None`` is a legitimate state: a turn with no owning session authority (messaging
@@ -207,6 +208,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        if rich_cards_enabled(ctx):
+            ctx._rich_slack_task_cards = True
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)
         if authority is not None:
@@ -494,7 +497,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.run_turn_progress import local_viewer_turn
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, (
             self._local_notice_callback_sync if local_viewer_turn(self) else self._notice_callback_sync)
-        agent.reasoning_callback = None  # per turn: a reused agent never keeps an earlier API turn's sink
+        agent.reasoning_callback = card_reasoning_callback(self)  # per turn: a reused agent never keeps an earlier API turn's sink
         if self._approval_owner is not None:
             from gateway.session_api_turn import api_execution, wire_api_observers
             if api_execution.get() is not None:

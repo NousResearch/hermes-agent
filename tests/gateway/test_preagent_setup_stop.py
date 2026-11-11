@@ -49,7 +49,7 @@ def _wedged_turn(monkeypatch, timeout: str):
 
     async def _hang(*_args, **_kwargs):
         entered.set()
-        await asyncio.sleep(3600)
+        await asyncio.Event().wait()  # an await nothing ever completes
 
     runner._hmwa_resolve_session = _hang
     state = runner._session_state(key)

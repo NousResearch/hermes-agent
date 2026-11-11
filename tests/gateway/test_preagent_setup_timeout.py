@@ -48,7 +48,7 @@ async def test_hung_preagent_resolve_is_cancelled_and_notified(monkeypatch, capl
     runner = _bare_runner()
 
     async def _hang(*_args, **_kwargs):
-        await asyncio.sleep(10)
+        await asyncio.Event().wait()  # an await nothing ever completes
         raise AssertionError("hung resolve should have been cancelled")
 
     runner._hmwa_resolve_session = _hang
@@ -76,7 +76,6 @@ async def test_preagent_timeout_zero_does_not_bound_setup(monkeypatch):
 
     async def _quick(*_args, **_kwargs):
         seen.set()
-        return None
 
     runner._hmwa_resolve_session = _quick
     result = await GatewayRunner._handle_message_with_agent(

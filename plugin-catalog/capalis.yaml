@@ -1,7 +1,7 @@
 name: capalis
 title: Capalis
 repo: https://github.com/Femtech-web/Capalis
-sha: 78843af2e15812fc391a74fe1cbcf2ac82a03de1
+sha: 13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff
 subdir: plugin
 description: >-
   Describe a job in one sentence, and Capalis sets it up, runs it and checks it really happened. It finds your
@@ -15,15 +15,15 @@ tier: community
 category: automation
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Femtech-web/Capalis#readme
-version: "0.2.0"
-image: https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/banner.png
+version: "0.2.1"
+image: https://raw.githubusercontent.com/Femtech-web/Capalis/13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/telegram-approval-request.png
-  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/discord-ack-and-fixed.png
-  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/slack-notice.png
-  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/github-issue-closed.png
-  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/evidence.png
-  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/slack-thread-reply.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff/docs/assets/telegram-approval-request.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff/docs/assets/discord-ack-and-fixed.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff/docs/assets/slack-notice.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff/docs/assets/github-issue-closed.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff/docs/assets/evidence.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/13b2dde6efce5fa4ad54f50bc4a882a583c6c3ff/docs/assets/slack-thread-reply.png
 platforms: []
 known_issues:
   - Reports from Discord or Slack reach Capalis only after the report channel and the reporters are added to Hermes's gateway settings. /capalis setup prints the exact hermes config set commands.

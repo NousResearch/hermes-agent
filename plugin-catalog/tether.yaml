@@ -1,6 +1,6 @@
 name: tether
 repo: https://github.com/Zek-Takai/hermes-tether
-sha: 21405882aaca43f6783befabab60581d7a646d55
+sha: a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06
 subdir: plugin/tether
 title: Hermes Tether
 version: "0.1.0"
@@ -10,17 +10,17 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 platforms: []
-image: https://raw.githubusercontent.com/Zek-Takai/hermes-tether/21405882aaca43f6783befabab60581d7a646d55/docs/media/tether-banner.png
+image: https://raw.githubusercontent.com/Zek-Takai/hermes-tether/a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06/docs/media/tether-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/21405882aaca43f6783befabab60581d7a646d55/docs/media/tether-desktop.png
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/21405882aaca43f6783befabab60581d7a646d55/docs/media/tether-demo.gif
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06/docs/media/tether-desktop.png
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/a73abb7119bdb8e5a9eaa921ec1f42acb0f66a06/docs/media/tether-demo.gif
 known_issues:
-  - "Devices must be macOS or Windows (the host runs anywhere Hermes runs). On a device, Hermes must run in the signed-in desktop session so the consent prompt can appear."
+  - "Devices must be macOS or Windows; the host must be macOS or Linux (it uses a POSIX file lock and Unix socket). On a device, Hermes must run in the signed-in desktop session so the consent prompt can appear."
   - "Computer use on the device needs the companion plugin tether_screen, installed by hand from plugin/tether_screen in the repository. Its validation stops at the capability probe exactly like Hermes's bundled computer-use plugin."
   - "Several Hermes Desktops connected to one backend share it: closing one ends the chat open in the other."
   - "'untether' closes a connection only when it is sent as a message on its own."
 capabilities:
   provides_tools: [devices]
-  provides_hooks: [pre_llm_call, post_llm_call, transform_tool_result]
+  provides_hooks: [pre_llm_call, post_llm_call, post_tool_call, transform_tool_result]
   provides_middleware: [tool_execution]
   requires_env: []

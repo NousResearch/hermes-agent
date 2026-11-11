@@ -584,6 +584,40 @@ def test_pythonpath_descendants_are_not_owned():
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
+@pytest.mark.parametrize("selection", ["newer", "missing"])
+def test_pythonpath_strips_older_install_generation(child_env, monkeypatch, selection):
+    """An inherited generation stays owned after PM commits a newer one, or with no selection recorded."""
+    from pm.environments import runtime_facts_path, site_packages
+
+    state = child_env / "hermes/installs/this-install"
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    if selection == "newer":
+        newer = state / "environments/newer"
+        newer.mkdir(parents=True)
+        (newer / "pyvenv.cfg").write_text("version = 3.14\n", encoding="utf-8")
+        facts = runtime_facts_path(Path(__file__).resolve().parents[2])
+        facts.write_text(json.dumps({"packages": {"venv": {"environment": str(newer)}}}), encoding="utf-8")
+    # The older generation may already have been collected, including pyvenv.cfg.
+    owned = site_packages(state / "environments/older")
+    user = child_env / "user-lib"
+    env = {"PYTHONPATH": os.pathsep.join(map(str, [owned, user]))}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"] == str(user)
+
+
+def test_pythonpath_keeps_other_install_and_generation_subdirectory(child_env, monkeypatch):
+    """Only this install's exact generation site-packages paths are owned."""
+    from pm.environments import site_packages
+
+    state = child_env / "hermes/installs/this-install"
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    entries = [str(site_packages(state.parent / "other-install/environments/older")),
+               str(state / "environments/older/workspace")]
+    env = {"HERMES_HOME": str(child_env / "hermes"), "PYTHONPATH": os.pathsep.join(entries)}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == entries
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])

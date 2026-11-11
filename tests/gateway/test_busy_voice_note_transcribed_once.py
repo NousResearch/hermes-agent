@@ -6,6 +6,7 @@ then re-captures the clip and the FIFO turn restores a new ``MessageEvent`` with
 STT cache, so the turn's preprocessing used to pay STT and echo the transcript a second time.
 """
 import asyncio
+import os
 
 import pytest
 
@@ -208,7 +209,7 @@ async def test_a_partly_refused_busy_echo_repeats_no_shown_clip(tmp_path, monkey
     words = {'a.ogg': 'one', 'b.ogg': 'two', 'c.ogg': 'three'}
     monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {
-                            'success': True, 'transcript': words[path.rsplit('/', 1)[-1]], 'provider': 'f'})
+                            'success': True, 'transcript': words[os.path.basename(path)], 'provider': 'f'})
     runner, authority, source, _agent, _sent = await _busy_rig(tmp_path, monkeypatch)
     shown, refuse = [], [True]
 

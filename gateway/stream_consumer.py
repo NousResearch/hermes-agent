@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from agent.redact import redact_for_egress as _redact_for_egress
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.config import (
@@ -531,7 +532,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _finalize_boundary_stream(self, _reason: str) -> bool:
         """Close the open native stream at a boundary; send() the pre-prompt text if that
         fails.  False only when both finalize and the fallback send failed."""
-        finalize_text = self._accumulated or self._boundary_placeholder
+        finalize_text = self._clean_for_display(self._accumulated) or self._boundary_placeholder
         try:
             if await self._send_frame(finalize_text, finalize=True):
                 logger.debug("%s boundary: finalized stream (chat=%s, turn=%s)",
@@ -845,6 +846,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         True when the turn finished here (the run loop returns)."""
         if (handed_off := await self._ceiling_split_first_send(tick)) is not None:
             return handed_off
+        self._redact_settled_text(done=tick.got_done)
         chunks = self._truncate_for_stream(self._accumulated, self._safe_limit, self._len_fn)
         if len(chunks) <= 1:
             # Malformed/legacy adapter result must still be splittable.
@@ -898,6 +900,19 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._fallback_prefix = ""
         return False
 
+    def _redact_settled_text(self, *, done: bool) -> int:
+        """Redact the buffer before an overflow split; returns where the settled text ends.
+
+        Split heads are sealed (never edited again) and a cut through a credential leaves halves
+        no pattern matches on its own, so the split must work on redacted text (#56039). The
+        token still arriving at the end of the buffer stays raw until a later delta completes it:
+        masking a partial key here would leave the rest of the key to be appended unmatched."""
+        text = self._accumulated
+        settled = len(text) if done else max(text.rfind(c) for c in " \t\n") + 1
+        if settled:
+            self._accumulated = _redact_for_egress(text[:settled]) + text[settled:]
+        return settled - (len(text) - len(self._accumulated)) if settled else 0
+
     def _overflows(self) -> bool:
         return self._len_fn(self._accumulated) > self._safe_limit
 
@@ -913,10 +928,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         while self._overflows() and self._message_id is not None and self._edit_supported:
             if sent and self._turn_reset():
                 break
+            settled = self._redact_settled_text(done=False)
             cp_budget = _custom_unit_to_cp(self._accumulated, self._safe_limit, self._len_fn)
             split_at = self._accumulated.rfind("\n", 0, cp_budget)
             if split_at < cp_budget // 2:
                 split_at = cp_budget
+            if 0 < settled < split_at:
+                split_at = settled  # never seal the head of a token that is still arriving
             if self._ceiling_seal_cut(split_at, final=final):
                 break  # past the reply's message cap: it goes out as a file once complete
             chunk = self._accumulated[:split_at]
@@ -1099,6 +1117,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         shows as ``!alt`` plus an unfurl (#141806). The tag is removed without trimming the text
         around it, so interim frames stay prefix-stable. A silence marker closing the reply on its own
         line is dropped (``strip_trailing_silence_marker``); a bare marker is left for the silence check.
+
+        Every consumer egress (preview, edit, sealed head, native/draft frame, fallback send) passes
+        through here, so this is where streamed text gets the same forced secret redaction the
+        non-streamed final send applies in ``_sanitize_gateway_final_response`` (#56039).
         """
-        return _strip_trailing_silence_marker(
-            strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text)))
+        return _redact_for_egress(_strip_trailing_silence_marker(
+            strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text))))

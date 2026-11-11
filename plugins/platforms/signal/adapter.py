@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
@@ -198,6 +198,19 @@ class SignalAdapter(BasePlatformAdapter):
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
                                 else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
         self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
+        # History backfill (like Discord's): signal-cli has no history API, so group messages the
+        # require_mention gate drops are buffered per chat and handed to the next mentioned message as
+        # ``channel_context``. Only the gap since the last dispatched message is kept; in-memory only.
+        _bf = extra.get("history_backfill")
+        self.history_backfill = (bool(_bf) if _bf is not None
+                                 else (_sig_secret("SIGNAL_HISTORY_BACKFILL", "true") or "true").lower() in TRUTHY_STRINGS)
+        try:
+            self.history_backfill_limit = max(0, int(extra.get("history_backfill_limit",
+                                                               _sig_secret("SIGNAL_HISTORY_BACKFILL_LIMIT", "50") or 50)))
+        except (TypeError, ValueError):
+            self.history_backfill_limit = 50
+        self._unmentioned_group_messages: OrderedDict[str, deque[str]] = OrderedDict()
+        self._max_backfill_chats = 256
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
@@ -450,6 +463,8 @@ class SignalAdapter(BasePlatformAdapter):
         if is_group:
             mentioned, text = self._apply_group_mention_rules(text, data_message)
             if not mentioned:
+                self._remember_unmentioned_group_message(chat_id, sender_name or sender, text,
+                                                         bool(data_message.get("attachments")))
                 return
         # quote.id is the quoted message's timestamp, quote.author the quoted sender —
         # both are preserved so the gateway can tell the agent which message was replied to.
@@ -485,6 +500,7 @@ class SignalAdapter(BasePlatformAdapter):
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp,
+            channel_context=self._take_group_channel_context(chat_id) if is_group else None,
             raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,
@@ -493,6 +509,30 @@ class SignalAdapter(BasePlatformAdapter):
         )
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
+
+    def _remember_unmentioned_group_message(self, chat_id: str, name: str, text: str, has_attachments: bool) -> None:
+        """Buffer a group message the require_mention gate dropped (bounded per chat and in chats)."""
+        if not self.history_backfill or self.history_backfill_limit <= 0:
+            return
+        content = (text or "").strip() or ("(attachment)" if has_attachments else "")
+        if not content:
+            return
+        # Display names are sender-controlled: keep them on one line so they cannot fake a section.
+        safe_name = " ".join(str(name or "unknown").split())
+        lines = self._unmentioned_group_messages.get(chat_id)
+        if lines is None or lines.maxlen != self.history_backfill_limit:
+            lines = deque(lines or (), maxlen=self.history_backfill_limit)
+            self._unmentioned_group_messages[chat_id] = lines
+        self._unmentioned_group_messages.move_to_end(chat_id)
+        lines.append(f"[{safe_name}] {content}")
+        while len(self._unmentioned_group_messages) > self._max_backfill_chats:
+            self._unmentioned_group_messages.popitem(last=False)
+
+    def _take_group_channel_context(self, chat_id: str) -> Optional[str]:
+        """``[Recent channel messages]`` block of the messages missed since the last dispatched one, or None.
+        Taking it clears the buffer: those messages now reach the transcript with this turn."""
+        lines = self._unmentioned_group_messages.pop(chat_id, None)
+        return "[Recent channel messages]\n" + "\n".join(lines) if lines else None
 
     def _group_allowed(self, group_id: str) -> bool:
         """Group policy from SIGNAL_GROUP_ALLOWED_USERS: unset → groups disabled; IDs → only those

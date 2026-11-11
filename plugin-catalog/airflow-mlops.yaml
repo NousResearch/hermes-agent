@@ -1,7 +1,7 @@
 name: airflow-mlops
 repo: https://github.com/dayzell/MLOps_Assistant_Hermes_x_AirFlow
 sha: 1417f40f29c28fd7aac571758c34475c6dc11ad9
-description: "Apache Airflow MLOps assistant: watch DAGs, diagnose failed runs, approved targeted retries, fixes tested in a Docker sandbox. Calls your Airflow REST API; optional docker run sandbox."
+description: "Apache Airflow MLOps assistant: watch DAGs, diagnose failed runs, approved targeted retries, fixes tested in a Docker sandbox. Calls your Airflow REST API; optional docker run sandbox. Disclosure — calls only the Airflow REST API at your configured base_url with your Airflow credentials; while a DAG folder is configured it inspects Hermes' write_file, patch, terminal and execute_code calls and blocks or asks approval for changes to DAG files; task retries ask Hermes approval unless you enable auto_remediation_enabled, which lets it retry tasks it classified as transient on its own (including inside the optional night-watch cron job); the optional sandbox (off by default) runs your DAG code plus the model's patch in a local `docker run --network none` container through Hermes' terminal tool."
 maintainer: dayzell
 tier: community
 category: tools

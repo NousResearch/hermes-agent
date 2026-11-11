@@ -125,6 +125,16 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only agents-md
 
+      # A t() key that no catalog defines does not raise: t() returns the bare key
+      # and users read the dotted path. Same for a format kwarg the English value
+      # needs but the call site omits, which ships a literal {placeholder}. Neither
+      # is visible to the catalog parity tests, which only compare catalogs to each
+      # other. Reading locales/en.yaml needs ruamel (hermes_yaml); this job installs
+      # no project dependencies.
+      - name: Check t() usage against the English catalog
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- scripts/check_i18n_usage.py
+
       # ── Advisory footgun-family reports (pull requests, python lane) ──────────────────────
 
       # Advisory: continue-on-error and a step timeout each, so neither a failure nor an overrun

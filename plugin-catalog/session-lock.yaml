@@ -3,15 +3,16 @@ repo: https://github.com/TightXu/hermes-session-lock
 sha: abdac79e14e97040a9198d8fbf8b523f460097dc
 title: Session Lock
 description: >-
-  Inspect and release Hermes active-session leases (the "This chat is open somewhere
-  else" lock) from a Desktop status-bar chip: session names, owner liveness, age,
-  per-session release, clear-dead-only, and audit/backup records. Disclosure - it
-  reads and writes runtime/active_sessions.json through Hermes' private
-  hermes_cli.active_sessions helpers (catalog rule 9 warning), copies the registry
-  before a write and appends an audit line. Releasing a live lease is explicit and
-  lets two clients write one session at once. No network calls, no credentials, no
-  background process. Desktop installer is Windows; the backend route itself is
-  cross-platform.
+  A Hermes client that exits without clearing runtime/active_sessions.json leaves
+  the session leased, and every other client is refused with "This chat is open
+  somewhere else". The registry is not visible in the app, so a stale lease looks
+  like a broken gateway. session-lock makes those leases visible in a Desktop
+  status-bar chip: session name, surface, pid, age and owner liveness, with release
+  one, dead-only and all. Releasing a live lease is explicit and can let two clients
+  write; every write takes the same registry lock, copies a backup and appends an
+  audit line. No network calls, credentials or background process. The same REST
+  routes are used by my Android client. The manual installer is Windows; the
+  backend route is cross-platform.
 maintainer: TightXu
 tier: community
 category: desktop

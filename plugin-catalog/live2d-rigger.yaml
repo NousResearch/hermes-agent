@@ -1,8 +1,8 @@
 name: live2d-rigger
 title: Live2D Rigger
 repo: https://github.com/flabanabba8/live2d-rigger
-sha: 657345a77bd59088e66fdbaa2aed58007d16b9ce
-version: 0.5.0
+sha: 091bf7cfb733f9bf49409e14e5ee68e118fc05ef
+version: 0.5.1
 description: 'Create a provisional Live2D character from a brief with complete image
   parts, local cutout, placement, an experimental Umamo/JDK rig and Core motion review;
   also inspect and adjust a copy of an existing model. Disclosure: runs the user-configured
@@ -15,8 +15,8 @@ maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: '>=0.22.0'
-docs_url: https://github.com/flabanabba8/live2d-rigger/blob/657345a77bd59088e66fdbaa2aed58007d16b9ce/README.md
-image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/657345a77bd59088e66fdbaa2aed58007d16b9ce/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/live2d-rigger/blob/091bf7cfb733f9bf49409e14e5ee68e118fc05ef/README.md
+image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/091bf7cfb733f9bf49409e14e5ee68e118fc05ef/assets/thumbnail.jpg
 platforms:
 - linux
 capabilities:

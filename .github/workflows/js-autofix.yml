@@ -133,7 +133,8 @@ jobs:
     needs: generate-patch
     # Skip entirely when generate-patch found no fixes — saves a runner,
     # avoids a redundant checkout/download, and keeps the job graph honest.
-    if: needs.generate-patch.outputs.has-fixes == 'true'
+    # Forks still run normal checks, but cannot publish the bot PR.
+    if: github.repository == 'NousResearch/hermes-agent' && needs.generate-patch.outputs.has-fixes == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     environment: trusted-automation

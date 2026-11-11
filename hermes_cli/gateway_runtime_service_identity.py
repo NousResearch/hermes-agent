@@ -165,46 +165,25 @@ def subprocess_command(argv: list[str]) -> str:
     return subprocess.list2cmdline(argv)
 
 
-# systemd's shell_maybe_quote(SHELL_ESCAPE_POSIX): a value that needs quoting
-# prints as $'...', with \\ and ' escaped. v249+ writes the other control bytes
-# as C escapes (\a \b \f \n \r \t \v, else \ooo octal, up to \377);
-# v234-v248 escapes only \n and \t and leaves the rest raw, so both forms
-# reach the regex below. UTF-8 stays raw either way.
+# systemd's shell_maybe_quote(): v234+ quotes as $'...'; v249+ adds the other C escapes.
 _POSIX_QUOTED = re.compile(rb"\$'((?:[^\\']|\\(?:[abfnrtv\\']|[0-3][0-7]{2}))*)'")
 _C_ESCAPES = {
     b"a": b"\a", b"b": b"\b", b"f": b"\f", b"n": b"\n",
     b"r": b"\r", b"t": b"\t", b"v": b"\v",
     b"\\": b"\\", b"'": b"'",
 }
-# A backslash that systemd does not write: the escape is neither one of the short
-# forms nor a complete octal one.
+# A backslash systemd never writes.
 _BAD_ESCAPE = re.compile(rb"\\(?![abfnrtv\\']|[0-3][0-7]{2})(.)")
-# systemd validates the environment names before they enter the manager block
-# (env_name_is_valid: alphanumerics and "_", never a leading digit), and D-Bus
-# rejects the same names on set-environment. A name outside that set cannot be
-# in a real dump, so refusing one keeps a mis-parsed line from being read as an
-# environment variable.
+# env_name_is_valid: D-Bus rejects any other name.
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def manager_environment_pairs(value: str) -> dict[str, str]:
-    r"""Decode the text form of ``systemctl show-environment``.
-
-    One ``KEY=VALUE`` per line. A value systemd had to quote arrives as
-    ``$'...'`` with C escapes; any other value arrives verbatim.
-
-    systemd quotes every value holding a backslash, a quote, whitespace or
-    another shell character since v234, and escaped nothing before that. A dump
-    holding a ``$'`` value therefore comes from a quoting host and is read by
-    that rule; a dump without one is read verbatim.
-
-    Split on ``\n`` only: ``str.splitlines`` also breaks on ``\x0b``, ``\x0c``,
-    ``\x1c``-``\x1e``, ``\x85``, ``U+2028`` and ``U+2029``, which systemd emits
-    raw inside a value.
-    """
+    """Decode the text form of ``systemctl show-environment``."""
     quoting = _has_quoted_value(value)
     result = {}
     last = None
+    # split on "\n" only: str.splitlines() also breaks on \x0b, \x1c-\x1e, U+2028.
     for line in value.split("\n"):
         if not line:
             continue
@@ -251,24 +230,18 @@ def _decode_ansi_c(val: str, key: str) -> str:
 
 def _quoted_problem(raw: bytes) -> str:
     """Why a ``$'...'`` value does not decode."""
-    if raw.endswith(b"'"):
-        bad = _BAD_ESCAPE.search(raw[2:-1])
-        if bad:
-            if bad[1].isdigit():
-                return "carries an incomplete octal escape"
-            return f"carries the escape \\{bad[1].decode('ascii', 'replace')}, which systemd does not write"
+    bad = _BAD_ESCAPE.search(raw[2:-1] if raw.endswith(b"'") else raw[2:])
+    if bad:
+        if bad[1].isdigit():
+            return "carries an incomplete octal escape"
+        return f"carries the escape \\{bad[1].decode('ascii', 'replace')}, which systemd does not write"
+    if _POSIX_QUOTED.match(raw):
+        return "closes its ANSI-C quote before the end of the value"
     return "opens an ANSI-C quote it never closes"
 
 
 def manager_environment_pairs_json(value: str) -> dict[str, str]:
-    """Decode the JSON form of ``systemctl show-environment``.
-
-    The values arrive unescaped and unquoted, so there is no shell-quoting
-    grammar to interpret and no line separator to split on.
-
-    systemd gained this output mode in v250; older releases print the plain
-    text form instead, which :func:`manager_environment_pairs` still reads.
-    """
+    """Decode the JSON form of ``systemctl show-environment``."""
     try:
         data = json.loads(value)
     except ValueError:
@@ -277,7 +250,8 @@ def manager_environment_pairs_json(value: str) -> dict[str, str]:
         _unverified("the manager environment JSON is not an object")
     result = {}
     for key, val in data.items():
-        if not isinstance(key, str) or not isinstance(val, str):
+        # json.loads gives every key as a str, so only the value can be off.
+        if not isinstance(val, str):
             _unverified(f"the manager environment JSON holds a non-string value for {key!r}")
         if not _ENV_NAME.fullmatch(key):
             _unverified(f"the manager environment names {key!r}, which is not a valid variable name")
@@ -326,7 +300,9 @@ def verify_systemd(props: dict[str, str], manager_env: dict[str, str], home: Pat
     if service_uid != uid:
         raise ValueError("service_account_mismatch")
     inherited = manager_env
-    env = inherited if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
+    # A copy: the unit's own Environment= and UnsetEnvironment= must not reach the
+    # caller's mapping, which it keeps for the other scope.
+    env = dict(inherited) if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
     env.update(environment_pairs(props["Environment"]))
     for item in shlex.split(props["UnsetEnvironment"]):
         key, sep, value = item.partition("=")

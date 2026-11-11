@@ -81,7 +81,7 @@ class TestAbandonOnTurnDeath:
 
     @pytest.mark.asyncio
     async def test_abandon_without_open_stream_is_noop(self):
-        sc, adapter, t = _consumer()
+        sc, _adapter, t = _consumer()
         await sc._abandon_native_stream()
         assert t.ops == []
 

@@ -1,5 +1,7 @@
 import asyncio
 import time
+
+import pytest
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_models as _web_models
 import hermes_cli.web_routers.messaging as _rt_messaging
@@ -119,5 +121,22 @@ def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeyp
     _web_server_messaging._whatsapp_onboarding_sessions.clear()
 
 
-
-
+@pytest.mark.parametrize("lines,returncode,expected", [
+    # The bridge names the cause before exiting 1; the exit code must not replace it.
+    (['{"event":"error","error":"passkey_required"}\n'], 1, "hermes whatsapp --passkey-browser"),
+    (['{"event":"error","error":"logged_out","reason":401}\n'], 1, "logged_out"),
+    # No streamed cause: the exit reason is all the dashboard can show.
+    (['{"event":"qr","qr":"payload"}\n'], 1, "exited with code 1"),
+    ([], 0, "exited before pairing completed"),
+])
+def test_whatsapp_pairing_watcher_keeps_streamed_error(monkeypatch, lines, returncode, expected):
+    monkeypatch.setattr(_rt_messaging, "release_process_group_once_empty", lambda *a, **kw: None)
+    proc = _FakeProc(lines=lines, returncode=returncode)
+    record = _web_server_messaging._WhatsAppOnboardingSession(
+        proc=proc, mode="bot", allowed_users="", session_path="/nonexistent/session",
+        expires_at="2099-01-01T00:00:00Z", expires_at_ts=time.time() + 600,
+    )
+    monkeypatch.setitem(_rt_messaging._whatsapp_onboarding_sessions, "watch", record)
+    _rt_messaging._watch_whatsapp_pairing("watch", proc)
+    assert record.status == "error"
+    assert expected in record.error

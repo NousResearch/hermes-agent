@@ -1,0 +1,30 @@
+name: mdvault
+title: Markdown Vault
+repo: https://github.com/kailashrajh/hermes-mdvault
+sha: 46de6b47ab0772a7a6566f362304c41e1768fa6b
+subdir: plugins/mdvault
+version: "1.0.0"
+description: >-
+  Memory provider that treats a folder of Markdown notes as the agent's long-term store:
+  BM25 retrieval with CJK bigrams over an in-memory index, relevant notes injected before
+  every turn (prefetch), four tools (mdvault_search, mdvault_note, mdvault_recent,
+  mdvault_remember), built-in memory writes mirrored into a human-readable vault note, a
+  `hermes mdvault` CLI and a dashboard config panel. No network, no database, no
+  dependencies; the store is plain .md files the user can edit, git and back up.
+  Disclosure — reads only the configured vault folder (file symlinks skipped, excluded
+  directories ignored), writes only inside that folder (new notes with O_CREAT|O_EXCL,
+  plus the ownership-marked mirror note), no telemetry, no self-updater, no background
+  process, no subprocesses. The vault itself lives outside $HERMES_HOME, so `hermes
+  backup` does not copy it.
+maintainer: kailashrajh
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/kailashrajh/hermes-mdvault#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

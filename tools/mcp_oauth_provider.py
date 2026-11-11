@@ -155,9 +155,12 @@ class HermesProviderMixin:
         self.context.redirect_handler = _with_offline_access
 
     async def _hermes_accept_origin_issued_metadata(self, response):
-        """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
-        it lives under (see ``metadata_issued_by_origin``); the SDK's exact-string check (RFC 8414 §3.3)
-        would reject it and park the connection on an issuer mismatch (Strava, #116233).
+        """Accept an authorization server's metadata document whose ``issuer`` differs from the advertised
+        identifier only in a shape the SDK's exact-string check (RFC 8414 §3.3) refuses: a path-scoped
+        server naming its origin (see ``metadata_issued_by_origin``, Strava #116233), or a root issuer
+        spelled with the trailing slash on one side only (Otter.ai advertises ``https://otter.ai/`` and its
+        document names ``https://otter.ai``, #132233), which the SDK's own ``issuers_match`` treats as
+        one server but applies only on the legacy no-PRM path.
 
         The SDK validates inside its Step 2 loop right after reading the response, so the document is
         installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
@@ -182,11 +185,16 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+        from mcp.client.auth.utils import issuers_match
+        advertised, issuer = self.context.auth_server_url, str(metadata.issuer)
+        if metadata_issued_by_origin(metadata, advertised, response):
+            relation = "is the origin of"
+        elif advertised and issuer != advertised and issuers_match(issuer, advertised):
+            relation = "differs only by the root trailing slash from"
+        else:
             return response
-        self._hermes_logger.info(
-            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
-            "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
+        self._hermes_logger.info("MCP OAuth: accepting authorization-server metadata from %s whose issuer %s %s "
+                                 "the advertised server %s", response.url, issuer, relation, advertised)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
 
@@ -603,7 +611,7 @@ def enforce_refresh_token_issuer(context: Any) -> None:
         tokens.refresh_token = None
 
 
-def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, "HermesTokenStorage"]:
+def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, HermesTokenStorage]:
     """Copy the ``oauth:`` block, apply provider defaults, open its token storage. The copy
     matters: later steps record ``_resolved_port`` / ``_cimd_url`` in the dict, which must
     never leak back into the caller's config."""
@@ -613,7 +621,7 @@ def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict |
     return cfg, mo.HermesTokenStorage(server_name)
 
 
-def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy_hint: bool) -> dict[str, Any]:
+def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_hint: bool) -> dict[str, Any]:
     """Resolve the callback port and return the shared provider constructor kwargs. Order
     matters: metadata needs the resolved port, pre-registration needs the metadata.
     ``ssh_proxy_hint`` lets the redirect handler tailor its remote-session hint to a configured

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable, ClassVar, Literal
 
 
@@ -20,11 +20,11 @@ def _parse_datetime(value: Any) -> datetime | None:
     if text.endswith("Z"):
         text = f"{text[:-1]}+00:00"
     parsed = datetime.fromisoformat(text)
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
-    return None if value is None else value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return None if value is None else value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _camel(name: str) -> str:
@@ -37,10 +37,10 @@ def _pick(payload: dict[str, Any], *keys: str) -> Any:
     return next((payload.get(key) for key in keys if payload.get(key)), payload.get(keys[-1]))
 
 
-_str = lambda value: str(value or "").strip()  # noqa: E731
-_list = lambda value: list(value or [])  # noqa: E731
-_dict = lambda value: dict(value or {})  # noqa: E731
-_nested = lambda model: (lambda value: model.from_dict(value) if value else None)  # noqa: E731
+_str = lambda value: str(value or "").strip()
+_list = lambda value: list(value or [])
+_dict = lambda value: dict(value or {})
+_nested = lambda model: (lambda value: model.from_dict(value) if value else None)
 
 
 def _serialize_value(value: Any) -> Any:
@@ -180,7 +180,7 @@ class TeamsMeetingSummaryPayload(_Model):
     _DATETIMES = ("start_time", "end_time")
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "TeamsMeetingSummaryPayload":
+    def from_dict(cls, payload: dict[str, Any]) -> TeamsMeetingSummaryPayload:
         # meeting_ref is mandatory: a missing key raises KeyError rather than building a half-empty payload.
         return super().from_dict({**payload, "meeting_ref": payload["meeting_ref"]})
 

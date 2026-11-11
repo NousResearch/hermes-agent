@@ -27,7 +27,7 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain, and `check` to verify it (see [Checking the chain](#checking-the-chain)). Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
 
 If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 
@@ -59,6 +59,20 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
 
+### Checking the chain
+
+`hermes fallback check` reports whether each entry would work if the fallback switch reached it, without starting an agent session:
+
+```bash
+hermes fallback check            # static: resolve each entry and its credentials, no inference
+hermes fallback check --live     # also send one minimal request per entry, in parallel
+hermes fallback check --live --json
+```
+
+Each entry resolves exactly as the fallback switch resolves it (its `provider`, `model`, `base_url` and `api_key`/`key_env`), and the chain is never walked, so one entry can't hide another. `--live` sends one short completion per statically ready entry over that provider's own API (OpenAI-compatible, Anthropic Messages, Codex Responses, Bedrock, ACP). It is not retried (SDK retries are off; an Anthropic endpoint that refuses streaming gets the one non-streaming resend the adapter always makes) and never answered by another provider. An empty or malformed answer, one with a `failed`/`cancelled` status, or one that reports an error on the choice (OpenRouter's `finish_reason: "error"`) counts as a failure (`incomplete`, a token cap, still counts as answered); a provider error relayed in an HTTP 200 body is reported like the request error it describes. An entry fails as `model_mismatch` when the provider reports a different model (a dated snapshot of the requested model, such as `gpt-4o-2024-08-06` for `gpt-4o`, still counts as a match). The model check is skipped where the reported model proves nothing: Anthropic Messages and Codex Responses adapters don't expose the serving model, Azure reports the base model rather than your deployment name, router meta-models (`openrouter/auto`, `@preset/...`, `<model>@preset/...`) answer under the model they picked, Bedrock ARNs aren't echoed back, and local or private-network servers (llama.cpp, LM Studio, Ollama, a LAN box) often report a placeholder. The live request uses the provider's `request_timeout_seconds` when set (as the switch does), else 30 seconds; on a streamed request the timeout applies to each read, not the whole answer. A static pass for Bedrock (AWS SDK credential chain) or an external-process provider only means the route resolves; use `--live` to prove it. Static mode sends no inference request, but it resolves credentials the way a session does, so an expiring OAuth token may be refreshed and saved. Entries with `provider: auto` (backend picked per call) or `provider: moa` (a fan-out preset) are not one fixed route, so they are never sent a live request and keep their static verdict. The live request goes to the client the fallback switch would build; for Nous and Codex entries that client uses your stored login, as the switch does.
+
+The command exits with status 1 when any entry is not ready, so cron jobs and CI can gate on it. `--json` prints `profile`, `live`, `ready`, `checked_at` and one result per entry (`provider`, `model`, `base_url`, `api_mode`, `auth_source`, `configured`, `auth_ready`, `inference_ready`, `latency_ms`, `model_returned`, `error_class`, `error`, `ready`, `status`). `status` is `ready`, `ready (static)`, `config`, `auth`, `model_mismatch`, `live_response` (an answer with no usable completion) or `live_<reason>` for a failed request (`live_auth`, `live_timeout`, `live_rate_limit`, `live_model_not_found`, ...). Credentials are never printed, and provider error text is redacted. Use `hermes -p <profile> fallback check` to check another profile's chain.
+
 ### Supported Providers
 
 | Provider | Value | Requirements |
@@ -67,8 +81,6 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal` (fresh) or `hermes auth add nous` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth) |
-| GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
-| GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
@@ -103,6 +115,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | Tencent TokenPlan | `tencent-tokenplan` | `TOKENPLAN_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
+| Local llama.cpp (managed) | `llamacpp` (aliases `llama.cpp`, `llama-cpp`) | The local model server Hermes manages (Desktop **Settings → Providers → Local models**), no `base_url` needed. If it is not running the entry is skipped — Hermes never sends the local model name to another provider |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 | Mixture of Agents preset | `moa` (`model` = preset name) | A configured MoA preset whose aggregator has credentials — the fallback runs the whole preset (references + aggregator), not the aggregator alone |
@@ -220,7 +233,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 |------|-------------|-----------|
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Compression | Context compression summaries | `auxiliary.compression` |
-| Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
@@ -240,7 +252,7 @@ A billing or quota failure quarantines only the failed custom endpoint for the a
 
 The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
 
-**Built-in text discovery chain (compression, web extract, title generation, etc.):**
+**Built-in text discovery chain (compression, title generation, etc.):**
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
@@ -274,10 +286,6 @@ auxiliary:
     fallback_chain:              # optional, task-specific fallback policy
       - provider: openrouter
         model: inclusionai/ring-2.6-1t:free
-
-  skills_hub:
-    provider: "auto"
-    model: ""
 
   mcp:
     provider: "auto"
@@ -319,6 +327,7 @@ These options apply to `auxiliary:`, `compression:`, and `fallback_providers:` e
 | `"codex"` | Force Codex OAuth | `hermes model` → ChatGPT or Codex Subscription |
 | `"main"` | Use whatever provider the main agent uses (auxiliary tasks only) | Active main provider configured |
 | `"anthropic"` | Force Anthropic native | `ANTHROPIC_API_KEY` or Claude Code credentials |
+| `"llamacpp"` | Force the managed local llama.cpp server | Local model server running; when it is off, the local model name is never sent to another provider |
 
 ### Direct Endpoint Override
 
@@ -452,7 +461,6 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
-| Skills hub | Layered (see above) | `auxiliary.skills_hub` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |

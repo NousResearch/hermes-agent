@@ -1,0 +1,22 @@
+name: card-grader
+repo: https://github.com/Agenziamaia/card-grader
+sha: 0fb4c4c42baedb8e4e38ed22b0a50625d53edb37
+description: "Trading-card centering from a photo (perspective-corrected; PSA's centering table gives a grade ceiling, never a grade), corner/edge whitening and photo checks, an optional surface/holo opinion from your own configured vision model, sold values from PriceCharting or TCGdex (eBay with your own key), a grade-or-not verdict with stated odds, and a live Mercari hunt for the best copies. Disclosure — tools only, no hooks or middleware; network calls to www.pricecharting.com (public pages, browser User-Agent), api.tcgdex.net, jp.mercari.com (through the mercapi package) and api.ebay.com (only with your own EBAY_OAUTH_TOKEN, read through Hermes's secret scope); reads only the photo paths you pass; writes rendered measurement JPEGs to the system temp dir, or to any directory given as card_grade's render_dir (no confinement); the optional vision opinion sends the card photo to your own configured model through ctx.llm (vision=false skips it); no telemetry; no grade prediction."
+maintainer: Agenziamaia
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.2.2"
+screenshots:
+  - https://raw.githubusercontent.com/Agenziamaia/card-grader/9bd4f23bafa0a2e1b6a088bb7f3fd37c9de08950/docs/demo.png
+readme: true
+capabilities:
+  provides_tools:
+    - card_grade
+    - card_value
+    - card_verdict
+    - card_hunt
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - EBAY_OAUTH_TOKEN

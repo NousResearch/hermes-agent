@@ -91,7 +91,7 @@ def test_recovery_path_tail_row_carries_transformed_text(db_agent, monkeypatch):
     result = finalize_turn(
         agent, final_response="RECOVERED TEXT", api_call_count=1, interrupted=False, failed=False,
         messages=messages, conversation_history=None, effective_task_id="task-1", turn_id="turn-r",
-        user_message="do a thing", original_user_message="do a thing", _should_review_memory=False,
+        original_user_message="do a thing", _should_review_memory=False,
         _turn_exit_reason="partial_stream_recovery",
     )
 

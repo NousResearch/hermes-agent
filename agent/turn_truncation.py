@@ -230,7 +230,7 @@ class _Trunc(TruncationVerdict):
 
     def end_turn(
         self, final_response: str, error: Optional[str] = None, *,
-        result_messages: Optional[list[dict[str, Any]]] = None, cleanup: bool = True,
+        result_messages: Optional[list[dict[str, Any]]] = None,
         failed: bool = False, compression_exhausted: bool = False,
         failure: tuple[str, bool] = ("truncated", True),
     ) -> TruncationVerdict:
@@ -240,10 +240,7 @@ class _Trunc(TruncationVerdict):
         move future input off a bloated session (run_turn.py consumes it). ``failure`` is
         the ``(failure_reason, retryable)`` verdict for the UI descriptor.
         """
-        agent = self.agent
-        if cleanup:
-            agent._cleanup_task_resources(self.effective_task_id)
-        agent._persist_session(self.messages, self.conversation_history)
+        self.agent._persist_session(self.messages, self.conversation_history)
         return self.done("return", stamp_failure(partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
@@ -444,13 +441,9 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             force=True, diagnostic=True,
         )
         _final_response = _TRUNCATED_FINAL
-    agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)
-    return st.end_turn(
-        _final_response, cleanup=False,
-        failure=(_failure, True),
-    )
+    return st.end_turn(_final_response, failure=(_failure, True))
 
 
 def recover_from_truncation(
@@ -547,7 +540,7 @@ def recover_from_truncation(
     # First message was truncated - mark as failed
     agent._flush_status_buffer()
     agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True, diagnostic=True)
-    return st.end_turn(_FIRST_TRUNCATED_FINAL, cleanup=False, failed=True)
+    return st.end_turn(_FIRST_TRUNCATED_FINAL, failed=True)
 
 
 _CODEX_REPLAY_KEYS = (
@@ -776,7 +769,6 @@ def handle_content_policy_refusal(
         label=provider_label_for(agent.provider),
         summary=_refusal_text or "the model returned no explanation",
     )
-    agent._cleanup_task_resources(effective_task_id)
     # Do not persist the refused turn. A safety refusal is deterministic for the unchanged
     # conversation (the filter judges the whole thread), so a durable refused turn re-trips the
     # filter on every later message and locks the chat — the "stuck session" report. Hand the caller

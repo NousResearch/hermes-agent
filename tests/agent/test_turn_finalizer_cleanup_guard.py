@@ -1,6 +1,6 @@
 """Regression test for #8049.
 
-When the post-loop cleanup chain in ``finalize_turn`` raises — trajectory
+When the post-loop cleanup chain in ``finalize_turn`` / ``end_turn`` raises — trajectory
 save (file I/O), resource teardown (remote VM/browser), or session
 persistence (SQLite) — the partial ``final_response`` the caller is waiting
 for must still be returned.  Previously any of those raised straight out of
@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.turn_finalizer import finalize_turn
+from agent.turn_finalizer import end_turn, finalize_turn
 
 
 class _StubBudget:
@@ -40,6 +40,8 @@ class _StubAgent(StatusOutputMixin):
         self.provider = "stub"
         self.base_url = "http://stub"
         self.session_id = "sess-1"
+        self._current_task_id = "task-1"
+        self._current_turn_id = "turn-1"
         self.quiet_mode = True
         self.platform = "cli"
         self._interrupt_requested = False
@@ -133,7 +135,6 @@ def _run(
         conversation_history=None,
         effective_task_id="task-1",
         turn_id="turn-1",
-        user_message="do a thing",
         original_user_message="do a thing",
         _should_review_memory=False,
         _turn_exit_reason=turn_exit_reason,
@@ -148,6 +149,7 @@ def _run(
 def test_single_cleanup_step_raises_does_not_skip_others(step):
     agent = _StubAgent(raise_in=(step,))
     result = _run(agent)
+    end_turn(agent, result, "do a thing")
     # Response survives.
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     # Exactly the failing step is recorded; the others ran without error.
@@ -173,6 +175,7 @@ def test_a_ticketed_steer_stays_out_of_the_leftover_follow_up():
 def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)
+    end_turn(agent, result, "do a thing")
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     assert result["completed"] is False
     assert "cleanup_errors" not in result

@@ -191,7 +191,6 @@ def validate_tool_calls(
                 force=True, diagnostic=True,
             )
             agent._invalid_json_retries = 0
-            agent._cleanup_task_resources(effective_task_id)
             # Blame the output cap only when the model reported one; otherwise the args
             # were cut by a stream break or a router rewriting finish_reason (#91717).
             _copy = (

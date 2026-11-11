@@ -524,7 +524,6 @@ def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
             conversation_history=[],
             effective_task_id="task",
             turn_id="turn",
-            user_message="do it",
             original_user_message="do it",
             _should_review_memory=False,
             _turn_exit_reason="completed",

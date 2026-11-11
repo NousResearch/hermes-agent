@@ -582,15 +582,28 @@ def settle_held_final(agent, result: Any) -> None:
     result.update(final_response=final, response_transformed=transformed, pre_transform_response=None)
 
 
-def fire_session_end(agent, result: dict[str, Any]) -> None:
-    """Fire the ``on_session_end`` plugin hook once for a finished ``run_conversation`` call, built
-    from its result, so every exit (normal end, provider error, refusal, truncation ceiling, tool
-    validation, interrupt, ...) reports the same way. Early exits stamp only ``failure_reason``; it
-    stands in for the exit reason and travels too, so relay task metrics classify the failure.
-    Memory provider ``on_session_end()``/``shutdown_all()`` are not called here: this runs once per
-    message, and the CLI/gateway own session-end cleanup."""
+def end_turn(agent, result: dict[str, Any], user_message: Any) -> None:
+    """Close a finished ``run_conversation`` call once, whichever way it ended (normal end, provider
+    error, refusal, truncation ceiling, tool validation, interrupt, ...): save the trajectory from the
+    result's transcript, release the turn's task resources (VM, browser), and fire ``on_session_end``.
+    A failing trajectory save or teardown is reported in ``cleanup_errors``, never loses the result
+    (#8049). Early exits stamp only ``failure_reason``; it stands in for the exit reason and travels
+    too, so relay task metrics classify the failure. Memory provider ``on_session_end()`` /
+    ``shutdown_all()`` are not called here: this runs once per message, and the CLI/gateway own
+    session-end cleanup."""
     from agent.conversation_loop import logger
 
+    errors: list[str] = []
+    # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
+    _guarded_cleanup("save_trajectory", lambda: agent._save_trajectory(
+        result["messages"], _sanitize_surrogates(_summarize_user_message_for_log(user_message)),
+        bool(result.get("completed")),
+    ), errors, logger)
+    _guarded_cleanup(
+        "cleanup_task_resources", lambda: agent._cleanup_task_resources(agent._current_task_id), errors, logger,
+    )
+    if errors:
+        result["cleanup_errors"] = [*result.get("cleanup_errors", ()), *errors]
     if getattr(agent, "_persist_disabled", False):
         return
     _invoke_hook_safely(
@@ -644,7 +657,7 @@ def _mirror_turn_to_memory(
 
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
-    effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
+    effective_task_id, turn_id, original_user_message, _should_review_memory,
     _turn_exit_reason, _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
@@ -725,16 +738,6 @@ def finalize_turn(
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
     _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
-    # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
-    _guarded_cleanup(
-        "save_trajectory",
-        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
-        _cleanup_errors, logger,
-    )
-    _guarded_cleanup(
-        "cleanup_task_resources", lambda: agent._cleanup_task_resources(effective_task_id),
-        _cleanup_errors, logger,
-    )
     # Persist only after the transcript tail is shaped and scaffolding removed. Each
     # sub-step runs in the same order as the original inline block, and the
     # stream-recovered ``final_response`` is rebound the moment it is computed — BEFORE

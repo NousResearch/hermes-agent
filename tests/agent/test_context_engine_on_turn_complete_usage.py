@@ -129,7 +129,6 @@ def test_finalization_seam_observes_interrupted_turn_with_none_usage():
         conversation_history=None,
         effective_task_id="task-1",
         turn_id="turn-int",
-        user_message="do a thing",
         original_user_message="do a thing",
         _should_review_memory=False,
         _turn_exit_reason="interrupt",

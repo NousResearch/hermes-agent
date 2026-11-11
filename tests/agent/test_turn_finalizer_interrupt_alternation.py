@@ -134,7 +134,6 @@ def _finalize(agent, messages, *, interrupted, final_response=None):
         conversation_history=None,
         effective_task_id="task-1",
         turn_id="turn-1",
-        user_message="edit the file",
         original_user_message="edit the file",
         _should_review_memory=False,
         _turn_exit_reason="interrupted_by_user",

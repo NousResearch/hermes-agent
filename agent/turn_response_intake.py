@@ -216,7 +216,6 @@ def normalize_model_response(
         agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True, diagnostic=True)
         agent._incomplete_scratchpad_retries = 0
         rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
-        agent._cleanup_task_resources(effective_task_id)
         agent._persist_session(messages, conversation_history)
         return _verdict("return", partial_result(
             rolled_back_messages, api_call_count, "Incomplete REASONING_SCRATCHPAD after 2 retries"

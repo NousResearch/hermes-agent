@@ -89,6 +89,8 @@ cd apps/desktop
 pnpm run dev         # Vite renderer + Electron, which boots the Python backend
 ```
 
+`just desktop` runs the same dev server from the repository root.
+
 On Windows x64, the first `pnpm run dev` (and `profile:main`) fetches `get-windows`' native binding into `node_modules`, because the dependency install skips its script; if that fails or takes over two minutes, dev starts without `read_window_below` and retries next time. That fetch reads a mirror or proxy only from the environment (`npm_config_node_get_windows_binary_host_mirror`, `HTTP_PROXY` or `npm_config_proxy`), not from `.npmrc`.
 
 Point the app at a specific source checkout, or sandbox it away from your real config:

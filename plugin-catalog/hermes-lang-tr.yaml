@@ -1,0 +1,24 @@
+name: hermes-lang-tr
+repo: https://github.com/neekimyong/hermes-lang-tr
+sha: 011de999a62555373876a1ca0fd30b3be0b290b4
+description: >-
+  Turkish (Türkçe) language pack for Hermes — core (CLI approval prompts,
+  gateway replies, tips), TUI and Desktop. Full coverage: 3,535 core keys,
+  1,440 TUI keys and 5,569 Desktop keys, every key matching the English
+  catalogs, placeholders preserved. Independent community translation prepared
+  with AI assistance. Disclosure — text-only catalogs plus an __init__.py whose
+  register() is a no-op (kept so Desktop "Install from Git" accepts the pack);
+  no Python logic, no network access, no stored credentials; registering the
+  pack never changes display.language, the user opts in via config.
+maintainer: neekimyong
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/neekimyong/hermes-lang-tr#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

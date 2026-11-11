@@ -81,6 +81,11 @@ def _sql_literal(text: str) -> str:
 QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
 
 
+# ``display_metadata = <this>`` merges a JSON object parameter into the column (its keys win, a null value
+# removes a key): a row-addressed rewrite must not wipe a key another writer added meanwhile (a reaction).
+_MERGE_DISPLAY_META = "json_patch(CASE WHEN json_valid(display_metadata) THEN display_metadata ELSE '{}' END, COALESCE(?, '{}'))"
+
+
 def _sql_json_extract(expression: str, path: str) -> str:
     """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
 
@@ -286,7 +291,8 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 # (schema_read_probe_statements), never by this number, and its catch-up is the declarative
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
-SCHEMA_VERSION = 32
+# v33: data-only — re-tag delegate subagent rows that lost ``_delegate_from`` (see _run_data_migrations).
+SCHEMA_VERSION = 33
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA

@@ -86,7 +86,9 @@ def validate_deferred_call_args(name: str, args: dict[str, Any],
     try:
         if schema is None:
             from tools.registry import registry as _registry
-            schema = _registry.get_schema(name)
+            # The schema tool_describe served, dynamic overrides included (ElevenLabs drops `text`).
+            served = _registry.get_definitions({name}, quiet=True)
+            schema = served[0] if served else _registry.get_schema(name)
         if not isinstance(schema, dict):
             return None
         fn = schema.get("function") if schema.get("type") == "function" else schema

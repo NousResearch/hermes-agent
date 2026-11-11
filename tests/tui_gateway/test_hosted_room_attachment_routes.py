@@ -107,10 +107,16 @@ def _server_module():
     return server, submits
 
 
+# No test here exercises lease expiry. The driver renews its lease only at checkpoints, so the
+# work between ``start_task`` and the in-submit settle (file staging, session resolve) must
+# fit in one TTL: a sub-second TTL fenced the turn whenever a loaded CI worker was descheduled.
+_LEASE_TTL_SECONDS = 30.0
+
+
 def _legacy_runtime(db: Path, rpc: HostedRoomServerRPC) -> HostedRoomRuntime:
     return HostedRoomRuntime(
         db_path=db, rooms=[BINDING], rpc=rpc, turn_lock=RecordingTurnLocks(),
-        lease_ttl_seconds=0.4, poll_interval_seconds=0.01)
+        lease_ttl_seconds=_LEASE_TTL_SECONDS, poll_interval_seconds=0.01)
 
 
 class DispatchingPeerClient:
@@ -151,7 +157,7 @@ def _peer_runtime(db: Path, client: DispatchingPeerClient) -> HostedRoomRuntime:
 
     return HostedRoomRuntime(
         db_path=db, rooms=[BINDING], transport_resolver=resolve, turn_lock=RecordingTurnLocks(),
-        lease_ttl_seconds=0.4, poll_interval_seconds=0.01)
+        lease_ttl_seconds=_LEASE_TTL_SECONDS, poll_interval_seconds=0.01)
 
 
 def _assert_refused_as_proven_failure(task: dict, runtime: HostedRoomRuntime) -> None:

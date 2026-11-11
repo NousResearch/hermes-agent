@@ -1,0 +1,20 @@
+name: inference-exchange
+repo: https://github.com/qzyu999/hermes-inference-exchange
+sha: ae7709f9db287bc4e765f105f035fd8a3e42b0eb
+description: "Serve local Inference Exchange models while Hermes CLI is idle. Disclosure — when `sell_enabled` is turned on (off by default), runs the Python interpreter and Inference Exchange checkout you configure as a background process that registers this machine as an open-trust inference provider with your configured coordinator (for example the author-operated `alpha.inferenceex.com`), passes it your `IE_PROVIDER_TOKEN`, and serves third-party prompts on your local llama-server while Hermes is idle; it can block a turn if it cannot stop that process."
+maintainer: qzyu999
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/qzyu999/hermes-inference-exchange#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - post_llm_call
+    - on_session_end
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

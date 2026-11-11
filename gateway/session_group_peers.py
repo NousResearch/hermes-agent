@@ -1,4 +1,4 @@
-"""Cross-gateway members of gateway-owned Group Chats: text-only, default-profile targets.
+"""Cross-gateway members of gateway-owned Group Chats: text-only targets on any served profile.
 
 The target gateway's operator mints a room-scoped grant (``groups.peer.invite``) or revokes that
 scope (``groups.peer.revoke``). The room's home binds the grant to the room's pinned peer member
@@ -26,8 +26,8 @@ def room_link(authority):
     from gateway.hosted_room_peer import gateway_room_grant_secret_available
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     from gateway.session_authorities import served_profile_name
-    if served_profile_name(Path(authority.profile_id)) != 'default':
-        return {'enabled': False, 'reason': 'default_profile_required'}
+    # One api_server listener serves every profile; a named profile is lent through its /p/<name> mirror.
+    profile = served_profile_name(Path(authority.profile_id))
     adapter = _api_server(authority)
     if adapter is None:
         return {'enabled': False, 'reason': 'api_server_required'}
@@ -36,13 +36,13 @@ def room_link(authority):
     if not gateway_room_grant_secret_available():
         return {'enabled': False, 'reason': 'gateway_roomlink_secret_unavailable'}
     try:
-        _, catalog = _local_room_catalog(adapter, 'default', hosted_rooms.local_authority_gateway_id())
+        _, catalog = _local_room_catalog(adapter, profile, hosted_rooms.local_authority_gateway_id())
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
         # For example approvals off: a remote turn must never run without approval prompts.
         return {'enabled': False, 'reason': 'execution_policy_unsupported'}
     if not catalog['endpoint'].get('available'):
         return {'enabled': False, 'reason': 'endpoint_required'}
-    return {'enabled': True, 'profile': 'default', 'catalog': catalog, 'endpoint': catalog['endpoint']}
+    return {'enabled': True, 'profile': profile, 'catalog': catalog, 'endpoint': catalog['endpoint']}
 
 
 def dispatch_target(authority, method, params):
@@ -59,9 +59,9 @@ def _invite(authority, params):
             or type(params.get('authority_epoch')) is not int or not 1 <= params['authority_epoch'] < 2**63
             or any(type(params.get(k, 3600)) not in (int, float) for k in ('ttl_seconds', 'status_ttl_seconds'))):
         raise RuntimeStoreError('invalid_params')
-    if not room_link(authority)['enabled']:
+    if not (link := room_link(authority))['enabled']:
         raise RuntimeStoreError('room_link_unavailable')
-    invitation = _issue_invitation(_api_server(authority), params, 'default')
+    invitation = _issue_invitation(_api_server(authority), params, link['profile'])
     return {'grant': invitation['grant'], 'target_profile': invitation['target_profile'],
             'catalog': invitation['catalog'], 'endpoint': invitation['catalog']['endpoint']}
 
@@ -152,7 +152,7 @@ def register(service, params):
         # minted this grant for it, so this home owes its revoke at the pinned endpoint, unprobed.
         service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
         raise ended
-    if (profile != 'default' or not catalog.text or catalog.attachments
+    if (not catalog.text or catalog.attachments
             or PROTOCOL_VERSION not in catalog.protocol_versions or 'direct' not in catalog.link_modes):
         raise RuntimeStoreError('peer_target_unsupported')
     client = PeerRunsHTTPClient(base_url=target_url, api_key='', receipt_db_path=service.db_path)

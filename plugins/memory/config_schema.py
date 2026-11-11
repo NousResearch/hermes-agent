@@ -1,9 +1,12 @@
 """Declarative config schema for memory provider plugins: each declares its fields in
 a ``config_schema.py`` beside ``__init__.py``; one generic renderer and one
 ``GET/PUT /api/memory/providers/{name}/config`` pair drive the UI. Schema files are
-loaded by path, never imported as a package (plugin ``__init__`` pulls in the agent
-runtime, which must not load into the web server); they may import only this
-pure-data module. ``web_server`` owns read/write, dispatching on ``storage``.
+loaded by path, never imported as a package, so DISCOVERING a panel never pulls the
+provider's runtime into the web server; they may import only this pure-data module.
+Only ``STORAGE_PROVIDER`` reads/writes load the provider itself (in the plugin host when
+``plugins.isolation`` is ``host``). ``web_server`` owns read/write, dispatching on ``storage``: a flat JSON file
+core reads and writes, or ``provider``, where the provider's ``read_config_fields`` /
+``write_config_fields`` own the file layout (``agent.memory_provider.MemoryProvider``).
 """
 
 from __future__ import annotations
@@ -24,10 +27,6 @@ KIND_JSON = "json"
 
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
-STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
-# The provider's read_config_fields / write_config_fields own the file layout
-# (agent.memory_provider.MemoryProvider); loading them loads the provider itself (in the plugin
-# host when ``plugins.isolation`` is ``host``), and its writer also receives submitted secrets.
 STORAGE_PROVIDER = "provider"
 
 
@@ -42,9 +41,9 @@ class ProviderFieldOption:
 
 @dataclass(frozen=True)
 class ProviderField:
-    """One configurable field. Stored in exactly one place by ``kind``: non-secret
-    kinds under ``key`` in the provider's storage; ``secret`` in the env store under
-    ``env_key``, never read back (only ``is_set``). ``aliases``/``env_fallbacks`` read
+    """One configurable field. Non-secret kinds live under ``key`` in the provider's storage;
+    ``secret`` in the env store under ``env_key`` (a ``STORAGE_PROVIDER`` writer also receives it
+    and may persist it too), never read back (only ``is_set``). ``aliases``/``env_fallbacks`` read
     legacy values; ``inline`` marks the compact-panel subset (rest: modal, by ``group``)."""
 
     key: str
@@ -61,7 +60,8 @@ class ProviderField:
     group: str = ""
     # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
-    # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
+    # Placement hint a STORAGE_PROVIDER provider may read from its own schema; core ignores it (the
+    # "host" default keeps existing schema files valid).
     scope: str = "host"
 
     @property

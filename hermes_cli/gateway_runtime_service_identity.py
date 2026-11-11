@@ -24,18 +24,30 @@ SYSTEMD_IDENTITY_PROPERTIES = (
 SYSTEMD_OMITTED_WHEN_EMPTY = ("EnvironmentFiles", "ExecStartPre", "ExecCondition")
 
 
-def _unverified() -> NoReturn:
-    raise ValueError("service_identity_unverified")
+class Unverified(ValueError):
+    """``str()`` stays the reason code callers map; ``check`` names the rule the definition broke."""
+
+    def __init__(self, check: str):
+        super().__init__("service_identity_unverified")
+        self.check = check
+
+
+def _unverified(check: str) -> NoReturn:
+    raise Unverified(check)
 
 
 def _absolute(value: str) -> Path:
     if not value or not Path(value).is_absolute():
-        _unverified()
+        _unverified(f"not an absolute path: {value!r}")
     return Path(value).resolve()
 
 
 class ForeignRoot(ValueError):
     """The service serves another install root (a different HOME), not another profile of ours."""
+
+    def __init__(self, theirs: Path):
+        super().__init__("foreign_root")
+        self.check = f"the service runs another Hermes home: {theirs}"
 
 
 def _install_root(home: Path) -> Path:
@@ -51,7 +63,7 @@ def verify_home(home: Path, configured: str) -> None:
     if os.path.normcase(str(theirs)) == os.path.normcase(str(ours)):
         return
     if os.path.normcase(str(_install_root(theirs))) != os.path.normcase(str(_install_root(ours))):
-        raise ForeignRoot("foreign_root")
+        raise ForeignRoot(theirs)
     raise ValueError("profile_mismatch")
 
 
@@ -103,20 +115,20 @@ def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -
     if wrapper is not None and wrapper[0] == "hermes_cli.stderr_timestamp":
         args = wrapper[1]
         if len(args) < 4 or args[0] != "--error-log" or args[2] != "--":
-            _unverified()
+            _unverified("the stderr-timestamp wrapper's arguments are not the installer's")
         argv, own_launcher_only = args[3:], True
     if not argv or not looks_like_gateway_command_line(subprocess_command(argv)):
-        _unverified()
+        _unverified("the command is not a Hermes gateway command")
     executable = Path(argv[0]).name.lower()
     if _PYTHON_EXECUTABLE.fullmatch(executable):
         entry = _launch_module(argv, legacy=not wrapped)
         if entry is None or entry[0] != "hermes_cli.main":
-            _unverified()
+            _unverified("the Python command is not this install's -m hermes_cli.main")
         args = entry[1]
     elif executable in {"hermes", "hermes.exe"} and (not own_launcher_only or _own_store_launcher(argv[0])):
         args = argv[1:]
     else:
-        _unverified()
+        _unverified(f"{Path(argv[0]).name} is not this install's Python or hermes launcher")
     profiles = []
     filtered = []
     index = 0
@@ -125,7 +137,7 @@ def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -
         if token in {"--profile", "-p"}:
             index += 1
             if index == len(args):
-                _unverified()
+                _unverified("--profile has no value")
             profiles.append(args[index])
         elif token.startswith("--profile="):
             profiles.append(token.split("=", 1)[1])
@@ -133,7 +145,7 @@ def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -
             filtered.append(token)
         index += 1
     if len(profiles) > 1:
-        _unverified()
+        _unverified("the command names more than one --profile")
     if profiles:
         # An explicit selector must agree with the pinned environment. This
         # preserves custom-root profiles without borrowing the caller's root.
@@ -144,7 +156,7 @@ def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -
     if filtered[:2] != ["gateway", "run"] or any(
         arg not in {"--quiet", "--external-supervisor"} for arg in filtered[2:]
     ):
-        _unverified()
+        _unverified(f"the command runs {' '.join(filtered) or 'nothing'!r}, not gateway run")
 
 
 def subprocess_command(argv: list[str]) -> str:
@@ -157,12 +169,12 @@ def environment_pairs(value: str) -> dict[str, str]:
     # systemctl uses C escapes for unusual bytes. Do not silently reinterpret
     # those with shell escaping (not the same grammar).
     if "\\" in value:
-        _unverified()
+        _unverified("the manager environment uses C escapes")
     result = {}
     for item in shlex.split(value):
         key, separator, val = item.partition("=")
         if not separator:
-            _unverified()
+            _unverified("a manager environment entry has no =")
         result[key] = val
     return result
 
@@ -174,20 +186,21 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     # `show --all` output entirely; an omitted list is empty, not unknown.
     props = {**{key: "" for key in SYSTEMD_OMITTED_WHEN_EMPTY}, **props}
     if not all(key in props for key in SYSTEMD_IDENTITY_PROPERTIES):
-        _unverified()
+        _unverified("systemctl show omitted an identity property")
     # These can change the execution account, environment, mount namespace, or
     # definitions at start time; show does not expose their resulting identity.
     if props["DynamicUser"] != "no" or any(props[key] for key in (
         "EnvironmentFiles", "PAMName", "RootDirectory", "RootImage", "ExecStartPre", "ExecCondition",
     )):
-        _unverified()
+        _unverified("the unit can change its identity at start (DynamicUser, EnvironmentFiles, PAMName, "
+                    "RootDirectory, RootImage, ExecStartPre or ExecCondition)")
     user = props["User"]
     uid = os.getuid()  # windows-footgun: ok — native systemd only
     if user:
         try:
             service_uid = int(user) if user.isdecimal() else pwd.getpwnam(user).pw_uid
         except KeyError:
-            _unverified()
+            _unverified(f"the unit's User {user!r} does not exist")
     else:
         service_uid = 0 if system else uid
     if service_uid != uid:
@@ -205,10 +218,10 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     verify_home(home, configured)
     match = re.fullmatch(r"\{ path=(.*?) ; argv\[\]=(.*?) ; ignore_errors=(?:yes|no) ;(?:.*?)\}", props["ExecStart"])
     if not match or any(char in match[2] for char in ("$", "\\", "{", "}")):
-        _unverified()
+        _unverified("ExecStart is not a plain command line")
     argv = shlex.split(match[2])
     if not argv or match[1] != argv[0]:
-        _unverified()
+        _unverified("ExecStart's path and argv[0] differ")
     verify_gateway_argv(argv, home)
 
 
@@ -233,10 +246,10 @@ def _launchd_command(argv: list[str]) -> tuple[list[str], bool]:
     except ValueError:
         tokens = []
     if len(tokens) < 6 or tokens[0] != "exec" or tokens[-4] != ">>" or tokens[-2] != "2>>":
-        _unverified()
+        _unverified("the osascript wrapper is not the installer's")
     command = tokens[1:-4]
     if launchd_program_arguments(command, Path(tokens[-3]), Path(tokens[-1])) != argv:
-        _unverified()
+        _unverified("the osascript wrapper is not the installer's")
     return command, True
 
 
@@ -246,7 +259,7 @@ def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -
     def block(name):
         found = re.findall(r"^\t" + name + r" = \{\n(.*?)^\t\}", output, re.MULTILINE | re.DOTALL)
         if len(found) != 1:
-            _unverified()
+            _unverified(f"launchctl printed {len(found)} {name} blocks")
         return found[0].splitlines()
 
     for key, expected in (("uid", str(uid)), ("username", username)):
@@ -259,37 +272,37 @@ def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -
             continue
         key, sep, value = line.strip().partition(" => ")
         if not sep or key in env:
-            _unverified()
+            _unverified("the job environment has a malformed or repeated entry")
         env[key] = value
     verify_home(home, env.get("HERMES_HOME", ""))
     if home.parent.name != "profiles" and not env.get("HERMES_SUPERVISED_CHILD"):
-        _unverified()
+        _unverified("the job does not set HERMES_SUPERVISED_CHILD")
     argv = [line.strip() for line in block("arguments")]
     programs = re.findall(r"^\tprogram = (.+)$", output, re.MULTILINE)
     if len(programs) != 1 or not argv or programs[0] != argv[0]:
-        _unverified()
+        _unverified("the job's program and arguments disagree")
     _verify_launchd_argv(argv, home)
 
 
 def verify_launchd_plist(definition: dict, label: str, home: Path) -> None:
     if definition.get("Label") != label:
-        _unverified()
+        _unverified("the plist Label differs")
     if definition.get("Disabled"):
         raise ValueError("service_disabled")
     if definition.get("UserName") or definition.get("GroupName") or definition.get("RootDirectory"):
-        _unverified()
+        _unverified("the plist sets UserName, GroupName or RootDirectory")
     env = definition.get("EnvironmentVariables", {})
     if not isinstance(env, dict):
-        _unverified()
+        _unverified("the plist EnvironmentVariables is not a dictionary")
     verify_home(home, env.get("HERMES_HOME", ""))
     argv = definition.get("ProgramArguments")
     if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
-        _unverified()
+        _unverified("the plist ProgramArguments is not a list of strings")
     if definition.get("Program", argv[0] if argv else None) != (argv[0] if argv else None):
-        _unverified()
+        _unverified("the plist Program differs from ProgramArguments[0]")
     _verify_launchd_argv(argv, home)
     if home.parent.name != "profiles" and not env.get("HERMES_SUPERVISED_CHILD"):
-        _unverified()
+        _unverified("the job does not set HERMES_SUPERVISED_CHILD")
 
 
 def read_definition(path: Path) -> bytes:
@@ -299,10 +312,10 @@ def read_definition(path: Path) -> bytes:
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
-            _unverified()
+            _unverified(f"{path} is not a regular file under 1 MiB")
         value = stream.read(1024 * 1024 + 1)
         if len(value) > 1024 * 1024:
-            _unverified()
+            _unverified(f"{path} is larger than 1 MiB")
         return value
 
 
@@ -314,11 +327,39 @@ def launcher_text(raw: bytes) -> str:
         try:
             return raw.decode("utf-16")
         except UnicodeDecodeError:
-            _unverified()
+            _unverified("the launcher is not valid UTF-16")
     try:
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        _unverified()
+        _unverified("the launcher is neither UTF-16 with a BOM nor UTF-8")
+
+
+# A VBS string literal (doubled quotes escape, an unterminated one runs to the end), or a ' / REM comment.
+# Literals match first, so an apostrophe inside a string never starts a comment.
+_VBS_VALUE = re.compile(r'"(?:[^"]|"")*(?:"|$)|(?P<comment>(?:\'|(?<![\w.])(?i:REM)\b).*$)')
+
+
+def _masked_literals(line: str) -> str:
+    # A customised launcher line may assign an opaque credential the generic redactor can't recognise
+    # (``env.Item("S3_SECRET") = "..."``), or carry one in a comment: keep the names, never the values.
+    def mask(found: re.Match[str]) -> str:
+        if found["comment"] is not None:
+            return "' ***" if found["comment"].startswith("'") else found["comment"][:3] + " ***"
+        return found[0] if line[:found.start()].endswith(("Item(", "Environment(")) else '"***"'
+    return _VBS_VALUE.sub(mask, line)
+
+
+# The launcher's lines after its env block; None slots hold values, which _vbs_identity checks one by one.
+_LAUNCHER_TAIL = ('existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then', None, 'Else', None,
+                  'End If', None, None)
+
+
+def _tail_mismatch(tail: list[str]) -> int | None:
+    """Offset of the first tail line that breaks the template's shape, or None when it holds."""
+    for offset, expected in enumerate(_LAUNCHER_TAIL):
+        if offset == len(tail) or expected not in (None, tail[offset]):
+            return offset
+    return len(_LAUNCHER_TAIL) if len(tail) > len(_LAUNCHER_TAIL) else None
 
 
 def _vbs_identity(script: str) -> tuple[str, list[str]]:
@@ -327,11 +368,11 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
     literal = r'"(?:[^"\r\n]|"")*"'
     lines = script.splitlines()
     if len(lines) < 16 or not lines[0].startswith("' "):
-        _unverified()
+        _unverified("the launcher does not start with the installer's header")
     fixed = ["Option Explicit", "Dim sh, env, existing_pp",
              'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")']
     if lines[1:5] != fixed:
-        _unverified()
+        _unverified("the launcher's setup lines are not the installer's")
     env = {}
     index = 5
     while index < len(lines):
@@ -339,22 +380,25 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         if not match:
             break
         if match[1] not in {"HERMES_HOME", "HERMES_SUPERVISED_CHILD", "HERMES_GATEWAY_DETACHED", "PYTHONIOENCODING", "VIRTUAL_ENV"} or match[1] in env:
-            _unverified()
+            _unverified(f"the launcher sets {match[1]} twice or sets an unexpected variable")
         env[match[1]] = match[2][1:-1].replace('""', '"')
         index += 1
     tail = lines[index:]
-    if len(tail) != 8 or tail[:2] != ['existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then'] or tail[3] != 'Else' or tail[5] != 'End If':
-        _unverified()
+    mismatch = _tail_mismatch(tail)
+    if mismatch is not None:
+        index += mismatch
+        line = _masked_literals(lines[index]) if index < len(lines) else "<end of file>"
+        _unverified(f"launcher line {index + 1} is not the installer's: {line[:120]!r}")
     if not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal + r' & existing_pp', tail[2]) or not re.fullmatch(r'  env.Item\("PYTHONPATH"\) = ' + literal, tail[4]):
-        _unverified()
+        _unverified("the launcher's PYTHONPATH lines are not the installer's")
     if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
-        _unverified()
+        _unverified("the launcher's working-directory line is not the installer's")
     run = re.fullmatch(r'sh.Run (' + literal + r'), 0, False', tail[7])
     if not run or not env.get("HERMES_SUPERVISED_CHILD"):
-        _unverified()
+        _unverified("the launcher has no Run line or does not set HERMES_SUPERVISED_CHILD")
     command = run[1][1:-1].replace('""', '"')
     if "%" in command or "%" in env.get("HERMES_HOME", ""):
-        _unverified()
+        _unverified("the launcher command or HERMES_HOME contains %")
     # The template uses list2cmdline, with no embedded executable quote escapes.
     argv = [part.strip('"') for part in shlex.split(command, posix=False)]
     return env.get("HERMES_HOME", ""), argv
@@ -366,34 +410,36 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
     try:
         task = ET.fromstring(xml)
     except ET.ParseError:
-        _unverified()
+        _unverified("the task XML does not parse")
     ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     principals = task.findall("t:Principals/t:Principal", ns)
     actions = task.find("t:Actions", ns)
     if len(principals) != 1 or actions is None or len(actions) != 1:
-        _unverified()
+        _unverified(f"the task has {len(principals)} principal(s) and "
+                    f"{0 if actions is None else len(actions)} action(s), not one each")
     principal = principals[0]
     user = principal.findtext("t:UserId", "", ns)
     if not user or not account or not sid or principal.find("t:GroupId", ns) is not None:
-        _unverified()
+        _unverified("the task principal names no user, or names a group")
     if user.casefold() not in {account.casefold(), sid.casefold()}:
         raise ValueError("service_account_mismatch")
     # schtasks /Query /XML omits elements that hold the Windows default (#139013): an absent RunLevel
     # is least privilege and an absent Enabled is enabled. An explicit other value is still refused.
     if principal.findtext("t:RunLevel", "LeastPrivilege", ns) != "LeastPrivilege" or actions.get("Context") != principal.get("id"):
-        _unverified()
+        _unverified(f"the task RunLevel is {principal.findtext('t:RunLevel', 'LeastPrivilege', ns)!r} and its "
+                    f"action context is {actions.get('Context')!r}; expected LeastPrivilege and {principal.get('id')!r}")
     if task.findtext("t:Settings/t:Enabled", "true", ns) != "true":
         raise ValueError("service_disabled")
     action = actions[0]
     if action.tag != '{' + ns['t'] + '}Exec' or action.findtext('t:Command', '', ns).lower() not in {"wscript.exe", r"c:\windows\system32\wscript.exe"}:
-        _unverified()
+        _unverified(f"the task runs {action.findtext('t:Command', '', ns) or action.tag!r}, not wscript.exe")
     args = action.findtext("t:Arguments", "", ns)
     match = re.fullmatch(r'//B //Nologo "([^"\r\n]+)"', args)
     if not match:
-        _unverified()
+        _unverified(f"the task arguments are {args!r}, not //B //Nologo \"<launcher>\"")
     script = _absolute(match[1])
     if script.suffix.lower() != '.vbs':
-        _unverified()
+        _unverified(f"the task runs {script.name}, not a .vbs launcher")
     configured, argv = _vbs_identity(launcher_text(read_definition(script)))
     verify_home(home, configured)
     verify_gateway_argv(argv, home)

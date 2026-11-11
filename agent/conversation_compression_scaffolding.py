@@ -28,6 +28,11 @@ _SYNTHETIC_USER_FLAGS = (
 )
 
 
+def has_scaffolding_flag(message: dict) -> bool:
+    """A runtime user-role row stamped by its producer (nudges, task-list snapshots)."""
+    return any(message.get(f) for f in _SYNTHETIC_USER_FLAGS)
+
+
 def is_user_role_scaffolding(message: dict) -> bool:
-    """A runtime row in the user role, by flag or opening text (nudges, task-list snapshots, background-process completion/watch notices)."""
-    return any(message.get(f) for f in _SYNTHETIC_USER_FLAGS) or _message_text(message).strip().startswith(_SYNTHETIC_USER_PREFIXES)
+    """A runtime row in the user role, by flag or opening text (nudges, task-list snapshots, single background-process completion and watch-match notices)."""
+    return has_scaffolding_flag(message) or _message_text(message).strip().startswith(_SYNTHETIC_USER_PREFIXES)

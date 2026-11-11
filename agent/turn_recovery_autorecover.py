@@ -16,14 +16,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import TRANSIENT_REASONS
 
 logger = logging.getLogger("agent.conversation_loop")
-
-# Transient transport verdicts: the provider is expected back. Everything else (auth, format,
-# content policy, billing, entitlement, overflow, model-not-found ...) is deterministic for this
-# request and stays out.
-_LADDER_REASONS = frozenset({FailoverReason.overloaded, FailoverReason.server_error, FailoverReason.timeout})
 
 _LADDER_BASE_DELAY_S = 15.0
 _LADDER_CAP_S = 60.0
@@ -57,9 +52,10 @@ def ladder_wait_seconds(cycle: int, api_error: Any) -> float:
 
 
 def ladder_eligible(agent: Any, classified: Any) -> bool:
-    """True when the ladder may engage: cycles configured, a transient transport verdict, and no
-    answer text streamed to the user yet (delivered text is never replayed by this path)."""
-    if auto_recovery_cycles(agent) <= 0 or classified.reason not in _LADDER_REASONS:
+    """True when the ladder may engage: cycles configured, a transient transport verdict (auth, format,
+    policy, billing, overflow ... are deterministic for this request), and no answer text streamed to
+    the user yet (delivered text is never replayed by this path)."""
+    if auto_recovery_cycles(agent) <= 0 or classified.reason not in TRANSIENT_REASONS:
         return False
     streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
     return not agent._has_content_after_think_block(streamed)

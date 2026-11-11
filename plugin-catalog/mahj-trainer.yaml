@@ -4,7 +4,7 @@ repo: https://github.com/jackwallner/mahj
 sha: 290c1909ad57f38724ddf49fafd3e4ab04e7c129
 subdir: hermes
 version: "1.0.0"
-description: "Learn and practice American mah jongg (the game played with the yearly NMJL card) through Mahj Trainer's hosted MCP server (Streamable HTTP, no sign-in, no keys): short lessons, practice quizzes that check and explain each answer, a rack reader that suggests a Charleston pass with a reason for each tile, and a glossary. Bundles one skill that tells the agent when to call the tools. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to mahj.mahjtrainer.workers.dev, which keeps no accounts, writes no logs and stores nothing. All five tools are read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+description: "Learn and practice American mah jongg (the game played with the yearly NMJL card) through Mahj Trainer's hosted MCP server (Streamable HTTP, no sign-in, no keys): short lessons, practice quizzes that check and explain each answer, a rack reader that suggests a Charleston pass with a reason for each tile, and a glossary. Bundles one skill that tells the agent when to call the tools. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code: every tool call (rack tiles, quiz answers, lesson topics) goes to mahj.mahjtrainer.workers.dev, run by the plugin author; the five tools are served by that remote server at runtime and are not covered by the pinned sha (the source at the pin is read-only and stateless)."
 maintainer: Jack Wallner
 tier: community
 category: general

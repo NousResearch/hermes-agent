@@ -1,7 +1,7 @@
 """Owner-only adoption of pre-authority local transcripts.
 
-An old transcript has no authenticated subject. Only a redeemed same-profile
-native control ticket may adopt it; remote login is not evidence of ownership.
+An old transcript has no authenticated subject. Only the machine owner (a redeemed same-profile
+native control ticket, or the owner signed in to the Webapp: gateway.owner_identity) may adopt it.
 The historical ID becomes the stable logical owner without copying its messages.
 Compression and reset may later advance the physical target, never FIFO identity.
 """
@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
@@ -17,9 +18,11 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def bind_native_transport(authority, actor, identity):
-    if (identity.get('provider') == 'local'
-            and identity.get('profile_id') == authority.profile_id
-            and identity.get('instance_id') == authority.instance_id
+    # The machine owner signed in to the Webapp is the same person native Desktop is (owner_identity).
+    from gateway.owner_identity import host_owner_subject
+    native = (identity.get('provider') == 'local' and identity.get('profile_id') == authority.profile_id
+              and identity.get('instance_id') == authority.instance_id)
+    if ((native or actor.subject == host_owner_subject())
             and actor.profile_id == authority.profile_id
             and 'session:create' in actor.capabilities):
         if not hasattr(authority, '_native_legacy_transports'):
@@ -33,12 +36,16 @@ def unbind_native_transport(authority, actor):
 
 def require_history_claim(authority, conn, actor, sid):
     """Import receipts confer ownership; merely knowing an old ID does not."""
-    from hermes_state_mutation_binding import BINDING_PREFIX
-    row = conn.execute('SELECT session_key,chat_id,origin_json FROM sessions WHERE id=?', (sid,)).fetchone()
-    if row is None or any(row):
+    from gateway.owner_identity import same_owner
+    from hermes_state_mutation_binding import BINDING_PREFIX, _owner_user
+    row = conn.execute('SELECT * FROM sessions WHERE id=?', (sid,)).fetchone()
+    if row is None or row['session_key'] or row['chat_id'] or row['origin_json']:
         return
     if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (BINDING_PREFIX + sid,)).fetchone():
         return  # authorize_history checks the already committed importer identity.
+    own_profile = row['profile_name'] in (None, '', authority.db._own_profile_name() or 'default')
+    if own_profile and _owner_user(row) and same_owner(row['user_id'], actor.subject):
+        return  # Its owner (a login stamp is the machine owner's); authorize_history re-checks it.
     if getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor:
         raise RuntimeStoreError('permission_denied')
 
@@ -89,6 +96,11 @@ def legacy_launch_params(row):
         # an endpoint left without a provider is a custom route, never one to pair with the
         # profile's provider.
         route.setdefault('provider', 'custom')
+    if (route.get('provider', 'custom') != 'custom'
+            and urlsplit(route.get('base_url', '')).scheme not in ('', 'http', 'https')):
+        # A provider's own pseudo-address (process://, moa://) is not an endpoint the session picked,
+        # and replayed as a launch override it is refused (#142779, #147676). The provider is the route.
+        route.pop('base_url')
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})
@@ -201,6 +213,10 @@ def _route_is_usage_stamp(row):
     return str(row.get('billing_provider') or '').strip().lower() == 'custom'
 
 
+def _profile_default(model_cfg):
+    return str(model_cfg.get('default') or '').strip() if isinstance(model_cfg, dict) else str(model_cfg or '').strip()
+
+
 def _configured_owner(saved, config):
     """The configured named entry (``providers:``/``custom_providers:``) serving the saved URL, or None."""
     from gateway.session_route_identity import resolved_route, same_route
@@ -229,13 +245,32 @@ def _endpoint_owner(saved, config):
                             detail=f'{identity} no longer serves the saved endpoint; select a model to continue')
 
 
+def adopts_client_history(authority, actor, row):
+    """Whether this resume adopts *row*, a phone app's self-labelled chat
+    (``hermes_state_local_migration.client_history_row``), as a writable conversation: only for the
+    native owner adoption requires, and only when it validates for that owner. A read-only view of it
+    already open (a metadata read came first) is promoted in place (restore_local_session); a session
+    this authority serves any other way is left alone."""
+    from gateway.session_history_mount import is_history_mount
+    from hermes_state_local_migration import client_history_row, validate_legacy_row
+    live = authority.sessions.get(row['id'])
+    if (not client_history_row(row) or (live is not None and not is_history_mount(live))
+            or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor):
+        return False
+    try:
+        validate_legacy_row(authority.db, row, subject=actor.subject)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
 def adopt_legacy_session(authority, actor, row):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
-    from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
+    from hermes_state_local_migration import legacy_creation_source, validate_legacy_row
     validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
@@ -247,16 +282,26 @@ def adopt_legacy_session(authority, actor, row):
     request_id = 'legacy:' + row['id']
     sid = row['id']
     params, api_mode = legacy_launch_params(row)
-    params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
+    params['source'] = legacy_creation_source(row)
     private = {}
     config = _load_gateway_config()
     params, api_mode = legacy_bot_chat_launch(row, params, api_mode, config)
     model_cfg = config.get('model')
+    healed = None
+    if 'provider' not in params and params.get('model') and params['model'] != _profile_default(model_cfg):
+        # A row with a model but no provider would run on the profile's slot, which serves another model
+        # (#132648); its saved URL/wire may be stamps of exactly those misrouted turns.
+        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        if healed := empty_provider_identity(params.get('base_url'), params['model']):
+            params['provider'] = healed
+            params.pop('base_url', None)
+            api_mode = None
+    # A healed entry is its own route, even when it shares a relay URL with the profile's entry.
     if isinstance(model_cfg, dict) and ('provider' in params or 'base_url' in params):
         from gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
         saved = {'provider': params.get('provider', model_cfg.get('provider')), 'base_url': params.get('base_url')}
         # ``auto`` matches every route, so an ``auto`` side proves nothing about the saved endpoint.
-        if ('auto' not in (resolved_route(model_cfg, config)[0], resolved_route(saved, config)[0])
+        if (not healed and 'auto' not in (resolved_route(model_cfg, config)[0], resolved_route(saved, config)[0])
                 and same_route(saved, model_cfg, config)):
             # The profile still selects this endpoint: resume on the profile's route, so its own
             # credential (inline key, ${ENV} key, key_env) keeps its normal precedence.

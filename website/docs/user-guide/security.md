@@ -46,9 +46,11 @@ The full set of keys:
 |---|---|---|
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
 | `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
+| `discord_prompt_timeout` | `300` | Seconds Discord's interactive buttons (approvals, clarify, update and slash-command prompts) stay clickable; minimum 30. See [Discord](./messaging/discord.md). |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
 | `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Exception: an api_server session whose client can answer the card (`/v1/runs` and streaming chat completions, via `POST /v1/runs/{id}/approval`) still gets the approval request. Mirrors `cron_mode`. |
+| `approvers` | `["*"]` | Who may answer a pending approval from a messaging chat. `["*"]`: any admitted member. `[]` or a list of user ids: the requester, those ids and the platform admins only — see [Who can answer an approval in a shared chat](#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers). |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
@@ -56,7 +58,7 @@ The full set of keys:
 |------|----------|
 | **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
 | **manual** | Always prompt the user for approval on dangerous commands. |
-| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
+| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts, and write calls on `trust: untrusted` MCP servers run without the trust prompt. An MCP server's declared spend limit still asks (see [YOLO mode](#yolo-mode)). |
 
 :::warning
 Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
@@ -90,6 +92,12 @@ When YOLO is active, Hermes shows two persistent visual reminders so it's hard t
 :::danger
 YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
 :::
+
+YOLO and `approvals.mode: off` also skip the [`trust: untrusted`](../reference/mcp-config-reference.md) MCP prompt: a write-capable tool on an untrusted server runs without asking, with each source's usual reach. `/yolo` covers only the chat it was typed in (another chat is still asked); `--yolo` and `HERMES_YOLO_MODE` cover the sessions of the Hermes process they were given to; `approvals.mode: off` covers every chat and cron job of that profile. They do **not** skip:
+
+- **An MCP server's spend limit.** A call that would take the chat past a declared [`spend_limit`](./features/mcp.md#tool-costs-and-spend-limits) still asks, and where nobody can answer (a cron job, `hermes chat -q`) it is refused. The limit is a budget you set, not a safety prompt.
+- **Questions from an MCP server** ([elicitation](./features/mcp.md#mcp-elicitation-support)), which ask you for input rather than for permission.
+- **Payment-card fill prompts** from the [credential vault](./features/credential-vault.md#paying-and-filling-addresses), which hand a card to a page, and MCP event subscriptions, which install a standing trigger.
 
 For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
@@ -236,7 +244,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `modal`, `daytona`, or `vercel_sandbox` backends (or a container plugin backend such as `singularity`), dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `modal`, `daytona`, or `vercel_sandbox` backends (or a container plugin backend such as `singularity` or `sprites`), dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### `execute_code` Scripts {#execute-code-scripts}
@@ -276,7 +284,47 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 - Reply **yes**, **y**, **approve**, **ok**, or **go** to approve
 - Reply **no**, **n**, **deny**, or **cancel** to deny
 
+A messaging approval never asks you to approve a command you cannot read in full. When the command is too long for the approval card, Hermes first sends the whole command as its own message (split across several messages if needed), and the card says the preview was shortened. If the full command cannot be shown (the send fails, or the command itself contains a triple-backtick fence), the card offers **Deny** only. Review such a command in the CLI or the desktop app. On platforms that cut long messages instead of splitting them (ntfy, DingTalk, Photon, LINE), the plain-text prompt puts the answer instructions before the command. When the command would still be cut, the prompt offers only `/deny` and shows the same "preview shortened" notice.
+
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
+
+#### Who can answer an approval in a shared chat (`approvals.approvers`)
+
+By default any member admitted to the chat can answer a pending approval, whoever's message raised it. In a group, channel or shared thread you can bind each approval to the person who asked instead:
+
+```yaml
+approvals:
+  approvers: []            # default ["*"]: any admitted member answers
+  # approvers: ["U024BE7LH", "123456789"]   # requester + these chat user ids + admins
+```
+
+With `approvers` narrowed from `["*"]`, only these people can approve or deny a command:
+
+- the user whose message started the turn that raised it;
+- the user ids listed in `approvers`, using each platform's own id form (Slack `U…`, Telegram numeric id, Matrix `@user:server`);
+- the platform's admins of the chat the approval came from: `allow_admin_from` in a DM, `group_allow_admin_from` in a group (the same scopes slash commands use; a DM admin is not a group admin), from the profile whose bot received the chat.
+
+Identical commands raised at the same time by two different requesters get one prompt each, so one requester's answer never decides the other's. A turn that carries messages from two members (follow-ups merged while the agent was busy) has no single requester: its approvals go to the listed approvers and admins only.
+
+When anyone else clicks a button, adds a reaction, or sends `/approve`, `/deny` or a bare "yes", they get *Only &lt;name&gt; can answer this approval.* The command stays pending, so the requester can still answer it. Where the platform supports a private reply, only the clicker sees that note: a Slack ephemeral message, a Discord ephemeral reply, a Telegram callback alert, a Feishu toast or a Teams card response. Matrix, WhatsApp and the relay post it in the chat instead.
+
+The same rule covers the other prompts a member can answer for someone else: a slash-command confirmation (`/reload-mcp`'s Approve Once / Always / Cancel) and the agent's clarify question (a choice button, "Other", or a typed answer). Another member's tap gets the same note and the prompt stays pending; another member's typed message is handled as their own message, never as the answer.
+
+**With slash admin gating (`allow_admin_from` / `group_allow_admin_from`) set for the chat's scope**, the default `approvers: ["*"]` no longer means "any admitted member": answering an approval is `/approve` or `/deny`, and answering a slash-command confirmation runs that command, so only someone allowed to run that command in the chat can answer, on every path (button, reaction, typed `/approve`, bare `yes` / `always`, typed confirm reply). That is the scope's admins, plus members whose `user_allowed_commands` lists `approve` (who may then also deny) or `deny` (deny only), or the confirmed command. Anyone else, the member whose message raised the approval included, can answer neither way: they get *⛔ /approve is admin-only here* and the prompt stays pending for an admin, or is denied when it times out.
+
+When both are set, a narrowed `approvers` takes precedence: it is the explicit answer to "who approves", so the requester, the listed ids and the scope's admins answer with a button, reaction or bare "yes", as described above, whatever `user_allowed_commands` says. Typing `/approve` or `/deny` is itself a slash command, so it still needs that command's permission.
+
+| Config for the chat's scope | Who can answer |
+|---|---|
+| neither | any admitted member |
+| `allow_admin_from` only | admins, plus members with `approve` (approve or deny) / `deny` (deny only) or the confirmed command in `user_allowed_commands` |
+| `approvers` narrowed (with or without `allow_admin_from`) | the requester, the listed ids, the scope's admins |
+
+A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
+
+Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
+
+The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
 
 ### Permanent Allowlist
 
@@ -370,7 +418,7 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
 
 Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
@@ -601,6 +649,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **ssh** | Remote machine | ✅ Yes | Running on a separate server |
 | **docker** | Container | ❌ Skipped (container is boundary) | Production gateway |
 | **singularity** (plugin) | Container | ❌ Skipped | HPC environments |
+| **sprites** (plugin) | Cloud microVM | ❌ Skipped | Stateful cloud sandboxes |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 | **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
@@ -776,16 +825,43 @@ The same guard covers fetches whose URL comes from a remote party rather than fr
 
 #### Intentionally allowing private URLs
 
-Some setups legitimately need private/internal URL access — home networks that resolve `home.arpa` to RFC 1918 space, LAN-only Ollama/llama.cpp endpoints, internal wikis, cloud metadata debugging, and the like. For those cases there's a global opt-out:
+Some setups legitimately need private/internal URL access — home networks that resolve `home.arpa` to RFC 1918 space, LAN-only Ollama/llama.cpp endpoints, internal wikis, and the like. For those cases there's a global opt-out:
 
 ```yaml
 security:
   allow_private_urls: true   # default: false
 ```
 
-When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT / cloud-metadata destinations. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
+
+#### What `allow_private_urls` covers, and what it doesn't
+
+The setting guards the fetches Hermes makes or hands to a remote browser; it does
+not stop every route to a private host. With it `false`:
+
+| Surface | Private URL (`localhost`, `192.168.x.x`, ...) |
+|---|---|
+| `web_extract` | Refused before any backend is called. With it `true`, hosted extract backends still fetch from their own servers and cannot reach your LAN. |
+| `vision_analyze` URL fetches, image/video result downloads, gateway media downloads | Refused |
+| `browser_exec` on a cloud provider with `browser.auto_local_for_private_urls: false`, on a `/browser connect` (CDP) endpoint, or with a Docker/SSH/Modal terminal backend | Refused (`Blocked: URL targets a private or internal address`) |
+| `browser_cdp` raw CDP calls on those same backends | Refused while a private page is open, and when an absolute `http(s)://` URL the call fetches (a `url` param, a script, injected HTML) is private. A scheme-relative `//host` URL is checked for cloud metadata only |
+| `browser_exec` on a cloud provider with `browser.auto_local_for_private_urls: true` (the default) | **Opens**, in a local Chromium sidecar on the Hermes host ([hybrid routing](./features/browser.md#hybrid-routing-cloud-for-public-urls-local-for-lanlocalhost)) |
+| `browser_exec` on the local Chromium with a local terminal backend | **Opens**: the browser reaches nothing the terminal can't |
+| `terminal` (`curl http://localhost`, ...) | **Opens**: no URL guard |
+
+Cloud-metadata endpoints are refused on every row except `terminal`, sidecar and
+local Chromium included: a metadata URL written in `browser_exec` code, in a URL a raw CDP call
+fetches, or in a script or HTML it injects is refused before the browser sees it. Raw CDP params the
+call never fetches are not checked: typed text (`Input.*`), dialog answers, cookie scope URLs and
+request blocking or interception patterns. The check reads the URL literals the agent writes, not a
+URL assembled at run time (string concatenation, escapes) or split by a tab or newline the browser drops; it does not watch the browser afterwards, so a public page that redirects to, or
+fetches from, a metadata address is not stopped by it. On a cloud VM, block the metadata service at
+the network too (IMDSv2 with hop limit 1, a firewall rule). To keep the agent's browser off private hosts while a cloud provider is
+configured, set `browser.auto_local_for_private_urls: false`; that matters most on
+hosted installs (Docker, a VPS), where the sidecar sees the host's own loopback
+services and its LAN.
 
 #### Local proxy fake-ip ranges
 
@@ -822,8 +898,10 @@ destructive-verb list misses:
   an uploading `curl`/`wget`. An `Authorization` header is ordinary API use and
   is not flagged.
 - Invisible or bidirectional Unicode control characters (zero-width spaces,
-  right-to-left overrides, isolates), which make the command you approve differ
-  from the one that runs. Emoji joiner sequences are not flagged.
+  right-to-left overrides, isolates, and variation selectors that do not follow
+  an emoji), which make the command you approve differ from the one that runs.
+  Emoji joiner sequences, keycap emoji (`1️⃣`, `#️⃣`), and an emoji's own
+  presentation selector (as in folder names like `ℹ️ Info`) are not flagged.
 
 Both go through the normal approval flow like every other dangerous pattern.
 

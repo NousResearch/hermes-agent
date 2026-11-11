@@ -41,6 +41,7 @@ class TurnContext:
     awake_idle: AwakeIdleMeter = field(default_factory=AwakeIdleMeter)
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
+    _cleanup_adapter: Any = None
     _cleanup_msg_ids: list[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
@@ -72,6 +73,8 @@ class TurnContext:
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False
+    # The chat's resolved display.interim_assistant_messages. Turn-shaped gates (scheduled heartbeat, hold_stream,
+    # finite viewer) apply in TurnRunner; a fresh agent's delegation.gateway_mode reads this session-shaped value.
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False
     AIAgent: Any = None

@@ -8,8 +8,8 @@ import { withCompilerCache } from './compiler-cache.mjs'
 
 function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compiler-cache-'))
-  const lock = path.join(root, 'package-lock.json')
-  fs.writeFileSync(lock, '{"v":1}')
+  const lock = path.join(root, 'pnpm-lock.yaml')
+  fs.writeFileSync(lock, "lockfileVersion: '9.0'")
   const calls = []
   const plugin = () => ({
     transform: {
@@ -54,7 +54,7 @@ test('a toolchain or NODE_ENV change starts a new generation; a corrupt entry is
     await t.cached().transform.handler('<App/>', id)
     await t.cached({ env: { NODE_ENV: 'development' } }).transform.handler('<App/>', id)
     assert.equal(t.calls.length, 2)
-    fs.writeFileSync(t.lock, '{"v":2}')
+    fs.writeFileSync(t.lock, "lockfileVersion: '6.0'")
     await t.cached().transform.handler('<App/>', id)
     assert.equal(t.calls.length, 3)
     for (const name of t.entries()) fs.writeFileSync(path.join(t.root, 'cache', String(name)), '{torn')

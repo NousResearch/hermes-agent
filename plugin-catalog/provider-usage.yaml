@@ -5,19 +5,20 @@
 # files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
 name: provider-usage
 repo: https://github.com/PhoeniXAbhisheK/hermes-plugin-provider-usage
-sha: "023e7e54d6f6c5ec55314f7603ed5b80af81cd54"   # tag v0.2.1
-description: "Per-provider quota and balance readout in the Hermes desktop status bar. Per-provider chips with eye toggles, a popover with every quota window, reset times, balance and key-cap amounts, near-limit amber tint, a desktop notification per threshold crossing, and burn-rate projections (ETA to reset or depletion). Providers: OpenCode Go, OpenAI Codex, OpenRouter, plus Anthropic, GitHub Copilot, Nous, Z.AI, Kimi, MiniMax and DeepSeek when configured. Disclosure — resolves provider credentials read-only (Hermes account-usage helpers and profile secrets, else the profile's .env and the vendor CLI login files ~/.codex/auth.json, ~/.claude/.credentials.json and ~/.local/share/opencode/auth.json) and sends each only to that provider's usage endpoint; the GitHub Copilot check presents the VS Code / Copilot client identity. No subprocesses, no telemetry."
+sha: "4a957a66a1e36aa4fce14fe03c1b78fe11c4d6a2"   # tag v0.4.1
+description: "Per-provider quota and balance readout in the Hermes desktop status bar. Pinned providers in the bar (or the current chat's provider when none are pinned), a popover sorted by risk with every quota window, reset times, balance and key-cap amounts, a per-window usage chart with burn rate and projected run-out, near-limit amber tint, and a desktop notification at a per-window alert level. Providers: OpenCode Go, OpenAI Codex, OpenRouter, plus Anthropic, Nous, Z.AI, Kimi, MiniMax and DeepSeek when configured, and GitHub Copilot on Hermes 0.22.5 or older. Disclosure — resolves provider credentials read-only (Hermes account-usage helpers and profile secrets, else the profile's .env and the vendor CLI login files ~/.codex/auth.json, ~/.claude/.credentials.json and ~/.local/share/opencode/auth.json) and sends each only to that provider's usage endpoint (opencode.ai, chatgpt.com, openrouter.ai, api.anthropic.com, portal.nousresearch.com via Hermes' Nous sign-in, api.deepseek.com, api.kimi.com, api.moonshot.ai/.cn, api.z.ai, api.minimaxi.com, www.minimax.cn, api.minimax.io, www.minimax.io, api.github.com); the Anthropic check sends the Claude Code `anthropic-beta: oauth-2025-04-20` header, and on Hermes 0.22.5 or older the GitHub Copilot check presents the VS Code / Copilot client identity (`Editor-Version: vscode/1.96.2`, `Editor-Plugin-Version: copilot-chat/0.23.0`, `User-Agent: GitHubCopilotChat/0.23.0`). The plugin spawns no subprocesses itself (Hermes helpers it calls may: the Claude Subscription DirectSDK plugin's usage hook runs the Claude Code CLI, and the old Copilot resolver can run `gh auth token`) and sends no telemetry."
 maintainer: PhoeniXAbhisheK
 tier: community
 category: desktop
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/PhoeniXAbhisheK/hermes-plugin-provider-usage#readme
-version: "0.2.1"
-image: https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/023e7e54d6f6c5ec55314f7603ed5b80af81cd54/media/banner.png
+version: "0.4.1"
+image: https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/4a957a66a1e36aa4fce14fe03c1b78fe11c4d6a2/media/banner.png
 screenshots:
-- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/023e7e54d6f6c5ec55314f7603ed5b80af81cd54/media/panel.png
-- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/023e7e54d6f6c5ec55314f7603ed5b80af81cd54/media/status-bar.png
-- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/023e7e54d6f6c5ec55314f7603ed5b80af81cd54/media/notification.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/4a957a66a1e36aa4fce14fe03c1b78fe11c4d6a2/media/panel.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/4a957a66a1e36aa4fce14fe03c1b78fe11c4d6a2/media/chart.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/4a957a66a1e36aa4fce14fe03c1b78fe11c4d6a2/media/status-bar.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/4a957a66a1e36aa4fce14fe03c1b78fe11c4d6a2/media/notification.png
 capabilities:
   provides_tools: []
   provides_hooks: []

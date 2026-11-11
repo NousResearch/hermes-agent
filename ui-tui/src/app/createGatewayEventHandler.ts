@@ -4,19 +4,20 @@ import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
 import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type {
+  AnyGatewayEvent,
+  ConfigFullResponse,
+  DelegationStatusResponse,
+  GatewaySkin,
+  SessionInfo,
+  SessionMostRecentResponse
+} from '@hermes/shared/gateway-types'
 import type { UsageLimit } from '@hermes/shared/plan-usage'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import { usageFromTick } from '../domain/usage.js'
-import type {
-  AnyGatewayEvent,
-  ConfigFullResponse,
-  DelegationStatusResponse,
-  GatewaySkin,
-  SessionMostRecentResponse
-} from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { billingDialogCopy, usageLimitDialog } from '../lib/billingDialog.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
@@ -28,7 +29,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
+import type { Msg, SubagentProgress } from '../types.js'
 
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -44,6 +45,7 @@ import { reportGatewayStartTimeout } from './gatewayStartTimeout.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
+import { takePastes } from './pasteStore.js'
 import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
@@ -661,7 +663,9 @@ function applySessionInfo(payload: unknown, { appendMessage, setHistoryItems, se
   // authority starts it, so it lands after the previous assistant reply.
   for (const started of newlyStartedRows(current?.pending_submissions, incoming.pending_submissions)) {
     markBubbleShown(started.input_id)
-    appendMessage({ role: 'user', text: started.user })
+    // Submitted here: show it as it was typed, chips and their sections.
+    const pastes = started.user ? takePastes(started.user) : undefined
+    appendMessage({ role: 'user', text: pastes?.display ?? started.user, ...(pastes && { pastes: pastes.pastes }) })
   }
 
   // A replayed snapshot can be the only terminal signal after reconnect.
@@ -1599,7 +1603,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           )
         }
 
-        return
+        return turnController.pushImageSegment(ev.payload.image_path, ev.payload.tool_id)
       }
 
       case 'request.cancel': {

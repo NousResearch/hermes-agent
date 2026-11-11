@@ -68,7 +68,8 @@ def stored_session_route(session_meta, *, current_model, current_provider):
         # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
         # endpoint and wire, which must not ride on the ambient provider.
         base_url = None
-        if provider is None:
+        if provider is None or not stored_provider:
+            # An empty provider's saved wire came from turns that went to the wrong provider (#132648).
             api_mode = None
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
@@ -78,7 +79,7 @@ def stored_session_route(session_meta, *, current_model, current_provider):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
         base_url = api_mode = None
     # A row's api_mode/base_url were written for whichever model the session last ran. Providers that
-    # pick the wire per model (OpenCode Zen/Go, Copilot, Nous) re-derive both from the stored model, or a
+    # pick the wire per model (OpenCode Zen/Go, Nous, plugin profiles) re-derive both from the stored model, or a
     # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
     # model (#96066) — the CLI/oneshot twin of tui_gateway's _rederive_per_model_route.
     from hermes_cli.model_switch import model_derived_api_mode
@@ -90,12 +91,23 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
+def _main_slot_serves(model) -> bool:
+    """An empty provider means the row ran on the profile's route; it is lost only once that route
+    targets another model (#132648)."""
+    from hermes_cli.runtime_provider import _get_model_config
+    return str(_get_model_config().get("default") or "").strip() == str(model or "").strip()
+
+
 def _heal_bare_custom_provider(provider, *, base_url, model):
-    """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
-    later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
-    ``custom:<name>`` menu key from the endpoint, else drop the provider (None)."""
-    if str(provider or "").strip().lower() != "custom":
+    """Bare ``custom`` is a billing class, not a routable identity, and an empty provider names none
+    (#132648): recover the durable ``custom:<name>`` menu key from the endpoint or model, else None."""
+    if str(provider or "").strip().lower() not in ("", "custom"):
         return provider
+    if not str(provider or "").strip():
+        if _main_slot_serves(model):
+            return None
+        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        return empty_provider_identity(base_url, model)
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a
@@ -153,7 +165,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             _acting = f"{agg.get('provider')}:{agg.get('model')}"
             _cprint(f"    {t('cli.model.acting_model', model=_acting)}")
 
-    # Provider-aware context chain: Codex OAuth / Copilot / Nous caps win over the raw
+    # Provider-aware context chain: Codex OAuth / Nous / profile live-catalog caps win over the raw
     # models.dev entry (gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
     mi = result.model_info
     agent = cli.agent
@@ -169,9 +181,10 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        from agent.context_pin import context_pin_suffix
-        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}"
-                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
+        from agent.context_pin import context_window_suffix
+        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}" + context_window_suffix(
+            ctx, getattr(agent, '_config_context_length', None) if agent else None, model=result.new_model,
+            provider=result.target_provider, base_url=result.base_url or cli.base_url or ""))
     if mi:
         if mi.max_output:
             _cprint(f"    {t('gateway.model.max_output_label', tokens=f'{mi.max_output:,}')}")
@@ -261,6 +274,18 @@ _MODEL_USAGE_ROWS = (
     ("/model --provider <slug>", "cli.model.usage_switch_provider"),
     ("/model --refresh", "cli.model.usage_refresh"))
 _MODEL_USAGE_COL = 36
+
+
+def _configured_default_route() -> tuple[str, str]:
+    """``(model, provider)`` config.yaml names NOW (``/model reset``'s target). A fresh read, not the
+    startup snapshot: the dashboard or another surface may have changed the default since launch."""
+    from hermes_cli.config import load_config_readonly
+    model_cfg = (load_config_readonly() or {}).get("model")
+    if not isinstance(model_cfg, dict):
+        return (model_cfg.strip() if isinstance(model_cfg, str) else ""), ""
+    provider = str(model_cfg.get("provider") or "").strip()
+    return (str(model_cfg.get("default") or model_cfg.get("model") or "").strip(),
+            "" if provider.lower() == "auto" else provider)
 
 
 def _picker_reasoning_rows() -> list[tuple[str, str]]:
@@ -449,12 +474,19 @@ class CLIModelSwitchMixin:
         except Exception:
             pass
 
-        if resolved_provider == "copilot":
-            from hermes_cli.models import copilot_model_api_mode, normalize_copilot_model_id
+        from providers import get_provider_profile
+        profile = get_provider_profile(resolved_provider)
+        try:
+            native_id = profile.normalize_model_id(current_model, api_key=self.api_key or "") if profile else None
+        except Exception:  # a plugin hook failing must not block startup: generic repair continues
+            logger.debug("normalize_model_id(%s) failed", resolved_provider, exc_info=True)
+            native_id = None
+        if native_id is not None:  # a profile-owned id space also re-derives the wire for the new id
+            from hermes_cli.model_switch import model_derived_api_mode
             return _adopt_with_mode(
-                lambda m: normalize_copilot_model_id(m, api_key=self.api_key),
-                lambda m: copilot_model_api_mode(m, api_key=self.api_key),
-                lambda new: t("cli.model.normalized_copilot_model", old=current_model, new=new))
+                lambda m: native_id,
+                lambda m: model_derived_api_mode(resolved_provider, m, self.api_key or "") or self.api_mode,
+                lambda new: t("cli.model.normalized_model", old=current_model, new=new, provider=resolved_provider))
 
         from hermes_cli.models import opencode_provider_family
         if opencode_provider_family(resolved_provider) is not None:
@@ -835,6 +867,11 @@ class CLIModelSwitchMixin:
                 # rather than a dead session (#50163).
                 for _k, _v in _cli_snapshot.items():
                     setattr(self, _k, _v)
+                if str(exc) == "launch_credentials_unavailable":
+                    # No model switch can fix a chat whose launch key changed; say what does.
+                    from hermes_cli.cli_chat_error_copy import refusal_text
+                    _cprint(f"  {refusal_text(exc)}")
+                    return False
                 _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
                 return False
             finally:
@@ -953,6 +990,7 @@ class CLIModelSwitchMixin:
           /model <name> --provider <provider> — switch provider + model
           /model <name> --reasoning <level>   — switch and set reasoning effort in one step
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model reset                        — back to config.yaml's model (keeps history)
 
         Switches are session-scoped unless ``model.persist_switch_by_default`` or ``--global``.
         """
@@ -965,8 +1003,20 @@ class CLIModelSwitchMixin:
             # CLI decoration: "  ✗ " prefix over the canonical error copy.
             _cprint(f"  ✗ {request.error_messages()[0]}")
             return
+        target, explicit_provider = request.target, request.explicit_provider
+        if request.is_reset:
+            # Session-scoped switch back to config.yaml's model; drops an armed --once restore,
+            # which would otherwise re-plant the model being reset away from after the next turn.
+            target, explicit_provider = _configured_default_route()
+            if not target:
+                _cprint(f"  ✗ {t('cli.model.reset_no_default')}")
+                return
+            if target == self.model and explicit_provider in ("", self.provider):
+                self._pending_one_turn_model_restore = None
+                _cprint(f"  {t('cli.model.reset_none', model=target)}")
+                return
         one_turn = request.is_once
-        persist_global = resolve_persist_behavior(
+        persist_global = not request.is_reset and resolve_persist_behavior(
             request.is_global, request.is_session, is_once=one_turn,
             explicit_provider=request.explicit_provider)
 
@@ -995,8 +1045,7 @@ class CLIModelSwitchMixin:
             return _show_model_picker(self, ctx, request.force_refresh)
 
         result = _switch_model_from(
-            self, request.target, is_global=persist_global,
-            explicit_provider=request.explicit_provider,
+            self, target, is_global=persist_global, explicit_provider=explicit_provider,
             user_providers=user_provs, custom_providers=custom_provs)
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")

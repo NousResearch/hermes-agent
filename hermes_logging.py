@@ -291,15 +291,21 @@ def _install_session_record_factory() -> None:
 _install_session_record_factory()
 
 
+def canonical_logger_name(name: str) -> str:
+    """*name* without the ``hermes_agent.`` package prefix, so a module's logger keeps its component
+    and diagnostics scope whether it runs under its top-level name or inside the package."""
+    return name.removeprefix("hermes_agent.")
+
+
 class _ComponentFilter(logging.Filter):
-    """Only pass records whose logger name starts with one of *prefixes*."""
+    """Only pass records whose canonical logger name starts with one of *prefixes*."""
 
     def __init__(self, prefixes: Sequence[str]) -> None:
         super().__init__()
         self._prefixes = tuple(prefixes)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.name.startswith(self._prefixes)
+        return canonical_logger_name(record.name).startswith(self._prefixes)
 
 
 # Logger name prefixes per component; used by _ComponentFilter and ``hermes logs --component``.
@@ -935,6 +941,10 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
             homes.append(resolved)
     if len(homes) < 2:
         return False
+    # Each routed profile's redaction policy, read now: the formatter never reads config per record.
+    from agent.redact import resolve_profile_policy
+    for home in homes:
+        resolve_profile_policy(home)
 
     with _queue_state_lock:
         if not _queued_file_handlers:
@@ -1030,12 +1040,9 @@ def _read_logging_config():
             from hermes_cli.config_effective import load_user_config_effective
             cfg = load_user_config_effective(get_config_path())
         except Exception:
-            from utils import fast_safe_load
+            from hermes_cli.config_backend import config_exists, read_config_doc
             config_path = get_config_path()
-            cfg = {}
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8-sig") as f:
-                    cfg = fast_safe_load(f) or {}
+            cfg = (read_config_doc(config_path) or {}) if config_exists(config_path) else {}
         if not cfg:
             return (None, None, None)
         log_cfg = cfg.get("logging", {})

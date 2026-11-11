@@ -163,6 +163,11 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
+    # Opt-in (compression.prepare_ahead): when this response put the session near the trigger,
+    # write the next compaction summary while the tools run. No-op otherwise; never raises.
+    from agent.prepared_compaction import maybe_prepare
+    maybe_prepare(agent, messages, origin="tool-batch")
+
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
@@ -183,10 +188,10 @@ def run_tool_round(
         agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
-        # alive, so SSE/TUI clients see the explanation.
+        # alive, so SSE/TUI clients see the explanation. A held turn shows it as the final only.
         if final_response:
             agent._safe_print(f"\n{final_response}\n")
-            if agent.stream_delta_callback:
+            if agent.stream_delta_callback and not getattr(agent, "_hold_stream", False):
                 with suppress(Exception):
                     agent.stream_delta_callback(final_response)
                     agent.stream_delta_callback(None)
@@ -281,19 +286,19 @@ def stage_tool_call_message(
         agent._last_content_tools_all_housekeeping = _line_is_reply
         if _all_housekeeping and agent._has_stream_consumers():
             agent._mute_post_response = True
-        elif agent._should_emit_quiet_tool_messages():
+        elif agent._should_emit_quiet_tool_messages() and not getattr(agent, "_hold_stream", False):
             clean = agent._strip_think_blocks(turn_content).strip()
             if clean:
                 agent._vprint(f"  ┊ 💬 {clean}")
 
     # Pop thinking-only prefill message(s) before appending (same rationale as the
-    # final-response path). Tool calls after a prefill recovery reset the prefill
-    # counter, so each tool-call success is a fresh start, not a cumulative burn.
+    # final-response path). A landed tool call resets the thinking retry budget even
+    # when recovery used a request-local reminder instead of a legacy prefill row.
     _had_prefill = False
     while messages and isinstance(messages[-1], dict) and messages[-1].get("_thinking_prefill"):
         messages.pop()
         _had_prefill = True
-    if _had_prefill:
+    if _had_prefill or getattr(agent, "_thinking_prefill_retries", 0):
         agent._thinking_prefill_retries = 0
         agent._empty_content_retries = 0
     # Re-arm the post-tool nudge so it can fire on a LATER tool round; a landed tool call

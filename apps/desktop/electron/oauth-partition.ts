@@ -126,6 +126,11 @@ function sanitizePartitionComponent(id: string): string {
   return encodeURIComponent(id).replace(/%/g, '_')
 }
 
+/** The private jar connection `id` rides while it is a non-primary cookie-auth remote. */
+export function connectionOauthPartition(id: string): string {
+  return `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(id)}`
+}
+
 /** Read one property off an untrusted registry entry (parsed JSON) without a cast. */
 function entryField(entry: unknown, key: string): unknown {
   if (!entry || typeof entry !== 'object' || !(key in entry)) {
@@ -133,6 +138,88 @@ function entryField(entry: unknown, key: string): unknown {
   }
 
   return Object.getOwnPropertyDescriptor(entry, key)?.value
+}
+
+export interface OauthJarToClear {
+  partition: string
+  url: string
+  /** 'all': the jar is the connection's own; 'host': shared legacy jar, only cookies set for this host. */
+  scope: 'all' | 'host'
+}
+
+const hostOf = (raw: unknown): string => {
+  try {
+    return typeof raw === 'string' ? new URL(raw.trim()).hostname.toLowerCase() : ''
+  } catch {
+    return ''
+  }
+}
+
+/** True when `entry` keeps cookies in the legacy shared jar under `registry`. */
+function ridesLegacyJar(entry: unknown, registry: PartitionRegistrySnapshot, v1RemoteUrl: unknown): boolean {
+  const kind = entryField(entry, 'kind')
+
+  if (kind === 'cloud') {
+    return true
+  }
+
+  return (
+    kind === 'remote' &&
+    entryField(entry, 'authMode') === 'oauth' &&
+    resolveOauthPartition(entryField(entry, 'url'), { registry, v1RemoteUrl }) === LEGACY_OAUTH_PARTITION
+  )
+}
+
+/**
+ * The cookie jars to clear when cookie-auth remote `id` is removed: `before` is
+ * the list holding it, `after` the list without it. A connection changes jars
+ * over its life (its own jar while secondary, the legacy shared jar while primary),
+ * so clearing only the jar it rides NOW leaves the other one signed in, and a
+ * re-add with the recycled id (or a later primary at that URL) inherits it (#98242).
+ *
+ * Its own jar holds nothing else and is cleared whole. The legacy jar is shared
+ * (Cloud, the Portal, the primary), and Chromium scopes cookies by host, not port:
+ * only this host's cookies go, and only when nothing that stays (a gateway on the
+ * same host riding the legacy jar, Cloud, the Portal, connection.json's route at
+ * another URL on that host) could own them. `sharedUrls` names those outside URLs.
+ */
+export function oauthJarsToClearOnRemoval(
+  id: string,
+  before: PartitionRegistrySnapshot | null | undefined,
+  after: PartitionRegistrySnapshot | null | undefined,
+  opts: { v1RemoteUrl?: unknown; sharedUrls?: unknown[] } = {}
+): OauthJarToClear[] {
+  const connections = before && Array.isArray(before.connections) ? before.connections : []
+  const entry = connections.find(c => c && typeof c === 'object' && entryField(c, 'id') === id)
+  const url = entryField(entry, 'url')
+
+  if (entryField(entry, 'kind') !== 'remote' || entryField(entry, 'authMode') !== 'oauth' || typeof url !== 'string') {
+    return []
+  }
+
+  const host = hostOf(url)
+
+  if (!host) {
+    return []
+  }
+
+  const jars: OauthJarToClear[] = [{ partition: connectionOauthPartition(id), url, scope: 'all' }]
+  const remaining = after && Array.isArray(after.connections) ? after : { connections: [] }
+  const own = normalizeForMatch(url)
+
+  const sharedHost =
+    (remaining.connections as unknown[]).some(
+      c =>
+        entryField(c, 'id') !== id &&
+        hostOf(entryField(c, 'url')) === host &&
+        ridesLegacyJar(c, remaining, opts.v1RemoteUrl)
+    ) || (opts.sharedUrls ?? []).some(other => hostOf(other) === host && normalizeForMatch(other) !== own)
+
+  if (!sharedHost) {
+    jars.push({ partition: LEGACY_OAUTH_PARTITION, url, scope: 'host' })
+  }
+
+  return jars
 }
 
 /**
@@ -182,7 +269,7 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
       const pendingAuthMode = typeof opts.pendingAuthMode === 'string' ? opts.pendingAuthMode : ''
 
       return pendingKind === 'remote' && pendingAuthMode === 'oauth' && !(v1Norm && requestNorm === v1Norm)
-        ? `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(wantedId)}`
+        ? connectionOauthPartition(wantedId)
         : LEGACY_OAUTH_PARTITION
     }
 
@@ -195,7 +282,7 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
       ownBaseNorm &&
       !(v1Norm && ownBaseNorm === v1Norm)
     ) {
-      return `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(wantedId)}`
+      return connectionOauthPartition(wantedId)
     }
 
     return LEGACY_OAUTH_PARTITION
@@ -244,5 +331,5 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
     return LEGACY_OAUTH_PARTITION
   }
 
-  return `${CONNECTION_PARTITION_PREFIX}${sanitizePartitionComponent(best.id)}`
+  return connectionOauthPartition(best.id)
 }

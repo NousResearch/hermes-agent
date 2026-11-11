@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   connections: vi.fn(async () => [] as { id: string; label: string }[]),
   createCanonicalChat: vi.fn(async () => 'session-1'),
   deleteBot: vi.fn(async () => undefined),
+  dropLeftoverProfilePrefs: vi.fn(),
   /** Flipped off to model a desktop build that predates the live surface. */
   hasCapabilitiesView: { value: true },
   notify: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     host: {
       ...original.host,
       connections: mocks.connections,
+      dropLeftoverProfilePrefs: mocks.dropLeftoverProfilePrefs,
       notify: mocks.notify,
       notifyError: mocks.notifyError,
       request: mocks.request,
@@ -161,8 +163,11 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  // Radix's focus scope dispatches its unmount event from a 0 ms timer; let it fire
+  // here, or it lands in the next test file's jsdom window and throws there.
+  await new Promise(resolve => setTimeout(resolve, 0))
 })
 
 describe('materializing the draft profile', () => {
@@ -176,7 +181,7 @@ describe('materializing the draft profile', () => {
       target: { value: enteredName }
     })
 
-    const create = screen.getByRole('button', { name: 'Create Bot' })
+    const create = screen.getByRole('button', { name: 'Create bot' })
 
     expect((create as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(create)
@@ -201,7 +206,7 @@ describe('materializing the draft profile', () => {
     await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
 
     // Create Bot goes through the same helper — no duplicate profiles.create.
-    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
     expect(createCalls()).toHaveLength(1)
@@ -280,7 +285,7 @@ describe('materializing the draft profile', () => {
     // Shared keys live on the TARGET machine, and the label says which.
     screen.getByText('Share keys & accounts with the default profile on Studio')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
 
     await waitFor(() =>
       expect(mocks.requestProfile).toHaveBeenCalledWith(
@@ -309,6 +314,64 @@ describe('materializing the draft profile', () => {
         profile: 'inbox-triage'
       })
     )
+  })
+})
+
+// A create never lands on a live name, so a folder or startup profile stored
+// under the new bot's name was left by a deleted profile. Bot Mode creates
+// through its own RPC, so it has to drop them the way the profile dialog does.
+describe('leftover prefs under the new bot name', () => {
+  it('drops them once the create succeeded', async () => {
+    let created = false
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === 'profiles.create') {
+        created = true
+      }
+
+      return base(method, params)
+    })
+    mocks.dropLeftoverProfilePrefs.mockImplementationOnce(() => expect(created).toBe(true))
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', null]])
+  })
+
+  it('names the machine a remote bot was created on', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+
+    await waitFor(() => expect(mocks.dropLeftoverProfilePrefs).toHaveBeenCalled())
+    expect(mocks.dropLeftoverProfilePrefs.mock.calls).toEqual([['inbox-triage', 'studio']])
+  })
+
+  it('keeps them when the create fails', async () => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) => {
+      if (method === 'profiles.create') {
+        throw new Error('disk full')
+      }
+
+      return base(method, params)
+    })
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(mocks.dropLeftoverProfilePrefs).not.toHaveBeenCalled()
   })
 })
 
@@ -437,7 +500,7 @@ describe('provider readiness before the intro turn', () => {
     const onConfigureModel = vi.fn()
 
     await renderDialog(true, onConfigureModel)
-    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: false }))
     expect(mocks.request).toHaveBeenCalledWith('setup.runtime_check', { profile: 'inbox-triage' })
@@ -461,7 +524,7 @@ describe('provider readiness before the intro turn', () => {
     )
 
     await renderDialog(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
     expect(mocks.notify).toHaveBeenLastCalledWith({ kind: 'success', message: 'Bot "Inbox Triage" created' })
@@ -478,7 +541,7 @@ describe('provider readiness before the intro turn', () => {
     await screen.findByText('Create on')
     fireEvent.click(controlUnder('Create on'))
     fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
 
     await waitFor(() =>
       expect(mocks.notify).toHaveBeenLastCalledWith(
@@ -509,7 +572,7 @@ describe('the clone-from default', () => {
     fireEvent.click(await screen.findByRole('option', { name: /Fresh profile/ }))
     expect(cloneFrom().textContent).toMatch(/Fresh profile/)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
 
     // Second open: the picker must read `default` again, or every agent after

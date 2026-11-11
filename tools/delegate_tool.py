@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message, _close_child, _detach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
+    _lease_child_credential, _merge_late_steer, _register_child, _reserve_child_transcript, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
@@ -288,6 +288,12 @@ def _build_child_agent(
             request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
         parent_sid = getattr(parent_agent, "session_id", None)
         child_session_db = _open_child_session_db(parent_agent)
+        # Children run provider-less. Under compression.checkpoint_required the child arms the same gate
+        # (read inside the delegated profile scope, as the child reads it) and would die at its first
+        # compaction, so it inherits the provider, scoped as a fork. Cost: one initialize() per spawn.
+        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
+
+        child_checkpoint_required = checkpoint_required_from_config()
         with delegated_child_context():
             try:
                 child = AIAgent(
@@ -295,7 +301,8 @@ def _build_child_agent(
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
-                    skip_context_files=True, skip_memory=True, clarify_callback=None,
+                    skip_context_files=True, skip_memory=not child_checkpoint_required,
+                    memory_agent_context="subagent", clarify_callback=None,
                     thinking_callback=(
                         (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                         if child_progress_cb else None
@@ -324,11 +331,15 @@ def _build_child_agent(
     _apply_child_cache_ttl(child)
     if child_session_db is not None:
         child._owns_session_db = True  # released by the child's close(), never by the parent
+    _reserve_child_transcript(child)
     # Ownership transfer for the dedicated handle: the child's close() must release it (nothing else holds a
     # reference), and no parent teardown can close it out from under a background child (#81267).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    # Plugins see one conversation per delegation tree.
+    from agent.prompt_cache_scope import conversation_id
+    child._inherited_conversation_id = conversation_id(parent_agent)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -338,9 +349,13 @@ def _build_child_agent(
     except TypeError:
         child._delegate_parent_ref = None  # non-weakref-able test doubles
     # Sidebar marker: subagent sessions stay out of session pickers even when a
-    # parent delete orphans them (mirrors /branch's ``_branched_from``).
+    # parent delete orphans them (mirrors /branch's ``_branched_from``). The
+    # subagent_id lets a viewer find the stored transcript once the live registry
+    # has forgotten the child (``delegate_tool_sessions``).
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+        from tools.delegate_tool_sessions import SUBAGENT_ID_KEY
         child._session_init_model_config["_delegate_from"] = parent_sid
+        child._session_init_model_config[SUBAGENT_ID_KEY] = subagent_id
     child._delegate_profile_home = profile_home  # _ChildRun.await_child runs the conversation in this scope
     if child_pool is not None:
         child._credential_pool = child_pool
@@ -561,6 +576,9 @@ def delegate_task(
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("delegation", "delegate_task"):  # /review reaches here outside a tool call
+        return tool_error(refusal)
 
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
@@ -687,23 +705,31 @@ def _build_top_level_description(*, independent_completions=None) -> str:
 
     if independent_completions is None:
         independent_completions = _get_independent_completions()
-    delivery = (
-        "each ungrouped task / `group` returns on its own"
-        if independent_completions else "one message per call"
-    )
+    delivery = _DELIVERY_INDEPENDENT if independent_completions else _DELIVERY_JOINED
     return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
 
-_DESCRIPTION_HEAD = (
-    "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
-    "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
-    "(limit in the tasks description).\n\n"
+# The independent variant states the dispatch-time choice and its cost: a parent that meant to answer once but left
+# tasks ungrouped is woken per result and spends a filler turn on each.
+_DELIVERY_JOINED = " (one message per call)"
+_DELIVERY_INDEPENDENT = (
+    ", one message per `group`. Choose at dispatch: if you will respond only once ALL tasks are done, give every "
+    "task the same `group`; give a task its own `group` only when you will act on its result the moment it lands, "
+    "because each separate result re-enters alone and costs a turn"
+)
+
+_DESCRIPTION_DELIVERY = (
     "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
     "and return results in this tool call. "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
-    "as a new message when subagents finish ({delivery}). Background results are delivered only "
+    "as a new message when subagents finish{delivery}. Background results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
-    "wait or poll on transcripts, artifact files, or CI for a child. "
-    "While children run, `action` (list/steer/stop) controls them live.\n\n"
+    "wait or poll on transcripts, artifact files, or CI for a child.\n\n"
+)
+_ONESHOT_DESCRIPTION_DELIVERY = "Parallel children are joined and their results return in this tool call.\n\n"
+_DESCRIPTION_HEAD = (
+    "Spawn isolated subagents. Each gets its own conversation, terminal session, and toolset, and only its final "
+    "summary returns to you.\n\n"
+    + _DESCRIPTION_DELIVERY +
     "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
     "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
@@ -732,10 +758,8 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"The task(s), up to {max_children} in parallel for this user (set "
-        "via delegation.max_concurrent_children). Each entry spawns one "
-        "subagent with isolated context and terminal session; a single task "
-        "is a one-entry array. Required when spawning."
+        f"One entry per subagent; several run in parallel, up to {max_children} for this user (set via "
+        "delegation.max_concurrent_children). Required when spawning."
     )
 
 def _build_dynamic_schema_overrides() -> dict:
@@ -749,8 +773,10 @@ def _build_dynamic_schema_overrides() -> dict:
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
 
-    if not independent_completions:
-        tasks = overrides_params["properties"]["tasks"]
+    tasks = overrides_params["properties"]["tasks"]
+    if independent_completions:
+        tasks["items"] = {**tasks["items"], "required": ["goal", "group"]}
+    else:
         tasks["items"] = {**tasks["items"], "properties": {
             k: v for k, v in tasks["items"]["properties"].items() if k != "group"
         }}
@@ -795,8 +821,7 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": _p(
                             "string",
-                            "What this subagent should accomplish. Be specific and self-contained — it knows "
-                            "nothing about your conversation history.",
+                            "What this subagent should accomplish. Be specific and self-contained.",
                         ),
                         "context": _p(
                             "string",
@@ -805,14 +830,14 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "output_schema": _p(
                             "object",
-                            "Optional JSON Schema this child's final answer must validate against (told to the "
+                            "JSON Schema this child's final answer must validate against (told to the "
                             "child up front; parent validates with one bounded correction retry; result gains "
                             "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
                             "as summary, never discarded). Keep it forgiving — require only fields you will read.",
                         ),
                         "images": _p(
                             "array",
-                            "Optional images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a "
+                            "Images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a "
                             "screenshot the user sent, a design mock, a chart. Vision-capable children receive the "
                             "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
                             "files do NOT belong here — put paths in 'context' instead.",
@@ -820,10 +845,9 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "group": _p(
                             "string",
-                            "Optional result-delivery bucket within this call (only when delegation.independent_completions "
-                            "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
-                            "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
-                            "order execution; if B needs A's output, dispatch B after A returns.",
+                            "Result-delivery bucket. Tasks sharing a group return together in ONE message once all of "
+                            "them finish; a task with its own group returns alone when it finishes. Does not order "
+                            "execution; if B needs A's output, dispatch B after A returns.",
                         ),
                     },
                     "required": ["goal"],
@@ -836,22 +860,66 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "Default 'spawn'. Live control of running children: "
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
-                "course-correction text into one child (subagent_id + "
-                "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
-                "Control actions return immediately; goal/tasks are ignored unless spawning.",
+                "course-correction text into one child without stopping it; 'stop' = end one child "
+                "early (partial result still returns). "
+                "Control actions return immediately; tasks are ignored unless spawning.",
                 enum=["spawn", "list", "steer", "stop"],
             ),
-            "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "subagent_id": _p("string", "Required for action='steer'/'stop' (ids from the spawn response or action='list')."),
             "message": _p(
                 "string",
-                "For action='steer': the course correction, appended to "
+                "Required for action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
             ),
         },
         "required": [],
     },
 }
+
+
+_LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
+
+
+def oneshot_delegate_function(function: dict) -> dict:
+    """A built delegate_task definition minus live control and ``group``, for a one-shot or inline-gateway session
+    (agent/oneshot_footprint.py): its children are joined inside the call, so ``action`` list/steer/stop never has a
+    running child to reach, ``group`` never changes delivery, and the background-delivery paragraph never applies.
+    The handler still accepts those arguments."""
+    description = function.get("description") or ""
+    for delivery in (_DELIVERY_INDEPENDENT, _DELIVERY_JOINED):
+        description = description.replace(_DESCRIPTION_DELIVERY.format(delivery=delivery), _ONESHOT_DESCRIPTION_DELIVERY)
+    params = function["parameters"]
+    properties = {k: v for k, v in params["properties"].items() if k not in _LIVE_CONTROL_PARAMS}
+    items = properties["tasks"]["items"]
+    properties["tasks"] = {**properties["tasks"], "items": {
+        **items, "properties": {k: v for k, v in items["properties"].items() if k != "group"},
+        "required": [k for k in items["required"] if k != "group"],
+    }}
+    return {**function, "description": description, "parameters": {**params, "properties": properties}}
+
+
+def session_joins_delegation(agent: Any) -> bool:
+    """Whether *agent*'s top-level delegations join in the call because the ``delegate_task`` the model sees is the
+    joined variant (a gateway session with ``delegation.gateway_mode`` inline). Dispatch follows the schema bytes,
+    which ride the session's tools[] pin: a config change can never leave the model reading "results return in
+    this tool call" while children detach, or the reverse. One-shot sessions keep their own fallback (and note)."""
+    if getattr(agent, "_oneshot_session", None) is True:
+        return False
+    for tool in getattr(agent, "tools", None) or ():
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and function.get("name") == "delegate_task":
+            return _ONESHOT_DESCRIPTION_DELIVERY in (function.get("description") or "")
+    return False
+
+
+def adopt_session_delegation_mode(agent: Any) -> None:
+    """Re-freeze *agent*'s inline decision (``agent_joins_delegation``) from the ``delegate_task`` it carries once a
+    fresh agent has restored its session's tools[] pin, so the pin is authoritative: a later rebuild from fresh
+    definitions (compaction boundary, ``/reload-mcp``, Bot Chat refresh) derives the session's variant, not the one
+    the current config would build."""
+    tools = getattr(agent, "tools", None) or ()
+    if any(isinstance(tool, dict) and (tool.get("function") or {}).get("name") == "delegate_task" for tool in tools):
+        agent._delegation_inline = session_joins_delegation(agent)
 
 
 # --- Registry ---
@@ -888,4 +956,6 @@ registry.register(
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+    # The single-task top-level shape, kept for old transcripts.
+    compat_args=("goal", "context", "images", "max_iterations", "output_schema", "role"),
 )

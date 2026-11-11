@@ -7,6 +7,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $sessions } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
+import { clearAllButStoredJournal, storedJournal } from './prepared-submissions-test-utils'
 import { useSlashCommand } from './slash'
 import { captureSubmissionDestination } from './submission-destination'
 import { useSubmitPrompt } from './submit'
@@ -92,7 +93,7 @@ describe('submission intent destinations', () => {
     await act(async () => { expect(await b.result.current('same text')).toBe(true) })
     const other = second.requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]!
     expect(other.submission_id).not.toBe(original.submission_id)
-    const retained = Object.values(JSON.parse(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!))
+    const retained = Object.values(storedJournal())
     expect(retained).toHaveLength(1)
     expect(retained[0]).toMatchObject({ id: original.submission_id, params: original })
     await act(async () => { expect(await a.result.current('same text', { submission_id: String(original.submission_id) })).toBe(true) })
@@ -137,7 +138,7 @@ describe('submission intent destinations', () => {
     await act(async () => { expect(await hook.result.current('image retry', { submission_id: 'image-retry', attachments: [image] })).toBe(true) })
     expect(requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')[1][1]).toEqual(first)
     expect(deps.syncAttachmentsForSubmit).toHaveBeenCalledOnce()
-    expect(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).not.toContain('image retry')
+    expect(storedJournal()).toEqual({})
   })
 
 
@@ -194,11 +195,9 @@ describe('submission intent destinations', () => {
     await act(async () => {
       expect(await hook.result.current('retry me', { submission_id: 'explicit-retry' })).toBe(false)
     })
-    const journal = window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
-    expect(journal).toContain('retry me')
+    expect(Object.values(storedJournal())).toMatchObject([{ text: 'retry me' }])
     hook.unmount()
-    window.localStorage.clear()
-    window.localStorage.setItem('hermes.desktop.preparedSubmissions.v1', journal!)
+    clearAllButStoredJournal()
     // A same-text send in another profile/session is a different intent; it
     // must neither reuse nor retire the original uncertain admission.
     $activeGatewayProfile.set('bob')
@@ -305,12 +304,9 @@ describe('submission intent destinations', () => {
     await act(async () => {
       expect(await hook.result.current(input, { submission_id: 'new-session-retry' })).toBe(false)
     })
-    const serialized = window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
-    expect(serialized).toBeTruthy()
-    expect(Object.values(JSON.parse(serialized!))[0]).toMatchObject({ owner: { connectionId: 'local', profile: 'default' } })
+    expect(Object.values(storedJournal())).toMatchObject([{ owner: { connectionId: 'local', profile: 'default' } }])
     hook.unmount()
-    window.localStorage.clear()
-    window.localStorage.setItem('hermes.desktop.preparedSubmissions.v1', serialized!)
+    clearAllButStoredJournal()
     loseAck = false
     hook = mount()
     await act(async () => {

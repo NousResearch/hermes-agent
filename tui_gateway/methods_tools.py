@@ -455,7 +455,7 @@ def _(rid, params: dict) -> dict:
     # Hermes-owned strip (no-boot-through-venv).
     _compat = _tools_mod("hermes_cli._subprocess_compat")
     return _captured_exec(
-        rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
+        rid, [sys.executable, "-P", "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {
             "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
@@ -880,6 +880,8 @@ def _cmd_undo(rid, params, session, name, arg):
     _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
+    if hint := _tools_mod("tui_gateway.checkpoints").undo_rollback_hint_for(session, live_view, active):
+        notice += "\n" + hint["text"]
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
 
 
@@ -1080,7 +1082,8 @@ def _(rid, params: dict) -> dict:
                     worker = _SlashWorker(
                         session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
                         profile_home=session.get("profile_home"),
-                        provider=getattr(session.get("agent"), "provider", None) or None)
+                        provider=getattr(session.get("agent"), "provider", None) or None,
+                        base_url=getattr(session.get("agent"), "base_url", None) or None)
                     _attach_worker(sid, session, worker)
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
@@ -1149,13 +1152,16 @@ def _(rid, params: dict, session) -> dict:
         if reason := _container_checkpoint_refusal(session, mgr, cwd):
             return {"success": False, "error": reason}
         # A whole-tree restore keeps the user's hand-edits unless ``all`` (main's --all), as on the owner.
-        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None,
+        commit = _resolve_checkpoint_hash(mgr, cwd, target)
+        taken = _tools_mod("tools.checkpoint_undo_hint").checkpoint_taken_at(cwd, commit)
+        result = mgr.restore(cwd, commit, file_path=file_path or None,
                              safe=not file_path and params.get("all") is not True)
         if result.get("success") and not file_path:
             removed = 0
             with session["history_lock"]:
-                _history, user_indices = _user_turn_indices(session)
-                if user_indices:
+                history, user_indices = _user_turn_indices(session)
+                # Not a turn /undo kept: only one that made or followed this checkpoint.
+                if _tools_mod("tools.checkpoint_undo_hint").rollback_rewinds_newest_turn(history, user_indices, taken):
                     try:
                         removed = _rewind_active_session_history(session, len(user_indices) - 1)[2]
                     except Exception as exc:
@@ -1481,7 +1487,7 @@ def _(rid, params: dict) -> dict:
     configured, plugins = _mcp_server_rows()
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
-    safe = ("name", "transport", "tools", "connected", "disabled", "status")
+    safe = ("name", "transport", "tools", "connected", "disabled", "status", "needs_auth")
     servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
     return _ok(rid, {"servers": [
         {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",
@@ -1669,23 +1675,26 @@ def _plugin_rows() -> list[dict]:
     git_updates = _tools_mod("hermes_cli.plugins_cadence").cached_git_updates(ref_pins)
     out = []
     active = pc._category_active_names()
+    owned_tools = _plugin_tool_ownership()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
         # Bundled backends/platforms/providers and the live memory provider run without an explicit
         # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
         status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
-        # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
-        # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
+        # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop_source``: a root or
+        # ``desktop/`` plugin.js). The app pairs its app-level copy of that half with this ONE row.
         _dir_path = Path(str(_dir)) if _dir else None
         portable = pc._is_portable_plugin_dir(_dir)
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
             "source": source, "status": status, "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
-            "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
+            "has_desktop_half": bool(_dir_path and _tools_mod("hermes_cli.desktop_plugin_halves").desktop_source(_dir_path)),
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
+            # Tools this package's own code registered: Desktop's tool-media renderer ownership check.
+            "tools": owned_tools.get(key, []),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"update_available": True, "update_target": target}
                if _dir_path and (target := git_updates.get(_dir_path.name)) else {}),
@@ -1751,6 +1760,15 @@ def _plugins_toggle(rid, params):
         "name": key, "plugin": row}, key))
 
 
+def _refusal_data(result: dict) -> dict | None:
+    """The structured marker of an install refused because the source left the reviewed commit (the
+    client re-inspects) or because a plugin of that name is installed (the client offers Force): the
+    client acts on ``reason``, never on the message, which echoes text a git server controls."""
+    if result.get("source_moved"):
+        return {"reason": "source_moved"}
+    return {"reason": "exists"} if result.get("exists") else None
+
+
 def _plugins_install(rid, params):
     # ``catalog_name`` alone installs a curated entry at its pinned SHA (resolved server-side, kill list
     # enforced, no bypass) — same contract as the dashboard endpoint.
@@ -1761,10 +1779,48 @@ def _plugins_install(rid, params):
     _ensure_plugin_activation_listener()
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
-        ref=str(params.get("ref") or "").strip() or None)
+        ref=str(params.get("ref") or "").strip() or None,
+        inspected_sha=str(params.get("inspected_sha") or "").strip() or None)
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "install failed")
+        return _err(rid, 5026, result.get("error") or "install failed", data=_refusal_data(result))
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
+
+
+def _plugins_inspect(rid, params):
+    """Read-only pre-install check of ``identifier``/``repo`` (or ``catalog_name`` at its pin): which halves it
+    ships. Nothing is installed or run; a source that cannot be read answers ``ok: false`` + ``error``."""
+    ident = (params.get("identifier") or params.get("repo") or "").strip()
+    catalog_name = str(params.get("catalog_name") or "").strip()
+    if not ident and not catalog_name:
+        return _err(rid, 4019, "plugins.inspect requires 'identifier', 'repo', or 'catalog_name'")
+    inspect = _tools_mod("hermes_cli.plugins_cmd_inspect").inspect_plugin_source
+    return _ok(rid, inspect(ident, catalog_name=catalog_name or None))
+
+
+def _plugins_install_desktop(rid, params):
+    """Install a repository's desktop half onto this host (``desktop-plugins/<name>``) — what Electron's
+    ``installDesktopPlugin`` does, for a browser-hosted client with no disk of its own. ``ref`` is the
+    commit the install dialog reviewed; the loader picks the folder up on its next scan."""
+    ident = (params.get("identifier") or params.get("repo") or "").strip()
+    catalog_name = str(params.get("catalog_name") or "").strip()
+    if not ident and not catalog_name:
+        return _err(rid, 4019, "plugins.manage install_desktop requires 'identifier', 'repo', or 'catalog_name'")
+    result = _tools_mod("hermes_cli.desktop_plugin_install").install_desktop_plugin(
+        ident, ref=params.get("ref"), catalog_name=catalog_name or None, force=bool(params.get("force")))
+    if not result.get("ok"):
+        return _err(rid, 5026, result.get("error") or "desktop install failed", data=_refusal_data(result))
+    return _ok(rid, result)
+
+
+def _plugins_remove_desktop(rid, params):
+    """Delete one installed desktop plugin folder from this host. The desktop half of a package is
+    refused: that package's own removal takes it away."""
+    name = (params.get("name") or params.get("key") or "").strip()
+    if not name:
+        return _err(rid, 4019, "plugins.manage remove_desktop requires a 'name'")
+    result = _tools_mod("hermes_cli.desktop_plugin_install").remove_desktop_plugin(
+        name, force=bool(params.get("force")))
+    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "desktop remove failed")
 
 
 def _plugins_update(rid, params):
@@ -1844,6 +1900,25 @@ def _portable_server_names(plugin_dir: Path, key: str) -> set[str]:
     return {name_for(key, server) for server in package.mcp_servers}
 
 
+def _plugins_update_all(rid, params):
+    """Check every installed plugin and update each one ``hermes plugins update`` would move. Nothing is
+    accepted on the user's behalf: a widened catalog pin or a caution scan of a git update comes back
+    ``needs_review``."""
+    _ensure_plugin_activation_listener()
+    return _ok(rid, _tools_mod("hermes_cli.plugins_auto_update").update_all_unattended())
+
+
+def _plugins_auto_update(rid, params):
+    """Read ``plugins.auto_apply`` for the scoped profile, or set it when ``enable`` is given."""
+    auto = _tools_mod("hermes_cli.plugins_auto_update")
+    if params.get("enable") is None:
+        return _ok(rid, auto.auto_update_state())
+    try:
+        return _ok(rid, auto.set_auto_update(bool(params.get("enable"))))
+    except _tools_mod("hermes_cli.plugins_cmd").PluginOperationError as e:
+        return _err(rid, 4021, str(e))
+
+
 def _plugins_onboarding(rid, params):
     """Catalog plugins curated for the onboarding card that this OS runs, each with its app state."""
     return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
@@ -1855,8 +1930,10 @@ def _plugins_presence(rid, params):
 
 
 _PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "presence": _plugins_presence,
-                    "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
+                    "toggle": _plugins_toggle, "install": _plugins_install, "inspect": _plugins_inspect,
+                    "install_desktop": _plugins_install_desktop, "remove_desktop": _plugins_remove_desktop,
+                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings,
+                    "update_all": _plugins_update_all, "auto_update": _plugins_auto_update}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
@@ -1864,8 +1941,9 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
-    a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
+    default True); ``inspect`` reports which halves that source ships, installing nothing; ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
+    a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``; ``update_all``
+    updates every plugin with an update; ``auto_update`` reads or (with ``enable``) sets ``plugins.auto_apply``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

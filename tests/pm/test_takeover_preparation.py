@@ -12,6 +12,7 @@ import pytest
 
 from pm.lock import Facts, Lockfile
 from pm.store import current_target, tree_digest
+from tests.fakes.main_era_venv import main_era_venv
 from tests.pm._fixtures import _wheel
 
 
@@ -44,9 +45,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     subprocess.run([uv, "lock", "--offline", "--python", sys.executable], cwd=root, env=env, check=True, capture_output=True)
     # A main-era venv that carried a gated extra: the takeover interpreter
     # (-S, so no `packaging`) must still judge the gate and drop it.
-    legacy_site = root / ".venv" / "lib" / "python3.11" / "site-packages"
-    for anchor in ("mautrix", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"):
-        (legacy_site / anchor).mkdir(parents=True)
+    main_era_venv(root, "mautrix", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks", name=".venv")
     # Only the interpreter and private manager tool are needed by this tiny
     # application. They are real host tools; PM's worker and resolver stay real.
     (root / "pm/lock.json").write_text('{"schema":1,"packages":{}}', encoding="utf-8")

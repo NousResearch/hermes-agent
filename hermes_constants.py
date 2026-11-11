@@ -10,37 +10,55 @@ import shutil
 import stat
 import sys
 from collections.abc import Callable, Mapping, MutableMapping
-from contextvars import ContextVar, Token
 from pathlib import Path
 
 _profile_fallback_warned: bool = False
-_UNSET = object()
-_HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
 
 # TUI busy-indicator styles (CLI /indicator, TUI gateway config, /help registry).
 # Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
+# Browser-hosted attachments are staged on the Hermes host and then read back
+# as a base64 data URL for the normal remote attachment RPC. Keep the upload
+# and read-back boundaries identical so a successful picker/drop can always be
+# attached afterward.
+WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
 
-def set_hermes_home_override(path: str | Path | None) -> Token:
-    """Set a context-local Hermes home override and return its reset token.
 
-    Deliberately does not mutate ``os.environ`` (shared by every thread in the process).
+def set_hermes_home_override(path: str | Path | None):
+    """Set a context-local Hermes home override (``None``: the process home); returns a token for
+    :func:`reset_hermes_home_override`.
+
+    Deliberately does not mutate ``os.environ`` (shared by every thread in the process). The
+    override is one field of the runtime scope state (``hermes_scope``), so with a scope bound a
+    call naming another profile moves the whole scope (local) or raises ``ScopeSwitchRefused``
+    (hosted); see ``agent.runtime_scope.legacy_switch``. New code binds a scope instead
+    (``agent.runtime_scope.bind_profile_scope``).
     """
-    value: str | object = _UNSET if path is None else str(path)
-    return _HERMES_HOME_OVERRIDE.set(value)
+    from hermes_scope import current_scope, push_state
+    if current_scope() is not None:
+        from agent.runtime_scope import legacy_switch
+        switched = legacy_switch(path)
+        if switched is not None:
+            return switched
+    return push_state(home=None if path is None else str(path))
 
 
-def reset_hermes_home_override(token: Token) -> None:
-    """Restore the previous context-local Hermes home override."""
-    _HERMES_HOME_OVERRIDE.reset(token)
+def reset_hermes_home_override(token) -> None:
+    """Undo the ``set_hermes_home_override`` that returned *token*."""
+    token.reset()
 
 
 def get_hermes_home_override() -> str | None:
-    """Return the active context-local Hermes home override, if any."""
-    override = _HERMES_HOME_OVERRIDE.get()
-    return str(override) if override is not _UNSET and override else None
+    """Return the active context-local Hermes home override, if any.
+
+    Read through ``sys.modules``, not an import: this module is on the boot path (launchers,
+    ``hermes_bootstrap``, ``pm``) and must work alone, including in a checkout an update left
+    half-written. Nothing can be bound before ``hermes_scope`` has finished importing, so while
+    it is absent or still initialising (another thread's first import) there is no override."""
+    current_state = getattr(sys.modules.get("hermes_scope"), "current_state", None)
+    return (current_state().home or None) if current_state is not None else None
 
 
 def _expand_hermes_home(path: str) -> Path:
@@ -960,6 +978,10 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
     knowing. Entries idle for ``SCRATCH_MAX_IDLE_HOURS`` are pruned at most once per process
     and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+    The pass itself runs in a detached child process (``hermes_constants_scratch_detach``): the
+    directory is created and permissioned before this returns, no caller (the boot hook
+    included) waits on the idle scan or the ``rmtree`` of a multi-GB entry, and the pass still
+    finishes when the caller is a ``hermes`` command that exits a moment later.
 
     Permissions follow :func:`apply_secure_dir_policy`, so an explicit ``HERMES_HOME_MODE`` or
     a managed/shared home is honored instead of a blanket ``0700`` (#117347).
@@ -1006,7 +1028,9 @@ def _prune_scratch_dir_once(scratch: Path) -> None:
         pass
     with contextlib.suppress(Exception):
         stamp.touch()
-        prune_scratch_dir(scratch)
+        from hermes_constants_scratch_detach import spawn_prune
+
+        spawn_prune(scratch)
 
 
 def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:

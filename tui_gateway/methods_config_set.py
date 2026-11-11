@@ -6,6 +6,7 @@ Keys match exactly except ``details_mode.<section>`` (prefix) and ``_DISPLAY_TOG
 
 import os
 
+from hermes_cli.config_backend import ConfigWriteError
 from hermes_constants import INDICATOR_STYLES
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -17,8 +18,54 @@ _profile_scoped = _registry.profile_scoped
 
 # ── shared helpers
 
+class ManagedKeyError(ConfigWriteError):
+    """A write to a key the administrator's managed scope pins (the next load would reinstate it).
+    Raised before anything is saved; ``config.set`` answers it with 4030."""
+
+
+def _refuse_managed_keys(*key_paths: str) -> None:
+    """Refuse the whole write when the managed scope pins any of these exact dotted leaves, with
+    the refusal ``hermes config set`` prints for the same key."""
+    from hermes_cli import managed_scope
+    from hermes_cli.config import _managed_source
+    for key_path in key_paths:
+        if managed_scope.is_key_managed(key_path):
+            raise ManagedKeyError(
+                f"Cannot set '{key_path}': it is managed by your administrator ({_managed_source('config.yaml')}) "
+                "and cannot be changed. Contact your administrator to modify it.", code="config_key_managed")
+
+
+def _refuse_managed_model_pick(reasoning_effort: str = "", result=None) -> None:
+    """A persisting /model pick writes persist_model_selection's whole plan (model.default/provider/
+    base_url/api_mode always; context_length and stale credential keys cleared only when the route
+    changed), plus agent.reasoning_effort when ``--reasoning`` parses: refused whole before anything
+    is switched or persisted. Without ``result`` (before resolution, or a pick queued mid-turn): the
+    always-written keys. With the resolved ``result``: its exact plan, conditional clears included."""
+    from hermes_cli import managed_scope
+    from hermes_constants import parse_reasoning_effort
+    if not managed_scope.managed_config_keys():
+        return
+    plan = ["default", "provider", "base_url", "api_mode"]
+    if result is not None:
+        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.model_switch import model_selection_config_updates
+        plan = list(model_selection_config_updates(result, read_user_config_raw().get("model")))
+    effort_key = ("agent.reasoning_effort",) if parse_reasoning_effort(reasoning_effort or None) else ()
+    _refuse_managed_keys(*(f"model.{key}" for key in plan), *effort_key)
+
+
 def _write_display_sections(*, sections=None, drop_sections=(), **display_fields) -> None:
-    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back."""
+    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back.
+    Without a config file (remote backend) they are explicit keyed edits, refused as a whole when
+    any key is locked (never the bulk save's silent omission of the locked part)."""
+    from hermes_cli.config_backend import supports_file_tooling
+    _refuse_managed_keys(*(f"display.{field}" for field in display_fields),
+                         *(f"display.sections.{name}" for name in (*(sections or {}), *drop_sections)))
+    if not supports_file_tooling():
+        sets = {f"display.{field}": v for field, v in display_fields.items()}
+        sets.update({f"display.sections.{name}": v for name, v in (sections or {}).items()})
+        _write_config_changes(sets, tuple(f"display.sections.{name}" for name in drop_sections))
+        return
     cfg = _load_cfg_raw()
     display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
     cur = display.get("sections") if isinstance(display.get("sections"), dict) else {}
@@ -75,12 +122,24 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     reads every iteration): stash the pick for the NEXT turn start. Selection guards run HERE (the
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
     start) — on a warning nothing is stashed."""
+    from hermes_cli.model_switch import resolve_persist_behavior
+    # A persisting pick that writes a pinned key is refused NOW, not acked and dropped at turn start.
+    # resolve_persist_behavior, not --global alone: persist_switch_by_default counts. Only the keys it
+    # always writes: a conditional clear depends on the route resolved at turn start, where
+    # _apply_model_switch checks the exact plan before anything is switched or saved.
+    if not getattr(parsed, "is_reset", False) and resolve_persist_behavior(
+            parsed.is_global, parsed.is_session, is_once=parsed.is_once, explicit_provider=parsed.explicit_provider):
+        _refuse_managed_model_pick(getattr(parsed, "reasoning_effort", ""))
     try:
         pending_model = parsed.model_input
     except Exception:
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
-    if not confirmed:
+    is_reset = getattr(parsed, "is_reset", False)
+    if is_reset:  # `/model reset` queued: show the default it adopts, not the word "reset"
+        pending_model, pending_provider = _config_model_target()
+        pending_model = pending_model or str(value)
+    if not confirmed and not is_reset:
         # A bare pick resolves against the live provider at turn start; guard on that same provider
         # here, or a provider-keyed price check passes now and drops the queued pick later.
         agent = session.get("agent")
@@ -96,10 +155,16 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
 
 
 def _cfgset_guarded(fn):
-    """Setter whose uncaught exception becomes ``_err(rid, 5001, str(e))``."""
+    """Setter whose uncaught exception becomes ``_err(rid, 5001, str(e))``. A config backend's
+    refusal (locked key, refused value) passes through to ``config.set``'s 4002 answer, like the
+    unguarded setters'."""
+    from hermes_cli.config_backend import ConfigWriteError
+
     def setter(rid, params, key, value, session):
         try:
             return fn(rid, params, key, value, session)
+        except ConfigWriteError:
+            raise
         except Exception as e:
             return _err(rid, 5001, str(e))
     return setter
@@ -256,14 +321,15 @@ def _set_focus(rid, params, key, value, session):
         return _err(rid, 4002, f"unknown focus value: {value} (use on|off|status)")
     if action == "status" or target is None:
         return _kv(rid, key, "on" if cur_focus else "off", tool_progress=_load_tool_progress_mode())
+    updates = {}
     if target:
         saved = (cur_focus and d_f.get("focus_saved_tool_progress")) or _load_tool_progress_mode()
-        _write_config_key("display.focus_saved_tool_progress", normalize_tool_progress_mode(saved))
+        updates["display.focus_saved_tool_progress"] = normalize_tool_progress_mode(saved)
         effective = FOCUS_TOOL_PROGRESS_MODE
     else:
         effective = normalize_tool_progress_mode(d_f.get("focus_saved_tool_progress") or "all")
-    _write_config_key("display.tool_progress", effective)
-    _write_config_key("display.focus_view", bool(target))
+    updates.update({"display.tool_progress": effective, "display.focus_view": bool(target)})
+    _write_config_keys(updates)  # one write: a refused key leaves focus fully as it was
     if session:
         session["focus_view"] = bool(target)
         session["tool_progress_mode"] = effective
@@ -363,8 +429,8 @@ def _word_setters() -> dict:
             sections={section: w for section in _DETAIL_SECTION_NAMES}, details_mode=w)),
         # thinking_mode also keeps details_mode aligned (compat bridge).
         "thinking_mode": (_word, {"collapsed", "truncated", "full"}, "unknown thinking_mode: {value}", lambda w: (
-            _write_config_key("display.thinking_mode", w),
-            _write_config_key("display.details_mode", "expanded" if w == "full" else "collapsed"))),
+            _write_config_keys({"display.thinking_mode": w,
+                                "display.details_mode": "expanded" if w == "full" else "collapsed"}))),
         # 'light'/'dark' pin beats background auto-detection (xterm.js hosts misreport OSC 11).
         "theme": (_word, {"auto", "light", "dark"}, "unknown theme value: {value} (use auto|light|dark)",
                   lambda w: _write_config_key("display.tui_theme", w)),
@@ -449,6 +515,11 @@ def _set_cwd(rid, params, key, value, session):
 
 @_cfgset_guarded
 def _set_prompt(rid, params, key, value, session):
+    from hermes_cli.config_backend import supports_file_tooling
+    _refuse_managed_keys("custom_prompt")
+    if not supports_file_tooling():  # one explicit key: refused when locked, never silently dropped
+        _write_config_changes({}, ("custom_prompt",)) if value == "clear" else _write_config_changes({"custom_prompt": value})
+        return _kv(rid, key, "" if value == "clear" else value)
     cfg = _load_cfg_raw()  # write-back round-trip
     if value == "clear":
         cfg.pop("custom_prompt", None)
@@ -460,6 +531,7 @@ def _set_prompt(rid, params, key, value, session):
 
 @_cfgset_guarded
 def _set_personality(rid, params, key, value, session):
+    _refuse_managed_keys("display.personality")  # persist_personality writes it without this check
     pname, new_prompt = _validate_personality(str(value or ""), _load_cfg_raw())
     # Persists via hermes_cli.personality (single owner), never the user-owned system prompt.
     from hermes_cli.personality import persist_personality
@@ -486,6 +558,16 @@ def _set_display_toggle(rid, params, key, value, session):
     return _kv(rid, key, on)
 
 
+def _set_daybreak(rid, params, key, value, session):
+    """``agent.daybreak``: profile-wide like the native owner's (gateway/session_tui_config.py). Every turn
+    reads it (prompt_turn._sync_agent_daybreak); requests check eligibility (agent/codex_service_tiers.py)."""
+    on = _BOOL_WORDS.get(str(value).strip().lower())
+    if on is None:
+        return _err(rid, 4002, f"{key} takes true or false")
+    _write_config_key("agent.daybreak", on)
+    return _kv(rid, key, on)
+
+
 # ── dispatch
 
 _CONFIG_SETTERS = {
@@ -495,7 +577,7 @@ _CONFIG_SETTERS = {
     "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
-    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
+    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin, "daybreak": _set_daybreak}
 
 # Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this
@@ -519,7 +601,13 @@ def _(rid, params: dict) -> dict:
         handler = _set_display_toggle
     if handler is None:
         return _err(rid, 4002, f"unknown config key: {key}")
-    return handler(rid, params, key, value, session)
+    from hermes_cli.config_backend import ConfigWriteError
+    try:
+        return handler(rid, params, key, value, session)
+    except ManagedKeyError as exc:  # administrator-pinned (`hermes config set` refuses it too): nothing saved
+        return _err(rid, 4030, str(exc))
+    except ConfigWriteError as exc:  # a locked key or a value the config backend refused: nothing saved
+        return _err(rid, 4002, str(exc))
 
 
 def register(server) -> None:

@@ -1,0 +1,25 @@
+name: gmi-sandbox
+title: GMI Cloud Sandbox
+repo: https://github.com/avinxshKD/hermes-gmi-sandbox
+subdir: ""
+sha: 593d6425e7d0e4d966b7dd96b16f738534e42d6f
+description: "GMI Cloud Sandbox terminal backend: Hermes's terminal, file and code tools run inside an ephemeral cloud sandbox created from a ready template you provide (`hermes config set terminal.backend gmi_sandbox`). Commands are polled to completion and cancelled on interrupt; truncated output is reported as a failure. Disclosure — community plugin, not a GMI product. With `terminal.backend: gmi_sandbox`, every terminal command, file path and file content the agent handles goes to console.gmicloud.ai and the GMI sandbox data plane with your GMI_SANDBOX_API_KEY (read per sandbox through Hermes secret scope), tagged with the plugin name and the Hermes task id. The first terminal call creates a billed sandbox with no Hermes approval prompt, and a crash can leave it running until its lifetime (default 900 s, renewed per command) expires; the plugin creates and deletes only its own sandboxes. Not yet verified against the live GMI service (offline tests only)."
+maintainer: avinxshKD
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/avinxshKD/hermes-gmi-sandbox/tree/593d6425e7d0e4d966b7dd96b16f738534e42d6f#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "Live sandbox execution, file operations and cleanup have not been verified against GMI; this entry is pinned after offline tests only."
+  - "The template must provide bash, python3 and any development tools your tasks need; Hermes's generic resource knobs do not resize the sandbox."
+  - "Persistent container mode and per-task image overrides are refused."
+  - "Command stdout and stderr are concatenated after completion, so their interleaving is not preserved."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GMI_SANDBOX_API_KEY

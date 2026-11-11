@@ -24,11 +24,21 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        # Built outside ``_create_adapter``: without its runner a push wake skips the authority FIFO
+        # and falls to a message handler this adapter never has (``deliver_wake``).
+        self.gateway_runner = getattr(authority, 'runner', None)
         self.sources = {}
         self.policies = {}
 
+    @staticmethod
+    def _source_key(source):
+        # A conversation its chat moved past keeps the chat's id, which every other one of that chat
+        # shares: its own key names it (gateway/session_detached.py).
+        from gateway.session_detached import detached_route_of
+        return detached_route_of(source) or source.chat_id
+
     def authorize_source(self, source):
-        saved = self.sources.get(source.chat_id)
+        saved = self.sources.get(self._source_key(source))
         if saved is None:
             return False
         original, identity = saved
@@ -40,7 +50,24 @@ class LocalSessionAdapter(BasePlatformAdapter):
         return source.platform, source.chat_id, source.user_id, source.profile, source.chat_type
 
     def register_source(self, source):
-        self.sources[source.chat_id] = source, self._identity(source)
+        self.sources[self._source_key(source)] = source, self._identity(source)
+
+    def kept_source(self, source):
+        """The object this route was admitted with when *source* is that same source: a closed
+        conversation retired from memory comes back with it, so the results its background work
+        still holds pass ``authorize_source`` (an identity check)."""
+        saved = self.sources.get(self._source_key(source))
+        return saved[0] if saved is not None and saved[0].to_dict() == source.to_dict() else source
+
+    def forget(self, source, route):
+        """A deleted conversation's admission source, frozen policy and post-delivery slot (a local
+        route names one conversation; a detached copy keeps only its own key, its chat's stays)."""
+        key = self._source_key(source)
+        if self.sources.get(key, (None,))[0] is source:
+            del self.sources[key]
+        if key == source.chat_id and source.platform == Platform.LOCAL:
+            self.policies.pop(key, None)
+            self._post_delivery_callbacks.pop(route, None)
 
     async def connect(self, *, is_reconnect=False):
         return True
@@ -114,9 +141,20 @@ class LocalSessionAdapter(BasePlatformAdapter):
         return None
 
 
+def forget_live_session(authority, session_id, live):
+    """What the local adapter and the authority keyed by a deleted live session."""
+    authority.launch_sources.pop(session_id, None)
+    if live.source is None or live.source.platform != Platform.LOCAL:
+        return
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None:
+        local.forget(live.source, live.route)
+
+
 def authorize_local_source(runner, source):
-    """None for legacy/nonlocal routes; registered local adapters fail closed."""
-    if source.platform != Platform.LOCAL:
+    """None for legacy/nonlocal routes and history mounts; registered local adapters fail closed."""
+    if source is None or source.platform != Platform.LOCAL:
         return None
     # A forged profile must not miss this adapter and fall into a messaging
     # allow-all policy. Local source identity is owned by this authority alone.
@@ -419,7 +457,11 @@ def local_session_info(authority, ref):
     from gateway.session_authorities import served_profile_name
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
-    info = {'source': policy.source if policy else live.source.platform.value,
+    if live.source is None:  # a history mount: what its stored row says
+        source = authority.db.get_session(ref.session_id)['source']
+    else:
+        source = policy.source if policy else live.source.platform.value
+    info = {'source': source,
             'model': (getattr(agent, 'model', policy.current_model(authority) if policy else None) if agent is not None
                       else _lazy_model(authority, policy)),
             'lazy': agent is None,
@@ -432,7 +474,7 @@ def local_session_info(authority, ref):
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
     override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
-    if agent is None and policy is None and live.source.platform != Platform.LOCAL:
+    if agent is None and policy is None and live.source is not None and live.source.platform != Platform.LOCAL:
         # A messaging chat not built yet: what its next turn resolves (its /model and /reasoning picks
         # included), so a viewer's model and reasoning pill never wait on a field that never comes.
         from gateway.session_messaging_picks import messaging_route_info
@@ -444,6 +486,9 @@ def local_session_info(authority, ref):
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
+        from gateway.session_client import policy_client
+        if (client := policy_client(policy)) is not None:  # only a client that named itself
+            info['client'] = client
         from agent.session_client_env import NOT_LOCAL_WARNING
         # Session-start notices main's TUI already renders as ``config_warning``.
         notices = (project_plugins_warning(policy), NOT_LOCAL_WARNING if policy.client_env_remote else None)
@@ -455,8 +500,10 @@ def local_session_info(authority, ref):
 
 def _classic_cli_fields(authority, ref, live, agent, policy):
     """What main's HermesCLI read off itself for /status, the status bar and the exit summary: the
-    stored title and times, the session's yolo, api_mode, the loaded tool count and a masked
-    credential hint (never the key). Lazy sessions report what is known without building an agent."""
+    stored title, archived flag, and times, the session's yolo, api_mode, the loaded tool count and a
+    masked credential hint (never the key). Lazy sessions report what is known without building an
+    agent. ``archived`` is a JSON boolean (``bool(row.get("archived"))``), never SQLite ``1``:
+    Desktop's hidden Bot Chat probe uses ``archived === true``."""
     import contextlib
     stored_id = ref.session_id
     with contextlib.suppress(Exception):
@@ -481,5 +528,6 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     started = row.get('started_at')
     return {'title': row.get('title'), 'started_at': started,
             'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
+            'archived': bool(row.get('archived')),
             'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
             'credential_hint': hint}

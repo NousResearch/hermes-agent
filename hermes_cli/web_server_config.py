@@ -3,7 +3,6 @@
 
 import logging
 import os
-from dataclasses import replace
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from agent.model_metadata import is_local_endpoint
@@ -14,6 +13,7 @@ from hermes_cli.config import (
     find_provider_entry,
     read_raw_config,
 )
+from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
@@ -404,126 +404,17 @@ def _schema_with_dynamic_provider_options() -> dict[str, dict[str, Any]]:
     return {**CONFIG_SCHEMA, **overlay} if overlay else CONFIG_SCHEMA
 
 
-def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str]:
-    """Normalize a main-slot (provider, model) pair before persisting.
-
-    The per-card "Use as → Main model" menu can send the model's VENDOR prefix as the
-    provider (analytics rows with no ``billing_provider``), producing e.g.
-    ``provider: anthropic`` + ``default: anthropic/claude-opus-4.6`` — an aggregator slug on
-    the native provider, which 400s. Two repairs at this single chokepoint:
-
-    1. Vendor-name → Hermes-provider: when the provider is not a known provider/alias but the
-       model is a vendor-prefixed slug, keep the user's CURRENT aggregator if on one, else
-       openrouter. User-declared ``providers:``/``custom_providers:`` entries resolve first,
-       and durable named-custom slugs (``custom`` / ``custom:<name>``) are excluded —
-       ``_KNOWN_PROVIDER_NAMES`` lists only the bare ``custom`` bucket, so without this a
-       LiteLLM proxy serving ``ollama/glm-5.2`` would be silently reassigned to openrouter.
-       Matching only that syntax (not ``startswith("custom")``) avoids swallowing
-       unconfigured vendors like ``customproxy``.
-    2. Model-format normalization for the resolved provider via
-       ``normalize_model_for_provider`` (custom/user providers keep the model verbatim).
-    """
-    from hermes_cli.config import load_config
-    from hermes_cli.config import get_compatible_custom_providers
-    from hermes_cli.models import _AGGREGATOR_PROVIDERS, _KNOWN_PROVIDER_NAMES, normalize_provider
-    from hermes_cli.model_normalize import normalize_model_for_provider
-    from hermes_cli.providers import resolve_custom_provider, resolve_user_provider
-
-    prov_in = (provider or "").strip()
-    model_in = (model or "").strip()
-    canonical = normalize_provider(prov_in)
-
-    try:
-        cfg = load_config()
-    except Exception:
-        cfg = {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-    user_providers = cfg.get("providers")
-    declared = resolve_user_provider(
-        prov_in, user_providers if isinstance(user_providers, dict) else {}
-    ) or resolve_custom_provider(prov_in, get_compatible_custom_providers(cfg))
-    if declared is not None:
-        return declared.id, model_in
-
-    is_custom_provider_slug = canonical == "custom" or canonical.startswith("custom:")
-    if canonical not in _KNOWN_PROVIDER_NAMES and not is_custom_provider_slug and "/" in model_in:
-        try:
-            cur_cfg = cfg.get("model", {})
-            cur_provider = (
-                str(cur_cfg.get("provider", "") or "").strip().lower() if isinstance(cur_cfg, dict) else ""
-            )
-        except Exception:
-            cur_provider = ""
-        if cur_provider and normalize_provider(cur_provider) in _AGGREGATOR_PROVIDERS:
-            canonical = normalize_provider(cur_provider)
-            prov_in = cur_provider
-        else:
-            from hermes_cli.models_detect import provider_has_credentials
-
-            # Only guess OpenRouter when the user actually holds a key for it; otherwise keep the
-            # pair as sent rather than persisting a provider they never selected.
-            if provider_has_credentials("openrouter"):
-                canonical = prov_in = "openrouter"
-
-    if canonical in _KNOWN_PROVIDER_NAMES and not canonical.startswith("custom"):
-        try:
-            model_in = normalize_model_for_provider(model_in, canonical) or model_in
-        except Exception:
-            _log.debug("model normalization failed for %s/%s", prov_in, model_in, exc_info=True)
-
-    return prov_in, model_in
-
-
 def _validated_main_model_selection(
-    cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = ""
+    cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = "",
+    explicit_endpoint: Optional[bool] = None,
 ) -> "ModelSwitchResult":
-    """Route a dashboard main-slot pick through ``switch_model`` (catalog/alias/credential
-    validation) seeded with the configured route, exactly like a ``/model <model> --provider
-    <provider> --global``. A bare ``custom`` target carries the submitted endpoint as the current
-    one, which is how ``switch_model`` binds a custom base_url/key. Rejections become 400s."""
-    from hermes_cli.config import get_compatible_custom_providers
-    from hermes_cli.model_switch import switch_model
-
-    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    is_bare_custom = provider.strip().lower() in {"custom", "local"}
-    result = switch_model(
-        raw_input=model, explicit_provider=provider, is_global=True,
-        current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
-        current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
-        current_api_key=api_key if is_bare_custom else "",
-        user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
-        custom_providers=get_compatible_custom_providers(cfg))
-    if not result.success:
-        raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
-    if is_bare_custom and base_url.strip():
-        # The submitted endpoint IS the route this pick asked for; the credential step may have
-        # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
-        # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
-        # wire protocol it mandates: ``model.base_url`` and ``model.api_mode`` are persisted
-        # together, so a mode derived from the displaced host would route the submitted endpoint
-        # over the wrong wire.
-        from hermes_cli.providers import determine_api_mode
-        url = base_url.strip()
-        result = replace(result, base_url=url,
-                         api_mode=determine_api_mode(result.target_provider, url))
-    return result
-
-
-def _apply_main_model_assignment(model_cfg: Any, result: "ModelSwitchResult", api_key: str = "") -> dict:
-    """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
-    (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
-    the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
-    dropped so a stale secret cannot shadow it.
-
-    Returns a new dict."""
-    from hermes_cli.model_switch import apply_model_selection
-
-    model_cfg = apply_model_selection(model_cfg, result)
-    if api_key.strip():
-        model_cfg["api_key"] = api_key.strip()
-        model_cfg.pop("api", None)
-    return model_cfg
+    """:func:`hermes_cli.model_assignment.validated_main_model_selection` for a dashboard route: a
+    rejected pick is a 400 with the switch's reason."""
+    from hermes_cli.model_assignment import ModelAssignmentRejected, validated_main_model_selection
+    try:
+        return validated_main_model_selection(cfg, provider, model, base_url, api_key, explicit_endpoint)
+    except ModelAssignmentRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
@@ -549,7 +440,7 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
 # Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
 # in hermes_cli/config.py — listed here for deterministic ordering in the UI.
 _AUX_TASK_SLOTS: tuple[str, ...] = (
-    "vision", "compression", "skills_hub", "approval", "mcp", "title_generation", "review", "voice_chat",
+    "vision", "compression", "approval", "mcp", "title_generation", "review", "voice_chat",
     "triage_specifier", "kanban_decomposer", "profile_describer", "curator",
 )
 
@@ -630,6 +521,7 @@ def _resolve_assignment_credentials(model_cfg: dict, provider: str, provider_ent
     it on every re-apply). Prefer the raw template; fall back to the expanded value only when
     the raw yaml itself stores the key as a literal (no new exposure).
     """
+    from hermes_cli.model_assignment import drop_model_key
     try:
         _stored, raw_entry = find_provider_entry(read_raw_config().get("providers"), provider)
     except Exception:
@@ -639,8 +531,9 @@ def _resolve_assignment_credentials(model_cfg: dict, provider: str, provider_ent
     key_env = str(raw_entry.get("key_env") or "").strip()
     if key_env:
         model_cfg["key_env"] = key_env
-        # #88990: carry the credential POINTER, never a resolved secret.
-        model_cfg.pop("api_key", None)
+        # #88990: carry the credential POINTER, never a resolved secret. Masked, not dropped, under
+        # Remote Config: an inherited inline key outranks key_env at runtime.
+        drop_model_key(model_cfg, "api_key")
     elif isinstance(provider_entry, dict) and provider_entry.get("api_key"):
         raw_key = str(raw_entry.get("api_key") or "").strip()
         model_cfg["api_key"] = raw_key if raw_key.startswith("${") and raw_key.endswith("}") else provider_entry["api_key"]
@@ -742,20 +635,33 @@ def _provider_entry(cfg: dict, provider: str) -> Any:
 def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str, api_key: str) -> "tuple[str, ModelSwitchResult]":
     """Validation half of a main-slot assignment: ``(effective base_url, switch result)``.
     ``switch_model`` fetches catalogs / probes endpoints, so callers run this BEFORE taking
-    ``_CONFIG_MUTATION_LOCK``; it writes nothing."""
+    ``CONFIG_MUTATION_LOCK``; it writes nothing."""
+    from hermes_cli.model_assignment import is_explicit_custom_endpoint, normalize_main_model_assignment
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model required for main")
-    provider, model = _normalize_main_model_assignment(provider, model)
+    explicit_endpoint = is_explicit_custom_endpoint(provider, base_url)
+    if explicit_endpoint:
+        # The Local / custom endpoint wizard: the submitted URL IS the route. Normalizing would
+        # recover a bare ``custom`` onto the first named custom provider and keep ITS URL (#145466).
+        provider, model = provider.strip(), model.strip()
+    else:
+        provider, model = normalize_main_model_assignment(provider, model)
     provider_entry = _provider_entry(cfg, provider)
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()
-    return base_url, _validated_main_model_selection(cfg, provider, model, base_url, api_key)
+    return base_url, _validated_main_model_selection(
+        cfg, provider, model, base_url, api_key, explicit_endpoint=explicit_endpoint)
 
 
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
     from hermes_cli.free_tier_bootstrap import reconcile_record
+    from hermes_cli.model_assignment import (
+        BARE_CUSTOM_SELECTORS, apply_main_model_assignment, entry_points_elsewhere, is_explicit_custom_endpoint,
+    )
+    # Recorded from the SUBMITTED args, before preparation fills a URL from a named entry.
+    explicit_endpoint = is_explicit_custom_endpoint(provider, base_url)
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
@@ -765,15 +671,22 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     # (keep the existing shape — #76324).
     provider_lc = provider.strip().lower()
     endpoint_already_known = (
-        provider_lc in {"custom", "local"} and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
-    model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
-    _resolve_assignment_credentials(model_cfg, provider, provider_entry)
+        provider_lc in BARE_CUSTOM_SELECTORS and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
+    model_cfg = apply_main_model_assignment(cfg.get("model", {}), result, api_key)
+    if not (explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)):
+        # A submitted endpoint carries its own key (or none); a ``providers.custom`` block for
+        # ANOTHER host shares the selector's name, and hydrating from it would pair the new URL with
+        # that host's key. A block for the same host (its ``key_env``) still supplies the credential.
+        _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
 
     new_provider = provider.strip().lower()
     gateway_tools = _apply_nous_gateway_defaults(cfg) if new_provider == "nous" else []
-    save_config(cfg)
-    if new_provider in {"custom", "local"} and base_url and not endpoint_already_known:
+    # One route: a model.* key locked by the time the save runs (even after the preflight guard
+    # above, or on its CAS retry) refuses the whole save instead of being omitted from it.
+    with refusing_locked_omissions("model"):
+        save_config(cfg)
+    if new_provider in BARE_CUSTOM_SELECTORS and base_url and not endpoint_already_known:
         _register_custom_endpoint(base_url, api_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()
@@ -912,7 +825,7 @@ def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple
     in order: curated-catalog detection (``detect_provider_for_model``), then the vendor-slug
     heuristic — a ``vendor/model`` slug cannot belong to a non-aggregator provider (e.g.
     ``ollama-local``), so return the sentinel ``"openrouter"``; the caller's
-    ``_normalize_main_model_assignment`` resolves the real aggregator (keeps the current one).
+    ``model_assignment.normalize_main_model_assignment`` resolves the real aggregator (keeps the current one).
     """
     name = (model_val or "").strip()
     if not name:
@@ -987,9 +900,10 @@ def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
             if model_val != prev_default and prev_provider:
                 new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
                 if new_provider and new_provider.strip().lower() != prev_provider.lower():
-                    norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
+                    from hermes_cli.model_assignment import apply_main_model_assignment, normalize_main_model_assignment
+                    norm_provider, norm_model = normalize_main_model_assignment(new_provider, resolved_model)
                     result = _validated_main_model_selection(disk_cfg, norm_provider, norm_model)
-                    disk_model = _apply_main_model_assignment(disk_model, result)
+                    disk_model = apply_main_model_assignment(disk_model, result)
                     model_val = result.new_model
             disk_model["default"] = model_val
         if ctx_sent:

@@ -20,7 +20,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import config_connected_extra
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -178,7 +178,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = str(data.get("guid") or data.get("messageGuid") or "ok")
             return SendResult(success=True, message_id=msg_id, raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            return SendResult(success=False, error=describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or str(exc) or type(exc).__name__)
 
     async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
@@ -211,7 +211,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
                         self.server_url, self._private_api_enabled, self._helper_connected)
         except Exception as exc:
-            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
+            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, describe_proxy_error(exc, env_proxy_for_redaction(self.server_url)) or exc)
             await self._close_client()
             return False
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
@@ -414,8 +414,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=rdata.get("guid") if isinstance(rdata, dict) else None,
                                   raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
-        except Exception as e:
-            return SendResult(success=False, error=str(e))
+        except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
+            return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(self.server_url)) or str(e))
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -428,8 +428,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kw) -> SendResult:
         return await self._send_attachment(chat_id, image_path, caption=caption)
 
-    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kw) -> SendResult:
-        return await self._send_attachment(chat_id, audio_path, caption=caption, is_audio_message=True)
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, is_voice=None, **kw) -> SendResult:
+        # is_voice=False is a plain audio MEDIA file (music, a sound effect): a normal attachment,
+        # never an iMessage voice memo.
+        return await self._send_attachment(chat_id, audio_path, caption=caption, is_audio_message=is_voice is not False)
 
     async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kw) -> SendResult:
         return await self._send_attachment(chat_id, video_path, caption=caption)
@@ -645,8 +647,8 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             return send_error(f"BlueBubbles send failed: {result.error}")
         return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
     except Exception as e:
-        logger.debug("BlueBubbles standalone send failed", exc_info=True)
-        return send_error(f"BlueBubbles send failed: {e}")
+        logger.debug("BlueBubbles standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction((getattr(pconfig, "extra", None) or {}).get("server_url")))))
+        return send_error(f"BlueBubbles send failed: {shown or e}")
 
 
 def interactive_setup() -> None:

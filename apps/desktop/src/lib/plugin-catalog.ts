@@ -18,12 +18,13 @@
  * Plugin dialog, which still requires the user's explicit confirmation.
  */
 
-import type { ConnectionState } from '@hermes/shared'
+import { type ConnectionState, PLUGIN_CATALOG_NAME_RE } from '@hermes/shared'
 import type { ReadableAtom } from 'nanostores'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
-import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForActiveRoute } from '@/store/active-route-request'
+import { activeGatewayProfileKey } from '@/store/gateway'
 import { $gatewayState } from '@/store/session'
 
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
@@ -31,9 +32,6 @@ export const PLUGIN_CATALOG_URL = `${CATALOG_ORIGIN}/docs/api/plugins.json`
 export const PLUGIN_CATALOG_DOCS_URL = `${CATALOG_ORIGIN}/docs/user-guide/features/plugin-catalog`
 export const SKILLS_DOCS_URL = `${CATALOG_ORIGIN}/docs/skills/`
 export const SUBMIT_MOD_URL = 'https://github.com/NousResearch/hermes-agent/compare'
-
-/** Catalog names are directory names under `plugin-catalog/`; anything else is not a lookup key. */
-export const PLUGIN_CATALOG_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
 const FETCH_TIMEOUT_MS = 15_000
 const LOOKUP_TIMEOUT_MS = 20_000
@@ -102,7 +100,7 @@ export interface CatalogLookupReply {
   status?: string
 }
 
-/** The lookup RPC for one name, as `requestGatewayForProfile` sends it for the active profile. */
+/** The lookup RPC for one name, as `requestGatewayForActiveRoute` sends it for the active route. */
 export type CatalogRequest = (
   method: 'plugins.catalog.lookup',
   params: { name: string }
@@ -143,12 +141,12 @@ export function sendWhenGatewayOpen<T>(
   return withTimeout(opened, timeoutMs, 'Hermes backend did not connect', () => stop()).then(send)
 }
 
-// The route lookup inside requestGatewayForProfile has no deadline of its own, so the
+// The route lookup inside requestGatewayForActiveRoute has no deadline of its own, so the
 // whole call is bounded here, not just the RPC.
 const activeProfileRequest: CatalogRequest = (method, params) =>
   sendWhenGatewayOpen(() =>
     withTimeout(
-      requestGatewayForProfile<CatalogLookupReply>(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS),
+      requestGatewayForActiveRoute<CatalogLookupReply>(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS),
       LOOKUP_TIMEOUT_MS,
       `request timed out: ${method}`
     )

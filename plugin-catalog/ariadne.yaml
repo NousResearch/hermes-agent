@@ -1,0 +1,42 @@
+name: ariadne
+repo: https://github.com/miracle352/hermes-ariadne
+sha: 128c95967a0761ad24d3d224441d1502c43bbb69
+title: Ariadne
+description: "Record a Hermes session once, then replay it with no model, no network and no tokens to see exactly what Hermes does differently: check whether updating Hermes is safe by replaying your own sessions (with your plugins loaded) on the new version, replay on a new build, compare two installs, bisect the Hermes commit that changed a session, fork a recorded session to a live model from any model call, export trajectories and preference pairs, and check Hermes's documented hook contracts on every run. Disclosure — recording is off until you turn it on; cassettes are written locally under plugin-data with secrets scrubbed (tool output can still hold private file contents); play, compare, bisect and fork start Hermes (python -m tui_gateway.entry) as a child process and drive it over JSON-RPC; replays copy this profile's SOUL.md, memories/ and skills/ and only an allowlist of request-shaping settings from config.yaml (never hooks, MCP servers, terminal, auxiliary endpoints or credentials; --trust-config keeps all) into a throwaway home, never .env or auth.json, decode only openai/anthropic SDK model types from cassettes, answer every approval with deny, neutralise tool arguments and block outbound network through a closed local proxy; fork makes real model calls with your configured provider inside your own home (the forked session appears in your history) and runs tools after the fork point only with --live-tools; upgrade-check (CLI, or a button in Desktop) runs git ls-remote and git clone against github.com/NousResearch/hermes-agent and uv against the package index to install that Hermes, plus the python_dependencies your enabled plugins declare, into its own venv under plugin-data/ariadne/hermes/ (your install is not touched), then replays offline and loads your enabled plugins in both scratch homes; bisect checks out commits in a Hermes checkout you name, refusing a dirty tree and restoring the original commit; the optional Desktop half (off until you enable it) adds an Ariadne page, a REC status-bar chip, a mark on recorded sessions, palette commands and a theme, and its backend routes (dashboard/plugin_api.py, loaded only when ariadne is in plugins.enabled) read the plugin's own data folder and start replays and forks as background jobs; fonts are bundled, nothing is fetched from third-party hosts; no telemetry."
+maintainer: miracle352
+tier: community
+category: tools
+docs_url: https://github.com/miracle352/hermes-ariadne/tree/128c95967a0761ad24d3d224441d1502c43bbb69#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/miracle352/hermes-ariadne/128c95967a0761ad24d3d224441d1502c43bbb69/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/miracle352/hermes-ariadne/128c95967a0761ad24d3d224441d1502c43bbb69/docs/screenshots/upgrade.png
+  - https://raw.githubusercontent.com/miracle352/hermes-ariadne/128c95967a0761ad24d3d224441d1502c43bbb69/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/miracle352/hermes-ariadne/128c95967a0761ad24d3d224441d1502c43bbb69/docs/screenshots/drift.png
+  - https://raw.githubusercontent.com/miracle352/hermes-ariadne/128c95967a0761ad24d3d224441d1502c43bbb69/docs/screenshots/contracts.png
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - on_session_end
+    - on_session_finalize
+    - subagent_start
+    - subagent_stop
+    - pre_auxiliary_call
+    - post_auxiliary_call
+    - post_compaction
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware:
+    - llm_execution
+    - tool_request
+    - tool_execution
+  requires_env: []

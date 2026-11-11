@@ -329,8 +329,8 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
 
     def pack_into_staging(cmd, *args, **kwargs):
         assert kwargs["env"]["PATH"].startswith("C:\\pm-pinned-git\\cmd;")
-        # The build holds the checkout lock, so npm arrives wrapped in the custody launcher.
-        cmd = cmd[cmd.index("/usr/bin/npm"):] if "/usr/bin/npm" in cmd else cmd
+        # The build holds the checkout lock, so pnpm arrives wrapped in the custody launcher.
+        cmd = cmd[cmd.index("/usr/bin/pnpm"):] if "/usr/bin/pnpm" in cmd else cmd
         if cmd[1:3] != ["run", "builder"]:
             return subprocess.CompletedProcess(list(cmd), 0)
         # electron-builder honours -c.directories.output=<staging>; emulate a
@@ -345,7 +345,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
         assert name == "git"
         return SimpleNamespace(env={**base_env, "PATH": "C:\\pm-pinned-git\\cmd;" + base_env["PATH"]})
 
-    with patch("hermes_cli.main_desktop.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_desktop.shutil.which", return_value="/usr/bin/pnpm"), \
          patch("hermes_cli.source_build.source_build_env", return_value={"PATH": "/usr/bin"}), \
          patch("hermes_cli.source_build.prepare_source_dependencies"), \
          patch("pm.ensure", side_effect=pinned_git), \

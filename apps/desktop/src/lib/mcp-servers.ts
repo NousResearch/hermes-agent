@@ -23,15 +23,15 @@ export function normalizeEntry(entry: Record<string, unknown>): Record<string, u
   return entry
 }
 
-// `String()` folds the value first: false → 'false', 0 / 0.0 / -0 → '0'; everything
-// else (true, other numbers, null, absent, junk) lands outside this set and reads on.
 const OFF_WORDS = new Set(['false', '0', 'no', 'off'])
 const ON_WORDS = new Set(['true', '1', 'yes', 'on'])
 
-// A legacy `disabled` (pre-v46 profile editor) reads as the backend parses it: true, a non-zero
-// number or an on word; anything else is inert.
-const legacyDisabled = (value: unknown) =>
-  typeof value === 'number' ? value !== 0 : ON_WORDS.has(String(value).trim().toLowerCase())
+// The backend's `_parse_boolish`: a bool, a number (0 is false) or a word (any case, trimmed)
+// parses; anything else (null, absent, a list, a mapping) is unparseable and takes the default.
+const boolWord = (value: unknown, words: Set<string>) =>
+  typeof value === 'number'
+    ? (value === 0) === words.has('0')
+    : (typeof value === 'boolean' || typeof value === 'string') && words.has(String(value).trim().toLowerCase())
 
 /** Whether a server entry is on. Mirrors the backend's one reader
  *  (`tools/mcp_tool_common.py::mcp_server_enabled`): false/0 and the off words
@@ -40,7 +40,7 @@ const legacyDisabled = (value: unknown) =>
  *  `mcp-enabled-cases.json` pins both sides to the same table, so the MCP page
  *  never shows a server on that the runtime skips. */
 export const serverEnabled = (entry: McpServerEntry) =>
-  !OFF_WORDS.has(String(entry.enabled).trim().toLowerCase()) && !legacyDisabled(entry.disabled)
+  !boolWord(entry.enabled, OFF_WORDS) && !boolWord(entry.disabled, ON_WORDS)
 
 /** A value a reader can reach into: an object, not `null`, an array or a scalar. */
 const isEntry = (value: unknown): value is Record<string, unknown> =>

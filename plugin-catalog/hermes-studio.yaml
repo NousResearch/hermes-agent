@@ -1,6 +1,6 @@
 name: hermes-studio
 repo: https://github.com/PabloTheThinker/hermes-studio
-sha: 82565463c5403d80b9868f42eed4a8bb7aa7fa38
+sha: e95be949a416d0f5b1a80eae964d547a7aec7770
 subdir: hermes_plugin/hermes-studio
 title: Hermes Studio
 description: >-
@@ -26,14 +26,14 @@ category: tools
 requires_hermes: ">=0.19.0"
 docs_url: https://github.com/PabloTheThinker/hermes-studio#readme
 version: "0.6.2"
-image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/banner.png
+image: https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e95be949a416d0f5b1a80eae964d547a7aec7770/docs/catalog/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/01-timeline.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/02-clips-library.jpg
-  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/82565463c5403d80b9868f42eed4a8bb7aa7fa38/docs/catalog/05-edit-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e95be949a416d0f5b1a80eae964d547a7aec7770/docs/catalog/01-timeline.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e95be949a416d0f5b1a80eae964d547a7aec7770/docs/catalog/02-clips-library.jpg
+  - https://raw.githubusercontent.com/PabloTheThinker/hermes-studio/e95be949a416d0f5b1a80eae964d547a7aec7770/docs/catalog/05-edit-timeline.jpg
 platforms: []
 known_issues:
-  - Needs the Hermes Studio engine v0.6.2 or newer installed separately (uv tool install git+https://github.com/PabloTheThinker/hermes-studio@v0.6.2). If the CLI is missing or older, each tool returns a missing_dependency error with that command.
+  - Needs the Hermes Studio engine v0.6.2 or newer installed separately (uv tool install --python 3.12 git+https://github.com/PabloTheThinker/hermes-studio@v0.6.2). If the CLI is missing or older, each tool returns a missing_dependency error with that command.
 capabilities:
   provides_tools:
     - hermes_studio_run

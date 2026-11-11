@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -303,8 +304,10 @@ def _reinstall_sidecar_deps() -> None:
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            npm = str(installed.binary)
         env = with_hermes_node_path(for_subprocess=True)
+        npm = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
+        if npm is None:
+            raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
     except pm.InstallError as exc:
         logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return

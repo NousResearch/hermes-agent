@@ -7,6 +7,7 @@ import mimetypes
 import os
 import platform
 import re
+import shutil
 import signal
 import subprocess
 from contextlib import suppress
@@ -508,8 +509,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 installed = pm.installed_package("npm")
                 if installed is None or installed.binary is None:
                     raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-                _npm_bin = str(installed.binary)
             env = with_hermes_node_path(for_subprocess=True)
+            _npm_bin = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
+            if _npm_bin is None:
+                raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
                                             env=env, **_RUN_TEXT, check=False)
             if install_result.returncode == 0:

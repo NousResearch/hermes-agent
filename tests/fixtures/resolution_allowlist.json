@@ -288,6 +288,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/main_platform_setup.py",
+    "symbol": "_whatsapp_install_bridge",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_make_tui_argv",
     "kind": "bare_which"
@@ -391,6 +396,11 @@
   {
     "path": "hermes_cli/web_routers/git.py",
     "symbol": "_probe_gh_auth",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/web_routers/messaging.py",
+    "symbol": "_ensure_whatsapp_bridge_dependencies",
     "kind": "bare_which"
   },
   {

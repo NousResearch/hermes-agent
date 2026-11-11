@@ -113,8 +113,8 @@ def node_env(base_env: dict[str, str] | None = None, *,
              for_subprocess: bool = False, explicit: bool = False) -> dict[str, str]:
     """PM's paired npm/Node environment, optionally runnable through cmd.exe in a Windows package.
 
-    Unlike terminal PATH fallback, dependency setup must surface a refused or failed copy.
-    npm's batch file is readable inside the package, but the Node it starts must live outside it.
+    Dependency setup surfaces refused or failed copies. Callers resolve npm from this PATH
+    so both the batch file and the Node it starts live outside the package.
     """
     from pm.install import env_for
     from pm.package import InstallError

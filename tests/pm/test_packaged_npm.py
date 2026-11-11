@@ -158,6 +158,10 @@ def test_setup_entry_points_use_writable_paired_context(
     calls = []
 
     def installed(command, **kwargs):
+        expected_npm = Npm().binary(
+            packaged_tools.writable / f"npm-test-{current_target()}", current_target()
+        )
+        assert command[0] == str(expected_npm)
         directories = kwargs["env"]["PATH"].split(os.pathsep)
         assert directories[:2] == [
             str(packaged_tools.writable / f"{name}-test-{current_target()}")

@@ -437,9 +437,11 @@ class GatewayTurnPersistenceMixin:
                 or self._pending_event_audio_paths(event)):
             return
         from gateway.media_repair import _current_turn_messages
-        new_messages = _current_turn_messages(
-            agent_result.get("messages") or [], agent_result.get("history_offset", 0) or 0,
-        )
+        messages = agent_result.get("messages") or []
+        offset = agent_result.get("history_offset", 0) or 0
+        new_messages = _current_turn_messages(messages, offset)
+        if offset > len(messages) and not new_messages:
+            return  # compaction kept no user message to bound the turn: what ran is unknown, resend
         if (any(m.get("role") in ("tool", "function") or m.get("tool_calls") for m in new_messages)
                 or self._hmwa_fresh_session_has_pending_input(session_entry)):
             return

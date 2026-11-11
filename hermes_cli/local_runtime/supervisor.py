@@ -25,7 +25,9 @@ import urllib.request
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_cli.local_runtime.endpoint import child_query
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
+from hermes_cli.process_identity import release_process_group_once_empty, stop_owned_group_survivors
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +204,9 @@ class LlamaServerSupervisor:
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
-        # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
+        # list-args, never a shell: spaced paths (user homes) must survive. owned: the router
+        # tree dies with this process on every OS, however this process dies (#126631).
+        self.proc, self._job = spawn_server(cmd, owned=True, stdout=self._log_handle, stderr=subprocess.STDOUT,
                                              cwd=str(exe.parent), env=server_child_env(os.environ))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
@@ -266,6 +269,9 @@ class LlamaServerSupervisor:
                 continue
             if self._stopping:
                 return
+            # An already-empty group is released now, not after the backoff: its number is free for
+            # reuse meanwhile, and the survivor stop below would then signal a stranger's group.
+            release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
             if self._stop_event.wait(backoff):
@@ -275,6 +281,9 @@ class LlamaServerSupervisor:
                 with self._lifecycle_lock:
                     if self._stopping:
                         return
+                    # The crashed router's group: stop what is left of it and release its number
+                    # before the replacement registers its own (survivors stay covered).
+                    stop_owned_group_survivors(proc.pid, proc=proc)
                     self._reap_orphaned_children()
                     self._spawn()
                 self._wait_health(120)
@@ -294,6 +303,11 @@ class LlamaServerSupervisor:
                 if self._job is not None:
                     self._job.close()
                     self._job = None
+            if self.proc is not None:
+                # A router that crashed (the watcher's restart backoff) can leave its model children
+                # running in its group: stop them, then release the group only once it is empty, so
+                # a tree we failed to kill stays covered by the owner-death supervisor.
+                stop_owned_group_survivors(self.proc.pid, proc=self.proc)
             # Retain state: deleting it could race a replacement publication.
             if self._log_handle:
                 self._log_handle.close()
@@ -460,15 +474,21 @@ class LlamaServerSupervisor:
     def _probe_idle(self, model_id: str | None = None) -> bool | None:
         """Tri-state idle probe for the sweeper: True = confirmed idle, False = confirmed
         busy, None = the probe itself failed. The sweeper must never mistake a dead probe
-        for activity — that resets the idle clock and pins the model's VRAM."""
+        for activity — that resets the idle clock and pins the model's VRAM. A model that
+        isn't loaded is idle: the router answers 400 for it (the reads don't autoload)."""
         try:
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
             for mid in loaded:
-                slots = self._request(f"/slots?model={mid}")
+                try:
+                    slots = self._request(f"/slots?{child_query(mid)}")
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 400:
+                        continue
+                    raise
                 if any(s.get("is_processing") for s in slots):
                     return False
-                with self._open(f"/metrics?model={mid}", timeout_s=10, json_type=False) as r:
+                with self._open(f"/metrics?{child_query(mid)}", timeout_s=10, json_type=False) as r:
                     text = r.read().decode()
                 for line in text.splitlines():
                     if (line.startswith("llamacpp:requests_processing")

@@ -3,13 +3,16 @@ name: Sandbox desktop image
 # nousresearch/hermes-sandbox:desktop is the terminal-backend sandbox base
 # (nikolaik/python-nodejs) plus a display stack; Bot Screen, computer_use and
 # the bot's browser run inside it when terminal.backend is docker/ssh/etc.
-# It contains NO Hermes code, so it does not need to track main: it changes
-# when its Dockerfile changes, not when the agent changes.
+# It contains NO Hermes code, so it does not need to track main.
 #
 # Triggers: a PR that edits the Dockerfile/smoke (build + smoke, no push),
-# a release (publish :<tag>-desktop and roll :desktop), and manual dispatch.
-# Deliberately NOT on every main push: two 4 GB multi-arch builds per commit
-# for an image that changes a few times a year.
+# a successful Stable Release (publish :<tag>-desktop and roll :desktop), a
+# weekly rebuild (roll :desktop from main's Dockerfile, so a Dockerfile change on
+# main reaches users within a week, not at the next release), and manual dispatch.
+# Deliberately NOT on every main push: two 4 GB multi-arch builds per commit.
+# Its CVEs come from the floating base tag and the apt packages, so freshness
+# is a rebuild on a clock, not a Dockerfile change: every publishing run
+# builds without layer cache and re-pulls the base.
 
 on:
   pull_request:
@@ -17,8 +20,13 @@ on:
       - docker/sandbox-desktop.Dockerfile
       - docker/sandbox-desktop-smoke.sh
       - .github/workflows/sandbox-image.yml
-  release:
-    types: [published]
+  # Not `release: published`: release automation creates releases with
+  # GITHUB_TOKEN, which starts no workflows, so it has not fired since v0.21.7.
+  workflow_run:
+    workflows: ['Stable Release']
+    types: [completed]
+  schedule:
+    - cron: '23 4 * * 1'
   workflow_dispatch:
     inputs:
       publish:
@@ -30,7 +38,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: sandbox-image-${{ github.event.pull_request.number || github.ref }}
+  # Every Stable Release completion gets its own group: a skipped one can't replace a green
+  # release's pending run, and a weekly or dispatch run can't replace a pending release run.
+  # A release run may race a weekly one to move :desktop; both build main's Dockerfile.
+  group: sandbox-image-${{ github.event.pull_request.number || (github.event_name == 'workflow_run' && github.run_id) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -39,7 +50,11 @@ env:
 jobs:
   # PR code: secret-free build + smoke per arch.
   build:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: >-
+      github.repository == 'NousResearch/hermes-agent' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     strategy:
       fail-fast: false
       matrix:
@@ -66,6 +81,12 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
           load: true
+          # A publishing run starts fresh so it picks up base and apt fixes; publish normally
+          # reuses these layers through the cache written below (a cache miss or a moved base
+          # tag between the jobs means publish builds cold). `pull` matters once the builder
+          # keeps state between runs.
+          no-cache: ${{ github.event_name != 'pull_request' }}
+          pull: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=sandbox-${{ matrix.arch }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope=sandbox-{0}', matrix.arch) || '' }}
 
@@ -75,7 +96,8 @@ jobs:
 
   # Trusted source only; the sole Docker Hub credential boundary.
   publish:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    # Every non-PR event publishes, except a dispatch without publish=true.
+    if: github.repository == 'NousResearch/hermes-agent' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish)
     needs: [build]
     environment: container-publish
     strategy:
@@ -129,9 +151,12 @@ jobs:
 
   # Registry-side stitch of the two digests into one tagged manifest list.
   merge:
-    if: ${{ !cancelled() && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    # Implicit success(): runs only when both publish legs pushed.
     needs: [publish]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: container-publish
     steps:
@@ -142,7 +167,7 @@ jobs:
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -153,7 +178,11 @@ jobs:
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          # Stable Release's run-name is "Stable release rc.<N>-v<version>" (claim_run_title in
+          # scripts/releases/stable.py; the tag grammar is _ATTEMPT_REF_RE in
+          # scripts/releases/versioning.py + STABLE_TAG_RE in hermes_cli/update_channel.py);
+          # the release is v<version>.
+          RUN_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -165,10 +194,16 @@ jobs:
             echo "::error::want 2 digests, found ${#args[@]} (a publish leg failed)"
             exit 1
           fi
-          # :desktop is the stable tag docker_image points at; releases also get a pinned tag.
+          # :desktop is the stable tag docker_image points at. A green Stable Release also gets
+          # :v<version>-desktop, built from main's Dockerfile when that run completes, which can be
+          # before the sequencer publishes the GitHub release.
           tags=(-t "${IMAGE_NAME}:desktop")
-          if [ -n "${RELEASE_TAG}" ]; then
-            tags+=(-t "${IMAGE_NAME}:${RELEASE_TAG}-desktop")
+          if [ "${GITHUB_EVENT_NAME}" = workflow_run ]; then
+            if [[ ! "${RUN_TITLE}" =~ ^Stable\ release\ rc\.[1-9][0-9]*-(v(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
+              echo "::error::no release tag in Stable Release run title: ${RUN_TITLE}"
+              exit 1
+            fi
+            tags+=(-t "${IMAGE_NAME}:${BASH_REMATCH[1]}-desktop")
           fi
           for i in 1 2 3; do
             if docker buildx imagetools create "${tags[@]}" "${args[@]}"; then

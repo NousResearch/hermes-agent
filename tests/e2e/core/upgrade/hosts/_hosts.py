@@ -85,7 +85,8 @@ def login_shell(sb: I.Sandbox, script: str, *, path: str = "/usr/local/bin:/usr/
     env = dict(sb.env, PATH=path)
     bash = shutil.which("bash")
     assert bash is not None, "bash required"
-    return H.run([bash, "-lic", script], env=env, cwd=sb.root, writable=[sb.root], timeout=120)
+    return H.run([bash, "-lic", script], env=env, cwd=sb.root, writable=[sb.root], timeout=120,
+                 ro_binds=H.LOGIN_SHELL_RO_BINDS)
 
 
 def interpreter_paths(sb: I.Sandbox, python: str | None = None) -> dict:

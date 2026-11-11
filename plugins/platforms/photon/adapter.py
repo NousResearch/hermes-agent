@@ -44,6 +44,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
+from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
 
 from .auth import load_project_credentials
@@ -63,7 +64,9 @@ _MAX_MESSAGE_LENGTH = 8000  # iMessage caps practical size at ~16 KB; conservati
 # token; persisted once /healthz passes, removed on every stop / failed-start path.
 # --------------------------------------------------------------------------- Sidecar runtime record The
 # gateway persists this record once the sidecar passes its /healthz readiness check, and removes it on every
-# stop / failed-start path so a stale record never outlives a dead sidecar. See #69960.
+# stop / failed-start path so a stale record never outlives a dead sidecar. See #69960. It sits at the top of
+# the profile home, where a sandbox can hide it by path (a folder the agent writes, like runtime/, can be
+# renamed to expose a hidden file below it).
 _RUNTIME_RECORD_NAME = "photon-sidecar.json"
 _DEDUP_MAX_SIZE = 4000  # the gRPC stream is at-least-once and a reconnect can replay
 _DEDUP_WINDOW_SECONDS = 48 * 3600
@@ -102,28 +105,43 @@ async def _aiter_ndjson_lines(response: Any) -> AsyncIterator[str]:
 
 def _runtime_record_path() -> Path:
     from hermes_constants import get_hermes_home  # honors profile overrides
-    return get_hermes_home() / "runtime" / _RUNTIME_RECORD_NAME
+    return get_hermes_home() / _RUNTIME_RECORD_NAME
+
+
+def _legacy_runtime_record_path() -> Path:
+    """Where earlier releases kept the record: ``<hermes-home>/runtime/``."""
+    path = _runtime_record_path()
+    return path.parent / "runtime" / path.name
+
+
+def _current_runtime_record_path() -> Path:
+    """The record path. A record at the legacy path is deleted first without being read: the agent
+    can write that folder."""
+    with contextlib.suppress(OSError):
+        _legacy_runtime_record_path().unlink()
+    return _runtime_record_path()
 
 
 def _write_runtime_record(port: int, token: str, pid: int) -> None:
     """Atomically persist ``{port, token, pid}`` 0600 from creation (best-effort)."""
     try:
-        atomic_json_write(_runtime_record_path(), {"port": port, "token": token, "pid": pid}, indent=None, mode=0o600)
+        atomic_json_write(_current_runtime_record_path(), {"port": port, "token": token, "pid": pid}, indent=None, mode=0o600)
     except Exception as e:
         logger.warning("[photon] failed to write sidecar runtime record: %s", e)
 
 
 def _read_runtime_record() -> Optional[dict[str, Any]]:
     try:
-        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8-sig"))
+        raw = json.loads(_current_runtime_record_path().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return raw if isinstance(raw, dict) else None
 
 
 def _delete_runtime_record() -> None:
-    with contextlib.suppress(OSError):
-        _runtime_record_path().unlink(missing_ok=True)
+    for path in (_runtime_record_path(), _legacy_runtime_record_path()):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
 
 
 def _sidecar_pid_alive(pid: Any) -> bool:
@@ -560,6 +578,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    serial_receive_loop = True  # the /inbound NDJSON loop awaits each line before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
@@ -1052,6 +1071,7 @@ class PhotonAdapter(BasePlatformAdapter):
             self._sidecar_proc = subprocess.Popen(  # noqa: ASYNC220 -- persistent sidecar; callers use the Popen pipes and poll()
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                # detached-spawn: ok — exits on stdin EOF (PHOTON_SIDECAR_WATCH_STDIN), so it dies with this process
                 start_new_session=(sys.platform != "win32"),
                 # Windows: run the persistent sidecar headless so it does not open
                 # (or leave) a visible console window. CREATE_NO_WINDOW only (no
@@ -1623,7 +1643,7 @@ def _standalone_token_from_record(port: int) -> tuple[Optional[str], int, str]:
                       " — the gateway appears to be down.")
     return None, port, (
         "Photon standalone send requires a running sidecar. Start the Hermes gateway (which spawns "
-        f"the sidecar and records its address under <hermes-home>/runtime/{_RUNTIME_RECORD_NAME}), "
+        f"the sidecar and records its address in <hermes-home>/{_RUNTIME_RECORD_NAME}), "
         "or set PHOTON_SIDECAR_TOKEN in this process's environment." + stale_hint)
 
 
@@ -1692,11 +1712,18 @@ async def _standalone_send(
 
 # -- Plugin entry point ----------------------------------------------------------
 
+_SEND_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")  # mirrors PhotonAdapter._DM_CHAT_GUID_RE
+
+
 def register(ctx) -> None:
     """Called by the Hermes plugin loader at startup."""
     from . import cli as _cli  # local: avoid argparse work at module load
     ctx.register_platform(
+        # DM GUIDs are adapter-native ids (mirrors the react handler).
+        target_ref_syntax_fn=regex_stripped_parser(_SEND_DM_GUID_RE),
         name="photon", label="iMessage via Photon", adapter_factory=lambda cfg: PhotonAdapter(cfg),
+        dashboard_description="Use Hermes through iMessage via Photon's managed Spectrum platform.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
         install_hint=(
@@ -1722,7 +1749,10 @@ def register(ctx) -> None:
             "sends as a rich preview card. You can send files natively: write MEDIA:/absolute/path/to/file "
             "in your response (images and video appear inline, audio as voice notes, other files as "
             "attachments). Recipient identifiers are E.164 phone numbers; never expose them in responses "
-            "unless the user asked."))
+            "unless the user asked."),
+        # Permanent-message iMessage inboxes (no edit).
+        display_tier="low",
+    )
     ctx.register_cli_command(
         name="photon", help="Set up and manage the Photon iMessage integration",
         setup_fn=_cli.register_cli, handler_fn=_cli.dispatch)

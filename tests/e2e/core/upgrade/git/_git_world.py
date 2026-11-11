@@ -54,15 +54,17 @@ def reported_success(cp: subprocess.CompletedProcess) -> bool:
     return cp.returncode == 0 or SUCCESS in output(cp)
 
 
-def n1_tag() -> str:
-    """N-1: the newest release tag strictly before HEAD."""
-    return I.git("describe", "--tags", "--abbrev=0", "--match", "v20[0-9][0-9].*", "HEAD~1", cwd=H.WORKTREE)
+def n1_tag(generation: str | None = None) -> str:
+    """The start version's ref (``_install_helpers.upgrade_base``): N-1, or ``generation``'s newest release."""
+    base = I.upgrade_base(generation)
+    if base is None:
+        pytest.skip("no release tag reachable before HEAD (fetch tags)")
+    return base.ref
 
 
-def n1_base() -> str:
-    """The commit an N-1 install sits on: N-1's tag, or ``HERMES_E2E_N1_REF`` (a patched commit
-    object, used to prove red a cell whose bug lives in N-1's own updater code)."""
-    return commit_of(os.environ.get("HERMES_E2E_N1_REF") or n1_tag())
+def n1_base(generation: str | None = None) -> str:
+    """The commit an N-1 install sits on."""
+    return commit_of(n1_tag(generation))
 
 
 def commit_of(ref: str) -> str:
@@ -222,7 +224,10 @@ def world(root: Path, *, base: str, installer_ref: str | None = None,
             _preclone(sb, preclone, w.git_env())
         script = sb.root / "install.sh"
         script.write_text(installer_script(installer_ref), encoding="utf-8")
-        cp = sb.run(["bash", str(script), "--non-interactive"], timeout=1800, input="")
+        # The served repo publishes commits on main and no release tags: install main (N-1's
+        # installer ignores the variable and installs main anyway).
+        cp = sb.run(["bash", str(script), "--non-interactive"], timeout=1800, input="",
+                    env={**sb.env, "HERMES_INSTALL_CHANNEL": "main"})
         assert cp.returncode == 0, f"install ({installer_ref or 'HEAD'} installer, base {base[:12]}) failed:\n{w.diag(cp)}"
         head = w.head()
         assert head == base, f"installer left HEAD at {head}, expected {base}\n{w.diag(cp)}"

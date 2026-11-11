@@ -249,6 +249,8 @@ class GatewayModelCommandsMixin:
         self._session_model_overrides[ctx.session_key] = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
+            # Catalog alias names carry no credential authority; only a direct alias endpoint does.
+            "owns_credentials": result.alias_endpoint_applied,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
@@ -256,8 +258,8 @@ class GatewayModelCommandsMixin:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
-        elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
-            self._pending_one_turn_model_restores.pop(ctx.session_key, None)
+        elif not picker and (_otr_state := self._peek_session_state(ctx.session_key)) is not None:
+            _otr_state.conversation.one_turn_restore = None
         # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
         # the session override (memory + store) — a redundant copy would shadow every later global
         # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
@@ -305,13 +307,14 @@ class GatewayModelCommandsMixin:
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
-        from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length_async
+        from hermes_cli.model_switch import (
+            effective_context_pin, format_model_for_display, resolve_display_context_length_async)
 
         lines = [
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
             t("gateway.model.provider_label", provider=result.provider_label or result.target_provider),
         ]
-        # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
+        # Provider-aware chain: Codex OAuth, Nous and profile live-catalog caps win over the raw models.dev entry.
         mi = result.model_info
         model_cfg: dict = {}
         config_ctx = None
@@ -321,17 +324,20 @@ class GatewayModelCommandsMixin:
                 config_ctx = int(model_cfg["context_length"])
         if not isinstance(model_cfg, dict):
             model_cfg = {}
+        base_url = result.base_url or ctx.current_base_url or ""
+        # The pin applies only while the route matches the config; the number and its label use the same answer.
+        config_ctx = effective_context_pin(
+            config_ctx, result.new_model, result.target_provider, base_url,
+            model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider"), model_cfg.get("base_url"))
         ctx_len = await resolve_display_context_length_async(
-            result.new_model, result.target_provider,
-            base_url=result.base_url or ctx.current_base_url or "",
+            result.new_model, result.target_provider, base_url=base_url,
             api_key=result.api_key or ctx.current_api_key or "", model_info=mi,
             custom_providers=ctx.custom_provs, config_context_length=config_ctx,
-            configured_model=model_cfg.get("default") or model_cfg.get("model"),
-            configured_provider=model_cfg.get("provider"),
-            configured_base_url=model_cfg.get("base_url"),
         )
         if ctx_len:
-            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}"))
+            from agent.context_pin import context_window_suffix
+            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}") + context_window_suffix(
+                ctx_len, config_ctx, model=result.new_model, provider=result.target_provider, base_url=base_url))
         if mi and mi.max_output:
             lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
         if mi:
@@ -343,6 +349,8 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.prompt_caching_enabled"))
         if result.warning_message:
             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+        if getattr(result, "usage_notice", ""):
+            lines.append(f"⚠️ {result.usage_notice}")
         if ctx.persist_global and global_error is not None:
             # Never claim a clean global commit the disk did not take (#100314).
             lines.append(t("gateway.model.warning_prefix", warning=global_error))
@@ -413,22 +421,50 @@ class GatewayModelCommandsMixin:
 
     async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
         one_turn = False if picker else ctx.one_turn
-        error = self._switch_cached_agent_model(result, ctx, picker)
-        if error is not None:
-            return error
-        self._record_switch_metrics(result, ctx, source)
-        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        from gateway.session_setting_commands import defer_local_model_pick, local_authority_live
+        authority, live = local_authority_live(self, source)
+        level = ""
+        if live is not None:
+            # A local session runs its frozen policy: the owner's canonical model mutation is the
+            # only commit, landing at the next turn boundary (this command is the running turn).
+            if one_turn:
+                return t("gateway.model.error_prefix", error=t("gateway.model.err_once_local"))
+            from hermes_constants import parse_reasoning_effort
+            effort = (ctx.reasoning_effort or "").strip().lower()
+            level = effort if parse_reasoning_effort(effort) is not None else ""
+            await asyncio.to_thread(defer_local_model_pick, authority, live, result, level)
+            self._record_switch_metrics(result, ctx, source)
+            global_error = None
+            if ctx.persist_global:
+                try:
+                    await _persist_model_switch_to_config(result, ctx.config_path)
+                except Exception as e:
+                    logger.warning("Failed to persist model switch", exc_info=True)
+                    global_error = t("gateway.model.err_config_not_updated", error=str(e) or type(e).__name__)
+        else:
+            error = self._switch_cached_agent_model(result, ctx, picker)
+            if error is not None:
+                return error
+            self._record_switch_metrics(result, ctx, source)
+            global_error = await self._record_model_switch(
+                result, ctx, source=source, one_turn=one_turn, picker=picker)
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
-        if ctx.reasoning_effort and not one_turn:
+        if level:
+            # Committed with the local pick: only the config write-through and the reply remain.
+            saved = (ctx.persist_global and global_error is None
+                     and self._save_gateway_config_key("agent.reasoning_effort", level))
+            reply += "\n" + t("gateway.reasoning.set_global" if saved else "gateway.reasoning.set_session",
+                              effort=level)
+        elif ctx.reasoning_effort and not one_turn:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
             reply += "\n" + self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
                 persist_global=ctx.persist_global and global_error is None)
-        return reply
+        return reply + ("\n" + t("gateway.model.local_next_turn") if live is not None else "")
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
@@ -442,6 +478,8 @@ class GatewayModelCommandsMixin:
             providers = []
         if not providers:
             return False
+        from gateway.approval_actor import opener_authority
+        on_model_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         result = await adapter.send_model_picker(
             chat_id=source.chat_id, providers=providers,
             current_model=listing_kwargs["current_model"],
@@ -496,6 +534,7 @@ class GatewayModelCommandsMixin:
         lines.append(t("gateway.model.usage_switch_model"))
         lines.append(t("gateway.model.usage_switch_provider"))
         lines.append(t("gateway.model.usage_persist"))
+        lines.append(t("gateway.model.usage_reset"))
         return "\n".join(lines)
 
     async def _model_selection_guard_reply(
@@ -570,7 +609,7 @@ class GatewayModelCommandsMixin:
             # that searches by the complete peer tuple when session_key doesn't match. origin_json and
             # display_name complete the identity (same shape as the reset path's db_create_kwargs in
             # gateway/session.py, #82633) so consumers that read routing/presentation data from state.db
-            # (mcp_serve, mirror, channel directory) see the branch row fully formed with zero backfill gap.
+            # (the mcp-serve plugin, mirror, channel directory) see the branch row fully formed with zero backfill gap.
             session_key=session_key,
             source=source,
             config_path=(profile_home or _hermes_home) / "config.yaml",
@@ -583,6 +622,14 @@ class GatewayModelCommandsMixin:
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
         ctx.read_config()
+        if request.is_reset:
+            return await self._handle_model_reset(event, ctx)
+        # Turn precedence: session /model > channel_overrides > config.yaml.
+        # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
+        from gateway.session_info_route import channel_override_route
+        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(channel_override_route, getattr(self, "config", None), source)
+        if _ch_model:
+            ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
@@ -593,6 +640,178 @@ class GatewayModelCommandsMixin:
         if guard_fired:
             return guard_reply
         return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+
+    def _channel_default_route(self, source, config_path) -> tuple[str, str]:
+        """``(model, provider)`` this chat runs with no session override: channel_overrides, else the
+        owning profile's config.yaml (read from *config_path*: slash dispatch runs outside the routed
+        profile's scope on a multiplexed runner)."""
+        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        cfg = _load_gateway_config(config_path=config_path) or {}
+        model_cfg = cfg.get("model")
+        provider = str(model_cfg.get("provider") or "") if isinstance(model_cfg, dict) else ""
+        channel = self._channel_override_for(source)
+        if channel is not None and channel.model:
+            return channel.model, channel.provider or ""
+        return _resolve_gateway_model(cfg), "" if provider.lower() == "auto" else provider
+
+    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext) -> Optional[str]:
+        """``/model reset``: drop this session's /model override (memory, store and any armed
+        ``--once`` restore) so the next turn resolves channel_overrides > config.yaml again. The
+        transcript is kept; before this the only way off a persisted override was ``/new``."""
+        source, session_key = ctx.source, ctx.session_key
+        default_model, default_provider = await asyncio.to_thread(
+            self._channel_default_route, source, ctx.config_path)
+        from gateway.session_setting_commands import local_authority_live
+        if local_authority_live(self, source)[1] is not None:
+            # A local session runs a frozen policy with no override tier: reset is a session-scoped
+            # pick of the configured default, committed by the owner like any typed /model.
+            ctx.persist_global = False
+            result, error = await self._perform_model_switch(ctx, default_model, default_provider, source)
+            if error is not None:
+                return error
+            return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+        # A restart leaves the persisted override unloaded until first use: load it, or the reply
+        # says "none active" while the store resurrects it on the next message.
+        await asyncio.to_thread(self._rehydrate_session_model_override, session_key)
+        previous = self._session_model_overrides.pop(session_key, None)
+        if (_otr_state := self._peek_session_state(session_key)) is not None:
+            _otr_state.conversation.one_turn_restore = None
+        try:
+            await self.async_session_store.set_model_override(session_key, None)
+        except Exception:
+            logger.warning("Failed to clear persisted session model override", exc_info=True)
+        shown = default_model or t("gateway.shared.unknown_value")
+        if previous is None:
+            return t("gateway.model.reset_none", model=shown)
+        from hermes_cli.model_switch import format_model_for_display
+        _sess_db = getattr(self, "_session_db", None)
+        if _sess_db is not None:  # the dashboard's session-model column (#34850)
+            try:
+                entry = await self.async_session_store.get_or_create_session(source)
+                await _sess_db.update_session_model(entry.session_id, default_model, provider=default_provider or None)
+            except Exception:
+                logger.debug("Failed to persist model reset to DB", exc_info=True)
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        self._pending_model_notes[session_key] = (
+            f"[Note: the session model override was cleared; model changed from "
+            f"{format_model_for_display(previous.get('model') or '')} back to the default "
+            f"{format_model_for_display(default_model)}. Adjust your self-identification accordingly.]")
+        self._evict_cached_agent(session_key)  # next turn builds from the default route
+        return t("gateway.model.reset_done", model=format_model_for_display(shown))
+
+    # -------------------------------------------------- usage-window limit: one-tap switch
+
+    def _schedule_usage_limit_offer(self, event: MessageEvent, limit: dict, *, session_key: str = "",
+                                    generation: Optional[int] = None) -> None:
+        """After a usage-window refusal's reply: offer the plan's recommended model as a button where the
+        platform already has quick-choice buttons, else one line of text.
+
+        Runs as the adapter's post-delivery callback, so the offer always lands under the reply (the reply
+        is sent after this turn returns). The tap switches this session only (never the default) and
+        re-sends the refused message, like /retry. No credits button in a chat: anyone in the room could
+        spend the owner's credits, so the Portal is named instead. Hermes never switches on its own."""
+        try:
+            adapter = self._delivery_adapter_for(event.source) if event.source is not None else None
+            register = getattr(adapter, "register_post_delivery_callback", None)
+            if session_key and callable(register):
+                register(session_key, lambda: self._offer_usage_limit_switch(event, limit, generation),
+                         generation=generation)
+                return
+            self._track_background_task(self._offer_usage_limit_switch(event, limit, generation))
+        except Exception:
+            logger.debug("usage-limit offer scheduling failed", exc_info=True)
+
+    async def _offer_usage_limit_switch(self, event: MessageEvent, limit: dict,
+                                        generation: Optional[int] = None) -> None:
+        from agent.plan_limits import limit_next_steps_from_payload
+        try:
+            suggestions = [s for s in (limit.get("suggestions") or []) if isinstance(s, dict) and s.get("model")]
+            source = event.source
+            if source is None:
+                return
+            prefix = self._typed_command_prefix_for(source.platform)
+            adapter = self._delivery_adapter_for(source)
+            session_key = self._session_key_for_source(source)
+            if suggestions and adapter is not None and getattr(type(adapter), "send_choice_picker", None) is not None:
+                async def _on_choice(_chat_id: str, value: str) -> str:
+                    if generation is not None and self._usage_limit_offer_is_stale(session_key, generation):
+                        # A newer turn ran since the refusal: /retry would re-run that one, not the refused one.
+                        return t("platform.discord.picker.choice_expired")
+                    return await self._accept_usage_limit_switch(
+                        event, value, offer=None if generation is None else (session_key, generation))
+
+                choices = [{"value": str(s["model"]),
+                            "label": t("gateway.usage_limit.switch_choice", model=str(s.get("label") or s["model"]),
+                                       note=str(s.get("note") or "")),
+                            "is_current": False} for s in suggestions]
+                if await self._try_send_choice_picker(
+                        event, session_key, title=t("gateway.usage_limit.picker_title"), choices=choices,
+                        on_choice_selected=_on_choice):
+                    return
+            text = limit_next_steps_from_payload(limit, model_command=f"{prefix}model", topup_command=None, portal=True)
+            if adapter is not None and text:
+                await adapter.send(source.chat_id, text, metadata=self._reply_metadata(event))
+        except Exception:
+            logger.debug("usage-limit offer failed", exc_info=True)
+
+    def _usage_limit_offer_is_stale(self, session_key: str, generation: int) -> bool:
+        """True once the session has started a newer run than the refused one. Fails open (not stale)."""
+        try:
+            return int(self._session_state(session_key).persistent.run_generation) != int(generation)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
+
+    async def _accept_usage_limit_switch(self, event: MessageEvent, model_id: str, *,
+                                         offer: Optional[tuple[str, int]] = None) -> str:
+        """The tap: switch this session to *model_id* on Nous, then re-send the refused message.
+        ``offer`` is the refused turn's ``(session_key, run_generation)``."""
+        from gateway.run import _hermes_home
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(event.source)
+        ctx = _ModelSwitchContext(session_key=session_key, source=source,
+                                  config_path=(profile_home or _hermes_home) / "config.yaml", persist_global=False)
+
+        async def _switch() -> str:
+            ctx.read_config()
+            ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+            result, error = await self._perform_model_switch(ctx, model_id, "nous", event.source)
+            if error is not None:
+                return error
+            return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
+
+        before = self._session_model_overrides.get(session_key)
+        if profile_home is None:
+            reply = await _switch()
+        else:
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                reply = await _switch()
+        after = self._session_model_overrides.get(session_key)
+        switched = after is not None and after is not before and after.get("provider") == "nous"
+        if switched:
+            # Only after the switch landed (an error reply leaves the override unchanged). Exactly a typed /retry from the same sender (rewinds the refused turn, runs the message
+            # again, and the adapter delivers the reply). Called directly, the re-run's reply would be
+            # returned to nobody.
+            self._track_background_task(self._dispatch_usage_limit_retry(event, offer))
+        return reply
+
+    async def _dispatch_usage_limit_retry(self, event: MessageEvent, offer: Optional[tuple[str, int]] = None) -> None:
+        from gateway.platforms.event import MessageType
+        adapter = self._delivery_adapter_for(event.source)
+        # Re-checked here, with no await before the /retry: the switch awaited model resolution, and a
+        # turn that ran meanwhile is what /retry would rewind. The switch itself stands.
+        if adapter is None or (offer is not None and self._usage_limit_offer_is_stale(*offer)):
+            return
+        try:
+            await adapter.handle_message(MessageEvent(
+                text="/retry", message_type=MessageType.TEXT, source=event.source,
+                raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+        except Exception:
+            logger.debug("usage-limit retry dispatch failed", exc_info=True)
 
     # -------------------------------------------------- /codex-runtime, /personality
 
@@ -728,6 +947,8 @@ class GatewayModelCommandsMixin:
         adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
+        from gateway.approval_actor import opener_authority
+        on_choice_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         try:
             result = await adapter.send_choice_picker(
                 chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,
@@ -786,7 +1007,8 @@ class GatewayModelCommandsMixin:
             current_effort = rc.get("effort", "medium")
             level = effort_display_label(current_effort, *_route)
         display_state = t("gateway.reasoning.display_on") if self._show_reasoning else t("gateway.reasoning.display_off")
-        has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
+        _rs_state = self._peek_session_state(session_key)
+        has_session_override = _rs_state is not None and _rs_state.conversation.reasoning_override is not None
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:

@@ -61,26 +61,29 @@ class ResolvedCommentRule:
 
 
 class _MtimeCache:
-    """Mtime-based JSON file cache: ``stat()`` per access, re-read only on change. ``path`` is a
+    """JSON file cache: ``utils.file_cache_version`` per access, re-read only on change. ``path`` is a
     ``Path`` or a zero-arg callable resolving one; state is keyed per resolved path so profiles
     routed through one multiplexed process never share a slot."""
 
     def __init__(self, path: Path | Callable[[], Path]):
         self._resolve = path if callable(path) else (lambda: path)
-        self._entries: dict[Path, tuple[float, dict]] = {}
+        self._entries: dict[Path, tuple[tuple, dict]] = {}
 
     def invalidate(self) -> None:
         self._entries.pop(self._resolve(), None)
 
     def load(self) -> dict:
+        from utils import file_cache_version
         path = self._resolve()
         try:
-            mtime = path.stat().st_mtime
+            version = file_cache_version(path)
         except FileNotFoundError:
             self._entries.pop(path, None)
             return {}
+        except OSError:
+            version = None  # unreadable: the read below logs it and serves {}; never a cache hit
         cached = self._entries.get(path)
-        if cached is not None and cached[0] == mtime:
+        if cached is not None and version is not None and cached[0] == version:
             return cached[1]
         try:
             with open(path, "r", encoding="utf-8-sig") as f:
@@ -89,7 +92,7 @@ class _MtimeCache:
             logger.warning("[Feishu-Rules] Failed to read %s, using empty config", path)
             data = {}
         data = data if isinstance(data, dict) else {}
-        self._entries[path] = (mtime, data)
+        self._entries[path] = (version, data)
         return data
 
 

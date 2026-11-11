@@ -5,8 +5,9 @@ name: Bootstrap installer build
 # Azure Trusted Signing, macOS arm64 dmg signed with the Developer ID cert and
 # notarized. Uploaded as run artifacts only; nothing is published.
 #
-# No caches of any kind: no actions/cache, no setup-node cache, and fresh
-# npm/cargo/electron-builder cache dirs under RUNNER_TEMP.
+# No caches of any kind: no actions/cache, no setup-pm cache, and fresh
+# pnpm/cargo/electron-builder cache dirs under RUNNER_TEMP (setup-pm keeps
+# pnpm's store there too).
 
 on:
   workflow_dispatch:
@@ -50,9 +51,11 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+      - uses: ./.github/actions/setup-pm
         with:
-          node-version: 24.11.1
+          toolchain: node
+          cache: false
+          cache-node: false
 
       - name: Fresh cache dirs
         shell: bash
@@ -60,7 +63,7 @@ jobs:
           {
             echo "CARGO_HOME=$RUNNER_TEMP/cargo-home"
             echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target"
-            echo "npm_config_cache=$RUNNER_TEMP/npm-cache"
+            echo "pnpm_config_cache_dir=$RUNNER_TEMP/pnpm-cache"
             echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/electron-builder-cache"
           } >> "$GITHUB_ENV"
           echo "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
@@ -87,9 +90,9 @@ jobs:
         shell: bash
         run: |
           rustup target add x86_64-pc-windows-msvc
-          npm ci --workspace apps/bootstrap-installer --include-workspace-root=false --prefer-online --no-audit --no-fund
+          pnpm install --frozen-lockfile --filter "{./apps/bootstrap-installer}..."
           cd apps/bootstrap-installer
-          npx tauri build --target x86_64-pc-windows-msvc --no-bundle
+          pnpm exec tauri build --target x86_64-pc-windows-msvc --no-bundle
           exe="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/Hermes-Setup.exe"
           mkdir -p "$RUNNER_TEMP/out"
           cp "$exe" "$RUNNER_TEMP/out/Hermes-Setup.exe"
@@ -126,7 +129,7 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          npm ci --workspace apps/desktop --include-workspace-root=false --prefer-online --no-audit --no-fund
+          pnpm install --frozen-lockfile --filter "{./apps/desktop}..."
           # shellcheck disable=SC2016 # JS template literal, not shell
           EXE="$(cygpath -w "$RUNNER_TEMP/out/Hermes-Setup.exe")" node --input-type=module -e '
             import { pathToFileURL } from "node:url"
@@ -160,16 +163,18 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+      - uses: ./.github/actions/setup-pm
         with:
-          node-version: 24.11.1
+          toolchain: node
+          cache: false
+          cache-node: false
 
       - name: Fresh cache dirs
         run: |
           {
             echo "CARGO_HOME=$RUNNER_TEMP/cargo-home"
             echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target"
-            echo "npm_config_cache=$RUNNER_TEMP/npm-cache"
+            echo "pnpm_config_cache_dir=$RUNNER_TEMP/pnpm-cache"
           } >> "$GITHUB_ENV"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
@@ -236,9 +241,9 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           rustup target add aarch64-apple-darwin
-          npm ci --workspace apps/bootstrap-installer --include-workspace-root=false --prefer-online --no-audit --no-fund
+          pnpm install --frozen-lockfile --filter "{./apps/bootstrap-installer}..."
           cd apps/bootstrap-installer
-          npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+          pnpm exec tauri build --target aarch64-apple-darwin --bundles app,dmg
 
       - name: Sign, notarize and staple the dmg
         run: |

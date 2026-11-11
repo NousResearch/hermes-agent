@@ -71,7 +71,7 @@ def _prepare_connection_retirement():
 _HEADER_PROBE_LOCK = threading.Lock()
 _HEADER_PROBE_FDS: dict[str, tuple[int, int, int]] = {}  # key -> (fd, dev, ino)
 _RETIRED_HEADER_PROBE_FDS: list[int] = []  # intentionally never closed
-_FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+_FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram")
 
 
 def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
@@ -752,7 +752,8 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
     from hermes_state import _connect_tracked_db
     stats: dict[str, Any] = dict.fromkeys((
         "page_count", "page_size", "freelist_count", "logical_size_bytes", "wal_size_bytes", "journal_mode",
-        "messages", "sessions", "fts_tables", "fts_storage_version", "fts_rebuild_pending",
+        "messages", "sessions", "fts_tables", "fts_storage_version", "fts_storage_upgrade_needed",
+        "fts_teardown_pending", "fts_rebuild_pending",
         "fts_rebuild_high_water", "fts_rebuild_progress", "fts_rebuild_deferral"))
     # WAL sidecar size needs no connection at all.
     with contextlib.suppress(OSError):
@@ -795,11 +796,19 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
         # virtual tables themselves — a corrupt index must not fail stats).
         with contextlib.suppress(Exception):
             names = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
                 _FTS_TABLE_NAMES).fetchall()}
             stats["fts_tables"] = {t: (t in names) for t in _FTS_TABLE_NAMES}
         # Raw state_meta reads — cheap, and independent of SessionDB.
         stats["fts_storage_version"] = _meta_int("fts_storage_version")
+        with contextlib.suppress(Exception):
+            from hermes_state_fts import fts_layout_drift
+            stats["fts_storage_upgrade_needed"] = bool(fts_layout_drift(conn.cursor()))
+        with contextlib.suppress(Exception):
+            # Demoted old-index tables still awaiting teardown: an optimize-storage run stopped after its backfill.
+            stats["fts_teardown_pending"] = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' "
+                "LIMIT 1").fetchone() is not None
         stats["fts_rebuild_high_water"] = high_water = _meta_int("fts_rebuild_high_water")
         stats["fts_rebuild_progress"] = progress = _meta_int("fts_rebuild_progress")
         stats["fts_rebuild_pending"] = False if high_water is None else (progress or 0) < high_water

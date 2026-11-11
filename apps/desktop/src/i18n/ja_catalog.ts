@@ -60,7 +60,7 @@ export const jaCatalog = {
   retry: '再試行',
   more: 'さらに表示',
   pinned: 'レビュー済みコミット',
-  snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
+  snapshotHint: 'Unitalkカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
   installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
   results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
   back: '結果に戻る'

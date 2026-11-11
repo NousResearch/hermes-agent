@@ -1,11 +1,11 @@
 name: taskreel
 repo: https://github.com/SuryaXyz-art/taskreel
-sha: "5bf0235026ed5ab3968f1cbbcba20328ac5c943f"
+sha: "cfa88baa989bbb181d43f6f42f52c970a883c177"
 description: "Teach Hermes a local task once, then replay it with no model call. Checkpoints stop the replay on the first failed step."
 maintainer: SuryaXyz-art
 tier: community
 category: automation
-version: "1.0.0"
+version: "1.0.1"
 requires_hermes: ">=0.20.5"
 readme: true
 capabilities:

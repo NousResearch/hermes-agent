@@ -1,0 +1,23 @@
+name: hermes-backup
+repo: https://github.com/nizini-london/hermes-backup
+sha: 8e3ff78de189d41bb78776ba8243ae133013f411
+description: Encrypted restic backup and verified restore for the Hermes home — dual-target (local disk + S3), hot-database shadow copies, and a DR drill that proves restores actually come back.
+maintainer: Shaun Xenon
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - backup_status
+    - backup_now
+    - backup_list
+    - backup_verify
+    - backup_restore
+    - backup_restore_commit
+    - backup_drill
+    - backup_setup
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

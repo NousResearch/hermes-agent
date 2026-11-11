@@ -1,0 +1,52 @@
+# Prepared catalog entry; publication and Rule 9 review remain pending.
+# Demo: D_switchboard.mp4 is a labelled UI re-creation, not live candidate capture.
+name: hermes-intercom
+title: "Hermes Intercom"
+repo: https://github.com/greqone/hermes-intercom
+sha: "0d31c9cd01bfeb962e302d8f87941695c155a2e5"
+subdir: ""
+description: >-
+  Cross-session discovery and inter-agent messaging for Hermes Agent across Desktop,
+  TUI, CLI, Discord, and Telegram within the active profile. Adds `session_list`
+  (read-only, schema-tolerant discovery over the profile's `state.db` and
+  `gateway_routing` table, reporting whether each session has a live route or only a
+  synthesized `:local:dm:` key) and `session_send` (delivers `[Message from agent
+  '<sender>']` cards with `[intercom from=<id> hop=<n>/<max> mode=<reply|fyi>]`
+  loop protection, per-sender deduplication, and per-target rate limiting). Automatically
+  mounts dormant `:local:dm:` sessions in the local gateway authority before injection.
+  From a classic CLI REPL or external process, a `:local:dm:` target falls back to
+  `prompt.submit` over the local Gateway WebSocket when `allow_gateway_injection: true`.
+  A Discord or Telegram target has no such fallback. Disclosure — reads `$HERMES_HOME/state.db` (`sessions`, `gateway_routing`,
+  and `messages` tables) in read-only mode to list sessions, resolve targets, and read
+  inbound hop tags; reads `$HERMES_HOME/config.yaml` only to check the boolean
+  `plugins.entries.hermes-intercom.allow_gateway_injection` gate when not already set on
+  `ctx`; connects to the active profile's local loopback Gateway WebSocket
+  (`hermes_cli.gateway_runtime.discover_gateway_endpoint` and
+  `hermes_cli.gateway_client.connect_gateway`) to mount dormant `:local:dm:` sessions
+  (`session.resume` with `omit_messages=True`, then `session.detach`) and, when
+  `allow_gateway_injection: true` is enabled in `config.yaml`, to submit prompts via
+  `prompt.submit`; injects attributed messages into other sessions in the same profile
+  (which triggers model turns in the target session under that profile's configured
+  model and tool permissions, bounded by `max_hops` and per-target rate limits); and
+  appends delivery metadata (`ts`, session IDs, hop counts, content SHA-256 prefix, and
+  request/admission IDs — never message plaintext) to
+  `$HERMES_HOME/cache/hermes-intercom/audit.jsonl` (POSIX `0600` requested; Windows access follows directory ACL, rotated at 2 MiB). The plugin adds no external service endpoint or third-party runtime dependency;
+  host-configured model and tool calls may use external services, and `desktop/plugin.js` is a
+  no-op module that stays strictly inside the Desktop Plugin SDK surface.
+maintainer: greqone
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/greqone/hermes-intercom#readme
+version: "0.1.0"
+platforms: []
+readme: true
+screenshots: []
+capabilities:
+  provides_tools:
+    - session_list
+    - session_send
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

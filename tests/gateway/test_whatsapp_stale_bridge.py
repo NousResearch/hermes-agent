@@ -65,6 +65,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_process = None
     adapter._reply_prefix = None
     adapter._send_read_receipts = False
+    adapter._mark_online = False
     adapter._dm_policy = adapter._group_policy = "pairing"
     adapter._allow_from = adapter._group_allow_from = set()
     adapter._running = False

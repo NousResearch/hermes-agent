@@ -96,6 +96,13 @@ const SEND_READ_RECEIPTS =
   typeof process.env.WHATSAPP_SEND_READ_RECEIPTS === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SEND_READ_RECEIPTS.toLowerCase());
 
+// Appear online while connected (WhatsApp shows presence only for a bridge that marks itself online).
+const MARK_ONLINE =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_MARK_ONLINE === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_MARK_ONLINE.toLowerCase());
+
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 // Cache directories: the Python gateway passes the profile-aware paths via
@@ -437,7 +444,7 @@ async function startSocket() {
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
-    markOnlineOnConnect: false,
+    markOnlineOnConnect: MARK_ONLINE,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
@@ -1140,6 +1147,24 @@ app.post('/typing', async (req, res) => {
   }
 });
 
+// React to an inbound message (empty emoji removes our reaction). `key` is the
+// message's readReceiptKey, which carries `participant` for group messages.
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const { chatId, key, emoji } = req.body;
+  if (!chatId || !key?.id) return res.status(400).json({ error: 'chatId and key.id required' });
+
+  try {
+    await sendWithTimeout(chatId, { react: { text: String(emoji || ''), key } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Mark an inbound message as read only after the Python adapter has accepted
 // it through the authoritative DM/group/mention intake policy.
 app.post('/read', async (req, res) => {
@@ -1197,6 +1222,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    markOnline: MARK_ONLINE,
     // path.resolve, not realpath: the adapter compares against os.path.abspath, which keeps symlinks.
     session: path.resolve(SESSION_DIR),
     capabilities: { outboundMentions: true },

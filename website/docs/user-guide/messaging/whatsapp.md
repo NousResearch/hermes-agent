@@ -271,9 +271,15 @@ whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
   send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
+  reactions: false                          # React 👀 / ✅ / ❌ to messages while Hermes handles them
+  mark_online: false                        # Appear online while the bridge is connected
 ```
 
 When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+When `reactions` is `true`, Hermes reacts 👀 to each accepted message when processing starts and swaps it for ✅ on success or ❌ on failure (a cancelled turn clears the reaction), like the Telegram and Discord reactions. WhatsApp keeps one reaction per sender, so each step replaces the previous one.
+
+When `mark_online` is `true`, the bridge marks itself online on connect, so contacts see you as online while the gateway is connected. By default it stays offline and only sends the "typing…" indicator. Like `send_read_receipts`, changing it restarts the bridge on the next connection.
 
 Delivery and read status of the messages Hermes sends is logged to `gateway.log`, one line per status change (`server_ack`, `delivered`, `read`, `played`, or `error` with WhatsApp's error code). In groups, each recipient's receipt is its own line with `recipient=`. Messages typed by a person on the linked phone are not logged.
 

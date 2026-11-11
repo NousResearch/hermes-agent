@@ -1,7 +1,7 @@
 name: hermes-r0b0t-vibecad
 title: vibeCAD
 repo: https://github.com/r0b0tlab/hermes-r0b0t-vibeCAD
-sha: "921938cd4d85d33a483c85b7b944106418f481b7"
+sha: "edd839b727540875cdb4ec196796495f67598e90"
 description: >
   Profile-driven FDM CAD: executes trusted build123d workspace models or
   prepares a local single-shell STL, checks printer fit, renders depth-tested
@@ -21,7 +21,7 @@ maintainer: am423
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
-version: "0.4.0"
+version: "0.4.1"
 capabilities:
   provides_tools:
     - vibecad_list_printer_profiles

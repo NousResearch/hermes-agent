@@ -93,7 +93,8 @@ async def _attach_while_loading(tmp_path, monkeypatch, *, during_load, purpose='
 
     tickets = TicketStore('owner', [str(tmp_path)])
     ticket = tickets.mint(profile_id=str(tmp_path), subject='human', purpose=purpose)
-    authority = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / 'state.db'), profile_id=str(tmp_path), runner=None)
+    authority = SimpleNamespace(persistence=SimpleNamespace(scope=SimpleNamespace(profile_dir=tmp_path.resolve())),
+                                profile_id=str(tmp_path), runner=None)
     runner = SimpleNamespace(_draining=False, session_runtime_descriptor={'state': 'ready'},
                              session_authority=authority, session_ticket_store=tickets)
     handled, sent = [], []

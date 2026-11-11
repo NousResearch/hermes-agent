@@ -267,18 +267,19 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
     """#114909: a Desktop reconnect / resume remints the UI session id (new sid, new session record) and
     compression rotates the durable key. The read-only roster must keep showing the conversation's still-
     running children; a foreign conversation on the same transport sees nothing and control stays exact."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools.delegate_tool_child_run import _register_child
     from tools.delegate_tool_registry import _unregister_subagent
 
     server, owner, transport, call = runtime
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="conv", source="tui", model="test")
-    db.append_message(session_id="conv", role="user", content="hi")
-    db.end_session("conv", end_reason="compression")
-    db.create_session(session_id="conv2", source="tui", model="test", parent_session_id="conv")
-    db.append_message(session_id="conv2", role="user", content="continued")
-    owner["agent"] = parent = SimpleNamespace(session_id="conv", _session_db=db)
+    persistence = open_persistence(profile_scope(home=tmp_path))
+    seed_session(persistence, "conv", "tui", model="test")
+    seed_messages(persistence, "conv", {"role": "user", "content": "hi"})
+    persistence.sessions.end("conv", "compression")
+    seed_session(persistence, "conv2", "tui", model="test", parent_session_id="conv")
+    seed_messages(persistence, "conv2", {"role": "user", "content": "continued"})
+    owner["agent"] = parent = SimpleNamespace(session_id="conv", _session_db=persistence, persistence=persistence)
     stopped = []
     child = SimpleNamespace(_subagent_id="child", _delegate_depth=1, model="test",
                             hard_interrupt=lambda message: stopped.append(message))
@@ -287,7 +288,7 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
     try:
         def live_session(key):
             return {"session_key": key, "history": [], "transport": transport,
-                    "agent": SimpleNamespace(session_id=key, _session_db=db)}
+                    "agent": SimpleNamespace(session_id=key, _session_db=persistence, persistence=persistence)}
 
         # Reminted UI sid, rebuilt session record, same durable conversation.
         server._sessions = {"ui-new": live_session("conv")}
@@ -302,7 +303,7 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
         assert stopped == []
     finally:
         _unregister_subagent("child")
-        db.close()
+        persistence.close()
 
 
 def test_list_surfaces_failed_delegations_that_outlived_the_live_roster(runtime):

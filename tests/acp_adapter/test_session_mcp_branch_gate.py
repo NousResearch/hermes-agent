@@ -8,6 +8,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_read import session_row
 
 
 class _Bridge:
@@ -40,7 +41,7 @@ def owner(tmp_path, monkeypatch, server_spec):
         return real(authority, sid, policy, servers)
     monkeypatch.setattr(session_local_mcp, 'rebind_editor_mcp', spy)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
 
@@ -79,13 +80,12 @@ async def test_stale_branch_starts_no_editor_server(owner):
 
 @pytest.mark.asyncio
 async def test_busy_branch_starts_no_editor_server(owner):
-    from hermes_state_runtime import admit_session_input
     build, discovered, payload = owner
     authority, client, sid = await build()
     # A queued input: the branch commit's own idle rule refuses it (require_idle).
-    await asyncio.to_thread(admit_session_input, authority.db, epoch=authority.epoch, principal_id='human',
+    await asyncio.to_thread(authority.persistence.admissions.admit, epoch=authority.epoch, principal_id='human',
                             session_id=sid, request_id='queued', payload={'text': 'waiting'})
-    row = authority.db.get_session(sid)
+    row = session_row(authority.persistence, sid)
     fence = dict(revision=row['runtime_revision'], generation=row['runtime_generation'])
     assert await client.rpc('session.mutate', **_branch(sid, payload, **fence)) == 'session_busy'
     assert discovered == []

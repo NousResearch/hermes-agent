@@ -17,11 +17,12 @@ import json
 import logging
 import os
 import shutil
-import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from persistence import STORE_FAILURES
 
 logger = logging.getLogger(__name__)
 
@@ -167,29 +168,22 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
     prunable = total = prunable_bytes = total_bytes = 0
     estimate_ok = True
     try:
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=_home(home) / "state.db", read_only=True)
-        try:
-            where, params = db._prune_where(retention, None, {}, whole_lineages=True)
-            prunable, total = tuple(db._read_one(
-                f"SELECT (SELECT COUNT(*) FROM sessions s WHERE {where}), (SELECT COUNT(*) FROM sessions)",
-                params) or (0, 0))
-            if prunable:
-                # Weight by stored bytes, not message_count: old messages are far smaller than recent
-                # ones, and message_count skips the soft-archived rows a prune also deletes.
-                row_bytes = _row_bytes_sql(db)
-                prunable_bytes = (db._read_one(
-                    f"SELECT COALESCE(SUM({row_bytes}), 0) FROM messages m WHERE m.session_id IN "
-                    f"(SELECT s.id FROM sessions s WHERE {where})", params) or (0,))[0]
-                total_bytes = _cached_total_bytes(home, snap.db_bytes)
-                if total_bytes is None:
-                    total_bytes = (db._read_one(
-                        f"SELECT COALESCE(SUM({row_bytes}), 0) FROM messages m", []) or (0,))[0]
-                    _store_estimate(home, total_bytes=total_bytes, total_at_db_bytes=snap.db_bytes)
-                total_bytes = max(total_bytes, prunable_bytes)  # a stale scaled total never under-counts
-        finally:
-            db.close()
-    except (sqlite3.Error, OSError, RuntimeError, ValueError) as exc:  # a busy/damaged store: no estimate
+        from persistence_assembly import open_persistence_reader
+        cached_total = _cached_total_bytes(home, snap.db_bytes)
+        with open_persistence_reader(_home(home)) as store:
+            # Weight by stored bytes, not message_count: old messages are far smaller than recent
+            # ones, and message_count skips the soft-archived rows a prune also deletes.
+            estimate = store.maintenance.prune_reclaim_estimate(
+                retention, whole_lineages=True, measure_total_bytes=cached_total is None)
+        prunable, total = estimate.prunable, estimate.total
+        if prunable:
+            prunable_bytes = estimate.prunable_bytes
+            total_bytes = cached_total
+            if total_bytes is None:
+                total_bytes = estimate.total_bytes
+                _store_estimate(home, total_bytes=total_bytes, total_at_db_bytes=snap.db_bytes)
+            total_bytes = max(total_bytes, prunable_bytes)  # a stale scaled total never under-counts
+    except (*STORE_FAILURES, OSError, RuntimeError, ValueError) as exc:  # a busy/damaged store: no estimate
         logger.debug("auto-prune advice: reclaim estimate unavailable: %s", exc)
         estimate_ok = False
     reclaim = int(snap.db_bytes * prunable_bytes / total_bytes) if total_bytes else 0
@@ -258,14 +252,6 @@ def cached_advice(home: Optional[Path] = None) -> tuple[Optional[Advice], bool]:
                       True, bool(sessions.get("vacuum_after_prune", True))), stale
     except (KeyError, TypeError, ValueError):
         return None, True
-
-
-def _row_bytes_sql(db) -> str:
-    """Stored size of one ``messages`` row: the byte length of every text/blob column (read from
-    the live schema, so a column added later is counted without touching this)."""
-    cols = [r[1] for r in db._read_all("PRAGMA table_info(messages)", [])
-            if str(r[2]).upper() in {"TEXT", "BLOB", ""}]
-    return " + ".join(f'COALESCE(LENGTH(CAST(m."{c}" AS BLOB)), 0)' for c in cols) or "0"
 
 
 def _gb(n: int) -> str:

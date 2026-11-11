@@ -1,4 +1,4 @@
-"""Async token accounting — SessionDB background writer queue.
+"""Async token accounting: the store holder's background writer queue.
 
 queue_token_counts() must take the per-call sessions UPDATE off the turn
 thread while preserving update_token_counts() semantics exactly:
@@ -17,23 +17,21 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
-from persistence.sqlite import _holder
+from persistence.conversation.usage import TokenCounts, UsageDelta
 from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation import usage as sqlite_usage
+from persistence.sqlite.conversation._store.sessions import create_session, get_session, update_session_model
+from persistence.sqlite.conversation._store.usage import update_session_billing_route, update_token_counts
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
 
 
 @pytest.fixture()
-def db(tmp_path, monkeypatch):
-    db_path = tmp_path / "test_state.db"
-    session_db = SessionDB(db_path=db_path)
-    # The store holder's queue applies each delta through the backend's registered applier; route this
-    # handle's deltas through its own update_token_counts so a test can wrap that method.
-    applier = _holder._token_delta_applier
-    monkeypatch.setattr(_holder, "_token_delta_applier", lambda holder, session_id, kwargs: (
-        session_db.update_token_counts(session_id, **kwargs) if holder is session_db._holder
-        else applier(holder, session_id, kwargs)))
-    yield session_db
-    session_db.close()
+def db(tmp_path):
+    # The queue applies each delta through the usage module's update_token_counts, which a test can wrap.
+    holder = StoreHolder(tmp_path / "test_state.db")
+    yield holder
+    holder.close()
 
 
 def _totals(db, session_id):
@@ -70,17 +68,17 @@ class TestOrdering:
     def test_deltas_apply_in_enqueue_order(self, db):
         """The writer applies deltas strictly in enqueue order, including
         across sessions (which never coalesce with each other)."""
-        db.create_session("s-a", "test")
-        db.create_session("s-b", "test")
+        create_session(db, "s-a", "test")
+        create_session(db, "s-b", "test")
 
         applied = []
-        original = db.update_token_counts
+        original = sqlite_usage.update_token_counts
 
-        def recording(session_id, **kwargs):
+        def recording(holder, session_id, **kwargs):
             applied.append((session_id, kwargs.get("input_tokens", 0)))
-            return original(session_id, **kwargs)
+            return original(holder, session_id, **kwargs)
 
-        db.update_token_counts = recording
+        sqlite_usage.update_token_counts = recording
         try:
             expected = []
             for i in range(1, 7):
@@ -89,7 +87,7 @@ class TestOrdering:
                 expected.append((sid, i))
             assert db.flush_token_counts()
         finally:
-            db.update_token_counts = original
+            sqlite_usage.update_token_counts = original
 
         # Alternating sessions defeats coalescing, so every delta must be
         # applied individually, in order.
@@ -101,7 +99,7 @@ class TestOrdering:
         """incremental → absolute → incremental applies in order: the
         absolute overwrite wins over earlier increments, later increments
         stack on top of it."""
-        db.create_session("s-abs", "test")
+        create_session(db, "s-abs", "test")
         db.queue_token_counts("s-abs", input_tokens=100, api_call_count=1)
         db.queue_token_counts(
             "s-abs", input_tokens=500, output_tokens=50,
@@ -125,23 +123,23 @@ class TestCoalescing:
     def test_backlog_coalesces_and_sums_match(self, db):
         """When a backlog forms, same-route deltas merge into fewer applies
         while totals stay exact."""
-        db.create_session("s-c", "test")
+        create_session(db, "s-c", "test")
 
         apply_calls = []
         first_apply_started = threading.Event()
         release_first_apply = threading.Event()
-        original = db.update_token_counts
+        original = sqlite_usage.update_token_counts
 
-        def gated(session_id, **kwargs):
+        def gated(holder, session_id, **kwargs):
             apply_calls.append(kwargs)
             if len(apply_calls) == 1:
                 first_apply_started.set()
                 # Hold the writer inside its first apply so the remaining
                 # enqueues pile up into one batch.
                 assert release_first_apply.wait(timeout=10)
-            return original(session_id, **kwargs)
+            return original(holder, session_id, **kwargs)
 
-        db.update_token_counts = gated
+        sqlite_usage.update_token_counts = gated
         try:
             n = 20
             db.queue_token_counts(
@@ -159,7 +157,7 @@ class TestCoalescing:
             release_first_apply.set()
             assert db.flush_token_counts()
         finally:
-            db.update_token_counts = original
+            sqlite_usage.update_token_counts = original
 
         # The backlog collapses into far fewer UPDATEs than enqueues.
         assert len(apply_calls) < n
@@ -190,14 +188,14 @@ class TestCoalescing:
                           cost_status="estimated", api_call_count=1)),
         ]
 
-        db.create_session("s-eq", "test")
+        create_session(db, "s-eq", "test")
         db._apply_token_batch(list(batch))
 
-        seq_db = SessionDB(db_path=tmp_path / "sequential.db")
+        seq_db = StoreHolder(tmp_path / "sequential.db")
         try:
-            seq_db.create_session("s-eq", "test")
+            create_session(seq_db, "s-eq", "test")
             for sid, kwargs in batch:
-                seq_db.update_token_counts(sid, **kwargs)
+                update_token_counts(seq_db, sid, **kwargs)
             assert _totals(db, "s-eq") == _totals(seq_db, "s-eq")
             assert _model_usage(db, "s-eq") == _model_usage(seq_db, "s-eq")
         finally:
@@ -215,15 +213,15 @@ class TestReaderFlush:
     def test_get_session_sees_queued_deltas(self, db):
         """get_session drains the queue first, so readers observe exact
         totals even while the writer is mid-backlog."""
-        db.create_session("s-r", "test")
+        create_session(db, "s-r", "test")
 
-        original = db.update_token_counts
+        original = sqlite_usage.update_token_counts
 
-        def slow(session_id, **kwargs):
+        def slow(holder, session_id, **kwargs):
             time.sleep(0.05)  # keep the writer visibly behind the reader
-            return original(session_id, **kwargs)
+            return original(holder, session_id, **kwargs)
 
-        db.update_token_counts = slow
+        sqlite_usage.update_token_counts = slow
         try:
             for i in range(1, 5):
                 sid_tokens = i
@@ -232,9 +230,9 @@ class TestReaderFlush:
                     "s-r", input_tokens=sid_tokens,
                     model=f"m{i % 2}", api_call_count=1,
                 )
-            row = db.get_session("s-r")
+            row = get_session(db, "s-r")
         finally:
-            db.update_token_counts = original
+            sqlite_usage.update_token_counts = original
 
         assert row["input_tokens"] == 1 + 2 + 3 + 4
         assert row["api_call_count"] == 4
@@ -246,20 +244,20 @@ class TestReaderFlush:
         """The dead-writer caller-drain claims busy: a second flush must not
         report drained (fast path or locked path) while the first flusher's
         popped batch is still being applied outside the condition lock."""
-        db.create_session("s-cc", "test")
+        create_session(db, "s-cc", "test")
         db.flush_token_counts()
         db._stop_token_writer()  # writer dead, connection still open
 
         applied = threading.Event()
         gate = threading.Event()
-        original = db.update_token_counts
+        original = sqlite_usage.update_token_counts
 
-        def gated(session_id, **kwargs):
+        def gated(holder, session_id, **kwargs):
             applied.set()
             assert gate.wait(timeout=10)
-            return original(session_id, **kwargs)
+            return original(holder, session_id, **kwargs)
 
-        db.update_token_counts = gated
+        sqlite_usage.update_token_counts = gated
         try:
             db._token_queue.append(
                 ("s-cc", dict(input_tokens=4, api_call_count=1))
@@ -280,7 +278,7 @@ class TestReaderFlush:
             assert results.get("a") is True
             assert db.flush_token_counts()
         finally:
-            db.update_token_counts = original
+            sqlite_usage.update_token_counts = original
 
         assert _totals(db, "s-cc")["input_tokens"] == 4
 
@@ -292,8 +290,8 @@ class TestReaderFlush:
         reopens the connection and LANDS instead — strictly better than the
         old raise-and-lose contract: no delta is dropped, and the recovery
         is loud (WARNING at the persistence boundary)."""
-        db = SessionDB(db_path=tmp_path / "closed.db")
-        db.create_session("s-closed", "test")
+        db = StoreHolder(tmp_path / "closed.db")
+        create_session(db, "s-closed", "test")
         db.queue_token_counts("s-closed", input_tokens=1, api_call_count=1)
         db.close()
 
@@ -315,7 +313,7 @@ class TestRouteSwitchBarrier:
         carries the pre-switch route, and applying it after the switch
         UPDATE trips first_accounted_route (api_call_count == 0 + route
         mismatch) and resurrects the old model/provider on the row."""
-        db.create_session("s-sw", "test")
+        create_session(db, "s-sw", "test")
         # First delta of the session, queued but not yet applied (writer
         # not started — same state as a backlogged writer).
         db._token_queue.append(("s-sw", dict(
@@ -323,9 +321,9 @@ class TestRouteSwitchBarrier:
             api_call_count=1,
         )))
 
-        db.update_session_model("s-sw", "m2")
-        db.update_session_billing_route(
-            "s-sw", provider="p2", base_url="https://p2.example"
+        update_session_model(db, "s-sw", "m2")
+        update_session_billing_route(
+            db, "s-sw", provider="p2", base_url="https://p2.example"
         )
 
         totals = _totals(db, "s-sw")
@@ -351,10 +349,10 @@ class TestRouteSwitchBarrier:
 class TestDurability:
 
     def test_idle_writer_restarts_for_later_delta(self, tmp_path, monkeypatch):
-        db = SessionDB(db_path=tmp_path / "writer-restart.db")
+        db = StoreHolder(tmp_path / "writer-restart.db")
         monkeypatch.setattr(StoreHolder, "_TOKEN_WRITER_IDLE_SECONDS", 0.01)
         try:
-            db.create_session("s-restart", "test")
+            create_session(db, "s-restart", "test")
             db.queue_token_counts("s-restart", input_tokens=1, api_call_count=1)
             assert db.flush_token_counts()
 
@@ -372,7 +370,7 @@ class TestDurability:
             db.close()
 
     def test_abandoned_db_releases_writer_and_connection(self, tmp_path, monkeypatch):
-        """An async-accounting writer must not pin an abandoned SessionDB."""
+        """An async-accounting writer must not pin an abandoned store holder."""
         import gc
         import time
         import weakref
@@ -381,17 +379,15 @@ class TestDurability:
 
         db_path = tmp_path / "abandoned.db"
         monkeypatch.setattr(StoreHolder, "_TOKEN_WRITER_IDLE_SECONDS", 0.01, raising=False)
-        db = SessionDB(db_path=db_path)
-        db.create_session("s-abandoned", "test")
+        db = StoreHolder(db_path)
+        create_session(db, "s-abandoned", "test")
         db.queue_token_counts("s-abandoned", input_tokens=1, api_call_count=1)
         assert db.flush_token_counts()
 
         ref = weakref.ref(db)
-        # The writer thread pins the store holder the SessionDB serves through until it retires.
-        holder_ref = weakref.ref(db._holder)
         del db
         deadline = time.monotonic() + 2.0
-        while (ref() is not None or holder_ref() is not None) and time.monotonic() < deadline:
+        while ref() is not None and time.monotonic() < deadline:
             gc.collect()
             time.sleep(0.01)
 
@@ -403,8 +399,8 @@ class TestDurability:
         import gc
         import weakref
 
-        db = SessionDB(db_path=tmp_path / "atexit.db")
-        db.create_session("s-gc", "test")
+        db = StoreHolder(tmp_path / "atexit.db")
+        create_session(db, "s-gc", "test")
         db.queue_token_counts("s-gc", input_tokens=1, api_call_count=1)
         db.close()
 
@@ -420,33 +416,34 @@ class TestDurability:
         monkeypatch.setitem(os.environ, "OPENROUTER_API_KEY", "test-key")
         from run_agent import AIAgent
 
-        db = SessionDB(db_path=tmp_path / "finalize.db")
+        store = open_persistence(profile_scope(home=tmp_path))
         try:
             agent = AIAgent(
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
-                session_db=db,
+                session_db=store,
+                persistence=store,
                 session_id="s-fin",
                 skip_context_files=True,
                 skip_memory=True,
             )
             agent._ensure_db_session()
 
-            db.queue_token_counts(
-                "s-fin", input_tokens=11, output_tokens=2, api_call_count=1
+            store.usage.queue_usage(
+                "s-fin", UsageDelta(tokens=TokenCounts(input_tokens=11, output_tokens=2), api_call_count=1)
             )
             agent._persist_session(
                 [{"role": "user", "content": "q"}],
                 [],
             )
             # Raw read: the flush happened inside _persist_session itself.
-            totals = _totals(db, "s-fin")
+            totals = _totals(raw_holder(store), "s-fin")
             assert totals["input_tokens"] == 11
             assert totals["api_call_count"] == 1
         finally:
-            db.close()
+            store.close()
 
 
 # =========================================================================
@@ -459,7 +456,7 @@ class TestWriterFailure:
     def test_coalesce_failure_falls_back_to_raw_batch(self, db, caplog):
         """A coalescing bug must never kill the writer: the batch is applied
         raw (delta-by-delta) and the failure is logged."""
-        db.create_session("s-co", "test")
+        create_session(db, "s-co", "test")
 
         original = db._coalesce_token_deltas
 
@@ -488,20 +485,20 @@ class TestWriterFailure:
         busy-before-clear ordering as the writer loop: a concurrent flush's
         lock-free fast path (queue-then-busy, no cond held) must never
         observe 'empty and idle' while the popped batch is unapplied."""
-        db.create_session("s-stopdrain", "test")
+        create_session(db, "s-stopdrain", "test")
         db.flush_token_counts()
         db._stop_token_writer()  # writer dead, connection open
 
         applied = threading.Event()
         gate = threading.Event()
-        original = db.update_token_counts
+        original = sqlite_usage.update_token_counts
 
-        def gated(session_id, **kwargs):
+        def gated(holder, session_id, **kwargs):
             applied.set()
             assert gate.wait(timeout=10)
-            return original(session_id, **kwargs)
+            return original(holder, session_id, **kwargs)
 
-        db.update_token_counts = gated
+        sqlite_usage.update_token_counts = gated
         try:
             db._token_queue.append(
                 ("s-stopdrain", dict(input_tokens=6, api_call_count=1))
@@ -516,7 +513,7 @@ class TestWriterFailure:
             t.join(timeout=10)
             assert db.flush_token_counts()
         finally:
-            db.update_token_counts = original
+            sqlite_usage.update_token_counts = original
 
         assert _totals(db, "s-stopdrain")["input_tokens"] == 6
 
@@ -539,8 +536,8 @@ class TestCoalesceFieldContract:
         """
         import inspect
 
-        sig = inspect.signature(db.update_token_counts)
-        params = {name for name in sig.parameters if name != "session_id"}
+        sig = inspect.signature(update_token_counts)
+        params = {name for name in sig.parameters if name not in ("holder", "session_id")}
 
         classified = (
             set(db._TOKEN_DELTA_SUM_FIELDS)

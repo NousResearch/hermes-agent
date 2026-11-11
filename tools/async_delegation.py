@@ -14,7 +14,6 @@ import contextvars
 import json
 import logging
 import os
-import sqlite3
 import threading
 import time
 import uuid
@@ -22,6 +21,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
+from persistence.authority.coordination import (
+    DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_MAX_DELIVERY_ATTEMPTS, DELEGATION_ORPHAN_STALE_SECONDS,
+    DELEGATION_REPLAY_MAX_AGE_SECONDS, DelegationRecovery, OwnerStamp,
+)
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 from tools.async_delegation_worker import worker_ledger, require_ledger_owner
@@ -48,15 +51,13 @@ _FENCED_FIELDS = ("session_key", "parent_session_id")
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # Completed records retained (in memory and in the ledger) for status queries.
 _MAX_RETAINED_COMPLETED = 50
-_DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
-_MAX_DURABLE_PENDING = 1000
 # Cap retried deliveries so an unroutable row converges to terminal 'dropped'.
-_MAX_DELIVERY_ATTEMPTS = 8
+_MAX_DELIVERY_ATTEMPTS = DELEGATION_MAX_DELIVERY_ATTEMPTS
 # Pending completions older than this are dropped on restart replay instead of
 # re-run as a full-context turn; 48h keeps weekend results deliverable.
-_MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
+_MAX_COMPLETION_REPLAY_AGE_S = DELEGATION_REPLAY_MAX_AGE_SECONDS
 # A delivery claim older than this is abandoned and may be re-claimed.
-_CLAIM_LEASE_S = 300.0
+_CLAIM_LEASE_S = DELEGATION_CLAIM_STALE_SECONDS
 _DB_LOCK = threading.Lock()
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
@@ -65,7 +66,7 @@ _DB_LOCK = threading.Lock()
 # watcher, TUI poller) sweep each home they serve at most once per interval.
 ORPHAN_SWEEP_INTERVAL_S = 30.0
 # Idle time before a dead owner's pending row is re-offered; keeps the sweep off a row just touched.
-_ORPHAN_STALE_S = 60.0
+_ORPHAN_STALE_S = DELEGATION_ORPHAN_STALE_SECONDS
 _orphan_lock = threading.Lock()
 # (home key, delegation_id) put on this process's queue by replay or sweep and not re-offered while
 # that copy is alive. A consumer that discards its copy with the row still pending hands it back
@@ -112,53 +113,31 @@ _STALL_FIELD_MAP = (("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
                     ("_stall_threshold_seconds", "stall_threshold_seconds"), ("_stall_in_tool", "stall_in_tool"))
 
 
-# ── Durable ledger (state.db / async_delegations) ───────────────────────────
-def _db_path():
-    return get_hermes_home() / "state.db"
+# ── Durable ledger (the profile store's async_delegations) ──────────────────
+def _scope():
+    from persistence_assembly import profile_scope
+    return profile_scope()
 
 
-def _connect() -> sqlite3.Connection:
+def _ledger_exists():
+    """Whether the ledger's store exists yet; a read or a sweep never creates it."""
+    from persistence_assembly import store_exists
+    return store_exists(_scope())
+
+
+def _ledger():
+    """A handle on the ledger's store through the profile's registered writer; the caller closes it."""
     from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if is_worker_process():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
-    from hermes_cli.sqlite_util import open_db
-    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
-    # hardening so this writer doesn't create/leave the file (and its WAL
-    # sidecars) at the process umask. See hermes_state._secure_state_db_files.
-    from hermes_constants import mkdir_under_hermes_home
-    from hermes_state import _secure_state_db_files
-
-    path = _db_path()
-    # A late replay or writer must not resurrect a removed named profile (#123265).
-    mkdir_under_hermes_home(path.parent)
-    _secure_state_db_files(path, create_main=True)
-    # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
-    conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
-                   wal=False, row_factory=None, initialize=_initialize_schema)
-    _secure_state_db_files(path)
-    return conn
+    from persistence_assembly import open_persistence
+    return open_persistence(_scope())
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state_repair import apply_durability_barriers
-    from hermes_state_schema import reconcile_state_schema
-    # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
-    # every short-lived connection collides with live transcript/FTS writers.
-    apply_durability_barriers(conn)
-    # Single durable-shape authority: the canonical SCHEMA_SQL drives both
-    # table creation and column backfill (reconcile_state_schema replays the
-    # canonical DDL and reuses SessionDB's declarative reconciliation). This
-    # module previously carried its own CREATE TABLE + ALTER column list,
-    # which drifted from SCHEMA_SQL — same-name columns with different
-    # nullability/defaults depending on which authority touched the database
-    # first (#94691).
-    reconcile_state_schema(conn)
-
-
-def _transaction():
-    from hermes_cli.sqlite_util import transaction
-
-    return transaction(_connect())
+def _ledger_reader():
+    """A read-only handle on the ledger's store, which opens no store writer; the caller closes it."""
+    from persistence_assembly import open_persistence_reader
+    return open_persistence_reader(_scope().profile_dir)
 
 
 def _capture_routing_origin() -> dict[str, Any]:
@@ -175,7 +154,6 @@ def _capture_routing_origin() -> dict[str, Any]:
 def _persist_dispatch(record: dict[str, Any]) -> None:
     if remote := worker_ledger():
         return remote.dispatch(record)
-    now = time.time()
     try:
         from gateway.status import get_process_start_time
         owner_started_at = get_process_start_time(os.getpid())
@@ -189,56 +167,31 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
         task_payload["owner_cwd"] = os.getcwd()
     except OSError:
         pass
-    with _DB_LOCK, _transaction() as conn:
-        conn.execute("""INSERT OR REPLACE INTO async_delegations
-               (delegation_id, origin_session, origin_ui_session_id,
-                parent_session_id, state, dispatched_at, updated_at,
-                delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
-            (record["delegation_id"], record.get("session_key", ""), record.get("origin_ui_session_id", ""),
-             record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
-             json.dumps(task_payload), record.get("origin_session_id", "")))
+    with _DB_LOCK, _ledger() as store:
+        store.coordination.record_delegation_dispatch(
+            delegation_id=record["delegation_id"], origin_session=record.get("session_key", ""),
+            origin_ui_session_id=record.get("origin_ui_session_id", ""),
+            parent_session_id=record.get("parent_session_id"), dispatched_at=record["dispatched_at"],
+            owner=OwnerStamp(pid=os.getpid(), started_at=owner_started_at), task=task_payload,
+            origin_session_id=record.get("origin_session_id", ""))
     _prune_durable_records()
 
 
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     require_ledger_owner()
-    cutoff = time.time() - _DURABLE_RETENTION_SECONDS
-    with _DB_LOCK, _transaction() as conn:
-        conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
-        terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')").fetchone()[0]
-        if terminal_count > _MAX_RETAINED_COMPLETED:
-            conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
-                     ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
-                              updated_at ASC LIMIT ?
-                   )""", (terminal_count - _MAX_RETAINED_COMPLETED,))
-        pending_count = conn.execute("""SELECT COUNT(*) FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'""").fetchone()[0]
-        if pending_count > _MAX_DURABLE_PENDING:
-            conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
-                     ORDER BY updated_at ASC LIMIT ?
-                   )""", (pending_count - _MAX_DURABLE_PENDING,))
+    with _DB_LOCK, _ledger() as store:
+        store.coordination.prune_delegation_ledger()
 
 
 def _persist_completion(event: dict[str, Any], result: dict[str, Any]) -> None:
     event, result = redact_completion_event(event), redact_child_result(result)
     if remote := worker_ledger():
         return remote.complete(event, result)
-    now = time.time()
-    with _DB_LOCK, _transaction() as conn:
-        conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-               event_json=?, result_json=?, delivery_state='pending'
-               WHERE delegation_id=?""",
-            (event.get("status", "completed"), event.get("completed_at", now), now,
-             json.dumps(event), json.dumps(result), event["delegation_id"]))
+    with _DB_LOCK, _ledger() as store:
+        store.coordination.record_delegation_completion(
+            delegation_id=event["delegation_id"], state=event.get("status", "completed"),
+            completed_at=event.get("completed_at", time.time()), event=event, result=result)
 
 
 def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
@@ -254,23 +207,15 @@ def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
     if remote := worker_ledger():
         return remote.child(delegation_id, entry)
     try:
-        with _DB_LOCK, _transaction() as conn:
-            row = conn.execute("SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
-                               (delegation_id,)).fetchone()
-            if row is None:
-                return
-            partial = redact_child_result(json.loads(row[0] or "{}") or {})
-            results = [r for r in partial.get("results") or [] if r.get("task_index") != entry.get("task_index")]
-            results.append(entry)
-            conn.execute("UPDATE async_delegations SET result_json=?, updated_at=? WHERE delegation_id=? AND state='running'",
-                         (json.dumps({"results": results, "partial": True}), time.time(), delegation_id))
+        with _DB_LOCK, _ledger() as store:
+            store.coordination.record_unit_child(delegation_id=delegation_id, entry=entry)
     except Exception:
         logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
 
 
-def _recovered_results(task: dict[str, Any], result_json: Optional[str], error: str) -> Optional[list[dict[str, Any]]]:
+def _recovered_results(task: dict[str, Any], partial: Any, error: str) -> Optional[list[dict[str, Any]]]:
     """Per-task results for an abandoned unit: recorded children as they finished, the rest ``unknown``."""
-    partial = json.loads(result_json or "{}") or {}
+    partial = partial or {}
     if not (task.get("is_batch") and partial.get("partial") and partial.get("results")):
         return None
     recorded = {r["task_index"]: r for r in partial["results"] if isinstance(r.get("task_index"), int)}
@@ -299,19 +244,21 @@ def recover_abandoned_delegations() -> int:
     alive = _owner_liveness()
     if alive is None:
         return 0
-    now, recovered = time.time(), 0
-    with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
-                      parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id, result_json, state
-               FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
-        for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
-            if alive(pid, started):
+    if not _ledger_exists():
+        return 0
+    now, recoveries = time.time(), []
+    # The read and the conditional write are separate store calls: owner probes, transcript reads and git run
+    # between them, and a row changed since the read is left for its live writer. The read opens no writer, so a
+    # process with nothing to recover never opens one.
+    with _DB_LOCK:
+        with _ledger_reader() as reader:
+            inflight = reader.coordination.list_inflight_delegations()
+        for row in inflight:
+            if alive(row.owner_pid, row.owner_started_at):
                 continue
-            task = json.loads(task_json or "{}")
+            delegation_id, task, last_state = row.delegation_id, row.task, row.state
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
-            recovered_results = _recovered_results(task, result_json, error)
+            recovered_results = _recovered_results(task, row.result, error)
             if recovered_results:
                 done = sum(1 for r in recovered_results if r.get("status") != "unknown")
                 error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
@@ -325,23 +272,25 @@ def recover_abandoned_delegations() -> int:
             if hint := git_state_hint(task.get("owner_cwd")):
                 diagnostics["git_state_hint"] = hint
             event = {
-                "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
-                "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
-                "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
+                "type": "async_delegation", "delegation_id": delegation_id, "session_key": row.origin_session,
+                "origin_ui_session_id": row.origin_ui_session_id, "origin_session_id": row.origin_session_id,
+                "parent_session_id": row.parent_session_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
                 "status": "unknown", "summary": None, "error": error, **diagnostics,
                 **({"results": recovered_results} if recovered_results else {}),
-                "dispatched_at": dispatched_at, "completed_at": now,
+                "dispatched_at": row.dispatched_at, "completed_at": now,
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
             result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
                       **({"results": recovered_results} if recovered_results else {})}
             event, result = redact_completion_event(event), redact_child_result(result)
-            conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
-                   WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
-            recovered += 1
-    return recovered
+            recoveries.append(DelegationRecovery(
+                delegation_id=delegation_id, expected_state=last_state, expected_updated_at=row.updated_at,
+                completed_at=now, event=event, result=result))
+        if not recoveries:
+            return 0
+        with _ledger() as store:
+            return store.coordination.recover_abandoned_delegations(recoveries=recoveries)
 
 
 def restore_undelivered_completions(target_queue) -> int:
@@ -363,40 +312,29 @@ def restore_undelivered_completions(target_queue) -> int:
         # The ordinary owner restores delivery-only results; a compute import
         # must neither reap that owner's ledger nor steal its delivery queue.
         return 0
-    if not _db_path().exists():
+    if not _ledger_exists():
         return 0  # nothing to replay; a replay must not create (or migrate) the ledger (#123265)
     recover_abandoned_delegations()
-    now = time.time()
-    with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
-               FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
-               ORDER BY completed_at, delegation_id""").fetchall()
-        return _replay_pending(conn, rows, target_queue, now, startup=True)
+    with _ledger_reader() as reader:
+        if not reader.coordination.has_replayable_completions():
+            return 0
+    with _DB_LOCK, _ledger() as store:
+        return _offer_pending(store.coordination.take_replayable_completions(), target_queue, startup=True)
 
 
-def _replay_pending(conn, rows, target_queue, now: float, *, startup: bool = False) -> int:
-    """Put each pending ``(delegation_id, event_json, completed_at, dispatched_at)`` row on ``target_queue``
-    stamped ``restored``, or terminally drop it past ``_MAX_COMPLETION_REPLAY_AGE_S``. Records the offer so
-    the orphan sweep skips the row until the copy is handed back (``return_completion_offer``)."""
+def _offer_pending(completions, target_queue, *, startup: bool = False) -> int:
+    """Put each pending completion's event on ``target_queue`` stamped ``restored`` (the store already dropped
+    rows past ``_MAX_COMPLETION_REPLAY_AGE_S``). Records the offer so the orphan sweep skips the row until the
+    copy is handed back (``return_completion_offer``)."""
     home, restored = hermes_home_key(get_hermes_home()), 0
-    for delegation_id, payload, completed_at, dispatched_at in rows:
-        age_basis = completed_at or dispatched_at
-        if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
-            conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
-                          delivery_claim=NULL, delivery_claimed_at=NULL,
-                          updated_at=?
-                   WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
-            logger.warning("Async delegation %s: pending completion is %.1fh old "
-                           "(cap %.1fh); terminally dropping the replay (result remains queryable).",
-                           delegation_id, (now - age_basis) / 3600.0, _MAX_COMPLETION_REPLAY_AGE_S / 3600.0)
-            continue
+    for completion in completions:
+        delegation_id = completion.delegation_id
         with _orphan_lock:
             if (home, delegation_id) in _offered:
                 # The owner's explicit startup replay and the first-consume replay
                 # (process_registry.restore_completions) may both run: offer once.
                 continue
-        evt = json.loads(payload)
+        evt = completion.event
         if isinstance(evt, dict):
             evt = redact_completion_event(evt)
         with _orphan_lock:
@@ -511,7 +449,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     deliver twice. Rows past the delivery budget or the replay age converge to ``dropped``. Reads the
     current profile's ledger: callers bind the owning profile first."""
     alive = _owner_liveness()
-    if alive is None or not _db_path().exists():
+    if alive is None or not _ledger_exists():
         return 0  # never create a ledger just to sweep it
     recover_abandoned_delegations()
     now = time.time() if now is None else now
@@ -519,36 +457,25 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     from tools.process_registry import process_registry
     live = _queued_completion_ids(target_queue, process_registry.completion_queue)
     with _orphan_lock:
-        offered = {delegation_id for key, delegation_id in _offered if key == home}
-    with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
-                      owner_pid, owner_started_at, delivery_attempts, updated_at
-               FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
-                 AND event_json IS NOT NULL AND updated_at < ?
-                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
-               ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
-        orphans, lost = [], []
-        for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts, updated_at in rows:
-            copy_lost = alive(pid, started) or delegation_id in offered
-            if copy_lost and (live is None or _copy_may_be_live(delegation_id, pid, updated_at, live, home,
-                                                                  offered, now)):
-                continue
-            if (attempts or 0) >= _MAX_DELIVERY_ATTEMPTS:
-                # Its last claimant died holding the final attempt; converge like release_completion_delivery.
-                conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
-                              delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
-                       WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
-                logger.warning("Async delegation %s exhausted its %d delivery attempts; "
-                               "marking terminally dropped (result remains queryable).",
-                               delegation_id, _MAX_DELIVERY_ATTEMPTS)
-                continue
-            orphans.append((delegation_id, payload, completed_at, dispatched_at))
-            if copy_lost:
-                lost.append(delegation_id)
-        if lost:
-            _note_reoffers(home, lost, now)
-        return _replay_pending(conn, orphans, target_queue, now)
+        offered = frozenset(delegation_id for key, delegation_id in _offered if key == home)
+    with _DB_LOCK, _ledger() as store:
+        # Owners are probed and lost copies judged between the candidate read and the sweep's write; the store
+        # drops rows past the delivery budget or the replay age. The offers go out before that write commits,
+        # so a crash between them leaves every candidate pending.
+        candidates = store.coordination.list_orphan_completions(now=now)
+        dead = frozenset(item.owner for item in candidates if not alive(item.owner.pid, item.owner.started_at))
+        lost = frozenset(item.delegation_id for item in candidates
+                         if (item.owner not in dead or item.delegation_id in offered) and live is not None
+                         and not _copy_may_be_live(item.delegation_id, item.owner.pid, item.updated_at, live, home,
+                                                   offered, now))
+        sweep = dict(now=now, exclude_ids=offered, dead_owners=dead, lost_ids=lost)
+        orphans = store.coordination.list_orphan_completion_offers(**sweep)
+        reoffered = [item.delegation_id for item in orphans if item.delegation_id in lost]
+        if reoffered:
+            _note_reoffers(home, reoffered, now)
+        restored = _offer_pending(orphans, target_queue)
+        store.coordination.sweep_orphaned_completions(**sweep)
+        return restored
 
 
 def maybe_sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> int:
@@ -568,37 +495,19 @@ def maybe_sweep_orphaned_completions(target_queue, *, now: Optional[float] = Non
         return 0
 
 
-def _update_delivery(sql: str, params: tuple) -> bool:
-    """Run one UPDATE on the ledger; True iff exactly one row changed."""
-    with _DB_LOCK, _transaction() as conn:
-        return conn.execute(sql, params).rowcount == 1
-
-
 def mark_completion_delivered(delegation_id: str) -> bool:
     """Atomically acknowledge successful injection of a durable completion."""
     require_ledger_owner()
-    now = time.time()
-    return _update_delivery(
-        """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
-           WHERE delegation_id=? AND delivery_state!='delivered'""", (now, now, delegation_id))
+    with _DB_LOCK, _ledger() as store:
+        return store.coordination.mark_delegation_delivered(delegation_id=delegation_id)
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     if remote := worker_ledger():
         return remote.claim(delegation_id, claim_id)
-    now = time.time()
-    with _DB_LOCK, _transaction() as conn:
-        row = conn.execute(
-            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
-        if row is None:
-            return True  # legacy event created before durable dispatch
-        cur = conn.execute("""UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
-                      delivery_attempts=delivery_attempts+1, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
-            (claim_id, now, now, delegation_id, now - _CLAIM_LEASE_S))
-        return cur.rowcount == 1
+    with _DB_LOCK, _ledger() as store:
+        return store.coordination.claim_delivery(delegation_id=delegation_id, claim_id=claim_id)
 
 
 def is_interim_delegation_event(evt: dict[str, Any]) -> bool:
@@ -625,34 +534,16 @@ def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     terminal ``dropped`` (only pending rows replay on restart)."""
     if remote := worker_ledger():
         return remote.release(delegation_id, claim_id)
-    now = time.time()
-    with _DB_LOCK, _transaction() as conn:
-        capped = conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
-                      delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=? AND delivery_attempts>=?""",
-            (now, delegation_id, claim_id, _MAX_DELIVERY_ATTEMPTS))
-        if capped.rowcount == 1:
-            logger.warning("Async delegation %s exhausted its %d delivery attempts; "
-                           "marking terminally dropped (result remains queryable).",
-                           delegation_id, _MAX_DELIVERY_ATTEMPTS)
-            return True
-        cur = conn.execute("""UPDATE async_delegations SET delivery_claim=NULL,
-                      delivery_claimed_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=?""", (now, delegation_id, claim_id))
-        return cur.rowcount == 1
+    with _DB_LOCK, _ledger() as store:
+        return store.coordination.release_delivery(delegation_id=delegation_id, claim_id=claim_id)
 
 
 def defer_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Return an unadmitted completion to pending without spending a delivery attempt."""
     if remote := worker_ledger():
         return remote.defer(delegation_id, claim_id)
-    return _update_delivery("""UPDATE async_delegations SET delivery_claim=NULL,
-                  delivery_claimed_at=NULL, delivery_attempts=MAX(0, delivery_attempts-1),
-                  updated_at=?
-           WHERE delegation_id=? AND delivery_state='pending' AND delivery_claim=?""",
-        (time.time(), delegation_id, claim_id))
+    with _DB_LOCK, _ledger() as store:
+        return store.coordination.defer_delivery(delegation_id=delegation_id, claim_id=claim_id)
 
 
 def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -662,23 +553,16 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     restart recovery from replaying it into a fail-closed drop forever."""
     if remote := worker_ledger():
         return remote.drop(delegation_id, claim_id)
-    return _update_delivery("""UPDATE async_delegations SET delivery_state='dropped',
-                  updated_at=?, delivery_claim=NULL,
-                  delivery_claimed_at=NULL
-           WHERE delegation_id=? AND delivery_state='pending'
-             AND delivery_claim=?""", (time.time(), delegation_id, claim_id))
+    with _DB_LOCK, _ledger() as store:
+        return store.coordination.drop_delivery(delegation_id=delegation_id, claim_id=claim_id)
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
     if remote := worker_ledger():
         return remote.ack(delegation_id, claim_id)
-    now = time.time()
-    return _update_delivery("""UPDATE async_delegations SET delivery_state='delivered',
-                  delivered_at=?, updated_at=?, delivery_claim=NULL,
-                  delivery_claimed_at=NULL
-           WHERE delegation_id=? AND delivery_state='pending'
-             AND delivery_claim=?""", (now, now, delegation_id, claim_id))
+    with _DB_LOCK, _ledger() as store:
+        return store.coordination.complete_delivery(delegation_id=delegation_id, claim_id=claim_id)
 
 
 def requeue_admitted_completion(delegation_id: str, target_queue) -> bool:
@@ -687,27 +571,17 @@ def requeue_admitted_completion(delegation_id: str, target_queue) -> bool:
     The row returns to pending and its event goes back on ``target_queue``, so the next delivery
     re-runs the pre-flight. A row past the delivery budget converges to ``dropped`` instead, which
     bounds the loop; a row without a stored event is left as it is."""
-    now = time.time()
-    with _DB_LOCK, _transaction() as conn:
-        exhausted = conn.execute("""UPDATE async_delegations SET delivery_state='dropped', updated_at=?
-               WHERE delegation_id=? AND delivery_state='delivered' AND delivery_attempts>=?""",
-            (now, delegation_id, _MAX_DELIVERY_ATTEMPTS))
-        if exhausted.rowcount == 1:
-            logger.warning("Async delegation %s exhausted its %d delivery attempts; "
-                           "marking terminally dropped (result remains queryable).",
-                           delegation_id, _MAX_DELIVERY_ATTEMPTS)
-            return False
-        reopened = conn.execute("""UPDATE async_delegations SET delivery_state='pending',
-                      delivered_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='delivered' AND event_json IS NOT NULL""",
-            (now, delegation_id))
-        if reopened.rowcount != 1:
-            return False
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
-               FROM async_delegations WHERE delegation_id=?""", (delegation_id,)).fetchall()
-        with _orphan_lock:  # an admitted copy already had its consumer: requeue keeps live routing
-            _startup_replayed.discard(delegation_id)
-        return _replay_pending(conn, rows, target_queue, now) == 1
+    with _DB_LOCK, _ledger() as store:
+        # The copy is offered before the reopen commits, so a crash between them leaves the row delivered; a
+        # consumer's claim waits on ``_DB_LOCK`` until the row is pending.
+        admitted = store.coordination.get_admitted_completion(delegation_id=delegation_id)
+        offered = 0
+        if admitted is not None:
+            with _orphan_lock:  # an admitted copy already had its consumer: requeue keeps live routing
+                _startup_replayed.discard(delegation_id)
+            offered = _offer_pending((admitted,), target_queue)
+        reopened = store.coordination.reopen_admitted_completion(delegation_id=delegation_id)
+        return reopened is not None and offered == 1
 
 
 def complete_event_delivery(evt: dict[str, Any], claim_id: str) -> None:
@@ -744,27 +618,17 @@ def get_durable_delegation(delegation_id: str) -> Optional[dict[str, Any]]:
         if saved is not None and saved.get("result") is not None:
             return {**saved, "result": redact_child_result(saved["result"])}
         return saved
-    with _DB_LOCK, _transaction() as conn:
-        row = conn.execute("""SELECT origin_session, state, dispatched_at, completed_at,
-                      result_json, delivery_state, delivery_attempts,
-                      origin_session_id
-               FROM async_delegations WHERE delegation_id=?""", (delegation_id,)).fetchone()
-    return None if row is None else {
-        "delegation_id": delegation_id, "origin_session": row[0], "state": row[1], "dispatched_at": row[2],
-        "completed_at": row[3], "result": redact_child_result(json.loads(row[4])) if row[4] else None, "delivery_state": row[5],
-        "delivery_attempts": row[6], "origin_session_id": row[7] or ""}
+    with _DB_LOCK, _ledger() as store:
+        record = store.coordination.get_delegation(delegation_id=delegation_id)
+    return None if record is None else {
+        "delegation_id": delegation_id, "origin_session": record.origin_session, "state": record.state,
+        "dispatched_at": record.dispatched_at, "completed_at": record.completed_at,
+        "result": redact_child_result(record.result) if record.result is not None else None,
+        "delivery_state": record.delivery_state.value, "delivery_attempts": record.delivery_attempts,
+        "origin_session_id": record.origin_session_id}
 
 
 _FAILED_TASK_STATES = frozenset({"error", "failed", "failure", "timeout", "stalled", "unknown", "interrupted"})
-_FAILURE_SURFACE_WINDOW_S = 24 * 3600.0
-
-
-def _json_object(raw: Optional[str]) -> dict[str, Any]:
-    try:
-        value = json.loads(raw) if raw else {}
-    except ValueError:
-        return {}
-    return value if isinstance(value, dict) else {}
 
 
 def failed_delegations_for_session(
@@ -777,21 +641,15 @@ def failed_delegations_for_session(
     task (a batch unit that "completed" can still carry failed tasks) with ``delegation_id``,
     ``task_index``, ``goal``, ``status``, ``error``, ``dispatched_at`` and ``completed_at``. Either selector claims a row:
     the UI session id at dispatch, or the spawner's durable session id (survives a reload re-mint)."""
-    selectors = [(col, val) for col, val in (
-        ("origin_ui_session_id", origin_ui_session_id), ("parent_session_id", parent_session_id)) if val]
-    if not selectors:
+    if not (origin_ui_session_id or parent_session_id):
         return []
-    cutoff = (now if now is not None else time.time()) - _FAILURE_SURFACE_WINDOW_S
-    owner_sql = " OR ".join(f"{col}=?" for col, _ in selectors)
-    with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute(
-            f"""SELECT delegation_id, state, dispatched_at, completed_at, task_json, result_json FROM async_delegations
-                WHERE ({owner_sql}) AND state NOT IN ('running','finalizing') AND completed_at >= ?
-                ORDER BY completed_at DESC LIMIT ?""",
-            (*(val for _, val in selectors), cutoff, limit)).fetchall()
+    with _DB_LOCK, _ledger() as store:
+        rows = store.coordination.list_finished_delegations(
+            origin_ui_session_id=origin_ui_session_id, parent_session_id=parent_session_id, limit=limit, now=now)
     failed: list[dict[str, Any]] = []
-    for delegation_id, state, dispatched_at, completed_at, task_json, result_json in rows:
-        task, result = _json_object(task_json), redact_child_result(_json_object(result_json))
+    for row in rows:
+        delegation_id, state, dispatched_at, completed_at = row.delegation_id, row.state, row.dispatched_at, row.completed_at
+        task, result = row.task, redact_child_result(row.result)
         goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
         tasks = result["results"] if isinstance(result.get("results"), list) else [] if task.get("is_batch") else [result]
         if not tasks and str(state).lower() in _FAILED_TASK_STATES:  # crash, stall or owner exit: no per-task rows
@@ -978,8 +836,9 @@ def _dispatch_admitted(
             result = runner() or {}
             status = classify(result)
         except Exception as exc:
+            from storage_user_copy import error_type_name
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
-            result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
+            result = crash_result(f"{error_type_name(exc)}: {exc}", round(time.time() - dispatched_at, 2))
         finally:
             _finalize(delegation_id, result, status)
 
@@ -998,8 +857,8 @@ def _dispatch_admitted(
         if remote := worker_ledger():
             remote.unscheduled(delegation_id)
         else:
-            with _DB_LOCK, _transaction() as conn:
-                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+            with _DB_LOCK, _ledger() as store:
+                store.coordination.delete_unscheduled_delegation(delegation_id=delegation_id)
         return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
     if progress_fn is not None:
         _ensure_stale_monitor()

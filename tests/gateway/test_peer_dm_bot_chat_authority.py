@@ -17,12 +17,14 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_contract import SessionActor
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
 
 @pytest_asyncio.fixture
-async def peer(tmp_path, monkeypatch):
+async def peer(tmp_path, monkeypatch, api_store):
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -33,20 +35,18 @@ async def peer(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     monkeypatch.setattr('tools.bot_mode_dm._LIVE_WAIT_SECONDS', 2.0)
-    from hermes_state import SessionDB
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    store._db = SessionDB(db_path=tmp_path / 'state.db')
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
-                             _evict_cached_agent=lambda route: None)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, persistence=api_store(store.persistence))
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
     owner = SessionActor('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
     chat = create_local_session(authority, owner, {'request_id': 'bot', 'source': 'gui', 'cwd': str(tmp_path),
                                                     'model': 'fixture', 'toolsets': []})
     title_new_session(authority, chat, 'Bot Chat')
-    authority.db.create_session('scratch', 'api_server')
+    seed_session(authority.persistence, 'scratch', 'api_server')
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     adapter.gateway_runner = runner
-    adapter._session_db = authority.db
+    adapter._home_stores[str(tmp_path)] = authority.persistence
     from gateway.config import Platform
     runner.adapters[Platform.API_SERVER] = adapter
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -72,7 +72,7 @@ async def peer(tmp_path, monkeypatch):
     finally:
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
-        store._db.close()
+        store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,7 @@ async def test_peer_dm_into_the_bot_chat_is_the_chats_own_admission(peer):
     # The receipt is durable and exact: the same delivery reads back settled, no re-execution.
     record = json.loads((peer.home / 'runtime' / 'bot_live_delivery' / f"{body['delivery_id']}.json").read_text())
     assert record['status'] == 'settled' and record['session_id'] == peer.chat
-    rows = peer.authority.db._read_all("SELECT principal_id FROM session_admissions WHERE principal_id='api'")
+    rows = raw_holder(peer.authority.persistence)._read_all("SELECT principal_id FROM session_admissions WHERE principal_id='api'")
     assert rows == [], 'the Bot Chat was never bound as an API conversation'
 
 
@@ -109,4 +109,4 @@ async def test_streamed_peer_dm_and_peer_run_ride_the_same_door(peer):
     # A turn into any other session still runs as an ordinary API admission.
     resp = await peer.cli.post("/api/sessions/scratch/chat", json={"message": "elsewhere"})
     assert resp.status == 200 and [text for _, _, text, _ in peer.executed][-1] == 'elsewhere'
-    assert peer.authority.db._read_all("SELECT 1 FROM session_admissions WHERE principal_id='api'")
+    assert raw_holder(peer.authority.persistence)._read_all("SELECT 1 FROM session_admissions WHERE principal_id='api'")

@@ -31,6 +31,9 @@ import pytest
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence_assembly import profile_scope
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -43,7 +46,7 @@ TEXT = "**Yes.** I would make room for one island trip and one Balkan trip."
 def _fresh_db(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     monkeypatch.setattr(dl, "_owner_stamp", lambda: (os.getpid(), 202))
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: True)
     yield
@@ -53,8 +56,15 @@ _COLUMNS = ("obligation_id", "session_key", "state", "attempts", "last_error", "
             "platform")
 
 
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._scope().profile_dir))
+
+
 def _rows():
-    with dl._connect() as conn:
+    with _holder()._read_ctx() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'delivery_obligations'").fetchone() is None:
+            return []  # the ledger creates its table on its first use of the store
         cur = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM delivery_obligations")
         return [dict(zip(_COLUMNS, r)) for r in cur.fetchall()]
 

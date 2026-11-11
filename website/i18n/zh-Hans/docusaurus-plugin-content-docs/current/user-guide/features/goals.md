@@ -58,7 +58,7 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 | `/subgoal remove <N>` | 删除第 N 个子目标（从 1 开始计数）。 |
 | `/subgoal clear` | 删除所有子目标，但保留原始目标。 |
 
-子目标与目标一起持久化存储在 `SessionDB.state_meta` 中，因此在 `/resume` 后依然有效。设置新的 `/goal <text>` 会替换目标并清空子目标列表；`/goal clear` 同样如此。
+子目标与目标一起持久化存储在会话存储的 `state_meta` 中，因此在 `/resume` 后依然有效。设置新的 `/goal <text>` 会替换目标并清空子目标列表；`/goal clear` 同样如此。
 
 当你启动一个循环（"修复失败的测试"）后，中途发现还需要"为刚修复的 bug 添加回归测试"时，使用此功能——`/subgoal add a regression test` 可在不中断运行循环的情况下收紧成功条件。
 
@@ -98,7 +98,7 @@ agent 正在运行时，`/goal status`、`/goal pause` 和 `/goal clear` 可以�
 
 ### 持久化
 
-目标状态存储在 `SessionDB.state_meta` 中，以 `goal:<session_id>` 为键。这意味着 `/resume` 可以从你离开的地方继续——设置目标、合上笔记本、明天回来、执行 `/resume`，目标依然完好如初（活跃、暂停或已完成）。
+目标状态存储在会话存储的 `state_meta` 中，以 `goal:<session_id>` 为键。这意味着 `/resume` 可以从你离开的地方继续——设置目标、合上笔记本、明天回来、执行 `/resume`，目标依然完好如初（活跃、暂停或已完成）。
 
 ### Prompt 缓存
 
@@ -177,4 +177,4 @@ You: _
 
 ## 致谢
 
-`/goal` 是 Hermes 对 **Ralph loop** 模式的实现。面向用户的设计——跨轮次保持目标存活、不达成不停止，以及创建/暂停/恢复/清除控制——由 OpenAI Codex 团队的 Eric Traut 在 [Codex CLI 0.128.0](https://github.com/openai/codex) 中推广并落地。我们的实现是独立的（中央 `CommandDef` 注册表、`SessionDB.state_meta` 持久化、辅助客户端裁判、gateway 侧的适配器 FIFO 续行），但这个想法源自他们。功劳归于应得之人。
+`/goal` 是 Hermes 对 **Ralph loop** 模式的实现。面向用户的设计——跨轮次保持目标存活、不达成不停止，以及创建/暂停/恢复/清除控制——由 OpenAI Codex 团队的 Eric Traut 在 [Codex CLI 0.128.0](https://github.com/openai/codex) 中推广并落地。我们的实现是独立的（中央 `CommandDef` 注册表、会话存储 `state_meta` 持久化、辅助客户端裁判、gateway 侧的适配器 FIFO 续行），但这个想法源自他们。功劳归于应得之人。

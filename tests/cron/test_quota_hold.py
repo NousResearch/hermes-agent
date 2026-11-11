@@ -115,12 +115,13 @@ def _raise_quota(**_kw):
 
 
 def _tick(job, home, deliveries, resolve):
-    """One real scheduler tick (preflight ON) with the provider resolver replaced by *resolve*."""
+    """One real scheduler tick (preflight ON) with the provider resolver replaced by *resolve*; returns the
+    stand-in for the run's store opener."""
     with patch("cron.scheduler._hermes_home", home), \
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=MagicMock()), \
+         patch("persistence_assembly.open_persistence", return_value=MagicMock()) as open_store, \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
          patch("cron.delivery_queue.enqueue",
@@ -129,6 +130,7 @@ def _tick(job, home, deliveries, resolve):
          patch("run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.side_effect = RuntimeError("model said no")
         sched.run_one_job(dict(job))
+    return open_store
 
 
 def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_reach(tmp_cron_home, cron_owner):
@@ -145,7 +147,9 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     now = datetime.now(UTC)
     deliveries: list = []
 
-    _tick(get_job(job_id), tmp_cron_home, deliveries, _raise_quota)
+    open_store = _tick(get_job(job_id), tmp_cron_home, deliveries, _raise_quota)
+    # The provider resolve fails before the run opens its store.
+    open_store.assert_not_called()
     j = get_job(job_id)
     assert j["last_status"] == "error"
     assert len(deliveries) == 1, deliveries

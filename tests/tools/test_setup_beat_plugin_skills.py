@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from agent import onboarding_flow as flow
+from session_rules import onboarding_flow as flow
 from hermes_cli import plugins as plugins_mod
 from tools.setup_beat_tool import _result
 

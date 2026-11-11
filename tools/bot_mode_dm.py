@@ -909,11 +909,12 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     completion; mirrors gateway.wake.persist_delegation_delivery). A sender that already read
     the outcome via process(action='wait'/'log') is not told twice. Returns False (nothing
     armed) when the sender has no session transcript or the process is not tracked here."""
+    from persistence.conversation.messages import NewMessage
     from tools.process_registry import process_registry
 
-    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    persistence, session_id = getattr(agent, "persistence", None), getattr(agent, "session_id", None)
     proc = process_registry.get(proc_id)
-    if proc is None or not session_id or not callable(getattr(db, "append_message", None)):
+    if proc is None or not session_id or persistence is None:
         return False
 
     def _run() -> None:
@@ -926,9 +927,9 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
             return
         evt = {"type": "completion", "session_id": proc_id, **process_registry._exit_snapshot(proc, "exited")}
         try:
-            db.append_message(session_id, "user", content=format_process_notification(evt),
-                              display_kind="process_complete",
-                              display_metadata={"display_text": process_completion_display_text([evt])})
+            persistence.messages.append(session_id, NewMessage(
+                role="user", content=format_process_notification(evt), display_kind="process_complete",
+                display_metadata={"display_text": process_completion_display_text([evt])}))
         except Exception as exc:
             logger.warning("message_agent: could not persist the reply of %s into session %s: %s",
                            proc_id, session_id, exc)
@@ -1006,11 +1007,11 @@ def _delivery_main(args: list[str]) -> int:
 
 
 def _agent_home(agent: Any) -> str:
-    """The calling agent's OWN home (session-db derived), not ambient env."""
+    """The calling agent's OWN home (its store's profile), not ambient env."""
     with contextlib.suppress(Exception):
-        db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
-        if db_path:
-            return str(Path(db_path).parent)
+        persistence = getattr(agent, "persistence", None)
+        if persistence is not None:
+            return str(persistence.scope.profile_dir)
     return _default_home()
 
 
@@ -1019,9 +1020,14 @@ def _session_title(agent: Any) -> str:
     if title:
         return title
     with contextlib.suppress(Exception):
-        sdb, sid = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
-        if sdb and sid:
-            return str(sdb.get_session_title(sid) or "").strip()
+        from agent.runtime_session_store import RuntimeSessionStore
+
+        persistence, sid = getattr(agent, "persistence", None), getattr(agent, "session_id", None)
+        worker_store = getattr(agent, "_session_db", None)
+        if persistence is not None and sid:
+            return str(persistence.sessions.get_title(sid) or "").strip()
+        if isinstance(worker_store, RuntimeSessionStore) and sid:  # a managed worker reads its owner's row
+            return str(worker_store.get_session_title(sid) or "").strip()
     return ""
 
 

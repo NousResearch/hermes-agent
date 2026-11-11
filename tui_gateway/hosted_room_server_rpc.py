@@ -11,7 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from gateway import hosted_room_driver as state
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 _LockType = type(threading.Lock())
 
@@ -28,13 +28,18 @@ class HostedRoomSessionError(RuntimeError):
 class HostedRoomServerRPC:
     """Normalize the installed server handlers for :class:`HostedRoomRuntime`."""
 
-    def __init__(self, server: ModuleType, *, db_path: Path | str | None = None) -> None:
+    def __init__(self, server: ModuleType, *, db_path: Path | str | None = None, root: Path | None = None,
+                 placement: str | None = None) -> None:
         self.server = server
         self._ids = itertools.count(1)
         # Event-bound files resolve from the room store, as on the gateway route; without the
         # store there is nothing to resolve them from, so the driver refuses the turn by name.
         self.db_path = Path(db_path) if db_path is not None else None
         self.accepts_attachments = self.db_path is not None
+        # The room store the attachment reads open: its profile folder and which of its two placements it is.
+        self.root = root if root is not None else (self.db_path.parent if self.db_path is not None else None)
+        self.placement = placement or ("profile" if self.db_path is not None and self.db_path.name == "state.db"
+                                       else "shared")
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
@@ -71,7 +76,7 @@ class HostedRoomServerRPC:
             "profile": profile, "session_id": session_id, "omit_messages": True, "source": source})
 
     def submit(
-        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: HostedTaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
         attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
@@ -90,7 +95,7 @@ class HostedRoomServerRPC:
             token = set_hermes_home_override(str(home)) if home is not None else None
             try:
                 inputs = prepare_before_submit(lambda: bound_submission_payload(
-                    self.db_path, room_id=task.room_id, member_id=member_id, prompt=prompt,
+                    self, room_id=task.room_id, member_id=member_id, prompt=prompt,
                     attachments=list(attachments)))
             finally:
                 if token is not None:

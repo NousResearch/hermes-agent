@@ -6,26 +6,29 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from persistence_assembly import open_persistence, profile_scope, store_location
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class RoomService:
-    def __init__(self, path, owner):
-        self.db_path = path
+    def __init__(self, path, owner, store):
+        self.db_path, self.store, self.placement = path, store, 'profile'
         self.owner = owner
         self.calls = []
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})
 
-    def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
+    def authorize_room(self, actor_subject, room_id):
         if actor_subject != self.owner or room_id != 'owned':
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
 
-    def create_room(self, *, room_id, name, members, admit=None):
+    def create_room(self, *, room_id, name, members, owner=None):
         from gateway.hosted_rooms import create_room, local_authority_gateway_id
         self.calls.append(('create', room_id))
-        return create_room(self.db_path, room_id=room_id, name=name, members=members,
-                           authority_gateway_id=local_authority_gateway_id(), admit=admit)
+        if owner is not None:
+            self.authorize_room(owner, room_id)
+        return create_room(self.store, placement='profile', room_id=room_id, name=name, members=members,
+                           authority_gateway_id=local_authority_gateway_id())
 
     def status(self, room_id):
         return {'running': True, 'working': False, 'blocked': True, 'counts': {}, 'peer_routes': [],
@@ -37,8 +40,8 @@ class RoomService:
     def send(self, *, room_id, event_id, payload):
         from gateway.hosted_rooms import append_event, room_state
         self.calls.append(('send', room_id, event_id, payload))
-        room = room_state(self.db_path, room_id=room_id)
-        return append_event(self.db_path, room_id=room_id, event_id=event_id, kind='message.user',
+        room = room_state(self.store, placement='profile', room_id=room_id)
+        return append_event(self.store, placement='profile', room_id=room_id, event_id=event_id, kind='message.user',
                             actor={'kind': 'user', 'id': 'desktop'}, payload=payload,
                             authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch'])
 
@@ -67,10 +70,10 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
     # The control boundary validates the roster before any service sees it: helper is a destination.
     helper = (tmp_path / 'profiles' / 'helper').resolve()
     (tmp_path / 'config.yaml').write_text(json.dumps({'hosted_rooms': {'profiles': {'helper': str(helper)}}}))
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={}, persistence=storage_handle(tmp_path))
         connection = AuthorityConnection(authority, object(), {'user_id': 'alice'})
-        service = authority.hosted_room_service = RoomService(db.db_path, connection.actor.subject)
+        service = authority.hosted_room_service = RoomService(store_location(db.scope), connection.actor.subject, authority.persistence)
 
         async def probe():
             async def call(method, **params):
@@ -118,10 +121,10 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
 
 def test_execution_controls_reject_foreign_actor_profile_room_and_unready_service(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={}, persistence=storage_handle(tmp_path))
         owner = AuthorityConnection(authority, object(), {'user_id': 'alice'})
-        service = authority.hosted_room_service = RoomService(db.db_path, owner.actor.subject)
+        service = authority.hosted_room_service = RoomService(store_location(db.scope), owner.actor.subject, authority.persistence)
 
         async def probe():
             requests = {
@@ -176,19 +179,19 @@ def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(tmp_pat
             pass
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={}, persistence=db)
         connection = AuthorityConnection(authority, object(), {'user_id': 'alice'})
         server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
-        service = authority.hosted_room_service = OwnedRooms(server, db_path=db.db_path)
+        service = authority.hosted_room_service = OwnedRooms(server, store=db, placement='profile')
         monkeypatch.setattr(service.runtime, 'status', lambda: {'running': True, 'stopping': False})
         monkeypatch.setattr(service, 'local_profiles', lambda: ('default', 'ops'))
         for room_id in ('owned', 'ended'):
             service.create_room(room_id=room_id, name='Room', members=[
                 {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
                 {'member_id': 'two', 'profile': 'ops', 'handle': 'two'}])
-        hosted_rooms.disband_room(db.db_path, room_id='ended', expected_gateway_id=hosted_rooms.local_authority_gateway_id(),
-                                  expected_epoch=1)
+        hosted_rooms.disband_room(db, placement='profile', room_id='ended',
+                                  expected_gateway_id=hosted_rooms.local_authority_gateway_id(), expected_epoch=1)
         async def send(event_id, text, room_id='owned'):
             payload = {'text': text, 'thread_id': 'thread'}
             return await connection.dispatch({'id': 1, 'method': 'groups.send',
@@ -209,7 +212,7 @@ def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(tmp_pat
             receipt = sent['result']
             assert receipt['accepted'] is True and receipt.get('admitted') is not False
             assert receipt['client_event_id'] == 'stored'
-            events = hosted_rooms.read_events(db.db_path, room_id='owned', since_seq=0)['events']
+            events = hosted_rooms.read_events(db, placement='profile', room_id='owned', since_seq=0)['events']
             [event] = [e for e in events if e['event_id'] == receipt['event']['event_id']]  # the worker may add notices
             assert event['event_id'] == hosted_rooms.user_event_id('stored')
             assert event['payload']['text'] == 'Stored'

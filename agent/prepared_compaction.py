@@ -151,9 +151,7 @@ def _message_identity(msg: Any) -> _Identity:
     bodies are left out: the no-LLM prune rewrites them in place."""
     if not isinstance(msg, dict):
         return "?", None, ""
-    from agent.memory_manager import sanitize_context
-    from agent.message_content import flatten_message_text
-    from agent.message_metadata import message_uid_or_none
+    from session_rules.turns import sanitize_context, flatten_message_text, message_uid_or_none
 
     role = str(msg.get("role") or "")
     uid = message_uid_or_none(msg)

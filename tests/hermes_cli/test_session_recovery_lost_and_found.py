@@ -16,10 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
 from hermes_cli import session_recovery
-from hermes_cli import session_schema_history
-from hermes_cli.session_lost_and_found import (
+from persistence.sqlite.admin import _schema_history as session_schema_history
+from persistence.sqlite.admin._lost_and_found import (
     STUB_TITLE_PREFIX,
     _cli_recover_attempts,
     classify_lost_and_found_row,
@@ -30,9 +29,13 @@ from hermes_cli.session_lost_and_found import (
 from hermes_cli.session_recovery import (
     SessionRecoverySafetyError,
     SessionRecoverySourceError,
-    _probe_populated_edge,
     recover_session_database,
 )
+from persistence.sqlite.admin import _recovery
+from persistence.sqlite.admin._recovery import _probe_populated_edge
+from persistence.conversation.sessions import SessionQuery, SessionWindow
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 from tests.hermes_cli.test_session_recovery import (
     _btree_leaf_pages,
@@ -40,11 +43,29 @@ from tests.hermes_cli.test_session_recovery import (
 )
 
 
-from hermes_cli.session_lost_and_found import find_sqlite3_cli
+from persistence.sqlite.admin._lost_and_found import find_sqlite3_cli
 
 # .recover needs a sqlite3 shell built with sqlite_dbpage — PATH presence
 # alone is not enough (Ubuntu CI ships a build without it).
 HAVE_SQLITE3_CLI = find_sqlite3_cli() is not None
+
+
+def _store_file(home: Path) -> Path:
+    """The ``state.db`` a store handle on *home* opens; *home* is created."""
+    home.mkdir(exist_ok=True)
+    return home / "state.db"
+
+
+def _create_store(path: Path) -> None:
+    """An empty current-schema store at *path*, a home's ``state.db``."""
+    with open_persistence(profile_scope(home=path.parent)) as store:
+        store.ready()
+
+
+def _list_count(path: Path, limit: int) -> int:
+    """How many rows the store at *path* lists in one window of *limit*."""
+    with open_persistence(profile_scope(home=path.parent)) as store:
+        return len(store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=limit)))
 
 
 # ── physical corruption helpers ─────────────────────────────────────────────
@@ -89,20 +110,15 @@ def _corrupt_schema_page(path: Path) -> None:
 
 
 def _make_schema_unreadable_source(path: Path) -> dict[str, int]:
-    db = SessionDB(db_path=path)
-    try:
+    with open_persistence(profile_scope(home=path.parent)) as store:
         for session_number in range(3):
             session_id = f"20260812_1353{session_number:02d}_abc{session_number:03x}"
-            db.create_session(session_id, "cli", cwd=f"/tmp/laf-{session_number}")
-            db.set_session_title(session_id, f"LAF {session_number}")
+            seed_session(store, session_id, "cli", title=f"LAF {session_number}", cwd=f"/tmp/laf-{session_number}")
             for message_number in range(9):
-                db.append_message(
-                    session_id,
-                    "user" if message_number % 2 == 0 else "assistant",
-                    f"lost-and-found payload {session_number} {message_number}",
-                )
-    finally:
-        db.close()
+                seed_messages(store, session_id, {
+                    "role": "user" if message_number % 2 == 0 else "assistant",
+                    "content": f"lost-and-found payload {session_number} {message_number}",
+                })
     conn = sqlite3.connect(str(path), isolation_level=None)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -218,11 +234,11 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without a sqlite3 CLI the refusal must say exactly what to install."""
-    source = tmp_path / "schemaless.db"
+    source = _store_file(tmp_path / "schemaless")
     output = tmp_path / "schemaless-recovered.db"
     _make_schema_unreadable_source(source)
 
-    import hermes_cli.session_lost_and_found as laf
+    from persistence.sqlite.admin import _lost_and_found as laf
 
     monkeypatch.setattr(laf, "find_sqlite3_cli", lambda: None)
     with pytest.raises(SessionRecoverySourceError) as excinfo:
@@ -247,8 +263,8 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
     tmp_path: Path,
 ) -> None:
     """The last-resort lane must salvage rows SQL-level recovery cannot."""
-    source = tmp_path / "schemaless.db"
-    output = tmp_path / "schemaless-recovered.db"
+    source = _store_file(tmp_path / "schemaless")
+    output = _store_file(tmp_path / "schemaless-recovered")
     expected = _make_schema_unreadable_source(source)
 
     # Premise: the schema really is unreadable at the SQL level.
@@ -300,12 +316,7 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
     assert fts_matches == expected["messages"]
 
     # The output must open as a regular current-schema session database.
-    recovered_db = SessionDB(db_path=output)
-    try:
-        sessions = recovered_db.list_sessions_rich(limit=10)
-        assert len(sessions) == expected["sessions"]
-    finally:
-        recovered_db.close()
+    assert _list_count(output, 10) == expected["sessions"]
 
 
 
@@ -317,17 +328,14 @@ def test_lost_and_found_lane_recovers_page1_header_damaged_source(tmp_path: Path
     """#106667: a garbage page-1 header makes SQLite (and the shell's .recover) refuse the file
     with 'file is not a database' although every data page survives. The lane must still
     salvage the rows, and must do it on its snapshot — the user's file stays byte-identical."""
-    source = tmp_path / "header-damaged.db"
+    source = _store_file(tmp_path / "header-damaged")
     output = tmp_path / "header-recovered.db"
-    db = SessionDB(db_path=source)
-    try:
+    with open_persistence(profile_scope(home=source.parent)) as store:
         for session_number in range(3):
             session_id = f"hdr-session-{session_number}"
-            db.create_session(session_id, "cli", cwd="/tmp/hdr")
+            seed_session(store, session_id, "cli", cwd="/tmp/hdr")
             for message_number in range(9):
-                db.append_message(session_id, "user", f"payload {session_number} {message_number}")
-    finally:
-        db.close()
+                seed_messages(store, session_id, {"role": "user", "content": f"payload {session_number} {message_number}"})
     conn = sqlite3.connect(str(source), isolation_level=None)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -530,8 +538,8 @@ def test_store_created_at_runtime_schema_maps_source_by_name(tmp_path: Path) -> 
     runtime_generation right after ``id`` (declared order), so its source cell sits
     at index 3, not 1. The classifier must still see a sessions record and the
     mapper must land ``source`` by name rather than reject the population."""
-    output = tmp_path / "mapped.db"
-    SessionDB(db_path=output).close()
+    output = _store_file(tmp_path / "mapped")
+    _create_store(output)
     dest = sqlite3.connect(str(output), isolation_level=None)
     lf = sqlite3.connect(":memory:", isolation_level=None)
     try:
@@ -564,14 +572,14 @@ def test_mapper_rebuilds_sessiondb_from_synthetic_lost_and_found(
     tmp_path: Path,
 ) -> None:
     """Binary-independent: mapper + stubbing + FTS rebuild end to end."""
-    schema_ref = tmp_path / "schema-ref.db"
-    SessionDB(db_path=schema_ref).close()
+    schema_ref = _store_file(tmp_path / "schema-ref")
+    _create_store(schema_ref)
 
     lf_path = tmp_path / "lost_and_found.db"
     expected = _make_synthetic_lost_and_found(lf_path, schema_ref)
 
-    output = tmp_path / "mapped.db"
-    SessionDB(db_path=output).close()
+    output = _store_file(tmp_path / "mapped")
+    _create_store(output)
 
     lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
     dest = sqlite3.connect(str(output), isolation_level=None)
@@ -629,12 +637,8 @@ def test_mapper_rebuilds_sessiondb_from_synthetic_lost_and_found(
         lf_conn.close()
         dest.close()
 
-    # And the mapped output opens through the normal SessionDB path.
-    db = SessionDB(db_path=output)
-    try:
-        assert len(db.list_sessions_rich(limit=20)) == 5
-    finally:
-        db.close()
+    # And the mapped output opens as a store through the storage interface.
+    assert _list_count(output, 20) == 5
 
 
 # ── issue #72291: source-fingerprint error must name the parent CLI ─────────
@@ -644,14 +648,14 @@ def test_fingerprint_error_enumerates_parent_cli_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = tmp_path / "busy.db"
-    SessionDB(db_path=source).close()
+    source = _store_file(tmp_path / "busy")
+    _create_store(source)
 
     fingerprints = iter([{"main": {"size": 1, "mtime_ns": 1}},
                          {"main": {"size": 2, "mtime_ns": 2}},
                          {"main": {"size": 3, "mtime_ns": 3}}])
     monkeypatch.setattr(
-        session_recovery,
+        _recovery,
         "_source_fingerprint",
         lambda _source: next(fingerprints),
     )
@@ -682,8 +686,8 @@ def _map_salvage_rows(
     the NOT NULL substitute turns it into 0.0 on every row.
     """
 
-    schema_ref = tmp_path / "schema-ref.db"
-    SessionDB(db_path=schema_ref).close()
+    schema_ref = _store_file(tmp_path / "schema-ref")
+    _create_store(schema_ref)
     schema = sqlite3.connect(str(schema_ref))
     try:
         sessions_columns = [
@@ -766,8 +770,8 @@ def _map_salvage_rows(
     finally:
         lf_conn.close()
 
-    output = tmp_path / "mapped.db"
-    SessionDB(db_path=output).close()
+    output = _store_file(tmp_path / "mapped")
+    _create_store(output)
     lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
     dest = sqlite3.connect(str(output), isolation_level=None)
     try:
@@ -798,7 +802,7 @@ def test_plausibility_gate_flags_positional_mis_mapping(
             "SELECT COUNT(*) FROM sessions WHERE started_at = 0.0"
         ).fetchone()[0] == 3
 
-        errors = session_recovery._lost_and_found_plausibility_errors(conn)
+        errors = _recovery._lost_and_found_plausibility_errors(conn)
         assert len(errors) == 1
         assert "sessions.started_at" in errors[0]
     finally:
@@ -814,7 +818,7 @@ def test_plausibility_gate_flags_mis_mapped_message_timestamps(
         blank_message_timestamp=True,
     )
     try:
-        errors = session_recovery._lost_and_found_plausibility_errors(conn)
+        errors = _recovery._lost_and_found_plausibility_errors(conn)
         assert len(errors) == 1
         assert "messages.timestamp" in errors[0]
     finally:
@@ -841,7 +845,7 @@ def test_plausibility_gate_passes_correctly_mapped_salvage(
         )
         conn.commit()
 
-        assert session_recovery._lost_and_found_plausibility_errors(conn) == []
+        assert _recovery._lost_and_found_plausibility_errors(conn) == []
     finally:
         conn.close()
 
@@ -886,18 +890,14 @@ def test_lost_and_found_lane_refuses_to_verify_a_physically_shifted_source(
     the template's declared order maps every cell onto the wrong column. The
     output still passes integrity/FK/FTS, so only the plausibility gate can
     stop the report from claiming ``verified``."""
-    source = tmp_path / "upgraded.db"
+    source = _store_file(tmp_path / "upgraded")
     output = tmp_path / "upgraded-recovered.db"
-    db = SessionDB(db_path=source)
-    try:
+    with open_persistence(profile_scope(home=source.parent)) as store:
         for n in range(3):
             sid = f"20260812_1400{n:02d}_def{n:03x}"
-            db.create_session(sid, "cli", cwd=f"/tmp/shift-{n}")
-            db.set_session_title(sid, f"shift {n}")
+            seed_session(store, sid, "cli", title=f"shift {n}", cwd=f"/tmp/shift-{n}")
             for m in range(4):
-                db.append_message(sid, "user" if m % 2 == 0 else "assistant", f"payload {n} {m}")
-    finally:
-        db.close()
+                seed_messages(store, sid, {"role": "user" if m % 2 == 0 else "assistant", "content": f"payload {n} {m}"})
     conn = sqlite3.connect(str(source), isolation_level=None)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -988,8 +988,8 @@ def test_upgraded_physical_layout_maps_cells_by_name(tmp_path: Path) -> None:
     and blanks every title.
     """
 
-    output = tmp_path / "mapped.db"
-    SessionDB(db_path=output).close()
+    output = _store_file(tmp_path / "mapped")
+    _create_store(output)
 
     declared = sqlite3.connect(str(output))
     try:
@@ -1131,7 +1131,7 @@ def test_upgraded_physical_layout_maps_cells_by_name(tmp_path: Path) -> None:
         assert mode == usage_cells["billing_mode"]
 
         # Correctly mapped salvage has nothing for the gate to flag.
-        assert session_recovery._lost_and_found_plausibility_errors(dest) == []
+        assert _recovery._lost_and_found_plausibility_errors(dest) == []
     finally:
         lf_conn.close()
         dest.close()
@@ -1141,8 +1141,8 @@ def test_plausibility_gate_ignores_stub_only_sessions(tmp_path: Path) -> None:
     """Stub rows from ``stub_missing_parent_sessions`` legitimately carry
     ``started_at = 0.0``; a salvage where only stubs survived is depleted,
     not mis-mapped, and must not be flagged."""
-    output = tmp_path / "stubs.db"
-    SessionDB(db_path=output).close()
+    output = _store_file(tmp_path / "stubs")
+    _create_store(output)
     conn = sqlite3.connect(str(output))
     try:
         now = 1_750_000_000.0
@@ -1155,19 +1155,19 @@ def test_plausibility_gate_ignores_stub_only_sessions(tmp_path: Path) -> None:
             ("20260812_140000_aaa000", "user", "hi", now),
         )
         conn.commit()
-        assert session_recovery._lost_and_found_plausibility_errors(conn) == []
+        assert _recovery._lost_and_found_plausibility_errors(conn) == []
         # One genuinely mapped row with a real timestamp keeps it clean too...
         conn.execute(
             "INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)",
             ("20260812_140001_aaa001", "cli", now, None),
         )
         conn.commit()
-        assert session_recovery._lost_and_found_plausibility_errors(conn) == []
+        assert _recovery._lost_and_found_plausibility_errors(conn) == []
         # ...and a mapped row at 0.0 with a NULL title (the mis-mapped shape:
         # blank titles) is still counted as mapped, not as a stub.
         conn.execute("UPDATE sessions SET started_at = 0.0 WHERE id = '20260812_140001_aaa001'")
         conn.commit()
-        errors = session_recovery._lost_and_found_plausibility_errors(conn)
+        errors = _recovery._lost_and_found_plausibility_errors(conn)
         assert len(errors) == 1 and "sessions.started_at" in errors[0]
     finally:
         conn.close()
@@ -1183,7 +1183,7 @@ def test_recovery_lane_refuses_to_verify_when_rows_matched_no_layout(
     """Wiring: ``unrecognized_layout_rows`` from the mapper must reach the
     verifier — once the recognised rows map correctly, the all-rows
     timestamp gate cannot see a few positionally guessed ones."""
-    import hermes_cli.session_lost_and_found as lf_module
+    from persistence.sqlite.admin import _lost_and_found as lf_module
 
     real = lf_module.map_lost_and_found_rows
 
@@ -1194,15 +1194,12 @@ def test_recovery_lane_refuses_to_verify_when_rows_matched_no_layout(
 
     monkeypatch.setattr(lf_module, "map_lost_and_found_rows", counting)
 
-    source = tmp_path / "source.db"
+    source = _store_file(tmp_path / "source")
     output = tmp_path / "recovered.db"
-    db = SessionDB(db_path=source)
-    try:
+    with open_persistence(profile_scope(home=source.parent)) as store:
         sid = "20260812_140000_def000"
-        db.create_session(sid, "cli", cwd="/tmp/x")
-        db.append_message(sid, "user", "payload")
-    finally:
-        db.close()
+        seed_session(store, sid, "cli", cwd="/tmp/x")
+        seed_messages(store, sid, {"role": "user", "content": "payload"})
     conn = sqlite3.connect(str(source), isolation_level=None)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

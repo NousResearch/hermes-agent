@@ -112,23 +112,15 @@ def resolve_breadcrumb_session() -> Optional[str]:
     if not session_id:
         return None
     try:
-        from hermes_state import SessionDB
         from hermes_constants import get_hermes_home
+        from persistence_assembly import open_persistence_reader
 
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+        with open_persistence_reader(get_hermes_home()) as persistence:
+            if not persistence.sessions.get(session_id):
+                return None  # session was deleted — fall back to latest
+            try:
+                return persistence.lineage.tip(session_id) or session_id
+            except Exception:
+                return session_id
     except Exception:
         return None
-    try:
-        if not db.get_session(session_id):
-            return None  # session was deleted — fall back to latest
-        try:
-            return db.get_compression_tip(session_id) or session_id
-        except Exception:
-            return session_id
-    except Exception:
-        return None
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass

@@ -2,8 +2,8 @@
 that home, over real private sockets."""
 import asyncio
 import json
-import sqlite3
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,15 +12,17 @@ from gateway import hosted_room_driver as tasks, hosted_rooms, session_hosted_tr
 from gateway.config import GatewayConfig
 from gateway.runtime_ownership import ProfileOwnership
 from gateway.session import SessionStore
-from gateway.session_authority import initialize_session_authority
+from gateway.session_authority import admission_row, initialize_session_authority
 from gateway.session_group_controls import _disband
-from gateway.session_hosted_member_homes import _HOMES, record_member_home
+from gateway.session_hosted_member_homes import record_member_home
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from hermes_state import SessionDB
-from hermes_state_runtime import (
-    begin_runtime_epoch, claim_session_input, list_session_admissions, settle_session_input,
-)
+from gateway.session_persistence import authority_persistence
+from persistence.gateway.hosted_rooms import RoomStopPendingError
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_session_hosted_transport import _SourceTask, _server
+
+_HOMES = 'gateway.hosted.member_homes.v1:'
 
 
 class _Homes:
@@ -36,7 +38,7 @@ class _Homes:
         self.service.runtime.process_generation = 'test'
         self.binding = self.service.bindings()[0]
         self.sids = {}
-        hosted_rooms.append_event(source.db.db_path, room_id='room', event_id='input', kind='message.user',
+        hosted_rooms.append_event(source.db, placement='profile', room_id='room', event_id='input', kind='message.user',
             actor={'kind': 'user', 'id': 'alice'}, payload={'text': 'frozen'},
             authority_gateway_id=source.gateway, authority_epoch=1)
         for home, authority in [(source.authority.profile_id, source.authority), *targets.items()]:
@@ -57,7 +59,7 @@ class _Homes:
 
     @property
     def task(self):
-        return tasks.get_task(self.source.db.db_path, self.source.identity)
+        return tasks.get_task(self.source.db, self.source.identity, placement='profile')
 
     def start(self, home):
         assert asyncio.run_coroutine_threadsafe(self.servers[home].start(), self.loop).result(10)
@@ -78,7 +80,7 @@ class _Homes:
     def defer(self, home):
         self.stop(home)  # The daemon still owns its lock; its control socket is unavailable.
         task = self.task
-        tasks.begin_task_cancel(self.source.db.db_path, self.source.identity,
+        tasks.begin_task_cancel(self.source.db, self.source.identity, placement='profile',
             cancel_id=f"stop:{task['execution_generation']}",
             expected_cancel_generation=task['cancel_generation'], clock=self.service.runtime.clock)
         self.now += 10
@@ -88,32 +90,34 @@ class _Homes:
         self.start(home)
 
     def disband(self):
-        return _disband(self.service, self.service, self.source.db.db_path, self.source.gateway, {'room_id': 'room'})
+        return _disband(self.service, self.service, self.source.db, self.source.gateway, {'room_id': 'room'})
 
     def pending(self):
         assert self.service.stop_room('room', cancel_id='stop-again') == 0
-        with pytest.raises(hosted_rooms.RoomStopPendingError):
+        with pytest.raises(RoomStopPendingError):
             self.disband()
         assert self.task['status'] == 'deferred'
         assert self.service._room('room').get('disbanded_at') is None
 
     def rows(self, home):
-        return list_session_admissions(self.targets[home].db, session_id=self.sids[home], pending_only=False)
+        return [admission_row(record) for record in authority_persistence(self.targets[home]).admissions.list(
+            session_id=self.sids[home], pending_only=False)]
 
     def claim(self, home):
         authority = self.targets[home]
-        return claim_session_input(authority.db, epoch=authority.epoch, session_id=self.sids[home])
+        return admission_row(authority_persistence(authority).admissions.claim(epoch=authority.epoch,
+                                                                                session_id=self.sids[home]))
 
     def finish(self, home, row):
         authority = self.targets[home]
-        settle_session_input(authority.db, epoch=authority.epoch, admission_id=row['admission_id'],
+        authority_persistence(authority).admissions.settle(epoch=authority.epoch, admission_id=row['admission_id'],
             generation=row['generation'], outcome='interrupted')
 
     def restart(self):
         self.source.db.close()
-        self.source.db = SessionDB(self.source.db.db_path)
-        self.source.authority.db = self.source.db
-        self.source.authority.epoch = begin_runtime_epoch(self.source.db, instance_id='restarted')
+        self.source.db = open_persistence(profile_scope(home=Path(self.source.authority.profile_id)))
+        self.source.authority.db = self.source.authority.persistence = self.source.db
+        self.source.authority.epoch = self.source.db.runtime.begin_epoch(instance_id='restarted')
         self.service = CanonicalHostedRoomService(self.source.authority, None)
         self.service.runtime.prepare_room = self.service.runtime.publish_terminal = None
         self.now += 1001
@@ -133,13 +137,13 @@ def homes(hosted_owner, tmp_path, monkeypatch):
         home.mkdir(parents=True, mode=0o700)
     authority.profile_id = str(home_a)
     store = SessionStore(home_b / 'sessions', GatewayConfig())
-    other_db = SessionDB(home_b / 'state.db')
+    other_db = open_persistence(profile_scope(home=home_b))
     other_agent = SimpleNamespace(interrupted=False)
     other_agent.interrupt = lambda: setattr(other_agent, 'interrupted', True)
     runner = SimpleNamespace(session_store=store, _session_db=other_db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: other_agent)
     other = asyncio.run_coroutine_threadsafe(initialize_session_authority(
-        runner, profile_id=str(home_b), instance_id='other'), loop).result(10)
+        runner, profile_id=str(home_b), instance_id='other', persistence=other_db), loop).result(10)
     monkeypatch.setattr(other, '_schedule', lambda ref: None)
     source = _SourceTask(tmp_path, monkeypatch, b'attachment')
     fixture = _Homes(source, loop, {home_a: authority, home_b: other})
@@ -162,14 +166,15 @@ def test_a_resubmit_after_non_admission_is_a_new_attempt_at_the_new_home(homes):
     # and its next start_task is a new generation, so the home that takes it gets its own record.
     homes.submit(homes.a)
     homes.finish(homes.a, homes.claim(homes.a))  # home A doesn't hold this attempt
-    db, clock = homes.source.db.db_path, homes.service.runtime.clock
+    db, clock = homes.source.db, homes.service.runtime.clock
     first = homes.task
-    lease = tasks.acquire_lease(db, room_id='room', gateway_id=homes.source.gateway, authority_epoch=1,
-                                process_generation='test', ttl_seconds=1000, clock=clock)
+    lease = tasks.acquire_lease(db, placement='profile', room_id='room', gateway_id=homes.source.gateway,
+                                authority_epoch=1, process_generation='test', ttl_seconds=1000, clock=clock)
     tasks.requeue_not_admitted_task(db, tasks.TaskAttempt(
-        homes.source.identity, lease, first['execution_generation'], first['cancel_generation']), clock=clock)
-    tasks.start_task(db, homes.source.identity, lease, expected_cancel_generation=first['cancel_generation'],
-                     clock=clock)
+        homes.source.identity, lease, first['execution_generation'], first['cancel_generation']),
+        placement='profile', clock=clock)
+    tasks.start_task(db, homes.source.identity, lease, placement='profile',
+                     expected_cancel_generation=first['cancel_generation'], clock=clock)
     assert homes.task['execution_generation'] == first['execution_generation'] + 1
     homes.submit(homes.b)  # the profile moved while it was queued
     homes.claim(homes.b)  # home B runs it
@@ -203,10 +208,11 @@ def test_retry_moves_on_when_the_admitting_home_is_gone(homes):
 def test_a_turn_from_before_attempt_homes_is_stopped_at_a_live_older_home(homes):
     homes.submit(homes.a)
     homes.defer(homes.a)
-    with sqlite3.connect(homes.source.db.db_path) as conn:
+    def forget_attempt_homes(conn):
         for (key,) in conn.execute('SELECT key FROM state_meta WHERE substr(key, 1, ?)=?', (len(_HOMES), _HOMES)).fetchall():
             if len(json.loads(key[len(_HOMES):])) == 4:
                 conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
+    raw_holder(homes.source.db)._execute_write(forget_attempt_homes)
     homes.source.homes['other'] = str(homes.b)  # its "no such session" proves nothing about home A
     # Home A still holds the queued input: its Stop goes there, and once A holds nothing it settles.
     assert 'tombstone' in homes.disband()

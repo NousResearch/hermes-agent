@@ -3,12 +3,14 @@
 from unittest.mock import patch
 
 from agent.prompt_builder import steer_user_row
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView
 from run_agent import AIAgent
+from tests.fixtures.storage_read import transcript_rows
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "steer-compaction"
     with (
         patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}),
@@ -19,7 +21,7 @@ def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -29,15 +31,15 @@ def test_flushed_steer_keeps_one_display_identity_across_compactions(tmp_path):
 
     agent._flush_messages_to_session_db([steer], [])
 
-    durable_timestamp = db.get_messages(session_id)[0]["timestamp"]
+    durable_timestamp = transcript_rows(db, session_id)[0]["timestamp"]
     assert steer["timestamp"] == durable_timestamp
 
     for _ in range(2):
-        db.archive_and_compact(session_id, [dict(steer)])
+        db.messages.compact(session_id, [NewMessage.from_live(dict(steer))])
 
-    physical = db.get_messages(session_id, include_inactive=True)
+    physical = transcript_rows(db, session_id, TranscriptRead(view=TranscriptView.ALL))
     assert len([row for row in physical if row["display_kind"] == "steer"]) == 3
-    visible = db.get_messages(session_id, include_compacted=True)
+    visible = transcript_rows(db, session_id, TranscriptRead(view=TranscriptView.DISPLAY))
     assert [(row["display_kind"], row["content"]) for row in visible] == [
         ("steer", steer["content"]),
     ]

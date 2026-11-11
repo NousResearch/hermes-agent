@@ -16,6 +16,10 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
+from gateway.session_persistence import authority_persistence
+from tests.fixtures.storage_holder import policy_key, raw_holder
+from tests.fixtures.storage_seed import seed_session
+
 SESSION_COUNT = 300  # more than one LISTING_BATCH
 
 
@@ -28,13 +32,13 @@ async def owner(tmp_path, monkeypatch):
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id='live', instance_id='owner')
     sids = []
     for index in range(SESSION_COUNT):
         sid = f'sess-{index:03d}'
-        store._db.create_session(sid, source='telegram')
+        seed_session(store.persistence, sid, 'telegram')
         authority.sessions[sid] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id=sid), sid)
         sids.append(sid)
     connection = AuthorityConnection(authority, object(), {'user_id': 'viewer'})
@@ -44,20 +48,19 @@ async def owner(tmp_path, monkeypatch):
         assert 'result' in reply, reply
         return reply['result']['sessions']
 
-    yield SimpleNamespace(authority=authority, db=store._db, sids=sids, listing=listing)
+    yield SimpleNamespace(authority=authority, db=store.persistence, sids=sids, listing=listing)
 
 
-def _count_reads_by_thread(monkeypatch, db):
-    """Every read connection checkout the walk makes, keyed by whether it ran on the loop thread."""
+def _count_reads_by_thread(monkeypatch, *stores):
+    """Every read connection checkout the walk makes on the storage interface's holders, keyed by whether it
+    ran on the loop thread."""
     loop_thread = threading.get_ident()
     reads = {'loop': 0, 'worker': 0}
-    original = type(db)._read_ctx
-
-    def counting(self, *args, **kwargs):
-        reads['loop' if threading.get_ident() == loop_thread else 'worker'] += 1
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(type(db), '_read_ctx', counting)
+    for store in stores:
+        def counting(self, *args, _original=type(store)._read_ctx, **kwargs):
+            reads['loop' if threading.get_ident() == loop_thread else 'worker'] += 1
+            return _original(self, *args, **kwargs)
+        monkeypatch.setattr(type(store), '_read_ctx', counting)
     return reads
 
 
@@ -65,7 +68,7 @@ def _count_reads_by_thread(monkeypatch, db):
 @pytest.mark.parametrize('method, params', [('session.list', {}), ('session.list', {'picker': True}),
                                             ('session.active_list', {})])
 async def test_a_live_listing_reads_the_store_off_the_loop_in_batches(owner, monkeypatch, method, params):
-    reads = _count_reads_by_thread(monkeypatch, owner.db)
+    reads = _count_reads_by_thread(monkeypatch, raw_holder(authority_persistence(owner.authority)))
     rows = await owner.listing(method, **params)
     assert len(rows) == (200 if method == 'session.list' else SESSION_COUNT)
     assert reads['loop'] == 0, reads
@@ -95,16 +98,15 @@ async def test_a_closed_unviewed_local_session_still_leaves_the_live_feed(owner)
     """The batched read keeps ``closed_and_unviewed``: a local session whose receipt target is ended
     and that nobody views is listed as resumable (stored feed), not live; an open one stays live."""
     import json
-    from hermes_state_local import POLICY_PREFIX
     closed, open_ = owner.sids[0], owner.sids[1]
-    owner.db.create_session('target-closed', source='tui')
-    owner.db.create_session('target-open', source='tui')
-    owner.db.end_session('target-closed', 'tui_close')
+    seed_session(owner.db, 'target-closed', 'tui', end_reason='tui_close')
+    seed_session(owner.db, 'target-open', 'tui')
     for sid, target in ((closed, 'target-closed'), (open_, 'target-open')):
-        owner.db.set_meta(POLICY_PREFIX + sid, json.dumps({'entry': {'session_id': target}}))
-    owner.db.set_meta(POLICY_PREFIX + owner.sids[2], '{not json')
-    with owner.db._lock:  # newest, so session.list's 200-row window holds all three
-        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?,?)', owner.sids[:3])
+        owner.db.state_meta.set(policy_key(sid), json.dumps({'entry': {'session_id': target}}))
+    owner.db.state_meta.set(policy_key(owner.sids[2]), '{not json')
+    # newest, so session.list's 200-row window holds all three
+    raw_holder(owner.db)._execute_write(lambda conn: conn.execute(
+        'UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?,?)', owner.sids[:3]))
     for method in ('session.list', 'session.active_list'):
         ids = {row['id'] for row in await owner.listing(method)}
         assert closed not in ids and open_ in ids and owner.sids[2] in ids, method

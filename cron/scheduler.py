@@ -59,36 +59,36 @@ from agent.turn_failure_copy import is_max_iteration_handoff
 logger = logging.getLogger(__name__)
 
 
-def _set_cron_session_title(session_db, session_id, base_title):
-    """Persist a non-blank, unique title for a finished cron session; returns it (None if unset).
-    Runs BEFORE end_session()/close() so no write races the close. Duplicate title (unique-index
-    ValueError) -> get_next_title_in_lineage(); if unavailable, raise rather than end up untitled.
+def _set_cron_session_title(sessions, session_id, base_title):
+    """Persist a non-blank, unique title for a finished cron session through ``sessions`` (the session
+    repository); returns it (None if unset). Runs BEFORE end()/close() so no write races the close.
+    Duplicate title (``ValueError``) -> next_title_in_lineage(); if unavailable, raise rather than end up
+    untitled.
 
     Centralizes the title write so the cron finally block can guarantee a non-blank, unique title is
-    persisted before end_session()/close() tear the connection down (issues #50535, #50536, #50537):
+    persisted before end()/close() tear the store down (issues #50535, #50536, #50537):
     - #50535: never leaves the session blank. base_title already carries a cron-id fallback for nameless
-    jobs; this also guards a failed write. Recover by appending a #N suffix via get_next_title_in_lineage()
-    when supported, instead of swallowing the error and ending up untitled. - #50536: this runs
-    synchronously in the cron finally block ahead of the session close, so no in-flight title write can race
-    the close.
+    jobs; this also guards a failed write. Recover by appending a #N suffix via next_title_in_lineage()
+    when supported, instead of swallowing the error and ending up untitled. - #50536: this runs synchronously in the cron
+    finally block ahead of the session close, so no in-flight title write can race the close.
     """
-    if not session_db or not session_id:
+    if not sessions or not session_id:
         return None
     title = (base_title or "").strip()
     if not title:
         return None
     try:
-        session_db.set_session_title(session_id, title)
+        sessions.set_title(session_id, title)
         return title
     except ValueError:
         # Unique-title collision: fall back to the next lineage title (base #2, #3, ...).
-        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
+        next_title_fn = getattr(sessions, "next_title_in_lineage", None)
         if next_title_fn is None:
             raise
         deduped = next_title_fn(title)
         if not deduped or deduped == title:
             raise
-        session_db.set_session_title(session_id, deduped)
+        sessions.set_title(session_id, deduped)
         return deduped
 
 
@@ -533,7 +533,7 @@ from cron.executions import (
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
-from cron.scheduler_bookkeeping import _classify_delivery_outcome
+from cron.scheduler_bookkeeping import _BoundedCronSessionDB, _classify_delivery_outcome
 from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
                                clear_cancel, finish_lost_execution,
                                run_job_unless_cancelled as _run_job_unless_cancelled)
@@ -1449,47 +1449,6 @@ def _run_cron_cleanup_with_timeout(
     return True
 
 
-class _BoundedCronSessionDB:
-    """Proxy SessionDB cleanup calls through the cron cleanup timeout; after the first failure or
-    timeout all later calls fail immediately (a damaged connection leaks at most one worker)."""
-
-    def __init__(self, session_db, job_id: str):
-        self._session_db = session_db
-        self._job_id = job_id
-        self._disabled = False
-
-    def __getattr__(self, name):
-        target = getattr(self._session_db, name)
-        if not callable(target):
-            return target
-
-        def _bounded(*args, **kwargs):
-            if self._disabled:
-                raise RuntimeError("session finalization disabled after prior cleanup failure")
-
-            result = {}
-
-            def _call():
-                try:
-                    result["value"] = target(*args, **kwargs)
-                except BaseException as exc:
-                    result["error"] = exc
-                    raise
-
-            ok = _run_cron_cleanup_with_timeout(
-                _call, job_id=self._job_id, label=f"session finalization ({name})")
-            if not ok:
-                error = result.get("error")
-                if error is not None:
-                    raise error
-                # No error yet not complete == timeout: disable so later steps fail fast.
-                self._disabled = True
-                raise TimeoutError(f"session finalization method {name} timed out")
-            return result.get("value")
-
-        return _bounded
-
-
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
     """Configured job workdir, or None when unset / no longer a directory (logged)."""
     workdir = (job.get("workdir") or "").strip() or None
@@ -1843,14 +1802,14 @@ def _init_cron_mcp_tools(job_id: str) -> None:
 def _open_cron_session_db(job: dict):
     """Bound store acquisition separately from the conversation watchdog.
 
-    Canonical runs borrow the owner's exact store and fail closed on acquisition
+    Canonical runs open a handle on the owner's store and fail closed on acquisition
     errors. Only the legacy non-owner helper path may return no session store.
     """
     # Initialize the SQLite session store so cron job messages are persisted and discoverable via
     # session_search (same pattern as gateway/run.py) — only now, after every early-return path (wake-gate,
     # prompt validation, drift skip) has passed, so a gated run never opens state.db just to abandon the
     # handle (#96290). Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which only watches
-    # the agent's run_conversation below): SessionDB.__init__ opens/migrates state.db synchronously and has
+    # the agent's run_conversation below): the eager open opens/migrates state.db synchronously and has
     # no timeout of its own against a wedged sqlite3.connect (e.g. a stale flock left by a crashed sibling
     # process). An unbounded hang here would wedge the job's worker thread, so the init is bounded and a
     # timeout proceeds without a session store instead of blocking the run forever.
@@ -1863,17 +1822,20 @@ def _open_cron_session_db(job: dict):
         raise WorkerPersistenceError('worker_cron_registration_required')
     _session_db_timeout = _get_session_db_timeout()
     try:
-        from hermes_state_registry import acquire
+        from persistence_assembly import open_persistence, profile_scope
 
         def acquire_store():
             if owner is None:
-                return acquire()
-            db = acquire(Path(owner[0].db.db_path))
-            if db is not owner[0].db:
-                from hermes_state_registry import release_or_close
-                release_or_close(db)
+                return open_persistence(profile_scope(), eager=True)
+            store = open_persistence(owner[0].persistence.scope, eager=True)
+            try:
+                # Handles on one profile share its store while any is open; the owner's handle answers only
+                # while its store is open, else this handle holds a store of its own.
+                owner[0].persistence.ready()
+            except Exception:  # health: allow BLE001 -- a failing owner handle means its store is closed
+                store.close()
                 raise RuntimeError('cron requires the canonical owner store')
-            return db
+            return store
 
         if _session_db_timeout <= 0:
             return acquire_store()
@@ -1886,7 +1848,7 @@ def _open_cron_session_db(job: dict):
             return _session_db_future.result(timeout=_session_db_timeout)
         except concurrent.futures.TimeoutError:
             # The abandoned worker may still finish; close its late result or its SQLite FDs leak.
-            # The worker is abandoned (shutdown below doesn't wait for it). If SessionDB() later completes
+            # The worker is abandoned (shutdown below doesn't wait for it). If the open later completes
             # inside it, the future's result would be orphaned and its SQLite FDs (.db, WAL, SHM) leak until
             # process exit. Register a done-callback that retrieves and closes any eventual late result
             # (#72782).
@@ -2084,7 +2046,7 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
         # Render every persistence-cause variant or cause-refined text slips through.
         _explainer_variants = []
         try:
-            from hermes_state_errors import PERSISTENCE_ERROR_CAUSES as _causes
+            from persistence.core.errors import PERSISTENCE_ERROR_CAUSES as _causes
         except Exception:
             _causes = ("locked", "disk", "unknown")
         # The finalizer fills the model name into the explainer; render with the same name (and
@@ -2113,14 +2075,17 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
 
 def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str,
                            workdir: Optional[str] = None) -> None:
-    """Title, classify, end and release the cron session after the agent turn has returned."""
+    """Title, classify, end and release the cron session after the agent turn has returned. ``session_db`` is
+    the run's storage interface handle; the row writes go through its repositories."""
     # Bound every DB op so storage failure cannot hold the dispatch guard.
     _session_db = _BoundedCronSessionDB(session_db, job_id)
+    _sessions = _session_db.beside(getattr(session_db, "sessions", None))
+    _lineage = _session_db.beside(getattr(session_db, "lineage", None))
     # Compression may have rotated the run onto a continuation: finalize that, not the stale cron
-    # id. SessionDB lineage is authoritative; agent.session_id is only a fail-safe.
+    # id. The stored lineage is authoritative; agent.session_id is only a fail-safe.
     _final_cron_session_id = cron_session_id
     try:
-        _compression_tip = _session_db.get_compression_tip(cron_session_id)
+        _compression_tip = _lineage.tip(cron_session_id)
         if _compression_tip:
             _final_cron_session_id = _compression_tip
     except (Exception, KeyboardInterrupt) as e:
@@ -2143,37 +2108,36 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         # the connection down, so the close can never run over an in-flight title write (#50536).
         _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
         _cron_title = f"{_title_base} · {safe_strftime(_hermes_now(), '%b %d %H:%M')}"
-        if not _set_cron_session_title(_session_db, _final_cron_session_id, _cron_title):
-            _set_cron_session_title(_session_db, _final_cron_session_id, f"cron {job_id}")
+        if not _set_cron_session_title(_sessions, _final_cron_session_id, _cron_title):
+            _set_cron_session_title(_sessions, _final_cron_session_id, f"cron {job_id}")
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
         # Never leave the session untitled.
         # Try the next free title in the lineage, then a bare id-stamped title. See #50535.
         for _fallback in (
-            getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
+            getattr(_sessions, "next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
             f"cron {job_id} {_final_cron_session_id[-6:]}"):
             try:
-                if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
+                if _set_cron_session_title(_sessions, _final_cron_session_id, _fallback):
                     break
             except (Exception, KeyboardInterrupt):
                 continue
     # Book cron_complete only when the last row is a real assistant reply ([SILENT] counts). Only a
     # POSITIVELY recognized bad status downgrades (keep tuple in sync with
-    # session_lifecycle_statuses); unknown values / probe failures fail OPEN.
+    # lifecycle_statuses); unknown values / probe failures fail OPEN.
     # Verified completion booking (#93820): the run may only be recorded as cron_complete when the session's
     # LAST message row is a real assistant reply — a plain answer or the [SILENT] sentinel (both are
     # assistant-text rows, so both classify as 'complete'). A turn that died after a tool call,
     # mid-API-wait, or without any assistant text leaves the last row as a tool result / pending call / user
-    # prompt and must not surface as a healthy run. session_lifecycle_statuses is the existing cost-bounded
-    # classifier for exactly this shape. Only a POSITIVELY recognized pathological status (see the status
-    # vocabulary in hermes_state's session_lifecycle_statuses docstring — keep the tuple below in sync when
-    # it grows) downgrades the booking: an unknown value (newer classifier shape, test doubles) keeps the
+    # prompt and must not surface as a healthy run. lifecycle_statuses is the existing cost-bounded
+    # classifier for exactly this shape. Only a POSITIVELY recognized pathological status (see
+    # SessionLifecycleStatus — keep the tuple below in sync when it grows) downgrades the booking: an unknown value (newer classifier shape, test doubles) keeps the
     # historical reason, and so does a failed probe — the booking itself is FAIL-OPEN on probe errors,
     # because classification is best-effort metadata and must not mislabel a healthy run.
     _end_reason = "cron_complete"
     try:
-        _statuses = _session_db.session_lifecycle_statuses([_final_cron_session_id])
-        _lifecycle = _statuses.get(_final_cron_session_id)
+        _status = _sessions.lifecycle_statuses([_final_cron_session_id]).get(_final_cron_session_id)
+        _lifecycle = _status.value if _status is not None else None
         if _lifecycle in ("interrupted", "error", "empty"):
             _end_reason = "cron_incomplete_no_output"
             logger.warning(
@@ -2186,24 +2150,21 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
     # sidebar groups by cwd prefix and nothing else writes a cron row's cwd (#108205).
     if workdir:
         try:
-            _session_db.update_session_cwd(_final_cron_session_id, workdir)
+            _sessions.update_cwd(_final_cron_session_id, workdir)
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Job '%s': failed to stamp workdir on session row: %s", job_id, e, exc_info=True)
     try:
-        _session_db.end_session(_final_cron_session_id, _end_reason)
-        # The scheduler owns cron-session finalization. AIAgent.close() also
-        # finalizes owned session rows by default; once the shared SessionDB is
-        # released below, that second end_session() would reopen the just-closed
-        # SQLite handle (#94736). The reason is durably booked, so disarm only the
-        # agent's redundant row-finalization; its resource teardown still runs in
-        # _teardown_cron_agent.
+        _sessions.end(_final_cron_session_id, _end_reason)
+        # The scheduler owns cron-session finalization. AIAgent.close() also finalizes owned session rows by
+        # default; once the run's handle is closed, that second end would reach the just-closed
+        # store (#94736). The reason is durably booked, so disarm only the agent's
+        # redundant row-finalization; its resource teardown still runs in _teardown_cron_agent.
         if agent is not None:
             agent._end_session_on_close = False
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to end session: %s", job_id, e)
     try:
-        from hermes_state_registry import release_or_close
-        release_or_close(_session_db)
+        _session_db.close()
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
@@ -2244,7 +2205,7 @@ def _prepare_job_prompt(
             logger.error("Job '%s': refusing to run — %s", job_id, exc)
             return (False, f"# Cron Job: {job_name}\n\nError: {exc}\n", "", str(exc)), None
 
-    # no_agent short-circuits BEFORE importing run_agent / opening SessionDB.
+    # no_agent short-circuits BEFORE importing run_agent / opening the store.
     if job.get("no_agent"):
         return _run_no_agent_job(job, job_id, job_name, cancel_event), None
 
@@ -2475,7 +2436,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     return setup
 
 
-def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
+def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db, persistence=None):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
     return AIAgent(
@@ -2508,7 +2469,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
         platform="cron",
         session_id=session_id,
-        session_db=session_db,
+        session_db=session_db, persistence=persistence,
     )
 
 
@@ -2598,9 +2559,8 @@ def run_job(
 
         # Open state.db only after every early-return gate has passed.
         _session_db = _open_cron_session_db(job)
-        agent = _construct_cron_agent(
-            AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
-            session_db=_session_db)
+        agent = _construct_cron_agent(AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
+                                      session_db=_session_db, persistence=_session_db)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
@@ -2628,7 +2588,8 @@ def run_job(
         return True, output, final_response, None
 
     except (Exception, ConfigBackendUnavailable) as e:  # the plane being down fails THIS fire only
-        error_msg = f"{type(e).__name__}: {e!s}"
+        from storage_user_copy import error_type_name
+        error_msg = f"{error_type_name(e)}: {e!s}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         # Cowork-style unreachable-model re-run (cron/unreachable_retry.py): flag failures where
         # the model was never reached (transient network/DNS, zero API calls) so the bookkeeping
@@ -2664,13 +2625,12 @@ def run_job(
         if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
                                    workdir=scope.workdir)
-        # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
-        # teardown, hand the live agent back: delivery needs a live async client.
-        # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held
-        # by this ephemeral cron agent. Without this, a gateway that ticks cron every N minutes leaks fds
-        # per job until it hits EMFILE (#10200 / "too many open files"). When the caller opted to defer
-        # teardown (passed a list), hand the live agent back instead of closing it here — delivery must run
-        # against a live async client, and the caller tears down afterwards (#58720).
+        # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred teardown, hand the
+        # live agent back: delivery needs a live async client. Release subprocesses, terminal sandboxes, browser
+        # daemons, and the main OpenAI/httpx client held by this ephemeral cron agent. Without this, a gateway that
+        # ticks cron every N minutes leaks fds per job until it hits EMFILE (#10200 / "too many open files"). When the
+        # caller opted to defer teardown (passed a list), hand the live agent back instead of closing it here — delivery
+        # must run against a live async client, and the caller tears down afterwards (#58720).
         if not _worker_teardown_deferred:
             if defer_agent_teardown is not None:
                 if agent is not None:

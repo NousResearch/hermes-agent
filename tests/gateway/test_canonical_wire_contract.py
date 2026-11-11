@@ -6,18 +6,18 @@ import pytest
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from gateway.session_group_controls import GROUP_METHODS
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway.contracts.registry import CANONICAL_METHODS, METHODS
 
 
 @pytest.fixture
 def owner(tmp_path):
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='current')
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='current')
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
-                                     instance_id='current', db=db, epoch=epoch)
+                                     instance_id='current', epoch=epoch, persistence=db)
         authority.sessions['s'] = LiveSession(None, 'route')
         yield AuthorityConnection(authority, object(), {'user_id': 'owner'}), db
 
@@ -37,7 +37,7 @@ async def test_declared_params_gate_canonical_verbs_before_their_handlers(owner)
     """An unknown or missing key is ``4001 invalid_params`` naming the field, including verbs
     whose handlers only ``.get`` their keys; a well-formed call is unaffected."""
     connection, db = owner
-    revision = db.get_session('s')['runtime_revision']
+    revision = db.sessions.get('s').runtime_revision
     mutate = {'session_id': 's', 'request_id': 'r1', 'expected_revision': revision,
               'operation': 'rename', 'payload': {'title': 'Declared'}}
     try:
@@ -51,6 +51,6 @@ async def test_declared_params_gate_canonical_verbs_before_their_handlers(owner)
             assert field in response['error']['data']['fields'], (method, response)
         applied = await connection.dispatch({'id': 2, 'method': 'session.mutate', 'params': mutate})
         CANONICAL_METHODS['session.mutate'].result.model_validate(applied['result'])
-        assert db.get_session('s')['title'] == 'Declared'
+        assert db.sessions.get('s').title == 'Declared'
     finally:
         await connection.close()

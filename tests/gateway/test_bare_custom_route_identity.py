@@ -14,6 +14,7 @@ import pytest
 
 from tests.gateway.test_follow_profile_followups import _profile
 from tests.gateway.test_session_follow_profile_config import _owner
+from tests.fixtures.storage_read import session_row
 
 RELAY = 'http://127.0.0.1:8080/v1'
 SIBLINGS = {'providers': {
@@ -77,7 +78,7 @@ async def test_a_following_session_switches_model_with_an_inline_secret_outside_
         lambda **kwargs: GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, **kwargs))
     try:
         ref, live, _entry = await _target(authority, owner.actor)
-        snap = authority.db.get_session(ref.session_id)
+        snap = session_row(authority.persistence, ref.session_id)
         response = await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': dict(
             session_id=ref.session_id, request_id='pick', operation='model', payload={'model': 'new-model'},
             expected_revision=snap['runtime_revision'], expected_generation=snap['runtime_generation'])})

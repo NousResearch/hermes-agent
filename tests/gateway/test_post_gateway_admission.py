@@ -14,6 +14,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import _profile_runtime_scope
 from gateway.session import SessionSource
 from hermes_constants import get_hermes_home
+from tests.fixtures.storage_holder import raw_holder
 
 HOOK = "post_gateway_admission"
 
@@ -194,7 +195,7 @@ async def test_webhook_deliveries_fire_the_hook_once_per_admission_never_on_a_pr
             "X-GitHub-Delivery": delivery_id, "X-Hub-Signature-256": signature})
 
     async with TestClient(TestServer(app)) as client:
-        db = adapter._message_handler.__self__.session_authority.db
+        db = raw_holder(adapter._message_handler.__self__.session_authority.persistence)
         assert (await _post(client, "eat this", "d-eat")).status == 202
         assert sent == ["plugin took it"] and not db._read_all("SELECT 1 FROM session_admissions")
         assert (await _post(client, "keep this", "d-keep")).status == 202

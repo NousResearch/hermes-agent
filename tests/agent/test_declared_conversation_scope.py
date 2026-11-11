@@ -18,6 +18,7 @@ conversations under #79161.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -34,7 +35,11 @@ from agent.prompt_cache_scope import (
     resolve_prompt_cache_scope,
 )
 from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
-from hermes_state import SessionDB
+from gateway.session_ingress_media import native_inputs_root
+from persistence.conversation.messages import ConversationPeer
+from persistence_assembly import Persistence, open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 
 # One room member, two consecutive replies: the Studio group-chat shape
 # (``gc_run_<room>_<profile>_<name>`` truncated to 96 chars + a per-response
@@ -46,7 +51,7 @@ CHAT_KEY = "agent:main:telegram:group:-100123:456"
 
 @pytest.fixture()
 def db(tmp_path):
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = open_persistence(profile_scope(home=tmp_path))
     try:
         yield session_db
     finally:
@@ -57,6 +62,8 @@ def _agent(session_id, session_db=None, key=None):
     return SimpleNamespace(
         session_id=session_id,
         _session_db=session_db,
+        # A storage interface handle is the agent's store and its interface; the doubles are bare stores.
+        persistence=session_db if isinstance(session_db, Persistence) else None,
         _gateway_session_key=key,
     )
 
@@ -82,8 +89,8 @@ def _grok_headers(session_id):
 class TestDeclaredConversationScope:
     def test_per_response_ids_resolve_to_one_declared_scope(self, db):
         """THE fix: two replies of one conversation share one scope."""
-        db.create_session(RUN_1, source="api_server")
-        db.create_session(RUN_2, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
+        seed_session(db, RUN_2, source="api_server")
 
         first = resolve_prompt_cache_scope(_agent(RUN_1, db, CHAT_KEY))
         second = resolve_prompt_cache_scope(_agent(RUN_2, db, CHAT_KEY))
@@ -92,7 +99,7 @@ class TestDeclaredConversationScope:
         assert first not in (RUN_1, RUN_2)
 
     def test_distinct_declarations_stay_isolated(self, db):
-        db.create_session(RUN_1, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
         other = _agent(RUN_1, db, "agent:main:telegram:group:-100123:999")
 
         assert resolve_prompt_cache_scope(
@@ -105,7 +112,7 @@ class TestDeclaredConversationScope:
         A session id is a Hermes-internal token; a session KEY embeds the
         platform, chat and user identifiers, so it is hashed first.
         """
-        db.create_session(RUN_1, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
         scope = resolve_prompt_cache_scope(_agent(RUN_1, db, CHAT_KEY))
 
         assert scope.startswith("gwk_")
@@ -115,9 +122,9 @@ class TestDeclaredConversationScope:
 
     def test_no_declaration_keeps_lineage_behavior(self, db):
         """Unchanged for every host that keeps one id per conversation."""
-        db.create_session("root-sess", source="webui")
-        db.end_session("root-sess", "compression")
-        db.create_session("rotated-1", source="webui", parent_session_id="root-sess")
+        seed_session(db, "root-sess", source="webui")
+        db.sessions.end("root-sess", "compression")
+        seed_session(db, "rotated-1", source="webui", parent_session_id="root-sess")
 
         assert resolve_prompt_cache_scope(_agent("rotated-1", db)) == "root-sess"
         assert declared_conversation_scope(_agent("rotated-1", db)) is None
@@ -125,22 +132,22 @@ class TestDeclaredConversationScope:
     def test_declaration_outranks_the_lineage_root(self, db):
         """Both are stable; the declared key is stable across MORE (per-response
         ids), so it wins rather than being a fallback."""
-        db.create_session("root-sess", source="webui")
-        db.end_session("root-sess", "compression")
-        db.create_session("rotated-1", source="webui", parent_session_id="root-sess")
+        seed_session(db, "root-sess", source="webui")
+        db.sessions.end("root-sess", "compression")
+        seed_session(db, "rotated-1", source="webui", parent_session_id="root-sess")
 
         scope = resolve_prompt_cache_scope(_agent("rotated-1", db, CHAT_KEY))
         # Same declared conversation reached through a different physical id
         # on the same peer — the property the lineage walk cannot provide.
-        db.create_session("rotated-2", source="webui")
+        seed_session(db, "rotated-2", source="webui")
         assert scope == resolve_prompt_cache_scope(_agent("rotated-2", db, CHAT_KEY))
         assert scope != "root-sess"
         assert scope.startswith("gwk_")
 
     def test_branch_child_ignores_the_shared_chat_key(self, db):
         """/branch keys off session_id, not the chat key — #79161 isolation."""
-        db.create_session("root-sess", source="telegram")
-        db.create_session(
+        seed_session(db, "root-sess", source="telegram")
+        seed_session(db,
             "branch-child",
             source="telegram",
             parent_session_id="root-sess",
@@ -157,8 +164,8 @@ class TestDeclaredConversationScope:
         )
 
     def test_delegate_child_ignores_the_declaration(self, db):
-        db.create_session("parent-sess", source="telegram")
-        db.create_session(
+        seed_session(db, "parent-sess", source="telegram")
+        seed_session(db,
             "delegate-child",
             source="telegram",
             parent_session_id="parent-sess",
@@ -171,8 +178,8 @@ class TestDeclaredConversationScope:
         )
 
     def test_tool_child_ignores_the_declaration(self, db):
-        db.create_session("parent-sess", source="telegram")
-        db.create_session("tool-child", source="tool", parent_session_id="parent-sess")
+        seed_session(db, "parent-sess", source="telegram")
+        seed_session(db, "tool-child", source="tool", parent_session_id="parent-sess")
 
         assert (
             resolve_prompt_cache_scope(_agent("tool-child", db, CHAT_KEY))
@@ -181,7 +188,7 @@ class TestDeclaredConversationScope:
 
     def test_background_review_fork_ignores_the_declaration(self, db):
         """The review fork clones the live runtime, key included."""
-        db.create_session("live-sess", source="telegram")
+        seed_session(db, "live-sess", source="telegram")
         agent = _agent("review-fork", db, CHAT_KEY)
         agent._persist_disabled = True
 
@@ -208,7 +215,7 @@ class TestDeclaredConversationScope:
         assert resolve_prompt_cache_scope(agent).startswith("gwk_")
 
     def test_blank_declarations_are_no_declaration(self, db):
-        db.create_session(RUN_1, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
         for blank in (None, "", "   "):
             assert declared_conversation_scope(_agent(RUN_1, db, blank)) is None
 
@@ -229,24 +236,24 @@ class TestOneIdentityReadPerResolution:
 
     Resolution is memoized per transcript segment, so this was never on the
     per-API-call hot path (#79017) — but reading the same row twice per
-    resolution was one read too many (@teknium1 on #98811), and a ``SessionDB``
+    resolution was one read too many (@teknium1 on #98811), and a store
     that predates the combined view has to keep the path it had.
     """
 
     def test_the_identity_row_is_read_once(self, db):
-        db.create_session(RUN_1, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
         reads = []
-        real_get_session = db.get_session
+        sessions = type(db.sessions)
 
-        def counted(session_id):
-            reads.append(session_id)
-            return real_get_session(session_id)
+        def counted(read):
+            def counting(self, session_id):
+                reads.append(session_id)
+                return read(self, session_id)
+            return counting
 
-        db.get_session = counted
-        try:
+        with patch.object(sessions, "get", counted(sessions.get)), \
+                patch.object(sessions, "declared_scope_identity", counted(sessions.declared_scope_identity)):
             scope = declared_conversation_scope(_agent(RUN_1, db, CHAT_KEY))
-        finally:
-            del db.get_session
 
         assert scope.startswith("gwk_")
         assert reads == [RUN_1]
@@ -287,7 +294,7 @@ class TestOneIdentityReadPerResolution:
         assert resolve_prompt_cache_scope(agent) == "maybe-fork"
 
     def test_the_combined_read_still_refuses_a_fork(self, db):
-        db.create_session("tool-child", source="tool")
+        seed_session(db, "tool-child", source="tool")
 
         assert declared_conversation_scope(_agent("tool-child", db, CHAT_KEY)) is None
 
@@ -303,8 +310,8 @@ class TestPromptCacheKeyStability:
         return _content_cache_key(self.INSTRUCTIONS, self.TOOLS, scope)
 
     def test_key_survives_a_per_response_id(self, db):
-        db.create_session(RUN_1, source="api_server")
-        db.create_session(RUN_2, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
+        seed_session(db, RUN_2, source="api_server")
 
         assert self._key_for(_agent(RUN_1, db, CHAT_KEY)) == self._key_for(
             _agent(RUN_2, db, CHAT_KEY)
@@ -312,16 +319,16 @@ class TestPromptCacheKeyStability:
 
     def test_key_still_churns_without_a_declaration(self, db):
         """Nothing is inferred from the id itself — the #79017 rule holds."""
-        db.create_session(RUN_1, source="api_server")
-        db.create_session(RUN_2, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
+        seed_session(db, RUN_2, source="api_server")
 
         assert self._key_for(_agent(RUN_1, db)) != self._key_for(_agent(RUN_2, db))
 
     def test_codex_transport_key_matches_across_responses(self, db):
         from agent.transports.codex import ResponsesApiTransport
 
-        db.create_session(RUN_1, source="api_server")
-        db.create_session(RUN_2, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
+        seed_session(db, RUN_2, source="api_server")
         transport = ResponsesApiTransport()
         base = dict(
             model="gpt-5.5",
@@ -343,8 +350,8 @@ class TestPromptCacheKeyStability:
     def test_chat_completions_key_matches_across_responses(self, db):
         from agent.transports.chat_completions import _add_prompt_cache_key
 
-        db.create_session(RUN_1, source="api_server")
-        db.create_session(RUN_2, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
+        seed_session(db, RUN_2, source="api_server")
         messages = [{"role": "system", "content": self.INSTRUCTIONS}]
 
         def key(session_id):
@@ -367,7 +374,7 @@ class TestPromptCacheKeyStability:
         """#57012: the session header still carries the physical id."""
         from agent.transports.codex import ResponsesApiTransport
 
-        db.create_session(RUN_1, source="api_server")
+        seed_session(db, RUN_1, source="api_server")
         kwargs = ResponsesApiTransport().build_kwargs(
             model="gpt-5.5",
             messages=[{"role": "system", "content": self.INSTRUCTIONS}],
@@ -454,7 +461,7 @@ class TestConversationGenerationRotates:
     KEY = "agent:main:telegram:dm:123"
 
     def _keyed(self, db, session_id):
-        db.create_session(
+        seed_session(db,
             session_id=session_id,
             source="telegram",
             session_key=self.KEY,
@@ -471,7 +478,7 @@ class TestConversationGenerationRotates:
         before = self._keyed(db, "sess-A")
         scope_before = resolve_prompt_cache_scope(before)
 
-        db.end_session("sess-A", "session_reset")
+        db.sessions.end("sess-A", "session_reset")
         after = self._keyed(db, "sess-B")
 
         assert scope_before.startswith("gwk_")
@@ -492,7 +499,7 @@ class TestConversationGenerationRotates:
         """
         first = self._keyed(db, f"sess-{reason}-1")
         scope_first = resolve_prompt_cache_scope(first)
-        db.end_session(f"sess-{reason}-1", reason)
+        db.sessions.end(f"sess-{reason}-1", reason)
         second = self._keyed(db, f"sess-{reason}-2")
         assert resolve_prompt_cache_scope(second) != scope_first
 
@@ -502,7 +509,7 @@ class TestConversationGenerationRotates:
         for i in range(3):
             agent = self._keyed(db, f"sess-gen{i}")
             scopes.append(resolve_prompt_cache_scope(agent))
-            db.end_session(f"sess-gen{i}", "session_reset")
+            db.sessions.end(f"sess-gen{i}", "session_reset")
         assert len(set(scopes)) == 3
 
     def test_per_response_ids_still_share_one_scope(self, db):
@@ -522,7 +529,7 @@ class TestConversationGenerationRotates:
         """Only intentional breaks rotate; a crash-close keeps the scope warm."""
         first = self._keyed(db, "sess-live")
         scope_first = resolve_prompt_cache_scope(first)
-        db.end_session("sess-live", "agent_close")
+        db.sessions.end("sess-live", "agent_close")
         second = self._keyed(db, "sess-resumed")
         assert resolve_prompt_cache_scope(second) == scope_first
 
@@ -532,17 +539,17 @@ class TestConversationGenerationRotates:
         scope_mine = resolve_prompt_cache_scope(mine)
 
         other_key = "agent:main:telegram:dm:999"
-        db.create_session(
+        seed_session(db,
             session_id="sess-other", source="telegram", session_key=other_key
         )
-        db.end_session("sess-other", "session_reset")
+        db.sessions.end("sess-other", "session_reset")
 
         again = self._keyed(db, "sess-mine-2")
         assert resolve_prompt_cache_scope(again) == scope_mine
 
     def test_scope_never_carries_the_raw_key_or_boundary(self, db):
         self._keyed(db, "sess-A")
-        db.end_session("sess-A", "session_reset")
+        db.sessions.end("sess-A", "session_reset")
         rotated = self._keyed(db, "sess-B")
         scope = resolve_prompt_cache_scope(rotated)
         assert self.KEY not in scope
@@ -588,20 +595,18 @@ class TestConversationGenerationRotates:
         """
         first = self._keyed(db, "sess-clock-1")
         scope_first = resolve_prompt_cache_scope(first)
-        db.end_session("sess-clock-1", "session_reset")
+        db.sessions.end("sess-clock-1", "session_reset")
 
         second = self._keyed(db, "sess-clock-2")
         scope_second = resolve_prompt_cache_scope(second)
-        db.end_session("sess-clock-2", "session_reset")
+        db.sessions.end("sess-clock-2", "session_reset")
         # The clock went backwards: this boundary lands BEFORE the first one.
-        with db._lock:
-            db._conn.execute(
-                "UPDATE sessions SET ended_at = ("
-                "  SELECT MIN(ended_at) FROM sessions WHERE ended_at IS NOT NULL"
-                ") - 60 WHERE id = ?",
-                ("sess-clock-2",),
-            )
-            db._conn.commit()
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET ended_at = ("
+            "  SELECT MIN(ended_at) FROM sessions WHERE ended_at IS NOT NULL"
+            ") - 60 WHERE id = ?",
+            ("sess-clock-2",),
+        ))
 
         third = self._keyed(db, "sess-clock-3")
         scope_third = resolve_prompt_cache_scope(third)
@@ -623,9 +628,9 @@ class TestPeerIdentityIsSourceQualified:
     KEY = "shared-key-string"
 
     def _row(self, db, sid, source):
-        db.create_session(session_id=sid, source=source, session_key=self.KEY)
+        seed_session(db, session_id=sid, source=source, session_key=self.KEY)
         return SimpleNamespace(
-            session_id=sid, _session_db=db, _gateway_session_key=self.KEY,
+            session_id=sid, _session_db=db, persistence=db, _gateway_session_key=self.KEY,
             platform=source,
         )
 
@@ -635,14 +640,14 @@ class TestPeerIdentityIsSourceQualified:
 
         # Same key string, different platform, reset only over there.
         self._row(db, "tg-1", "telegram")
-        db.end_session("tg-1", "session_reset")
+        db.sessions.end("tg-1", "session_reset")
 
         assert resolve_prompt_cache_scope(self._row(db, "api-2", "api_server")) == before
 
     def test_our_own_reset_still_rotates(self, db):
         mine = self._row(db, "api-1", "api_server")
         before = resolve_prompt_cache_scope(mine)
-        db.end_session("api-1", "session_reset")
+        db.sessions.end("api-1", "session_reset")
         assert resolve_prompt_cache_scope(self._row(db, "api-2", "api_server")) != before
 
     def test_equal_keys_under_different_sources_never_share_a_scope(self, db):
@@ -652,11 +657,11 @@ class TestPeerIdentityIsSourceQualified:
         assert mine.startswith("gwk_") and theirs.startswith("gwk_")
 
     def test_the_boundary_read_is_peer_scoped(self, db):
-        db.create_session(session_id="tg-1", source="telegram", session_key=self.KEY)
-        db.end_session("tg-1", "session_reset")
-        assert db.latest_conversation_boundary(self.KEY, "telegram") is not None
-        assert db.latest_conversation_boundary(self.KEY, "api_server") is None
-        assert db.latest_conversation_boundary(self.KEY, "") is None
+        seed_session(db, session_id="tg-1", source="telegram", session_key=self.KEY)
+        db.sessions.end("tg-1", "session_reset")
+        assert db.messages.latest_conversation_boundary(ConversationPeer(self.KEY, "telegram")) is not None
+        assert db.messages.latest_conversation_boundary(ConversationPeer(self.KEY, "api_server")) is None
+        assert db.messages.latest_conversation_boundary(ConversationPeer(self.KEY, "")) is None
 
 
 class TestGenerationSurvivesPruning:
@@ -676,26 +681,26 @@ class TestGenerationSurvivesPruning:
     SOURCE = "telegram"
 
     def _keyed(self, db, sid):
-        db.create_session(session_id=sid, source=self.SOURCE, session_key=self.KEY)
+        seed_session(db, session_id=sid, source=self.SOURCE, session_key=self.KEY)
         return SimpleNamespace(
-            session_id=sid, _session_db=db, _gateway_session_key=self.KEY,
+            session_id=sid, _session_db=db, persistence=db, _gateway_session_key=self.KEY,
             platform=self.SOURCE,
         )
 
     def _gen(self, db):
-        return db.latest_conversation_boundary(self.KEY, self.SOURCE)
+        return db.messages.latest_conversation_boundary(ConversationPeer(self.KEY, self.SOURCE))
 
     def test_deleting_the_newest_boundary_does_not_roll_back(self, db):
         a = self._keyed(db, "s-a")
         scope_a = resolve_prompt_cache_scope(a)
-        db.end_session("s-a", "session_reset")
+        db.sessions.end("s-a", "session_reset")
 
         b = self._keyed(db, "s-b")
         scope_b = resolve_prompt_cache_scope(b)
-        db.end_session("s-b", "session_reset")
+        db.sessions.end("s-b", "session_reset")
         assert self._gen(db) == 2
 
-        db.delete_session("s-b")          # prune the newest boundary
+        db.sessions.delete("s-b", media_root=str(native_inputs_root()))          # prune the newest boundary
         assert self._gen(db) == 2         # counter is outside that rowset
 
         c = self._keyed(db, "s-c")
@@ -705,8 +710,8 @@ class TestGenerationSurvivesPruning:
     def test_deleting_every_boundary_does_not_roll_back(self, db):
         a = self._keyed(db, "s-a")
         scope_a = resolve_prompt_cache_scope(a)
-        db.end_session("s-a", "session_reset")
-        db.delete_session("s-a")
+        db.sessions.end("s-a", "session_reset")
+        db.sessions.delete("s-a", media_root=str(native_inputs_root()))
 
         b = self._keyed(db, "s-b")
         assert resolve_prompt_cache_scope(b) != scope_a
@@ -715,59 +720,57 @@ class TestGenerationSurvivesPruning:
         """The reviewer's exact shape: (1,T1) -> (2,T1) -> delete -> (1,T1)."""
         a = self._keyed(db, "s-a")
         scope_a = resolve_prompt_cache_scope(a)
-        db.end_session("s-a", "session_reset")
+        db.sessions.end("s-a", "session_reset")
 
         b = self._keyed(db, "s-b")
         scope_b = resolve_prompt_cache_scope(b)
-        db.end_session("s-b", "session_reset")
+        db.sessions.end("s-b", "session_reset")
         # Clock went backwards: this boundary lands before the first one.
-        with db._lock:
-            db._conn.execute(
-                "UPDATE sessions SET ended_at = ("
-                "  SELECT MIN(ended_at) FROM sessions WHERE ended_at IS NOT NULL"
-                ") - 60 WHERE id = ?",
-                ("s-b",),
-            )
-            db._conn.commit()
-        db.delete_session("s-b")
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET ended_at = ("
+            "  SELECT MIN(ended_at) FROM sessions WHERE ended_at IS NOT NULL"
+            ") - 60 WHERE id = ?",
+            ("s-b",),
+        ))
+        db.sessions.delete("s-b", media_root=str(native_inputs_root()))
 
         c = self._keyed(db, "s-c")
         assert len({scope_a, scope_b, resolve_prompt_cache_scope(c)}) == 3
 
     def test_only_real_boundaries_advance_it(self, db):
         self._keyed(db, "s-a")
-        db.end_session("s-a", "compression")
+        db.sessions.end("s-a", "compression")
         assert self._gen(db) is None
-        db.create_session(session_id="s-b", source=self.SOURCE, session_key=self.KEY)
-        db.end_session("s-b", "agent_close")
+        seed_session(db, session_id="s-b", source=self.SOURCE, session_key=self.KEY)
+        db.sessions.end("s-b", "agent_close")
         assert self._gen(db) is None
 
     def test_a_repeated_end_does_not_double_count(self, db):
         """end_session no-ops on an ended row; the first reason wins."""
         self._keyed(db, "s-a")
-        db.end_session("s-a", "session_reset")
-        db.end_session("s-a", "session_reset")
-        db.end_session("s-a", "idle")
+        db.sessions.end("s-a", "session_reset")
+        db.sessions.end("s-a", "session_reset")
+        db.sessions.end("s-a", "idle")
         assert self._gen(db) == 1
 
     def test_promote_advances_it_too(self, db):
         """/new and the policy resets promote rather than end_session."""
         self._keyed(db, "s-a")
-        db.end_session("s-a", "agent_close")
+        db.sessions.end("s-a", "agent_close")
         assert self._gen(db) is None
-        assert db.promote_to_session_reset("s-a", "session_reset") is True
+        assert db.sessions.promote_to_reset("s-a", "session_reset") is True
         assert self._gen(db) == 1
 
     def test_an_unkeyed_row_advances_nothing(self, db):
-        db.create_session(session_id="s-bare", source=self.SOURCE)
-        db.end_session("s-bare", "session_reset")
+        seed_session(db, session_id="s-bare", source=self.SOURCE)
+        db.sessions.end("s-bare", "session_reset")
         assert self._gen(db) is None
 
     def test_the_counter_is_peer_scoped(self, db):
         self._keyed(db, "s-a")
-        db.end_session("s-a", "session_reset")
+        db.sessions.end("s-a", "session_reset")
         assert self._gen(db) == 1
-        assert db.latest_conversation_boundary(self.KEY, "api_server") is None
+        assert db.messages.latest_conversation_boundary(ConversationPeer(self.KEY, "api_server")) is None
 
 
 class TestSourceOverrideDomain:
@@ -787,7 +790,7 @@ class TestSourceOverrideDomain:
 
         monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
         agent = SimpleNamespace(
-            session_id="s-none", _session_db=db, _gateway_session_key=self.KEY,
+            session_id="s-none", _session_db=db, persistence=db, _gateway_session_key=self.KEY,
             platform="telegram",
         )
         assert _agent_source(agent, "", db) == "override-src"
@@ -796,14 +799,68 @@ class TestSourceOverrideDomain:
         monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
 
         def keyed(sid):
-            db.create_session(
+            seed_session(db,
                 session_id=sid, source="override-src", session_key=self.KEY
             )
             return SimpleNamespace(
-                session_id=sid, _session_db=db,
+                session_id=sid, _session_db=db, persistence=db,
                 _gateway_session_key=self.KEY, platform="telegram",
             )
 
         before = resolve_prompt_cache_scope(keyed("s-a"))
-        db.end_session("s-a", "session_reset")
+        db.sessions.end("s-a", "session_reset")
         assert resolve_prompt_cache_scope(keyed("s-b")) != before
+
+
+class TestScopeThroughTheStorageInterface:
+    """An agent carrying a writer handle resolves the scopes its store resolves; the store beside it is not read."""
+
+    @pytest.fixture()
+    def handle(self, tmp_path, db):
+        from persistence_assembly import open_persistence, profile_scope
+
+        persistence = open_persistence(profile_scope(home=tmp_path))
+        try:
+            yield persistence
+        finally:
+            persistence.close()
+
+    @staticmethod
+    def _via(handle, session_id, key=None):
+        agent = _agent(session_id, MagicMock(), key)
+        agent.persistence = handle
+        return agent
+
+    def test_declared_scope_rotates_with_the_reset_boundary(self, db, handle):
+        seed_session(db, session_id="sess-A", source="telegram", session_key=CHAT_KEY)
+        before = self._via(handle, "sess-A", CHAT_KEY)
+        scope_before = resolve_prompt_cache_scope(before)
+        assert scope_before.startswith("gwk_")
+        assert scope_before == resolve_prompt_cache_scope(_agent("sess-A", db, CHAT_KEY))
+        db.sessions.end("sess-A", "session_reset")
+        seed_session(db, session_id="sess-B", source="telegram", session_key=CHAT_KEY)
+        after = self._via(handle, "sess-B", CHAT_KEY)
+        assert resolve_prompt_cache_scope(after) == resolve_prompt_cache_scope(_agent("sess-B", db, CHAT_KEY))
+        assert resolve_prompt_cache_scope(after) != scope_before
+        assert before._session_db.method_calls == after._session_db.method_calls == []
+
+    def test_lineage_root_and_fork_children_match_the_store(self, db, handle):
+        seed_session(db, "root-sess", source="webui")
+        db.sessions.end("root-sess", "compression")
+        seed_session(db, "rotated-1", source="webui", parent_session_id="root-sess")
+        seed_session(db,
+            "branch-child", source="webui", parent_session_id="root-sess", model_config={"_branched_from": "root-sess"},
+        )
+        rotated = self._via(handle, "rotated-1")
+        branch = self._via(handle, "branch-child", CHAT_KEY)
+        assert resolve_prompt_cache_scope(rotated) == "root-sess"
+        assert declared_conversation_scope(branch) is None
+        assert rotated._session_db.method_calls == branch._session_db.method_calls == []
+
+    def test_source_lookup_reads_the_handle(self, db, handle):
+        from agent.prompt_cache_scope import _agent_source
+
+        seed_session(db, "sess-1", source="telegram")
+        store = MagicMock()
+        assert _agent_source(SimpleNamespace(platform="cli"), "sess-1", store, persistence=handle) == "telegram"
+        assert store.method_calls == []

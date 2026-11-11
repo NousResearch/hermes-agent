@@ -43,34 +43,44 @@ async def _build_profile_authority(runner, name, home, *, register):
     instance_id = runner.session_runtime_descriptor['instance_id']
     # Each home's store resolves through the runner's scope-following handle cache, exactly
     # the handle every later scoped read of that profile uses (one writer per state.db).
-    db = await asyncio.to_thread(open_profile_store, runner, home)
+    persistence = await asyncio.to_thread(open_profile_store, runner, home)
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        if db is None:
+        if persistence is None:
             raise RuntimeError(_store_open_failure(runner, home))
-        if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
+        from persistence_assembly import open_persistence, store_location
+        location = store_location(persistence.scope)
+        owner = (persistence.scope.profile_dir if location is None
+                 else (await asyncio.to_thread(Path(location).resolve)).parent)
+        if owner != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
+        # The authority reads and writes through its own reference on its store, held until it retires: the stop
+        # closes the runner's handles while startup recovery may still read through the authority, and the store
+        # must answer it then.
+        reference = open_persistence(persistence.scope)
         try:
             authority = await initialize_session_authority(
-                runner, profile_id=str(home), instance_id=instance_id, db=db, register=register)
+                runner, profile_id=str(home), instance_id=instance_id, persistence=reference,
+                register=register)
         except BaseException:
+            reference.close()
             registry.remove(home)
             raise
+        authority.store_reference = reference
     registry.replace(home, authority)
     return authority
 
 
 def open_profile_store(runner, home):
-    """*home*'s SessionDB through the runner's scoped handle cache, opened in the CALLING thread
-    under that profile's scope (bound here: a worker thread inherits no scope it was not given).
+    """*home*'s storage interface handle through the runner's scoped handle cache, opened in the CALLING
+    thread under that profile's scope (bound here: a worker thread inherits no scope it was not given).
 
     Callers run it in a worker: a first open runs the schema / FTS setup, about a second per store
     on a loaded host, and run on the loop it froze every connected client for the whole
     multi-profile boot. Later opens of the same path are cache hits."""
     from gateway.run import _profile_runtime_scope
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        db = runner._session_db
-        return getattr(db, '_db', db)
+        return getattr(runner, 'persistence', None)
 
 
 async def _prewarm_profile_stores(runner, homes):
@@ -82,22 +92,21 @@ async def _prewarm_profile_stores(runner, homes):
 
 
 def pin_launch_store():
-    """Open the launch profile's state.db in the calling (worker) thread and hold one registry
-    reference, so the synchronous ``SessionStore`` open inside ``GatewayRunner()`` on the loop is a
-    registry hit instead of the schema setup. None when the open fails: the store's own open then
-    reports and backs off exactly as before."""
-    from hermes_state_registry import acquire
+    """Open the launch profile's state.db in the calling (worker) thread and hold one storage handle
+    on it, so the synchronous ``SessionStore`` open inside ``GatewayRunner()`` on the loop shares the
+    open store instead of running the schema setup. None when the open fails: the store's own open
+    then reports and backs off exactly as before."""
+    from persistence_assembly import open_persistence, profile_scope
     try:
-        return acquire()
+        return open_persistence(profile_scope(), eager=True)
     except Exception:
         logger.debug('launch state.db prewarm failed; the store open reports it', exc_info=True)
         return None
 
 
-def unpin_launch_store(db):
-    if db is not None:
-        from hermes_state_registry import release
-        release(db)
+def unpin_launch_store(handle):
+    if handle is not None:
+        handle.close()
 
 
 def _store_open_failure(runner, home):
@@ -109,7 +118,7 @@ def _store_open_failure(runner, home):
     path = home / 'state.db'
     caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
               getattr(runner, '_session_db_handle_cache', None))
-    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    error = next((e for e in (c.last_error(home) for c in caches if c is not None) if e), '')
     if error:
         return f'{path} did not open: {error}'
     return f'{path} is unavailable (its last open failed; retry pending)'
@@ -214,13 +223,16 @@ def release_unknown_turn_markers(runner):
     its marker is cleared rather than ledgered as a delivery the FIFO never committed. A terminal
     admission keeps its marker: its persisted reply is ledgered and sent once, never re-run."""
     from gateway.session_authorities import admission_owner, owner_scope
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import StoreUnavailable
     store = getattr(runner, 'session_store', None)
     if store is None:
         return
     for authority in _authorities(runner):
         with owner_scope(authority):
-            unknown = {row['target_session_id'] for row in authority.db._read_all(
-                "SELECT DISTINCT target_session_id FROM session_admissions WHERE status='unknown'")}
+            if (persistence := authority_persistence(authority)) is None:
+                raise StoreUnavailable(f'no storage handle for {authority.profile_id}')
+            unknown = persistence.admissions.pending_targets(statuses=frozenset({'unknown'}))
             if not unknown:
                 continue
             for entry in store.list_sessions():
@@ -324,7 +336,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     ``reason`` (a gateway restart/shutdown) is recorded on each worker it signals, so the turn settles
     with that cause; a worker already stopped (the user's Stop came first) keeps none. A worker
     still being spawned gets the same Stop and cause through latches (``_stop_spawning_managed``)."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     signalled = 0
     workers = getattr(authority, '_managed_workers', {})
     for worker in list(workers.values()):
@@ -333,7 +345,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
         worker.stop_cause = reason
         try:
             worker.control({'type': 'stop'})
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             # A full control queue: control() latched worker.stop first, and the owner's read
             # loop escalates on that latch alone (terminate after STOP_ACK_SECONDS).
             logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
@@ -434,12 +446,15 @@ async def _retire_profile_authority(authority, timeout=None):
     authority.retired = True
     # No drain is left to answer an observer (a session_busy pause keeps API/webhook/Bot ones
     # waiting): release them all. Their rows stay queued for the next owner, so nothing is resent.
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     authority.native_waiters.clear()
     for waiter in authority.waiters.values():
         if not waiter.done():
-            waiter.set_exception(RuntimeStoreError('runtime_draining'))
+            waiter.set_exception(AuthorityRefusal('runtime_draining'))
     authority.waiters.clear()
+    reference, authority.store_reference = getattr(authority, 'store_reference', None), None
+    if reference is not None:
+        reference.close()
     return True
 
 
@@ -561,7 +576,11 @@ async def recover_bot_mailbox(authority):
     try:
         await recover_bot_deliveries(authority)
     except MailboxUnusable as exc:
-        logger.warning('Bot Chat recovery skipped for %s: %s', authority.db.db_path, exc)
+        from gateway.session_persistence import authority_persistence
+        from persistence_assembly import store_location
+        store = authority_persistence(authority)
+        logger.warning('Bot Chat recovery skipped for %s: %s',
+                       store_location(store.scope) if store is not None else authority.profile_id, exc)
 
 
 async def start_gateway_runtime_api(runner):
@@ -674,9 +693,12 @@ async def recover_gateway_native_sessions(runner):
 async def recover_profile_native_sessions(runner, authority):
     """Bind one authority's queued native rows to the adapters connected now."""
     from gateway.session_authorities import owner_scope
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import StoreUnavailable
     with owner_scope(authority):
-        pending = {row['target_session_id'] for row in authority.db._read_all(
-            "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
+        if (store := authority_persistence(authority)) is None:
+            raise StoreUnavailable(f'no storage handle for {authority.profile_id}')
+        pending = store.admissions.pending_targets(statuses=frozenset({'queued', 'unknown'}))
         bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
                     for owner in [authority.logical_owner(entry.session_id)] if owner in pending]

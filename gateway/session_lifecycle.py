@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Optional
 
-from hermes_state_ids import new_session_id
+from session_rules.session_ids import new_session_id
 
 if TYPE_CHECKING:
     from gateway.session import SessionEntry, SessionSource
@@ -86,14 +86,14 @@ class SessionLifecycleMixin:
                 # (a /new racing a turn that resolves the route as it finishes): healing it here
                 # would hand the route back to the conversation the user just left.
                 return False
-        db = self._db_for_key(session_key) if session_key else self._db_for_session_id(session_id)
-        if not db or not session_id:
+        store = self._persistence_for_key(session_key) if session_key else self._persistence_for_session_id(session_id)
+        if not store or not session_id:
             return False
         try:
-            row = db.get_session(session_id)
+            row = store.sessions.get(session_id)
         except Exception:
             return False
-        return row is None or row.get("end_reason") is not None
+        return row is None or row.end_reason is not None
 
     def _local_receipt_target(self, entry: Optional[SessionEntry]) -> Optional[str]:
         """The physical target the authority's receipt names for *entry*'s local route, else None
@@ -107,19 +107,16 @@ class SessionLifecycleMixin:
         origin = getattr(entry, "origin", None)
         if origin is None or getattr(origin, "platform", None) is None or origin.platform.value != "local":
             return None
-        db = self._db_for_key(entry.session_key)
-        if db is None or getattr(db, "_read_ctx", None) is None:
+        store = self._persistence_for_key(entry.session_key)
+        if store is None:
             return None
-        import sqlite3
-
-        from hermes_state_local import local_receipt
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import STORE_FAILURES, AuthorityRefusal
         try:
-            receipt = local_receipt(db, str(origin.chat_id))
-            if receipt.get("route") != entry.session_key:
+            receipt = store.bindings.receipt(str(origin.chat_id))
+            if receipt.route != entry.session_key:
                 return None
-            return str(receipt["entry"]["session_id"]) or None
-        except (RuntimeStoreError, sqlite3.Error, KeyError, TypeError, AttributeError):
+            return str(receipt.entry["session_id"]) or None
+        except (AuthorityRefusal, *STORE_FAILURES, KeyError, TypeError, AttributeError):
             return None
 
     def _api_bound(self, entry: Optional[SessionEntry]) -> bool:
@@ -130,19 +127,14 @@ class SessionLifecycleMixin:
         origin = getattr(entry, "origin", None)
         if origin is None or getattr(origin, "platform", None) is None or origin.platform.value != "api_server":
             return False
-        db = self._db_for_key(entry.session_key)
-        if db is None or getattr(db, "_read_ctx", None) is None:
+        store = self._persistence_for_key(entry.session_key)
+        if store is None:
             return False
-        import json
-        import sqlite3
-
-        from hermes_state_local import API_BINDING_PREFIX
+        from persistence.core.errors import STORE_FAILURES
         try:
-            with db._read_ctx() as conn:
-                saved = conn.execute("SELECT value FROM state_meta WHERE key=?",
-                                     (API_BINDING_PREFIX + str(origin.chat_id),)).fetchone()
-            return saved is not None and json.loads(saved[0])["entry"]["session_key"] == entry.session_key
-        except (sqlite3.Error, ValueError, KeyError, TypeError):
+            binding = store.bindings.api_binding(str(origin.chat_id))
+            return binding is not None and binding.entry["session_key"] == entry.session_key
+        except (*STORE_FAILURES, ValueError, KeyError, TypeError):
             return False
 
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:

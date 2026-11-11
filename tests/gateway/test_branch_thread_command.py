@@ -1,7 +1,7 @@
 """/branch on thread-capable platforms opens a sibling thread and keeps the origin (#66023).
 
-Drives the REAL ``_handle_branch_command`` against a REAL SessionStore + SessionDB (SQLite in
-tmp_path); only the platform adapter is a fake whose ``create_handoff_thread`` returns a fixed id.
+Drives the REAL ``_handle_branch_command`` against a REAL SessionStore and its real store (SQLite in
+the test HERMES_HOME); only the platform adapter is a fake whose ``create_handoff_thread`` returns a fixed id.
 """
 
 from __future__ import annotations
@@ -11,7 +11,8 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, SessionStore
-from hermes_state import AsyncSessionDB
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 
 
 class _ThreadAdapter:
@@ -26,17 +27,19 @@ class _ThreadAdapter:
 
 
 @pytest.fixture()
-def store(tmp_path, monkeypatch):
-    import hermes_state
-
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-    return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+def store(tmp_path):
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    yield store
+    store.close_all_db_handles()
 
 
 def _runner(store, adapter):
     from gateway.run import GatewayRunner
 
-    runner = object.__new__(GatewayRunner)
+    class _Runner(GatewayRunner):
+        persistence = None  # the session store's storage interface handle, set below
+
+    runner = object.__new__(_Runner)
     runner.adapters = {Platform.DISCORD: adapter} if adapter else {}
     runner._profile_adapters = {}
     runner.config = {}
@@ -44,7 +47,7 @@ def _runner(store, adapter):
     runner._running_agents = {}
     runner._agent_cache_lock = None
     runner.session_store = store
-    runner._session_db = AsyncSessionDB(store._db)
+    runner.persistence = store.persistence
     runner._pending_skills_reload_notes = {}
     return runner
 
@@ -56,8 +59,8 @@ def _discord_channel_source():
 
 def _seed(store, source):
     entry = store.get_or_create_session(source)
-    store._db.append_message(entry.session_id, role="user", content="hello")
-    store._db.append_message(entry.session_id, role="assistant", content="world")
+    seed_messages(store.persistence, entry.session_id, {"role": "user", "content": "hello"},
+                  {"role": "assistant", "content": "world"})
     return entry
 
 
@@ -79,10 +82,10 @@ async def test_plain_branch_binds_new_thread_and_keeps_origin(store):
                                   thread_id="777000", parent_chat_id="123", user_id="u1", scope_id="g9")
     branch = store.get_or_create_session(thread_source)
     assert branch.session_id != parent.session_id
-    row = store._db.get_session(branch.session_id)
+    row = session_row(store.persistence, branch.session_id)
     assert (row["parent_session_id"], row["chat_id"], row["thread_id"], row["chat_type"]) == (
         parent.session_id, "777000", "777000", "thread")
-    assert [m["content"] for m in store._db.get_messages(branch.session_id)] == ["hello", "world"]
+    assert [m["content"] for m in transcript_rows(store.persistence, branch.session_id)] == ["hello", "world"]
     assert "<#777000>" in reply and parent.session_id in reply
 
 
@@ -101,9 +104,9 @@ async def test_here_or_no_thread_branches_in_place(store, text, adapter):
 
     current = store.get_or_create_session(source)
     assert current.session_id != parent.session_id
-    row = store._db.get_session(current.session_id)
+    row = session_row(store.persistence, current.session_id)
     assert row["parent_session_id"] == parent.session_id
-    assert store._db.get_session_title(current.session_id) == "side quest"
+    assert store.persistence.sessions.get_title(current.session_id) == "side quest"
     if adapter is not None:
         # ``--here`` never even asks the platform for a thread.
         assert adapter.calls == ([] if "--here" in text else [("123", "side quest")])

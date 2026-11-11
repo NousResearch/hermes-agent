@@ -13,17 +13,18 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
-from hermes_state_runtime import list_session_admissions
+from persistence_assembly import close_stores_under
 from tests.gateway.test_shared_busy_receive_loop import Adapter
 from tests.waiting import async_wait_until
+from tests.fixtures.storage_holder import raw_holder
 
 X, Y = '15551234567@s.whatsapp.net', '15557654321@s.whatsapp.net'
 
 
 def _order(authority):
     rows = (row for sid in authority.sessions
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False))
-    return [row['request_id'] for row in sorted(rows, key=lambda row: row['seq'])]
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False))
+    return [row.request_id for row in sorted(rows, key=lambda row: row.seq)]
 
 
 def _hold_capture(monkeypatch):
@@ -90,7 +91,7 @@ async def test_media_then_quick_text_keep_arrival_order(tmp_path, monkeypatch, b
         release.set()
         gate.set()
         await async_wait_until(lambda: not adapter._background_tasks, what='adapter tasks done')
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 async def _held_owner(tmp_path, monkeypatch):
@@ -136,7 +137,7 @@ async def test_a_cancelled_middle_input_does_not_let_the_next_overtake(tmp_path,
         assert authority._route_turns == {}  # the per-chat entries go once idle
     finally:
         release.set()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -156,7 +157,7 @@ async def test_a_held_capture_never_delays_another_chat_nor_outlives_its_cancel(
         await async_wait_until(follower.done, timeout=5.0, what='the next input after a cancelled capture')
     finally:
         release.set()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -166,14 +167,14 @@ async def test_stop_fences_inputs_still_capturing_or_waiting(tmp_path, monkeypat
     have not committed yet, also when the chat has no session yet. A FIFO paused on a lost turn
     keeps its queued followers through /stop and /new, and so these too."""
     authority, entered, release, admit, route = await _held_owner(tmp_path, monkeypatch)
-    queued = lambda: [row['request_id'] for sid in authority.sessions for row in
-                      list_session_admissions(authority.db, session_id=sid) if row['status'] == 'queued']
+    queued = lambda: [row.request_id for sid in authority.sessions for row in
+                      authority.persistence.admissions.list(session_id=sid) if row.status == 'queued']
     first = second = None
     try:
         if chat != 'first-message':
             await admit(X, 'x0-text')
         if chat == 'paused':  # x0 was running when the previous owner died
-            authority.db._execute_write(lambda conn: conn.execute(
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
                 "UPDATE session_admissions SET status='unknown' WHERE request_id='x0-text'"))
         first = admit(X, 'x1-video', media=True, ingress=True)
         await asyncio.to_thread(entered.wait, 5)
@@ -194,7 +195,7 @@ async def test_stop_fences_inputs_still_capturing_or_waiting(tmp_path, monkeypat
         for task in (first, second):
             if task is not None:
                 task.cancel()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -211,7 +212,7 @@ async def test_one_stop_epoch_per_route_fences_inputs_and_command_turns(tmp_path
         if chat != 'first-message':
             await admit(X, 'x0-text')
         if chat == 'paused':
-            authority.db._execute_write(lambda conn: conn.execute(
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
                 "UPDATE session_admissions SET status='unknown' WHERE request_id='x0-text'"))
         before = runner._route_stop_epoch(route(X))
         assert before == authority.route_epoch(route(X))
@@ -221,4 +222,4 @@ async def test_one_stop_epoch_per_route_fences_inputs_and_command_turns(tmp_path
         assert authority._route_turns == {} and runner._route_stop_epoch(route(Y)) == 0
         assert not hasattr(runner, '_route_stop_epochs')
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

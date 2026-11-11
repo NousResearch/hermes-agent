@@ -17,17 +17,18 @@ def test_resume_and_exit_read_without_writing(tmp_path, populated):
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(repo))
     code = '''
 from pathlib import Path
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from hermes_cli.main import _resolve_last_session, _resolve_session_by_name_or_id
 from hermes_cli.main_tui_launch import _print_tui_exit_summary
 import os
 path = Path(os.environ['HERMES_HOME']) / 'state.db'
 populated = POPULATED
 if populated:
-    with SessionDB(db_path=path) as db:
-        db.create_session('reader-fixture', source='tui')
-        db.append_message('reader-fixture', role='user', content='hello')
-        db.set_session_title('reader-fixture', 'Reader fixture')
+    with open_persistence(profile_scope(home=path.parent)) as store:
+        seed_session(store, 'reader-fixture', 'tui')
+        seed_messages(store, 'reader-fixture', {'role': 'user', 'content': 'hello'})
+        store.sessions.set_title('reader-fixture', 'Reader fixture')
 before = path.read_bytes() if path.exists() else None
 from hermes_cli.terminal_breadcrumbs import write_breadcrumb, resolve_breadcrumb_session
 os.environ['TMUX_PANE'] = 'reader-fixture'

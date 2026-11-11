@@ -9,13 +9,15 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from gateway.hosted_room_driver import TaskIdentity
 from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION
 from tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, InternalSessionRPC, room_session_title)
+from persistence.gateway.hosted_rooms import HostedPlacement, HostedTaskIdentity
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
 
 
 class HostedRoomPeerClient(Protocol):
@@ -120,7 +122,8 @@ class PeerMemberRoute:
 
 
 def route_identity(
-    *, db_path: Path | str, home_install_id: str, room_id: str, member_id: str) -> tuple[str, str]:
+    *, store: Persistence, placement: HostedPlacement, home_install_id: str, room_id: str, member_id: str,
+) -> tuple[str, str]:
     """``(cancellation_scope_id, trace_id)`` for one member route. Both are in every dispatch body,
     and the target fingerprints that body under its idempotency key, so a route re-registered with
     a fresh grant must replay an accepted dispatch byte for byte: it keeps the pair already stored
@@ -128,7 +131,7 @@ def route_identity(
     trace). A new route derives it: the trace from home, room and member, and the cancellation
     scope from the room, as ``hermes serve`` has always named it."""
     from gateway import hosted_rooms
-    stored = next((row for row in hosted_rooms.list_room_link_records(db_path)
+    stored = next((row for row in hosted_rooms.list_room_link_records(store, placement=placement)
                    if (row["room_id"], row["member_id"]) == (room_id, member_id)), None)
     if stored is not None and stored["cancellation_scope_id"] and stored["trace_id"]:
         return str(stored["cancellation_scope_id"]), str(stored["trace_id"])
@@ -214,7 +217,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         return session
 
     def submit(
-        self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: HostedTaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
         member_id: str | None = None, attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:

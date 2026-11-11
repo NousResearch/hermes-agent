@@ -9,6 +9,7 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_results import execution_result
 from tests.waiting import async_wait_until
+from persistence_assembly import close_stores_under
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -59,4 +60,4 @@ async def test_native_execution_and_settled_delivery_hydrate_secrets_off_loop(tm
         assert sent == ['ok']
         assert hydrations and True not in hydrations, hydrations
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

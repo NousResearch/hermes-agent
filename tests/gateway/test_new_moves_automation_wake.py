@@ -18,7 +18,6 @@ async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles
     from gateway.session_authority import initialize_session_authority
     from gateway.session_automation import admit_route_wake
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -70,8 +69,8 @@ async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles
         reset = runner.async_session_store.reset_session
 
         def old_statuses(wake):
-            return [r['status'] for r in list_session_admissions(authority.db, session_id=str(old), pending_only=False)
-                    if r['principal_id'].startswith('automation:') == wake]
+            return [r.status for r in authority.persistence.admissions.list(session_id=str(old), pending_only=False)
+                    if r.principal_id.startswith('automation:') == wake]
 
         async def reset_then_settle(session_key):
             entry = await reset(session_key)
@@ -89,6 +88,6 @@ async def test_new_moves_a_queued_wake_to_the_fresh_session(monkeypatch, settles
     finish.set()
     await async_wait_until(lambda: any(text == 'WAKE' for text, _ in executed), timeout=15,
                            what='the wake to run after /new')
-    rows = list_session_admissions(authority.db, session_id=old, pending_only=False)
-    assert not [r for r in rows if r['status'] == 'queued'], rows
+    rows = authority.persistence.admissions.list(session_id=old, pending_only=False)
+    assert not [r for r in rows if r.status == 'queued'], rows
     assert [sid for text, sid in executed if text == 'WAKE'] == [new], 'the wake must run once, on the fresh session'

@@ -161,7 +161,7 @@ class GatewayPluginInjectionMixin:
         profile = self._served_profile_for_home(plugin_home)
         owner = profile
         if profile is not None and getattr(getattr(self, "config", None), "multiplex_profiles", False) is True:
-            from hermes_state_keys import profile_from_session_key
+            from session_keys import profile_from_session_key
             owner = profile_from_session_key(session_key)
         if profile is not None and owner == profile:
             return True
@@ -374,7 +374,7 @@ class GatewayPluginInjectionMixin:
             return None
         import json
         import uuid
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         identity = json.dumps(["plugin", plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
         event = MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,
@@ -383,7 +383,7 @@ class GatewayPluginInjectionMixin:
         )
         try:
             await authority.admit_automation(adapter, event, identity)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             logger.warning("Plugin message injection refused by the session authority: plugin=%s session=%s (%s)",
                            plugin_id, session_key, exc.reason)
             return False

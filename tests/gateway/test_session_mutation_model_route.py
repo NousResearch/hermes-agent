@@ -12,6 +12,7 @@ import threading
 import pytest
 
 from tests.gateway.test_session_follow_profile_config import _create, _owner, _route
+from tests.fixtures.storage_read import session_row
 
 MODELS = ('original', 'current', 'picked')
 
@@ -64,7 +65,7 @@ def _configure(home, model, url, key):
 
 
 async def _pick(owner, authority, sid, payload, request_id='model-pick'):
-    row = authority.db.get_session(sid)
+    row = session_row(authority.persistence, sid)
     return await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': {
         'session_id': sid, 'request_id': request_id, 'expected_revision': row['runtime_revision'],
         'expected_generation': row['runtime_generation'], 'operation': 'model', 'payload': payload}})

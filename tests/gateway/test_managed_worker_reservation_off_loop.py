@@ -11,6 +11,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from gateway.session_contract import SessionActor, SessionRef
 from tests.waiting import wait_until
@@ -38,19 +39,19 @@ HOLD_S = 3.0
 @pytest.mark.parametrize('held_during', ['reserve', 'lose'])
 def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch, held_during):
     from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, 's', 'test')
     runner = SimpleNamespace(_draining=False, _cached_agent_for=lambda route: None,
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'), persistence=storage_handle(tmp_path))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
@@ -76,7 +77,7 @@ def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch,
 
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         writer = threading.Thread(target=competing_writer, daemon=True)
         writer.start()
         if held_during == 'reserve':
@@ -99,7 +100,7 @@ def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch,
         return row, max(b - a for a, b in pairwise(ticks))
     with db:
         row, gap = asyncio.run(scenario())
-        status = db._read_one('SELECT status FROM session_admissions WHERE admission_id=?', (row['admission_id'],))[0]
+        status = db.admissions.get(admission_id=row['admission_id']).status
     assert held.is_set()
     assert status == 'unknown'  # the bogus frame still revokes the assignment once the writer frees
     assert gap < HOLD_S / 2, f'the owner loop stalled {gap:.2f}s behind a held state.db writer'

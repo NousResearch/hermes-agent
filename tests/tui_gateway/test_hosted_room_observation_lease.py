@@ -7,18 +7,27 @@ import pytest
 
 from gateway import hosted_room_driver as state, hosted_rooms
 from tui_gateway import hosted_room_driver as runtime_module
+from persistence.gateway.hosted_rooms import (
+    InvalidTaskTransitionError, RoomUnavailableError, StaleLeaseError, StaleTaskError)
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
     BINDING, PROFILE, FakeSessionRPC, RecordingTurnLocks, _admit, _identity, _runtime,
-    db as db_fixture,
+    db as room_fixture, store_fixture,
 )
 
-db = db_fixture
+room = room_fixture
+store = store_fixture
+
+
+@pytest.fixture
+def db(room, store):
+    """The store handle on the test home, its room created."""
+    return store
 
 
 @pytest.fixture
 def observed(db, monkeypatch):
     identity, now, published = _identity(), [100.0], []
-    hosted_rooms.append_event(db, room_id=BINDING.room_id, event_id='input', kind='message.user',
+    hosted_rooms.append_event(db, placement='profile', room_id=BINDING.room_id, event_id='input', kind='message.user',
         actor={'kind': 'user', 'id': 'alice'}, payload={'text': 'hello'},
         authority_gateway_id=BINDING.gateway_id, authority_epoch=1)
     _admit(db, identity)
@@ -71,7 +80,7 @@ def test_continuous_failures_retire_exact_attempt(observed, monkeypatch, operati
     o.runtime.transport_resolver = resolve
     fail_observation(o, monkeypatch, operation)
     o.runtime._process_room(BINDING)
-    task = state.get_task(o.db, o.identity)
+    task = state.get_task(o.db, o.identity, placement='profile')
     assert task['status'] == 'indeterminate'
     assert task['indeterminate_at'] == first_failure + 30
     assert task['execution_generation'] == 1
@@ -89,14 +98,14 @@ def test_flapping_reads_reset_grace_and_settle_once(observed, monkeypatch, opera
     fail_observation(o, monkeypatch, operation)
 
     def complete():
-        assert state.get_task(o.db, o.identity)['status'] == 'running'
+        assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'running'
         if o.now[0] == 170:
             o.rpc.complete(o.identity.task_id, content='Recovered once')
 
     o.action = complete
     o.runtime._process_room(BINDING)
     assert o.now[0] == 170
-    assert state.get_task(o.db, o.identity)['result']['text'] == 'Recovered once'
+    assert state.get_task(o.db, o.identity, placement='profile')['result']['text'] == 'Recovered once'
     assert [t['status'] for t in o.published] == ['settled']
     assert len([c for c in o.rpc.calls if c[0] == 'submit']) == 1
 
@@ -108,10 +117,10 @@ def test_local_callback_at_review_boundaries_settles_once(observed, monkeypatch,
     o.action = lambda: o.rpc.complete(o.identity.task_id, content='Exact reply') if o.now[0] == finish else None
     o.runtime._process_room(BINDING)
     if finish > 162:
-        assert state.get_task(o.db, o.identity)['status'] == 'indeterminate'
+        assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'indeterminate'
         o.now[0] = finish
         o.rpc.complete(o.identity.task_id, content='Exact reply')
-    assert state.get_task(o.db, o.identity)['result']['text'] == 'Exact reply'
+    assert state.get_task(o.db, o.identity, placement='profile')['result']['text'] == 'Exact reply'
     assert [t['status'] for t in o.published] == ['settled']
 
 
@@ -119,18 +128,18 @@ def test_local_callback_at_review_boundaries_settles_once(observed, monkeypatch,
 def test_stop_and_deadline_still_reach_live_member(observed, monkeypatch, control):
     o = observed
     # Read faults stop when Stop begins; the same member remains live throughout.
-    o.fail = lambda: o.now[0] >= 132 and state.get_task(o.db, o.identity)['status'] == 'running'
+    o.fail = lambda: o.now[0] >= 132 and state.get_task(o.db, o.identity, placement='profile')['status'] == 'running'
     fail_observation(o, monkeypatch)
     if control == 'deadline':
         o.runtime.turn_timeout_seconds = 52
     else:
         def stop():
             if o.now[0] == 152:
-                state.begin_task_cancel(o.db, o.identity, cancel_id='stop',
+                state.begin_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                         expected_cancel_generation=0, clock=o.runtime.clock)
         o.action = stop
     o.runtime._process_room(BINDING)
-    task = state.get_task(o.db, o.identity)
+    task = state.get_task(o.db, o.identity, placement='profile')
     assert task['status'] == ('failed' if control == 'deadline' else 'cancelled')
     assert o.now[0] == 152
     assert [kw['expected_task_id'] for name, kw in o.rpc.calls if name == 'interrupt'] == [o.identity.task_id]
@@ -143,7 +152,7 @@ def test_stop_and_deadline_still_reach_live_member(observed, monkeypatch, contro
 def retired(observed, monkeypatch):
     fail_observation(observed, monkeypatch)
     observed.runtime._process_room(BINDING)
-    assert state.get_task(observed.db, observed.identity)['status'] == 'indeterminate'
+    assert state.get_task(observed.db, observed.identity, placement='profile')['status'] == 'indeterminate'
     return observed
 
 
@@ -156,11 +165,11 @@ def test_retired_callback_checks_exact_attempt(retired, fence):
              'cancel': replace(o.attempt, cancel_generation=1),
              'identity': replace(o.attempt, identity=other)}[fence]
     o.runtime._on_terminal(BINDING, wrong, {'status': 'settled', 'text': 'Wrong'})
-    assert state.get_task(o.db, o.identity)['status'] == 'indeterminate'
-    assert state.get_task(o.db, other)['status'] == 'queued'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'indeterminate'
+    assert state.get_task(o.db, other, placement='profile')['status'] == 'queued'
     assert not o.published
     o.rpc.complete(o.identity.task_id, content='Exact attempt')
-    assert state.get_task(o.db, o.identity)['result']['text'] == 'Exact attempt'
+    assert state.get_task(o.db, o.identity, placement='profile')['result']['text'] == 'Exact attempt'
     assert [t['status'] for t in o.published] == ['settled']
 
 
@@ -175,12 +184,12 @@ def test_retired_callback_race_always_wakes(retired, monkeypatch, race, where):
         monkeypatch.setattr(o.runtime, where, original)
         if race == 'error':
             raise RuntimeError('publication unavailable')
-        task = state.begin_task_cancel(o.db, o.identity, cancel_id='stop',
+        task = state.begin_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                       expected_cancel_generation=0, clock=o.runtime.clock)
-        state.complete_task_cancel(o.db, o.identity, cancel_id='stop',
+        state.complete_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                    expected_cancel_generation=task['cancel_generation'], clock=o.runtime.clock)
         if race == 'disband':
-            hosted_rooms.disband_room(o.db, room_id=BINDING.room_id,
+            hosted_rooms.disband_room(o.db, placement='profile', room_id=BINDING.room_id,
                 expected_gateway_id=BINDING.gateway_id, expected_epoch=1)
         o.runtime._wake.clear()
         return original(*args, **kwargs)
@@ -204,15 +213,15 @@ def test_member_recovers_just_after_retirement_with_same_run(retired):
     o.now[0] += 1
     o.rpc.complete(o.identity.task_id, content='Recovered history')
     o.runtime._process_room(BINDING)
-    task = state.get_task(o.db, o.identity)
+    task = state.get_task(o.db, o.identity, placement='profile')
     assert task['status'] == 'settled'
     assert task['result']['text'] == 'Recovered history'
     assert task['execution_generation'] == 1
     assert len([c for c in o.rpc.calls if c[0] == 'submit']) == 1
 
 
-@pytest.mark.parametrize('error', [state.StaleLeaseError, state.StaleTaskError,
-                                   state.InvalidTaskTransitionError, state.RoomUnavailableError,
+@pytest.mark.parametrize('error', [StaleLeaseError, StaleTaskError,
+                                   InvalidTaskTransitionError, RoomUnavailableError,
                                    'not_admitted', 'refused_before_submit'])
 def test_observation_retry_preserves_state_and_admission_errors(observed, monkeypatch, error):
     o, reads = observed, []
@@ -233,8 +242,8 @@ def test_observation_retry_preserves_state_and_admission_errors(observed, monkey
     o.runtime._process_room(BINDING)
     assert reads[-1] == 133
     expected = {'not_admitted': 'queued', 'refused_before_submit': 'failed'}.get(error, 'running')
-    assert state.get_task(o.db, o.identity)['status'] == expected
-    if error in (state.StaleLeaseError, state.StaleTaskError):
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == expected
+    if error in (StaleLeaseError, StaleTaskError):
         assert 'fenced: state fence' in o.runtime._last_error
 
 
@@ -256,7 +265,7 @@ def test_grace_holds_worker_and_profile_lock_until_stop(db, monkeypatch):
     history, failures = rpc.history, []
 
     def observe(**kwargs):
-        if state.get_task(db, identity)['status'] == 'running':
+        if state.get_task(db, identity, placement='profile')['status'] == 'running':
             failures.append(True)
             if len(failures) == 2:
                 watching.set()
@@ -271,10 +280,10 @@ def test_grace_holds_worker_and_profile_lock_until_stop(db, monkeypatch):
         assert runtime._room_threads[BINDING.room_id].is_alive()
         assert profile_lock.locked()
         assert runtime.status()['current_task'] == identity
-        state.begin_task_cancel(db, identity, cancel_id='stop', expected_cancel_generation=0, clock=runtime.clock)
+        state.begin_task_cancel(db, identity, placement='profile', cancel_id='stop', expected_cancel_generation=0, clock=runtime.clock)
         release.set()
         from tests.waiting import wait_until
-        wait_until(lambda: state.get_task(db, identity)['status'] == 'cancelled', timeout=10)
+        wait_until(lambda: state.get_task(db, identity, placement='profile')['status'] == 'cancelled', timeout=10)
         assert [kw['expected_task_id'] for name, kw in rpc.calls if name == 'interrupt'] == [identity.task_id]
     finally:
         release.set()
@@ -288,12 +297,12 @@ def test_stop_reaches_member_whose_history_keeps_failing(observed, monkeypatch):
 
     def stop():
         if o.now[0] == 152:
-            state.begin_task_cancel(o.db, o.identity, cancel_id='stop',
+            state.begin_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                     expected_cancel_generation=0, clock=o.runtime.clock)
 
     o.action = stop
     o.runtime._process_room(BINDING)
-    assert state.get_task(o.db, o.identity)['status'] == 'cancelled'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'cancelled'
     assert [kw['expected_task_id'] for name, kw in o.rpc.calls if name == 'interrupt'] == [o.identity.task_id]
 
 
@@ -309,7 +318,7 @@ def test_expired_lease_during_stop_frees_the_worker(observed, monkeypatch):
             return
         o.now[0] += 1
         if o.now[0] == 110:
-            state.begin_task_cancel(o.db, o.identity, cancel_id='stop',
+            state.begin_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                     expected_cancel_generation=0, clock=o.runtime.clock)
         if o.now[0] == 112:
             o.now[0] = 500
@@ -317,7 +326,7 @@ def test_expired_lease_during_stop_frees_the_worker(observed, monkeypatch):
     monkeypatch.setattr(o.runtime._wake, 'wait', wait)
     o.runtime._process_room(BINDING)
     assert not kept_polling
-    assert state.get_task(o.db, o.identity)['status'] == 'stopping'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'stopping'
     assert o.runtime.status()['current_task'] is None
 
 
@@ -336,7 +345,7 @@ def test_every_probe_timing_out_still_defers(db, monkeypatch):
 
     rpc.history = rpc.resolve_exact = timeout
     runtime._run_room_once(BINDING)
-    while state.get_task(db, identity)['status'] != 'deferred':
+    while state.get_task(db, identity, placement='profile')['status'] != 'deferred':
         assert now[0] < 400, 'recovery never deferred the turn'
         now[0] += 5
         runtime._run_room_once(BINDING)
@@ -353,9 +362,9 @@ def test_turn_active_at_recovery_deadline(retired, monkeypatch, limit, status, p
         o.now[0] += 5
         o.runtime._process_room(BINDING)
     if status == 'settled':
-        assert state.get_task(o.db, o.identity)['status'] == 'indeterminate'
+        assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'indeterminate'
         o.runtime._on_terminal(BINDING, o.attempt, {'status': 'settled', 'content': 'done'})
-    assert state.get_task(o.db, o.identity)['status'] == status
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == status
     assert [t['status'] for t in o.published] == published
     assert len([c for c in o.rpc.calls if c[0] == 'interrupt']) == (status == 'failed')
 
@@ -369,14 +378,14 @@ def test_lost_transport_still_reaches_deferral(retired, monkeypatch):
     o.runtime.transport_resolver = gone
     o.now[0] += 6
     o.runtime._process_room(BINDING)
-    assert state.get_task(o.db, o.identity)['status'] == 'deferred'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'deferred'
 
 
 def test_late_reply_after_the_retired_attempts_lease_expired(retired):
     o = retired
     o.now[0] += 500  # the recovery probe waited on the profile lock past the lease
     o.runtime._on_terminal(BINDING, o.attempt, {'status': 'settled', 'content': 'done'})
-    assert state.get_task(o.db, o.identity)['status'] == 'settled'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'settled'
     assert [t['status'] for t in o.published] == ['settled']
 
 
@@ -391,14 +400,14 @@ def test_stop_of_a_lost_member_lets_go_of_the_worker(observed, monkeypatch):
 
     def stop():
         if o.now[0] == 140:
-            state.begin_task_cancel(o.db, o.identity, cancel_id='stop',
+            state.begin_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                     expected_cancel_generation=0, clock=o.runtime.clock)
 
     o.action = stop
     o.runtime._process_room(BINDING)
     assert o.now[0] < 180  # the fixture's tick fails the test if this worker never lets go
     assert o.runtime.status()['current_task'] is None
-    assert state.get_task(o.db, o.identity)['status'] == 'stopping'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'stopping'
 
 
 def test_stop_of_a_member_on_another_daemon_defers(observed, monkeypatch):
@@ -414,14 +423,14 @@ def test_stop_of_a_member_on_another_daemon_defers(observed, monkeypatch):
 
     def stop():
         if o.now[0] == 140:
-            state.begin_task_cancel(o.db, o.identity, cancel_id='stop',
+            state.begin_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                     expected_cancel_generation=0, clock=o.runtime.clock)
 
     o.action = stop
     o.runtime._process_room(BINDING)
     o.now[0] += 10
     o.runtime._process_room(BINDING)
-    assert state.get_task(o.db, o.identity)['status'] == 'deferred'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'deferred'
 
 
 def test_stop_probe_outlasting_the_lease_still_defers(observed, monkeypatch):
@@ -436,15 +445,15 @@ def test_stop_probe_outlasting_the_lease_still_defers(observed, monkeypatch):
 
     def stop():
         if o.now[0] == 140:
-            state.begin_task_cancel(o.db, o.identity, cancel_id='stop',
+            state.begin_task_cancel(o.db, o.identity, placement='profile', cancel_id='stop',
                                     expected_cancel_generation=0, clock=o.runtime.clock)
             monkeypatch.setattr(o.rpc, 'resolve_exact', timeout)
 
     o.action = stop
     o.runtime._run_room_once(BINDING)
     for _ in range(12):
-        if state.get_task(o.db, o.identity)['status'] == 'deferred':
+        if state.get_task(o.db, o.identity, placement='profile')['status'] == 'deferred':
             break
         o.now[0] += 5
         o.runtime._run_room_once(BINDING)
-    assert state.get_task(o.db, o.identity)['status'] == 'deferred'
+    assert state.get_task(o.db, o.identity, placement='profile')['status'] == 'deferred'

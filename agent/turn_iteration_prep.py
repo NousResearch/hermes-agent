@@ -33,7 +33,7 @@ def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
         return False
     if msg.get("content") == user_message:
         return True
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
 
     view = user_originated_turn_view(msg)
     return view is not None and view.get("content") == user_message

@@ -9,47 +9,44 @@ the whole compression chain — and the endpoint never called it. The fix
 backfills remaining result slots through that existing helper via the same
 add_lineage_result dedup path (content hits keep BM25 priority).
 
-These tests drive the real SessionDB through the real route handler (no fake
+These tests drive a real state.db through the real route handler (no fake
 DB) so the title lane is exercised end to end, including the SQLite
 read-only connection the endpoint opens.
 """
 
 import asyncio
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 import hermes_cli.web_server_sessions as _web_server_sessions
 import hermes_cli.web_routers.sessions as _rt_sessions
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
 def real_db(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    # A session whose message content never contains the search needle —
-    # only its (manually set) title does.
-    db.create_session(session_id="titled_session", source="cli", model="m")
-    db.set_session_title("titled_session", "Building the Modpack Server")
-    db.append_message("titled_session", role="user", content="hello world")
-    # A content-matching session: the needle appears in message text only.
-    db.create_session(session_id="content_session", source="cli", model="m")
-    db.append_message("content_session", role="user", content="modpack build notes")
-    # An unrelated session that must never surface.
-    db.create_session(session_id="other_session", source="cli", model="m")
-    db.append_message("other_session", role="user", content="completely unrelated")
-    yield db
-    try:
-        db.close()
-    except Exception:
-        pass
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        # A session whose message content never contains the search needle:
+        # only its (manually set) title does.
+        seed_session(db, "titled_session", "cli", model="m", title="Building the Modpack Server")
+        seed_messages(db, "titled_session", {"role": "user", "content": "hello world"})
+        # A content-matching session: the needle appears in message text only.
+        seed_session(db, "content_session", "cli", model="m")
+        seed_messages(db, "content_session", {"role": "user", "content": "modpack build notes"})
+        # An unrelated session that must never surface.
+        seed_session(db, "other_session", "cli", model="m")
+        seed_messages(db, "other_session", {"role": "user", "content": "completely unrelated"})
+        yield db
 
 
 @pytest.fixture
-def db_path_for_profile(real_db, monkeypatch):
+def db_path_for_profile(real_db, tmp_path, monkeypatch):
     """Point the endpoint's profile DB opener at the real temp state.db."""
     monkeypatch.setattr(
-        _web_server_sessions, "_session_db_path_for_profile", lambda profile: real_db.db_path
+        _web_server_sessions, "_session_db_path_for_profile", lambda profile: tmp_path / "state.db"
     )
 
 
@@ -83,16 +80,22 @@ def test_search_title_lane_respects_limit(db_path_for_profile):
 def test_search_title_lane_runs_off_event_loop(db_path_for_profile, monkeypatch):
     """The title backfill runs on the endpoint's worker thread, not the loop
     thread (#60747 discipline): the whole _search body already runs in
-    asyncio.to_thread, so the real SessionDB calls must never land on the loop."""
+    asyncio.to_thread, so the real store calls must never land on the loop."""
     loop_thread = threading.get_ident()
     db_threads: list[int] = []
-    real_search_messages = SessionDB.search_messages
+    real_open = _rt_sessions._open_session_db_for_profile
 
-    def spy(self, *args, **kwargs):
-        db_threads.append(threading.get_ident())
-        return real_search_messages(self, *args, **kwargs)
+    def spy_open(profile, *, read_only):
+        store = real_open(profile, read_only=read_only)
 
-    monkeypatch.setattr(SessionDB, "search_messages", spy)
+        def search_messages(*args, **kwargs):
+            db_threads.append(threading.get_ident())
+            return store.search.search_messages(*args, **kwargs)
+
+        return SimpleNamespace(sessions=store.sessions, lineage=store.lineage,
+                               search=SimpleNamespace(search_messages=search_messages), close=store.close)
+
+    monkeypatch.setattr(_rt_sessions, "_open_session_db_for_profile", spy_open)
     asyncio.run(_rt_sessions.search_sessions(q="Modpack", limit=20))
     assert db_threads
     assert all(tid != loop_thread for tid in db_threads)

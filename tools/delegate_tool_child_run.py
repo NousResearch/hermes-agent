@@ -41,11 +41,10 @@ def _reserve_child_transcript(child: Any) -> None:
         # the moment its id is published. The first turn merges the rest of the
         # constructor config in (``AIAgent._ensure_db_session``); the prompt stays unset.
         parent_sid = child._parent_session_id
-        db.create_session(
-            session_id=child.session_id, source="subagent",
-            parent_session_id=parent_sid,
-            model_config={"_delegate_from": parent_sid} if parent_sid else None,
-        )
+        from persistence.conversation.sessions import NewSession
+        child.persistence.sessions.create(NewSession(
+            session_id=child.session_id, source="subagent", parent_session_id=parent_sid,
+            model_config={"_delegate_from": parent_sid} if parent_sid else None))
         child._session_db_reserved = True
     except BaseException:
         # Ownership has transferred, but the child is not attached or published yet.
@@ -635,7 +634,7 @@ def _build_result_entry(
         # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
         # assistant row); the completion must carry what the child actually had so far — its last real assistant
         # text — and keep the placeholder as the error.
-        from agent.message_content import flatten_message_text
+        from session_rules.turns import flatten_message_text
         placeholders = {"", summary.strip(), "Operation interrupted."}
         partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")

@@ -14,11 +14,14 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, validate_room_link_url)
+
+if TYPE_CHECKING:
+    from persistence.gateway.hosted_rooms import HostedPlacement
+    from persistence_assembly import Persistence
 
 
 logger = logging.getLogger(__name__)
@@ -221,7 +224,8 @@ class PeerRunsHTTPClient:
     def __init__(
         self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
         total_deadline: bool = False,
-        receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
+        receipt_store: Persistence | None = None, receipt_placement: HostedPlacement = "shared",
+        poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         base_url, self.transport_security = validate_room_link_url(base_url)
         if api_key and len(api_key) < 16:
@@ -229,7 +233,7 @@ class PeerRunsHTTPClient:
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
         self.timeout_seconds = float(timeout_seconds)
         self.total_deadline = total_deadline
-        self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
+        self.receipt_store, self.receipt_placement = receipt_store, receipt_placement
         if poll_min_seconds <= 0 or poll_max_seconds < poll_min_seconds:
             raise ValueError("peer polling bounds are invalid")
         self.poll_min_seconds = float(poll_min_seconds)
@@ -241,12 +245,11 @@ class PeerRunsHTTPClient:
         self._terminal_receipts: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
 
-    def bind_receipt_store(self, db_path: Path | str) -> None:
+    def bind_receipt_store(self, store: Persistence, *, placement: HostedPlacement) -> None:
         """Attach the gateway-wide durable receipt store idempotently."""
-        path = Path(db_path)
-        if self.receipt_db_path not in {None, path}:
+        if self.receipt_store is not None and (self.receipt_store, self.receipt_placement) != (store, placement):
             raise PeerRunsHTTPError("peer receipt store changed")
-        self.receipt_db_path = path
+        self.receipt_store, self.receipt_placement = store, placement
 
     def bind_room_scope(
         self, *, room_id: str, home_install_id: str, authority_gateway_id: str,
@@ -271,12 +274,12 @@ class PeerRunsHTTPClient:
     def _receipt(self, task_id: str, execution_generation: int) -> dict[str, Any] | None:
         """Return the in-memory receipt, falling back to the durable store."""
         record = self._runs.get((task_id, execution_generation))
-        if record is not None or self.receipt_db_path is None or self._room_scope is None:
+        if record is not None or self.receipt_store is None or self._room_scope is None:
             return record
         from gateway import hosted_rooms
         identity = {"task_id": task_id, "execution_generation": execution_generation}
         return hosted_rooms.remote_run_receipt(
-            self.receipt_db_path, record={**self._room_scope, **identity})
+            self.receipt_store, placement=self.receipt_placement, record={**self._room_scope, **identity})
 
     def bind_observation(self, *, task_id: str, execution_generation: int) -> None:
         """Pin history/status reads to one exact logical task attempt."""
@@ -500,9 +503,10 @@ class PeerRunsHTTPClient:
             "run_id": run_id, "session_id": session_id,
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
             "task_id": checked.task_id, "execution_generation": checked.execution_generation}
-        if self.receipt_db_path is not None:
+        if self.receipt_store is not None:
             from gateway import hosted_rooms
-            hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
+            hosted_rooms.upsert_remote_run_receipt(
+                self.receipt_store, placement=self.receipt_placement, record=receipt)
         self._runs[(checked.task_id, checked.execution_generation)] = receipt
         self._status_cache.pop(run_id, None)
 
@@ -675,10 +679,10 @@ class PeerRunsHTTPClient:
             self._runs.pop(key, None)
         self._status_cache.pop(run_id, None)
         self._terminal_receipts.discard(key)
-        if self.receipt_db_path is None or self._room_scope is None:
+        if self.receipt_store is None or self._room_scope is None:
             return True
         from gateway import hosted_rooms
-        return hosted_rooms.drop_remote_run_receipt(self.receipt_db_path, record={
+        return hosted_rooms.drop_remote_run_receipt(self.receipt_store, placement=self.receipt_placement, record={
             **self._room_scope, "task_id": key[0], "execution_generation": key[1]}, run_id=run_id)
 
     def refresh_receipt(self, *, dispatch: Mapping[str, Any], grant: str) -> None:

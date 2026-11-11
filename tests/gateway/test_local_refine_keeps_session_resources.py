@@ -38,7 +38,8 @@ async def test_cold_refine_keeps_the_sessions_terminal(tmp_path, monkeypatch):
     source = SimpleNamespace(chat_id=sid)
     live = SimpleNamespace(source=source, review=SimpleNamespace())
     authority = SimpleNamespace(profile_id=str(tmp_path), sessions={sid: live},
-        db=SimpleNamespace(get_messages_as_conversation=lambda *a, **k: [{'role': 'user', 'content': 'history'}]))
+        persistence=SimpleNamespace(messages=SimpleNamespace(
+            read_conversation=lambda *a, **k: [SimpleNamespace(as_openai_message=lambda: {'role': 'user', 'content': 'history'})])))
     policy = object()
     # Isolate inference/authority construction only. The production refine body,
     # AIAgent.close, task-resource cleanup, registry and LocalEnvironment are real.

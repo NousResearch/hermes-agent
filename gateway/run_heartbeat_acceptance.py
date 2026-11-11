@@ -17,7 +17,10 @@ async def resolve_heartbeat_owner(runner, event, entry):
     resolved = entry.session_id
     if resolved != expected:
         def compression_tip():
-            return runner.session_store._db_for_key(entry.session_key).get_compression_tip(expected)
+            from persistence.core.errors import StoreUnavailable
+            if (store := runner.session_store._persistence_for_key(entry.session_key)) is None:
+                raise StoreUnavailable(f"no storage handle for {entry.session_key}")
+            return store.lineage.tip(expected)
 
         tip = await runner._run_in_executor_with_context(compression_tip)
         if tip != resolved:
@@ -49,17 +52,20 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     import json
     from gateway.platforms.event import MessageEvent
     from hermes_cli.heartbeat import HeartbeatManager
-    from hermes_state_runtime import list_session_admissions
+    from persistence.core.errors import StoreUnavailable
 
     from gateway.session_authorities import active_authority
+    from gateway.session_persistence import authority_persistence
     authority = active_authority(runner)
     if authority is None:
         return
+    if (store := authority_persistence(authority)) is None:
+        raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
     # Admissions live on the route's logical owner (the compression root), not its transcript tip;
     # a LOCAL route's heartbeat rides local_automation_v1.
-    pending = list_session_admissions(authority.db, session_id=authority.logical_owner(session_id))
-    if any(row['payload'].get('native_text_v1', {}).get('automation', {}).get('heartbeat')
-           or row['payload'].get('local_automation_v1', {}).get('heartbeat') for row in pending):
+    pending = store.admissions.list(session_id=authority.logical_owner(session_id))
+    if any(row.payload.get('native_text_v1', {}).get('automation', {}).get('heartbeat')
+           or row.payload.get('local_automation_v1', {}).get('heartbeat') for row in pending):
         return
     manager = HeartbeatManager(session_id)
     prompt = manager.due_prompt()

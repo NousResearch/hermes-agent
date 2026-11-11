@@ -15,14 +15,15 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.fixtures.webhook_route_authority import mount_authority
 
 
 @pytest.mark.asyncio
 async def test_admitted_webhook_runs_through_startup_restore_gate(monkeypatch):
+    from gateway.session_authority import admission_row
     from gateway.session_contract import SessionRef
     from gateway.session_ingress import execute_admission
-    from hermes_state_runtime import get_session_admission
 
     config = PlatformConfig(enabled=True, extra={
         'secret': 'owned-secret', 'routes': {'fixture': {'prompt': '{text}', 'deliver': 'log'}}})
@@ -41,8 +42,8 @@ async def test_admitted_webhook_runs_through_startup_restore_gate(monkeypatch):
         response = await client.post('/webhooks/fixture', data=body, headers=headers)
         assert response.status == 202, await response.text()
         authority = runner.session_authority
-        admission_id = authority.db._read_one('SELECT admission_id FROM session_admissions')['admission_id']
-        row = get_session_admission(authority.db, admission_id=admission_id)
+        admission_id = raw_holder(authority.persistence)._read_one('SELECT admission_id FROM session_admissions')['admission_id']
+        row = admission_row(authority.persistence.admissions.get(admission_id=admission_id))
 
         turns = []
 

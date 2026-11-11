@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from persistence_assembly import close_stores_under
 
 _MODAL = {"id": "i1", "type": 5, "channel_id": "c1", "guild_id": "g1",
           "member": {"user": {"id": "u1", "username": "ben"}},
@@ -63,4 +64,4 @@ async def test_relayed_modal_admitted_only_with_reader_proof(tmp_path, monkeypat
         await async_wait_until(lambda: calls and settled(), timeout=30)
         assert calls == ["feedback\ntitle: MODAL_MARKER"]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

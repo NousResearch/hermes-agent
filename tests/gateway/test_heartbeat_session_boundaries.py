@@ -9,6 +9,8 @@ from hermes_cli.heartbeat import (
     migrate_heartbeat_to_session,
     save_heartbeat,
 )
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
 
 
 def test_reset_clears_only_the_departing_conversations_heartbeat(tmp_path):
@@ -20,11 +22,10 @@ def test_reset_clears_only_the_departing_conversations_heartbeat(tmp_path):
     state = HeartbeatState(prompt="check deploy", interval_seconds=60, created_at=1)
     save_heartbeat(parent, state)
     save_heartbeat("unrelated", state)
-    db = store._db_for_key(key)
-    db.publish_compression_child(
-        parent_session_id=parent, child_session_id=child, source="telegram",
-        require_compression_lease=False, model="offline", model_config={},
-        system_prompt="offline", messages=[{"role": "user", "content": "retained"}],
+    store._persistence_for_key(key).lineage.publish_compression_child(
+        parent, CompressionChild(session_id=child, source="telegram", model="offline", model_config={},
+                                 system_prompt="offline"),
+        [NewMessage.from_live({"role": "user", "content": "retained"})], require_compression_lease=False,
     )
     assert migrate_heartbeat_to_session(parent, child)
     assert store.advance_compression_session(key, parent, child)

@@ -14,6 +14,7 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_results import execution_result
 from tests.waiting import async_wait_until
+from persistence_assembly import close_stores_under
 
 SENDER = 'user_123'
 PNG_BYTES = b'\x89PNG\r\n\x1a\n' + b'\x00' * 32
@@ -65,4 +66,4 @@ async def test_real_mattermost_posts_run_a_turn_through_native_admission(tmp_pat
         assert sent == ['ok', 'ok'], sent
         assert turns == [('hello', 0, []), ('look at this', 1, ['image/png'])], turns
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

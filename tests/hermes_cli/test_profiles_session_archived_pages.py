@@ -3,27 +3,22 @@
 from starlette.testclient import TestClient
 
 
-def test_archived_profiles_pages_do_not_lose_rows_to_non_archived_pins(_isolate_hermes_home, monkeypatch):
-    import hermes_state
-    from hermes_constants import get_hermes_home
+def test_archived_profiles_pages_do_not_lose_rows_to_non_archived_pins(_isolate_hermes_home):
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
-    db = SessionDB()
-    try:
+    with open_persistence(profile_scope()) as store:
         for sid in ("archive-a", "archive-b"):
-            db.create_session(session_id=sid, source="cli")
-            db.append_message(session_id=sid, role="user", content="hi")
-            db.set_session_archived(sid, True)
-        db.create_session(session_id="live-pin", source="cli")
-        db.append_message(session_id="live-pin", role="user", content="hi")
-        db.set_session_pinned("live-pin", True)
-    finally:
-        db.close()
+            seed_session(store, sid, "cli")
+            seed_messages(store, sid, {"role": "user", "content": "hi"})
+            store.sessions.set_archived(sid, True)
+        seed_session(store, "live-pin", "cli")
+        seed_messages(store, "live-pin", {"role": "user", "content": "hi"})
+        store.sessions.set_pinned("live-pin", True)
 
     for route in ("/api/profiles/sessions?profile=default", "/api/sessions?profile=default"):
         pages = [client.get(f"{route}&limit=1&offset={offset}&archived=only") for offset in (0, 1)]

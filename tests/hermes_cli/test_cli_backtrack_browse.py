@@ -10,22 +10,34 @@ from unittest.mock import MagicMock
 import pytest
 from prompt_toolkit.utils import get_cwidth
 
-from hermes_state import SessionDB
+from persistence import RowVisibility
+from persistence.conversation.messages import TranscriptRead, TranscriptView
+from tests.fixtures.gateway_owner import GatewayOwner
+from tests.fixtures.storage_seed import seed_messages
 from tests.hermes_cli.test_cli_init import _make_cli
 
 
 @pytest.fixture
-def cli(tmp_path, monkeypatch):
+def owner(tmp_path, monkeypatch):
+    owner = GatewayOwner(tmp_path, monkeypatch)
+    yield owner
+    owner.close()
+
+
+@pytest.fixture
+def cli(owner, monkeypatch):
+    """The CLI on its ``GatewaySessionStore`` to a real session authority in this process; the owner's
+    storage interface handle seeds and reads the rows."""
     cli = _make_cli()
     cli._session_db.close()
-    db = SessionDB(db_path=tmp_path / "state.db")
-    cli._session_db = db
-    cli.session_id = "20261105_010000_bbbbbb"
-    db.create_session(cli.session_id, source="cli")
-    for role, content in (("user", "ALPHA"), ("assistant", "a1"), ("user", "BETA"), ("assistant", "b1"),
-                          ("user", "GAMMA"), ("assistant", "g1")):
-        db.append_message(cli.session_id, role, content)
-    cli.conversation_history = db.get_messages_as_conversation(cli.session_id)
+    cli._session_db = owner.client()
+    cli.session_id = cli._session_db.open_session(cli)
+    cli._gateway_session_open = True
+    seed_messages(owner.persistence, cli.session_id, *(
+        {"role": role, "content": content}
+        for role, content in (("user", "ALPHA"), ("assistant", "a1"), ("user", "BETA"), ("assistant", "b1"),
+                              ("user", "GAMMA"), ("assistant", "g1"))))
+    cli.conversation_history = cli._session_db.get_messages_as_conversation(cli.session_id)
     cli.agent = None
     cli._agent_running = False
     cli._attached_images = []
@@ -37,7 +49,6 @@ def cli(tmp_path, monkeypatch):
     cli.printed = printed
     _terminal(monkeypatch, 100, 30)
     yield cli
-    db.close()
 
 
 def _terminal(monkeypatch, cols, rows):
@@ -144,7 +155,7 @@ def test_up_down_scroll_without_moving_the_selection(cli, monkeypatch):
     assert cli._backtrack_selected()[1] == "GAMMA"
 
 
-def test_enter_prefills_the_prompt_and_cuts_nothing(cli):
+def test_enter_prefills_the_prompt_and_cuts_nothing(cli, owner):
     sid = cli.session_id
     assert cli._open_backtrack_picker()
     cli._backtrack_step(1)
@@ -152,7 +163,8 @@ def test_enter_prefills_the_prompt_and_cuts_nothing(cli):
     assert cli._backtrack_state is None
     cli._prefill_input_buffer.assert_called_once_with("BETA")
     assert cli._backtrack_edit["ordinal"] == 1
-    rows = cli._session_db._conn.execute("SELECT active FROM messages WHERE session_id = ?", (sid,)).fetchall()
+    rows = [(int(row.visibility is RowVisibility.ACTIVE),) for row in owner.persistence.messages.read_transcript(
+        sid, TranscriptRead(view=TranscriptView.ALL))]
     assert [a for (a,) in rows] == [1] * 6
     assert len(cli.conversation_history) == 6
 
@@ -220,10 +232,10 @@ def test_footer_sheds_whole_hints_at_narrow_widths(cli, monkeypatch, cols, foote
     assert hint_rows == [footer]  # one row, never wrapped mid-hint
 
 
-def test_a_long_url_hard_wraps_inside_the_pager(cli, monkeypatch):
+def test_a_long_url_hard_wraps_inside_the_pager(cli, owner, monkeypatch):
     _terminal(monkeypatch, 40, 30)
     db, sid = cli._session_db, cli.session_id
-    db.append_message(sid, "user", "see https://example.com/" + "a" * 120)
+    seed_messages(owner.persistence, sid, {"role": "user", "content": "see https://example.com/" + "a" * 120})
     cli.conversation_history = db.get_messages_as_conversation(sid)
     assert cli._open_backtrack_picker()
     rendered = [text for text, _rev in _rows(cli)]

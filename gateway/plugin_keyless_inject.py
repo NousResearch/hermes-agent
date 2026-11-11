@@ -57,10 +57,10 @@ def _local(runner, live) -> bool:
 
 def _launched_by_classic_cli(runner, live) -> bool:
     from gateway.session_policy import policy_for_source
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     try:
         policy = policy_for_source(runner, live.source)
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         return False
     return policy is not None and policy.source == "cli"
 

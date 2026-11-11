@@ -191,15 +191,16 @@ def test_sandbox_resume_drops_a_stored_hermes_home_cwd(launch_dir, monkeypatch):
 def test_sandbox_resume_drops_a_stored_desktop_launch_dir(launch_dir, monkeypatch, tmp_path, launch):
     """Legacy rows holding a desktop launch dir (the OS home, ``/``) are not adopted as a sandbox workspace, by
     hydration or ``session.resume`` (both go through ``_resumable_stored_cwd``); local still adopts them."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     stored = str(server.Path.home()) if launch == "os-home" else "/"
     _backend(monkeypatch, "modal")
     assert server._resumable_stored_cwd(stored, None) == ""
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("legacy", source="desktop", model="m", cwd=stored)
+        seed_session(db, "legacy", "desktop", model="m", cwd=stored)
         monkeypatch.setitem(server._sessions, "s-legacy", {"session_key": "legacy", "source": "desktop",
                                                            "cwd": str(launch_dir), "profile_home": None})
         monkeypatch.setattr(server, "_persist_session_cwd_and_schedule_git_meta", lambda *a, **k: None)
@@ -230,14 +231,15 @@ def test_sandbox_resume_keeps_a_workspace_picked_under_the_hermes_root(launch_di
 def test_sandbox_hydrated_workspace_stays_the_terminal_cwd(launch_dir, monkeypatch, tmp_path):
     """A sandbox session hydrated from its stored workspace marks it explicit, so the terminal uses it rather than
     reading it as an unpicked launch dir."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     project = tmp_path / "project"
     project.mkdir()
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
         _backend(monkeypatch, "modal")
-        db.create_session("hydrated", source="tui", model="m", cwd=str(project))
+        seed_session(db, "hydrated", "tui", model="m", cwd=str(project))
         monkeypatch.setitem(server._sessions, "s-hydrated",
                             {"session_key": "hydrated", "source": "tui", "cwd": str(launch_dir),
                              "profile_home": None})

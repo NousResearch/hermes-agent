@@ -35,6 +35,8 @@ import time
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 def _compressor(threshold_tokens: int) -> ContextCompressor:
     cc = ContextCompressor(
@@ -162,18 +164,16 @@ class TestFutilityGuard:
         )
 
     def test_model_switch_resets_and_persists_fallback_streak(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", source="cli")
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "cli")
         cc = _compressor(threshold_tokens=24_576)
-        cc.bind_session_state(db, "s1")
+        cc.bind_session_state(db, "s1", persistence=db)
         cc.record_completed_compaction(used_fallback=True)
 
         cc.update_model("next-model", 100_000)
 
         assert cc._fallback_compression_streak == 0
-        assert db.get_compression_fallback_streak("s1") == 0
+        assert db.lineage.compression_fallback_streak("s1") == 0
 
 class TestMinimumMessagesBranch:
     def test_too_few_messages_defers_via_structural_backoff(self):

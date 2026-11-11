@@ -10,6 +10,9 @@ import os
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 @pytest.fixture(autouse=True)
 def _isolated_config_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -65,29 +68,25 @@ class TestCronRunJobGuard:
 
         from gateway.session_contract import SessionRef
         from gateway.session_cron import current_execution, execute
-        from hermes_state_registry import acquire, release
 
         _write_corrupt_config(tmp_path)
         # Agent-backed run_job is now a client. Exercise the scheduler's guard
         # through its owner entry, without launching a daemon or bypassing it.
-        db = acquire(tmp_path / "state.db")
+        persistence = storage_handle(tmp_path)
         ref = SessionRef("default", "cron-guard")
-        db.create_session(ref.session_id, source="cron")
-        owner = SimpleNamespace(db=db, pending_results={}, sessions={
+        seed_session(persistence, ref.session_id, "cron")
+        owner = SimpleNamespace(persistence=persistence, pending_results={}, sessions={
             ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))})
         admission = {"admission_id": "guard-fire", "request_id": "guard-fire",
                      "principal_id": "cron-owner", "payload": {"text": ""}}
         policy = SimpleNamespace(request_json=json.dumps({
             "cron_job": self._job(), "extra_prompt": None, "request_id": "guard-fire"}))
         previous = current_execution()
-        try:
-            with pytest.raises(RuntimeError, match="Hermes stopped because your settings file"):
-                await execute(owner, ref, admission, policy)
-            success, _output_doc, final_response, error = owner.pending_results["guard-fire"]["result"]["cron_result"]
-            assert current_execution() is previous
-            assert not owner._cron_cancellations
-        finally:
-            release(db)
+        with pytest.raises(RuntimeError, match="Hermes stopped because your settings file"):
+            await execute(owner, ref, admission, policy)
+        success, _output_doc, final_response, error = owner.pending_results["guard-fire"]["result"]["cron_result"]
+        assert current_execution() is previous
+        assert not owner._cron_cancellations
 
         assert success is False
         assert error is not None

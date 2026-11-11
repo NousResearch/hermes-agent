@@ -68,11 +68,11 @@ def caching_route():
 
 
 def _agent(srv, home):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
 
     agent = AIAgent(provider="custom:cacherelay", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
-                    session_db=SessionDB(db_path=home / "state.db"), session_id="cache-contract", quiet_mode=True,
+                    persistence=open_persistence(profile_scope(home=home)), session_id="cache-contract", quiet_mode=True,
                     platform="cli")
     assert (agent._use_prompt_caching, agent._use_native_cache_layout) == (True, False)
     return agent

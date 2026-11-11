@@ -41,9 +41,9 @@ async def test_disband_settles_retained_grants(gateway, linked_peer, monkeypatch
     result = await request('groups.disband', room_id='linked')
     if failure != 'expired':
         assert 'tombstone' not in result
-        assert hosted_rooms.room_state(gateway.db.db_path, room_id='linked').get('disbanded_at') is None
-        assert len(hosted_room_links.load_room_links(gateway.db.db_path)) == 1
-        assert _owed(gateway.db.db_path) == [('linked', 'reviewer', 0)]
+        assert hosted_rooms.room_state(gateway.db, placement='profile', room_id='linked').get('disbanded_at') is None
+        assert len(hosted_room_links.load_room_links(gateway.db, placement='profile')) == 1
+        assert _owed(gateway.db) == [('linked', 'reviewer', 0)]
         assert await _grant_error(url, long_grant) == (
             'room_reauthorization_required' if failure == 'lost_ack' else None)
         monkeypatch.setattr(PeerRunsHTTPClient, 'revoke_grant', revoke)
@@ -52,6 +52,6 @@ async def test_disband_settles_retained_grants(gateway, linked_peer, monkeypatch
     else:
         assert long_grant not in attempted
     assert 'tombstone' in result
-    assert hosted_room_links.load_room_links(gateway.db.db_path) == ()
+    assert hosted_room_links.load_room_links(gateway.db, placement='profile') == ()
     assert gateway.service.peer_routes == {}
-    assert _owed(gateway.db.db_path) == []
+    assert _owed(gateway.db) == []

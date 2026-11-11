@@ -731,23 +731,19 @@ async def do_action(body: dict):
 
 #### 访问 Hermes 内部模块
 
-后端路由在 dashboard 进程内运行，因此可以直接从 hermes-agent 代码库导入：
+后端路由在 dashboard 进程内运行，因此可以直接从 hermes-agent 代码库导入。会话历史通过存储接口（`persistence_assembly`，见[会话存储](../../developer-guide/session-storage.md#常用操作)）读取；只读句柄不会创建或迁移存储，普通 `def` 路由让读取不占用事件循环：
 
 ```python
 from fastapi import APIRouter
-from hermes_state import SessionDB
 from hermes_cli.config import load_config
+from persistence_assembly import open_persistence_reader, profile_scope
 
 router = APIRouter()
 
 @router.get("/session-count")
-async def session_count():
-    db = SessionDB()
-    try:
-        count = len(db.list_sessions(limit=9999))
-        return {"count": count}
-    finally:
-        db.close()
+def session_count():
+    with open_persistence_reader(profile_scope().profile_dir) as store:
+        return {"count": store.sessions.count_sessions()}
 
 @router.get("/config-snapshot")
 async def config_snapshot():

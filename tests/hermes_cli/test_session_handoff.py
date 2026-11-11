@@ -17,17 +17,21 @@ from contextlib import contextmanager
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 
 class TestHandoffStateDB:
-    """Test the handoff schema + helper methods on SessionDB."""
+    """Test the handoff schema + the store's coordination verbs over it."""
 
     @pytest.fixture
     def db(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
-        return SessionDB(db_path=home / "state.db")
+        with open_persistence(profile_scope(home=home)) as store:
+            yield store
 
     def _make_session(self, db, session_id, source="cli", title=None):
         """Insert a session row directly for testing."""
@@ -37,76 +41,76 @@ class TestHandoffStateDB:
                 "VALUES (?, ?, ?, ?)",
                 (session_id, source, title, time.time()),
             )
-        db._execute_write(_do)
+        raw_holder(db)._execute_write(_do)
 
     def test_list_pending_handoffs_excludes_running_and_terminal(self, db):
         a, b, c, d = "sess-a", "sess-b", "sess-c", "sess-d"
         for sid in (a, b, c, d):
             self._make_session(db, sid)
 
-        db.request_handoff(a, "telegram")
-        db.request_handoff(b, "discord")
-        db.request_handoff(c, "telegram")
-        db.claim_handoff(c)  # c is now running, not pending
-        db.request_handoff(d, "slack")
-        db.claim_handoff(d)
-        db.complete_handoff(d)  # d is terminal
+        db.coordination.request_handoff(session_id=a, platform="telegram")
+        db.coordination.request_handoff(session_id=b, platform="discord")
+        db.coordination.request_handoff(session_id=c, platform="telegram")
+        db.coordination.claim_handoff(session_id=c)  # c is now running, not pending
+        db.coordination.request_handoff(session_id=d, platform="slack")
+        db.coordination.claim_handoff(session_id=d)
+        db.coordination.complete_handoff(session_id=d)  # d is terminal
 
-        pending = db.list_pending_handoffs()
-        ids = [r["id"] for r in pending]
+        pending = db.coordination.list_pending_handoffs()
+        ids = [r.session_id for r in pending]
         assert set(ids) == {a, b}
 
     def test_complete_handoff_clears_error(self, db):
         sid = "sess-complete"
         self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
-        db.claim_handoff(sid)
-        db.fail_handoff(sid, "transient")
+        db.coordination.request_handoff(session_id=sid, platform="telegram")
+        db.coordination.claim_handoff(session_id=sid)
+        db.coordination.fail_handoff(session_id=sid, error="transient")
         # User retries; mock the watcher path
-        db.request_handoff(sid, "telegram")
-        db.claim_handoff(sid)
-        db.complete_handoff(sid)
+        db.coordination.request_handoff(session_id=sid, platform="telegram")
+        db.coordination.claim_handoff(session_id=sid)
+        db.coordination.complete_handoff(session_id=sid)
 
-        state = db.get_handoff_state(sid)
-        assert state["state"] == "completed"
-        assert state["error"] is None
+        state = db.coordination.get_handoff(session_id=sid)
+        assert state.state == "completed"
+        assert state.error is None
 
     def test_full_pending_to_completed_flow(self, db):
         """End-to-end sequence the CLI + gateway watcher follow."""
         sid = "sess-flow"
         self._make_session(db, sid, title="my session")
-        db.append_message(sid, "user", "Hello")
-        db.append_message(sid, "assistant", "Hi there!")
+        seed_messages(db, sid, {"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi there!"})
 
         # CLI: request handoff
-        assert db.request_handoff(sid, "telegram") is True
-        assert db.get_handoff_state(sid)["state"] == "pending"
+        assert db.coordination.request_handoff(session_id=sid, platform="telegram") is True
+        assert db.coordination.get_handoff(session_id=sid).state == "pending"
 
         # Gateway watcher: discover + claim
-        pending = db.list_pending_handoffs()
+        pending = db.coordination.list_pending_handoffs()
         assert len(pending) == 1
-        assert pending[0]["id"] == sid
-        assert db.claim_handoff(sid) is True
-        assert db.get_handoff_state(sid)["state"] == "running"
+        assert pending[0].session_id == sid
+        assert db.coordination.claim_handoff(session_id=sid) is True
+        assert db.coordination.get_handoff(session_id=sid).state == "running"
 
-        # Gateway uses get_messages to load the transcript (real flow uses
+        # Gateway reads the transcript (real flow uses
         # session_store.switch_session which reads the same table).
-        messages = db.get_messages(sid)
+        messages = transcript_rows(db, sid)
         assert [m["role"] for m in messages] == ["user", "assistant"]
 
         # Gateway: mark completed
-        db.complete_handoff(sid)
-        assert db.get_handoff_state(sid)["state"] == "completed"
-        assert db.list_pending_handoffs() == []
+        db.coordination.complete_handoff(session_id=sid)
+        assert db.coordination.get_handoff(session_id=sid).state == "completed"
+        assert db.coordination.list_pending_handoffs() == ()
 
     def test_handoff_reads_use_read_context_during_reconnect(self, db, monkeypatch):
         """Handoff polling must not borrow the reconnectable writer handle."""
         sid = "sess-read-path"
         self._make_session(db, sid)
-        db.request_handoff(sid, "discord")
+        db.coordination.request_handoff(session_id=sid, platform="discord")
 
         entered = []
-        original = db._read_ctx
+        holder = raw_holder(db)
+        original = holder._read_ctx
 
         @contextmanager
         def traced_read_ctx():
@@ -114,7 +118,7 @@ class TestHandoffStateDB:
             with original() as conn:
                 yield conn
 
-        monkeypatch.setattr(db, "_read_ctx", traced_read_ctx)
-        assert db.get_handoff_state(sid)["state"] == "pending"
-        assert [row["id"] for row in db.list_pending_handoffs()] == [sid]
+        monkeypatch.setattr(holder, "_read_ctx", traced_read_ctx)
+        assert db.coordination.get_handoff(session_id=sid).state == "pending"
+        assert [row.session_id for row in db.coordination.list_pending_handoffs()] == [sid]
         assert len(entered) == 2

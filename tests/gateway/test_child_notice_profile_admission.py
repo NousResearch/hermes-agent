@@ -12,6 +12,9 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from persistence_assembly import store_location
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 OWNERS = ["child", "handoff", "foreground", "live_handoff"]
 
@@ -23,15 +26,11 @@ def _build_rig(monkeypatch, tmp_path, request, surface_a, mode):
     from gateway.run import _async_profile_runtime_scope
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
-    import hermes_state
     from tools import process_registry as pr_module
     from tools.process_registry import ProcessRegistry
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_BASE_HOME", str(tmp_path))
-    # The global fixture pins the default DB; restore call-time profile resolution
-    # within these explicitly private homes instead of sharing its root handle.
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     import gateway.run as gw
     monkeypatch.setattr(gw, "_hermes_home", tmp_path)
     registry = ProcessRegistry()
@@ -95,13 +94,13 @@ async def _for_each_leg(rig, owner, surface_a, path, consume):
         async with _async_profile_runtime_scope(homes[name]):
             source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm", profile=name)
             entry = runner.session_store.get_or_create_session(source, force_new=True)
-            db = runner.session_store._db_for_key(entry.session_key)
+            db = runner.session_store._persistence_for_key(entry.session_key)
             assert db is not None
-            assert db.db_path == homes[name] / "state.db"
-            assert db.get_session(entry.session_id) is not None
+            assert store_location(db.scope) == homes[name] / "state.db"
+            assert db.sessions.get(entry.session_id) is not None
             child = f"worker-{name}-{leg_index}"
-            db.create_session(child, source="subagent", model_config={"_delegate_from": entry.session_id})
-            before = {sid: db.get_session(sid) for sid in (entry.session_id, child)}
+            seed_session(db, child, "subagent", model_config={"_delegate_from": entry.session_id})
+            before = {sid: session_row(db, sid) for sid in (entry.session_id, child)}
         proc = ProcessSession(
             id=f"proc_{name}{leg_index}abcd", command="build",
             owner_task_id="parent-owner" if owner == "foreground" else "sa-child",
@@ -117,7 +116,7 @@ async def _for_each_leg(rig, owner, surface_a, path, consume):
         }
         async with runner._completion_event_scope(watcher):
             assert get_hermes_home() == homes[name], runner._primary_profile_name
-            assert await runner._session_db.get_session(child) is not None
+            assert await runner.persistence.aio.sessions.get(child) is not None
         leg = SimpleNamespace(
             name=name, index=leg_index, entry=entry, db=db, child=child, proc=proc, watcher=watcher,
             surfaced=handed_off or owner == "foreground" or (surface_a if name == "a" else not surface_a),
@@ -151,7 +150,7 @@ async def _for_each_leg(rig, owner, surface_a, path, consume):
             assert current is not None
             assert current.session_id == entry.session_id
             for sid, row in before.items():
-                after = db.get_session(sid)
+                after = session_row(db, sid)
                 for field in ("ended_at", "end_reason", "source", "session_key", "model_config"):
                     assert after[field] == row[field], (path, name, sid, field)
 
@@ -294,8 +293,7 @@ async def test_batched_completions_follow_the_owning_profile(
         if boundary:
             async with _async_profile_runtime_scope(rig.homes[leg.name]):
                 stale = f"stale-{leg.name}-{leg.index}"
-                leg.db.create_session(stale, source="telegram")
-                leg.db.end_session(stale, end_reason="session_reset")
+                seed_session(leg.db, stale, "telegram", end_reason="session_reset")
             companion["parent_session_id"] = stale
         pair = [("PROCESS_RESULT", evt), ("COMPANION_RESULT", companion)]
         if path in {"batch_foreground_first", "batch_boundary_first"}:

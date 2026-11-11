@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tui_gateway import server
 
 _BASE_URL = "http://127.0.0.1:59999/v1"
@@ -32,14 +34,10 @@ def _write_home(home, config_text: str) -> None:
 
 
 def _store(home, provider: str) -> None:
-    db = SessionDB(db_path=home / "state.db")
-    try:
-        db.create_session(_STORED, "desktop", model="local-code",
-                          model_config={"model": "local-code", "provider": provider, "base_url": _BASE_URL})
-        db.append_message(_STORED, "user", "hi")
-        db.append_message(_STORED, "assistant", "hello")
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, _STORED, "desktop", model="local-code",
+                     model_config={"model": "local-code", "provider": provider, "base_url": _BASE_URL})
+        seed_messages(db, _STORED, {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"})
 
 
 @pytest.fixture()
@@ -54,7 +52,7 @@ def homes(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(server, "_hermes_home", str(launch))
     monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
-    monkeypatch.setattr(server, "_get_db", lambda: SessionDB(db_path=launch / "state.db"))
+    monkeypatch.setattr(server, "_get_db", lambda: storage_handle(launch))
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_schedule_resume_hydration", _NoopHydration())
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)

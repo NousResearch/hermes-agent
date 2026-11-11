@@ -92,17 +92,18 @@ def owner_execution_runner():
     """
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
-    from hermes_state_registry import acquire, release
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     def run(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
         from cron.scheduler import _get_hermes_home
 
-        db = acquire(_get_hermes_home() / "state.db")
+        store = open_persistence(profile_scope(home=_get_hermes_home()))
         identity = uuid4().hex
         ref = SessionRef("test-profile", "cron-" + identity)
-        db.create_session(ref.session_id, source="cron")
+        seed_session(store, ref.session_id, "cron")
         authority = SimpleNamespace(
-            db=db, sessions={ref.session_id: SimpleNamespace(
+            persistence=store, sessions={ref.session_id: SimpleNamespace(
                 source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
         request_id = execution_id or identity
         row = {"admission_id": identity, "request_id": request_id,
@@ -127,7 +128,7 @@ def owner_execution_runner():
         try:
             return asyncio.run(execute_job())
         finally:
-            release(db)
+            store.close()
 
     return run
 

@@ -46,7 +46,7 @@ def undo_span_start(target_timestamp, kept_history=()) -> Optional[float]:
     """When the undone span began: the undone user message's stamp, or the newest kept message's when that is
     later. A gateway stamps a message with its platform send time, so a prompt queued while the previous turn
     ran is stamped before that turn's checkpoints; the kept turn's last row bounds them out."""
-    from agent.context_compressor import is_compaction_summary_message
+    from session_rules.turns import is_compaction_summary_message
 
     start = _epoch(target_timestamp)
     for message in kept_history or ():
@@ -165,7 +165,7 @@ def rollback_rewinds_newest_turn(history: list, user_indices: list[int], taken) 
     A snapshot from an older build records only its git second, so a row inside that same second may be
     either side of it: that is ambiguous, and an ambiguous turn is KEPT (losing a turn the user kept is the
     worse mistake). Unknown times keep main's behaviour."""
-    from agent.context_compressor import is_compaction_summary_message
+    from session_rules.turns import is_compaction_summary_message
 
     if not user_indices or taken is None:
         return bool(user_indices)

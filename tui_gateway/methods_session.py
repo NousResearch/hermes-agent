@@ -34,13 +34,15 @@ def _session_method(name: str, *, live: bool = False):
 
 
 def _with_db(code: int, *, session_scoped: bool):
-    """Append a db arg — the session's db (after ``_with_session``) or ``_profile_db(params)``; ``code`` when None."""
+    """Append the storage handle on the session's db (after ``_with_session``) or ``_profile_db(params)``; ``code``
+    when None."""
     def deco(fn):
         def handler(rid, params: dict, *session) -> dict:
-            with (_session_db(session[0]) if session_scoped else _profile_db(params)) as db:
-                if db is None:
+            with (_session_db(session[0]) if session_scoped else _profile_db(params)) as db, \
+                    _persistence_for(db) as persistence:
+                if persistence is None:
                     return _db_unavailable_error(rid, code=code)
-                return fn(rid, params, *session, db)
+                return fn(rid, params, *session, persistence)
         return _with_session(handler) if session_scoped else handler
     return deco
 
@@ -84,20 +86,6 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
         _clear_session_context(tokens)
 
 
-def _profile_session_db(profile_home):
-    """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
-    if profile_home:
-        from hermes_state_registry import acquire
-        return acquire(Path(profile_home) / "state.db"), True
-    return _get_db(), False
-
-
-def _release_db(db) -> None:
-    with contextlib.suppress(Exception):
-        from hermes_state_registry import release_or_close
-        release_or_close(db)
-
-
 def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     """session.info after a cwd change: the full agent view, or the lazy shape."""
     if (agent := session.get("agent")) is not None:
@@ -107,9 +95,9 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
             "desktop_contract": DESKTOP_BACKEND_CONTRACT}
 
 
-def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None, db=None) -> dict:
+def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None, persistence=None) -> dict:
     """Compact session.list row; ``tip_row``/``resolved_id`` come from the compression tip.
-    ``db`` adds ``live_message_count`` (see ``_live_count_field``)."""
+    ``persistence`` adds ``live_message_count`` (see ``_display_count_field``)."""
     tip_row = tip_row or row
     return {"id": row["id"], **({} if resolved_id is None else {"resolved_id": resolved_id}),
             "title": row.get("title") or "", "preview": tip_row.get("preview") or "",
@@ -119,10 +107,16 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             # projects (api_server._session_response); RPC consumers (desktop pinning /
             # lineage dedup) group on it. #66663.
             "_lineage_root_id": row.get("_lineage_root_id"),
-            **({} if db is None else _live_count_field(db, row["id"] if resolved_id is None else resolved_id))}
+            **({} if persistence is None
+               else _display_count_field(persistence, row["id"] if resolved_id is None else resolved_id))}
 
 
-from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+def _row_of(record) -> dict | None:
+    """The session row dict of a stored ``SessionRecord``; None stays None."""
+    return None if record is None else record.as_session_row()
+
+
+from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
 
 
 # Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
@@ -143,10 +137,12 @@ def _auto_resume_denied_source(row: dict) -> bool:
     return source in _LISTING_DENY_SOURCES or source == "unknown"
 
 
-def _listing_rows(db, limit: int, **kwargs) -> list:
-    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
-    rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
-    return [row for row in rows if not _denied_source(row)]
+def _listing_rows(persistence, limit: int, **kwargs) -> list:
+    """Human-facing listing rows (most recent first), deny-list applied."""
+    from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+    entries = persistence.sessions.list_sessions(SessionQuery(order=SessionOrder.LAST_ACTIVE, **kwargs),
+                                                 SessionWindow(limit=limit), compact_rows=True)
+    return [row for row in (entry.as_list_row() for entry in entries) if not _denied_source(row)]
 
 
 def _snapshot_sessions(rid):
@@ -227,101 +223,6 @@ def _billing_pending_change(result: dict) -> dict:
 
 
 # ── session.create / list / most_recent / facts ──────────────────────
-def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    model: str, copy_fields=(), compensate: bool = False, title_source: str = "user",
-                    user_id: str | None = None) -> None:
-    """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
-    row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
-    heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
-    deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
-    IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
-    login: the child is a Desktop session too, and the row only records identity at insert."""
-    from agent.message_metadata import message_identity
-    from agent.transcript_repair import sync_flushed_message_markers
-
-    # The child sends the parent's exact system prompt: a row without one makes the branch's first
-    # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
-    parent_prompt = None
-    try:
-        parent_prompt = (db.get_session(parent_key) or {}).get("system_prompt")
-    except Exception:
-        logger.debug("branch: parent system prompt read failed for %s", parent_key, exc_info=True)
-    db.create_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
-                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
-                      system_prompt=parent_prompt or None)
-    try:
-        # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
-        # committed, the durable-but-empty row would defeat the lazy first-prompt fallback
-        # (_ensure_session_db_row is INSERT OR IGNORE — the row exists, so the seed never lands and the
-        # renderer fail-latches on a "transcript-less" session again). Roll back just this child so the seed
-        # path can retry cleanly on first submit.
-        # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
-        # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-        rows = [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                 **{field: msg.get(field) for field in copy_fields}, **message_identity(msg)} for msg in history]
-        db.append_messages_batch(new_key, rows, chunk_rows=500)
-        if title_source == "user":
-            db.set_session_title(new_key, title)
-        else:
-            db.set_auto_title(new_key, title, source=title_source)
-        sync_flushed_message_markers(history, rows)
-    except Exception as exc:
-        from hermes_state_errors import is_disk_full_error
-        if compensate and not is_disk_full_error(exc):
-            try:
-                db.discard_unadmitted_session(new_key)
-            except Exception:
-                logger.debug("branch seed compensation delete failed for %s", new_key, exc_info=True)
-        raise
-
-
-def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home):
-    """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
-    renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
-    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
-    try:
-        with _session_db(record) as db:
-            if db is None:
-                return
-            _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
-                            source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            model=_session_default_route(record)[0], compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
-            record["pending_title"] = None
-            # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
-            record["_branch_seed_persisted"] = True
-    except Exception:
-        logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
-                       exc_info=True)
-
-
-def _seed_row(record: dict) -> None:
-    """Persist a parentless seeded session NOW, for the reason ``_seed_branch_row`` gives: seeded content is
-    intent, not an abandoned draft, and the renderer's post-create hydration reads the DB. The client's title
-    lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
-    the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
-    ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
-    key = record.get("session_key")
-    try:
-        if _ensure_session_db_row(record) is False:
-            return
-        _persist_branch_seed(record)
-    except Exception:
-        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
-    if not record.get("_branch_seed_persisted"):
-        with contextlib.suppress(Exception), _session_db(record) as db:
-            if db is not None:
-                db.discard_unadmitted_session(key)
-        return
-    try:
-        if title := record.get("pending_title"):
-            with _session_db(record) as db:
-                if db is not None and db.set_session_title(key, title):
-                    record["pending_title"] = None
-    except Exception:
-        logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
-
-
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -379,11 +280,12 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         # Whole-session desktop branches must not serialize the parent's transcript
         # through the renderer. Read the durable display projection here, where the
         # owning state.db already lives, and keep the full copy server-side.
-        with _profile_db(params) as db:
-            if db is None:
+        with _profile_db(params) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 return _db_unavailable_error(rid, code=5008)
             try:
-                _, display_history = db.get_resume_conversations(parent_session_id)
+                display_history = [m.as_openai_message() for m in
+                                   persistence.messages.read_resume_conversations(parent_session_id).display]
             except Exception as exc:
                 return _err(rid, 4008, f"nothing to branch — {exc}")
         history = _visible_branch_history(display_history)
@@ -488,69 +390,67 @@ def _(rid, params: dict) -> dict:
     return _create_session(rid, params, copy_parent_history=True)
 
 
-def _unarchive_recoverable(db, session_id: str) -> bool:
-    """``unarchive_recoverable_session`` that works on a read-only listing handle (foreign profile):
-    the rare write escalates to a short-lived registry writer instead of writing on the reader."""
-    if not getattr(db, "read_only", False):
-        return db.unarchive_recoverable_session(session_id)
-    from hermes_state_registry import acquire
+def _unarchive_recoverable(persistence, session_id: str) -> bool:
+    """``unarchive_recoverable`` that works on a read-only listing handle (foreign profile):
+    the rare write escalates to a short-lived writer handle instead of writing on the reader."""
+    if not persistence.read_only:
+        return persistence.sessions.unarchive_recoverable(session_id)
+    from persistence_assembly import open_persistence
     try:
-        wdb = acquire(db.db_path)
+        writer = open_persistence(persistence.scope, eager=True)
     except Exception:
-        logger.warning("Bot Chat unarchive skipped: writer unavailable for %s", db.db_path, exc_info=True)
+        logger.warning("Bot Chat unarchive skipped: writer unavailable for %s", persistence.scope.profile_dir,
+                       exc_info=True)
         return False
     try:
-        return wdb.unarchive_recoverable_session(session_id)
+        return writer.sessions.unarchive_recoverable(session_id)
     finally:
         with contextlib.suppress(Exception):
-            wdb.close()
+            writer.close()
 
 
-def _session_list_by_title(rid, db, title_lookup: str) -> dict:
+def _session_list_by_title(rid, persistence, title_lookup: str) -> dict:
     """EXACT-title lookup (title as identity), window-free on purpose (a busy profile's windowed listing can
     push the row out). Hidden rows resolve (canonical chats are born hidden); archived / deny-listed do not;
     lineages resolve to the live tip (``resolved_id``)."""
-    row = db.get_session_by_title(title_lookup)
+    row = _row_of(persistence.sessions.get_by_title(title_lookup))
     if row and row.get("archived"):
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
         # replacements forever): resurrect recoverable reasons only. Re-fetch by ID — title is not UNIQUE.
-        if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(db, row["id"]):
+        if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(persistence, row["id"]):
             # The canonical Bot Chat is identity-scoped: an archive stamped by the ws-orphan reaper or older
             # agent cleanup (ws_orphan_reap / agent_close) is an accident, not user intent, and hiding the
             # row here makes the desktop mint transient replacements forever (#92687). Resurrect it — same
             # recoverable-reason set as stale-route recovery. Deliberate archives (no/explicit end_reason)
             # still hide. Re-fetch by ID: title has no DB-level UNIQUE, so a title re-query could grab a
             # different (still-archived) duplicate row.
-            row = db.get_session(row["id"])
+            row = _row_of(persistence.sessions.get(row["id"]))
     if not row or row.get("archived") or _denied_source(row):
         return _ok(rid, {"sessions": []})
     tip = row["id"]
     with contextlib.suppress(Exception):
         # Real compression continuation only: the resolver's unmarked-child fallback could redirect Bot Chat.
-        tip = db.get_compression_tip(row["id"]) or row["id"]
-    tip_row = (db.get_session(tip) or row) if tip != row["id"] else row
-    return _ok(rid, {"sessions": [_session_row_summary(row, tip_row=tip_row, resolved_id=tip, db=db)]})
+        tip = persistence.lineage.tip(row["id"]) or row["id"]
+    tip_row = (_row_of(persistence.sessions.get(tip)) or row) if tip != row["id"] else row
+    return _ok(rid, {"sessions": [_session_row_summary(row, tip_row=tip_row, resolved_id=tip,
+                                                       persistence=persistence)]})
 
 
 @method("session.list")
 @_with_db(5006, session_scoped=False)
-def _(rid, params: dict, db) -> dict:
+def _(rid, params: dict, persistence) -> dict:
     try:
         if title_lookup := _str_param(params, "title"):
-            return _session_list_by_title(rid, db, title_lookup)
+            return _session_list_by_title(rid, persistence, title_lookup)
         limit = int(params.get("limit", 200) or 200)
         # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
         # surfaces that OWN hidden sessions (Bots pane, pickers).
-        from pathlib import Path
-
         from hermes_cli.session_listing import show_subagent_sessions
 
         # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
-        # A store without a path has no profile config to read, so it keeps the default shape.
-        db_path = getattr(db, "db_path", None)
-        include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
-        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
+        include_subagents = show_subagent_sessions(persistence.scope.profile_dir)
+        rows = _listing_rows(persistence, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
                              include_subagents=include_subagents)[:limit]
         # No live_message_count here on purpose: the bulk listing serves rows whose open
         # paths never demand history (expectHistory defaults false); the count is a
@@ -564,12 +464,12 @@ def _(rid, params: dict, db) -> dict:
 def _(rid, params: dict) -> dict:
     """Most recent human-facing session, skipping auto-resume-denied rows (deny-list
     plus ``source='unknown'`` guard placeholders, #54320); errors fold into ``session_id: null``."""
-    with _profile_db(params) as db:
+    with _profile_db(params) as db, _persistence_for(db) as persistence:
         try:
             # Generous over-fetch: many denied rows must not yield a false "none".
-            rows = ([row for row in _listing_rows(db, 200)
+            rows = ([row for row in _listing_rows(persistence, 200)
                      if not _auto_resume_denied_source(row)]
-                    if db is not None else [])
+                    if persistence is not None else [])
             for row in rows[:1]:
                 return _ok(rid, {"session_id": row.get("id"), "title": row.get("title") or "",
                                  "started_at": row.get("started_at") or 0, "source": row.get("source") or ""})
@@ -609,6 +509,7 @@ class _Resume:
     to close (handler ``finally``) until handed to the hydration worker or the agent."""
 
     inline_images = True  # class default so a ``__new__``-built ctx (tests) projects the full form
+    persistence = None  # the storage handle beside ``db``, released by the handler unless handed on
 
     def __init__(self, rid, params: dict, target: str) -> None:
         self.rid, self.params, self.target = rid, params, target
@@ -666,7 +567,9 @@ class _Resume:
 
     def child_history(self, repair: bool) -> list:
         """The child's OWN conversation (no ancestors), row ids included."""
-        return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
+        from persistence.conversation.messages import ConversationRequest
+        return [m.as_openai_message() for m in self.persistence.messages.read_conversation(
+            self.target, ConversationRequest(repair_alternation=repair, include_row_ids=True))]
 
     def messages(self, display: list) -> list:
         return [] if self.omit_messages else _history_to_messages(
@@ -682,18 +585,17 @@ class _Resume:
         for the session row, but NOT for stale queue residue: the restart that made this resume
         necessary also discarded the busy-queue, so retire never-drained accept rows (#125577)
         here — with #128508 the reopen no longer runs on this path and the marked row would stay
-        active and visible until the next send. Best-effort like the resume guard: a handle
-        without the method (duck-typed doubles) skips the cleanup, a real error still fails."""
-        retire = getattr(self.db, "retire_undrained_queue_rows", None)
-        if callable(retire):
-            retire(self.target)
+        active and visible until the next send."""
+        self.persistence.sessions.retire_undrained_queue_rows(self.target)
         if self.omit_messages:
             return self.child_history(repair=True), []
-        return self.db.get_resume_conversations(self.target)
+        resume = self.persistence.messages.read_resume_conversations(self.target)
+        return [m.as_openai_message() for m in resume.model], [m.as_openai_message() for m in resume.display]
 
     def display_prefix(self) -> list:
         """Ancestor display rows (model-fed history drops a dangling tool-call tail — display keeps it)."""
-        return [] if self.omit_messages else self.db.get_ancestor_display_prefix(self.target)
+        return [] if self.omit_messages else [
+            m.as_openai_message() for m in self.persistence.lineage.ancestor_display_prefix(self.target)]
 
 
 def _find_live_unpersisted(needle: str, home) -> str:
@@ -744,17 +646,18 @@ def _resume_adopt_stranded(ctx: _Resume) -> None:
         # unreachable instead of misrouted). Adopt the full lineage from the default store into this
         # profile's db, then retry the lookup. Only profile-scoped resumes reach here (owns_db); unknown ids
         # in the default store still 4007 exactly as before.
-        default_db = _get_db()
-        donor_row = default_db.get_session(ctx.target) if default_db is not None else None
-        if not donor_row or donor_row.get("archived"):
-            return
-        adoption = ctx.db.adopt_session_lineage_from(default_db, donor_row["id"])
+        from lineage_adoption import adopt_session_lineage
+        with _persistence_for(_get_db()) as donor:
+            donor_row = _row_of(donor.sessions.get(ctx.target)) if donor is not None else None
+            if not donor_row or donor_row.get("archived"):
+                return
+            adoption = adopt_session_lineage(ctx.persistence, donor, donor_row["id"])
         if adoption.get("adopted"):
             logger.info("adopted stranded session %s (lineage of %s segment(s)) from default store into profile %s",
                         donor_row["id"],
                         len(adoption.get("imported_ids") or []) + len(adoption.get("skipped_ids") or []),
                         ctx.profile or "?")
-            ctx.found = ctx.db.get_session(donor_row["id"])
+            ctx.found = _row_of(ctx.persistence.sessions.get(donor_row["id"]))
             if ctx.found:
                 ctx.target = ctx.found["id"]
     except Exception:
@@ -774,14 +677,15 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
     the exact key. ``create_session`` is an upsert, so a concurrently persisted row is
     not clobbered (only its NULL model/source columns would fill in).
     """
+    from persistence.conversation.sessions import NewSession
     try:
-        ctx.db.create_session(
-            ctx.target,
+        ctx.persistence.sessions.create(NewSession(
+            session_id=ctx.target,
             source=_resolve_session_source(_str_param(ctx.params, "source") or None),
             model=_resolve_model(),
             profile_name=profile_name_for_home(ctx.profile_home) or _response_profile_name(ctx.profile),
-        )
-        ctx.found = ctx.db.get_session(ctx.target)
+        ))
+        ctx.found = _row_of(ctx.persistence.sessions.get(ctx.target))
         logger.info(
             "materialized session row for minted-but-unpersisted key %s (resume no longer 4007s)",
             ctx.target,
@@ -792,10 +696,10 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
 
 def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
-    ctx.found = ctx.db.get_session(ctx.target)
+    ctx.found = _row_of(ctx.persistence.sessions.get(ctx.target))
     if ctx.found:
         return None
-    ctx.found = ctx.db.get_session_by_title(ctx.target)
+    ctx.found = _row_of(ctx.persistence.sessions.get_by_title(ctx.target))
     if ctx.found:
         ctx.target = ctx.found["id"]
         return None
@@ -825,18 +729,18 @@ def _resume_follow_tip(ctx: _Resume) -> None:
     with contextlib.suppress(Exception):
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         if (ctx.found.get("title") or "").strip() == BOT_CHAT_TITLE:
-            tip = ctx.db.get_compression_tip(ctx.target) or ctx.target
+            tip = ctx.persistence.lineage.tip(ctx.target) or ctx.target
         else:
-            tip = ctx.db.resolve_resume_session_id(ctx.target)
+            tip = ctx.persistence.lineage.resolve_resume_target(ctx.target)
     if tip and tip != ctx.target:
         ctx.target = tip
-        ctx.found = ctx.db.get_session(tip) or ctx.found
+        ctx.found = _row_of(ctx.persistence.sessions.get(tip)) or ctx.found
 
 
 def _resume_guard(ctx: _Resume) -> dict | None:
     """Refuse a runaway transcript before any history read (sessions.max_resume_messages). Deferred /
     omit_messages / lazy paths load the TIP segment only and are guarded tip-only (a lineage count rejected
-    exactly the well-compressed chats). Metadata fallback for lightweight adaptor DBs; fails OPEN on errors.
+    exactly the well-compressed chats). Fails OPEN on errors.
 
     Kanban worker transcripts refuse FIRST and fail CLOSED on a positive match (#68779): a
     resumed Desktop/TUI session would be a write-capable writer with none of the dispatcher
@@ -844,16 +748,15 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     in the same workspace. One guard for every resume shape below (cold / eager / deferred /
     lazy / live-reuse) — no slash worker is ever built for a refused session."""
     from hermes_cli.kanban_resume_guard import kanban_resume_refusal
-    if (kanban_refusal := kanban_resume_refusal(ctx.db, ctx.target)) is not None:
+    if (kanban_refusal := kanban_resume_refusal(ctx.db, ctx.target, persistence=ctx.persistence)) is not None:
         return _err(ctx.rid, 4132, kanban_refusal)
-    from hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
+    from persistence.conversation.messages import ResumeTooLarge
+    from storage_limits import resolved_max_resume_messages
     tip_only = ctx.lazy or ctx.omit_messages or (ctx.defer_history and not ctx.eager_build)
     try:
-        if callable(safety_check := getattr(ctx.db, "assert_resume_safe", None)):
-            safety_check(ctx.target, **({"tip_only": True} if tip_only else {}))
-        elif (limit := resolved_max_resume_messages()) and (n := int(ctx.found.get("message_count") or 0)) > limit:
-            raise SessionResumeTooLargeError(n, limit)
-    except SessionResumeTooLargeError as exc:
+        ctx.persistence.messages.assert_resume_safe(
+            ctx.target, max_messages=resolved_max_resume_messages(), tip_only=tip_only)
+    except ResumeTooLarge as exc:
         return _err(ctx.rid, 4130, str(exc))
     except Exception as exc:
         logger.warning("resume safety check failed for %s (proceeding without guard): %s", ctx.target, exc)
@@ -912,11 +815,8 @@ def _resume_lazy(ctx: _Resume) -> dict:
     try:
         # Read-only mount (#85303): an ended row stays ended; the first real turn reopens it.
         # But a restart discarded the busy-queue — retire never-drained accept rows (#125577)
-        # or the marked row stays active and visible until the next send. Best-effort like
-        # the resume guard: a handle without the method (duck-typed doubles) skips it.
-        retire = getattr(ctx.db, "retire_undrained_queue_rows", None)
-        if callable(retire):
-            retire(ctx.target)
+        # or the marked row stays active and visible until the next send.
+        ctx.persistence.sessions.retire_undrained_queue_rows(ctx.target)
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:
@@ -950,9 +850,9 @@ def _resume_deferred(ctx: _Resume) -> dict:
         return reused
     # Desktop owns the visible transcript through bounded REST pages, not this model-history restore.
     _schedule_resume_hydration(
-        sid, ctx.target, ctx.db, close_db=ctx.owns_db,
+        sid, ctx.target, ctx.db, close_db=ctx.owns_db, persistence=ctx.persistence,
         model_history_only=source == "desktop" and ctx.omit_messages)
-    ctx.owns_db = False  # the hydration worker now owns (and closes) the profile-scoped handle
+    ctx.owns_db, ctx.persistence = False, None  # the hydration worker now owns (and closes) the profile-scoped handles
     _schedule_session_cap_enforcement()
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), messages=[],
                             message_count=record["resume_message_count"], status="resuming", hydrating=True)
@@ -991,7 +891,8 @@ def _resume_eager(ctx: _Resume) -> dict:
             # not inherit another chat's global model.
             stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
             agent = _make_agent_in_context(
-                sid, ctx.target, session_db=ctx.db, platform_override=source,
+                sid, ctx.target, session_db=ctx.db, persistence=ctx.persistence,
+                platform_override=source,
                 cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
@@ -1013,7 +914,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 # turn). Gated on owns_db: the SHARED launch handle must never move onto one session.
                 if ctx.owns_db:
                     _transfer_db_to_agent(agent, ctx.db)
-                ctx.owns_db = False
+                ctx.owns_db, ctx.persistence = False, None
             if (session := _sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
@@ -1048,6 +949,7 @@ def _(rid, params: dict) -> dict:
     ctx = _Resume(rid, params, target)
     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
     ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+    ctx.persistence = _persistence_beside(ctx.db)
     try:
         if ctx.db is None:
             return _db_unavailable_error(rid, code=5000)
@@ -1062,19 +964,19 @@ def _(rid, params: dict) -> dict:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
-        from hermes_state import SessionDB
+        from persistence.conversation.sessions import session_yolo_enabled
         from tools.approval_yolo import restore_session_yolo  # a fresh backend starts with an empty set
-        restore_session_yolo(ctx.target, SessionDB.session_yolo_enabled(ctx.found))
+        restore_session_yolo(ctx.target, session_yolo_enabled((ctx.found or {}).get("model_config")))
         if ctx.lazy:
             return _resume_lazy(ctx)
         return _resume_eager(ctx) if ctx.eager_build else (
             _resume_deferred(ctx) if ctx.defer_history else _resume_cold(ctx))
     finally:
-        # Refcounting alone does not release the sqlite fds: SessionDB pins ITSELF (atexit.register) once its
-        # background token writer starts; only close() unregisters.
+        # A dedicated profile store this resume still owns is released here; its handle beside it with it.
         if ctx.owns_db and ctx.db is not None:
             with contextlib.suppress(Exception):
                 ctx.db.close()
+        _release_persistence(ctx.persistence)
 
 
 # ── cwd / workspace / live-session bookkeeping ───────────────────────
@@ -1114,16 +1016,16 @@ def _(rid, params: dict) -> dict:
     except ValueError:
         return _err(rid, 4017, f"working directory does not exist: {raw}")
     branch, root = git_probe.branch(target_cwd), git_probe.common_repo_root(target_cwd)
-    with _profile_db(params, writer=True) as db:
-        if db is None:
+    with _profile_db(params, writer=True) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return _db_unavailable_error(rid, code=5007)
         # A draft has no row yet; the live re-home still applies (row inherits cwd on write).
-        if not db.get_session(target):
+        if persistence.sessions.get(target) is None:
             if live is None:
                 return _err(rid, 4007, "session not found")
         else:
             try:
-                db.update_session_cwd(target, target_cwd, branch, root, replace_git_meta=True)
+                persistence.sessions.update_cwd(target, target_cwd, branch, root, replace_git_meta=True)
             except Exception as e:
                 return _err(rid, 5007, f"move failed: {e}")
     if live is not None:
@@ -1168,7 +1070,8 @@ def _(rid, params: dict, session: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
     from agent.onboarding_record import delete_chat
-    from hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
+    from gateway.session_ingress_media import native_inputs_root
+    from persistence.core.errors import SessionWriteGuarded  # body runs on server.py globals
 
     if not (target := params.get("session_id", "")):
         return _err(rid, 4006, "session_id required")
@@ -1178,30 +1081,31 @@ def _(rid, params: dict) -> dict:
     if any(s.get("session_key") == target for _sid, s in snapshot):
         return _err(rid, 4023, "cannot delete an active session")
     profile_home = _profile_home((params.get("profile") or "").strip() or None)
-    with _profile_db(params, writer=True) as db:
+    with _profile_db(params, writer=True) as db, _persistence_for(db) as persistence:
         if db is None:
             return _db_unavailable_error(rid, code=5036)
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
-            deleted = delete_chat(db, target, lambda: db.delete_session(
-                target, sessions_dir=home / "sessions", exclude_active_write_guards=True))
-        except SessionActiveWriteGuardError:
+            deleted = delete_chat(db, target, lambda: _delete_unfinished_chat(
+                db, target, sessions_dir=home / "sessions", media_root=str(native_inputs_root()),
+                persistence=persistence), persistence=persistence)
+        except SessionWriteGuarded:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:
             return _err(rid, 5036, f"delete failed: {e}")
     return _ok(rid, {"deleted": target}) if deleted else _err(rid, 4007, "session not found")
 
 
-def _title_read(session: dict, db, key: str) -> str:
+def _title_read(session: dict, persistence, key: str) -> str:
     """``session.title`` without ``title``: read it, applying a queued pending_title if possible."""
     fallback = session.get("pending_title") or ""
     try:
-        resolved_title = db.get_session_title(key) or ""
+        resolved_title = persistence.sessions.get_title(key) or ""
         if not fallback:
             if resolved_title:
                 session["pending_title"] = None
-        elif (db.set_session_title(key, fallback)
-              or ((db.get_session(key) or {}).get("title") or "").strip() == fallback):
+        elif (persistence.sessions.set_title(key, fallback)
+              or ((_row_of(persistence.sessions.get(key)) or {}).get("title") or "").strip() == fallback):
             session["pending_title"] = None
             resolved_title = fallback
         elif not resolved_title:
@@ -1213,26 +1117,26 @@ def _title_read(session: dict, db, key: str) -> str:
 
 @method("session.title")
 @_with_db(5007, session_scoped=True)
-def _(rid, params: dict, session: dict, db) -> dict:
+def _(rid, params: dict, session: dict, persistence) -> dict:
     key = session["session_key"]
     if "title" not in params:
-        result = {"title": _title_read(session, db, key), "session_key": key}
+        result = {"title": _title_read(session, persistence, key), "session_key": key}
     elif not (title := (params.get("title", "") or "").strip()):
         return _err(rid, 4021, "title required")
     else:
         try:
-            if db.set_session_title(key, title):
+            if persistence.sessions.set_title(key, title):
                 pending, value = False, title
             # rowcount == 0 can mean "same value" as well as "missing row".
-            elif existing_row := db.get_session(key):
+            elif existing_row := _row_of(persistence.sessions.get(key)):
                 pending, value = False, existing_row.get("title") or title
             else:
                 # No row yet: an explicit /title is clear intent, so persist the row NOW (as the gateway's
                 # _handle_title_command); the min-messages sidebar filter hides a titled 0-message row. If
                 # row creation didn't take, queue so the post-turn apply block can recover.
                 _ensure_session_db_row(session)
-                with _session_db(session) as scoped_db:
-                    pending, value = not (scoped_db is not None and scoped_db.set_session_title(key, title)), title
+                with _session_db(session) as scoped_db, _persistence_for(scoped_db) as scoped:
+                    pending, value = not (scoped is not None and scoped.sessions.set_title(key, title)), title
         except ValueError as e:
             return _err(rid, 4022, str(e))
         except Exception as e:
@@ -1255,19 +1159,23 @@ def _(rid, params: dict) -> dict:
     # Quiet live lookup, the set_hidden reasoning: a stored id that is not in memory is this method's
     # expected second tier, not a rejection (session.list rows archive without a live runtime here).
     session = _sessions.get(target)
-    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
-        if db is None:
+    from session_retention import emit_session_deleted
+    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db, \
+            _persistence_for(db) as persistence:
+        if persistence is None:
             return _db_unavailable_error(rid, code=5007)
         try:
             if session is not None:
                 key = session["session_key"]
-                if not db.set_session_archived(key, archived):
+                change = persistence.sessions.set_archived(key, archived)
+                if not change.changed:
                     session["pending_archived"] = archived  # no row yet: _ensure_session_db_row applies it
             else:
-                # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
-                if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
+                # ``resolve_id`` follows key/title aliases like the REST pin/archive path.
+                if not (key := persistence.sessions.resolve_id(target)):
                     return _err(rid, 4001, "session not found")
-                db.set_session_archived(key, archived)
+                change = persistence.sessions.set_archived(key, archived)
+            emit_session_deleted(persistence.scope.profile_dir, change.archived_ids, reason="archive", primary=key)
             return _ok(rid, {"archived": archived, "session_key": key})
         except Exception as e:
             return _err(rid, 5007, str(e))
@@ -1285,20 +1193,21 @@ def _(rid, params: dict) -> dict:
     # rejection — _sess_nowait would log "session-scoped RPC rejected … not in memory" for a request that is
     # then fulfilled from the profile db, burying the real stale-runtime-id signal under sweep noise.
     session = _sessions.get(str(params.get("session_id") or ""))
-    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
-        if db is None:
+    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db, \
+            _persistence_for(db) as persistence:
+        if persistence is None:
             return _db_unavailable_error(rid, code=5007)
         try:
             if session is not None:
                 key = session["session_key"]
-                if not db.set_session_hidden(key, hidden):
+                if not persistence.sessions.set_hidden(key, hidden):
                     session["pending_hidden"] = hidden  # no row yet: _ensure_session_db_row is born hidden
             else:
-                # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
+                # ``resolve_id`` follows key/title aliases like the REST pin/archive path.
                 target = _str_param(params, "session_id")
-                if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
+                if not (key := persistence.sessions.resolve_id(target)):
                     return _err(rid, 4001, "session not found")
-                db.set_session_hidden(key, hidden)
+                persistence.sessions.set_hidden(key, hidden)
             return _ok(rid, {"hidden": hidden, "session_key": key})
         except Exception as e:
             return _err(rid, 5007, str(e))
@@ -1316,8 +1225,8 @@ def _(rid, params: dict, session: dict) -> dict:
         return _err(rid, 4024, "emoji must be a non-empty string or null")
     if (author := str(params.get("author") or "user").strip()) not in {"user", "agent"}:
         return _err(rid, 4025, "author must be 'user' or 'agent'")
-    with _session_db(session) as db:
-        if db is None:
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return _db_unavailable_error(rid, code=5007)
         # The row lookup and the reaction are both session-qualified, and the newest live row lives in
         # the session the agent writes to — which a compression rotation moves off session_key mid-session
@@ -1325,15 +1234,16 @@ def _(rid, params: dict, session: dict) -> dict:
         row_session = _submit_row_target_key(session)
         try:
             if row_id is None:
-                row_id = db.latest_message_row_id(row_session, role=newest_role)
+                row_id = persistence.messages.latest_row_id(row_session, role=newest_role)
                 if row_id is None:
                     return _err(rid, 4040, "no message to react to yet")
-            reactions = db.set_message_reaction(row_session, int(row_id), emoji, author=author)
+            reactions = persistence.messages.set_reaction(row_session, int(row_id), emoji, author=author)
         except Exception as e:
             return _err(rid, 5007, str(e))
     if reactions is None:
         return _err(rid, 4040, "message not found in this session")
-    return _ok(rid, {"row_id": int(row_id), "reactions": reactions})
+    return _ok(rid, {"row_id": int(row_id), "reactions": [
+        {"emoji": r.emoji, "author": r.author, "at": r.at, **({"seen": True} if r.seen else {})} for r in reactions]})
 
 
 @method("llm.oneshot")
@@ -1396,13 +1306,13 @@ def _(rid, params: dict, session: dict) -> dict:
     # The watcher transfers a persisted row, so make sure one exists for an empty chat.
     _ensure_session_db_row(session)
     key = session["session_key"]
-    with _session_db(session) as db:
-        if db is None:
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return _db_unavailable_error(rid, code=5007)
         try:
-            if not db.get_session(key):
-                db.set_session_title(key, f"handoff-{key[:8]}")
-            if not db.request_handoff(key, platform_name):
+            if persistence.sessions.get(key) is None:
+                persistence.sessions.set_title(key, f"handoff-{key[:8]}")
+            if not persistence.coordination.request_handoff(session_id=key, platform=platform_name):
                 return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
         except Exception as e:
             return _err(rid, 5007, str(e))
@@ -1411,10 +1321,11 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @method("handoff.state")
 @_with_db(5007, session_scoped=True)
-def _(rid, params: dict, session: dict, db) -> dict:
+def _(rid, params: dict, session: dict, persistence) -> dict:
     """Poll ``{state, platform, error}``; ``state`` is pending|running|completed|failed or empty."""
-    record = db.get_handoff_state(session["session_key"]) or {}
-    return _ok(rid, {field: record.get(field) or "" for field in ("state", "platform", "error")})
+    handoff = persistence.coordination.get_handoff(session_id=session["session_key"])
+    return _ok(rid, {"state": "", "platform": "", "error": ""} if handoff is None else {
+        "state": handoff.state.value, "platform": handoff.platform or "", "error": handoff.error or ""})
 
 
 @method("handoff.fail")
@@ -1425,17 +1336,14 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     reason = str(params.get("error") or "handoff failed").strip()[:500]
-    with _session_db(session) as db:
-        if db is None:
+    from persistence.authority.coordination import HandoffStatus
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return _db_unavailable_error(rid, code=5007)
         key = session["session_key"]
-        try:
-            failed = db.fail_handoff(key, reason, only_states=("pending",))
-        except TypeError:
-            # Older SessionDB without only_states: fail only when still pending.
-            if failed := ((db.get_handoff_state(key) or {}).get("state") or "") == "pending":
-                db.fail_handoff(key, reason)
-        state = "failed" if failed else (db.get_handoff_state(key) or {}).get("state") or ""
+        failed = persistence.coordination.fail_handoff(session_id=key, error=reason, only_states=(HandoffStatus.PENDING,))
+        handoff = None if failed else persistence.coordination.get_handoff(session_id=key)
+        state = "failed" if failed else handoff.state.value if handoff is not None else ""
     return _ok(rid, {"failed": bool(failed), "state": state})
 
 
@@ -1945,8 +1853,8 @@ def _status_row(session: dict, params: dict, key: str) -> dict:
 
 
 def _try_get_session(db, key: str) -> dict:
-    with contextlib.suppress(Exception):
-        return db.get_session(key) or {}
+    with contextlib.suppress(Exception), _persistence_for(db) as persistence:
+        return _row_of(persistence.sessions.get(key)) or {}
     return {}
 
 
@@ -1984,16 +1892,17 @@ def _(rid, params: dict, session: dict) -> dict:
     # every turn since the rotation (#123545).
     row_session = _submit_row_target_key(session)
     if row_session:
-        with _session_db(session) as db:
-            if db is not None:
+        from persistence.conversation.messages import ConversationRequest
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is not None:
                 # include_row_ids: the durable row id is how clients address a persisted turn (reactions,
                 # truncation targets); _history_to_messages forwards it.
                 with contextlib.suppress(Exception):
                     # The projection in _history_to_messages only forwards row_id when the row carries a
                     # stamp, so an unstamped read here silently strips the one durable address clients can
                     # use. See #87059.
-                    history = db.get_messages_as_conversation(
-                        row_session, include_ancestors=True, include_row_ids=True)
+                    history = [m.as_openai_message() for m in persistence.messages.read_conversation(
+                        row_session, ConversationRequest(include_lineage=True, include_row_ids=True))]
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
@@ -2009,7 +1918,7 @@ def _(rid, params: dict, session: dict) -> dict:
             return busy
         history = _history_without_ephemeral_scaffolding(session.get("history", []))
         # Truncate from the last *real* user turn (not a timeline marker / compaction handoff).
-        from agent.context_compressor import user_originated_turn_view
+        from session_rules.turns import user_originated_turn_view
         if user_turns := sum(1 for message in history if user_originated_turn_view(message) is not None):
             try:
                 removed = (rewound := _rewind_active_session_history(session, user_turns - 1))[2]
@@ -2147,12 +2056,12 @@ def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
     from hermes_cli.session_export import load_save_snapshot, render_session_for_save
-    from hermes_state import SessionExportTooLargeError
+    from persistence.core.errors import ExportTooLarge
     # As CLI/messaging /save json, under the SESSION's profile config + home (runs unscoped); a failed read falls back.
     try:
-        with _session_profile_runtime_scope(session, hydrate_secrets=False), _session_db(session) as db:
-            data = db and load_save_snapshot(db, _submit_row_target_key(session), "json")
-    except SessionExportTooLargeError as e:
+        with _session_profile_runtime_scope(session, hydrate_secrets=False), _session_db(session) as db, _persistence_for(db) as persistence:
+            data = db and load_save_snapshot(db, _submit_row_target_key(session), "json", persistence=persistence)
+    except ExportTooLarge as e:
         return _err(rid, 4131, str(e))
     except Exception:
         logger.warning("session.save: stored-session read failed; saving the in-memory history", exc_info=True)
@@ -2335,5 +2244,7 @@ def register(server) -> None:
     bind_module(globals(), server, skip=("_",))
     from . import methods_session_branch
     methods_session_branch.register(server)
+    from . import methods_session_seed
+    methods_session_seed.register(server)
     from . import methods_session_interrupt
     methods_session_interrupt.register(server)

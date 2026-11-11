@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from gateway.session_contract import Submission
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
+from persistence.core.errors import AuthorityRefusal
 
 
 @pytest.mark.asyncio
@@ -28,7 +28,7 @@ async def test_discard_of_a_captured_answer_delivers_it_once(tmp_path, monkeypat
     authority.runner._adapter_for_source = lambda source: object()
     async def deliver(adapter, event, session_key, response):
         sent.append((response, event.source.chat_id,
-                     get_session_admission(authority.db, admission_id=event.message_id)['status']))
+                     authority.persistence.admissions.get(admission_id=event.message_id).status))
     monkeypatch.setattr(session_ingress, 'deliver_response', deliver)
     monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', (0.01,), raising=False)
     original = session_results.finish_result
@@ -45,15 +45,15 @@ async def test_discard_of_a_captured_answer_delivers_it_once(tmp_path, monkeypat
         waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
     await asyncio.wait_for(authority._drain(ref), 10)
     monkeypatch.setattr(session_results, 'finish_result', original)
-    row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-    assert row['status'] == 'unknown' and sent == [], 'an unsettled admission was answered externally'
+    row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+    assert row.status == 'unknown' and sent == [], 'an unsettled admission was answered externally'
     if waiter is not None:
-        with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+        with pytest.raises(AuthorityRefusal, match='unknown_execution'):
             await waiter  # the chat got the paused notice instead
-    await authority.resolve_unknown(actor, ref, receipt.admission_id, row['generation'])
-    resolved = get_session_admission(authority.db, admission_id=receipt.admission_id)
-    assert (resolved['status'], resolved['outcome']) == ('terminal', 'completed')
+    await authority.resolve_unknown(actor, ref, receipt.admission_id, row.generation)
+    resolved = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+    assert (resolved.status, resolved.outcome) == ('terminal', 'completed')
     assert sent == [('model reply', 'c', 'terminal')], 'Discard committed the answer but never delivered it'
-    await authority.resolve_unknown(actor, ref, receipt.admission_id, row['generation'])
+    await authority.resolve_unknown(actor, ref, receipt.admission_id, row.generation)
     assert len(sent) == 1, 'a repeated resolution sent the answer twice'
     assert calls == ['hi'], 'inference must never re-run'

@@ -684,7 +684,7 @@ export interface SessionInfo {
    *  as visible. */
   hidden?: boolean
   /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
-   *  see `SessionDB.session_unread`). True when the conversation was
+   *  see `session_unread` in persistence/sqlite/conversation/_store/sessions.py). True when the conversation was
    *  explicitly marked unread or a response arrived after it was last read.
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean

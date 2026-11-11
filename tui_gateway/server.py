@@ -35,14 +35,14 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
-from hermes_state_ids import new_session_id
+from session_rules.session_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.voice_turn_route import session_runtime_view
 from agent.compaction_display import project_compaction_message_for_display
-from agent.skill_commands import describe_skill_invocation
+from session_rules.turns import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe, stream_segments
 from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
@@ -307,19 +307,14 @@ def _launch_home() -> Path:
     return Path(home)
 
 
-def _launch_state_db_path() -> Path:
-    """Launch profile's ``state.db`` (see :func:`_launch_home`)."""
-    return _launch_home() / "state.db"
-
-
 def _get_db():
     global _db, _db_error
     if _db is None:
-        from hermes_state_registry import acquire
+        from persistence_assembly import open_persistence, profile_scope
         try:
             # Launch home, never the context-local override (#102526); resolved at first
-            # use, not import time (#112692). See _launch_state_db_path.
-            _db, _db_error = acquire(_launch_state_db_path()), None
+            # use, not import time (#112692). See _launch_home.
+            _db, _db_error = open_persistence(profile_scope(home=_launch_home()), eager=True), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)
@@ -340,7 +335,7 @@ def _transfer_db_to_agent(agent, db) -> bool:
         # down the process-wide database every other session shares. Refuse it explicitly even if a caller
         # invokes the transfer incorrectly; the caller's own `owns_db` gate is the first line of defense.
         if db is _get_db():
-            logger.warning("Refused transfer of the shared launch SessionDB to a session "
+            logger.warning("Refused transfer of the shared launch store to a session "
                            "agent — the caller's owns_db gate should have prevented this.")
             return False
         agent._owns_session_db = True
@@ -352,31 +347,18 @@ def _open_profile_session_db(profile_home):
     """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED: a silent fallback to the
     launch ``state.db`` would bleed rows into the wrong profile's store exactly when the profile store is
     briefly unopenable (locked, mid-restore); callers let the error abort the build (→ ``agent_error``)."""
-    from hermes_state_registry import acquire
-    db_path = Path(profile_home) / "state.db"
+    from persistence_assembly import open_persistence, profile_scope, store_location
+    scope = profile_scope(home=Path(profile_home))
     try:
-        return acquire(db_path)
+        return open_persistence(scope, eager=True)
     except Exception as exc:
-        raise RuntimeError(f"profile session store unavailable: {db_path}: {exc}") from exc
-
-
-def _bootstrap_served_profile_store(db_path: Path) -> None:
-    """A served profile whose first RPC is a read (Bot Chat registry lookup on a fresh bot) has no
-    ``state.db`` yet. Browsing never creates a store, but THIS process is the profile's session
-    owner (``_open_profile_session_db`` acquires the writer for every agent build), so it seeds the
-    store it is about to own instead of answering ``storage_unavailable`` until a turn happens."""
-    try:
-        if db_path.stat().st_size > 0:
-            return
-    except FileNotFoundError:
-        pass
-    from hermes_state_registry import acquire, release_or_close
-    release_or_close(acquire(db_path))
+        raise RuntimeError(
+            f"profile session store unavailable: {store_location(scope) or scope.profile_dir}: {exc}") from exc
 
 
 @contextlib.contextmanager
 def _profile_db(params: dict | None = None, *, writer: bool = False):
-    """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
+    """Yield the store for ``params['profile']`` (None when unavailable); closes dedicated
     profile handles, leaves the launch-profile shared handle open.
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
@@ -390,12 +372,17 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
     else:
         try:
             if writer:
-                from hermes_state_registry import acquire
-                db = acquire(Path(profile_home) / "state.db")
+                from persistence_assembly import open_persistence, profile_scope
+                db = open_persistence(profile_scope(home=Path(profile_home)), eager=True)
             else:
                 from hermes_cli.web_server_sessions import _open_session_db_at_path
-                _bootstrap_served_profile_store(Path(profile_home) / "state.db")
-                db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
+                from persistence_assembly import profile_scope, store_location
+                scope = profile_scope(home=Path(profile_home))
+                if (db_path := store_location(scope)) is None:
+                    raise RuntimeError("Browsing a profile's sessions needs a file-backed session store; "
+                                       "this profile's store has no file.")
+                _bootstrap_served_profile_store(scope.profile_dir)
+                db = _open_session_db_at_path(db_path, read_only=True)
             owns = True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
@@ -436,7 +423,7 @@ def _response_profile_name(profile: str | None = None) -> str:
 
 
 def _db_unavailable_error(rid, *, code: int):
-    from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+    from storage_user_copy import describe_storage_failure, storage_failure_details
     failure = describe_storage_failure(_db_error)
     return _err(
         rid, code,
@@ -1127,22 +1114,25 @@ def _live_session_agent_db(session: dict | None):
 def _persist_live_session_system_prompt(session: dict | None) -> None:
     """Refresh the stored system prompt after a live runtime identity change."""
     live = _live_session_agent_db(session)
-    if live is None or not hasattr(live[0], "_build_system_prompt") or not hasattr(live[2], "update_system_prompt"):
+    if live is None or not hasattr(live[0], "_build_system_prompt"):
         return
     agent, session_key, db = live
-    # Re-bind the session's profile runtime scope (the build's finally reset it → root profile's SOUL.md/skills,
-    # #50233) and session context (on the RPC thread _SESSION_CWD is unset → the process TERMINAL_CWD would
-    # persist). The full scope, not HERMES_HOME alone: the external memory provider's system_prompt_block()
-    # reads its credential through get_secret, which fails closed once this process multiplexes (#112927).
-    session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
-    try:
-        with _session_profile_runtime_scope(session):
-            prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
-        db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
-    except Exception:
-        logger.warning("failed to persist live session system prompt for session %s", session_key, exc_info=True)
-    finally:
-        _clear_session_context(session_tokens)
+    with _persistence_for(db) as persistence:
+        if persistence is None:
+            return
+        # Re-bind the session's profile runtime scope (the build's finally reset it → root profile's SOUL.md/skills,
+        # #50233) and session context (on the RPC thread _SESSION_CWD is unset → the process TERMINAL_CWD would
+        # persist). The full scope, not HERMES_HOME alone: the external memory provider's system_prompt_block()
+        # reads its credential through get_secret, which fails closed once this process multiplexes (#112927).
+        session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
+        try:
+            with _session_profile_runtime_scope(session):
+                prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
+            persistence.sessions.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
+        except Exception:
+            logger.warning("failed to persist live session system prompt for session %s", session_key, exc_info=True)
+        finally:
+            _clear_session_context(session_tokens)
 
 
 # Stable leading text of the model-switch marker (builder + dedup); only the newest marker is meaningful.
@@ -1192,20 +1182,21 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is None:
             _ensure_session_db_row(session)
-        with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
-            if db is not None:
+        with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db, \
+                _persistence_for(db) as persistence:
+            if persistence is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER
+                from persistence.conversation.messages import NewMessage
                 # Same stale-key hazard as the submit row: this durable pivot must land in the session the
                 # live agent writes to, or a model switch between turns on a rotated session files the notice
                 # under a parent the conversation no longer reads from (#123545).
                 target = _submit_row_target_key(session)
                 # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
                 # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
-                db.deactivate_messages_by_display_kind(target, "model_switch")
+                persistence.messages.deactivate_messages_by_display_kind(target, "model_switch")
                 from agent.message_metadata import stamp_message_uid
-                entry["_row_id"] = db.append_message(
-                    session_id=target, role="user", content=marker, display_kind="model_switch",
-                    message_uid=stamp_message_uid(entry))
+                entry["_row_id"] = persistence.messages.append(target, NewMessage(
+                    role="user", content=marker, display_kind="model_switch", message_uid=stamp_message_uid(entry)))
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:
         # warning, not debug: filing the pivot in the LIVE session (#123545) means this write can now hit
@@ -1623,31 +1614,28 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
             logger.warning("profile session store unavailable for %s — skipping cwd hydration instead of "
                            "touching the launch state.db", profile_home, exc_info=True)
     try:
-        if db is not None:
-            row = db.get_session(key) if hasattr(db, "get_session") else None
-            if row and _resumable_stored_cwd(row.get("cwd"), profile_home):
+        with _persistence_for(db) as persistence:
+            row = persistence.sessions.get(key) if persistence is not None else None
+            if row and _resumable_stored_cwd(row.cwd, profile_home):
                 # An ssh or sandbox session's stored cwd is its workspace: explicit, so the remote terminal uses it
                 # instead of the backend default (an unpicked launch dir is never persisted for them). Host backends
                 # keep main's semantics (resolved outside the sessions lock: I/O).
                 remote = not _host_cwd_is_terminal_cwd(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
-                        _sessions[sid]["cwd"] = row["cwd"]
+                        _sessions[sid]["cwd"] = row.cwd
                         if remote:
                             _sessions[sid]["explicit_cwd"] = True
                 # Lazy desktop rows already carry their explicitly chosen cwd, so they never reach the fresh-cwd
                 # branch below. Claim a generation before probing to keep an older probe from overwriting a later
                 # workspace move; complete rows do not need another probe on every resume.
-                if (not row.get("git_branch") or not row.get("git_repo_root")) and hasattr(
-                    db, "update_session_cwd"
-                ):
+                if not row.git_branch or not row.git_repo_root:
                     try:
-                        _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
+                        _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row.cwd, db=db)
                     except Exception:
                         logger.debug("failed to enrich resumed session git metadata", exc_info=True)
-            elif (not (row and row.get("cwd")) or _is_other_profiles_cwd(row["cwd"], profile_home)) and hasattr(
-                db, "update_session_cwd"
-            ) and not _is_remote_launch_cwd(_sessions.get(sid)):
+            elif persistence is not None and (not (row and row.cwd) or _is_other_profiles_cwd(row.cwd, profile_home)) \
+                    and not _is_remote_launch_cwd(_sessions.get(sid)):
                 # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled,
                 # or a named profile's row holding another profile's dir (#87584), repaired to this session's own.
                 try:
@@ -1993,13 +1981,13 @@ from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server
 
 # ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close
 # over exists; register() rebinds them onto this namespace.
-from hermes_state import _BARE_BILLING_PROVIDERS
+from persistence.gateway.routing import BARE_BILLING_PROVIDERS as _BARE_BILLING_PROVIDERS
 
 from . import (
     session_registry as _session_registry, agent_factory as _agent_factory,
     slash_worker_client as _slash_worker_client, methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
-    plugin_inject as _plugin_inject,
+    plugin_inject as _plugin_inject, store_handles as _store_handles,
     rpc_dispatch as _rpc_dispatch,
     agent_callbacks as _agent_callbacks, session_history as _session_history,
     prompt_attachments as _prompt_attachments, session_notifications as _session_notifications,
@@ -2022,7 +2010,7 @@ from . import (
     methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
 
 for _m in (
-    _session_registry, _agent_factory, _slash_worker_client,
+    _session_registry, _agent_factory, _slash_worker_client, _store_handles,
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,

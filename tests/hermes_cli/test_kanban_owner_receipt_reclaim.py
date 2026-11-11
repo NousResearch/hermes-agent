@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -35,6 +34,9 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli import kanban_owner_recovery
 from hermes_cli.process_identity import worker_birth
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_admission, seed_session
 from hermes_cli.kanban_owner_recovery import (
     bound_interpreter_gone,
     owner_attempt_provably_over,
@@ -63,14 +65,12 @@ class _Board:
         kbc.init_db(self.path)
         self.conn = kbc.connect(self.path)
         self.ledger = root / "state.db"
-        with sqlite3.connect(self.ledger) as store:
-            store.execute(
-                "CREATE TABLE session_admissions "
-                "(target_session_id TEXT, request_id TEXT, status TEXT, outcome TEXT)"
-            )
+        self.store = open_persistence(profile_scope(home=root), eager=True)
+        seed_session(self.store, "sess-1", "cli")
 
     def close(self) -> None:
         self.conn.close()
+        self.store.close()
 
     # --- seeding --------------------------------------------------------------------------
     def dead_attempt(
@@ -118,9 +118,7 @@ class _Board:
                        {"pid": worker_pid, "claim_lock": lock, "started_at": worker_fingerprint},
                        started + 60)
         if admission:
-            with sqlite3.connect(self.ledger) as store:
-                store.execute("INSERT INTO session_admissions VALUES ('sess-1', ?, ?, ?)",
-                              (payload["request_id"], admission[0], admission[1]))
+            seed_admission(self.store, "sess-1", payload["request_id"], *admission)
         self.conn.commit()
         return run
 
@@ -274,8 +272,8 @@ def test_a_foreign_host_interpreter_bound_after_the_gate_keeps_its_claim(board, 
         if not calls:  # the remote owner admits and binds an interpreter right after the first look
             board.event(task_id, run, "worker_bound", {"pid": _absent_pid(base=3_700_000)}, NOW)
             board.conn.commit()
-            with sqlite3.connect(board.ledger) as store:
-                store.execute("UPDATE session_admissions SET status = 'unknown', outcome = NULL")
+            raw_holder(board.store)._execute_write(
+                lambda conn: conn.execute("UPDATE session_admissions SET status = 'unknown', outcome = NULL"))
         calls.append(verdict)
         return verdict
 
@@ -305,8 +303,8 @@ def test_a_timed_out_managed_run_is_booked_timed_out_not_left_for_the_crash_swee
             os.kill(pid, sig)
             interpreter.kill()  # _watch_submitter: the interpreter exits with its worker
             interpreter.wait()
-            with sqlite3.connect(board.ledger) as store:  # the owner settles the lost turn
-                store.execute("UPDATE session_admissions SET status = 'unknown'")
+            # The owner settles the lost turn: its next boot marks the started admission unknown.
+            board.store.admissions.recover(epoch=board.store.runtime.begin_epoch(instance_id="owner-reboot"))
 
         assert kbd.enforce_max_runtime(board.conn, signal_fn=sigterm_ends_the_attempt) == ["t_slow"]
         outcome = board.conn.execute("SELECT outcome FROM task_runs WHERE id = ?", (run,)).fetchone()[0]

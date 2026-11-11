@@ -1,8 +1,8 @@
-"""SessionDB bootstrap must never run schema init on an event-loop thread.
+"""The store bootstrap must never run schema init on an event-loop thread.
 
 Enterprise field report (2026-08-14): after an unclean shutdown plus a
 double-instance startup race, the v25 schema migration inside
-``SessionDB.__init__`` blocked the gateway's event-loop thread (reached via
+the store's open blocked the gateway's event-loop thread (reached via
 ``_post_turn_goal_continuation`` → ``GoalManager()`` → ``load_goal`` →
 ``_get_session_db``). The loop-liveness watchdog missed 3 probes and killed
 the process with exit 75; the supervisor restarted into the same state —
@@ -12,7 +12,7 @@ Contract fixed here, at the shared boundary (goals.py ``_get_session_db``,
 which the heartbeat module reuses):
 
 - Called on a thread with a RUNNING event loop and no cached DB, it must
-  NOT construct SessionDB inline. It returns None immediately (callers
+  NOT open the store inline. It returns None immediately (callers
   already degrade gracefully on None) and populates the cache from a
   background thread.
 - Called on a plain worker thread, it constructs inline as before.
@@ -26,10 +26,11 @@ import time
 import pytest
 
 from hermes_cli import goals
+from tests.fixtures.storage_holder import raw_holder
 
 
 class _RecordingDB:
-    """Stands in for SessionDB; records which thread constructed it."""
+    """Stands in for the store holder; records which thread constructed it."""
 
     constructed_on: list = []
 
@@ -58,7 +59,7 @@ def _patch_sessiondb(monkeypatch, cls=_RecordingDB):
 def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):
     """On the event-loop thread with a cold cache: construction happens on a
     background thread (never the loop thread). A fast init is returned via
-    the grace window; either way the loop thread never runs SessionDB()."""
+    the grace window; either way the loop thread never opens the store."""
     _patch_sessiondb(monkeypatch)
     loop_thread_id = None
     inline_result = "UNSET"
@@ -72,15 +73,15 @@ def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):
 
     # Fast init: the grace window returns the real instance (no silent
     # feature loss on the first call).
-    assert isinstance(inline_result._holder, _RecordingDB)
+    assert isinstance(raw_holder(inline_result), _RecordingDB)
     # Cache populated for subsequent calls.
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not goals._DB_CACHE:
         time.sleep(0.02)
     assert goals._DB_CACHE, "background bootstrap never populated the cache"
-    assert _RecordingDB.constructed_on, "SessionDB never constructed"
+    assert _RecordingDB.constructed_on, "the store holder was never constructed"
     assert all(t != loop_thread_id for t in _RecordingDB.constructed_on), (
-        "SessionDB was constructed on the event-loop thread"
+        "the store holder was constructed on the event-loop thread"
     )
 
 
@@ -106,12 +107,12 @@ def test_worker_thread_constructs_inline(monkeypatch):
     _patch_sessiondb(monkeypatch)
     db = goals._get_session_db()
     assert db is not None
-    assert isinstance(db._holder, _RecordingDB)
+    assert isinstance(raw_holder(db), _RecordingDB)
     assert _RecordingDB.constructed_on == [threading.get_ident()]
 
 
 def test_slow_construction_does_not_block_the_loop(monkeypatch):
-    """A SessionDB whose init blocks (locked-DB migration) must not
+    """A store holder whose init blocks (locked-DB migration) must not
     stall the event loop. The kick call is bounded by the one-time init
     window. Every later call is bounded by the short per-call window.
     Both calls degrade to None.

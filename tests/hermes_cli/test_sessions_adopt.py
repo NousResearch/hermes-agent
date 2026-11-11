@@ -13,6 +13,8 @@ import sqlite3
 
 import pytest
 
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.fixtures.owner_process import running_owner
 
 #: The owner's dashboard session token (``HERMES_DASHBOARD_SESSION_TOKEN``): what a loopback browser
@@ -26,15 +28,11 @@ _OLD_CHATS = (('old-desktop', 'desktop', None), ('old-desktop-nous', 'desktop', 
 
 
 def _seed(home):
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=home / 'state.db')
-    try:
+    with open_persistence(profile_scope(home=home)) as db:
         for sid, source, user_id in _OLD_CHATS:
-            db.create_session(sid, source=source, model='old-model', cwd=str(home), user_id=user_id)
-            db.append_message(sid, role='user', content=sid.upper())
-            db.end_session(sid, 'session_switch')
-    finally:
-        db.close()
+            seed_session(db, sid, source, model='old-model', cwd=str(home), user_id=user_id)
+            seed_messages(db, sid, {'role': 'user', 'content': sid.upper()})
+            db.sessions.end(sid, 'session_switch')
 
 
 def _run_adopt(capsys, *argv):
@@ -98,19 +96,15 @@ def test_adopting_old_chats_lets_the_browser_login_continue_them(tmp_path, model
 
 
 def _seed_long_and_moved(home):
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=home / 'state.db')
-    try:
+    with open_persistence(profile_scope(home=home)) as db:
         # The owner's resume reply always carries the whole history: this one is over the 8 MiB a
         # default native client accepts in one frame.
-        db.create_session('long-desktop', source='desktop', model='old-model', cwd=str(home))
-        db.append_message('long-desktop', role='user', content='x' * (9 * 1024 * 1024))
-        db.create_session('moved-desktop', source='desktop', model='old-model', cwd=str(home / 'deleted-worktree'))
-        db.append_message('moved-desktop', role='user', content='MOVED')
+        seed_session(db, 'long-desktop', 'desktop', model='old-model', cwd=str(home))
+        seed_messages(db, 'long-desktop', {'role': 'user', 'content': 'x' * (9 * 1024 * 1024)})
+        seed_session(db, 'moved-desktop', 'desktop', model='old-model', cwd=str(home / 'deleted-worktree'))
+        seed_messages(db, 'moved-desktop', {'role': 'user', 'content': 'MOVED'})
         for sid in ('long-desktop', 'moved-desktop'):
-            db.end_session(sid, 'session_switch')
-    finally:
-        db.close()
+            db.sessions.end(sid, 'session_switch')
 
 
 @pytest.mark.platforms("linux")

@@ -10,11 +10,12 @@ import sqlite3
 from pathlib import Path
 
 from gateway import delivery_ledger as dl
+from persistence_assembly import profile_scope
 
 
 def test_recording_a_reply_does_not_open_a_second_connection(tmp_path, monkeypatch):
     db = tmp_path / "state.db"
-    monkeypatch.setattr(dl, "_db_path", lambda: db)
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=db.parent))
     real_connect = sqlite3.connect
     opened: list[str] = []
 

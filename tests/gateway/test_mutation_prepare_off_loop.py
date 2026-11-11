@@ -7,6 +7,8 @@ import time
 import pytest
 
 from tests.waiting import async_wait_until
+from persistence_assembly import store_location
+from tests.fixtures.storage_read import session_row
 
 
 @pytest.mark.asyncio
@@ -21,41 +23,41 @@ async def test_model_prepare_waiting_on_a_contended_writer_keeps_the_loop_live(t
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_switch
-    import hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='switched', target_provider='custom', base_url='http://127.0.0.1:9/v1'))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
-                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=db,
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'))
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
                                                             model='frozen', toolsets=[]))
-    snap = db.get_session(ref.session_id)
+    snap = session_row(db, ref.session_id)
     held, release = threading.Event(), threading.Event()
 
     def hold_writer():
-        other = sqlite3.connect(db.db_path, timeout=10)
+        other = sqlite3.connect(store_location(db.scope), timeout=10)
         other.execute('BEGIN IMMEDIATE')
         held.set()
         release.wait(1.0)
         other.rollback()
         other.close()
     holder = threading.Thread(target=hold_writer)
-    real = session_mutations.mutate_runtime_session
+    runtime = session_mutations.authority_persistence(authority).runtime
+    real = runtime.prepare_mutation
 
     def contended(*args, **kwargs):
         # Another process takes the writer lock exactly as the prepare transaction starts.
-        if kwargs.get('_prepare_only') and not held.is_set():
+        if not held.is_set():
             holder.start()
             held.wait(5)
         return real(*args, **kwargs)
-    monkeypatch.setattr(session_mutations, 'mutate_runtime_session', contended)
+    monkeypatch.setattr(runtime, 'prepare_mutation', contended)
     gaps = []
 
     stopped = asyncio.Event()

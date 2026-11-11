@@ -723,7 +723,10 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
         title = str(getattr(agent, "_session_title_hint", "") or "").strip()
         if not title and agent._session_db and agent.session_id:
             try:
-                title = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
+                from agent.agent_init_session import agent_interface
+                store = agent_interface(agent)
+                title = str((store.sessions.get_title(agent.session_id) if store is not None
+                             else agent._session_db.get_session_title(agent.session_id)) or "").strip()
             except Exception:
                 title = ""
         return title == BOT_CHAT_TITLE and bool(stored_bot_chat_prompt_needs_upgrade(stored_prompt, home))
@@ -738,7 +741,10 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
     if not agent._session_db:
         return
     try:
-        agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        (store.sessions if store is not None else agent._session_db).update_system_prompt(
+            agent.session_id, agent._cached_system_prompt)
         if persist_tools:
             from tools.mcp_tool_agent import persist_agent_tool_names
             persist_agent_tool_names(agent)
@@ -810,7 +816,17 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     session_row = None
     if conversation_history and agent._session_db:
         try:
-            session_row = agent._session_db.get_session(agent.session_id)
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(agent)
+            if store is not None:
+                record = store.sessions.get(agent.session_id)
+                session_row = None if record is None else {
+                    "system_prompt": record.system_prompt,
+                    "tool_names": None if record.tool_pin is None else json.dumps(record.tool_pin),
+                    "model_config": record.model_config,
+                }
+            else:
+                session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:
                 raw_prompt = session_row.get("system_prompt")
                 stored_state = "null" if raw_prompt is None else ("empty" if raw_prompt == "" else "present")
@@ -1932,7 +1948,7 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
     turn (tool rounds included) is deliberate: the user keeps SEEING the message in the chat, but the
     model is never re-sent the content that tripped the filter, so the chat is not locked. A closing
     boundary would only be written to be rewound. Idempotence
-    is keyed on the DURABLE tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail
+    is keyed on the DURABLE tail (``latest_conversation_role``), so a redelivery or a tail
     already closed by another writer is a no-op, and the gateway's own closer then no-ops in turn.
     """
     try:
@@ -1947,7 +1963,11 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if not isinstance(messages, list) or not messages or db is None or not session_id:
             return
-        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) not in OPEN_TURN_TAIL_ROLES:
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        if getattr(agent, "_persist_disabled", False) or (
+            (store.messages if store is not None else db).latest_conversation_role(session_id) not in OPEN_TURN_TAIL_ROLES
+        ):
             return
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.

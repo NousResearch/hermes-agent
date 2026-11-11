@@ -143,7 +143,7 @@ async def test_config_get_reports_the_reasoning_display_the_session_streams(tmp_
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setattr(run, '_hermes_home', home)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='first')

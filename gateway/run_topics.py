@@ -21,6 +21,7 @@ from gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.session_identity import replace_source
+from persistence import TopicAlreadyLinked
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -61,9 +62,8 @@ class GatewayTopicThreadsMixin:
         return str(getattr(source, "profile", None) or "").strip() or "default"
 
     def _sync_session_db(self):
-        """The sync SessionDB handle, or None. Only for callers that provably run off-loop."""
-        session_db = getattr(self, "_session_db", None)
-        return None if session_db is None else getattr(session_db, "_db", session_db)
+        """The storage handle for plain verb calls, or None. Only for callers that provably run off-loop."""
+        return getattr(self, "persistence", None)
 
     @staticmethod
     def _is_telegram_dm(source: SessionSource) -> bool:
@@ -75,7 +75,7 @@ class GatewayTopicThreadsMixin:
         if session_db is None:
             return False
         try:
-            raw = session_db.is_telegram_topic_mode_enabled(
+            raw = session_db.routing.is_topic_mode_enabled(
                 chat_id=str(source.chat_id), user_id=str(source.user_id),
                 profile_name=self._telegram_topic_profile_name(source),
             )
@@ -160,7 +160,7 @@ class GatewayTopicThreadsMixin:
         session_db = self._sync_session_db()
         if session_db is None or not source.chat_id or not source.thread_id:
             return
-        session_db.bind_telegram_topic(
+        session_db.routing.bind_topic(
             chat_id=str(source.chat_id), thread_id=str(source.thread_id), user_id=str(source.user_id or ""),
             session_key=session_entry.session_key, session_id=session_entry.session_id,
             profile_name=self._telegram_topic_profile_name(source),
@@ -315,11 +315,11 @@ class GatewayTopicThreadsMixin:
         """Refusal text when ``target_session_id`` is bound to ANOTHER topic: a session links to one
         topic only, so after the route moved the binding write would fail and the next message's heal
         would snap the topic back. Checked before the switch; None = this lane may take it."""
-        if self._session_db is None or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        if (store := self.persistence) is None or not await asyncio.to_thread(self._is_telegram_topic_lane, source):
             return None
-        bound = await self._session_db.get_telegram_topic_binding_by_session(session_id=target_session_id)
+        bound = await store.aio.routing.get_topic_binding_for_session(session_id=target_session_id)
         here = (self._telegram_topic_profile_name(source), str(source.chat_id), str(source.thread_id))
-        if bound and (str(bound.get("profile_name")), str(bound.get("chat_id")), str(bound.get("thread_id"))) != here:
+        if bound and (str(bound.profile_name), str(bound.chat_id), str(bound.thread_id)) != here:
             return t("gateway.topic.already_linked")
         return None
 
@@ -347,15 +347,15 @@ class GatewayTopicThreadsMixin:
         if session_db is None:
             return None
         try:
-            bindings = session_db.list_telegram_topic_bindings_for_chat(
+            bindings = session_db.routing.list_topic_bindings_for_chat(
                 chat_id=str(source.chat_id), profile_name=self._telegram_topic_profile_name(source)
             )
         except Exception:
             logger.debug("topic-recover: read failed", exc_info=True)
             return None
         for b in bindings or ():  # newest-first
-            if str(b.get("user_id") or "") == str(source.user_id):
-                recovered = str(b.get("thread_id") or "")
+            if str(b.user_id or "") == str(source.user_id):
+                recovered = str(b.thread_id or "")
                 return recovered if recovered and recovered != inbound else None
         return None
 
@@ -481,9 +481,9 @@ class GatewayTopicThreadsMixin:
         if not opens_this_thread(origin):
             # An entry rebuilt after a lost routing index holds an unmarked event, while the session
             # row keeps the opening origin until that entry's first peer refresh overwrites it.
-            db = self.session_store._db_for_key(session_key)
-            row = db.get_session(entry.session_id) if db is not None else None
-            raw = (row or {}).get("origin_json")
+            store = self.session_store._persistence_for_key(session_key)
+            record = store.sessions.get(entry.session_id) if store is not None else None
+            raw = record.origin_json if record is not None else None
             origin = None
             if raw:
                 with suppress(ValueError, KeyError, TypeError):  # malformed/legacy row: no recovery
@@ -687,14 +687,14 @@ class GatewayTopicThreadsMixin:
                 operator_topic = None
             if isinstance(operator_topic, dict):
                 return
-        session_db = getattr(self, "_session_db", None)
-        if session_db is not None:
+        store = getattr(self, "persistence", None)
+        if store is not None:
             try:
-                binding = await session_db.get_telegram_topic_binding(
+                binding = await store.aio.routing.get_topic_binding(
                     chat_id=str(source.chat_id), thread_id=str(source.thread_id),
                     profile_name=self._telegram_topic_profile_name(source),
                 )
-                if binding and str(binding.get("session_id") or "") != str(session_id):
+                if binding and str(binding.session_id or "") != str(session_id):
                     return
             except Exception:
                 logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
@@ -722,8 +722,9 @@ class GatewayTopicThreadsMixin:
 
     async def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
-        if not self._session_db:
-            from hermes_state import format_session_db_unavailable
+        store = self.persistence
+        if store is None:
+            from storage_user_copy import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
         chat_id = str(source.chat_id or "")
         if not chat_id:
@@ -731,13 +732,13 @@ class GatewayTopicThreadsMixin:
         profile_name = self._telegram_topic_profile_name(source)
         currently_enabled = False
         with suppress(Exception):
-            currently_enabled = await self._session_db.is_telegram_topic_mode_enabled(
+            currently_enabled = await store.aio.routing.is_topic_mode_enabled(
                 chat_id=chat_id, user_id=str(source.user_id or ""), profile_name=profile_name,
             )
         if not currently_enabled:
             return t("gateway.topic.mode_not_enabled")
         try:
-            await self._session_db.disable_telegram_topic_mode(chat_id=chat_id, profile_name=profile_name)
+            await store.aio.routing.disable_topic_mode(chat_id=chat_id, profile_name=profile_name)
         except Exception as exc:
             logger.exception("Failed to disable Telegram topic mode")
             return t("gateway.topic.disable_failed", error=exc)
@@ -751,25 +752,27 @@ class GatewayTopicThreadsMixin:
         return t("gateway.topic.mode_disabled")
 
     async def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
+        from persistence.core.errors import StoreUnavailable
         lines = [t("gateway.topic.status_enabled"), "", t("gateway.topic.status_how_to"), ""]
         try:
-            sessions = await self._session_db.list_unlinked_telegram_sessions_for_user(
-                chat_id=str(source.chat_id), user_id=str(source.user_id),
-                profile_name=self._telegram_topic_profile_name(source), limit=10,
-            )
+            # The listing reads its store's own profile: only the topic profile's store can answer.
+            profile_name = self._telegram_topic_profile_name(source)
+            if (store := self.persistence) is None or store.scope.name != profile_name:
+                raise StoreUnavailable(f"no storage handle for profile {profile_name!r}")
+            sessions = await store.aio.sessions.list_unlinked_telegram_sessions(user_id=str(source.user_id), limit=10)
         except Exception:
             logger.debug("Failed to list unlinked Telegram sessions", exc_info=True)
             sessions = []
         if sessions:
             lines.append(t("gateway.topic.previous_unlinked"))
-            for session in sessions:
-                preview = str(session.get("preview") or "").strip()
+            for entry in sessions:
+                preview = str(entry.preview or "").strip()
                 lines.append(
-                    f"- {session.get('title') or t('gateway.topic.untitled_session')} — `{session.get('id') or ''}`"
+                    f"- {entry.session.title or t('gateway.topic.untitled_session')} — `{entry.session.session_id or ''}`"
                     + (f" — {preview}" if preview else "")
                 )
             lines.extend(["", t("gateway.topic.restore_one"), *_topic_restore_steps(),
-                          t("gateway.topic.restore_example", session_id=sessions[0].get("id"))])
+                          t("gateway.topic.restore_example", session_id=sessions[0].session.session_id)])
         else:
             lines.extend([t("gateway.topic.no_unlinked"), "", t("gateway.topic.restore_later"), *_topic_restore_steps()])
         return "\n".join(lines)
@@ -777,39 +780,37 @@ class GatewayTopicThreadsMixin:
     async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
-        db = self._session_db
-        session_id = await db.resolve_session_id(raw_session_id.strip())
-        session = await db.get_session(session_id) if session_id else None
+        db = self.persistence.aio
+        session_id = await db.sessions.resolve_id(raw_session_id.strip())
+        session = await db.sessions.get(session_id) if session_id else None
         if not session:
             return t("gateway.topic.session_not_found", session_id=raw_session_id.strip())
-        if str(session.get("source") or "") != "telegram":
+        if str(session.source or "") != "telegram":
             return t("gateway.topic.not_telegram_session")
-        if str(session.get("user_id") or "") != str(source.user_id):
+        if str(session.user_id or "") != str(source.user_id):
             return t("gateway.topic.not_your_session")
-        linked = await db.is_telegram_session_linked_to_topic(session_id=session_id)
+        linked = await db.routing.is_session_linked_to_topic(session_id=session_id)
         topic_profile = self._telegram_topic_profile_name(source)
-        current_binding = await db.get_telegram_topic_binding(
+        current_binding = await db.routing.get_topic_binding(
             chat_id=str(source.chat_id), thread_id=str(source.thread_id), profile_name=topic_profile,
         )
         already_linked = t("gateway.topic.already_linked")
-        if linked and (not current_binding or current_binding.get("session_id") != session_id):
+        if linked and (not current_binding or current_binding.session_id != session_id):
             return already_linked
         try:
-            await db.bind_telegram_topic(
+            await db.routing.bind_topic(
                 chat_id=str(source.chat_id), thread_id=str(source.thread_id), user_id=str(source.user_id),
                 session_key=self._session_key_for_source(source), session_id=session_id, managed_mode="restored",
                 profile_name=topic_profile,
             )
-        except ValueError as exc:
-            if "already linked" in str(exc):
-                return already_linked
-            raise
-        title = await db.get_session_title(session_id) or session_id
+        except TopicAlreadyLinked:
+            return already_linked
+        title = await db.sessions.get_title(session_id) or session_id
         # Restored titles bypass auto-titling, so rename the newly bound topic here.
         await self._rename_telegram_topic_for_session_title(source, session_id, title)
         last_assistant = None
         with suppress(Exception):
-            for message in reversed(await db.get_messages(session_id)):
+            for message in reversed([row.as_wire_row() for row in await db.messages.read_transcript(session_id)]):
                 if message.get("role") != "assistant":
                     continue
                 projected = project_compaction_message_for_display(message)

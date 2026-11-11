@@ -23,28 +23,29 @@ from cron.scheduler import (
 )
 from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
 from tools.env_passthrough import clear_env_passthrough
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _run_owned_job(job, tmp_path, db=None):
-    """Run the production owner bridge, preserving each test's agent/DB probes."""
+    """Run the production owner bridge, preserving each test's agent/DB probes (``db`` is the handle cron opens)."""
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
-    from hermes_state_registry import acquire, release
+    from persistence_assembly import profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     ref = SessionRef("test-profile", "canonical-cron-session")
     admission_id = "cron-owner-admission"
     request_id = "cron-owner-request"
     owns_db = db is None
     if owns_db:
-        db = acquire(tmp_path / "state.db")
-        db.create_session(ref.session_id, source="cron")
+        persistence = storage_handle(tmp_path)
+        seed_session(persistence, ref.session_id, "cron")
     else:
-        db.db_path = str(tmp_path / "state.db")
+        persistence = SimpleNamespace(scope=profile_scope(home=tmp_path), ready=lambda: None)
     authority = SimpleNamespace(
-        db=db,
+        persistence=persistence,
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
-        pending_results={},
-    )
+        pending_results={})
     row = {
         "admission_id": admission_id, "request_id": request_id,
         "principal_id": "cron-owner", "payload": {"text": ""},
@@ -66,11 +67,7 @@ def _run_owned_job(job, tmp_path, db=None):
         assert authority._cron_cancellations == {}
         return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
 
-    try:
-        return asyncio.run(run())
-    finally:
-        if owns_db:
-            release(db)
+    return asyncio.run(run())
 
 
 def test_cron_cleanup_worker_inherits_caller_contextvars():
@@ -549,13 +546,13 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db = MagicMock()
-        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
+        fake_db.handle.lineage.tip.side_effect = lambda session_id: session_id
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db.handle), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -578,29 +575,27 @@ class TestRunJobSessionPersistence:
         assert "ok" in output
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["session_db"] is fake_db
+        assert kwargs["session_db"] is kwargs["persistence"] is fake_db.handle
         assert kwargs["platform"] == "cron"
         assert kwargs["session_id"] == "canonical-cron-session"
         original_session_id = kwargs["session_id"]
-        fake_db.get_compression_tip.assert_called_once_with(original_session_id)
-        fake_db.end_session.assert_called_once()
-        call_args = fake_db.end_session.call_args
-        assert call_args[0][0] == original_session_id
-        assert call_args[0][1] == "cron_complete"
-        fake_db.close.assert_called_once()
+        fake_db.handle.lineage.tip.assert_called_once_with(original_session_id)
+        fake_db.handle.sessions.end.assert_called_once()
+        assert fake_db.handle.sessions.end.call_args[0] == (original_session_id, "cron_complete")
+        fake_db.handle.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
     def test_run_job_disarms_agent_close_after_scheduler_finalizes_session(self, tmp_path):
         """Cron owns the terminal session reason; agent.close must not end it twice.
 
         Regression for the #94736 teardown warning seen after every healthy cron
-        run: the scheduler closed its shared SessionDB, then AIAgent.close() tried
-        another end_session("agent_close"), forcing SessionDB to reopen solely
+        run: the scheduler closed its shared store, then AIAgent.close() tried
+        another end_session("agent_close"), forcing the store to reopen solely
         for a redundant write.
         """
         job = {"id": "single-finalize", "name": "test", "prompt": "hello"}
         fake_db = MagicMock()
-        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
+        fake_db.handle.lineage.tip.side_effect = lambda session_id: session_id
         closed = False
         calls_after_close = []
 
@@ -612,14 +607,14 @@ class TestRunJobSessionPersistence:
             if closed:
                 calls_after_close.append(args)
 
-        fake_db.close.side_effect = close_db
-        fake_db.end_session.side_effect = end_session
+        fake_db.handle.close.side_effect = close_db
+        fake_db.end_session.side_effect = fake_db.handle.sessions.end.side_effect = end_session
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db.handle), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -642,7 +637,7 @@ class TestRunJobSessionPersistence:
             success, *_ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
-        assert fake_db.end_session.call_count == 1
+        assert fake_db.end_session.call_count + fake_db.handle.sessions.end.call_count == 1
         assert calls_after_close == []
 
     @contextlib.contextmanager
@@ -667,7 +662,7 @@ class TestRunJobSessionPersistence:
             patch("cron.scheduler_delivery._resolve_origin", return_value=None),
             patch("hermes_cli.env_loader.load_hermes_dotenv"),
             patch("hermes_cli.env_loader.reset_secret_source_cache"),
-            patch("hermes_state_registry.acquire", return_value=fake_db),
+            patch("persistence_assembly.open_persistence", return_value=fake_db),
             patch(
                 "hermes_cli.runtime_provider.resolve_runtime_provider",
                 return_value={
@@ -789,7 +784,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -849,7 +844,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -933,7 +928,7 @@ class TestRunJobSessionPersistence:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.reset_secret_source_cache", _record_reset), \
              patch("hermes_cli.env_loader.load_hermes_dotenv", _record_load), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -994,7 +989,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -1054,7 +1049,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1117,7 +1112,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
              patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
@@ -1169,7 +1164,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
              patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
@@ -1216,7 +1211,7 @@ class TestRunJobModelResolution:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1241,7 +1236,7 @@ class TestRunJobModelResolution:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1270,7 +1265,7 @@ class TestRunJobModelResolution:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1295,7 +1290,7 @@ class TestRunJobModelResolution:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1338,7 +1333,7 @@ class TestRunJobSkillBacked:
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("persistence_assembly.open_persistence", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={

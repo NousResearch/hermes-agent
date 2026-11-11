@@ -15,7 +15,9 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_contract import SessionActor
+from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
+from tests.fixtures.storage_seed import seed_session
 
 SID = '20261012_122515_721bf6'
 
@@ -27,27 +29,28 @@ def _adopt_and_resolve(home, legacy_route, source='tui', billing=None):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_local_migration import bind_native_transport, resolve_local_target
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
 
     store = SessionStore(home / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = asyncio.run(initialize_session_authority(runner, profile_id=str(home), instance_id='fixture'))
     actor = SessionActor('uid:1000', str(home), frozenset({'session:read', 'session:create'}), 'native')
     bind_native_transport(authority, actor, {'provider': 'local', 'profile_id': str(home), 'instance_id': 'fixture'})
     reasoning = {'enabled': True, 'effort': 'xhigh'}
-    authority.db.create_session(SID, source=source, model='legacy-model', model_config={
+    seed_session(authority.persistence, SID, source, model='legacy-model', model_config={
         'model': 'legacy-model', **legacy_route, 'api_mode': 'chat_completions',
         'reasoning_config': reasoning, 'service_tier': 'priority'} if source in ('tui', 'desktop') else {
         'max_iterations': 90, 'reasoning_config': reasoning, 'max_tokens': None})
     if billing:
-        authority.db.update_token_counts(SID, input_tokens=1, model='legacy-model', **billing)
+        authority.persistence.usage.queue_usage(SID, UsageDelta(tokens=TokenCounts(input_tokens=1),
+                                                                route=BillingRoute(model='legacy-model', **billing)))
+        authority.persistence.usage.flush_usage()
     try:
         resolve_local_target(authority, actor, SID)
-        policy = restore_policy(local_receipt(authority.db, SID)['policy'])
+        policy = restore_policy(authority.persistence.bindings.receipt(SID).policy)
         return policy, _resolve_policy_agent_runtime(runner, policy)
     finally:
-        store._db.close()
+        store.close_all_db_handles()
 
 
 def _write_profile(home, profile_url, extra=''):

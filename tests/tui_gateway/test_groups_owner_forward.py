@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 
 import tui_gateway.server as srv
 from tui_gateway import methods_groups, owner_forward
@@ -64,7 +66,7 @@ def test_room_calls_go_to_the_owning_gateway_and_nothing_lands_locally(home, own
     assert listed["result"]["rooms"] == [{"room_id": "room-webapp"}]
     assert [call[0] for call in owner] == ["groups.create", "groups.list"]
     from gateway.hosted_rooms import default_db_path, list_rooms
-    assert list_rooms(default_db_path()) == []  # no second store, no local driver for it
+    assert list_rooms(storage_handle(get_hermes_home()), placement="shared") == []  # no second store, no local driver for it
 
 
 def test_capabilities_advertise_only_what_this_wire_carries(home, owner):
@@ -83,7 +85,7 @@ def test_owner_refusal_is_returned_not_run_locally(home, monkeypatch):
     reply = srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Desk", "members": MEMBERS})
     assert reply["error"]["code"] == 4030 and reply["error"]["data"] == {"reason": "permission_denied"}
     from gateway.hosted_rooms import default_db_path, list_rooms
-    assert list_rooms(default_db_path()) == []
+    assert list_rooms(storage_handle(get_hermes_home()), placement="shared") == []
 
 
 @pytest.mark.parametrize("failure,method,code,data", [
@@ -157,7 +159,7 @@ def test_a_starting_gateway_is_waited_for_and_nothing_lands_locally(home, owner,
     assert created["result"]["room"]["room_id"] == "room-desk"
     assert [call[0] for call in owner] == ["groups.create"]
     from gateway.hosted_rooms import default_db_path, list_rooms
-    assert list_rooms(default_db_path()) == []  # never a room the gateway's list would not show
+    assert list_rooms(storage_handle(get_hermes_home()), placement="shared") == []  # never a room the gateway's list would not show
 
 
 def test_a_named_profile_gateway_never_hides_the_standalone_rooms(home, owner, monkeypatch):
@@ -210,5 +212,5 @@ def test_a_handed_room_is_never_renamed_in_the_standalone_store_while_its_gatewa
     reply = srv._methods["groups.rename"](2, {"room_id": "room-desk", "event_id": "rename-1", "name": "After"})
 
     assert reply.get("error", {}).get("code") == OWNER_LOST_CODE, reply
-    [kept] = list_rooms(default_db_path(), include_disbanded=True)
+    [kept] = list_rooms(storage_handle(get_hermes_home()), placement="shared", include_disbanded=True)
     assert kept["name"] == "Before"

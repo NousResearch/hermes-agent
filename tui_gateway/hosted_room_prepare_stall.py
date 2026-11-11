@@ -17,8 +17,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
+from persistence.core.errors import PermanentStoreError, TransientStoreError
+from persistence.gateway.hosted_rooms import (
+    AuthorityConflictError, EventCursorConflictError, HostedPlacement, LeaseHeldError, RoomNotFoundError,
+    RoomUnavailableError, StaleLeaseError)
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +31,15 @@ _EVENT_PREFIX = "prepare-stalled:"
 _MAX_ERROR_CHARS = 300
 # Contention or an ownership move, not a broken room: never counted toward the stall.
 _TRANSIENT = (
-    sqlite3.OperationalError, hosted_rooms.AuthorityConflictError, hosted_rooms.EventCursorConflictError,
-    hosted_rooms.RoomNotFoundError, driver.LeaseHeldError, driver.StaleLeaseError, driver.RoomUnavailableError)
+    TransientStoreError, AuthorityConflictError, EventCursorConflictError, RoomNotFoundError, LeaseHeldError,
+    StaleLeaseError, RoomUnavailableError)
+
+
+def _missing_table(exc: BaseException) -> bool:
+    """The store refused a statement on a table its file does not have (not counted either)."""
+    cause = exc.__cause__
+    return (isinstance(exc, PermanentStoreError) and isinstance(cause, sqlite3.OperationalError)
+            and str(cause).startswith("no such table"))
 
 
 @dataclass
@@ -70,7 +80,7 @@ class PrepareStallTracker:
         with self._lock:
             streak = self._rooms.setdefault(room_id, _Streak())
             streak.error = _describe(exc)
-            if isinstance(exc, _TRANSIENT) or streak.stalled:
+            if isinstance(exc, _TRANSIENT) or _missing_table(exc) or streak.stalled:
                 return False
             streak.failures += 1
             streak.stalled = streak.failures >= STALL_ATTEMPTS
@@ -90,18 +100,19 @@ def retry_action(room_id: str, room: Mapping[str, Any]) -> dict[str, Any]:
             "task_id": f"{RETRY_TASK_PREFIX}{room_id}", "execution_generation": 1}
 
 
-def report_stall(db_path: Any, room_id: str, exc: BaseException) -> None:
+def report_stall(store: Any, room_id: str, exc: BaseException, *, placement: HostedPlacement) -> None:
     """Append the room's one stall notice; a stall already reported last in the log is not repeated."""
     try:
-        room = hosted_rooms.room_state(db_path, room_id=room_id)
+        room = hosted_rooms.room_state(store, placement=placement, room_id=room_id)
         latest_seq = int(room["latest_seq"])
         tail = hosted_rooms.read_events(
-            db_path, room_id=room_id, since_seq=max(0, latest_seq - 1), limit=1)["events"]
+            store, placement=placement, room_id=room_id, since_seq=max(0, latest_seq - 1), limit=1)["events"]
         if tail and str(tail[-1]["event_id"]).startswith(_EVENT_PREFIX):
             return
         gateway_id, epoch = str(room["authority_gateway_id"]), int(room["authority_epoch"])
         hosted_rooms.append_event(
-            db_path, room_id=room_id, event_id=f"{_EVENT_PREFIX}{latest_seq}", kind="member.unavailable",
+            store, placement=placement, room_id=room_id, event_id=f"{_EVENT_PREFIX}{latest_seq}",
+            kind="member.unavailable",
             actor={"kind": "gateway", "id": gateway_id},
             payload={"error": f"Members could not be woken: {_describe(exc)}", "reason_code": "prepare_failed"},
             authority_gateway_id=gateway_id, authority_epoch=epoch, control_reserve=True)

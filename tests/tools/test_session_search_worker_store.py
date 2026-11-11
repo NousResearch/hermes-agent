@@ -11,7 +11,8 @@ import json
 import pytest
 
 from agent.runtime_session_store import RuntimeSessionStore
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tools.session_search_tool import session_search
 
 
@@ -25,10 +26,9 @@ def home(tmp_path, monkeypatch):
 
 
 def _seed(path, session_id, content):
-    db = SessionDB(path / "state.db")
-    db.create_session(session_id, source="cli")
-    db.append_message(session_id, role="user", content=content)
-    db.append_message(session_id, role="assistant", content="noted")
+    db = open_persistence(profile_scope(home=path))
+    seed_session(db, session_id, "cli")
+    seed_messages(db, session_id, {"role": "user", "content": content}, {"role": "assistant", "content": "noted"})
     return db
 
 
@@ -51,13 +51,16 @@ def test_worker_recall_reads_the_state_db_instead_of_the_store(home):
 
 
 def test_a_readable_handle_is_still_used_as_given(home, tmp_path):
-    """A real SessionDB passed by a caller is not swapped for the home DB."""
+    """A storage handle passed by a caller is not swapped for the home store."""
+    from persistence_assembly import open_persistence_reader
+
     home_db = _seed(home, "home-session", "zanzibar appears only in the home transcript")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     passed = _seed(elsewhere, "passed-in", "zanzibar from the caller's handle")
     try:
-        payload = json.loads(session_search(query="zanzibar", db=passed))
+        with open_persistence_reader(elsewhere) as persistence:
+            payload = json.loads(session_search(query="zanzibar", db=passed, persistence=persistence))
     finally:
         passed.close()
         home_db.close()

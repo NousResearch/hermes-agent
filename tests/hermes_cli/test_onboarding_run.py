@@ -10,7 +10,8 @@ import pytest
 
 from hermes_cli import onboarding_run, profiles
 from hermes_cli.config import read_user_config_raw
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
@@ -23,12 +24,9 @@ def root(tmp_path, monkeypatch) -> Path:
 
 
 def _add_chat(home: Path) -> None:
-    db = SessionDB(home / "state.db")
-    try:
-        db.create_session("old-session", "desktop")
-        db.append_message("old-session", "user", "hello")
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, "old-session", "desktop")
+        seed_messages(store, "old-session", {"role": "user", "content": "hello"})
 
 
 def _launch_under(monkeypatch, root: Path, name: str) -> Path:
@@ -40,16 +38,16 @@ def _launch_under(monkeypatch, root: Path, name: str) -> Path:
 
 
 def test_fresh_install_runs(root):
-    SessionDB(root / "state.db").close()  # a boot leaves an empty state.db behind
+    with open_persistence(profile_scope(home=root)) as store:
+        store.ready()  # a boot leaves an empty state.db behind
 
     assert onboarding_run.should_run() is True
 
 
 def test_an_empty_session_row_is_not_use(root):
     # Desktop resume and onboarding.start both write a session row before any message.
-    db = SessionDB(root / "state.db")
-    db.create_session("minted", "desktop")
-    db.close()
+    with open_persistence(profile_scope(home=root)) as store:
+        seed_session(store, "minted", "desktop")
 
     assert onboarding_run.should_run() is True
 

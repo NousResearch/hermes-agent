@@ -6,17 +6,17 @@ import os
 from pathlib import Path
 
 from gateway.platforms.event import MessageEvent
-from hermes_state_runtime import list_session_admissions
+from gateway.session_authority import admission_row
 from tests.waiting import async_wait_until, wait_until
 
 
 def rows(authority, sid):
-    return list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    return [admission_row(record) for record in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 async def verify_envelope_guards(runner, source):
     from gateway.session_contract import SessionActor, Submission
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     authority = runner.session_authority
     ref = authority.register(source)
     before = rows(authority, ref.session_id)
@@ -24,7 +24,7 @@ async def verify_envelope_guards(runner, source):
     try:
         await authority.submit(actor, Submission('forged-source', ref, {
             'text': 'FORGED', 'native_text_v1': {'source': {'internal': True}}}, 'queue'))
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         assert exc.reason == 'invalid_params'
     else:
         raise AssertionError('client supplied its own trusted source')
@@ -37,7 +37,7 @@ async def verify_envelope_guards(runner, source):
     for event in unsupported:
         try:
             await authority.admit_native(event)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             assert exc.reason == 'invalid_params'
         else:
             raise AssertionError('unsupported envelope ACKed without recoverable trust')

@@ -21,6 +21,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +43,7 @@ class TestFlushAfterCompression:
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
-                session_db=session_db,
+                persistence=session_db,
                 session_id="original-session",
                 skip_context_files=True,
                 skip_memory=True,
@@ -55,11 +58,10 @@ class TestFlushAfterCompression:
         After the fix, conversation_history is cleared to None after compression,
         so flush_from = max(0, 0) = 0, and ALL compressed messages are written.
         """
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
 
             agent = self._make_agent(db)
 
@@ -72,12 +74,12 @@ class TestFlushAfterCompression:
 
             # First, flush original messages to the original session
             agent._flush_messages_to_session_db(original_history, [])
-            original_rows = db.get_messages("original-session")
+            original_rows = transcript_rows(db, "original-session")
             assert len(original_rows) == 200
 
             # Now simulate compression: new session, reset idx, shorter messages
             agent.session_id = "compressed-session"
-            db.create_session(session_id="compressed-session", source="test")
+            seed_session(db, "compressed-session", "test")
             agent._last_flushed_db_idx = 0
 
             # The compressed messages (summary + tail + new turn)
@@ -94,7 +96,7 @@ class TestFlushAfterCompression:
             # After the fix, conversation_history should be None.
             agent._flush_messages_to_session_db(compressed_messages, None)
 
-            new_rows = db.get_messages("compressed-session")
+            new_rows = transcript_rows(db, "compressed-session")
             assert len(new_rows) == 5, (
                 f"Expected 5 compressed messages in new session, got {len(new_rows)}. "
                 f"Compression persistence bug: messages not written to SQLite."
@@ -103,17 +105,16 @@ class TestFlushAfterCompression:
 
     def test_flush_with_stale_history_loses_messages(self):
         """Stale conversation_history no longer causes data loss."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
 
             agent = self._make_agent(db)
 
             # Simulate compression reset
             agent.session_id = "new-session"
-            db.create_session(session_id="new-session", source="test")
+            seed_session(db, "new-session", "test")
             agent._last_flushed_db_idx = 0
 
             compressed = [
@@ -126,7 +127,7 @@ class TestFlushAfterCompression:
             stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
             agent._flush_messages_to_session_db(compressed, stale_history)
 
-            rows = db.get_messages("new-session")
+            rows = transcript_rows(db, "new-session")
             assert len(rows) == 2
             assert [row["content"] for row in rows] == ["summary", "continuing..."]
             db.close()
@@ -140,11 +141,10 @@ class TestFlushAfterCompression:
         the compacted dicts again, doubling live context.
         """
         from agent.conversation_compression import conversation_history_after_compression
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
 
             agent = self._make_agent(db)
             agent._ensure_db_session()
@@ -154,7 +154,7 @@ class TestFlushAfterCompression:
                 {"role": "assistant", "content": "old answer"},
             ]
             agent._flush_messages_to_session_db(original_history, [])
-            assert [row["content"] for row in db.get_messages("original-session")] == [
+            assert [row["content"] for row in transcript_rows(db, "original-session")] == [
                 "old question",
                 "old answer",
             ]
@@ -164,7 +164,7 @@ class TestFlushAfterCompression:
                 {"role": "user", "content": "recent question"},
                 {"role": "assistant", "content": "recent answer"},
             ]
-            db.archive_and_compact("original-session", compacted)
+            db.messages.compact("original-session", [NewMessage.from_live(message) for message in compacted])
             agent._last_compaction_in_place = True
             agent._last_flushed_db_idx = 0
 
@@ -184,7 +184,7 @@ class TestFlushAfterCompression:
             ]
             agent._flush_messages_to_session_db(messages, post_compaction_history)
 
-            rows = db.get_messages("original-session")
+            rows = transcript_rows(db, "original-session")
             assert [row["content"] for row in rows] == [
                 "[CONTEXT COMPACTION] summary",
                 "recent question",
@@ -200,7 +200,7 @@ class TestFlushAfterCompression:
             compress_context,
             conversation_history_after_compression,
         )
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         class SuccessCompressor:
             _last_compress_aborted = False
@@ -235,8 +235,7 @@ class TestFlushAfterCompression:
                 return messages
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
             agent = self._make_agent(db)
             agent.compression_in_place = True
             original = [
@@ -267,9 +266,9 @@ class TestFlushAfterCompression:
             agent._flush_messages_to_session_db(returned, history)
 
             db.close()
-            resumed_db = SessionDB(db_path=db_path)
-            assert [message["content"] for message in resumed_db.get_messages_as_conversation(
-                agent.session_id
+            resumed_db = open_persistence(profile_scope(home=Path(tmpdir)))
+            assert [message["content"] for message in conversation(
+                resumed_db, agent.session_id
             )] == [
                 "[summary] earlier state",
                 "retained tail",
@@ -281,13 +280,12 @@ class TestFlushAfterCompression:
     def test_rotation_child_session_flushes_full_compressed_transcript_with_markers(self):
         """Regression for #57491: live cached-agent markers must not block child flush."""
         from agent.conversation_compression import compress_context
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
             parent_sid = "20260701_152840_parent"
-            db.create_session(parent_sid, "gateway", model="test/model")
+            seed_session(db, parent_sid, "gateway", model="test/model")
 
             agent = self._make_agent(db)
             agent.session_id = parent_sid
@@ -325,7 +323,7 @@ class TestFlushAfterCompression:
 
             agent._flush_messages_to_session_db(compressed, None)
 
-            child_rows = db.get_messages(child_sid)
+            child_rows = transcript_rows(db, child_sid)
             assert len(child_rows) == len(compressed), (
                 f"Expected {len(compressed)} rows in child session, got {len(child_rows)}. "
                 f"_db_persisted marker propagation bug (#57491)."
@@ -472,12 +470,12 @@ class TestStoredPromptCwdDrift:
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
         from run_agent import AIAgent
         from agent.system_prompt import build_system_prompt_parts
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
             with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
                 agent = AIAgent(
                     api_key="test-key",
@@ -485,7 +483,7 @@ class TestStoredPromptCwdDrift:
                     model="test/model",
                     provider="openrouter",
                     quiet_mode=True,
-                    session_db=db,
+                    persistence=db,
                     session_id="platform-test",
                     skip_context_files=True,
                     skip_memory=True,

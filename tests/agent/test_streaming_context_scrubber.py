@@ -6,7 +6,8 @@ regex can't survive chunk boundaries, so _fire_stream_delta routes deltas
 through a stateful scrubber.
 """
 
-from agent.memory_context import StreamingContextScrubber, sanitize_context
+from agent.memory_context import StreamingContextScrubber
+from session_rules.turns import sanitize_context
 
 
 class TestStreamingContextScrubberBasics:

@@ -4,6 +4,7 @@ from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+from persistence_assembly import open_persistence, profile_scope
 import sqlite3
 import threading
 
@@ -11,6 +12,10 @@ from tests.waiting import async_wait_until
 
 import pytest
 from tests.gateway.fixtures.local_recovery_probe import Model, daemon, rpc, websocket
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, session_row
+from tests.fixtures.storage_seed import seed_messages
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class CatalogModel(Model):
@@ -157,7 +162,6 @@ def test_desktop_pick_resolves_a_provider_added_after_the_session_and_freezes_on
     ``key_env`` key, the receipt freezes only that one entry plus the pointer (never the key
     value), nothing else in the frozen config moves, and another profile's same-named provider
     is never read."""
-    from hermes_state_local import POLICY_PREFIX
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
@@ -186,9 +190,8 @@ def test_desktop_pick_resolves_a_provider_added_after_the_session_and_freezes_on
                FOREIGN_KEY='sk-foreign-never')
 
     def receipt(sid):
-        with sqlite3.connect(home / 'state.db') as db:
-            (value,), = db.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchall()
-        return json.loads(value)['policy']
+        with open_persistence(profile_scope(home=home)) as store:
+            return store.bindings.receipt(sid).policy
 
     async def run(desc):
         async with websocket(home, desc) as ws:
@@ -261,12 +264,11 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_switch
-    import hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='switched', target_provider='custom', base_url='http://127.0.0.1:9/v1'))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     executed = []
 
     async def handle(event):
@@ -277,17 +279,19 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
                              _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
-                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=storage_handle(db.scope.profile_dir),
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'))
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
                                                             model='frozen', toolsets=[]))
     # A contended receipt transaction: the commit thread holds it open while the loop runs.
     entered, release = threading.Event(), threading.Event()
-    db._conn.create_function('hold_receipt', 1, lambda s: (entered.set(), release.wait(s))[1] and 0)
-    db._execute_write(lambda c: c.execute("CREATE TRIGGER hold_receipt AFTER INSERT ON state_meta "
+    from gateway.session_persistence import authority_persistence
+    for conn in (raw_holder(db)._conn, raw_holder(authority_persistence(authority))._conn):  # the receipt commits on the handle's
+        conn.create_function('hold_receipt', 1, lambda s: (entered.set(), release.wait(s))[1] and 0)
+    raw_holder(db)._execute_write(lambda c: c.execute("CREATE TRIGGER hold_receipt AFTER INSERT ON state_meta "
                                           "WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT hold_receipt(30); END"))
-    snap = db.get_session(ref.session_id)
+    snap = session_row(db, ref.session_id)
     try:
         mutation = asyncio.create_task(owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'switch', 'expected_revision': snap['runtime_revision'],
@@ -302,7 +306,7 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
         queued = await submit
         assert (await mutation)['result']['model'] == 'switched'
         await async_wait_until(
-            lambda: rt.get_session_admission(db, admission_id=queued.admission_id)['status'] == 'terminal',
+            lambda: db.admissions.get(admission_id=queued.admission_id).status == 'terminal',
             timeout=10, what='the queued follower ran after the policy was published')
         assert executed == ['FOLLOWER']
     finally:
@@ -319,13 +323,12 @@ async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp
     from types import SimpleNamespace
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import bind_launch_key, build_policy, restore_policy
-    from hermes_state import SessionDB
     from hermes_cli import model_switch
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='b', target_provider='anthropic', provider_changed=True,
         base_url='https://api.anthropic.com'))
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db, runner=SimpleNamespace(
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle, runner=SimpleNamespace(
             _resolve_session_agent_runtime=lambda **k: (None, {'api_key': 'sk-launch'})))
         private = {}
         config = {'model': {'provider': 'openrouter', 'default': 'a'},
@@ -348,7 +351,6 @@ async def test_model_pick_reads_current_provider_config_when_legacy_policy_lacks
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
-    from hermes_state import SessionDB
     from hermes_cli import model_switch
 
     (tmp_path / 'config.yaml').write_text(
@@ -367,8 +369,8 @@ async def test_model_pick_reads_current_provider_config_when_legacy_policy_lacks
 
     monkeypatch.setattr(model_switch, 'switch_model', switch)
     monkeypatch.setenv('INKSTONE_API_KEY', 'inkstone-secret')
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
         runner = SimpleNamespace(session_authority=authority,
                                  _resolve_session_agent_runtime=lambda **k: (None, {}))
         authority.runner = runner
@@ -398,7 +400,6 @@ async def test_model_pick_freezes_legacy_custom_provider_for_the_next_runtime(tm
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
-    from hermes_state import SessionDB
     from hermes_cli import model_switch
 
     (tmp_path / 'config.yaml').write_text(
@@ -416,8 +417,8 @@ async def test_model_pick_freezes_legacy_custom_provider_for_the_next_runtime(tm
 
     monkeypatch.setattr(model_switch, 'switch_model', switch)
     monkeypatch.setenv('INKSTONE_API_KEY', 'inkstone-secret')
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
         runner = SimpleNamespace(session_authority=authority,
                                  _resolve_session_agent_runtime=lambda **k: (None, {}))
         authority.runner = runner
@@ -443,8 +444,7 @@ async def test_picked_legacy_custom_provider_survives_a_profile_reorder_on_cold_
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from hermes_cli import model_switch
 
     other = '  - name: other\n    base_url: https://other.example.invalid/v1\n    api_key: sk-other\n'
@@ -454,9 +454,9 @@ async def test_picked_legacy_custom_provider_survives_a_profile_reorder_on_cold_
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='glm-5.3', target_provider='inkstone',
         base_url='https://inkstone.example.invalid/v1', api_mode='chat_completions'))
-    with SessionDB(tmp_path / 'state.db') as db:
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
         def owner():  # a fresh owner: no in-memory secrets, everything re-read from config.yaml
-            authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+            authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
             authority.runner = SimpleNamespace(session_authority=authority,
                                                _resolve_session_agent_runtime=lambda **k: (None, {}))
             return authority
@@ -479,7 +479,7 @@ async def test_picked_legacy_custom_provider_survives_a_profile_reorder_on_cold_
         # lookup's fingerprint check would accept it, so only identity can refuse the deletion.
         third = other.replace('other', 'third').replace('sk-third', 'sk-inkstone')
         config.write_text('custom_providers:\n' + other + third, encoding='utf-8')
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             switched.config(owner())
         assert refused.value.reason == 'launch_credentials_unavailable'
 
@@ -493,8 +493,7 @@ async def test_probe_rename_keep_url_key(tmp_path, monkeypatch):
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from hermes_cli import model_switch
 
     other = '  - name: other\n    base_url: https://other.example.invalid/v1\n    api_key: sk-other\n'
@@ -504,9 +503,9 @@ async def test_probe_rename_keep_url_key(tmp_path, monkeypatch):
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='glm-5.3', target_provider='inkstone',
         base_url='https://inkstone.example.invalid/v1', api_mode='chat_completions'))
-    with SessionDB(tmp_path / 'state.db') as db:
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
         def owner():  # a fresh owner: no in-memory secrets, everything re-read from config.yaml
-            authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+            authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
             authority.runner = SimpleNamespace(session_authority=authority,
                                                _resolve_session_agent_runtime=lambda **k: (None, {}))
             return authority
@@ -522,7 +521,7 @@ async def test_probe_rename_keep_url_key(tmp_path, monkeypatch):
         assert runtime['api_key'] == 'sk-inkstone'
 
         config.write_text('custom_providers:\n' + picked.format(name='Inkstone EU') + other, encoding='utf-8')
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             switched.config(owner())
         assert refused.value.reason == 'launch_credentials_unavailable'
 
@@ -537,7 +536,6 @@ async def test_model_pick_resolves_the_profiles_current_entry_over_a_frozen_one(
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
-    from hermes_state import SessionDB
     from hermes_cli import model_switch
 
     (tmp_path / 'config.yaml').write_text(
@@ -555,8 +553,8 @@ async def test_model_pick_resolves_the_profiles_current_entry_over_a_frozen_one(
 
     monkeypatch.setattr(model_switch, 'switch_model', switch)
     monkeypatch.setenv('CURRENT_KEY', 'current-secret')
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
         runner = SimpleNamespace(session_authority=authority,
                                  _resolve_session_agent_runtime=lambda **k: (None, {}))
         authority.runner = runner
@@ -590,11 +588,10 @@ async def test_committed_model_selection_is_the_next_resolved_runtime(tmp_path, 
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import bind_launch_key, build_policy, restore_policy
-    from hermes_state import SessionDB
     from hermes_cli import model_switch
     old_url, new_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.2:9/v1'
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
         runner = SimpleNamespace(session_authority=authority,
                                  _resolve_session_agent_runtime=lambda **k: (None, {'api_key': 'sk-endpoint-a'}))
         authority.runner = runner
@@ -638,7 +635,6 @@ async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_cost_guard, model_switch
-    import hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
@@ -646,20 +642,20 @@ async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp
         model_cost_guard.ExpensiveModelWarning(model, 'custom', None, None, 'test', f'{model} IS EXPENSIVE')
         if model.startswith('pricey') else None))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
-                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=storage_handle(db.scope.profile_dir),
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'))
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
                                                             model='frozen', toolsets=[]))
     calls = iter(range(100))
 
     async def mutate(payload, retry=None):
-        snap = db.get_session(ref.session_id)
+        snap = session_row(db, ref.session_id)
         params = retry or {'session_id': ref.session_id, 'request_id': f'switch-{next(calls)}', 'operation': 'model',
                            'payload': payload, 'expected_revision': snap['runtime_revision'],
                            'expected_generation': snap['runtime_generation']}
@@ -668,7 +664,7 @@ async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp
         return response['result'], params
 
     def state():
-        row = db.get_session(ref.session_id)
+        row = session_row(db, ref.session_id)
         return row['runtime_revision'], row['runtime_generation'], row['model'], authority.sessions[ref.session_id]
     try:
         before = state()
@@ -684,7 +680,7 @@ async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp
         applied, params = await mutate(confirmed)
         assert applied['model'] == 'pricey' and applied['execution_generation'] == before[1] + 1
         assert (await mutate(confirmed, params))[0] == applied  # exact retry: applied once
-        assert db.get_session(ref.session_id)['runtime_generation'] == before[1] + 1
+        assert session_row(db, ref.session_id)['runtime_generation'] == before[1] + 1
         stale, _ = await mutate(confirmed)  # same target, but the selection it replaced is gone
         assert stale['status'] == 'confirmation_required' and stale['confirm'] != refused['confirm']
     finally:
@@ -706,29 +702,27 @@ async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_a
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_selection_guards, model_switch
-    import hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_selection_guards, '_context_cache_threshold', lambda: 1000)
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
-                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=storage_handle(db.scope.profile_dir),
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'))
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
                                                             model='frozen', toolsets=[]))
     try:
-        db.append_message(ref.session_id, role='user', content='hello')
-        db.append_message(ref.session_id, role='assistant', content='hi')
-        messages = db.get_messages_as_conversation(ref.session_id)
-        db.patch_session_model_config(ref.session_id, {
+        seed_messages(db, ref.session_id, {'role': 'user', 'content': 'hello'}, {'role': 'assistant', 'content': 'hi'})
+        messages = conversation(db, ref.session_id)
+        db.sessions.patch_model_config(ref.session_id, {
             USAGE_ANCHOR_MODEL_CONFIG_KEY: capture_usage_anchor(250_000, 10, messages)})
-        snap = db.get_session(ref.session_id)
+        snap = session_row(db, ref.session_id)
         response = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'switch', 'operation': 'model',
             'payload': {'model': 'other-model'}, 'expected_revision': snap['runtime_revision'],
@@ -736,7 +730,7 @@ async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_a
         result = response['result']
         assert result['status'] == 'confirmation_required', result
         assert 'LARGE CONTEXT' in result['confirm_message']
-        assert db.get_session(ref.session_id)['model'] == snap['model']
+        assert session_row(db, ref.session_id)['model'] == snap['model']
     finally:
         await owner.close()
         store.close_all_db_handles()

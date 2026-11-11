@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import hermes_yaml as yaml
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 from gateway.session_tui_config import _set_display, _write_profile_config
 
@@ -39,7 +39,7 @@ def test_owner_config_set_refuses_a_managed_key_and_writes_nothing(home, raw):
     if raw:  # the raw file already holds the requested value: no change there, the managed one still wins
         (home / "config.yaml").write_text(raw)
     before = (home / "config.yaml").read_text()
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         _owner_write(home, "skin", "mono")
     assert (refused.value.reason, refused.value.field) == ("permission_denied", "display.skin")
     assert (home / "config.yaml").read_text() == before
@@ -93,7 +93,7 @@ def test_owner_global_reasoning_level_is_refused_before_anything_changes(home, m
     def run():
         return asyncio.run(session_tui_config._set_command_setting(connection, SimpleNamespace(session_id="s"), params))
     if scope == "global" and pins_effort:
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             run()
         assert (refused.value.reason, refused.value.field) == ("permission_denied", "agent.reasoning_effort")
         assert calls == []
@@ -115,7 +115,7 @@ def test_owner_approval_mode_refusal_names_a_pinned_key(home, monkeypatch, pins_
         monkeypatch.setattr(approval_mode, "run_approval_mode_command",
                             lambda mode: SimpleNamespace(ok=False, mode="manual"))
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(home)))
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         session_tui_config._set_approval_mode(connection, "off")
     expected = ("permission_denied", "approvals.mode") if pins_mode else ("storage_unavailable", None)
     assert (refused.value.reason, refused.value.field) == expected

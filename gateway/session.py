@@ -21,8 +21,8 @@ from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pi
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
-# Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
-from hermes_state_keys import profile_from_session_key_namespace
+# Inverse of _session_key_namespace, defined in the neutral session_keys module (storage must not import gateway).
+from session_keys import profile_from_session_key_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -805,7 +805,7 @@ class SessionStore(
     SessionPersistenceMixin, SessionRecoveryMixin, SessionLifecycleMixin, SessionTranscriptMixin,
     SessionPromptPinMixin,
 ):
-    """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
+    """Session routing index + transcripts: SQLite through the storage interface, legacy JSONL fallback."""
 
     def __init__(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
@@ -843,7 +843,7 @@ class SessionStore(
         self._has_active_processes_fn = has_active_processes_fn
         self._write_sessions_json = bool(getattr(config, "write_sessions_json", True))
 
-        # SQLite handles are cached per path and resolved through ``_db`` per call, never bound
+        # Storage handles are cached per profile and resolved for the active scope per call, never bound
         # once: a multiplexed gateway serves every profile from ONE process and a handle frozen to
         # the root home would land every profile's rows in the root state.db.
         # Initialize SQLite session database. A multiplexed gateway serves every profile from a SINGLE
@@ -872,14 +872,14 @@ class SessionStore(
             handles=self._db_handles, lock=self._db_handles_lock
         )
         # The routing index needs exactly one home for its lifetime: the gateway's own, captured
-        # before any profile scope exists (see ``_routing_db``).
+        # before any profile scope exists (see ``_routing_persistence``).
         try:
             from hermes_constants import get_hermes_home
 
             self._routing_home: Optional[Path] = Path(get_hermes_home())
         except Exception:
             self._routing_home = None
-        self._open_session_db_for_active_scope()
+        self._open_persistence_for_active_scope()
 
     def _lazy(self, name: str, factory):
         """``self.<name>``, created via *factory* when missing/None (suites build bare stores via
@@ -908,9 +908,10 @@ class SessionStore(
     def has_any_sessions(self) -> bool:
         """Whether any session has ever been created. SQLite is the source of truth (ended sessions
         count); the current session is already in the DB when this runs, hence ``> 1``."""
-        if self._db:
+        store = self._scoped_persistence()
+        if store is not None:
             try:
-                return self._db.session_count_ge(2)
+                return store.sessions.count_at_least(2)
             except Exception:
                 pass  # fall through to heuristic
         with self._lock:
@@ -1364,12 +1365,12 @@ class SessionStore(
             )
 
         try:
-            if self._db_for_key(session_key) and old_entry.session_id:
+            if self._persistence_for_key(session_key) and old_entry.session_id:
                 self._promote_session_reset(
                     session_key, old_entry.session_id, "session_switch",
                     log=lambda e: logger.debug("Session DB end_session failed: %s", e),
                 )
-            if self._db_for_key(session_key):
+            if self._persistence_for_key(session_key):
                 # An explicit /resume/handoff/branch repoint is real user activity: the row is
                 # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
                 # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.

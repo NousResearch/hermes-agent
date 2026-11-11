@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']
 
@@ -18,7 +18,7 @@ def _refuse(monkeypatch, reason):
     real, refusing = session_automation.snapshot_automation, [True]
     def snapshot(*args, **kwargs):
         if refusing:
-            raise RuntimeStoreError(reason)
+            raise AuthorityRefusal(reason)
         return real(*args, **kwargs)
     monkeypatch.setattr(session_automation, 'snapshot_automation', snapshot)
     return refusing
@@ -35,7 +35,7 @@ async def test_refused_delivery_leaves_a_terminal_receipt_the_scan_accepts(bot, 
     from tools.bot_live_delivery import read_delivery_result
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, 'permission_denied')
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await deliver(bot.connection, params)
     receipt = read_delivery_result(bot.home, KEY)
     assert (receipt['status'], receipt['reason']) == ('failed', 'agent_blocked'), receipt
@@ -49,7 +49,7 @@ async def test_refused_delivery_leaves_a_terminal_receipt_the_scan_accepts(bot, 
     refusing.clear()
     again = await deliver(bot.connection, params)
     assert (again['status'], again['reason']) == ('failed', 'agent_blocked'), again
-    assert list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False) == []
+    assert bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False) == []
 
 
 @pytest.mark.parametrize('reason', ['invalid_params', 'admission_conflict'])
@@ -59,12 +59,12 @@ async def test_a_final_refusal_answers_every_resend_with_its_receipt(bot, monkey
     from gateway.session_bot import deliver
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, reason)
-    with pytest.raises(RuntimeStoreError, match=reason):
+    with pytest.raises(AuthorityRefusal, match=reason):
         await deliver(bot.connection, params)
     refusing.clear()
     again = await deliver(bot.connection, params)
     assert (again['status'], again['refused'], again['reason']) == ('failed', True, 'agent_blocked'), again
-    assert list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False) == []
+    assert bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False) == []
 
 
 @pytest.mark.parametrize('reason', ['runtime_draining', 'storage_unavailable', 'stale_epoch'])
@@ -76,14 +76,14 @@ async def test_a_transient_refusal_leaves_the_same_id_resendable(bot, monkeypatc
     from tools.bot_live_delivery import read_delivery_result
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, reason)
-    with pytest.raises(RuntimeStoreError, match=reason):
+    with pytest.raises(AuthorityRefusal, match=reason):
         await deliver(bot.connection, params)
     assert read_delivery_result(bot.home, KEY) is None
     refusing.clear()
     again = await deliver(bot.connection, params)
     assert not again.get('refused') and again['admission_id'], again
-    rows = list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False)
-    assert [row['request_id'] for row in rows] == ['bot:' + KEY]
+    rows = bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False)
+    assert [row.request_id for row in rows] == ['bot:' + KEY]
 
 
 @pytest.mark.asyncio
@@ -112,8 +112,8 @@ async def test_a_cron_report_parked_across_a_drain_is_delivered_on_the_next_tick
     await asyncio.to_thread(drain_legacy_pending)
     record = json.loads(path.read_text())
     assert record['status'] == 'transferred' and record['receipt_status'] != 'failed', record
-    rows = list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False)
-    assert [row['request_id'] for row in rows] == ['bot:' + KEY]
+    rows = bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False)
+    assert [row.request_id for row in rows] == ['bot:' + KEY]
 
 
 def _rpc_connection(bot):
@@ -142,7 +142,7 @@ async def test_a_refused_delivery_answers_through_the_deliver_contract(bot, monk
     result = again['result']
     assert (result['status'], result['refused'], result['reason']) == ('failed', True, 'agent_blocked'), result
     assert result['delivery_id'] == KEY and 'admission_id' not in result
-    assert list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False) == []
+    assert bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False) == []
 
 
 AUTHOR = {'id': 'bot:cto', 'name': 'cto', 'is_bot': True}
@@ -160,14 +160,14 @@ async def test_a_refused_receipt_keeps_the_whole_delivery_identity(bot, monkeypa
     from gateway.session_bot import deliver
     params = dict(id=KEY, profile='default', message='ping', author=AUTHOR)
     refusing = _refuse(monkeypatch, 'permission_denied')
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await deliver(bot.connection, params)
     refusing.clear()
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         await deliver(bot.connection, {**params, **changed})
     again = await deliver(bot.connection, params)
     assert (again['status'], again['reason']) == ('failed', 'agent_blocked'), again
-    assert list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False) == []
+    assert bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False) == []
 
 
 @pytest.mark.asyncio
@@ -180,10 +180,10 @@ async def test_a_pin_without_refusal_proof_still_warns(bot, monkeypatch, caplog)
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
         await real(self, *args)
-        raise RuntimeStoreError('stale_epoch')
+        raise AuthorityRefusal('stale_epoch')
     monkeypatch.setattr(type(bot.authority), 'admit_automation', committed_then_refused)
     bot.authority._schedule = lambda ref: None
-    with pytest.raises(RuntimeStoreError, match='stale_epoch'):
+    with pytest.raises(AuthorityRefusal, match='stale_epoch'):
         await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     receipt = read_delivery_result(bot.home, KEY)
     assert receipt['status'] == 'ambiguous' and 'admission_id' not in receipt, receipt

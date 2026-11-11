@@ -11,10 +11,15 @@ All run zero LLM calls.
 import json
 import time
 from datetime import datetime, timezone, UTC
+from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tools.session_search_tool import (
     _format_timestamp,
     _is_compacted_message,
@@ -26,39 +31,66 @@ from tools.session_search_tool import (
 
 @pytest.fixture
 def db(tmp_path):
-    return SessionDB(tmp_path / "state.db")
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as handle:
+        yield handle
+
+
+@pytest.fixture
+def persistence(tmp_path):
+    """A read-only storage interface handle on the ``db`` fixture's store."""
+    from persistence_assembly import open_persistence_reader
+
+    with open_persistence_reader(tmp_path) as handle:
+        yield handle
 
 
 def _seed_modpack_sessions(db):
     """Create three sessions about a modpack so FTS5 has hits to dedupe."""
     now = int(time.time())
     # Older session — modpack origin
-    db.create_session("s_oldest", source="cli")
-    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-                     (now - 30000, "Building the Modpack", "s_oldest"))
-    db.append_message("s_oldest", role="user", content="Let's build a Minecraft modpack")
-    db.append_message("s_oldest", role="assistant", content="Great. Let me scaffold the modpack repo.")
-    db.append_message("s_oldest", role="user", content="Use NeoForge 1.21.1")
-    db.append_message("s_oldest", role="assistant", content="Done. Modpack repo created with NeoForge 1.21.1.")
-    db.append_message("s_oldest", role="assistant", content="Tier-0 mods installed; modpack smoke test passes.")
+    seed_session(db, "s_oldest", "cli")
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now - 30000, "Building the Modpack", "s_oldest"),
+    ))
+    seed_messages(db, "s_oldest", {"role": "user", "content": "Let's build a Minecraft modpack"})
+    seed_messages(db, "s_oldest", {"role": "assistant", "content": "Great. Let me scaffold the modpack repo."})
+    seed_messages(db, "s_oldest", {"role": "user", "content": "Use NeoForge 1.21.1"})
+    seed_messages(db, "s_oldest", {"role": "assistant", "content": "Done. Modpack repo created with NeoForge 1.21.1."})
+    seed_messages(db, "s_oldest", {"role": "assistant", "content": "Tier-0 mods installed; modpack smoke test passes."})
 
     # Middle session — modpack quest coverage
-    db.create_session("s_middle", source="cli")
-    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-                     (now - 15000, "Modpack Quest Coverage", "s_middle"))
-    db.append_message("s_middle", role="user", content="Deep-dive every modpack reference quest guide")
-    db.append_message("s_middle", role="assistant", content="Surveying ATM10 questbook for modpack inspiration.")
-    db.append_message("s_middle", role="user", content="Update the modpack version too")
-    db.append_message("s_middle", role="assistant", content="Modpack version bumped 0.4 → 0.8.5; quest coverage page added.")
+    seed_session(db, "s_middle", "cli")
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now - 15000, "Modpack Quest Coverage", "s_middle"),
+    ))
+    seed_messages(db, "s_middle", {"role": "user", "content": "Deep-dive every modpack reference quest guide"})
+    seed_messages(db, "s_middle", {
+        "role": "assistant",
+        "content": "Surveying ATM10 questbook for modpack inspiration.",
+    })
+    seed_messages(db, "s_middle", {"role": "user", "content": "Update the modpack version too"})
+    seed_messages(db, "s_middle", {
+        "role": "assistant",
+        "content": "Modpack version bumped 0.4 → 0.8.5; quest coverage page added.",
+    })
 
     # Newest session — modpack mob spawn fix
-    db.create_session("s_newest", source="cli")
-    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-                     (now - 1000, "Modpack Mob Spawn Fix", "s_newest"))
-    db.append_message("s_newest", role="user", content="Fix the modpack mob spawning")
-    db.append_message("s_newest", role="assistant", content="Investigating elite mob gating in the modpack KubeJS.")
-    db.append_message("s_newest", role="assistant", content="Shipped commit b850442. Modpack alternator nerfed too.")
-    db._conn.commit()
+    seed_session(db, "s_newest", "cli")
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now - 1000, "Modpack Mob Spawn Fix", "s_newest"),
+    ))
+    seed_messages(db, "s_newest", {"role": "user", "content": "Fix the modpack mob spawning"})
+    seed_messages(db, "s_newest", {
+        "role": "assistant",
+        "content": "Investigating elite mob gating in the modpack KubeJS.",
+    })
+    seed_messages(db, "s_newest", {
+        "role": "assistant",
+        "content": "Shipped commit b850442. Modpack alternator nerfed too.",
+    })
 
 
 # =========================================================================
@@ -79,89 +111,96 @@ class TestFormatTimestamp:
 
 class TestBrowseShape:
     def test_browse_uses_bounded_recent_path(self):
-        class _DB:
+        class _Sessions:
             rich_called = False
-            bounded_kwargs = None
+            bounded_query = None
 
-            def list_recent_sessions_bounded(self, **kwargs):
-                self.bounded_kwargs = kwargs
-                return []
+            def list_recent_sessions(self, query):
+                self.bounded_query = query
+                return ()
 
-            def list_sessions_rich(self, **_kwargs):
+            def list_sessions(self, *_args, **_kwargs):
                 self.rich_called = True
                 raise AssertionError("unbounded rich listing must not be used")
 
-        db = _DB()
-        result = json.loads(session_search(db=db))
+        sessions = _Sessions()
+        result = json.loads(session_search(persistence=SimpleNamespace(sessions=sessions)))
 
         assert result["success"] is True
-        assert db.rich_called is False
-        assert db.bounded_kwargs is not None
+        assert sessions.rich_called is False
+        assert sessions.bounded_query is not None
 
     def test_browse_fails_closed_without_bounded_database_capability(self):
-        class _LegacyDB:
-            def list_sessions_rich(self, **_kwargs):
+        class _LegacySessions:
+            def list_sessions(self, *_args, **_kwargs):
                 raise AssertionError("known-unbounded fallback must not be called")
 
-        result = json.loads(session_search(db=_LegacyDB()))
+        result = json.loads(session_search(persistence=SimpleNamespace(sessions=_LegacySessions())))
 
         assert result["success"] is False
 
     def test_lazy_database_is_released_after_search(self, monkeypatch):
-        class _DB:
+        from contextlib import contextmanager
+
+        class _Reader:
             released = 0
+            sessions = SimpleNamespace(list_recent_sessions=lambda _query: ())
 
-            def list_recent_sessions_bounded(self, **_kwargs):
-                return []
+            def ready(self):
+                pass
 
-        db = _DB()
-        monkeypatch.setattr("hermes_state.SessionDB", lambda **kwargs: db)
-        monkeypatch.setattr(
-            "hermes_state_registry.release_or_close",
-            lambda _: setattr(db, "released", db.released + 1),
-        )
+        reader = _Reader()
+
+        @contextmanager
+        def _open_reader(_target):
+            try:
+                yield reader
+            finally:
+                reader.released += 1
+
+        monkeypatch.setattr("persistence_assembly.open_persistence_reader", _open_reader)
 
         result = json.loads(session_search())
 
         assert result["success"] is True
-        assert db.released == 1
+        assert reader.released == 1
 
     def test_cross_profile_database_is_closed_but_shared_database_is_not(
         self, monkeypatch
     ):
-        class _DB:
+        class _Handle:
             def __init__(self):
                 self.closed = 0
-
-            def list_recent_sessions_bounded(self, **_kwargs):
-                return []
+                self.sessions = SimpleNamespace(list_recent_sessions=lambda _query: ())
 
             def close(self):
                 self.closed += 1
 
-        shared_db = _DB()
-        profile_db = _DB()
-        monkeypatch.setattr(
-            "tools.session_search_tool._resolve_profile_db",
-            lambda _profile: profile_db,
-        )
+        shared = _Handle()
+        profile_handle = _Handle()
 
-        result = json.loads(session_search(db=shared_db, profile="work"))
+        def _resolve(_profile, handles):
+            handles.callback(profile_handle.close)
+            return profile_handle
+
+        monkeypatch.setattr("tools.session_search_tool._resolve_profile_db", _resolve)
+
+        result = json.loads(session_search(persistence=shared, profile="work"))
 
         assert result["success"] is True
-        assert profile_db.closed == 1
-        assert shared_db.closed == 0
+        assert profile_handle.closed == 1
+        assert shared.closed == 0
 
-    def test_no_args_returns_recent_sessions(self, db):
+    def test_no_args_returns_recent_sessions(self, db, persistence):
         _seed_modpack_sessions(db)
-        result = json.loads(session_search(db=db))
+        result = json.loads(session_search(db=db, persistence=persistence))
         assert result["success"] is True
         assert result["mode"] == "browse"
         assert result["count"] >= 3
 
-    def test_browse_excludes_current_session(self, db):
+    def test_browse_excludes_current_session(self, db, persistence):
         _seed_modpack_sessions(db)
-        result = json.loads(session_search(db=db, current_session_id="s_newest"))
+        result = json.loads(session_search(db=db, persistence=persistence, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
@@ -172,10 +211,10 @@ class TestBrowseShape:
 
 class TestDiscoveryShape:
 
-    def test_full_detail_returns_bookends_and_window_for_every_hit(self, db):
+    def test_full_detail_returns_bookends_and_window_for_every_hit(self, db, persistence):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(
-            query="modpack", limit=3, detail="full", db=db
+            query="modpack", limit=3, detail="full", db=db, persistence=persistence
         ))
         assert result["success"] is True
         assert result["mode"] == "discover"
@@ -191,10 +230,10 @@ class TestDiscoveryShape:
             assert "messages_before" in hit
             assert "messages_after" in hit
 
-    def test_default_discovery_keeps_top_full_and_compacts_lower_hits(self, db):
+    def test_default_discovery_keeps_top_full_and_compacts_lower_hits(self, db, persistence):
         _seed_modpack_sessions(db)
 
-        result = json.loads(session_search(query="modpack", limit=3, db=db))
+        result = json.loads(session_search(query="modpack", limit=3, db=db, persistence=persistence))
 
         assert result["success"] is True
         assert result["detail"] == "adaptive"
@@ -214,37 +253,33 @@ class TestDiscoveryShape:
             assert hit["messages"][0]["anchor"] is True
             assert hit["bookend_end"] == []
 
-    def test_adaptive_detail_preserves_ranking_and_reduces_payload(self, db):
+    def test_adaptive_detail_preserves_ranking_and_reduces_payload(self, db, persistence):
         now = int(time.time())
         for session_index in range(3):
             session_id = f"payload_{session_index}"
-            db.create_session(session_id, source="cli")
-            db._conn.execute(
+            seed_session(db, session_id, "cli")
+            raw_holder(db)._execute_write(lambda conn: conn.execute(
                 "UPDATE sessions SET started_at = ? WHERE id = ?",
                 (now - session_index, session_id),
-            )
+            ))
             for message_index in range(8):
-                db.append_message(
-                    session_id,
-                    role="user" if message_index % 2 == 0 else "assistant",
-                    content=f"opening {session_index}-{message_index} " + "o" * 2500,
-                )
-            db.append_message(
-                session_id,
-                role="user",
-                content=f"payloadneedle anchor {session_index} " + "a" * 3500,
-            )
+                seed_messages(db, session_id, {
+                    "role": "user" if message_index % 2 == 0 else "assistant",
+                    "content": f"opening {session_index}-{message_index} " + "o" * 2500,
+                })
+            seed_messages(db, session_id, {
+                "role": "user",
+                "content": f"payloadneedle anchor {session_index} " + "a" * 3500,
+            })
             for message_index in range(8):
-                db.append_message(
-                    session_id,
-                    role="assistant" if message_index % 2 == 0 else "user",
-                    content=f"closing {session_index}-{message_index} " + "c" * 2500,
-                )
-        db._conn.commit()
+                seed_messages(db, session_id, {
+                    "role": "assistant" if message_index % 2 == 0 else "user",
+                    "content": f"closing {session_index}-{message_index} " + "c" * 2500,
+                })
 
-        adaptive_json = session_search(query="payloadneedle", limit=3, db=db)
+        adaptive_json = session_search(query="payloadneedle", limit=3, db=db, persistence=persistence)
         full_json = session_search(
-            query="payloadneedle", limit=3, detail="full", db=db
+            query="payloadneedle", limit=3, detail="full", db=db, persistence=persistence
         )
         adaptive = json.loads(adaptive_json)
         full = json.loads(full_json)
@@ -258,24 +293,24 @@ class TestDiscoveryShape:
         assert len(adaptive_json.encode("utf-8")) < len(full_json.encode("utf-8")) * 0.6
 
 
-    def test_current_session_filtered_out(self, db):
+    def test_current_session_filtered_out(self, db, persistence):
         _seed_modpack_sessions(db)
-        result = json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
+        result = json.loads(session_search(query="modpack", db=db, persistence=persistence, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
 
 class TestDiscoverySort:
-    def test_sort_newest_orders_by_recency(self, db):
+    def test_sort_newest_orders_by_recency(self, db, persistence):
         _seed_modpack_sessions(db)
-        result = json.loads(session_search(query="modpack", limit=3, sort="newest", db=db))
+        result = json.loads(session_search(query="modpack", limit=3, sort="newest", db=db, persistence=persistence))
         # First result should be the most recent session
         first = result["results"][0]
         assert first["session_id"] == "s_newest" or "Newest" in (first.get("title") or "")
 
-    def test_sort_oldest_orders_by_age(self, db):
+    def test_sort_oldest_orders_by_age(self, db, persistence):
         _seed_modpack_sessions(db)
-        result = json.loads(session_search(query="modpack", limit=3, sort="oldest", db=db))
+        result = json.loads(session_search(query="modpack", limit=3, sort="oldest", db=db, persistence=persistence))
         first = result["results"][0]
         assert first["session_id"] == "s_oldest"
 
@@ -285,16 +320,16 @@ class TestDiscoverySort:
 # =========================================================================
 
 class TestScrollShape:
-    def test_scroll_returns_anchored_window_without_bookends(self, db):
+    def test_scroll_returns_anchored_window_without_bookends(self, db, persistence):
         _seed_modpack_sessions(db)
         # Get an anchor first via discovery
-        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        disc = json.loads(session_search(query="modpack", limit=1, db=db, persistence=persistence))
         anchor_sid = disc["results"][0]["session_id"]
         anchor_mid = disc["results"][0]["match_message_id"]
 
         # Now scroll
         result = json.loads(session_search(
-            session_id=anchor_sid, around_message_id=anchor_mid, window=2, db=db
+            session_id=anchor_sid, around_message_id=anchor_mid, window=2, db=db, persistence=persistence
         ))
         assert result["success"] is True
         assert result["mode"] == "scroll"
@@ -306,28 +341,32 @@ class TestScrollShape:
         assert len(anchor_in_window) == 1
         assert anchor_in_window[0].get("anchor") is True
 
-    def test_scroll_window_clamped_to_20(self, db):
+    def test_scroll_window_clamped_to_20(self, db, persistence):
         _seed_modpack_sessions(db)
-        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        disc = json.loads(session_search(query="modpack", limit=1, db=db, persistence=persistence))
         anchor_sid = disc["results"][0]["session_id"]
         anchor_mid = disc["results"][0]["match_message_id"]
         result = json.loads(session_search(
-            session_id=anchor_sid, around_message_id=anchor_mid, window=999, db=db
+            session_id=anchor_sid, around_message_id=anchor_mid, window=999, db=db, persistence=persistence
         ))
         assert result["window"] == 20
 
 
-    def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):
-        db.create_session("s_current", source="cli")
-        db.create_session(
-            "s_delegate", source="delegate", parent_session_id="s_current"
+    def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db, persistence):
+        seed_session(db, "s_current", "cli")
+        seed_session(
+            db,
+            "s_delegate",
+            "delegate",
+            parent_session_id="s_current",
         )
-        mid = db.append_message(
-            "s_delegate", role="assistant", content="live delegated result"
-        )
+        mid = seed_messages(db, "s_delegate", {
+            "role": "assistant",
+            "content": "live delegated result",
+        })[0]
 
         result = json.loads(session_search(
-            session_id="s_delegate", around_message_id=mid, db=db,
+            session_id="s_delegate", around_message_id=mid, db=db, persistence=persistence,
             current_session_id="s_current",
         ))
 
@@ -338,20 +377,22 @@ class TestScrollShape:
 class TestScrollPattern:
     """The forward/backward scroll loop using tool output."""
 
-    def test_scroll_forward_from_last_id(self, db):
+    def test_scroll_forward_from_last_id(self, db, persistence):
         # Long session
-        db.create_session("s_long", source="cli")
+        seed_session(db, "s_long", "cli")
         ids = []
         for i in range(20):
-            ids.append(db.append_message("s_long", role="user" if i % 2 == 0 else "assistant",
-                                         content=f"long session msg {i}"))
+            ids.append(seed_messages(db, "s_long", {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"long session msg {i}",
+            })[0])
 
         v1 = json.loads(session_search(
-            session_id="s_long", around_message_id=ids[5], window=3, db=db
+            session_id="s_long", around_message_id=ids[5], window=3, db=db, persistence=persistence
         ))
         last_id = v1["messages"][-1]["id"]
         v2 = json.loads(session_search(
-            session_id="s_long", around_message_id=last_id, window=3, db=db
+            session_id="s_long", around_message_id=last_id, window=3, db=db, persistence=persistence
         ))
         # Forward scroll: v2 should reach further than v1
         assert max(m["id"] for m in v2["messages"]) > max(m["id"] for m in v1["messages"])
@@ -365,23 +406,23 @@ class TestScrollPattern:
 # =========================================================================
 
 class TestShapePrecedence:
-    def test_scroll_args_beat_query(self, db):
+    def test_scroll_args_beat_query(self, db, persistence):
         _seed_modpack_sessions(db)
-        disc = json.loads(session_search(query="modpack", limit=1, db=db))
+        disc = json.loads(session_search(query="modpack", limit=1, db=db, persistence=persistence))
         anchor_sid = disc["results"][0]["session_id"]
         anchor_mid = disc["results"][0]["match_message_id"]
         # Pass both query and scroll args — scroll should win
         result = json.loads(session_search(
             query="modpack",  # would normally trigger discovery
-            session_id=anchor_sid, around_message_id=anchor_mid, db=db,
+            session_id=anchor_sid, around_message_id=anchor_mid, db=db, persistence=persistence,
         ))
         assert result["mode"] == "scroll"
 
 
-    def test_session_id_without_anchor_reads(self, db):
+    def test_session_id_without_anchor_reads(self, db, persistence):
         _seed_modpack_sessions(db)
         # session_id alone (no anchor, no query) → read shape, not browse.
-        result = json.loads(session_search(session_id="s_oldest", db=db))
+        result = json.loads(session_search(session_id="s_oldest", db=db, persistence=persistence))
         assert result["mode"] == "read"
 
 
@@ -390,9 +431,9 @@ class TestShapePrecedence:
 # =========================================================================
 
 class TestReadShape:
-    def test_read_returns_full_session(self, db):
+    def test_read_returns_full_session(self, db, persistence):
         _seed_modpack_sessions(db)
-        result = json.loads(session_search(session_id="s_oldest", db=db))
+        result = json.loads(session_search(session_id="s_oldest", db=db, persistence=persistence))
         assert result["success"] is True
         assert result["mode"] == "read"
         assert result["session_id"] == "s_oldest"
@@ -401,39 +442,37 @@ class TestReadShape:
         assert len(result["messages"]) == 5
         assert result["session_meta"]["title"] == "Building the Modpack"
 
-    def test_read_strips_ansi_sequences_from_messages(self, db):
-        db.create_session("s_ansi", source="cli")
-        db.append_message("s_ansi", role="user", content="plain")
-        db.append_message(
-            "s_ansi", role="assistant", content="\u001b[31mred text\u001b[0m and more"
-        )
-        db._conn.commit()
-        result = json.loads(session_search(session_id="s_ansi", db=db))
+    def test_read_strips_ansi_sequences_from_messages(self, db, persistence):
+        seed_session(db, "s_ansi", "cli")
+        seed_messages(db, "s_ansi", {"role": "user", "content": "plain"})
+        seed_messages(db, "s_ansi", {
+            "role": "assistant",
+            "content": "\u001b[31mred text\u001b[0m and more",
+        })
+        result = json.loads(session_search(session_id="s_ansi", db=db, persistence=persistence))
         assert result["success"] is True
         rendered = [m["content"] for m in result["messages"] if m.get("content")]
         assert any(text == "red text and more" for text in rendered)
         assert all("\u001b" not in text for text in rendered)
 
-    def test_read_truncates_large_session(self, db):
-        db.create_session("s_big", source="cli")
+    def test_read_truncates_large_session(self, db, persistence):
+        seed_session(db, "s_big", "cli")
         for i in range(50):
-            db.append_message("s_big", role="user" if i % 2 == 0 else "assistant", content=f"m{i}")
-        db._conn.commit()
-        result = json.loads(session_search(session_id="s_big", db=db))
+            seed_messages(db, "s_big", {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"})
+        result = json.loads(session_search(session_id="s_big", db=db, persistence=persistence))
         assert result["mode"] == "read"
         assert result["message_count"] == 50
         assert result["truncated"] is True
         assert len(result["messages"]) < 50
 
-    def test_read_caps_oversized_message_content(self, db):
+    def test_read_caps_oversized_message_content(self, db, persistence):
         # #114344: a huge archived tool result stored as a message must not come
         # back whole on the read shape - discovery/scroll already cap (#69334).
-        db.create_session("s_huge", source="cli")
-        db.append_message("s_huge", role="user", content="run it")
-        db.append_message("s_huge", role="assistant", content="x" * 80_000)
-        db.append_message("s_huge", role="user", content="thanks")
-        db._conn.commit()
-        result = json.loads(session_search(session_id="s_huge", db=db))
+        seed_session(db, "s_huge", "cli")
+        seed_messages(db, "s_huge", {"role": "user", "content": "run it"})
+        seed_messages(db, "s_huge", {"role": "assistant", "content": "x" * 80_000})
+        seed_messages(db, "s_huge", {"role": "user", "content": "thanks"})
+        result = json.loads(session_search(session_id="s_huge", db=db, persistence=persistence))
         assert result["mode"] == "read"
         assert result["truncated"] is False  # 3 messages, count-wise it all fits
         big = next(m for m in result["messages"] if m.get("content_truncated"))
@@ -441,14 +480,14 @@ class TestReadShape:
         assert big["original_content_chars"] == 80_000
         assert sum(len(m.get("content") or "") for m in result["messages"]) < 5_000
 
-    def test_title_match_entry_caps_content_like_fts_hits(self, db):
+    def test_title_match_entry_caps_content_like_fts_hits(self, db, persistence):
         """A session-title match is a discovery entry: bookends 1200, window 4000, same as FTS hits."""
-        db.create_session("s_titled", source="cli")
-        db.set_session_title("s_titled", "quasar ledger reconciliation")
-        db.append_message("s_titled", role="user", content="reconcile the quasar ledger")
-        db.append_message("s_titled", role="tool", content="y" * 80_000)
-        db.end_session("s_titled", "cli_exit")
-        result = json.loads(session_search(query="quasar ledger reconciliation", db=db, detail="full"))
+        seed_session(db, "s_titled", "cli")
+        db.sessions.set_title("s_titled", "quasar ledger reconciliation")
+        seed_messages(db, "s_titled", {"role": "user", "content": "reconcile the quasar ledger"})
+        seed_messages(db, "s_titled", {"role": "tool", "content": "y" * 80_000})
+        db.sessions.end("s_titled", "cli_exit")
+        result = json.loads(session_search(query="quasar ledger reconciliation", db=db, persistence=persistence, detail="full"))
         entry = next(r for r in result["results"] if r["matched_role"] == "session_title")
         shaped = entry["bookend_start"] + entry["messages"] + entry["bookend_end"]
         big = [m for m in shaped if m.get("original_content_chars") == 80_000]
@@ -472,9 +511,9 @@ class TestSessionLink:
         assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
 
 
-    def test_every_discovery_result_links_to_its_own_session(self, db):
+    def test_every_discovery_result_links_to_its_own_session(self, db, persistence):
         _seed_modpack_sessions(db)
-        result = json.loads(session_search(query="modpack", limit=5, db=db))
+        result = json.loads(session_search(query="modpack", limit=5, db=db, persistence=persistence))
 
         assert result["results"]
         for entry in result["results"]:
@@ -493,15 +532,14 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
 
-    def test_bare_id_never_reads_another_profiles_store(self, db, tmp_path, monkeypatch):
+    def test_bare_id_never_reads_another_profiles_store(self, db, persistence, tmp_path, monkeypatch):
         # #106761: profiles are isolated islands. A bare id that misses the caller's
         # store must NOT be located by scanning every other profile's state.db.
         other_home = tmp_path / "asdf_home"
         other_home.mkdir()
-        other = SessionDB(other_home / "state.db")
-        other.create_session("s_far", source="cli")
-        other.append_message("s_far", role="user", content="secret")
-        other._conn.commit()
+        other = storage_handle(other_home)
+        seed_session(other, "s_far", "cli")
+        seed_messages(other, "s_far", {"role": "user", "content": "secret"})
 
         from collections import namedtuple
         from hermes_cli import profiles as profiles_mod
@@ -509,24 +547,23 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
         monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
 
-        result = json.loads(session_search(session_id="s_far", db=db))
+        result = json.loads(session_search(session_id="s_far", db=db, persistence=persistence))
         assert result["success"] is False
         assert "messages" not in result and "secret" not in json.dumps(result)
 
         # Naming the owning profile is still the sanctioned cross-profile read.
         self._patch_profiles(monkeypatch, other_home)
-        named = json.loads(session_search(session_id="s_far", profile="asdf", db=db))
+        named = json.loads(session_search(session_id="s_far", profile="asdf", db=db, persistence=persistence))
         assert named["success"] is True and named["message_count"] == 1
 
-    def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):
+    def test_combined_value_autosplits(self, db, persistence, tmp_path, monkeypatch):
         # Agent passed the raw "@session:<profile>/<id>" value as session_id with
         # no separate profile — the tool should recover both.
         other_home = tmp_path / "other_home"
         other_home.mkdir()
-        other = SessionDB(other_home / "state.db")
-        other.create_session("s_other", source="cli")
-        other.append_message("s_other", role="user", content="hi")
-        other._conn.commit()
+        other = storage_handle(other_home)
+        seed_session(other, "s_other", "cli")
+        seed_messages(other, "s_other", {"role": "user", "content": "hi"})
 
         self._patch_profiles(monkeypatch, other_home)
 
@@ -536,7 +573,7 @@ class TestCrossProfileRead:
             {"session_id": "asdf/s_other", "profile": "asdf"},  # full value AND profile
             {"session_id": "s_other", "profile": "asdf"},       # bare id + profile
         ):
-            result = json.loads(session_search(db=db, **kwargs))
+            result = json.loads(session_search(db=db, persistence=persistence, **kwargs))
             assert result["success"] is True, kwargs
             assert result["mode"] == "read"
             assert result["session_id"] == "s_other"
@@ -555,24 +592,27 @@ class TestCronDemotion:
         """
         now = int(time.time())
         # Interactive user session — older, so it loses on bare recency too.
-        db.create_session("s_user", source="telegram")
-        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
-                         (now - 90000, "s_user"))
-        db.append_message("s_user", role="user", content="how is the venom project going")
-        db.append_message("s_user", role="assistant", content="The venom project shipped its first milestone.")
+        seed_session(db, "s_user", "telegram")
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 90000, "s_user"),
+        ))
+        seed_messages(db, "s_user", {"role": "user", "content": "how is the venom project going"})
+        seed_messages(db, "s_user", {"role": "assistant", "content": "The venom project shipped its first milestone."})
         # Several cron sessions, all newer and all stuffed with the same terms.
         for i in range(8):
             sid = f"cron_{i}"
-            db.create_session(sid, source="cron")
-            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
-                             (now - 1000 - i, sid))
-            db.append_message(sid, role="user", content="venom project daily status")
-            db.append_message(sid, role="assistant", content="venom project venom project venom summary")
-        db._conn.commit()
+            seed_session(db, sid, "cron")
+            raw_holder(db)._execute_write(lambda conn: conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (now - 1000 - i, sid),
+            ))
+            seed_messages(db, sid, {"role": "user", "content": "venom project daily status"})
+            seed_messages(db, sid, {"role": "assistant", "content": "venom project venom project venom summary"})
 
-    def test_interactive_session_surfaces_above_cron(self, db):
+    def test_interactive_session_surfaces_above_cron(self, db, persistence):
         self._seed_cron_and_interactive(db)
-        result = json.loads(session_search(query="venom project", limit=1, db=db))
+        result = json.loads(session_search(query="venom project", limit=1, db=db, persistence=persistence))
         assert result["success"] is True
         assert result["count"] == 1
         # With cron drowning FTS, bare BM25/recency would return a cron_* hit.
@@ -580,17 +620,18 @@ class TestCronDemotion:
         assert result["results"][0]["source"] == "telegram"
         assert result["results"][0]["session_id"] == "s_user"
 
-    def test_cron_still_reachable_when_only_match(self, db):
+    def test_cron_still_reachable_when_only_match(self, db, persistence):
         """Demotion must not exclude cron — when only cron matches, it still
         comes back."""
         now = int(time.time())
-        db.create_session("cron_only", source="cron")
-        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
-                         (now - 500, "cron_only"))
-        db.append_message("cron_only", role="user", content="quarterly archive sweep")
-        db.append_message("cron_only", role="assistant", content="Archive sweep complete.")
-        db._conn.commit()
-        result = json.loads(session_search(query="archive sweep", db=db))
+        seed_session(db, "cron_only", "cron")
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 500, "cron_only"),
+        ))
+        seed_messages(db, "cron_only", {"role": "user", "content": "quarterly archive sweep"})
+        seed_messages(db, "cron_only", {"role": "assistant", "content": "Archive sweep complete."})
+        result = json.loads(session_search(query="archive sweep", db=db, persistence=persistence))
         assert result["success"] is True
         assert result["count"] == 1
         assert result["results"][0]["source"] == "cron"
@@ -611,29 +652,33 @@ class TestCompactionSummaryFiltering:
         assert not _is_compaction_summary("")
         assert not _is_compaction_summary(None)
 
-    def test_compaction_summary_excluded_from_bookend_start(self, db):
+    def test_compaction_summary_excluded_from_bookend_start(self, db, persistence):
         """Compaction handoff in bookend_start position must be filtered out."""
-        db.create_session("s_compact", source="cli")
+        seed_session(db, "s_compact", "cli")
         # First message: a compaction handoff (should be filtered)
-        db.append_message("s_compact", role="user",
-                          content="[CONTEXT COMPACTION — REFERENCE ONLY] "
-                                  "Earlier turns were compacted into the summary below. " + "x" * 50000)
+        seed_messages(db, "s_compact", {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY] "
+            "Earlier turns were compacted into the summary below. " + "x" * 50000,
+        })
         # Second message: normal user message
-        db.append_message("s_compact", role="user", content="Fix the zorgblat rendering bug")
+        seed_messages(db, "s_compact", {"role": "user", "content": "Fix the zorgblat rendering bug"})
         # Padding messages to push window away from session start (so bookend has room)
         for i in range(10):
-            db.append_message("s_compact", role="user", content=f"setup step {i}")
-            db.append_message("s_compact", role="assistant", content=f"setup done {i}")
+            seed_messages(db, "s_compact", {"role": "user", "content": f"setup step {i}"})
+            seed_messages(db, "s_compact", {"role": "assistant", "content": f"setup done {i}"})
         # Match target: uses a unique term so FTS5 anchors here, not at the start
-        db.append_message("s_compact", role="user", content="investigate the frobnitz mob spawning in KubeJS")
-        db.append_message("s_compact", role="assistant", content="I'll look into the frobnitz mob spawning issue.")
+        seed_messages(db, "s_compact", {"role": "user", "content": "investigate the frobnitz mob spawning in KubeJS"})
+        seed_messages(db, "s_compact", {
+            "role": "assistant",
+            "content": "I'll look into the frobnitz mob spawning issue.",
+        })
         # Tail messages
         for i in range(5):
-            db.append_message("s_compact", role="user", content=f"tail {i}")
-            db.append_message("s_compact", role="assistant", content=f"done tail {i}")
-        db._conn.commit()
+            seed_messages(db, "s_compact", {"role": "user", "content": f"tail {i}"})
+            seed_messages(db, "s_compact", {"role": "assistant", "content": f"done tail {i}"})
 
-        result = json.loads(session_search(query="frobnitz mob spawning", db=db, limit=1))
+        result = json.loads(session_search(query="frobnitz mob spawning", db=db, persistence=persistence, limit=1))
         assert result["success"] is True
         assert len(result["results"]) >= 1
         entry = result["results"][0]
@@ -658,24 +703,24 @@ class TestCompactionSummaryFiltering:
 class TestResolveToParent:
     """Unit tests for _resolve_to_parent's compression-aware tuple return."""
 
-    def test_legacy_rotation_detects_compression(self, db):
+    def test_legacy_rotation_detects_compression(self, db, persistence):
         """Parent ended with end_reason='compression', child has parent_session_id."""
-        db.create_session("s_parent", source="cli")
-        db.end_session("s_parent", "compression")
-        db.create_session("s_child", source="cli", parent_session_id="s_parent")
-        root, has_compression = _resolve_to_parent(db, "s_child")
+        seed_session(db, "s_parent", "cli")
+        db.sessions.end("s_parent", "compression")
+        seed_session(db, "s_child", "cli", parent_session_id="s_parent")
+        root, has_compression = _resolve_to_parent(persistence, "s_child")
         assert root == "s_parent"
         assert has_compression is True
 
 
-    def test_chain_with_mixed_edges(self, db):
+    def test_chain_with_mixed_edges(self, db, persistence):
         """Compression grandparent → parent → child (no end_reason on parent)."""
-        db.create_session("s_gp", source="cli")
-        db.end_session("s_gp", "compression")
-        db.create_session("s_p", source="cli", parent_session_id="s_gp")
+        seed_session(db, "s_gp", "cli")
+        db.sessions.end("s_gp", "compression")
+        seed_session(db, "s_p", "cli", parent_session_id="s_gp")
         # s_p does NOT end with compression — but ancestor s_gp does
-        db.create_session("s_c", source="cli", parent_session_id="s_p")
-        root, has_compression = _resolve_to_parent(db, "s_c")
+        seed_session(db, "s_c", "cli", parent_session_id="s_p")
+        root, has_compression = _resolve_to_parent(persistence, "s_c")
         assert root == "s_gp"
         assert has_compression is True
 
@@ -683,40 +728,44 @@ class TestResolveToParent:
 class TestIsCompactedMessage:
     """Unit tests for the _is_compacted_message helper."""
 
-    def test_active_message_returns_false(self, db):
-        db.create_session("s1", source="cli")
-        mid = db.append_message("s1", role="user", content="hello")
-        assert _is_compacted_message(db, mid) is False
+    def test_active_message_returns_false(self, db, persistence):
+        seed_session(db, "s1", "cli")
+        mid = seed_messages(db, "s1", {"role": "user", "content": "hello"})[0]
+        assert _is_compacted_message(persistence, mid) is False
 
-    def test_compacted_message_returns_true(self, db):
-        db.create_session("s1", source="cli")
-        mid = db.append_message("s1", role="user", content="archived content")
-        db.archive_and_compact("s1", [
+    def test_compacted_message_returns_true(self, db, persistence):
+        seed_session(db, "s1", "cli")
+        mid = seed_messages(db, "s1", {"role": "user", "content": "archived content"})[0]
+        db.messages.compact("s1", [NewMessage.from_live(m) for m in [
             {"role": "assistant", "content": "compacted summary"},
-        ])
+        ]])
         # mid is now active=0, compacted=1
-        assert _is_compacted_message(db, mid) is True
+        assert _is_compacted_message(persistence, mid) is True
 
 
 class TestInPlaceCompactionDiscovery:
     """In-place compaction: archived turns on the SAME session_id must be
     discoverable from the current session."""
 
-    def test_archived_content_discoverable_after_compaction(self, db):
+    def test_archived_content_discoverable_after_compaction(self, db, persistence):
         """The core regression: pre-compaction content on the current session
         must surface in discovery even though raw_sid == current_session_id."""
-        db.create_session("s_compact", source="cli")
-        db.append_message("s_compact", role="user",
-                          content="The spectral phoenix only spawns during full moons")
-        db.append_message("s_compact", role="assistant",
-                          content="Spectral phoenix requires moonstone bait")
-        db.archive_and_compact("s_compact", [
+        seed_session(db, "s_compact", "cli")
+        seed_messages(db, "s_compact", {
+            "role": "user",
+            "content": "The spectral phoenix only spawns during full moons",
+        })
+        seed_messages(db, "s_compact", {
+            "role": "assistant",
+            "content": "Spectral phoenix requires moonstone bait",
+        })
+        db.messages.compact("s_compact", [NewMessage.from_live(m) for m in [
             {"role": "user", "content": "Summary: spectral phoenix discussed"},
             {"role": "assistant", "content": "Acknowledged spectral phoenix info"},
-        ])
+        ]])
 
         result = json.loads(session_search(
-            query="spectral phoenix", db=db, current_session_id="s_compact",
+            query="spectral phoenix", db=db, persistence=persistence, current_session_id="s_compact",
         ))
         assert result["success"] is True
         assert result["count"] >= 1
@@ -724,12 +773,12 @@ class TestInPlaceCompactionDiscovery:
         hit = result["results"][0]
         assert hit["session_id"] == "s_compact"
 
-    def test_live_content_still_filtered_on_current_session(self, db):
+    def test_live_content_still_filtered_on_current_session(self, db, persistence):
         """Non-compacted (active) content on the current session stays filtered."""
-        db.create_session("s_live", source="cli")
-        db.append_message("s_live", role="user", content="crystal golem farming route")
+        seed_session(db, "s_live", "cli")
+        seed_messages(db, "s_live", {"role": "user", "content": "crystal golem farming route"})
         result = json.loads(session_search(
-            query="crystal golem", db=db, current_session_id="s_live",
+            query="crystal golem", db=db, persistence=persistence, current_session_id="s_live",
         ))
         assert result["count"] == 0
 
@@ -739,19 +788,23 @@ class TestLegacyRotationDiscovery:
     child session created. Parent's pre-compaction content must be discoverable
     from the child."""
 
-    def test_compression_parent_discoverable_from_child(self, db):
-        db.create_session("s_parent", source="cli")
-        db.append_message("s_parent", role="user",
-                          content="The void crystal mining requires diamond pickaxe")
-        db.append_message("s_parent", role="assistant",
-                          content="Void crystal found in the deep caverns")
-        db.end_session("s_parent", "compression")
+    def test_compression_parent_discoverable_from_child(self, db, persistence):
+        seed_session(db, "s_parent", "cli")
+        seed_messages(db, "s_parent", {
+            "role": "user",
+            "content": "The void crystal mining requires diamond pickaxe",
+        })
+        seed_messages(db, "s_parent", {
+            "role": "assistant",
+            "content": "Void crystal found in the deep caverns",
+        })
+        db.sessions.end("s_parent", "compression")
 
-        db.create_session("s_child", source="cli", parent_session_id="s_parent")
-        db.append_message("s_child", role="user", content="Continue void crystal work")
+        seed_session(db, "s_child", "cli", parent_session_id="s_parent")
+        seed_messages(db, "s_child", {"role": "user", "content": "Continue void crystal work"})
 
         result = json.loads(session_search(
-            query="void crystal", db=db, current_session_id="s_child",
+            query="void crystal", db=db, persistence=persistence, current_session_id="s_child",
         ))
         assert result["success"] is True
         assert result["count"] >= 1
@@ -764,21 +817,27 @@ class TestDelegationExclusion:
     is still visible to the parent agent. parent_session_id is set but the
     parent does NOT have end_reason='compression'."""
 
-    def test_delegation_parent_excluded_from_child(self, db):
+    def test_delegation_parent_excluded_from_child(self, db, persistence):
         """Child can see its own content but parent's live content stays
         excluded (it's in context via delegation)."""
-        db.create_session("s_parent", source="cli")
-        db.append_message("s_parent", role="user",
-                          content="nebula deployment infrastructure setup")
-        db.append_message("s_parent", role="assistant",
-                          content="Nebula deployment configured successfully")
+        seed_session(db, "s_parent", "cli")
+        seed_messages(db, "s_parent", {
+            "role": "user",
+            "content": "nebula deployment infrastructure setup",
+        })
+        seed_messages(db, "s_parent", {
+            "role": "assistant",
+            "content": "Nebula deployment configured successfully",
+        })
 
-        db.create_session("s_child", source="cli", parent_session_id="s_parent")
-        db.append_message("s_child", role="user",
-                          content="delegated nebula deployment subtask")
+        seed_session(db, "s_child", "cli", parent_session_id="s_parent")
+        seed_messages(db, "s_child", {
+            "role": "user",
+            "content": "delegated nebula deployment subtask",
+        })
 
         result = json.loads(session_search(
-            query="nebula deployment", db=db, current_session_id="s_child",
+            query="nebula deployment", db=db, persistence=persistence, current_session_id="s_child",
         ))
         assert result["count"] == 0
 
@@ -801,39 +860,46 @@ class TestCompactionDiscoveryBothLayers:
     exclude compaction summaries / cap content length."""
 
     def _seed_compacted_session(self, db):
-        db.create_session("s_both", source="cli")
+        seed_session(db, "s_both", "cli")
         # Long normal opening — exercises the 1200-char bookend cap.
-        db.append_message("s_both", role="user",
-                          content="Kick off the obsidian gateway migration. " + "o" * 5000)
-        db.append_message("s_both", role="assistant",
-                          content="Starting the obsidian gateway migration plan.")
+        seed_messages(db, "s_both", {
+            "role": "user",
+            "content": "Kick off the obsidian gateway migration. " + "o" * 5000,
+        })
+        seed_messages(db, "s_both", {
+            "role": "assistant",
+            "content": "Starting the obsidian gateway migration plan.",
+        })
         # Padding so the anchored window doesn't swallow the bookends.
         for i in range(10):
-            db.append_message("s_both", role="user", content=f"migration step {i}")
-            db.append_message("s_both", role="assistant", content=f"migration step {i} done")
+            seed_messages(db, "s_both", {"role": "user", "content": f"migration step {i}"})
+            seed_messages(db, "s_both", {"role": "assistant", "content": f"migration step {i} done"})
         # The FTS match target — will be archived by compaction below.
-        db.append_message("s_both", role="user",
-                          content="the obsidian gateway needs a quartz keystone to activate")
-        db.append_message("s_both", role="assistant",
-                          content="Noted: quartz keystone required for the obsidian gateway.")
+        seed_messages(db, "s_both", {
+            "role": "user",
+            "content": "the obsidian gateway needs a quartz keystone to activate",
+        })
+        seed_messages(db, "s_both", {
+            "role": "assistant",
+            "content": "Noted: quartz keystone required for the obsidian gateway.",
+        })
         for i in range(5):
-            db.append_message("s_both", role="user", content=f"wrap-up {i}")
-            db.append_message("s_both", role="assistant", content=f"wrapped {i}")
+            seed_messages(db, "s_both", {"role": "user", "content": f"wrap-up {i}"})
+            seed_messages(db, "s_both", {"role": "assistant", "content": f"wrapped {i}"})
         # Compact in place: everything above becomes active=0/compacted=1 and
         # the handoff summary is inserted as the new live tail.
-        db.archive_and_compact("s_both", [
+        db.messages.compact("s_both", [NewMessage.from_live(m) for m in [
             {"role": "user",
              "content": "[CONTEXT COMPACTION — REFERENCE ONLY] "
                         "Earlier turns were compacted into this summary. " + "s" * 50000},
             {"role": "assistant", "content": "Continuing after compaction."},
-        ])
-        db._conn.commit()
+        ]])
 
-    def test_archived_hit_surfaces_with_bounded_summary_free_bookends(self, db):
+    def test_archived_hit_surfaces_with_bounded_summary_free_bookends(self, db, persistence):
         self._seed_compacted_session(db)
 
         result = json.loads(session_search(
-            query="quartz keystone", db=db, current_session_id="s_both",
+            query="quartz keystone", db=db, persistence=persistence, current_session_id="s_both",
         ))
 
         # Layer 1 — discovery scope: the archived (active=0, compacted=1)
@@ -844,7 +910,7 @@ class TestCompactionDiscoveryBothLayers:
         assert entry["session_id"] == "s_both"
 
         # Layer 2a — summary exclusion: the compaction handoff row sits at the
-        # session tail (freshly inserted by archive_and_compact), exactly where
+        # session tail (freshly inserted by messages.compact), exactly where
         # bookend_end samples — it must be filtered out.
         for msg in entry.get("bookend_start", []) + entry.get("bookend_end", []):
             assert "[CONTEXT COMPACTION" not in (msg.get("content") or "")
@@ -868,27 +934,30 @@ class TestRewindExclusion:
     """Rewind/undo rows (active=0, compacted=0) must STAY hidden — only
     compaction archives (active=0, compacted=1) should surface."""
 
-    def test_compacted_messages_still_surface_alongside_rewind(self, db):
+    def test_compacted_messages_still_surface_alongside_rewind(self, db, persistence):
         """On the same session: compacted rows surface, rewind rows don't."""
-        db.create_session("s_mixed", source="cli")
+        seed_session(db, "s_mixed", "cli")
         # Message that will be compacted
-        db.append_message("s_mixed", role="user",
-                          content="compaction archived content beta")
-        db.archive_and_compact("s_mixed", [
+        seed_messages(db, "s_mixed", {
+            "role": "user",
+            "content": "compaction archived content beta",
+        })
+        db.messages.compact("s_mixed", [NewMessage.from_live(m) for m in [
             {"role": "assistant", "content": "Summary of beta"},
-        ])
+        ]])
         # Now add a post-compaction message and rewind it
-        mid2 = db.append_message("s_mixed", role="user",
-                                 content="rewound content gamma")
-        db._conn.execute(
+        mid2 = seed_messages(db, "s_mixed", {
+            "role": "user",
+            "content": "rewound content gamma",
+        })[0]
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
             "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
             (mid2,),
-        )
-        db._conn.commit()
+        ))
 
         # Compacted content should be discoverable
         result_compact = json.loads(session_search(
-            query="compaction archived content beta", db=db,
+            query="compaction archived content beta", db=db, persistence=persistence,
             current_session_id="s_mixed",
         ))
         assert result_compact["count"] >= 1
@@ -897,7 +966,7 @@ class TestRewindExclusion:
         # retry may legitimately surface OTHER active rows sharing the common term
         # "content"; the invariant is that the rewound row itself never comes back.
         result_rewind = json.loads(session_search(
-            query="rewound content gamma", db=db,
+            query="rewound content gamma", db=db, persistence=persistence,
             current_session_id="s_mixed",
         ))
         for entry in result_rewind["results"]:
@@ -910,33 +979,39 @@ class TestLegacyContinuationPlusDelegation:
     must stay excluded — its content is still live to the parent agent.
     Only the compression-ended ancestor's content should surface."""
 
-    def test_compression_parent_surfaces_but_delegate_child_excluded(self, db):
+    def test_compression_parent_surfaces_but_delegate_child_excluded(self, db, persistence):
         """Setup: grandparent (compression) → parent (compression) → child
         (active, current session). A delegation grandchild is created under
         the parent. Searching from the child should find grandparent/parent
         content but NOT the delegation grandchild's content."""
         # Grandparent: compression-ended, has searchable content
-        db.create_session("s_gp", source="cli")
-        db.append_message("s_gp", role="user",
-                          content="grandparent cosmic anomaly research data")
-        db.end_session("s_gp", "compression")
+        seed_session(db, "s_gp", "cli")
+        seed_messages(db, "s_gp", {
+            "role": "user",
+            "content": "grandparent cosmic anomaly research data",
+        })
+        db.sessions.end("s_gp", "compression")
 
         # Parent: compression-ended continuation
-        db.create_session("s_p", source="cli", parent_session_id="s_gp")
-        db.append_message("s_p", role="user",
-                          content="parent cosmic anomaly follow-up notes")
-        db.end_session("s_p", "compression")
+        seed_session(db, "s_p", "cli", parent_session_id="s_gp")
+        seed_messages(db, "s_p", {
+            "role": "user",
+            "content": "parent cosmic anomaly follow-up notes",
+        })
+        db.sessions.end("s_p", "compression")
 
         # Current session: active child
-        db.create_session("s_current", source="cli", parent_session_id="s_p")
+        seed_session(db, "s_current", "cli", parent_session_id="s_p")
 
         # Delegation child under s_p (not compression-ended)
-        db.create_session("s_delegate", source="cli", parent_session_id="s_p")
-        db.append_message("s_delegate", role="assistant",
-                          content="delegated cosmic anomaly subtask results")
+        seed_session(db, "s_delegate", "cli", parent_session_id="s_p")
+        seed_messages(db, "s_delegate", {
+            "role": "assistant",
+            "content": "delegated cosmic anomaly subtask results",
+        })
 
         result = json.loads(session_search(
-            query="cosmic anomaly", db=db,
+            query="cosmic anomaly", db=db, persistence=persistence,
             current_session_id="s_current",
         ))
 
@@ -961,45 +1036,52 @@ class TestLegacyContinuationPlusDelegation:
 
 def _seed_gateway_new_reset_chain(db, *, needle="ibuprofen night-dose protocol"):
     """A → B → C gateway /new chain. C is the empty current session."""
-    db.create_session(
-        "s_aug12", source="telegram", session_key="tg:user:1",
+    seed_session(
+        db,
+        "s_aug12",
+        "telegram",
+        session_key="tg:user:1",
     )
-    db.append_message("s_aug12", role="user", content="older unrelated chat")
-    db.end_session("s_aug12", "session_reset")
+    seed_messages(db, "s_aug12", {"role": "user", "content": "older unrelated chat"})
+    db.sessions.end("s_aug12", "session_reset")
 
-    db.create_session(
-        "s_night", source="telegram",
+    seed_session(
+        db,
+        "s_night",
+        "telegram",
         parent_session_id="s_aug12",
         session_key="tg:user:1",
         model_config={"_reset_from": "s_aug12"},
     )
-    db._conn.execute(
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET title = ? WHERE id = ?",
         ("Night ibuprofen plan", "s_night"),
-    )
-    db.append_message("s_night", role="user", content=f"Remember the {needle}")
-    db.append_message(
-        "s_night", role="assistant", content=f"Noted {needle} at 21:00",
-    )
-    db.end_session("s_night", "session_reset")
+    ))
+    seed_messages(db, "s_night", {"role": "user", "content": f"Remember the {needle}"})
+    seed_messages(db, "s_night", {
+        "role": "assistant",
+        "content": f"Noted {needle} at 21:00",
+    })
+    db.sessions.end("s_night", "session_reset")
 
-    db.create_session(
-        "s_today", source="telegram",
+    seed_session(
+        db,
+        "s_today",
+        "telegram",
         parent_session_id="s_night",
         session_key="tg:user:1",
         model_config={"_reset_from": "s_night"},
     )
-    db._conn.commit()
     return needle
 
 
 class TestNewResetLineageDiscovery:
     """After /new, yesterday's session must be searchable from the empty child."""
 
-    def test_session_reset_parent_discoverable_from_child(self, db):
+    def test_session_reset_parent_discoverable_from_child(self, db, persistence):
         _seed_gateway_new_reset_chain(db)
         result = json.loads(session_search(
-            query="ibuprofen", db=db, current_session_id="s_today",
+            query="ibuprofen", db=db, persistence=persistence, current_session_id="s_today",
         ))
         assert result["success"] is True
         assert result["count"] >= 1
@@ -1008,66 +1090,74 @@ class TestNewResetLineageDiscovery:
         blob = json.dumps(result["results"], ensure_ascii=False).lower()
         assert "ibuprofen" in blob
 
-    def test_cli_new_session_parent_discoverable_from_child(self, db):
-        db.create_session("s_cli_old", source="cli")
-        db.append_message(
-            "s_cli_old", role="user",
-            content="quartz lantern wiring diagram from yesterday",
-        )
-        db.end_session("s_cli_old", "new_session")
-        db.create_session(
-            "s_cli_new", source="cli", parent_session_id="s_cli_old",
+    def test_cli_new_session_parent_discoverable_from_child(self, db, persistence):
+        seed_session(db, "s_cli_old", "cli")
+        seed_messages(db, "s_cli_old", {
+            "role": "user",
+            "content": "quartz lantern wiring diagram from yesterday",
+        })
+        db.sessions.end("s_cli_old", "new_session")
+        seed_session(
+            db,
+            "s_cli_new",
+            "cli",
+            parent_session_id="s_cli_old",
         )
         result = json.loads(session_search(
-            query="quartz lantern", db=db, current_session_id="s_cli_new",
+            query="quartz lantern", db=db, persistence=persistence, current_session_id="s_cli_new",
         ))
         assert result["count"] >= 1
         assert "s_cli_old" in [r["session_id"] for r in result["results"]]
 
 
-    def test_branched_parent_still_excluded(self, db):
+    def test_branched_parent_still_excluded(self, db, persistence):
         """/branch verbatim-copies the transcript into the child, so the
         parent's content IS the branch child's live context — it must not
         surface as a same-lineage recall hit (unlike /new-reset parents)."""
-        db.create_session("s_p", source="cli")
-        db.append_message(
-            "s_p", role="user", content="zephyr crystal cache design",
-        )
-        db.end_session("s_p", "branched")
-        db.create_session(
-            "s_q", source="cli", parent_session_id="s_p",
+        seed_session(db, "s_p", "cli")
+        seed_messages(db, "s_p", {
+            "role": "user",
+            "content": "zephyr crystal cache design",
+        })
+        db.sessions.end("s_p", "branched")
+        seed_session(
+            db,
+            "s_q",
+            "cli",
+            parent_session_id="s_p",
             model_config={"_branched_from": "s_p"},
         )
         # /branch copies history into the child
-        db.append_message(
-            "s_q", role="user", content="zephyr crystal cache design",
-        )
+        seed_messages(db, "s_q", {
+            "role": "user",
+            "content": "zephyr crystal cache design",
+        })
         result = json.loads(session_search(
-            query="zephyr crystal", db=db, current_session_id="s_q",
+            query="zephyr crystal", db=db, persistence=persistence, current_session_id="s_q",
         ))
         sids = [r["session_id"] for r in result.get("results", [])]
         assert "s_p" not in sids
 
-    def test_title_match_reset_parent_not_dropped(self, db):
+    def test_title_match_reset_parent_not_dropped(self, db, persistence):
         _seed_gateway_new_reset_chain(db)
         result = json.loads(session_search(
-            query="Night ibuprofen plan", db=db, current_session_id="s_today",
+            query="Night ibuprofen plan", db=db, persistence=persistence, current_session_id="s_today",
         ))
         assert result["count"] >= 1
         sids = [r["session_id"] for r in result["results"]]
         assert "s_night" in sids
 
-    def test_scroll_into_reset_parent_is_allowed(self, db):
+    def test_scroll_into_reset_parent_is_allowed(self, db, persistence):
         _seed_gateway_new_reset_chain(db)
         disc = json.loads(session_search(
-            query="ibuprofen", db=db, current_session_id="s_today", limit=1,
+            query="ibuprofen", db=db, persistence=persistence, current_session_id="s_today", limit=1,
         ))
         assert disc["count"] >= 1
         hit = disc["results"][0]
         scrolled = json.loads(session_search(
             session_id=hit["session_id"],
             around_message_id=hit["match_message_id"],
-            db=db,
+            db=db, persistence=persistence,
             current_session_id="s_today",
         ))
         assert scrolled["success"] is True
@@ -1079,42 +1169,48 @@ class TestNewResetLineageDiscovery:
 class TestNewResetLineageBrowse:
     """Browse must list /new-reset conversations, not only cron/root rows."""
 
-    def test_reset_parent_appears_in_browse(self, db):
+    def test_reset_parent_appears_in_browse(self, db, persistence):
         _seed_gateway_new_reset_chain(db)
-        result = json.loads(session_search(db=db, current_session_id="s_today"))
+        result = json.loads(session_search(db=db, persistence=persistence, current_session_id="s_today"))
         assert result["mode"] == "browse"
         sids = [r["session_id"] for r in result["results"]]
         assert "s_today" not in sids
         assert "s_night" in sids
 
-    def test_browse_still_hides_live_delegation_child(self, db):
-        db.create_session("s_main", source="cli")
-        db.append_message("s_main", role="user", content="parent work")
-        db.create_session(
-            "s_delegate", source="cli", parent_session_id="s_main",
+    def test_browse_still_hides_live_delegation_child(self, db, persistence):
+        seed_session(db, "s_main", "cli")
+        seed_messages(db, "s_main", {"role": "user", "content": "parent work"})
+        seed_session(
+            db,
+            "s_delegate",
+            "cli",
+            parent_session_id="s_main",
         )
-        db.append_message("s_delegate", role="assistant", content="subagent work")
-        result = json.loads(session_search(db=db, current_session_id="s_other"))
+        seed_messages(db, "s_delegate", {"role": "assistant", "content": "subagent work"})
+        result = json.loads(session_search(db=db, persistence=persistence, current_session_id="s_other"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_delegate" not in sids
         assert "s_main" in sids
 
-    def test_browse_lists_legacy_premarker_reset_child(self, db):
+    def test_browse_lists_legacy_premarker_reset_child(self, db, persistence):
         """A pre-marker reset child (no _reset_from, admitted by the SQL
         same-key heuristic because its parent ended at a reset boundary on
         the same session_key) must not be re-hidden by a Python re-check.
         Regression guard for the follow-up to #85756."""
-        db.create_session("s_old", source="telegram", session_key="tg:legacy:1")
-        db.append_message("s_old", role="user", content="legacy era chat")
-        db.end_session("s_old", "session_reset")
+        seed_session(db, "s_old", "telegram", session_key="tg:legacy:1")
+        seed_messages(db, "s_old", {"role": "user", "content": "legacy era chat"})
+        db.sessions.end("s_old", "session_reset")
         # Legacy child: parent link + same session_key, NO _reset_from marker,
         # still live (end_reason=None).
-        db.create_session(
-            "s_legacy_child", source="telegram",
-            parent_session_id="s_old", session_key="tg:legacy:1",
+        seed_session(
+            db,
+            "s_legacy_child",
+            "telegram",
+            parent_session_id="s_old",
+            session_key="tg:legacy:1",
         )
-        db.append_message("s_legacy_child", role="user", content="current era chat")
-        result = json.loads(session_search(db=db, current_session_id="s_other"))
+        seed_messages(db, "s_legacy_child", {"role": "user", "content": "current era chat"})
+        result = json.loads(session_search(db=db, persistence=persistence, current_session_id="s_other"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
 
@@ -1125,8 +1221,10 @@ def _unix(year, month, day):
 
 def _set_started(db, **started_at_by_sid):
     for sid, ts in started_at_by_sid.items():
-        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid))
-    db._conn.commit()
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (ts, sid),
+        ))
 
 
 class TestDiscoveryTemporalNarrowing:
@@ -1146,29 +1244,29 @@ class TestDiscoveryTemporalNarrowing:
         else:
             assert _parse_iso_bound(value) == expected
 
-    def test_iso_window_is_applied_in_sql_not_as_a_post_filter(self, db, monkeypatch):
+    def test_iso_window_is_applied_in_sql_not_as_a_post_filter(self, db, persistence, monkeypatch):
         """A June hit must survive even when FTS rank would fill the scan with August rows, so the
         bound has to live in the WHERE clause rather than trim the already-truncated top-N. An
         invalid bound is a tool error, not a silent unbounded search."""
         monkeypatch.setattr("tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2)
         for i in range(4):
             sid = f"s_aug_{i}"
-            db.create_session(sid, source="cli")
-            db.append_message(sid, role="user", content="modpack modpack modpack modpack")
-            db.append_message(sid, role="assistant", content="modpack details " * 20)
+            seed_session(db, sid, "cli")
+            seed_messages(db, sid, {"role": "user", "content": "modpack modpack modpack modpack"})
+            seed_messages(db, sid, {"role": "assistant", "content": "modpack details " * 20})
             _set_started(db, **{sid: _unix(2026, 8, 10)})
-        db.create_session("s_june", source="cli")
-        db.append_message("s_june", role="user", content="modpack")
-        db.append_message("s_june", role="assistant", content="ok")
+        seed_session(db, "s_june", "cli")
+        seed_messages(db, "s_june", {"role": "user", "content": "modpack"})
+        seed_messages(db, "s_june", {"role": "assistant", "content": "ok"})
         _set_started(db, s_june=_unix(2026, 6, 15))
 
         result = json.loads(session_search(
-            query="modpack", limit=5, after="2026-06-01", before="2026-07-01", db=db))
+            query="modpack", limit=5, after="2026-06-01", before="2026-07-01", db=db, persistence=persistence))
         assert result["success"] is True
         assert [r["session_id"] for r in result["results"]] == ["s_june"]
-        assert json.loads(session_search(query="modpack", after="not-a-date", db=db))["success"] is False
+        assert json.loads(session_search(query="modpack", after="not-a-date", db=db, persistence=persistence))["success"] is False
 
-    def test_relative_bounds_reach_the_tool_through_the_inline_executor(self, db):
+    def test_relative_bounds_reach_the_tool_through_the_inline_executor(self, db, persistence):
         """after="7d" keeps the last week, before="7d" keeps everything older — and both must
         survive the production dispatch (INLINE_TOOL_EXECUTORS), which maps schema args to kwargs
         explicitly and used to drop the new parameters on the floor."""
@@ -1179,7 +1277,7 @@ class TestDiscoveryTemporalNarrowing:
         _seed_modpack_sessions(db)
         now = int(time.time())
         _set_started(db, s_newest=now - 2 * 86400, s_middle=now - 30 * 86400, s_oldest=now - 60 * 86400)
-        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, persistence=persistence, session_id="current")
         ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
 
         def run(**args):
@@ -1194,34 +1292,35 @@ class TestDiscoveryTemporalNarrowing:
 
 
 class TestDiscoverySessionExclusion:
-    def test_exclude_session_ids_drops_whole_lineage(self, db):
-        db.create_session("s_root", source="cli")
-        db.append_message("s_root", role="user", content="unique lineage token alpha")
-        db.append_message("s_root", role="assistant", content="noted unique lineage token alpha")
-        db.create_session("s_child", source="cli", parent_session_id="s_root")
-        db.append_message("s_child", role="user", content="follow-up unique lineage token alpha")
-        db.append_message("s_child", role="assistant", content="child unique lineage token alpha")
+    def test_exclude_session_ids_drops_whole_lineage(self, db, persistence):
+        seed_session(db, "s_root", "cli")
+        seed_messages(db, "s_root", {"role": "user", "content": "unique lineage token alpha"})
+        seed_messages(db, "s_root", {"role": "assistant", "content": "noted unique lineage token alpha"})
+        seed_session(db, "s_child", "cli", parent_session_id="s_root")
+        seed_messages(db, "s_child", {"role": "user", "content": "follow-up unique lineage token alpha"})
+        seed_messages(db, "s_child", {"role": "assistant", "content": "child unique lineage token alpha"})
         _set_started(db, s_root=_unix(2026, 6, 1), s_child=_unix(2026, 6, 2))
 
-        found = json.loads(session_search(query="unique lineage token alpha", limit=5, db=db))
+        found = json.loads(session_search(query="unique lineage token alpha", limit=5, db=db, persistence=persistence))
         assert {r["session_id"] for r in found["results"]} & {"s_root", "s_child"}
         excluded = json.loads(session_search(
-            query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
+            query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db, persistence=persistence))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
 
 
 class TestBrowseDefaultLimit:
-    def test_no_limit_browse_returns_ten_on_every_entry_point(self, db):
+    def test_no_limit_browse_returns_ten_on_every_entry_point(self, db, tmp_path, monkeypatch):
         """Browse must not inherit discovery's default of 3 via the function, the registry
         handler, or the inline executor (the live path), each of which used to bake in 3."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # a call without a handle reads the home's store
         from types import SimpleNamespace
 
         from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
         from tools.registry import registry
 
         for i in range(12):
-            db.create_session(f"s_browse_{i:02d}", source="cli")
-            db.append_message(f"s_browse_{i:02d}", role="user", content=f"browse seed {i}")
+            seed_session(db, f"s_browse_{i:02d}", "cli")
+            seed_messages(db, f"s_browse_{i:02d}", {"role": "user", "content": f"browse seed {i}"})
         agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
         ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
 

@@ -127,7 +127,7 @@ def _callback_tool(module: str, func: str, callback_attr: str, *arg_specs: _ArgS
 def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     session_db = agent._get_session_db_for_recall()
     if not session_db:
-        from hermes_state import format_session_db_unavailable
+        from storage_user_copy import format_session_db_unavailable
 
         return json.dumps({"success": False, "error": format_session_db_unavailable()})
     return _call_tool(
@@ -139,7 +139,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
             ("exclude_session_ids", "exclude_session_ids"),
         ),
-        db=session_db, current_session_id=agent.session_id,
+        db=session_db, persistence=getattr(agent, "persistence", None), current_session_id=agent.session_id,
     )
 
 
@@ -274,7 +274,8 @@ def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
     from tools.setup_beat_tool import setup_beat_tool
 
     return setup_beat_tool(
-        args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
+        args, db=getattr(agent, "_session_db", None), persistence=getattr(agent, "persistence", None),
+        session_id=getattr(agent, "session_id", None) or "",
         tool_call_id=ctx.tool_call_id or "", callback=getattr(agent, "setup_beat_callback", None),
         end_turn=lambda: agent.interrupt(tool_reason=_REASON_NEW_MESSAGE),
     )

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,19 +85,25 @@ class Proposal:
 # Scan: session DB -> (command, class description) records
 # ---------------------------------------------------------------------------
 
-def default_db_path() -> Path:
+def _store_target(db_path: Optional[Path] = None) -> Optional[Path]:
+    """What a scan reads: the ``db_path`` file when one is given, else the current profile's folder, which names
+    its store; None when that store does not exist."""
+    if db_path:
+        return Path(db_path) if Path(db_path).exists() else None
     from hermes_constants import get_hermes_home
-    return get_hermes_home() / "state.db"
+    from persistence_assembly import profile_scope, store_exists
+    scope = profile_scope(home=get_hermes_home())
+    return scope.profile_dir if store_exists(scope) else None
 
 
-def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-
-
-def _fetch_rows(cur) -> Iterator[tuple]:
-    """Stream cursor rows in 2000-row batches."""
-    while rows := cur.fetchmany(2000):
-        yield from rows
+def _shown_store(db_path: Optional[Path] = None) -> Path:
+    """The store file the output names: the ``db_path`` given, else the file that holds the current profile's store."""
+    if db_path:
+        return Path(db_path)
+    from hermes_constants import get_hermes_home
+    from persistence_assembly import profile_scope, store_location
+    scope = profile_scope(home=get_hermes_home())
+    return store_location(scope) or scope.profile_dir
 
 
 def _json_or_none(raw):
@@ -108,14 +113,9 @@ def _json_or_none(raw):
         return None
 
 
-def _iter_terminal_calls(con: sqlite3.Connection, since_ts: float) -> Iterator[tuple[str, str]]:
+def _iter_terminal_calls(messages, since_ts: float) -> Iterator[tuple[str, str]]:
     """Yield ``(tool_call_id, command)`` for every terminal tool call."""
-    cur = con.execute(
-        "SELECT tool_calls FROM messages WHERE role='assistant' AND tool_calls IS NOT NULL "
-        "AND tool_calls LIKE '%terminal%' AND timestamp >= ?",
-        (since_ts,),
-    )
-    for (raw,) in _fetch_rows(cur):
+    for raw in messages.terminal_tool_call_payloads(since_ts=since_ts):
         calls = _json_or_none(raw)
         for call in calls if isinstance(calls, list) else ():
             fn = call.get("function") or {} if isinstance(call, dict) else {}
@@ -129,17 +129,11 @@ def _iter_terminal_calls(con: sqlite3.Connection, since_ts: float) -> Iterator[t
                 yield (call.get("id") or "", command)
 
 
-def _blocked_tool_call_ids(con: sqlite3.Connection, since_ts: float) -> set:
+def _blocked_tool_call_ids(messages, since_ts: float) -> set:
     """Collect tool_call_ids whose result shows the command never ran freely."""
-    cur = con.execute(
-        "SELECT tool_call_id, content FROM messages "
-        "WHERE role='tool' AND tool_call_id IS NOT NULL AND timestamp >= ? "
-        "AND (content LIKE '%BLOCKED%' OR content LIKE '%approval%')",
-        (since_ts,),
-    )
     return {
         tool_call_id
-        for tool_call_id, content in _fetch_rows(cur)
+        for tool_call_id, content in messages.blocked_tool_result_payloads(since_ts=since_ts)
         if content and any(marker in content for marker in _BLOCK_MARKERS)
     }
 
@@ -148,18 +142,18 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
     that actually executed (i.e. carried an implied user approval).
     """
+    from persistence_assembly import open_persistence_reader
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
-    path = Path(db_path) if db_path else default_db_path()
-    if not path.exists():
+    path = _store_target(db_path)
+    if path is None:
         return []
 
     since_ts = 0.0 if days <= 0 else time.time() - days * 86400
 
     records: list[tuple[str, str]] = []
-    con = _connect_readonly(path)
-    try:
-        blocked = _blocked_tool_call_ids(con, since_ts)
-        for tool_call_id, command in _iter_terminal_calls(con, since_ts):
+    with open_persistence_reader(path) as store:
+        blocked = _blocked_tool_call_ids(store.messages, since_ts)
+        for tool_call_id, command in _iter_terminal_calls(store.messages, since_ts):
             if tool_call_id in blocked:
                 continue
             # Hardline commands are unconditionally blocked at runtime; never mine them (defense in
@@ -169,8 +163,6 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
             is_dangerous, _key, description = detect_dangerous_command(command)
             if is_dangerous:
                 records.append((command, description))
-    finally:
-        con.close()
     return records
 
 
@@ -315,10 +307,11 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
 
 def suggest_command(args) -> int:
     """Entry point for ``hermes approvals suggest``."""
-    db_path = Path(args.db) if getattr(args, "db", None) else default_db_path()
+    db_path = _store_target(getattr(args, "db", None))
+    shown = _shown_store(getattr(args, "db", None))
     days = getattr(args, "days", 90)
-    if not db_path.exists():
-        print(f"Session database not found: {db_path}")
+    if db_path is None:
+        print(f"Session database not found: {shown}")
         return 1
 
     import tools.approval as approval_module
@@ -349,7 +342,7 @@ def suggest_command(args) -> int:
 
     if as_json:
         payload = {
-            "db": str(db_path),
+            "db": str(shown),
             "days": days,
             "proposals": [
                 {

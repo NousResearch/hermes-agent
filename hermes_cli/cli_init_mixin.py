@@ -12,9 +12,9 @@ import queue
 import threading
 from datetime import datetime
 from hermes_cli.fallback_config import get_fallback_chain
-from hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
+from session_rules.session_ids import new_session_id
 from typing import Any, Dict, List, Optional
 from utils import base_url_host_matches, base_url_hostname, is_truthy_value
 
@@ -437,7 +437,7 @@ class CLIInitMixin:
             # the store before relying on resume.
             self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
-            from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+            from storage_user_copy import describe_storage_failure, storage_failure_details
             from agent.i18n import t
             failure = describe_storage_failure(e)
             def _present_store_warning():
@@ -484,7 +484,6 @@ class CLIInitMixin:
         from hermes_cli.gateway_session_store import GatewaySessionStore
         store = getattr(self, "_session_db", None)
         if not isinstance(store, GatewaySessionStore) or not getattr(self, "_gateway_session_open", False):
-            from hermes_state_ids import new_session_id
             return new_session_id(now)
         if branch_of:
             child = store.branch(branch_of, title)

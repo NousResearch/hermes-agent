@@ -8,7 +8,7 @@ import pytest
 from gateway import hosted_room_links, hosted_rooms
 from tests.gateway.test_hosted_room_disband_publication import _surface
 from tests.gateway.test_session_group_peers import (
-    gateway as gateway_fixture, linked_peer as linked_peer_fixture, linked_room, _seat, invite, call,
+    gateway as gateway_fixture, linked_peer as linked_peer_fixture, linked_room, _seat, invite,
 )
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 
@@ -36,8 +36,9 @@ async def test_disband_revoke_releases_shared_route_lock(gateway, linked_peer, m
     ending = asyncio.create_task(request('groups.disband', room_id='linked'))
     try:
         assert await asyncio.to_thread(reached.wait, 5)
-        assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None
-        assert len(hosted_room_links.load_room_links(service.db_path)) == 1
+        assert hosted_rooms.room_state(
+            service.store, placement=service.placement, room_id='linked').get('disbanded_at') is None
+        assert len(hosted_room_links.load_room_links(service.store, placement=service.placement)) == 1
         refused = await asyncio.wait_for(request(
             'groups.peer.register', room_id='linked', member_id='reviewer', target_url=url,
             target_profile='default', grant=grant, catalog=catalog), 5)

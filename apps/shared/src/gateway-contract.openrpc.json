@@ -24683,7 +24683,7 @@
       },
       "MessageReaction": {
         "additionalProperties": true,
-        "description": "One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
+        "description": "One persisted reaction row (``MessageRepository.set_reaction``); ``seen`` is\nstamped once announced.",
         "properties": {
           "emoji": {
             "title": "Emoji",
@@ -39313,7 +39313,7 @@
       },
       "SessionMutateParams": {
         "additionalProperties": false,
-        "description": "``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
+        "description": "``operation`` + ``payload`` are validated by ``persistence.authority.runtime.parse_mutation``;\n``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.\n``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite\nthe session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project. ``edit_policy``\n(``{policy}``: ask / workspace_session / session) is an ACP session's edit approval (main's ACP modes).",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -39441,7 +39441,7 @@
       },
       "SessionPruneParams": {
         "additionalProperties": false,
-        "description": "Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
+        "description": "Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as\n``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``).",
         "properties": {
           "filters": {
             "anyOf": [

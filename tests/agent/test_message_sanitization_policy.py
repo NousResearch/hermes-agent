@@ -12,15 +12,10 @@ from types import SimpleNamespace
 import pytest
 
 from agent.message_sanitization import (
-    apply_reasoning_content_policy,
-    coalesce_tool_call_id,
-    deterministic_call_id,
-    matches_reasoning_echo_family,
-    needs_reasoning_echo,
-    reapply_reasoning_echo,
-    reasoning_echo_family,
-    uniquify_tool_call_ids,
+    apply_reasoning_content_policy, deterministic_call_id, matches_reasoning_echo_family,
+    needs_reasoning_echo, reapply_reasoning_echo, reasoning_echo_family, uniquify_tool_call_ids,
 )
+from session_rules.turns import coalesce_tool_call_id
 
 # ---------------------------------------------------------------------------
 # deterministic_call_id — byte-exact (prompt-cache keys)

@@ -96,6 +96,11 @@ Notes:
   A hard crash leaves the last-known status — the inherent limitation of a
   profile-text indicator.
 - Off by default, since it mutates the bot's global profile.
+- Hermes saves the bot's own short description (the one set in @BotFather) before
+  it first writes **Online**, and keeps that copy across restarts and crashes.
+  Turn `status_indicator` off and the next connect puts your text back. Edit the
+  description in @BotFather while the gateway is down and the new text is what
+  Hermes saves.
 
 ### Cold-boot pending queue (Optional)
 

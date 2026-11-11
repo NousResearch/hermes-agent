@@ -3006,19 +3006,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return False
 
     async def _set_status_indicator(self, online: bool) -> None:
-        """Set the bot's short description to the online/offline text (closest Bot API surface to
-        presence). No-op unless ``extra.status_indicator``; failures are debug-logged."""
-        if not getattr(self, "_status_indicator_enabled", False):
-            return
-        bot = self._bot
-        if bot is None:
-            return
-        text = (self._status_online_text if online else self._status_offline_text)[:120]  # Telegram cap
-        try:
-            await bot.set_my_short_description(short_description=text)
-            logger.info("[%s] Set bot status indicator to %r", self.name, text)
-        except Exception as e:
-            logger.debug("[%s] Failed to set bot status indicator to %r: %s", self.name, text, _redact_telegram_error_text(e))
+        """Bot short description as the opt-in online/offline indicator (telegram_status_indicator)."""
+        from plugins.platforms.telegram.telegram_status_indicator import set_status_indicator
+        await set_status_indicator(self, online)
 
     @staticmethod
     def _collect_live_tasks(candidates, current_task) -> list:

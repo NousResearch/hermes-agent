@@ -4,27 +4,11 @@ repo: https://github.com/takaolovely/hermes-walrus-memory
 sha: 324b0a150b74165402fdea52639062c9dd28a4a5
 subdir: plugin
 version: "0.3.0"
-requires_hermes: ">=0.16"
+requires_hermes: ">=0.16.0"
 maintainer: takaolovely
 tier: community
-category: memory
-description: >
-  Append-only memory with temporal provenance and hash-chain integrity. Corrections are
-  appended next to the original instead of overwriting it, recall returns the exact ledger
-  line behind any fact, and with Walrus credentials every line is also stored on Walrus
-  Mainnet. Runs zero-config as a local tamper-evident ledger with no external Python
-  dependencies. All file access is confined to the profile: the ledger lives under
-  plugin-data/hermes-walrus-memory, and memory_import reads only the profile's own
-  memories/MEMORY.md. It does not touch memory.provider, so it runs alongside the built-in
-  MEMORY.md rather than replacing it. Disclosure - when WALRUS_DELEGATE_KEY and
-  WALRUS_ACCOUNT_ID are set, every memory line (facts, corrections and derived rules) is
-  uploaded to the Walrus Memory relay (relayer.memory.walrus.xyz by default) under the
-  configured namespace. Lines are sent over TLS and sealed with Mysten SEAL at the relay
-  before they are written to Walrus; the plaintext is not sealed on this machine. Offline
-  that is the whole payload: no telemetry, no other network calls, and nothing is written
-  to ~/.hermes/MEMORY.md. Without credentials nothing leaves the machine. Reading sealed
-  blobs back requires a SEAL session, supplied through WALRUS_SEAL_SESSION or an optional
-  WALRUS_SEAL_BRIDGE command; nothing is pulled or decrypted without one.
+category: tools
+description: "Append-only memory with temporal provenance and hash-chain integrity. Corrections are appended next to the original instead of overwriting it, recall returns the exact ledger line behind any fact, and with Walrus credentials every line is also stored on Walrus Mainnet. Runs zero-config as a local tamper-evident ledger with no external Python dependencies. All file access is confined to the profile: the ledger lives under plugin-data/hermes-walrus-memory, and memory_import reads only the profile's own memories/MEMORY.md. It does not touch memory.provider, so it runs alongside the built-in MEMORY.md rather than replacing it. Disclosure - when WALRUS_DELEGATE_KEY and WALRUS_ACCOUNT_ID are set, every memory line (facts, corrections and derived rules) is uploaded to the Walrus Memory relay (relayer.memory.walrus.xyz by default) under the configured namespace. Lines are sent over TLS and sealed with Mysten SEAL at the relay before they are written to Walrus; the plaintext is not sealed on this machine. Offline that is the whole payload: no telemetry, no other network calls, and nothing is written to ~/.hermes/MEMORY.md. Without credentials nothing leaves the machine. Reading sealed blobs back requires a SEAL session, supplied through WALRUS_SEAL_SESSION or an optional WALRUS_SEAL_BRIDGE command; nothing is pulled or decrypted without one. Disclosure — when WALRUS_DELEGATE_KEY and WALRUS_ACCOUNT_ID are set, every memory line (facts, corrections and derived rules) is uploaded to the Walrus Memory relay (relayer.memory.walrus.xyz by default, or MEMWAL_SERVER_URL) under the configured namespace; lines travel in plaintext inside TLS and are sealed with Mysten SEAL at the relay, not on this machine; reading sealed lines back runs the optional WALRUS_SEAL_BRIDGE command you configure, with a minimal environment. Without credentials nothing leaves the machine."
 docs_url: https://github.com/takaolovely/hermes-walrus-memory#readme
 homepage_url: https://github.com/takaolovely/hermes-walrus-memory
 readme: true

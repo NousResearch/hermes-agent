@@ -421,6 +421,48 @@ async def test_aclosed_transport_serves_the_next_request_on_a_fresh_pool(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_a_hung_pool_close_does_not_strand_the_other_pools(monkeypatch):
+    """``aclose()`` detaches every pool at once; when one idle pool's close hangs past the adapter's
+    bounded drain, the other pools must still be retired: an idle one closes, and a busy one closes
+    once its open response does. Nothing can reach them again after the drain gives up."""
+    hang = asyncio.Event()
+    built = []
+
+    class _Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"{}"
+
+    class _Inner(httpx.AsyncBaseTransport):
+        def __init__(self, **_kwargs):
+            self.closed = False
+            built.append(self)
+
+        async def handle_async_request(self, request):
+            return httpx.Response(200, request=request, stream=_Body())
+
+        async def aclose(self):
+            if self is built[0]:
+                await hang.wait()  # the primary's close wedges
+            self.closed = True
+
+    from plugins.platforms.telegram import telegram_pool
+    monkeypatch.setattr(telegram_pool.httpx, "AsyncHTTPTransport", _Inner)
+    transport = tnet.TelegramFallbackTransport(["149.154.166.110", "149.154.167.220"], proxy=None)
+    idle_fallback = await transport._get_fallback("149.154.166.110")
+    busy_fallback = await transport._get_fallback("149.154.167.220")
+    response = await busy_fallback.handle_async_request(httpx.Request("POST", "https://api.telegram.org/bot1/getMe"))
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(transport.aclose(), timeout=0.5)  # the adapter's drain deadline
+        await async_wait_until(lambda: idle_fallback._inner.closed, timeout=5, what="idle fallback closes")
+        assert busy_fallback._retired and not busy_fallback._inner.closed
+        await response.aclose()
+        await async_wait_until(lambda: busy_fallback._inner.closed, timeout=5, what="busy fallback closes on release")
+    finally:
+        hang.set()
+
+
+@pytest.mark.asyncio
 async def test_no_proxy_custom_base_url_is_reached_directly(tmp_path, monkeypatch):
     """A self-hosted Bot API server in NO_PROXY is reached directly even with HTTPS_PROXY set: the
     adapter's request builder decided "no proxy" for it, and the transport must not re-resolve the

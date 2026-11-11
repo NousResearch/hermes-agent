@@ -1,0 +1,48 @@
+name: disko
+title: disko
+repo: https://github.com/emirkaan5/hermes-disko
+sha: 92941008c78981e935af6744e09ce2d441056e48
+description: >-
+  Run and steer a disko AI DJ set on your Mac from any Hermes chat. disko's model picks each
+  next track and beat-matches the mix; this plugin launches it on a music folder or a Spotify
+  playlist, starts the set, steers the energy, asks for a different next track, pauses and stops, through ten
+  tools, a /disko slash command and a hermes disko CLI that need no model turn, and a
+  pre_llm_call hook that tells the agent what is playing while a set runs. Standard library
+  only. Disclosure — talks only to disko's local control socket (~/.disko/control.sock),
+  which disko restricts to the same macOS user, so no token is used; reads ~/.disko/install.json
+  (disko's folder and Python path, written by disko; not a credential) to find disko, and reads
+  no token or credential file. No third-party network calls (an optional control_url, set by
+  the user, is contacted over plain HTTP with a token from Hermes's secret store). disko_launch
+  starts disko as a background process with a fixed command (no shell) that keeps running
+  after Hermes exits and logs to the plugin's data folder (a Spotify playlist is passed only as
+  `liked` or a playlist id; disko, not the plugin, then uses the user's own Spotify sign-in, and
+  only if the user turned Spotify audio on in disko themselves); disko_start plays music out
+  loud on the Mac. While a set runs, one line of track names is added to each message and reaches the
+  model provider. Requires disko (github.com/emirkaan5/disko) on macOS. No telemetry.
+maintainer: emirkaan5
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/emirkaan5/hermes-disko/blob/92941008c78981e935af6744e09ce2d441056e48/README.md
+version: "0.4.1"
+readme: true
+image: https://raw.githubusercontent.com/emirkaan5/hermes-disko/92941008c78981e935af6744e09ce2d441056e48/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/emirkaan5/hermes-disko/92941008c78981e935af6744e09ce2d441056e48/docs/screenshot.jpg
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - disko_status
+    - disko_find_tracks
+    - disko_start
+    - disko_set_energy
+    - disko_pick_again
+    - disko_pause
+    - disko_resume
+    - disko_stop
+    - disko_launch
+    - disko_quit
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

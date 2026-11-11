@@ -75,8 +75,8 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
     existing.extend_media(event)
     captions = merged_text(caption_text(existing), event, caption_text(event), merge_caption) or ""
     existing.text = merged_text(existing.text, event, event.text, merge_caption)
-    if captions != (existing.text or ""):  # some item inlined its file text
-        existing.__dict__[CAPTION_TEXT_ATTR] = captions
+    if CAPTION_TEXT_ATTR in existing.__dict__ or CAPTION_TEXT_ATTR in event.__dict__:  # an item inlined file text
+        existing.__dict__[CAPTION_TEXT_ATTR] = captions  # refreshed on every merge, so it never lags the text
         if caption_is_command(captions):
             # An album is judged by its ONE caption, which only one item carries. The uncaptioned siblings
             # inlined their text, which would become the command's arguments or hide the command; the files

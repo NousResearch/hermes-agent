@@ -26,10 +26,12 @@ Card for ``manage_connections``: ``connection_callback`` publishes ``connection.
 """
 from __future__ import annotations
 
+import enum
 import json
 import logging
 import threading
 import time
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +68,26 @@ _TOUR_BRIDGE_UNAVAILABLE = json.dumps({
               "has nothing listening. Update the Hermes Desktop app and start a new session. Do not retry tour "
               "in this session.")})
 
+
+class _Bridge(enum.Enum):
+    """How a session's renderer met its last probe; a session never probed has no entry."""
+    ANSWERED = enum.auto()
+    UNANSWERED = enum.auto()
+
+
+@dataclass(frozen=True)
+class _PreviewProbe:
+    bridge: _Bridge
+    retry_at: float = 0.0  # UNANSWERED: monotonic instant the next probe may go out
+
+
 _lock = threading.Lock()
 # turn key (the turn's bound HERMES_SESSION_ID) -> publish(event_type, payload) of the live turn
 _turns: dict[str, object] = {}
-# canonical session id -> {"state": "answered"|"unanswered", "retry_at": monotonic}
-_preview_bridge: dict[str, dict] = {}
-# canonical session id -> "answered" | "unanswered" (main: the session record's ``tour_bridge``)
-_tour_bridge: dict[str, str] = {}
+# canonical session id -> its renderer's last preview-action / tour probe (main: the session record's
+# ``tour_bridge``)
+_preview_bridge: dict[str, _PreviewProbe] = {}
+_tour_bridge: dict[str, _Bridge] = {}
 # process ``session_key`` -> (authority, canonical session id) of the session that last ran a turn with it
 _process_routes: dict[str, tuple] = {}
 _emitter_installed = False
@@ -190,15 +205,16 @@ def _tour(turn, agent, payload) -> str:
     """main's ``_tour_request``: probe once per session, then the full deadline or fail fast."""
     session_id = turn._approval_owner[1]
     with _lock:
-        state = _tour_bridge.get(session_id)
-    if state == "unanswered":
+        bridge = _tour_bridge.get(session_id)
+    if bridge is _Bridge.UNANSWERED:
         return _TOUR_BRIDGE_UNAVAILABLE
-    answer = _ask(turn, agent, "tour", payload, _TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
+    answered = bridge is _Bridge.ANSWERED
+    answer = _ask(turn, agent, "tour", payload, _TOUR_TIMEOUT_S if answered else _TOUR_PROBE_TIMEOUT_S)
     with _lock:
         if answer:
-            _tour_bridge[session_id] = "answered"
-        elif state != "answered" and not getattr(agent, "_interrupt_requested", False):
-            _tour_bridge[session_id] = "unanswered"
+            _tour_bridge[session_id] = _Bridge.ANSWERED
+        elif not answered and not getattr(agent, "_interrupt_requested", False):
+            _tour_bridge[session_id] = _Bridge.UNANSWERED
     return answer or _TOUR_BRIDGE_UNAVAILABLE
 
 
@@ -232,20 +248,22 @@ def _preview_action(turn, agent, payload) -> str:
     session_id = turn._approval_owner[1]
     now = time.monotonic()
     with _lock:
-        bridge = _preview_bridge.setdefault(session_id, {})
-        state = bridge.get("state")
-        if state == "unanswered" and now < bridge.get("retry_at", 0):
-            return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
-        if state == "unanswered":
-            bridge["retry_at"] = now + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+        probe = _preview_bridge.get(session_id)
+        answered = probe is not None and probe.bridge is _Bridge.ANSWERED
+        if probe is not None and not answered:
+            if now < probe.retry_at:
+                return _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
+            _preview_bridge[session_id] = _PreviewProbe(_Bridge.UNANSWERED, now + _PREVIEW_ACTION_REPROBE_COOLDOWN_S)
     answer = _ask(turn, agent, "preview.act", payload,
-                  _PREVIEW_ACTION_TIMEOUT_S if state == "answered" else _PREVIEW_ACTION_PROBE_TIMEOUT_S)
+                  _PREVIEW_ACTION_TIMEOUT_S if answered else _PREVIEW_ACTION_PROBE_TIMEOUT_S)
     with _lock:
+        current = _preview_bridge.get(session_id)
         if answer:
-            bridge["state"] = "answered"
-        elif bridge.get("state") != "answered" and not getattr(agent, "_interrupt_requested", False):
-            bridge["state"] = "unanswered"
-            bridge["retry_at"] = time.monotonic() + _PREVIEW_ACTION_REPROBE_COOLDOWN_S
+            _preview_bridge[session_id] = _PreviewProbe(_Bridge.ANSWERED)
+        elif (current is None or current.bridge is not _Bridge.ANSWERED) \
+                and not getattr(agent, "_interrupt_requested", False):
+            _preview_bridge[session_id] = _PreviewProbe(
+                _Bridge.UNANSWERED, time.monotonic() + _PREVIEW_ACTION_REPROBE_COOLDOWN_S)
     return answer or _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
 
 

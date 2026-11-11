@@ -233,6 +233,7 @@ for activation, daily use, dependency changes, and leaving the environment.
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 📱 [FlipsiBridge](https://github.com/TechFlipsi/FlipsiBridge) — Community Android companion for Hermes Agent: pairs a phone with your self-hosted agent over an end-to-end-encrypted TLS relay — agent chat with read receipts, notifications, contacts and device control in a native Material 3 app (Google Play test track open to testers).
 
 ---
 

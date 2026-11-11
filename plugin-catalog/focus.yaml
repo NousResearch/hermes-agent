@@ -1,7 +1,7 @@
 name: focus
 title: Focus
 repo: https://github.com/Kattegat-crew/hermes_focus_plugin
-sha: 81494ad462a0be066607e70fd0102ad217d55db9
+sha: 746abb8c3ed878dcd98a01f4b976000ae1c92186
 version: "0.1.0"
 description: "Cognitive context engine for Hermes Agent. Intercepts turns before inference, extracts true intent and entities, prioritizes repository governance, selectively ingests memory, and injects winning skills in a single step with zero KV-cache mutation."
 maintainer: Kattegat-crew

@@ -25,3 +25,20 @@ def isolated_machine_home(request, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(home))
+
+
+@pytest.fixture(autouse=True)
+def checkout_venvs_are_not_an_install(monkeypatch):
+    """The checkout running the suite is never a test's pre-PM install.
+
+    Many PM tests keep ``repo_root`` at the real checkout under an isolated HERMES_HOME (no
+    recorded selection), where PM reads that checkout's ``venv/`` or ``.venv/`` as the old
+    install's. Whatever a contributor keeps there must not change what those tests select; a
+    test of the legacy carry builds its own tree under ``tmp_path``.
+    """
+    from pm import extras
+
+    checkout = Path(__file__).resolve().parents[2]
+    real = extras._pre_pm_site_packages
+    monkeypatch.setattr(extras, "_pre_pm_site_packages",
+                        lambda root: [] if Path(root).resolve() == checkout else real(root))

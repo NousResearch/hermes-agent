@@ -125,7 +125,7 @@ def _write_output(output, text, summary) -> None:
 
 def _cmd_repair(args):
     from hermes_state import DEFAULT_DB_PATH as db_path, SessionDB
-    from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
+    from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
@@ -133,6 +133,9 @@ def _cmd_repair(args):
     # A missing canonical sessions table is not additive upgrade drift: creating
     # an empty one could hide lost history. Preserve corruption/recovery routing.
     reason = _db_opens_cleanly(db_path)
+    if isinstance(reason, HealthCheckUnavailable):
+        print(f"✗ Could not check {db_path}: {reason}")
+        return 1
     # Opens cleanly but lags SCHEMA_SQL: additive drift (snapshot reconcile), not corruption surgery.
     drift_only = reason is None
     if drift_only:
@@ -1009,7 +1012,7 @@ def _cmd_clean_markers(db, args):
         print(f"✓ Cleared {report['rows_affected']} row(s).")
 
 
-_BACKFILL_LABELS = {"backfill": "Rebuilding index", "backfill_cjk": "Building CJK index"}
+_BACKFILL_LABELS = {"backfill": "Rebuilding index"}
 _COUNTED_PHASES = frozenset({*_BACKFILL_LABELS, "teardown"})
 
 

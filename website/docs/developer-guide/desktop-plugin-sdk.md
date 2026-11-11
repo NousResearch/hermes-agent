@@ -16,7 +16,7 @@ A **desktop plugin** is a single ESM file that default-exports a `HermesPlugin`.
 It imports one module — `@hermes/plugin-sdk` — and gets everything: the app's
 live state, the gateway JSON-RPC door, a scoped REST/socket backend namespace,
 React Query, and the app's own UI kit so plugin UI looks native by default. No
-repo clone, no `npm run build`, no patching app source. Drop the file in
+repo clone, no `pnpm run build`, no patching app source. Drop the file in
 `$HERMES_HOME/desktop-plugins/<id>/plugin.js` and the app loads it within seconds
 and hot-reloads every save.
 
@@ -2050,7 +2050,7 @@ host.i18n.languageOptions(): LanguageOption[]   // bundled ∪ registered ∪ ba
 Where English has a **function** entry (``results: n => `${n} results` ``), a pack
 gives a plain string with POSITIONAL placeholders — `{0}`, `{1}` in argument
 order — and the merge wraps it into the same call shape. The full key set is
-published in `locales/_keys.desktop.json` (regenerate with `npm run i18n:keys`
+published in `locales/_keys.desktop.json` (regenerate with `pnpm run i18n:keys`
 in `apps/desktop` and commit it; CI pins the file to `en.ts`), which is what `hermes plugins
 validate` checks a pack's `<lang>.desktop.yaml` against.
 

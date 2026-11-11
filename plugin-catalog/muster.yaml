@@ -1,0 +1,39 @@
+name: muster
+repo: https://github.com/jollyroger1480/muster
+sha: d02a2d4775ff6cee77b686101f0778d8e13e15eb
+description: >-
+  See what your AI helpers are actually doing. Every worker hermes starts shows
+  up live in one pane: working, stuck (silent too long), failing on repeat, or
+  gone (hermes crashed). Stop a stuck one or send it a message with one click.
+  Start your own helpers with muster_fanout. /muster-digest reports status,
+  spend and the decisions you need; scheduled Fleet watch + Morning report
+  blueprints speak up only when something needs you. No network, no setup.
+maintainer: jollyroger1480
+requires_hermes: ">=0.22.5"
+tier: community
+category: tools
+docs_url: https://github.com/jollyroger1480/muster#readme
+version: "1.0.0"
+platforms: []
+title: "Muster"
+capabilities:
+  provides_tools:
+    - muster_fanout
+    - muster_status
+  provides_hooks:
+    - subagent_start
+    - subagent_stop
+    - pre_tool_call
+    - post_tool_call
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - pre_auxiliary_call
+    - post_auxiliary_call
+    - on_session_finalize
+    - kanban_task_claimed
+    - kanban_task_completed
+    - kanban_task_blocked
+    - on_kanban_worker_exited
+  provides_middleware: []
+  requires_env: []

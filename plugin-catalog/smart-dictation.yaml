@@ -1,0 +1,27 @@
+name: smart-dictation
+title: Smart Dictation
+repo: https://github.com/metamindedu/hermes-smart-dictation
+sha: e62b98787d4d056b8d7c333e05a80c6779f9ba2a
+version: "0.5.0"
+description: Native local dictation with opt-in proofreading and an advanced contextual review workflow.
+maintainer: metamindedu
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+screenshots:
+  - https://raw.githubusercontent.com/metamindedu/hermes-smart-dictation/e62b98787d4d056b8d7c333e05a80c6779f9ba2a/docs/images/smart-dictation.png
+readme: true
+platforms: [linux, macos, windows]
+onboarding: false
+known_issues:
+  - Requires configured local faster-whisper and cached model weights. No automatic model download or cloud-STT fallback.
+  - Package activation and STT provider selection are per profile. Current and future profiles are not automatically enrolled; the copy-only setup guide does not activate or send anything.
+  - Native correction is profile-wide and OFF until explicit consent; text may go to the configured native auxiliary model, with its normal costs, recovery and logging policies.
+  - Native inherits core insertion and undo, not Contextual draft/session fences or successful raw/corrected comparison. Enabled correction failure inserts a warning plus the entire original transcript.
+  - Contextual requires a local route and sends transcript and explicitly selected reference context to its correction route. Local decoding means the selected Hermes backend host.
+  - Local decoder excludes Windows ARM64 and Intel macOS. Model and reasoning-effort assignments use native Hermes settings; select the intended profile and save targets.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

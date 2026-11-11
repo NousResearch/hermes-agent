@@ -1,9 +1,9 @@
 name: agentmemory
 title: AgentMemory
 repo: https://github.com/rohitg00/agentmemory
-sha: c5b8ebfb32eb6a08fe301d3bb75840f3597b66c8
+sha: 28ffc538b81b265e2f649354ed9f88b0c12ae414
 subdir: integrations/hermes
-version: "0.9.31"
+version: "0.9.33"
 description: >-
   Persistent memory provider with automatic recall, conversation capture, and native
   memory_save, memory_recall, and memory_search tools. Memory is scoped to the active
@@ -19,8 +19,8 @@ description: >-
 maintainer: rohitg00
 tier: community
 category: memory
-docs_url: https://github.com/rohitg00/agentmemory/blob/c5b8ebfb32eb6a08fe301d3bb75840f3597b66c8/integrations/hermes/README.md
-image: https://raw.githubusercontent.com/rohitg00/agentmemory/c5b8ebfb32eb6a08fe301d3bb75840f3597b66c8/assets/banner.png
+docs_url: https://github.com/rohitg00/agentmemory/blob/28ffc538b81b265e2f649354ed9f88b0c12ae414/integrations/hermes/README.md
+image: https://raw.githubusercontent.com/rohitg00/agentmemory/28ffc538b81b265e2f649354ed9f88b0c12ae414/assets/banner.png
 platforms:
   - linux
   - macos

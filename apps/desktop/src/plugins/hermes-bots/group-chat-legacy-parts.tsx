@@ -49,7 +49,7 @@ export function LegacyRoomTitle({ availabilityLabel, countLabel, group, image, m
       : <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-(--ui-bg-quaternary) text-(--ui-text-tertiary)">
         <Codicon name="organization" />
       </span>}
-    <span className="min-w-0 truncate">{group}</span>
+    <span className="min-w-0 truncate" title={group}>{group}</span>
     <Tip label={memberNames}>
       <span aria-label={availabilityLabel} className={cn('shrink-0 text-xs font-normal text-(--ui-text-tertiary)', short && 'text-amber-600 dark:text-amber-300')}>
         {short ? availabilityLabel : countLabel}

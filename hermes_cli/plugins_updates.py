@@ -404,17 +404,13 @@ def default_ls_remote(source: str) -> str:
     refuses anonymous access — the gateway's scheduled check has nobody to
     answer a helper's window or a prompt.
     """
-    from hermes_cli._subprocess_compat import noninteractive_git_env
-    from hermes_cli.git_credentials import run_git_with_credential_fallback
-    from hermes_cli.plugins_cmd import _resolve_git_executable
+    from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
 
-    proc = run_git_with_credential_fallback(
-        [_resolve_git_executable() or "git", "ls-remote", source, "HEAD"], source,
-        env=noninteractive_git_env(),
-        capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
-        timeout=30,
-    )
+    # Through the plugin git runner, like clone and pull: no terminal and no ambient credential
+    # helper (PM's PortableGit names a GUI chooser there, which outlives the timeout below), and a
+    # stored credential only when the remote asks for one.
+    proc = _run_plugin_git(_resolve_git_executable() or "git", Path.cwd(), "ls-remote", source, "HEAD",
+                           timeout=30, auth_url=source)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or "ls-remote failed").strip()[:200])
     # 'sha\trefs/heads/...' or empty

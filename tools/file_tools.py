@@ -1380,8 +1380,9 @@ def _handle_search_files(args, **kw):
     if path is None or (isinstance(path, str) and not path.strip()):
         path = "."
     pattern = args.get("pattern") or ""
-    if target == "content" and not str(pattern).strip():
+    if target != "files" and not pattern:
         # Every line matches an empty pattern: the model gets the whole tree back as "results".
+        # Whitespace is a real search (a tab, trailing spaces), so only emptiness is refused.
         return tool_error("search_files is missing required argument(s): pattern. The tool was NOT invoked. "
                           "A content search needs text or a regex to look for; to list files use target='files'.")
     return search_tool(

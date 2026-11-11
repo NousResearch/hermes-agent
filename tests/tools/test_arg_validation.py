@@ -18,7 +18,8 @@ def test_missing_required_argument_is_refused_before_the_handler_runs(monkeypatc
     assert searched == []
     # A files listing takes no pattern: a required key the handler does without stays its call.
     handle_function_call("search_files", {"target": "files", "path": str(tmp_path)}, task_id="t")
-    assert [kw["target"] for kw in searched] == ["files"]
+    handle_function_call("search_files", {"pattern": "\t", "path": str(tmp_path)}, task_id="t")  # a tab is a pattern
+    assert [(kw["target"], kw["pattern"]) for kw in searched] == [("files", ""), ("content", "\t")]
     # Every other built-in is refused by the generic check, before its handler.
     monkeypatch.setattr("tools.file_tools.read_file_tool", lambda *a, **kw: searched.append("read") or "{}")
     refused = json.loads(handle_function_call("read_file", {"offset": 3}, task_id="t"))

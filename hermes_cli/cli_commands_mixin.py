@@ -306,8 +306,6 @@ def _browser_connect(cli, cdp_url: str) -> None:
     if not found:
         return _say_block(_t("browser.not_connected"))
     os.environ["BROWSER_CDP_URL"] = found
-    # Eagerly start the CDP supervisor so pending_dialogs + frame_tree show up in the next snapshot.
-    _probe("tools.browser_session_cdp", "ensure_cdp_supervisor", None, "default")
     _say_block(_t("browser.connected"), f"   {_t('browser.endpoint', url=found)}")
     # Tell the model the CDP browser was made available on purpose.
     if hasattr(cli, '_pending_input'):
@@ -329,8 +327,6 @@ def _browser_disconnect(cli) -> None:
     os.environ.pop("BROWSER_CDP_URL", None)
     with suppress(Exception):
         from tools.browser_session_lifecycle import cleanup_all_browsers
-        from tools.browser_session_cdp import stop_cdp_supervisor
-        stop_cdp_supervisor("default")
         cleanup_all_browsers()
     _say_block(_t("browser.disconnected"), f"   {_t('browser.reverted')}")
     if hasattr(cli, '_pending_input'):

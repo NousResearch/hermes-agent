@@ -141,10 +141,12 @@ class CapturedCDP:
 
 
 def capture(registry: _SupervisorRegistry, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
-    """Pin the running supervisor for ``task_id``; never starts, reconnects or refocuses one."""
+    """Pin the running supervisor of the browser session ``task_id`` last drove; never starts, reconnects
+    or refocuses one."""
+    from tools.browser_session import driven_session_key
     from tools.browser_supervisor import _LoopUnavailable, _schedule
 
-    found = registry.get(task_id)
+    found = registry.get(driven_session_key(task_id))
     loop = found._loop if found is not None else None
     if found is None or loop is None or not loop.is_running():
         raise CapturedCDPInvalid(f"no running browser supervisor for task {task_id!r}")

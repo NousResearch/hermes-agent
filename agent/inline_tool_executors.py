@@ -193,13 +193,13 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
     if not preview:
         return False
     from agent.browser_page_registry import backend_for_task
-    from tools.browser_session import session_for_task
+    from tools.browser_session import driven_session_key, session_for_task
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     # A plugin backend (e.g. Camofox) holding the task's live page owns the fill: browser_vault's own
     # backend selection already picks it, so an omitted target must NOT be forced to preview over it.
     # Fall to preview only when nothing else owns the page.
-    return (not session_for_task(task_id) and SUPERVISOR_REGISTRY.get(task_id) is None
+    return (not session_for_task(task_id) and SUPERVISOR_REGISTRY.get(driven_session_key(task_id)) is None
             and backend_for_task(task_id) is None)
 
 

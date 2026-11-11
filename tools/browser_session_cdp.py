@@ -1,5 +1,5 @@
 """User-supplied CDP endpoints (live ``/browser connect``, ``BROWSER_CDP_URL``, ``browser.cdp_url``),
-dialog-policy config and the per-task CDP supervisor lifecycle."""
+dialog-policy config and the per-session CDP supervisor stop."""
 
 from __future__ import annotations
 
@@ -129,31 +129,10 @@ def get_dialog_policy_config() -> tuple[str, float]:
     return policy, (timeout_s if timeout_s > 0 else DEFAULT_DIALOG_TIMEOUT_S)
 
 
-def ensure_cdp_supervisor(task_id: str) -> None:
-    """Start the CDP supervisor for ``task_id`` when an endpoint is reachable (idempotent; restarts on a
-    URL change). URL precedence: the CDP override, then the session's own ``cdp_url``. A failed attach
-    never breaks the session."""
-    cdp_url = get_cdp_override()
-    if not cdp_url:
-        from tools import browser_session as _bs
-        with _bs._cleanup_lock:
-            session_cdp = str((_bs._active_sessions.get(task_id) or {}).get("cdp_url") or "")
-        cdp_url = resolve_cdp_override(session_cdp) if session_cdp else ""
-    if not cdp_url:
-        return
+def stop_cdp_supervisor(session_key: str) -> None:
+    """Stop the CDP supervisor of the session ``session_key`` if one exists (browser_exec starts it)."""
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
-        policy, timeout_s = get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy,
-                                         dialog_timeout_s=timeout_s)
-    except Exception as exc:  # health: allow BLE001 -- a failed supervisor attach must not break the session
-        logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
-
-
-def stop_cdp_supervisor(task_id: str) -> None:
-    """Stop ``task_id``'s CDP supervisor if one exists."""
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-        SUPERVISOR_REGISTRY.stop(task_id)
+        SUPERVISOR_REGISTRY.stop(session_key)
     except Exception as exc:  # health: allow BLE001 -- teardown must never abort on a supervisor error
-        logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)
+        logger.debug("CDP supervisor stop for session=%s failed (non-fatal): %s", session_key, exc)

@@ -19,7 +19,6 @@ def _reset_session_state(monkeypatch):
     monkeypatch.setattr(bs, "_active_sessions", {})
     monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
     monkeypatch.setattr("tools.browser_session_lifecycle.update_session_activity", lambda t: None)
-    monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda task_id: None)
     monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
     monkeypatch.setattr(browser_launcher, "launch_chromium",
                         lambda key, **kw: (SimpleNamespace(cdp_url=_LOCAL_CDP, pid=4242), None))

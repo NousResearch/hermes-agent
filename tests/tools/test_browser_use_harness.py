@@ -70,4 +70,4 @@ def test_browser_exec_child_environment(tmp_path, monkeypatch):
     assert child["env"]["ANONYMIZED_TELEMETRY"] == "false"
     assert child["env"]["BROWSER_USE_API_KEY"] == "bu-key"
     assert child["env"]["KEEP_BROWSER_PROBE"] == "kept"
-    assert attached == [("owner", "ws://127.0.0.1:47000/private")]
+    assert attached == [("bu-named-research", "ws://127.0.0.1:47000/private")]

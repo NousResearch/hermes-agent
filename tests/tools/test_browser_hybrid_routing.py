@@ -107,7 +107,6 @@ class TestHybridRoutingSessionCreation:
             "cdp_url": "wss://fake.browserbase.com/ws",
         }
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda t: None)
 
         session = bs.get_session_info("default::local")
 
@@ -127,7 +126,6 @@ class TestHybridRoutingSessionCreation:
             "cdp_url": "wss://real.browserbase.com/ws",
         }
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda t: None)
         monkeypatch.setattr("tools.browser_session_cdp.resolve_cdp_override", lambda u: u)
 
         session = bs.get_session_info("default")

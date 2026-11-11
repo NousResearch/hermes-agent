@@ -20,7 +20,6 @@ def _no_sessions(monkeypatch):
     monkeypatch.setattr(browser_session, "_session_last_activity", {})
     monkeypatch.setattr(browser_session_lifecycle, "start_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_session_lifecycle, "update_session_activity", lambda task_id: None)
-    monkeypatch.setattr(browser_session_cdp, "ensure_cdp_supervisor", lambda task_id: None)
 
 
 class TestResolveCdpOverride:

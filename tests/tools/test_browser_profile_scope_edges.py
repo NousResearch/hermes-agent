@@ -282,7 +282,6 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
     sessions = {}
     monkeypatch.setattr(bs, "_active_sessions", sessions)
     monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
     closed = []  # released by object: the stale session is never in ``sessions``
     monkeypatch.setattr(lifecycle, "release_session_backend", lambda task_id, info: closed.append(info["cdp_url"]))
@@ -315,7 +314,6 @@ def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_cal
     sessions = {}
     monkeypatch.setattr(bs, "_active_sessions", sessions)
     monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
     monkeypatch.setattr(bs_cdp, "stop_cdp_supervisor", lambda key: None)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
     visible_during_close = []
@@ -349,7 +347,6 @@ def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(
     sessions = {}
     monkeypatch.setattr(bs, "_active_sessions", sessions)
     monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
     closed = []
     monkeypatch.setattr(lifecycle, "cleanup_single_session", closed.append)
     monkeypatch.setattr(lifecycle, "release_session_backend", lambda task_id, info: closed.append(task_id))
@@ -375,7 +372,7 @@ def test_a_browser_exec_that_routed_to_the_old_endpoint_during_a_connect_reloads
     a, _b = profiles
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
-    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a: None)
     monkeypatch.setattr(bs_cdp, "resolve_cdp_override", lambda raw: raw)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
     latched = {}  # like browser-harness: one daemon per identity latches BU_CDP_URL; --reload stops it
@@ -420,7 +417,7 @@ def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(pr
     a, _b = profiles
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
-    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a: None)
     monkeypatch.setattr(bs_cdp, "resolve_cdp_override", lambda raw: raw)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
     latched, connects = {}, []

@@ -60,7 +60,6 @@ def test_a_new_session_records_its_profile(profiles, monkeypatch):
     monkeypatch.setattr(bs, "_active_sessions", {})
     monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)
     monkeypatch.setattr(bs, "_create_session_for_key", lambda key, force_local: {"session_name": "s"})
-    monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", lambda key: None)
     with _profile_runtime_scope(a, hydrate_secrets=False):
         info = bs.get_session_info("task-a")
     assert info["home_key"] == hermes_home_key(a)
@@ -107,7 +106,7 @@ cat "$latch"
     monkeypatch.setenv("BH_RUNTIME_DIR", str(shared))
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: [str(cli)])
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
-    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a: None)
     monkeypatch.setattr(bs_cdp, "resolve_cdp_override", lambda url: url)
 
     def drive(home, url=None):

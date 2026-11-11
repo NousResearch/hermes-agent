@@ -54,6 +54,7 @@ _session_last_activity: dict[str, float] = {}
 _session_owner_homes: dict[str, str] = {}
 _cleanup_failures: dict[str, int] = {}  # consecutive janitor failures (#100738)
 _session_holds: dict[str, int] = {}  # calls running on each session now: the janitor never closes one in use
+_task_driven_keys: dict[str, str] = {}  # task id -> session key of the browser its last browser_exec drove
 _cleanup_lock = threading.Lock()  # protects every dict above
 _cleanup_thread: Optional[threading.Thread] = None
 _cleanup_running = False
@@ -156,14 +157,25 @@ def real_profile_note(cache_key: Optional[str]) -> Optional[str]:
         return (_active_sessions.get(cache_key or "default") or {}).get("real_profile_unavailable")
 
 
-def session_for_task(task_id: Optional[str]) -> dict[str, Any]:
-    """The active session serving ``task_id`` (its exact key, else one whose owner is that task), or {}."""
+def note_driven_session(task_id: Optional[str], cache_key: str) -> None:
+    """Record ``cache_key`` as the session ``task_id``'s browser_exec drives now."""
+    with _cleanup_lock:
+        _task_driven_keys[task_id or "default"] = cache_key
+
+
+def driven_session_key(task_id: Optional[str]) -> str:
+    """Session key of the browser ``task_id`` last drove; the dialog, frame, vault and plugin capture tools
+    act on that session's supervisor. A task that has not driven one yet maps to its own id."""
     task = task_id or "default"
     with _cleanup_lock:
-        if task in _active_sessions:
-            return _active_sessions[task]
-        return next((info for key, info in _active_sessions.items()
-                     if owner_task_id(key) == task and not is_local_sidecar_key(key)), {})
+        return _task_driven_keys.get(task, task)
+
+
+def session_for_task(task_id: Optional[str]) -> dict[str, Any]:
+    """The active session of the browser ``task_id`` last drove (``driven_session_key``), or {}."""
+    key = driven_session_key(task_id)
+    with _cleanup_lock:
+        return _active_sessions.get(key, {})
 
 
 # ── Session creation ─────────────────────────────────────────────────────────────────────────────────
@@ -344,7 +356,7 @@ def get_session_info(cache_key: Optional[str] = None) -> dict[str, Any]:
     """Get or create the session for ``cache_key`` (thread-safe); starts the inactivity janitor and touches
     activity. A ``::local`` key forces a local browser even with a cloud provider configured."""
     from tools import browser_session_lifecycle as _lifecycle
-    from tools.browser_session_cdp import ensure_cdp_supervisor, live_cdp_generation
+    from tools.browser_session_cdp import live_cdp_generation
     key = cache_key or "default"
     _lifecycle.start_cleanup_thread()
     _lifecycle.update_session_activity(key)
@@ -374,11 +386,6 @@ def get_session_info(cache_key: Optional[str] = None) -> dict[str, Any]:
             return winner
         logger.info("Browser endpoint changed during session creation for %s; recreating", key)
         _lifecycle.release_session_backend(key, session_info)
-
-    # Cloud / CDP-override sessions get the supervisor here (dialogs, frame tree, vault fill). Local
-    # browsers are attached by browser_exec per call under the task id.
-    if not (session_info.get("features") or {}).get("local"):
-        ensure_cdp_supervisor(key)
     return session_info
 
 

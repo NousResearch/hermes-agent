@@ -288,17 +288,12 @@ class TestLightpandaSessionLifecycle:
         monkeypatch.setattr(bs_cdp, "get_cdp_override", lambda: "")
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: None)
         monkeypatch.setattr(bs, "_create_local_session", lambda *a, **k: fresh)
-        supervised = []
-        monkeypatch.setattr(bs_cdp, "ensure_cdp_supervisor", supervised.append)
 
         info = bs.get_session_info("task-1")
         assert cleaned == ["task-1"]
         assert info["session_name"] == "lp_fresh"
         assert bs._active_sessions["task-1"]["session_name"] == "lp_fresh"
         assert info["session_name"] != stale["session_name"]
-        # A local (Lightpanda) session never gets the session-layer supervisor;
-        # browser_exec attaches one per call.
-        assert supervised == []
 
     def test_cleanup_stops_lightpanda_without_a_chromium_stop(self, monkeypatch):
         self._seed()

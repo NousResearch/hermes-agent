@@ -105,15 +105,16 @@ def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
 
 
 def _ensure_supervisor(task_id: str):
-    """The supervisor for ``task_id`` (browser_exec attaches one on every call), attaching one on demand to
-    the task's session CDP endpoint when none is running. None when no endpoint is known; a fill then
-    refuses rather than touching argv."""
+    """The supervisor of the session ``task_id`` last drove (browser_exec attaches one on every call),
+    attaching one on demand to that session's CDP endpoint when none is running. None when no endpoint is
+    known; a fill then refuses rather than touching argv."""
+    from tools.browser_session import driven_session_key, session_for_task
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    session_key = driven_session_key(task_id)
+    supervisor = SUPERVISOR_REGISTRY.get(session_key)
     if supervisor is not None:
         return supervisor
-    from tools.browser_session import session_for_task
     from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
 
     cdp_url = str(session_for_task(task_id).get("cdp_url") or "")
@@ -121,7 +122,7 @@ def _ensure_supervisor(task_id: str):
         return None
     policy, timeout_s = get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=resolve_cdp_override(cdp_url),
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=session_key, cdp_url=resolve_cdp_override(cdp_url),
                                                 dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:  # health: allow BLE001 -- a failed attach is reported as supervisor_required
         logger.debug("vault fill: supervisor attach to the task's session failed (%s)", exc)

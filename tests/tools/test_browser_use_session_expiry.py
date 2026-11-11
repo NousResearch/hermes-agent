@@ -12,7 +12,6 @@ def _isolate_browser_state(monkeypatch):
     monkeypatch.setattr(bs, "_session_last_activity", {})
     monkeypatch.setattr(bs, "_session_owner_homes", {})
     monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
-    monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda task_id: None)
 
 
 def test_browser_use_preserves_provider_timeout(monkeypatch):

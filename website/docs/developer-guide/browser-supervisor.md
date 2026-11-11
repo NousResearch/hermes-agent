@@ -48,7 +48,7 @@ browser with no CDP surface, so the supervisor does not apply to it.
 
 ### CDPSupervisor
 
-One `asyncio.Task` running in a background daemon thread per Hermes `task_id`.
+One `asyncio.Task` running in a background daemon thread per browser session, keyed by the session cache key. `browser_dialog`, `browser_cdp` and `capture(task_id)` use the session the task last drove.
 Holds a persistent WebSocket to the backend's CDP endpoint. Maintains:
 
 - **Dialog queue** — `List[PendingDialog]` with `{id, type, message, default_prompt, session_id, opened_at}`
@@ -67,9 +67,9 @@ frozen snapshot without awaiting.
 
 ### Lifecycle
 
-- **Start:** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — called when
-  `browser_exec` attaches to a session (local, cloud provider or CDP override)
-  and on `/browser connect`. Idempotent.
+- **Start:** `SupervisorRegistry.get_or_start(session_key, cdp_url)` — called when
+  `browser_exec` attaches to a session (local, cloud provider or CDP override).
+  Idempotent.
 - **Stop:** session teardown or `/browser disconnect`. Cancels the asyncio
   task, closes the WebSocket, discards state.
 - **Dropped endpoint:** after a successful attach the supervisor reconnects with
@@ -224,7 +224,7 @@ expiry, while the supervisor's long-lived connection keeps a valid session.
 - `tools/browser_supervisor.py` — `CDPSupervisor`, `SupervisorRegistry`, `PendingDialog`, `FrameInfo`
 - `tools/browser_supervisor_capture.py` — `CapturedCDP` / `CapturedCDPInvalid`, the trusted-plugin CDP seam behind `SUPERVISOR_REGISTRY.capture`
 - `tools/browser_dialog_tool.py` — `browser_dialog` tool handler
-- `tools/browser_session_cdp.py` — `ensure_cdp_supervisor` / `stop_cdp_supervisor`, `/browser connect` reattach, dialog-policy config
+- `tools/browser_session_cdp.py` — `stop_cdp_supervisor`, `/browser connect` reattach, dialog-policy config
 - `tools/browser_session_lifecycle.py` — per-session teardown (supervisor stopped first)
 - `toolsets.py` — registers `browser_dialog` in `browser`, `hermes-acp`, `hermes-api-server`, and core toolsets (gated on CDP reachability)
 - `hermes_cli/config.py` — `browser.dialog_policy` and `browser.dialog_timeout_s` defaults

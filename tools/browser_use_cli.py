@@ -500,10 +500,14 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     return err or None
 
 
-def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
-    """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault`` fill has
-    a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
-    endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
+def _attach_vault_supervisor(env: dict, task_id: Optional[str], session_key: str) -> None:
+    """Make ``session_key`` the session ``task_id``'s dialog, frame and vault tools act on, and attach that
+    session's CDP supervisor (one per session key; its teardown stops it) to the browser this exec drives,
+    so ``browser_vault`` fill has a secret-capable WebSocket (never argv) into the SAME browser. Only
+    CDP-routed backends expose an endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools
+    report ``supervisor_required``."""
+    from tools.browser_session import note_driven_session
+    note_driven_session(task_id, session_key)
     cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
     if not cdp:
         return
@@ -511,7 +515,7 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
         policy, timeout_s = get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=resolve_cdp_override(cdp),
+        SUPERVISOR_REGISTRY.get_or_start(task_id=session_key, cdp_url=resolve_cdp_override(cdp),
                                          dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
@@ -830,9 +834,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
+    session_key = _backend_cache_key(task_id, session, sidecar=local_sidecar)
 
     def dispatch() -> dict[str, Any]:
-        _attach_vault_supervisor(env, task_id)
+        _attach_vault_supervisor(env, task_id, session_key)
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()
@@ -854,7 +859,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
 
     from tools.browser_session_lifecycle import hold_session
-    with hold_session(_backend_cache_key(task_id, session, sidecar=local_sidecar)):
+    with hold_session(session_key):
         if bot_desktop_browser:
             from tools.browser_session import run_fenced
             dispatched = run_fenced({"features": {"local": True}}, dispatch)

@@ -75,7 +75,7 @@ def run_exec(monkeypatch, tmp_path):
     monkeypatch.delenv("BU_AUTOSPAWN", raising=False)
     monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
     monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: "")
-    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda *a: None)
     monkeypatch.setattr(bu_cli, "_exec_route_is_sidecar", {}, raising=False)
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
     fake_dir = tmp_path / "fake_transport"

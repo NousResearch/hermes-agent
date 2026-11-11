@@ -69,8 +69,9 @@ def browser_dialog(
     dialog_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> str:
-    """Respond to a pending dialog on the active task's CDP supervisor."""
-    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
+    """Respond to a pending dialog in the browser session the task last drove."""
+    from tools.browser_session import driven_session_key
+    supervisor = SUPERVISOR_REGISTRY.get(driven_session_key(task_id))
     if supervisor is None:
         return json.dumps({
             "success": False,

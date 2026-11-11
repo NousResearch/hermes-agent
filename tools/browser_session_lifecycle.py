@@ -119,6 +119,8 @@ def _forget_session_tracking(cache_key: str, *, activity: bool = True, session: 
             bs._session_last_activity.pop(cache_key, None)
         bs._session_owner_homes.pop(cache_key, None)
         bs._cleanup_failures.pop(cache_key, None)
+        for task in [task for task, key in bs._task_driven_keys.items() if key == cache_key]:
+            del bs._task_driven_keys[task]
 
 
 # ── Teardown ─────────────────────────────────────────────────────────────────────────────────────────
@@ -267,6 +269,7 @@ def emergency_cleanup_all_sessions() -> None:
         bs._session_last_activity.clear()
         bs._session_owner_homes.clear()
         bs._cleanup_failures.clear()
+        bs._task_driven_keys.clear()
     _best_effort("Orphan reap on exit", reap_orphaned_browser_sessions)
 
 

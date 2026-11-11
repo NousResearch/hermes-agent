@@ -499,7 +499,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
 
 class _SupervisorRegistry:
-    """Process-global (task_id → supervisor) map with idempotent start/stop (``SUPERVISOR_REGISTRY``)."""
+    """Process-global (browser session key → supervisor) map with idempotent start/stop
+    (``SUPERVISOR_REGISTRY``); the ``task_id`` arguments carry that session key."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -516,8 +517,8 @@ class _SupervisorRegistry:
             return self._by_task.pop(task_id, None)
 
     def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
-        """Public CDP seam for trusted in-process plugins: a handle pinned to this task's
-        current connection and default page session (``tools.browser_supervisor_capture``)."""
+        """Public CDP seam for trusted in-process plugins: a handle pinned to the current connection and
+        default page session of the browser session this task last drove (``tools.browser_supervisor_capture``)."""
         from tools.browser_supervisor_capture import capture
 
         return capture(self, task_id, timeout=timeout)

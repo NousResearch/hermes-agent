@@ -1,21 +1,21 @@
 name: hermes-plant
 repo: https://github.com/tuancookiez-hub/hermes-plant
-sha: b9eb4cf5fddebcf195f74a4884389bdb071f50e3
-version: "1.1.0"
+sha: f387648461b12488a48d703e918d283cafe7402a
+version: "1.2.0"
 title: Hermes Plant
-description: "A calm little garden for Hermes Desktop that grows in real time. It sits above the app like the Hermes pet, takes no layout space and can be dragged anywhere. Click a plant for a care wheel: water, prune, rotate, fertilize, repot, pick, sell, or ask Hermes. Four species (leafy plant, fern, cactus, little tree) grow in their own ways, pruning shapes how each one branches, and neglect only pauses them. Care earns play coins, and a small shop sells more plants and fertilizer, up to six pots. Bugs land now and then and can be shooed away. Two agent tools let Hermes check the garden and tend it when you ask. Original blue-ink artwork drawn in code. Reachable from the status bar, the command palette and the keyboard, and it speaks through the Hermes pet when one is showing. Disclosure: no network requests, no background model calls and no background processes; Ask Hermes submits one chat message only when you press it; coins are play money inside the plugin; the garden is kept in Desktop plugin storage and in plugin-data/hermes-plant/data.db; the plugin adds its own floating element to the page (Hermes has no SDK area for one) and removes it on unload, without reading or changing core markup."
+description: "A calm little garden for Hermes Desktop that grows in real time. It sits above the app like the Hermes pet, takes no layout space and can be dragged anywhere. Click a plant for a care wheel: water, prune (you choose which tip to cut, and the piece drops away), rotate, fertilize, repot, pick, sell, or ask Hermes. Four species (leafy plant, fern, cactus, little tree) grow in their own ways, pruning shapes how each one branches, and neglect only pauses them. Care earns play coins, and a small shop sells more plants and fertilizer, up to six pots. Bugs land now and then and can be shooed away. Two agent tools let Hermes check the garden and tend it when you ask. Original blue-ink artwork drawn in code. Reachable from the status bar, the command palette and the keyboard, and it speaks through the Hermes pet when one is showing. Disclosure: no network requests, no background model calls and no background processes; Ask Hermes submits one chat message only when you press it; coins are play money inside the plugin; the garden is kept in Desktop plugin storage and in plugin-data/hermes-plant/data.db; the plugin adds its own floating element to the page (Hermes has no SDK area for one) and removes it on unload, without reading or changing core markup."
 maintainer: tuancookiez-hub
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/tuancookiez-hub/hermes-plant/tree/b9eb4cf5fddebcf195f74a4884389bdb071f50e3
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/b9eb4cf5fddebcf195f74a4884389bdb071f50e3/docs/images/banner.png
+docs_url: https://github.com/tuancookiez-hub/hermes-plant/tree/f387648461b12488a48d703e918d283cafe7402a
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/f387648461b12488a48d703e918d283cafe7402a/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/b9eb4cf5fddebcf195f74a4884389bdb071f50e3/docs/images/species.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/b9eb4cf5fddebcf195f74a4884389bdb071f50e3/docs/images/wheel.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/b9eb4cf5fddebcf195f74a4884389bdb071f50e3/docs/images/shop.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/b9eb4cf5fddebcf195f74a4884389bdb071f50e3/docs/images/stages.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/b9eb4cf5fddebcf195f74a4884389bdb071f50e3/docs/images/shapes.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/f387648461b12488a48d703e918d283cafe7402a/docs/images/species.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/f387648461b12488a48d703e918d283cafe7402a/docs/images/wheel.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/f387648461b12488a48d703e918d283cafe7402a/docs/images/shop.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/f387648461b12488a48d703e918d283cafe7402a/docs/images/stages.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-plant/f387648461b12488a48d703e918d283cafe7402a/docs/images/shapes.png
 platforms: []
 capabilities:
   provides_tools:

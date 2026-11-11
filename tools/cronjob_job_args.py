@@ -523,6 +523,8 @@ def _format_job(job: dict[str, Any]) -> dict[str, Any]:
         result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
+    if job.get("output_retention") is not None:  # 0 is a real value (never prune)
+        result["output_retention"] = job["output_retention"]
     return result
 
 

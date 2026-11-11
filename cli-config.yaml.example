@@ -433,6 +433,11 @@ kanban:
 #   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 cron:
   catch_up_missed: true  # False skips past-grace recurring misses after planned downtime.
+  # Run documents kept per job under cron/output/<job>/; the oldest are pruned beyond the cap.
+  # Silent ([SILENT]) runs are pruned on their own cap so heartbeats never evict runs that
+  # reported something. A job's own output_retention overrides both caps. 0 or negative = never prune.
+  output_retention: 50         # normal (reported or failed) runs
+  output_retention_silent: 20  # silent runs (<timestamp>.silent.md)
 
 terminal:
   backend: "local"

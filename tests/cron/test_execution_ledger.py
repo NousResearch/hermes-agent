@@ -351,7 +351,7 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
         return True, "output", "response", None
 
     monkeypatch.setattr(scheduler, "run_job", fake_run_job)
-    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args, **_kw: None)
     monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
 

@@ -120,6 +120,7 @@ tools:
       - process_manage
       - cronjob_manage
       - text_to_speech
+      - manage_connections
       - manage_catalog
 ```
 

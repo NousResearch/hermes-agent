@@ -115,7 +115,7 @@ export function startOauthLoginWindow<S>(
     try {
       win = deps.createWindow({
         session,
-        title: silent ? 'Connecting to Unitalk Cloud agent…' : 'Sign in to Unitalk',
+        title: silent ? 'Connecting to your AI Collaborator…' : 'Sign in to Unitalk',
         // Silent windows start hidden: the auto-SSO chain normally finishes
         // in well under a second and never needs to be seen.
         show: !silent && !hiddenRecovery

@@ -49,6 +49,7 @@ platforms:
       routes:
         github-pr-review:
           secret: "your-webhook-secret-here"   # must match the GitHub webhook secret exactly
+          signature: github                    # accept only X-Hub-Signature-256 on this route
           events:
             - pull_request
 
@@ -214,6 +215,7 @@ platforms:
       routes:
         github-pr-review:
           secret: "your-webhook-secret-here"
+          signature: github
           events: [pull_request]
           prompt: |
             A pull request event was received (action: {action}).

@@ -80,6 +80,7 @@ curl http://localhost:8644/health
 |----------|----------|-------------|
 | `events` | 否 | 要接受的事件类型列表（例如 `["pull_request"]`）。若为空，则接受所有事件。事件类型从 `X-GitHub-Event`、`X-GitLab-Event` 或 payload 中的 `event_type` 读取。 |
 | `secret` | **是** | 用于签名验证的 HMAC secret。若路由未设置，则回退到全局 `secret`。仅用于测试时可设为 `"INSECURE_NO_AUTH"`（跳过验证）。 |
+| `signature` | 否 | 将路由固定到一种签名方案：`generic`（`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`，或 Standard Webhooks / Svix 请求头）、`github`（`X-Hub-Signature-256`）、`gitlab`（`X-Gitlab-Token`，或以 Standard Webhooks 请求头发送的 GitLab 签名令牌）或 `linear`（`Linear-Signature`）。其他请求头一律返回 `401`。省略时接受所有支持的方案（引入此键之前的行为）。`hermes webhook subscribe` 为新路由写入 `signature: generic`。建议设置，参见[固定签名方案](#pin-the-signature-scheme)。 |
 | `prompt` | 否 | 使用点号表示法访问 payload 字段的模板字符串（例如 `{pull_request.title}`）。若省略，则将完整 JSON payload 转储到 prompt 中。 |
 | `filters` | 否 | 声明式 payload 过滤器，在认证/请求体/事件过滤之后、agent 或直接投递之前求值。不匹配时返回 `{"status":"ignored","reason":"filter"}`（HTTP 200）。 |
 | `script` | 否 | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入。stdout 为 JSON 对象时会在模板渲染前替换 payload；文本 stdout 以 `script_output` 形式暴露；空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。 |
@@ -102,6 +103,7 @@ platforms:
         github-pr:
           events: ["pull_request"]
           secret: "github-webhook-secret"
+          signature: github
           prompt: |
             Review this pull request:
             Repository: {repository.full_name}
@@ -282,6 +284,7 @@ platforms:
         gitlab-mr:
           events: ["merge_request"]
           secret: "your-gitlab-secret-token"
+          signature: gitlab
           prompt: |
             Review this merge request:
             Project: {project.path_with_namespace}
@@ -418,6 +421,7 @@ platforms:
         pr-feedback:
           events: ["pull_request_review"]
           secret: "github-webhook-secret"
+          signature: github
           cron_job: "pr-review-sweeper"        # 已有任务的 ID 或名称
           prompt: |
             {repository.full_name} 的 PR #{number} 收到了来自
@@ -429,6 +433,7 @@ platforms:
 ```bash
 hermes webhook subscribe pr-feedback \
   --events "pull_request_review" \
+  --signature github \
   --cron-job "pr-review-sweeper" \
   --prompt "PR #{number} 收到反馈：{review.body}"
 ```
@@ -453,6 +458,7 @@ hermes webhook subscribe pr-feedback \
 ```bash
 hermes webhook subscribe github-issues \
   --events "issues" \
+  --signature github \
   --prompt "New issue #{issue.number}: {issue.title}\nBy: {issue.user.login}\n\n{issue.body}" \
   --deliver telegram \
   --deliver-chat-id "-100123456789" \
@@ -460,6 +466,8 @@ hermes webhook subscribe github-issues \
 ```
 
 此命令返回 webhook URL 和自动生成的 HMAC secret。将你的服务配置为 POST 到该 URL。
+
+新订阅默认固定为 `--signature generic`（带时间戳的 V2 或 Standard Webhooks）；对自行签名的服务商请传 `--signature github`、`gitlab` 或 `linear`。更新已有订阅时保留其固定方案。
 
 ### 列出订阅
 
@@ -479,6 +487,8 @@ hermes webhook remove github-issues
 hermes webhook test github-issues
 hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
 ```
+
+`test` 按路由 `signature` 固定的方案签名：`github` 用 `X-Hub-Signature-256`，`gitlab` 用 `X-Gitlab-Token`，`linear` 用 `Linear-Signature`，`generic` 或未固定的路由用 `X-Webhook-Signature-V2` + `X-Webhook-Timestamp`。
 
 ### 动态订阅的工作原理
 
@@ -508,6 +518,24 @@ webhook 适配器包含多层安全机制：
 - **通用（V1，已拒绝）**：仅对请求体签名的 `X-Webhook-Signature` 可被重放，返回 `401 Unauthorized`；请改用 V2
 
 若已配置 secret 但请求中不存在已识别的签名请求头，则请求被拒绝。
+
+### 固定签名方案 {#pin-the-signature-scheme}
+
+GitHub（`X-Hub-Signature-256`）、Linear（`Linear-Signature`）和已拒绝的 V1 请求头携带的是同一个值：用路由 secret 对请求体计算的 HMAC-SHA256，不含时间戳。因此在未设置 `signature` 的路由上，截获的 V1 请求仍可被重放：把其 MAC 放进 `Linear-Signature`（或加上 `sha256=` 前缀放进 `X-Hub-Signature-256`）并换一个新的投递 ID 即可。请为每个路由设置 `signature`，只接受其发送方实际使用的方案：
+
+```yaml
+routes:
+  github-pr:
+    secret: "github-webhook-secret"
+    signature: github      # 仅 X-Hub-Signature-256
+  deploy-hook:
+    secret: "deploy-secret"
+    signature: generic     # 仅 X-Webhook-Signature-V2 + X-Webhook-Timestamp，或 Standard Webhooks
+```
+
+未知取值属于配置错误：静态路由会阻止适配器启动，动态订阅会被跳过，二者都不会退回到接受所有方案。
+
+如果某个发送方曾使用仅签名请求体的 V1（`X-Webhook-Signature`），在迁移到 V2 时请**轮换该路由的 secret**。只有 secret 变更后，旧的截获请求才会在所有请求头下失效。GitHub 和 Linear 签名本身不含时间戳，因此固定为 `github`/`linear` 的路由针对本服务商请求的重放仍依赖 1 小时的投递 ID 缓存。
 
 ### Secret 为必填项
 

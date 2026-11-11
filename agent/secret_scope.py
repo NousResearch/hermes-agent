@@ -456,12 +456,17 @@ def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: di
     """Resolve ``${VAR}`` / ``${VAR:-default}`` in values that came from the dotenv layers, with
     ``load_hermes_dotenv``'s own resolver, so the scope and ``os.environ`` agree on what a file says:
     ``TELEGRAM_HOME_CHANNEL=${TELEGRAM_USER_ID}`` otherwise reached cron delivery as the literal
-    template (#137080). A value another source replaced (an external secret) is left alone."""
+    template (#137080). A value another source replaced (an external secret) is left alone.
+
+    Another profile's references resolve against process-global vars only: the launch process's
+    shell exports and external secrets are the launch profile's, and ``${OPENAI_API_KEY:-default}``
+    in a satellite must take its default, never the gateway's key."""
     templated = {k: v for k, v in raw.items() if "${" in v and secrets.get(k) == v}
     if not templated:
         return
     from hermes_cli.env_loader import resolve_home_dotenv
-    resolved = resolve_home_dotenv(Path(hermes_home))
+    lookup = None if _is_process_home(hermes_home) else {k: v for k, v in os.environ.items() if _is_global_env(k)}
+    resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup)
     secrets.update((k, resolved[k]) for k in templated if k in resolved)
 
 

@@ -23,11 +23,7 @@ import { $reviewScopeCwd, $reviewScopeTarget, closeReview } from '@/store/review
 import { $currentCwd, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
-import { usePortalRedesign } from '../redesign/use-portal-redesign'
-
 import { DeveloperRail } from './developer-rail'
-
-vi.mock('../redesign/use-portal-redesign', () => ({ usePortalRedesign: vi.fn(() => false) }))
 
 vi.mock('@/store/preview', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -38,7 +34,6 @@ vi.mock('../right-sidebar/terminal/reveal-focus', () => ({ toggleTerminalPane: v
 const disposers: (() => void)[] = []
 
 beforeEach(() => {
-  vi.mocked(usePortalRedesign).mockReturnValue(false)
   $interfaceMode.set('advanced')
   $previewTabs.set([])
   $rightRailActiveTabId.set(null)
@@ -177,8 +172,7 @@ it('updates Preview visibility when the selected browser changes without a layou
   expect(screen.getByRole('button', { name: 'Preview', pressed: true })).toBeTruthy()
 })
 
-it('maps Simple to non-developer chrome only in the Portal redesign', () => {
-  vi.mocked(usePortalRedesign).mockReturnValue(true)
+it('shows developer tools only in Advanced mode with the redesign enabled', () => {
   $interfaceMode.set('simple')
   mount()
   expect(screen.queryByRole('button', { name: 'Terminal' })).toBeNull()
@@ -186,8 +180,9 @@ it('maps Simple to non-developer chrome only in the Portal redesign', () => {
   expect(screen.getByRole('button', { name: 'Terminal' })).toBeTruthy()
   act(() => $interfaceMode.set('simple'))
   expect(screen.queryByRole('button', { name: 'Terminal' })).toBeNull()
-  cleanup()
-  vi.mocked(usePortalRedesign).mockReturnValue(false)
-  mount()
-  expect(screen.getByRole('button', { name: 'Terminal' })).toBeTruthy()
+  act(() => {
+    $interfaceMode.set('advanced')
+    $agentSidebarChoice.set(false)
+  })
+  expect(screen.queryByRole('navigation')).toBeNull()
 })

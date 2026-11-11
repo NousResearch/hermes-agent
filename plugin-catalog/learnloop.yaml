@@ -1,0 +1,32 @@
+name: learnloop
+repo: https://github.com/huss-wrld/learnloop
+sha: fdcf3d1acf95c7d4056dfe746347ca6b97e38c04
+subdir: ""
+version: "0.1.0"
+title: learnloop
+description: >-
+  Structured lessons and practice inside Hermes, after LearnHarness: /learnloop:study probes what you
+  know, plans a path and teaches it one graded check at a time; /learnloop:practice drills it with a
+  hint ladder. What you learn becomes a knowledge graph you can explore and practise from.
+maintainer: huss-wrld
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: ""
+image: "https://raw.githubusercontent.com/huss-wrld/learnloop/fdcf3d1acf95c7d4056dfe746347ca6b97e38c04/docs/brand/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/huss-wrld/learnloop/fdcf3d1acf95c7d4056dfe746347ca6b97e38c04/docs/screenshots/dock-verdict.png"
+  - "https://raw.githubusercontent.com/huss-wrld/learnloop/fdcf3d1acf95c7d4056dfe746347ca6b97e38c04/docs/screenshots/lesson-reply.png"
+  - "https://raw.githubusercontent.com/huss-wrld/learnloop/fdcf3d1acf95c7d4056dfe746347ca6b97e38c04/docs/screenshots/learn-map.png"
+  - "https://raw.githubusercontent.com/huss-wrld/learnloop/fdcf3d1acf95c7d4056dfe746347ca6b97e38c04/docs/screenshots/practice-concluded.png"
+  - "https://raw.githubusercontent.com/huss-wrld/learnloop/fdcf3d1acf95c7d4056dfe746347ca6b97e38c04/docs/screenshots/graph.png"
+readme: true
+platforms: []
+known_issues:
+  - "Teaching quality depends on the model: tested with Claude Opus 5.5 and DeepSeek V4.1 Flash."
+  - "The Desktop part has its own enable switch per profile (Capabilities, Plugins)."
+capabilities:
+  provides_tools: [learn_ask, learn_grade, learn_phase, learn_method, learn_record, learn_recall, learn_problem, learn_conclude]
+  provides_hooks: [pre_llm_call, pre_tool_call, transform_llm_output, on_session_delete]
+  provides_middleware: []
+  requires_env: []

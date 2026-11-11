@@ -134,7 +134,7 @@ def commit_trailer(root: Path, ref: str) -> str | None:
 
 def move_roots(root: Path, name: str, roots: list[str]) -> str:
     for rel in roots:
-        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+        if Path(rel).anchor or ".." in Path(rel).parts:  # a Windows "\outside" has a root but no drive
             raise Failure(f"ROOT must be a path relative to the repository root: {rel}")
         if not (root / rel).exists():
             raise Failure(f"no such root: {rel}")

@@ -946,7 +946,7 @@ def build_plan(root: Path, commit: str, files: list[str] | None = None) -> Plan:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--from-commit", required=True, help="the move commit (git mv only)")
+    parser.add_argument("--from-commit", required=True, help="the move commit (git mv, plus the MOVES update)")
     parser.add_argument("--paths", nargs="*", default=[], help="limit to these files or directories")
     parser.add_argument("--check", action="store_true", help="write nothing; fail when anything would change")
     args = parser.parse_args(argv)

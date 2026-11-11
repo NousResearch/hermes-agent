@@ -1,0 +1,9 @@
+name: cellium-wallet
+repo: https://github.com/xjubiliance/cellium-hermes-plugin
+sha: 077d76e9dbbd5880eb6dd81e68158c6f9570491b
+description: Connect Hermes to a Cellium agent for wallet operations, swaps, bridges, and managed orders.
+maintainer: xjubiliance
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.1.0"

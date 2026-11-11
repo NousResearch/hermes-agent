@@ -1,6 +1,6 @@
 name: butler
 repo: https://github.com/Intenzi/hermes-butler
-sha: "a665eaed96adc6ceb54277616c1f7b9b5b817332"
+sha: "17992e70f761a534a186c9fcf881d339551fb000"
 version: "0.4.1"
 title: Butler
 description: "Turns the Hermes desktop pet into an on-screen operator: WALK draws a guide on the real controls and verifies each step from the macOS Accessibility tree, DESCRIBE reads the control under your pointer (role, label, enabled state, value) without letting the click reach your app, and WATCH announces one condition from an app in the background and keeps it until you acknowledge it. Accessibility only: no screenshots, no OCR, no Screen Recording, no Input Monitoring."

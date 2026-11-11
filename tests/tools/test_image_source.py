@@ -719,11 +719,11 @@ class TestHeicDetection:
 
 
 
-def _blank_pdf(pages: int = 2) -> bytes:
-    """A minimal valid PDF with ``pages`` blank pages (xref offsets computed)."""
-    kids = " ".join(f"{3 + i} 0 R" for i in range(pages))
-    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>".encode()]
-    objs += [b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>"] * pages
+def _blank_pdf() -> bytes:
+    """A minimal valid 2-page PDF: page 1 is 72x72 pt, page 2 is 144x72 pt (xref offsets computed)."""
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 144 72] >>"]
     out, offsets = bytearray(b"%PDF-1.4\n"), []
     for i, body in enumerate(objs, 1):
         offsets.append(len(out))
@@ -736,17 +736,21 @@ def _blank_pdf(pages: int = 2) -> bytes:
 
 
 @pytest.mark.skipif(__import__("shutil").which("pdftoppm") is None, reason="needs poppler pdftoppm")
-@pytest.mark.parametrize("suffix, ok", [("", True), ("#page=2", True), ("#page=9", False)])
+@pytest.mark.parametrize("data_url, suffix, width", [
+    (False, "", 150), (False, "#page=2", 300), (True, "#page=2", 300), (False, "#page=9", None)])
 @pytest.mark.asyncio
-async def test_pdf_source_renders_the_requested_page(tmp_path, monkeypatch, suffix, ok):
-    """A PDF given to vision becomes a PNG of page 1, or of ``#page=N``; out of range is refused."""
+async def test_pdf_source_renders_the_requested_page(tmp_path, monkeypatch, data_url, suffix, width):
+    """A PDF given to vision becomes a PNG of page 1, or of ``#page=N`` (file or data: URL);
+    out of range is refused. Pages differ in width (72 vs 144 pt at 150 DPI = 150 vs 300 px)."""
+    import struct
     isrc = _reload(monkeypatch, tmp_path / "hermes")
     monkeypatch.setenv("TERMINAL_ENV", "local")
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(_blank_pdf())
-    if not ok:
+    src = ("data:application/pdf;base64," + base64.b64encode(pdf.read_bytes()).decode()) if data_url else str(pdf)
+    if width is None:
         with pytest.raises(isrc.NotAnImage, match="page 9"):
-            await isrc.resolve_image_source(f"{pdf}{suffix}", isrc.ResolveContext())
+            await isrc.resolve_image_source(src + suffix, isrc.ResolveContext())
         return
-    res = await isrc.resolve_image_source(f"{pdf}{suffix}", isrc.ResolveContext())
-    assert res.mime == "image/png" and res.data[:8] == b"\x89PNG\r\n\x1a\n"
+    res = await isrc.resolve_image_source(src + suffix, isrc.ResolveContext())
+    assert res.mime == "image/png" and struct.unpack(">I", res.data[16:20])[0] == width

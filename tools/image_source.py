@@ -59,7 +59,8 @@ _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 # ``doc.pdf#page=3`` (the PDF open-parameters fragment) picks the page a PDF source renders.
 _PDF_PAGE_RE = re.compile(r"#page=(\d{1,5})$", re.IGNORECASE)
-_PDF_RENDER_DPI, _PDF_RENDER_TIMEOUT = 150, 60
+# 150 DPI, but no side past 4096 px (a poster-size page would otherwise rasterize to hundreds of MB).
+_PDF_RENDER_DPI, _PDF_RENDER_MAX_PX, _PDF_RENDER_TIMEOUT = 150, 4096, 60
 
 
 async def resolve_image_source(
@@ -67,7 +68,7 @@ async def resolve_image_source(
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
-    m = _PDF_PAGE_RE.search(s) if "image" in permitted and not s.startswith("data:") else None
+    m = _PDF_PAGE_RE.search(s) if "image" in permitted else None
     resolved = await _resolve_source(s[:m.start()] if m else s, ctx, permitted)
     if resolved.mime == "application/pdf":
         return await asyncio.to_thread(_render_pdf_page, resolved, int(m.group(1)) if m else 1, s)
@@ -376,7 +377,8 @@ async def resolve_local_source_to_data_url(
 def _render_pdf_page(pdf: ResolvedImage, page: int, src: str) -> ResolvedImage:
     """Rasterize one 1-based PDF page to PNG with ``pdftoppm`` (bytes in on stdin, PNG out on stdout)."""
     import subprocess
-    cmd = ["pdftoppm", "-png", "-r", str(_PDF_RENDER_DPI), "-singlefile", "-f", str(page), "-l", str(page), "-"]
+    cmd = ["pdftoppm", "-png", "-r", f"{_pdf_page_dpi(pdf.data, page):.1f}",
+           "-singlefile", "-f", str(page), "-l", str(page), "-"]
     try:
         proc = subprocess.run(cmd, input=pdf.data, capture_output=True, timeout=_PDF_RENDER_TIMEOUT, check=False)
     except FileNotFoundError:
@@ -388,3 +390,16 @@ def _render_pdf_page(pdf: ResolvedImage, page: int, src: str) -> ResolvedImage:
         raise NotAnImage(f"could not render PDF page {page}: {detail[-1] if detail else 'no output'}",
                          src=src, origin=pdf.origin)
     return _finalize(proc.stdout, "", pdf.origin, src)
+
+
+def _pdf_page_dpi(data: bytes, page: int) -> float:
+    """150 DPI, lowered so the page's longer side stays within ``_PDF_RENDER_MAX_PX`` (pdfinfo)."""
+    import subprocess
+    try:
+        info = subprocess.run(["pdfinfo", "-f", str(page), "-l", str(page), "-"], input=data,
+                              capture_output=True, timeout=_PDF_RENDER_TIMEOUT, check=False)
+        m = re.search(rb"Page\s+\d+\s+size:\s+([\d.]+) x ([\d.]+) pts", info.stdout)
+    except (OSError, subprocess.SubprocessError):
+        m = None
+    longest_pts = max(float(m.group(1)), float(m.group(2))) if m else 0.0
+    return min(_PDF_RENDER_DPI, _PDF_RENDER_MAX_PX * 72 / longest_pts) if longest_pts > 0 else _PDF_RENDER_DPI

@@ -80,6 +80,12 @@ def _select_capture_target(windows: list[dict[str, Any]], *, app_requested: bool
         external = [w for w in pool if not _is_cua_driver_self_window(w)]
         if external:
             pool = external
+    # macOS fullscreen: the app's own untitled title-bar strip is stacked above its titled content window, and a
+    # capture of a 24 px strip is never what the caller meant. Prefer the same process's titled window.
+    if not exact_target and pool and sys.platform == "darwin" and not pool[0].get("title"):
+        sibling = next((w for w in pool[1:] if w["pid"] == pool[0]["pid"] and w.get("title")), None)
+        if sibling is not None:
+            return sibling
     if not exact_target and not app_requested and sys.platform == "linux":
         pool = [w for w in pool if _is_real_app_window(w)] or pool
         if pool and _z_index_uninformative(pool):
@@ -115,6 +121,15 @@ def _png_metrics(png_b64: str, width: int, height: int) -> tuple[int, int, int]:
 
 def _is_desktop_window(w: dict[str, Any], names: tuple[str, ...] = _DESKTOP_WINDOW_NAMES) -> bool:
     return any(name in f"{w.get('app_name', '')} {w.get('title', '')}".lower() for name in names)
+
+
+def _focused_in_own_app(result: ActionResult, pid: Optional[int], window_id: Optional[int]) -> bool:
+    """True when a partial ``bring_to_front`` still left ``window_id`` focused with its own process frontmost and
+    only another window of that same process stacked above it."""
+    meta = result.meta or {}
+    observed, effect = meta.get("observed") or {}, meta.get("exact_window_effect") or {}
+    return bool(pid and window_id and effect.get("focused") and observed.get("front_process_matches_target")
+                and observed.get("focused_window_id") == window_id and observed.get("frontmost_pid") == pid)
 
 
 class _CaptureMixin:
@@ -175,6 +190,17 @@ class _CaptureMixin:
             "list_windows", {"on_screen_only": True, "session": self._session_id}, 20.0, "list_windows",
             lambda out: not _sorted_windows(out),
             "cua-driver list_windows returned no windows over MCP; re-fetching via CLI transport"))
+
+    def _windows_on_any_space(self) -> list[dict[str, Any]]:
+        """Windows on every Space, frontmost first (macOS: a fullscreen app lives on its own Space and is never in
+        the on-screen list). Rows with no Space id are hidden helper surfaces, not windows a user can switch to."""
+        try:
+            out = self._call_capture_tool("list_windows", {"on_screen_only": False, "session": self._session_id})
+        except Exception as exc:
+            logger.debug("computer_use list_windows across Spaces failed: %s", exc)
+            return []
+        rows = [w for w in _windows_from_tool_result(out) if isinstance(w, dict) and w.get("space_ids")]
+        return sorted(_ingest_windows(rows), key=lambda w: w["z_index"], reverse=True)
 
     def _match_windows_for_app(self, windows: list[dict[str, Any]], app: str) -> list[dict[str, Any]]:
         """Resolve ``app=``: exact window names, then exact list_apps aliases (Linux ``list_windows`` can
@@ -388,10 +414,20 @@ class _CaptureMixin:
         and uses the standalone ``bring_to_front`` tool."""
         with self._disarming():
             matched = self._match_windows_for_app(self.list_windows(), app)
+            elsewhere = [] if matched else self._match_windows_for_app(self._windows_on_any_space(), app)
+        # A fullscreen app (or any app parked on another Space) has no window on the current Space. Raising
+        # it is exactly what switches Spaces, so only the raise path may target it; background focus cannot
+        # drive a window the user cannot see.
+        if not matched and elsewhere and raise_window:
+            matched = elsewhere
         # No silent fallback to the frontmost window: that hides the real failure (often a localized macOS
         # app-name mismatch).
         if not matched:
             self._clear_active_target()
+            if elsewhere:
+                return ActionResult(ok=False, action="focus_app", code="window_on_other_space", message=(
+                    f"'{app}' has no window on the current Space: it is fullscreen or on another Space. "
+                    "focus_app with raise_window=true switches to it (a separately approved foreground action)."))
             return ActionResult(ok=False, action="focus_app", message=f"No on-screen window found for app '{app}'.")
         self._set_active_target(target := matched[0])
         self._last_app = target["app_name"] or app  # retained for back-compat diagnostics
@@ -401,6 +437,17 @@ class _CaptureMixin:
         if not self._session._has_tool("bring_to_front"):
             return ActionResult(ok=False, action="focus_app", code="bring_to_front_unsupported", message=_BTF_UNSUPPORTED_MSG)
         focused = self.bring_to_front(pid=self._active_pid, window_id=self._active_window_id)
+        if not focused.ok and _focused_in_own_app(focused, self._active_pid, self._active_window_id):
+            # macOS fullscreen: the app's own title-bar strip is a separate window stacked above the content
+            # window, so the driver's strict "frontmost ordinary window" check reports partial although the
+            # target window has focus and its process is in front.
+            driver_verdict = {k: focused.meta.get(k) for k in ("code", "status", "activated")}
+            focused.ok, focused.code, focused.verified = True, "bring_to_front_focused_own_app_above", True
+            focused.effect, focused.escalation = "confirmed", None
+            focused.meta = {**focused.meta, "code": focused.code, "status": "activated", "activated": True,
+                            "driver_verdict": driver_verdict}
+            focused.message = (f"Brought {target['app_name']} to the foreground: window {self._active_window_id} has "
+                               "focus; one of the app's own windows (e.g. its fullscreen title strip) is stacked above it.")
         if focused.ok:
             focused.action = "focus_app"
             focused.meta["target_selected"] = True

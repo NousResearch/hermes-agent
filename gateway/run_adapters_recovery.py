@@ -52,15 +52,15 @@ _RECONNECT_SUSPEND_GAP_SECS = 60.0
 
 def discount_suspended_wait(entries, waited_from: float, planned: float) -> None:
     """Move each reconnect entry's ``queued_at`` forward by a wait's suspend overrun, so NEEDS_ATTENTION and its
-    backdated ``retrying_since`` count only time the host was awake. Only entries already queued when the wait
-    began (``waited_from``) slept through it; one queued after resume keeps its own clock. Only idle waits are
+    backdated ``retrying_since`` count only time the host was awake. Entries queued before the planned wait elapsed may have slept through its overrun; those queued
+    after resume keep their own clock. Only idle waits are
     measured: time spent in connect attempts is the gateway failing and stays counted."""
     overrun = time.monotonic() - waited_from - planned
     if overrun <= _RECONNECT_SUSPEND_GAP_SECS:
         return
     for info in entries:
         queued_at = info.get("queued_at")
-        if queued_at is not None and queued_at <= waited_from:
+        if queued_at is not None and queued_at <= waited_from + planned:
             info["queued_at"] = queued_at + overrun
 
 

@@ -216,3 +216,57 @@ async def test_suspend_during_the_initial_delay_does_not_escalate_a_startup_entr
 
     assert attempts and attempts[0] is False, "flagged NEEDS_ATTENTION before the first retry"
     assert not [w for w in writes if w.get("needs_attention")], writes
+
+
+@pytest.mark.asyncio
+async def test_platform_queued_early_in_idle_is_not_aged_by_suspend(monkeypatch):
+    """A fatal queued while the watcher is idling, just before host suspend, must not
+    inherit that suspend as an outage. A late entry queued after wake stays unshifted."""
+    _set_threshold(monkeypatch, 7200)  # the production two-hour default
+    runner = _make_runner()
+    writes = []
+    monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda key, **kw: writes.append((key, kw)))
+    clock = _Clock(suspend_at=-1)
+    _install_clock(monkeypatch, clock)
+    cfg = PlatformConfig(enabled=True, token="t")
+    runner._failed_platforms[Platform.TELEGRAM] = runner._reconnect_queue_entry(
+        Platform.TELEGRAM, StubAdapter(), cfg, attempts=0, delay=0)
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, config:
+                        StubAdapter(platform=platform, fatal_error="network down"))
+
+    real_flag = runner._flag_reconnect_needs_attention
+    checked = []
+
+    def flag(platform, info, now, **kwargs):
+        flagged = real_flag(platform, info, now, **kwargs)
+        if platform == Platform.DISCORD and info["attempts"] >= 1:
+            checked.append(flagged)
+            runner._running = False
+        return flagged
+
+    monkeypatch.setattr(runner, "_flag_reconnect_needs_attention", flag)
+    real_sleep = asyncio.sleep
+    queued_during_idle = False
+
+    async def fake_sleep(seconds):
+        nonlocal queued_during_idle
+        if seconds == 1 and not queued_during_idle:
+            # The primary watcher entered its 10s idle with only Telegram queued.
+            # Another fatal arrives 2s into the idle, before the laptop sleeps.
+            clock.t += 2
+            runner._failed_platforms[Platform.DISCORD] = runner._reconnect_queue_entry(
+                Platform.DISCORD, StubAdapter(platform=Platform.DISCORD), cfg, attempts=0, delay=0)
+            queued_during_idle = True
+            clock.t += _SUSPEND + seconds
+        else:
+            clock.sleep(seconds)
+        if clock.sleeps > 400:
+            runner._running = False
+        await real_sleep(0)
+
+    with patch("asyncio.sleep", side_effect=fake_sleep):
+        await asyncio.wait_for(runner._platform_reconnect_watcher(), timeout=10)
+
+    assert queued_during_idle, "test never queued a second platform during watcher idle"
+    assert checked == [False], "a real two-hour outage must be awake time, not host suspend"
+    assert not [(key, kw) for key, kw in writes if key == "discord" and kw.get("needs_attention")]

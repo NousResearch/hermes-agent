@@ -723,13 +723,18 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Periodically retry failed platforms: backoff 30s → 300s cap, retryable failures retry
         forever (self-heal), non-retryable drop out. Pausing is manual only (``/platform pause``)."""
         async def _idle(seconds: int, until_queued: bool = False) -> bool:
-            """Sleep in 1s steps; False once the runner stops (or, if asked, once work is queued)."""
+            """Sleep in 1s steps; False once the runner stops (or, if asked, once work is queued). The
+            empty-queue wait measures each step: a fatal queued during it just before the host sleeps
+            must not age by the suspend either. The post-pass wait is measured once by its caller."""
             for _ in range(seconds):
                 if not self._running:
                     return False
                 if until_queued and self._failed_platforms:
                     break
+                step_from = time.monotonic()
                 await asyncio.sleep(1)
+                if until_queued:
+                    discount_suspended_wait(self._failed_platforms.values(), step_from, 1)
             return True
 
         started = time.monotonic()

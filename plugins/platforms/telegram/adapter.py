@@ -3512,6 +3512,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             raw_response={
                 "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
 
+    def _split_cap_notice(self, dropped_chars: int) -> Optional[str]:
+        """Raw truncation notice for :func:`cap_split_chunks`; ``None`` when warnings are hidden."""
+        return self.warning_text(t("platform.telegram.limits.response_truncated", max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars)))
+
     @staticmethod
     def _with_partial_send(
         result: SendResult, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> SendResult:

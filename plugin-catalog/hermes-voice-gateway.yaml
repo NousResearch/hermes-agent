@@ -1,0 +1,32 @@
+name: hermes-voice-gateway
+repo: https://github.com/SRai22/hermes-voice-gateway
+sha: d91bf6723b44b598d87d170d5d1b30fef31f36a3
+description: "Answers Twilio phone calls with Hermes: caller speech is transcribed and Hermes' replies are spoken with ElevenLabs over a Pipecat pipeline. Callers get only two restricted tools (inventory search, enquiry save). Operator-approved callbacks are proposed by the agent and dialed only after a human runs /voice-callback approve. Disclosure — runs a call server on 127.0.0.1:8081 (VOICE_WEBHOOK_HOST / VOICE_WEBHOOK_PORT) that a tunnel or reverse proxy must expose to Twilio; Twilio webhooks are signature-checked and callers must be on VOICE_ALLOWED_USERS, but caller ID can be spoofed, so treat the allowlist as a filter, not authentication. Call audio goes to ElevenLabs (speech-to-text and text-to-speech) and call metadata and callbacks go to the Twilio REST API; the optional local dev pipeline also uses OpenAI. Caller enquiries are stored as plaintext in the plugin's own SQLite file under HERMES_HOME."
+maintainer: SRai22
+tier: community
+category: platform
+version: "0.2.0"
+title: "Hermes Voice Gateway"
+docs_url: https://github.com/SRai22/hermes-voice-gateway/blob/d91bf6723b44b598d87d170d5d1b30fef31f36a3/README.md
+readme: true
+known_issues:
+  - "Requires pipecat-ai 1.7.0 exactly (pinned) and uvicorn; the Hermes runtime must be able to install them."
+  - "Twilio WebSocket calls have basic call control only: no transfers or reconnects. Voicemail is not detected, and full barge-in is unverified."
+  - "Twilio call-status callbacks are not wired in, so a stored callback status stays answered after the call ends; use voice_check_call_status for live state."
+  - "Caller ID is unverified. Anyone Hermes lets run slash commands can approve callbacks, so restrict command access to your operators."
+  - "In-process gateway platform only; the caller-tool policy uses some non-public Hermes internals and must be re-verified on Hermes upgrades. The Hermes profile's Voice tool selection must be set to voice_caller only (see the README), otherwise calls fail closed."
+capabilities:
+  provides_tools:
+    - voice_propose_callback
+    - voice_check_call_status
+    - voice_start_local_pipeline
+    - voice_search_inventory
+    - voice_save_enquiry
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - TWILIO_ACCOUNT_SID
+    - TWILIO_AUTH_TOKEN
+    - ELEVENLABS_API_KEY
+    - VOICE_WEBHOOK_URL

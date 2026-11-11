@@ -11,6 +11,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
@@ -485,8 +486,8 @@ def _is_prompt_example_echo(title: str) -> bool:
 
 
 def _cjk_char_count(text: str) -> int:
-    """Characters written with CJK scripts or their punctuation in ``text``."""
-    return sum(1 for ch in text if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
+    """Count CJK script characters after canonical normalization, without rewriting stored titles."""
+    return sum(1 for ch in unicodedata.normalize("NFC", text) if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
 
 
 def _is_answer_shaped(title: str) -> bool:

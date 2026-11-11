@@ -305,6 +305,18 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[dict[str, Any]]) 
     return None if caps is None else caps.supports_vision
 
 
+def _probe_nous_catalog(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+    """Nous Portal ``/v1/models`` verdict (``architecture.input_modalities``). models.dev has no
+    Nous catalog, so without this every Portal model reads as unknown and ``auto`` describes its
+    images through the auxiliary vision model. Network on a cold cache for the same reason as
+    :func:`_probe_models_dev`; the catalog is cached in memory and mirrored to disk."""
+    if _clean_str(provider).lower() != "nous":
+        return None
+    from hermes_cli.models_reasoning_caps import nous_model_supports_vision
+
+    return nous_model_supports_vision(model, allow_fetch=True)
+
+
 def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
     """Ollama ``/api/show`` verdict for local endpoints (see :func:`_should_probe_ollama_vision`)."""
     base_url = _resolve_inference_base_url(cfg, provider)
@@ -323,6 +335,7 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
 _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
+    ("nous catalog lookup", _probe_nous_catalog),
     ("ollama vision probe", _probe_ollama),
 )
 
@@ -337,7 +350,7 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe). A plugin's
+    (managed local runtime → models.dev catalog → Nous Portal catalog → Ollama probe). A plugin's
     per-model ``ProviderProfile.model_capabilities`` reaches this through the
     catalog probe. The provider-wide ``ProviderProfile.supports_vision`` flag is
     deliberately NOT consulted: it declares that tool-result messages may carry

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -17,6 +18,8 @@ import uuid
 
 from pm.filesystem import native
 from pm.package import InstallError
+
+LOG = logging.getLogger(__name__)
 
 
 def runtime_environment() -> dict[str, str]:
@@ -191,7 +194,7 @@ def collect_runtime_generations(root: Path) -> list[Path]:
     existed stay, as the application collector keeps its own.
     """
     from pm.filesystem import lock_fd
-    from hermes_cli.runtime_state import leases_held
+    from hermes_cli.runtime_state import leases_held, remove_generation
 
     generations = root / "generations"
     removed: list[Path] = []
@@ -210,8 +213,13 @@ def collect_runtime_generations(root: Path) -> list[Path]:
             published = (generation / "pm-runtime.json").is_file()
             if published and (not (generation / ".lease-managed").is_file() or leases_held(generation)):
                 continue
-            shutil.rmtree(generation)
-            removed.append(generation)
+            try:
+                complete = remove_generation(generation)
+            except OSError as exc:
+                LOG.warning("could not remove PM runtime generation %s: %s", generation, exc)
+            else:
+                if complete:
+                    removed.append(generation)
     return removed
 
 

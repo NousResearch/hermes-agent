@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 import uuid
 
@@ -179,6 +180,145 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     return release
 
 
+FILE_DISPOSITION_FLAG_DELETE = 0x1
+FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x2
+FILE_DISPOSITION_INFO_EX = 21  # FILE_INFO_BY_HANDLE_CLASS::FileDispositionInfoEx
+
+
+def _unlink_by_posix_disposition(path: str) -> bool:
+    """Strip a locked entry's directory entry via Win32 POSIX-semantics deletion.
+
+    On Windows an unlink that another process's open handle refuses
+    (``PermissionError``) is not always final: a disposition with
+    ``FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS``
+    removes the link as soon as the disposition handle closes, while the bytes
+    stay with whatever holds them. Live validation on Windows 10 19045 shows
+    this call is refused while an image section maps the file, so it covers
+    ordinary sharing and attribute refusals and complements — never replaces —
+    the tombstone rename that covers mapped images. Inert off Windows and on
+    any refusal; callers keep their ordinary defer path, and no chmod touches
+    the selected inode's attributes.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    kernel32.SetFileInformationByHandle.restype = ctypes.c_int
+    kernel32.SetFileInformationByHandle.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+    ]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    DELETE_ACCESS = 0x00010000
+    FILE_SHARE_READ_WRITE_DELETE = 0x7
+    OPEN_EXISTING = 3
+    # FILE_FLAG_BACKUP_SEMANTICS opens the link itself, so a symlinked payload
+    # entry loses its link, never its target — the os.unlink contract.
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    handle = kernel32.CreateFileW(
+        str(path), DELETE_ACCESS, FILE_SHARE_READ_WRITE_DELETE, None,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, None,
+    )
+    if not handle or handle == ctypes.c_void_p(-1).value:  # NULL / INVALID_HANDLE_VALUE
+        return False
+
+    class FILE_DISPOSITION_INFO_EX_STRUCT(ctypes.Structure):
+        _fields_ = [("Flags", ctypes.c_uint32)]
+
+    info = FILE_DISPOSITION_INFO_EX_STRUCT(
+        FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+    )
+    try:
+        # No FILE_DISPOSITION_FLAG_FORCE_IMAGE_SECTION_CHECK: without it the
+        # kernel explicitly allows deletion despite an existing image section.
+        return bool(kernel32.SetFileInformationByHandle(
+            handle, FILE_DISPOSITION_INFO_EX, ctypes.byref(info), ctypes.sizeof(info),
+        ))
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _tombstone_refused_entry(entry: Path, reclaimed_dir: Path) -> bool:
+    """Move an un-unlinkable entry out of the payload namespace, deferring bytes.
+
+    Live validation (Windows 10 19045): every ``FileDispositionInfoEx`` flag
+    variant is refused while an image section maps the file, while a plain
+    same-volume rename still succeeds — source name gone, payload bytes held by
+    the mapping until it is released (the observable MSYS ``rm`` behavior from
+    #129300). Renaming into ``reclaimed_dir`` keeps the tombstone inside the
+    generation, so a later collector pass — or this same walk once the mapping
+    is released — reclaims the bytes and the shell together. Inert off Windows
+    and on any refusal; entries already queued by an earlier pass return False
+    so the ordinary defer path stays in charge of them.
+    """
+    if sys.platform != "win32":
+        return False
+    if entry.parent == reclaimed_dir:  # already tombstoned by an earlier pass
+        return False
+    try:
+        reclaimed_dir.mkdir(parents=True, exist_ok=True)
+        entry.rename(reclaimed_dir / f"{uuid.uuid4().hex[:12]}-{entry.name}")
+        return True
+    except OSError:
+        return False
+
+
+def remove_generation(generation: Path) -> bool:
+    """Best-effort payload cleanup; retain lifetime metadata while any payload remains.
+
+    Call only after the collector's selection/lease checks, under its publication lock.
+    A mapped hard-linked image can refuse unlink in *every* old generation. Continue
+    past that file without chmod (which would also mutate the selected/cache inode):
+    first try a POSIX-semantics disposition, then a same-volume tombstone rename,
+    so a refused entry at least loses its payload-namespace name and the generation
+    stops looking reusable while its bytes wait under ``.reclaimed`` for a later pass.
+    """
+    failed = False
+    reclaimed_dir = generation / ".reclaimed"
+
+    def onerror(_function, path, exc_info):
+        nonlocal failed
+        exc = exc_info[1]
+        if isinstance(exc, FileNotFoundError):
+            return
+        if isinstance(exc, PermissionError):
+            if _unlink_by_posix_disposition(str(path)):
+                return  # The entry is gone; what refused the unlink was the mapping, not the name.
+            if _tombstone_refused_entry(Path(path), reclaimed_dir):
+                LOG.info(
+                    "payload %s stays mapped or locked; name queued under %s for a later pass",
+                    path, reclaimed_dir,
+                )
+                failed = True  # Bytes remain queued: the shell must stay until they go.
+                return
+        failed = True
+        LOG.warning("could not remove generation payload %s: %s", path, exc)
+
+    # A swallowing rmtree callback alone can delete these markers even when nested
+    # payload survives. Keep them out of the walk until the payload is fully gone.
+    # sorted() materializes the walk before any rename, so tombstones written
+    # under .reclaimed are never re-entered by this same pass.
+    for child in sorted(generation.iterdir()):
+        if child.name in (".lease-managed", "pm-runtime.json"):
+            continue
+        try:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, onerror=onerror)
+            else:
+                child.unlink()
+        except OSError as exc:
+            onerror(None, child, (type(exc), exc, exc.__traceback__))
+    if failed:
+        return False
+    shutil.rmtree(generation)
+    return True
+
+
 def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
     """Remove unselected lease-managed generations after their readers exit."""
     from pm.environments import selected_venv
@@ -201,8 +341,13 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
             if not leases_held(generation):
-                shutil.rmtree(generation)
-                removed.append(generation)
+                try:
+                    complete = remove_generation(generation)
+                except OSError as exc:
+                    LOG.warning("could not remove dependency generation %s: %s", generation, exc)
+                else:
+                    if complete:
+                        removed.append(generation)
     return removed
 
 

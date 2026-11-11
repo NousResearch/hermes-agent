@@ -53,3 +53,40 @@ sys.stdin.readline()
     assert not first.exists()
     assert (state / "environments" / "second").is_dir()
     assert legacy.is_dir()
+
+
+def test_dependency_collector_continues_after_one_generation_cannot_be_removed(tmp_path, monkeypatch):
+    from pm.environments import install_state_dir, runtime_facts_path, site_packages
+    from hermes_cli import runtime_state
+    from hermes_cli.runtime_state import collect_generations
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    state = install_state_dir(repo)
+
+    def make_generation(name):
+        venv = state / "environments" / name / "venv"
+        venv.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("version = 3.11")
+        site_packages(venv).mkdir(parents=True)
+        (venv.parent / ".lease-managed").touch()
+        return venv.parent
+
+    selected = make_generation("selected") / "venv"
+    blocked = make_generation("blocked")
+    removable = make_generation("removable")
+    runtime_facts_path(repo).write_text(json.dumps({"packages": {"venv": {"environment": str(selected)}}}))
+
+    real_rmtree = runtime_state.shutil.rmtree
+
+    def fail_one(path, *args, **kwargs):
+        if path == blocked:
+            raise PermissionError("mapped image")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_state.shutil, "rmtree", fail_one)
+
+    assert collect_generations(repo, min_age_seconds=0) == [removable]
+    assert blocked.is_dir()
+    assert not removable.exists()

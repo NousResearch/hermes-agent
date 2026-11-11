@@ -1,0 +1,45 @@
+name: wrenchboard
+title: WrenchBoard
+repo: https://github.com/Junkz3/hermes-wrenchboard
+sha: "da468ace9e5c5cdfa118fe302eeda00de81f67cb"
+description: >-
+  Turn Hermes into a circuit board repair bench: a live boardview beside the chat, opened from 14 boardview
+  formats, test plans with readings pinned on the pads, part cards drawn from the real copper, and your schematic
+  and datasheets read on your computer. Disclosure: needs a WrenchBoard account (free to read boards, with an
+  example board to try; repairs and test plans need Pro) and talks only to WrenchBoard's hosted connector, which
+  receives the boardview files you import, your repairs and your readings; schematic PDFs, documents and camera
+  pictures stay on your computer, and there is no telemetry.
+maintainer: Junkz3
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/Junkz3/hermes-wrenchboard#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Junkz3/hermes-wrenchboard/da468ace9e5c5cdfa118fe302eeda00de81f67cb/docs/screenshots/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/Junkz3/hermes-wrenchboard/da468ace9e5c5cdfa118fe302eeda00de81f67cb/docs/screenshots/protocol.png
+  - https://raw.githubusercontent.com/Junkz3/hermes-wrenchboard/da468ace9e5c5cdfa118fe302eeda00de81f67cb/docs/screenshots/datasheet-copper.png
+  - https://raw.githubusercontent.com/Junkz3/hermes-wrenchboard/da468ace9e5c5cdfa118fe302eeda00de81f67cb/docs/screenshots/example-diagnosis.png
+  - https://raw.githubusercontent.com/Junkz3/hermes-wrenchboard/da468ace9e5c5cdfa118fe302eeda00de81f67cb/docs/screenshots/schematic.png
+  - https://raw.githubusercontent.com/Junkz3/hermes-wrenchboard/da468ace9e5c5cdfa118fe302eeda00de81f67cb/docs/screenshots/dark.png
+  - https://raw.githubusercontent.com/Junkz3/hermes-wrenchboard/da468ace9e5c5cdfa118fe302eeda00de81f67cb/docs/screenshots/phone.png
+platforms: []
+known_issues:
+  - "Needs a WrenchBoard account: free, created in the browser when you press Connect, and it comes with an open-hardware example board."
+  - "The pane ships disabled, like every Desktop half: switch it on once under Capabilities, Plugins."
+  - "Repairs and test plans need a WrenchBoard Pro account. On the example board, a free account also reads the analysed schematic and the known faults."
+capabilities:
+  provides_tools:
+    - wb_schematic_find
+    - wb_schematic_view
+    - wb_capture
+    - wb_doc_find
+    - wb_doc_view
+    - wb_repairs_page
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+    - transform_llm_output
+    - pre_transcription
+  provides_middleware: []
+  requires_env: []

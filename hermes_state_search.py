@@ -260,12 +260,13 @@ def _search_filter_clauses(
     exclude_sources: Optional[list[str]], role_filter: Optional[list[str]],
     after_ts: Optional[int] = None, before_ts: Optional[int] = None) -> None:
     """Append the visibility/source/role/session-start predicates every search route shares. Live
-    rows (active=1) AND compaction-archived rows (compacted=1) are discoverable; only
-    rewind/undo rows (active=0, compacted=0) are hidden. ``after_ts``/``before_ts`` bound
+    rows (active=1) AND compaction-archived rows (compacted=1) are discoverable; rewind/undo rows
+    (active=0, compacted=0) and a retained refused ask (compacted=1, ``content_refused``: shown
+    to the user, never to the model) are hidden. ``after_ts``/``before_ts`` bound
     ``sessions.started_at`` (inclusive / exclusive) inside the query so LIMIT cannot be
     filled by out-of-window hits."""
     if not include_inactive:
-        where.append("(m.active = 1 OR m.compacted = 1)")
+        where.append("(m.active = 1 OR (m.compacted = 1 AND COALESCE(m.display_kind, '') <> 'content_refused'))")
     # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
     where.append("COALESCE(m.display_kind, '') <> 'hidden'")
     if source_filter is not None:

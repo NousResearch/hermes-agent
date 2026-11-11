@@ -557,14 +557,11 @@ class SessionSessionsMixin:
         now = time.time()
         # /new and policy auto-resets promote rather than end_session, so the
         # generation advances here too — same transaction, only when written.
-        try:
-            return bool(self._execute_write(lambda conn: self._end_and_bump(
-                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND (ended_at IS NULL "
-                f"OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))",
-                (now, reason, session_id), session_id, reason,
-            )))
-        except Exception:
-            return False
+        return bool(self._execute_write(lambda conn: self._end_and_bump(
+            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND (ended_at IS NULL "
+            f"OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))",
+            (now, reason, session_id), session_id, reason,
+        )))
 
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: Optional[str] = None,
@@ -1053,15 +1050,16 @@ class SessionSessionsMixin:
         Exempt the canonical Bot Chat (hidden + exact registry title): the desktop contract keeps it
         hidden and reachable only through the bot row, and unhiding it would also disable the
         rename guard in ``_set_session_title`` that protects its identity (see review on #106180)."""
-        result = self._set_lineage_column("pinned", session_id, int(pinned))
-        if pinned:
-            row = self.get_session(session_id)
-            is_canonical_bot_chat = bool(row) and bool(row.get("hidden")) and (
-                (row.get("title") or "") == self.CANONICAL_BOT_CHAT_TITLE
-            )
-            if not is_canonical_bot_chat:
-                self._set_lineage_column("hidden", session_id, 0)
-        return result
+        return bool(self._execute_write(
+            lambda conn: self._set_session_pinned_in_transaction(conn, session_id, pinned)))
+
+    def _set_session_pinned_in_transaction(self, conn, session_id: str, pinned: bool) -> list:
+        """:meth:`set_session_pinned` on *conn*; returns the lineage IDs the pin wrote."""
+        ids = self._set_lineage_column_in_transaction(conn, "pinned", session_id, int(pinned))
+        row = conn.execute("SELECT hidden, title FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if pinned and not (row and row["hidden"] and (row["title"] or "") == self.CANONICAL_BOT_CHAT_TITLE):
+            self._set_lineage_column_in_transaction(conn, "hidden", session_id, 0)
+        return ids
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""

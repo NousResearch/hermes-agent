@@ -153,7 +153,8 @@ async def test_editing_ones_own_branch_leaves_another_logins_parent_alone(tmp_pa
                           model_config={'_branched_from': 'root'})
         with pytest.raises(RuntimeStoreError):
             await edit('root', 'direct', {'pinned': True})
-        await edit('alice-branch', 'pin', {'pinned': True, 'hidden': True})
+        await edit('alice-branch', 'pin', {'pinned': True})
+        await edit('alice-branch', 'hide', {'hidden': True})
         await edit('alice-tip', 'arch', {'archived': True})
         for sid in ('root', 'root-tip'):
             row = db.get_session(sid)

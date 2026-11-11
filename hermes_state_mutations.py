@@ -107,6 +107,10 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
             affected.update(db._set_session_title_in_transaction(
                 conn, session_id, value, source=db.TITLE_SOURCE_USER))
             result[key] = conn.execute('SELECT title FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
+        elif key == 'pinned':
+            # Desktop's Pin lands here, not in set_session_pinned: same unhide rule (#106171).
+            affected.update(db._set_session_pinned_in_transaction(conn, session_id, value))
+            result[key] = value
         else:
             column = 'last_read_at' if key == 'unread' else key
             stored = (0.0 if value else time.time()) if key == 'unread' else int(value)

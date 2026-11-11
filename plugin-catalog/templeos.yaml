@@ -1,0 +1,71 @@
+name: templeos
+title: TempleOS for Hermes
+repo: https://github.com/mojomast/hermes-templeos
+sha: c61d00eb4d36c5e3c7cd57a2985985aed8db42f0
+subdir: ""
+description: >-
+  Run a local TempleOS-family guest (default Temple of Hermes 0.1.2; optional
+  TinkerOS 5.20-rc10, stock TempleOS 5.03, or ZealOS) in
+  QEMU so the Hermes agent and the user can share one live screen. Disclosure
+  — spawns qemu-system-x86_64 as a child (KVM only when /dev/kvm can be
+  opened, otherwise TCG) with a minimal non-secret child environment; may
+  fetch a pinned ISO from its official HTTPS URL (SHA-256 verified,
+  connection-pinned, no proxy); injects keys and HolyC over QMP/serial;
+  transfers files over a framed COM1 protocol; keeps a background QEMU
+  process; and stores disks and ISOs under plugin data. Networking is always
+  off (-nic none). QEMU and ISOs are not bundled. This is a child hypervisor,
+  not an OS sandbox. An optional Temple of Hermes HBBS/1 / chat bridge is
+  off by default; the destination is the allow-list name bbs and the TLS
+  endpoint comes from host config, never from guest text (loopback or
+  private LAN allowed only because the operator set them; metadata and
+  link-local are refused). The optional TEMPLEOS_CHAT_BRIDGE_TOKEN is read
+  only through Hermes secret scope. Observer hooks animate the Terry
+  companion from session events; they return None and do not approve, modify,
+  or log other tools. The Desktop pane uses ctx.rest only. Terry is an
+  original fan tribute with no official TempleOS affiliation.
+maintainer: mojomast
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.1"
+docs_url: https://github.com/mojomast/hermes-templeos#readme
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-1920x1240.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-typing.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-narrow.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-agent-log.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-user-driving.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/c61d00eb4d36c5e3c7cd57a2985985aed8db42f0/docs/images/pane-onboarding.png
+known_issues:
+  - "FAT floppy push is experimental; bake-off did not see hot-added FAT12 as A: on TinkerOS live CD."
+  - "Primary host is Linux x86_64. Apple Silicon and Windows are untested."
+  - "Temple of Hermes 0.1.2 is the default flavor, pinned to the official GitHub release ISO; TinkerOS, TempleOS 5.03, and ZealOS remain optional. No ISO is bundled."
+capabilities:
+  provides_tools:
+    - templeos_vm
+    - templeos_screen
+    - templeos_input
+    - templeos_files
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - on_stream_start
+    - on_stream_delta
+    - on_stream_end
+    - api_request_error
+    - pre_approval_request
+    - post_approval_response
+    - on_human_input_request
+    - on_human_input_resolved
+    - on_session_start
+    - on_session_end
+    - agent_loop_stopped
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env:
+    - TEMPLEOS_CHAT_BRIDGE_TOKEN

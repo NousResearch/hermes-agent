@@ -14,7 +14,8 @@ import sys
 
 import pytest
 
-from hermes_cli.gateway_launchd_runtime import start_gateway_job
+from hermes_cli import gateway_launchd_runtime as launchd_runtime
+from hermes_cli.gateway_launchd_runtime import GatewayJob, start_gateway_job
 from tests.waiting import wait_until
 
 
@@ -61,3 +62,19 @@ def test_gateway_job_is_a_launchd_osascript_child_that_reads_as_unsupervised(tmp
         release.write_text("", encoding="utf-8")
     assert wait_until(lambda: job.poll() is not None, timeout=30)
     assert job.poll() == 0
+
+
+def test_a_job_keeps_reporting_its_exit_past_the_spawn_deadline_once_the_ensure_moves_it(monkeypatch):
+    """A slow start the ensure keeps waiting on must still surface the job's exit (runtime_exited)."""
+    import time
+    calls = []
+
+    def launchctl(*args, timeout):
+        calls.append(timeout)
+        return None if timeout <= 0 else subprocess.CompletedProcess(args, 0, "\tlast exit code = 1\n", "")
+    monkeypatch.setattr(launchd_runtime, "_launchctl", launchctl)
+    job = GatewayJob("gui/501/probe", deadline=time.monotonic() - 1)
+    assert job.poll() is None
+    job.extend_deadline(time.monotonic() + 60)
+    job._checked = 0.0
+    assert job.poll() == 1

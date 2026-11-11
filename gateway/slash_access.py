@@ -116,7 +116,14 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     extra = getattr(platform_config, "extra", None)
     if not isinstance(extra, dict):
         extra = platform_config if isinstance(platform_config, dict) else {}
-    chat_type = getattr(source, "chat_type", None)
+    return policy_for_chat_type(extra, getattr(source, "chat_type", None))
+
+
+def policy_for_chat_type(extra: Any, chat_type: Any) -> SlashAccessPolicy:
+    """The scope policy of one platform ``extra`` block for a chat of ``chat_type``: the single rule
+    every surface uses to pick DM vs group admins (slash commands, ``/approve``, approval buttons)."""
+    if not isinstance(extra, dict):
+        extra = {}
     normalized = str(chat_type).strip().lower() if chat_type is not None else ""
     if normalized:
         scope = "dm" if normalized in _DM_CHAT_TYPES else "group"
@@ -130,7 +137,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
 
 
-__all__ = ["SlashAccessPolicy", "policy_for_source", "policy_from_extra"]
+__all__ = ["SlashAccessPolicy", "policy_for_chat_type", "policy_for_source", "policy_from_extra"]
 
 
 

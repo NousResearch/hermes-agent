@@ -1049,31 +1049,28 @@ def has_hook(hook_name: str) -> bool:
     return _delivery_manager().has_hook(hook_name)
 
 
-def _loaded_manager_nowait() -> Optional[PluginManager]:
-    """This home's manager when its plugins are loaded, else None. Never discovers or waits: an
-    unloaded home, or one whose (re)load is still running on another thread, answers None (unknown).
-    ``_discovered`` is set before a sweep finishes and a force reload clears the registries first, so
-    a held discovery lock counts as unknown."""
+def _loaded_registry_nowait(check: Callable[[PluginManager], bool]) -> bool:
+    """``check(manager)`` when this home's plugins are loaded, else False (unknown). Never discovers or
+    waits. ``_discovered`` is set before a sweep finishes and a force reload clears the registries
+    first, so a held discovery lock is unknown, and ``check`` reads the registry under that lock."""
     manager = get_plugin_manager()
     if not manager._discovery_lock.acquire(blocking=False):
-        return None
+        return False
     try:
-        return manager if manager._discovered else None
+        return manager._discovered and check(manager)
     finally:
         manager._discovery_lock.release()
 
 
 def hook_unused_nowait(hook_name: str) -> bool:
     """True when this home's plugins are loaded and none handles *hook_name*; safe on an event loop."""
-    manager = _loaded_manager_nowait()
-    return manager is not None and not manager.has_hook(hook_name)
+    return _loaded_registry_nowait(lambda manager: not manager.has_hook(hook_name))
 
 
 def plugin_command_absent_nowait(name: str) -> bool:
     """True when this home's plugins are loaded and none registered command *name*. Never discovers
     (discovery runs every plugin's ``register()``, which needs the caller's profile scope)."""
-    manager = _loaded_manager_nowait()
-    return manager is not None and name not in manager._plugin_commands
+    return _loaded_registry_nowait(lambda manager: name not in manager._plugin_commands)
 
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:

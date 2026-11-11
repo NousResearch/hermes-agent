@@ -1,11 +1,11 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const frOnboarding: TranslationOverrides['onboarding'] = {
-  headerTitle: 'Configurons Hermes Agent pour vous',
+  headerTitle: 'Activez votre Collaborateur IA',
   headerDesc:
-    'Connectez un fournisseur de modèles pour commencer à discuter. La plupart des options nécessitent un clic.',
-  preparingInstall: "Hermes finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",
-  starting: 'Démarrage de Hermes…',
+    'Connectez votre espace Unitalk en 1 clic pour activer vos crédits et équiper votre Collaborateur IA.',
+  preparingInstall: "Unitalk finalise la préparation de votre Collaborateur IA. Cela prend généralement moins d'une minute au premier lancement.",
+  starting: 'Démarrage de Unitalk…',
   setupSlowTitle: 'La configuration prend plus de temps que d’habitude.',
   setupSlowBody: 'Hermes est toujours en cours de démarrage en arrière-plan.',
   continueWithoutSetup: 'Continuer sans configuration',
@@ -16,7 +16,7 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   chooseLater: 'Je choisirai un fournisseur plus tard',
   recommended: 'Recommandé',
   connected: 'Connecté',
-  featuredPitch: 'Un abonnement, 300+ modèles de pointe — la méthode recommandée pour exécuter Hermes',
+  featuredPitch: 'Unitalk AI Gateway · 10 000 crédits offerts (5 €) — la méthode recommandée pour équiper votre Collaborateur IA',
   fireworksPitch: 'API de modèles directe — modèles de pointe hébergés par Fireworks',
   localModelsTitle: 'Exécuter des modèles en local',
   localModelsPitch: 'Aucun compte requis — téléchargez un modèle et exécutez-le sur cette machine',

@@ -50,3 +50,31 @@ test('joinBackendApiUrl rejects absolute URLs smuggled as the path', () => {
   assert.throws(() => joinBackendApiUrl(LOCAL, 'http://attacker.example/'), /relative path/)
   assert.throws(() => joinBackendApiUrl(LOCAL, 'https://attacker.example/'), /relative path/)
 })
+
+// The hermes:api handler routes the renderer path through these rewrites before
+// fetchJsonForBackend joins it; whatever they emit must still be refused or on-origin.
+test('routed renderer paths never leave the backend origin once joined', async () => {
+  const { pathForRegistryBackendRequest, resolveProfileApiRequest } = await import('./connection-config')
+  const hostile = ['@attacker.example/', ' @attacker.example/', 'attacker.example', '//attacker.example/', 'https://attacker.example/']
+
+  for (const path of hostile) {
+    const routed = [
+      resolveProfileApiRequest('iris', path, { globalRemote: true, primaryProfile: 'default' }).requestPath,
+      resolveProfileApiRequest('iris', path, {}).requestPath,
+      pathForRegistryBackendRequest(path, 'iris', { sharedRemote: true }),
+      pathForRegistryBackendRequest(path, 'iris', { mode: 'ssh', remoteProfile: 'default' })
+    ]
+
+    for (const requestPath of routed) {
+      let joined: null | string = null
+
+      try {
+        joined = joinBackendApiUrl(REMOTE, requestPath)
+      } catch {
+        continue
+      }
+
+      assert.equal(new URL(joined).origin, REMOTE, `${JSON.stringify(path)} -> ${requestPath}`)
+    }
+  }
+})

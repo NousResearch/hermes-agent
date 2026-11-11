@@ -14962,17 +14962,14 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
   return fetchJsonForBackend(descriptor, path, opts)
 }
 
-// Any-method REST call against a resolved backend descriptor — the descriptor
-// analogue of the hermes:api handler's own auth split: OAuth backends prefer a
-// native bearer (cookieless RFC 8252 flow) and fall back to the OAuth cookie
-// partition; token/local descriptors use the static session-token header.
+// Any-method REST call against a resolved backend descriptor, the one sink for renderer-routed paths (so the
+// join refuses any path that would move the credentials off the backend origin). OAuth backends prefer a native
+// bearer (cookieless RFC 8252) and fall back to the cookie partition; token/local use the session-token header.
 async function fetchJsonForBackend(
   descriptor,
   path,
   opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean } = {}
 ) {
-  // Every renderer-routed REST call lands here; refuse a path that would move the
-  // credentialed request off the backend origin (`@evil/` parses as userinfo).
   const url = joinBackendApiUrl(descriptor.baseUrl, path)
 
   // A native grant names one profile and the gateway refuses `all`: assemble the unified

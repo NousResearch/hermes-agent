@@ -177,6 +177,18 @@ def test_text_response_surfaces_fields_additively():
 # Phase B — delivery_mode threading + capability gating
 # ---------------------------------------------------------------------------
 
+def test_verify_state_action_is_exposed_and_forwarded():
+    from tools.computer_use import tool as cu
+    with patch.object(cu, "_new_backend", lambda mode: cu._NoopBackend()):
+        cu.reset_backend_for_tests()
+        noop_backend = cu._get_backend()
+        payload = {"action": "verify_state", "expect": [{"element": {"selector": {"role": "CheckBox"}, "exists": True}}], "pid": 7, "window_id": 9}
+        result = json.loads(cu.handle_computer_use(payload))
+        assert "error" not in result
+        call = next(args for name, args in noop_backend.calls if name == "verify_state")
+        assert call == {"expect": payload["expect"], "pid": 7, "window_id": 9}
+
+
 def test_background_is_default_no_flag_sent():
     out = {"isError": False, "data": {}, "structuredContent": {"effect": "confirmed"}}
     sess = _FakeSession(out)

@@ -22,6 +22,7 @@ Usage examples::
 """
 
 import re
+import io
 import sys
 import time
 from datetime import datetime, timedelta
@@ -293,18 +294,33 @@ def _read_last_n_lines(path: Path, n: int) -> list:
 
 
 def _follow_log(path: Path, **filters) -> None:
-    """Poll a log file for new content and print matching lines."""
+    """Poll a log file for new content and print matching lines.
+
+    Open the file in binary mode and wrap it with ``io.TextIOWrapper`` instead of
+    opening it in text mode (``"r\"``).  Windows log rotation (``RotatingFileHandler.doRollover``)
+    performs an ``os.rename`` of the log file; on Windows that fails with
+    ``PermissionError [WinError 32]`` whenever another process still holds the
+    file open.  A plain-text handle produced by ``open(..., "r\")`` keeps the
+    file locked, which stalls rotation and can leave the log truncated or
+    accumulate in the rotated file.
+
+    Opening the file in binary mode (``"rb\"``) and wrapping it with
+    ``io.TextIOWrapper`` sidesteps this: the underlying file descriptor is opened
+    with ``O_RDONLY`` (no extra sharing mode), so the log roll can proceed
+    unimpeded even while this follow-process is running.
+    """
     keep = _LineFilter(**filters)
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        # Seek to end
-        f.seek(0, 2)
-        while True:
-            line = f.readline()
-            if not line:
-                time.sleep(0.3)
-            elif keep(line):
-                print(line, end="")
-                sys.stdout.flush()
+    with open(path, "rb") as raw_f:
+        with io.TextIOWrapper(raw_f, encoding="utf-8-sig", errors="replace") as f:
+            # Seek to end
+            f.seek(0, 2)
+            while True:
+                line = f.readline()
+                if not line:
+                    time.sleep(0.3)
+                elif keep(line):
+                    print(line, end="")
+                    sys.stdout.flush()
 
 
 def _size_label(size: int) -> str:

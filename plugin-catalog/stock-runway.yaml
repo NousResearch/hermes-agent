@@ -1,9 +1,9 @@
 name: stock-runway
 repo: https://github.com/usegreymatter/hermes-stock-runway
-sha: aeb1f524639b807944c867d55637fabdbb6b260e
+sha: 34b148604c92648137a7506daba6ce47c8e5fe1b
 subdir: ""
 description: >-
-  See when each product will run out and when to reorder. Forecasts monthly demand,
+  See when each product will run out and when to reorder. Forecasts seasonal monthly demand,
   shows past demand, deliveries and stock on one chart, grades forecast accuracy, and
   lists what to order now (quantity and order-by date, with lead time, MOQ and pack size).
   Works from the bundled sample, a local CSV, or an optional read-only Odoo connection

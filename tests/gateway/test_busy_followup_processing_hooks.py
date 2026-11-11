@@ -118,3 +118,25 @@ async def test_busy_followup_success_waits_for_its_reply_and_a_failed_send_repor
     await _wait_for(lambda: not adapter._background_tasks, 15)
     await _wait_for(lambda: any(h[0] == 'm2' and h[1] == 'complete' for h in adapter.hooks))
     assert [h for h in adapter.hooks if h[0] == 'm2'] == [('m2', 'start'), ('m2', 'complete', ProcessingOutcome.FAILURE)]
+
+
+@pytest.mark.asyncio
+async def test_busy_followup_released_by_a_pause_keeps_its_lifecycle_when_it_runs(monkeypatch):
+    """A pause releases the follow-up's observer with a notice while its row stays queued. The turn
+    still owes its lifecycle: when the queue moves on it gets its start and completion hooks."""
+    from gateway.platforms.event import MessageEvent, ProcessingOutcome
+    from gateway.session_contract import SessionRef
+
+    adapter = HookAdapter()
+    authority, source, gate = await _busy_hook_owner(monkeypatch, adapter)
+    await adapter.handle_message(MessageEvent(text='one', source=source, message_id='m1'))
+    await _wait_for(lambda: _statuses(authority).get('one') == 'started')
+    await asyncio.wait_for(adapter.handle_message(MessageEvent(text='two', source=source, message_id='m2')), 5)
+    await _wait_for(lambda: _statuses(authority).get('two') == 'queued')
+    (session_id,) = authority.sessions
+    authority._pause(SessionRef(authority.profile_id, session_id), 'unknown_execution')
+    await _wait_for(lambda: len(adapter.sent) == 1)  # the observer's pause notice
+    gate.set()
+    await _wait_for(lambda: _statuses(authority).get('two') == 'terminal', 15)
+    await _wait_for(lambda: ('m2', 'complete', ProcessingOutcome.SUCCESS) in adapter.hooks)
+    assert [h for h in adapter.hooks if h[0] == 'm2'] == [('m2', 'start'), ('m2', 'complete', ProcessingOutcome.SUCCESS)]

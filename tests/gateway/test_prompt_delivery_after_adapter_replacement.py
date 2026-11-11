@@ -106,3 +106,37 @@ def test_update_prompt_after_reconnect_reaches_the_replacement(tmp_path):
     asyncio.run(scenario())
     assert live.calls == ["update_prompt", "text"]
     assert retired.calls == []
+
+
+def test_long_running_heartbeat_after_reconnect_reaches_the_replacement(monkeypatch):
+    """The "still working" heartbeat loop outlives a reconnect: each tick sends through the adapter
+    registered NOW, not the bot-less instance the turn started with."""
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
+    retired, live = _Adapter("old"), _Adapter("new")
+    runner = _bare_runner(retired)
+    runner._draining = runner._restart_requested = False
+    runner._agent_activity_summary = staticmethod(lambda agent: None)
+    agent = object()
+    runner._running_agents = {SESSION: agent}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="111", chat_type="dm", user_id="111")
+    ctx = TurnContext(source=source, session_key=SESSION, user_config={})
+    ctx.agent_holder[0] = agent
+    disp = SimpleNamespace(_display_surface_mode=lambda *a, **k: "on",
+                           resolve_display_setting=lambda *a, **k: False, user_config={}, platform_key="telegram")
+    for adapter in (retired, live):
+        async def send_then_stop(chat_id, text, _send=adapter.send, **kw):
+            runner._restart_requested = True  # one heartbeat is enough, whichever adapter sent it
+            return await _send(chat_id, text, **kw)
+
+        adapter.send = send_then_stop
+
+    async def scenario():
+        task = asyncio.ensure_future(runner._run_agent_notify_long_running(disp, ctx, [None]))
+        await asyncio.sleep(0)  # the loop resolved its adapter and is sleeping out the first interval
+        retired.connected = False
+        runner.adapters[Platform.TELEGRAM] = live
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    assert live.calls == ["text"], "the heartbeat must reach the live adapter"
+    assert retired.calls == []

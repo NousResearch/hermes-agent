@@ -234,4 +234,6 @@ move-docs *args:
 [group('move')]
 [positional-arguments]
 migrate-branch *args:
-    scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/migrate_branch.py "$@"
+    if python="$(git rev-parse --git-path migrate-branch/python)" && [ -f "$python" ]; then \
+        PYTHONPATH="$PWD" "$(cat "$python")" scripts/move/migrate_branch.py "$@"; \
+    else scripts/hermes-python -m scripts.ci.python_packages libcst==1.9.0 -- scripts/move/migrate_branch.py "$@"; fi

@@ -314,6 +314,13 @@ def _rename_like(old: str, new: str, mine: str) -> str | None:
     for before, after in zip(old_tokens, new_tokens):
         if mapping.setdefault(before, after) != after:
             return None
+    mine_tokens = _TOKEN.findall(mine)
+    lined_up = {index for tag, _, _, first, last in difflib.SequenceMatcher(
+        None, old_tokens, mine_tokens, autojunk=False).get_opcodes() if tag == "equal" for index in range(first, last)}
+    same_strings = re.sub(r"[^\"']", "", mine) == re.sub(r"[^\"']", "", old)  # same quote characters, in order
+    if any(mapping.get(token, token) != token and not (same_strings and index in lined_up)
+           for index, token in enumerate(mine_tokens)):
+        return None  # a moved name the branch wrote elsewhere, or on a line whose strings it changed: its own change
     return _TOKEN.sub(lambda match: mapping.get(match.group(0), match.group(0)), mine)
 
 
@@ -539,6 +546,9 @@ def start(onto_ref: str, push: bool, accept_flags: bool) -> dict:
     if find_chunks(state["base"], onto):
         extract_codemod(onto)
     save_state(state)
+    # `just migrate-branch --continue` and `--abort` run on this interpreter: once commit A is merged,
+    # scripts/hermes-python cannot set up in the tree, which lacks the moved packages until B's shims.
+    (state_dir() / "python").write_text(sys.executable, encoding="utf-8")
     return state
 
 

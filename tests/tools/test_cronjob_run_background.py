@@ -16,6 +16,8 @@ import json
 import threading
 from unittest.mock import patch
 
+from tests.waiting import wait_until
+
 from tools.cronjob_tools import (
     _try_dispatch_background_run,
     cronjob,
@@ -125,8 +127,6 @@ class TestBackgroundDispatch:
         delivered externally, the completion must report status without copying
         the payload into that other session.
         """
-        import time
-
         from tools.process_registry import process_registry
 
         job = {
@@ -149,20 +149,18 @@ class TestBackgroundDispatch:
                 res = _try_dispatch_background_run(job)
                 assert res["dispatched"] is True
 
-                found = None
-                for _ in range(100):
+                def _ours():
                     try:
                         evt = process_registry.completion_queue.get_nowait()
                     except Exception:
-                        time.sleep(0.05)
-                        continue
+                        return None
                     if evt.get("delegation_id") == res["delegation_id"]:
-                        found = evt
-                        break
+                        return evt
                     process_registry.completion_queue.put(evt)
-                    time.sleep(0.05)
+                    return None
 
-        assert found is not None
+                found = wait_until(_ours, timeout=10, what="the manual-run completion event")
+
         assert found["session_key"].endswith(":581299")
         assert "Delivery target: telegram:170829464:539316" in found["summary"]
         assert "PAYLOAD FOR THREAD 539316" not in found["summary"]

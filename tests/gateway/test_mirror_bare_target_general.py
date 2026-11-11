@@ -119,3 +119,28 @@ def test_sessions_json_fallback_prefers_thread1(tmp_path):
          patch("hermes_state_registry.release_or_close"), \
          patch.object(mirror_mod, "_SESSIONS_INDEX", index):
         assert _find_session_id("telegram", CHAT) == "sess-general"
+
+
+def test_bare_discord_thread_channel_resolves_its_own_thread(wired):
+    """Discord thread channels key the session on ``chat_id == thread_id``; a send to the
+    thread's channel id is bare yet names exactly that conversation."""
+    wired.create_session("sess-thread", "discord", user_id="u1",
+                         session_key="agent:main:discord:thread:777", chat_id="777",
+                         chat_type="thread", thread_id="777")
+
+    assert _find_session_id("discord", "777") == "sess-thread"
+
+
+def test_live_db_row_beats_a_stale_sessions_json_general_entry(wired, tmp_path):
+    """Every probe runs against state.db before the pre-migration index: an old General entry
+    left in sessions.json must not outrank the live flat session."""
+    wired.create_session("sess-live", "telegram", user_id="u1",
+                         session_key=f"agent:main:telegram:group:{CHAT}:u1", chat_id=CHAT,
+                         chat_type="group")
+    index = tmp_path / "sessions" / "sessions.json"
+    index.parent.mkdir()
+    index.write_text(json.dumps({"stale": {
+        "session_id": "sess-ended", "updated_at": "2026-01-01T00:00:00",
+        "origin": {"platform": "telegram", "chat_id": CHAT, "thread_id": "1"}}}), encoding="utf-8")
+
+    assert _find_session_id("telegram", CHAT) == "sess-live"

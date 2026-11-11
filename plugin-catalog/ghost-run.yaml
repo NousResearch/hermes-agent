@@ -1,27 +1,58 @@
 name: ghost-run
 title: Ghost Run
 repo: https://github.com/tnvolman/ghost-run
-sha: d00081ba41bcf758efb3bed5f4822bff9b7a0a98
-version: "0.1.0"
+sha: 26902e4e816c5be2997efede96f9c669cbf2ae0e
+version: "0.2.0"
+requires_hermes: ">=0.21.7"
 description: >-
   Dry-run mode for Hermes Agent. With /ghost on, file writes, patches, deletes and
   terminal commands are redirected into a throwaway copy of the working folder, and
-  network-touching tools and commands are blocked. Review the diff in a Desktop pane
-  (or a local web view via hermes ghost ui), then optionally run one configured Verify
-  command in the ghost (Pass/Fail banner; Apply stays human), then apply selected paths
-  or discard. Commands: /ghost on|off|status|verify; hermes ghost diff|apply|discard|ui|verify.
-  Disclosure — copies the working folder into a temp sandbox and runs the agent's
-  terminal commands inside it; writes session state to ~/.hermes/ghost-run/; "apply"
-  writes the chosen changes back to the real folder; hermes ghost ui serves a local-only
-  page on 127.0.0.1 with a per-session token. Opt-in outbound only: with GHOST_RUN_AI=1
-  (and an API key), pending diffs are posted to OpenRouter for advisory notes; off by
-  default. No credentials stored by the plugin; no telemetry.
+  network-touching tools and commands are blocked. Review the diff in the system
+  browser (hermes ghost ui; the Desktop pane only opens that page), then optionally
+  run one configured Verify command in the ghost (Pass/Fail banner; Apply stays human),
+  then apply selected paths or discard. Commands: /ghost on|off|status|verify;
+  hermes ghost diff|apply|discard|ui|verify.
+  Disclosure — copies the working folder into a temp sandbox (reflink, then copy;
+  never a hard link) and runs the agent's terminal commands inside it; writes session
+  state under the Hermes home from hermes_constants.get_hermes_home() (then HERMES_HOME,
+  then ~/.hermes), in ghost-run/; "apply" writes the chosen changes back to the real
+  folder only after a person presses Apply or runs /ghost apply; hermes ghost ui binds 127.0.0.1 only, checks
+  Host is 127.0.0.1:<port> or localhost:<port>, and requires a per-session token in the
+  URL fragment (#token=) plus the X-Ghost-Run-Token header. A query-string token is
+  ignored and does not authenticate. The page sends no CORS headers. The Desktop pane does not fetch that
+  server. The review page never auto-ticks HIGH-risk files. Apply with any HIGH path
+  shows a confirm that names those files; Cancel writes nothing. Filenames, reasons,
+  and diff lines are set via DOM text properties, not HTML insertion. POST /api/apply
+  requires a non-empty list of paths that are all in the current diff; a missing,
+  empty, or not-in-diff list (including a mix of valid and invalid paths) returns 400
+  and writes nothing. /ghost apply and hermes ghost apply with no paths still apply
+  every current change, and can copy a named path that is in the ghost tree even if
+  it is not in the diff. Opt-in outbound only: with GHOST_RUN_AI=1, advisory notes use ctx.llm.complete
+  when Hermes provides it (the plugin never sees the key). If that call is unbound,
+  OPENROUTER_API_KEY is read only via agent.secret_scope.get_secret. If that module is
+  missing, notes stay off. The main model key is never sent. Off by default; nothing is
+  uploaded otherwise. No credentials stored by the plugin; no telemetry.
 maintainer: tnvolman
 tier: community
 category: tools
 docs_url: https://github.com/tnvolman/ghost-run#readme
 readme: true
-platforms: []
+platforms:
+  - linux
+  - macos
+screenshots:
+  # First three: macOS Chrome opened by Hermes Desktop v0.23.1 at 54badf24.
+  # Last two: older headless Chrome shots on Linux, same loopback page.
+  - https://raw.githubusercontent.com/tnvolman/ghost-run/26902e4e816c5be2997efede96f9c669cbf2ae0e/demo/screenshots/desktop-macos-01-review-load.png
+  - https://raw.githubusercontent.com/tnvolman/ghost-run/26902e4e816c5be2997efede96f9c669cbf2ae0e/demo/screenshots/desktop-macos-02-high-confirm.png
+  - https://raw.githubusercontent.com/tnvolman/ghost-run/26902e4e816c5be2997efede96f9c669cbf2ae0e/demo/screenshots/desktop-macos-03-after-cancel.png
+  - https://raw.githubusercontent.com/tnvolman/ghost-run/26902e4e816c5be2997efede96f9c669cbf2ae0e/demo/screenshots/review-page-load.png
+  - https://raw.githubusercontent.com/tnvolman/ghost-run/26902e4e816c5be2997efede96f9c669cbf2ae0e/demo/screenshots/review-page-after-apply.png
+known_issues:
+  - "Verified on macOS in Hermes Desktop v0.23.1 at 54badf24: the pane opens the review page in the system browser; Load, Apply, and the HIGH confirm run on that page, not inside the pane. Checklist: docs/desktop-check.md."
+  - "Advisory OpenRouter notes run only when ctx.llm is unbound and agent.secret_scope.get_secret returns OPENROUTER_API_KEY. Otherwise the notes stay off."
+  - "Checked on Linux and macOS (Hermes Desktop v0.23.1 at 54badf24). Windows is untested."
+  - "The demo's headless Chrome fallback puts the review URL, fragment token included, on the browser process command line. curl reads the token from a mode-600 header file that is removed afterwards."
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -749,3 +749,23 @@ def test_same_job_id_wedged_in_one_profile_does_not_hide_live_run_in_another(mon
     finally:
         sched.release_running_job("daily-brief", home_a)
         sched.release_running_job("daily-brief", home_b)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.asyncio
+async def test_detached_restart_starts_the_replacement_detached_on_macos(monkeypatch):
+    """A chat ``/restart`` without a service runs ``gateway restart`` from a helper shell. On macOS it
+    passes ``--detach``, which starts the replacement as a one-off launchd job that keeps Local
+    Network access; in the foreground the replacement is responsible for itself once the old
+    gateway exits, and macOS refuses its LAN connects (#153226). Elsewhere the argv is unchanged."""
+    import sys
+    runner, _adapter = make_restart_runner()
+    argvs = []
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **_kwargs: argvs.append(argv) or MagicMock())
+
+    await runner._launch_detached_restart_command()
+
+    assert len(argvs) == 1
+    tail = argvs[0][-1].rsplit("; ", 1)[-1]
+    assert tail == ("hermes gateway restart --detach" if sys.platform == "darwin" else "hermes gateway restart")

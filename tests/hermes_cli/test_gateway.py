@@ -1149,3 +1149,22 @@ def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, in
     gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
 
     assert installs == ([] if installed else [False])
+
+
+@pytest.mark.platforms("macos")
+def test_spawn_detached_gateway_is_a_launchd_job_on_macos(monkeypatch, tmp_path):
+    """The no-service host start (``gateway restart --all --detach``, launchd fallback, migration)
+    starts the gateway the way ``gateway ensure`` does on macOS: a one-off launchd job, whose
+    osascript keeps its Local Network access once the CLI exits (#153226)."""
+    import hermes_cli.gateway_launchd_runtime as launchd_runtime
+    jobs = []
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(gateway, "_gateway_run_command", lambda: ["/usr/bin/true"])
+    monkeypatch.setattr(launchd_runtime, "start_gateway_job",
+                        lambda command, **kwargs: jobs.append((command, kwargs)) or object())
+    monkeypatch.setattr(gateway.subprocess, "Popen", lambda *a, **k: pytest.fail("plain child, not a launchd job"))
+
+    assert gateway._spawn_detached_gateway() is True
+    command, kwargs = jobs[0]
+    assert command[-2:] == ["--", "/usr/bin/true"]
+    assert kwargs["log_path"] == tmp_path / "logs" / "gateway.log"

@@ -303,11 +303,15 @@ def _spawn_detached_gateway() -> bool:
         target_home=get_hermes_home(), inherit_credentials=True,
     )
     child_env.pop("_HERMES_GATEWAY", None)
+    command = _timestamped_stderr_gateway_command(log_dir / "gateway.error.log")
+    if sys.platform == "darwin":  # a one-off launchd job keeps LAN access once this CLI exits (#153226)
+        from hermes_cli.gateway_launchd_runtime import start_gateway_job
+        if start_gateway_job(command, env=child_env, cwd=_gw().PROJECT_ROOT, log_path=log_dir / "gateway.log"):
+            return True
     try:
         with open(log_dir / "gateway.log", "ab") as out:
             subprocess.Popen(
-                _timestamped_stderr_gateway_command(log_dir / "gateway.error.log"),
-                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
+                command, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
                 env=child_env,
                 # detached-spawn: ok — foreground-less gateway launch, a service meant to outlive the CLI
                 **windows_detach_popen_kwargs(),

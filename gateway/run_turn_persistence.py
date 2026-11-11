@@ -687,6 +687,30 @@ class GatewayTurnPersistenceMixin:
         await adapter.ledger_attempted_final(
             event, session_key, response, error="Timed out: the streamed send may not have landed")
 
+    async def _hmwa_stop_typing_for_turn(self, event, source):
+        """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
+        metadata (Slack AI status is thread-scoped), on this turn's own message, not the chat's latest."""
+        from gateway.platforms.helpers import typing_metadata_for_turn
+        with suppress(Exception):
+            _typing_adapter = self._delivery_adapter_for(source)
+            _kind = type(_typing_adapter)
+            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
+                await _typing_adapter._stop_typing_with_metadata(source.chat_id, typing_metadata_for_turn(_typing_adapter,
+                    source.chat_id, self._reply_anchor_for_event(event), self._event_thread_metadata(event, source)))
+            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
+                await _typing_adapter.stop_typing(source.chat_id)
+
+    def _hmwa_pause_typing_after_silence(self, event, source) -> None:
+        """A turn that ends in intentional silence has nothing left to show: pause the adapter's typing
+        keep-alive now. It refreshes until the handler returns, so hooks and transcript persistence
+        after the agent finished kept "typing" on for a reply that never comes (#149948). Only inside
+        the adapter's turn bracket (``_turn_marker_handoff``), whose ``finally`` lifts the pause; a turn
+        run outside it has no keep-alive, and a pause there would mute the chat's next turn."""
+        adapter = self._delivery_adapter_for(source)
+        if getattr(event, "_turn_marker_handoff", False) is True and callable(
+                getattr(type(adapter), "pause_typing_for_chat", None)):
+            adapter.pause_typing_for_chat(source.chat_id)
+
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,
         agent_result, agent_messages, response, _footer_line, _intentional_silence,

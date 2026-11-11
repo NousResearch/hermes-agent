@@ -2,21 +2,21 @@ name: kumi
 title: Kumi
 version: "1.24.81"
 repo: https://github.com/user1303836/kumi
-sha: 13d6c28b952ce9114a00bb0cc4e34c076b77e560
+sha: 7f8b0de9f52d4bca526914c469e084a554388486
 subdir: hermes-plugin
-description: "Kumi puts Hermes inside Ableton Live, REAPER and Renoise: it hears your mix, makes changes you can undo, and turns your samples into new sounds. Disclosure — after you approve setup, downloads the Kumi release this pin names for your platform (27–35 MB, SHA-256 checked) from github.com/user1303836/kumi/releases into HERMES_HOME/plugin-data/kumi/ and installs Kumi's part in your DAW (Live's Remote Script with its Kumi Ears device, a REAPER extension or a Renoise tool) at paths you approve; a newer release comes only with a new catalog pin. Runs Kumi's runtime and DAW bridge as local child processes on loopback that stop with the chat or after idling. Reads the open DAW project, the sample folders you list, HERMES_HOME/cache/generated/audio, VST3 metadata in the standard plug-in folders and, after you approve, an existing Kumi's DAW connection files. Writes the Max for Live devices, presets and wavetables you ask for as new files in Live's User Library, copies your saved project beside it before some changes, and, using an existing Kumi's installation, keeps a write lease and listening renders in its folder. Runs a DAW script you ask for with the DAW's access to your computer (asked first, with its code, once a chat has read outside content). Plays the project only for a listen or play you ask for. Sends FOCUS notes and measurements to your Hermes model, and with listen_interpretation on, a small band-energy image to the auxiliary model. Mirelo (paid, off by default): only with your key and a credit cap above 0, approved prompts and audio go to api.mirelo.ai and the transfer hosts it names. No telemetry."
+description: "Kumi puts Hermes inside Ableton Live, REAPER and Renoise: it hears your mix, makes changes you can undo, and turns your samples into new sounds. Disclosure — after you approve setup, downloads the Kumi release this pin names for your platform (27–35 MB, SHA-256 checked) from github.com/user1303836/kumi/releases into HERMES_HOME/plugin-data/kumi/ and installs Kumi's part in your DAW (Live's Remote Script with its Kumi Ears device, a REAPER extension or a Renoise tool) at paths you approve; a newer release comes only with a new catalog pin. Runs Kumi's runtime and DAW bridge as local child processes on loopback that stop with the chat or after idling. Reads the open DAW project, the sample folders you list, HERMES_HOME/cache/generated/audio, VST3 metadata in the standard plug-in folders and, after you approve, an existing Kumi's DAW connection files. Writes the Max for Live devices, presets and wavetables you ask for as new files in Live's User Library, copies your saved project beside it before some changes, and, using an existing Kumi's installation, keeps a write lease and listening renders in its folder. Runs a DAW script you ask for with the DAW's access to your computer (asked first, with its code). Plays the project only for a listen or play you ask for. Sends FOCUS notes and measurements to your Hermes model, and with listen_interpretation on, a small band-energy image to the auxiliary model. Mirelo (paid, off by default): only with your key and a credit cap above 0, approved prompts and audio go to api.mirelo.ai and the transfer hosts it names. No telemetry."
 maintainer: user1303836
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/user1303836/kumi/blob/13d6c28b952ce9114a00bb0cc4e34c076b77e560/docs/en/HERMES.md
-image: https://raw.githubusercontent.com/user1303836/kumi/13d6c28b952ce9114a00bb0cc4e34c076b77e560/docs/assets/hermes/banner.png
+docs_url: https://github.com/user1303836/kumi/blob/7f8b0de9f52d4bca526914c469e084a554388486/docs/en/HERMES.md
+image: https://raw.githubusercontent.com/user1303836/kumi/7f8b0de9f52d4bca526914c469e084a554388486/docs/assets/hermes/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/user1303836/kumi/13d6c28b952ce9114a00bb0cc4e34c076b77e560/docs/assets/hermes/screenshots/catalog-2-map.png
-  - https://raw.githubusercontent.com/user1303836/kumi/13d6c28b952ce9114a00bb0cc4e34c076b77e560/docs/assets/hermes/screenshots/catalog-5-live-set.png
-  - https://raw.githubusercontent.com/user1303836/kumi/13d6c28b952ce9114a00bb0cc4e34c076b77e560/docs/assets/hermes/screenshots/catalog-1-pane.png
-  - https://raw.githubusercontent.com/user1303836/kumi/13d6c28b952ce9114a00bb0cc4e34c076b77e560/docs/assets/hermes/screenshots/catalog-8-make.png
-  - https://raw.githubusercontent.com/user1303836/kumi/13d6c28b952ce9114a00bb0cc4e34c076b77e560/docs/assets/hermes/screenshots/catalog-7-palette.png
+  - https://raw.githubusercontent.com/user1303836/kumi/7f8b0de9f52d4bca526914c469e084a554388486/docs/assets/hermes/screenshots/catalog-2-map.png
+  - https://raw.githubusercontent.com/user1303836/kumi/7f8b0de9f52d4bca526914c469e084a554388486/docs/assets/hermes/screenshots/catalog-5-live-set.png
+  - https://raw.githubusercontent.com/user1303836/kumi/7f8b0de9f52d4bca526914c469e084a554388486/docs/assets/hermes/screenshots/catalog-1-pane.png
+  - https://raw.githubusercontent.com/user1303836/kumi/7f8b0de9f52d4bca526914c469e084a554388486/docs/assets/hermes/screenshots/catalog-8-make.png
+  - https://raw.githubusercontent.com/user1303836/kumi/7f8b0de9f52d4bca526914c469e084a554388486/docs/assets/hermes/screenshots/catalog-7-palette.png
 readme: true
 platforms: []
 known_issues:

@@ -211,6 +211,7 @@ from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendP
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
 from plugins.platforms.telegram.telegram_split import REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
+from plugins.platforms.telegram.telegram_voice_mention import admit_media, cache_inbound_voice
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
@@ -5831,7 +5832,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         sender_id = getattr(sender, "id", None)
         return bot_id is None or sender_id is None or sender_id != bot_id
 
-    def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
+    def _should_process_message(self, message: Message, *, is_command: bool = False, spoken_mention: bool = False) -> bool:
         """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
         the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
         off, reply to the bot, @mention (incl. ``/cmd@botname``), or a wake-word match."""
@@ -5868,7 +5869,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return True
         if self._message_mentions_bot(message):  # guest-mode group mentions already returned above
             return True
-        return self._message_matches_mention_patterns(message)
+        return spoken_mention or self._message_matches_mention_patterns(message)  # spoken: a transcript matched
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups (topics don't inherit AllGroupChats scope;
@@ -6245,7 +6246,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
             return
-        if not self._should_process_message(msg):
+        if (clips := await admit_media(self, msg)) is None:  # {} = admitted as usual, else spoken-wake-word clips
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
                 if msg.caption:
@@ -6277,9 +6278,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache photo: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "photo", e)
-        # Voice/audio cached for STT transcription; video for vision.
-        if msg.voice:
-            await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg")
+        if msg.voice:  # voice/audio cached for STT transcription; video for vision
+            await cache_inbound_voice(self, msg, event, clips)
         elif msg.audio:
             await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3")
         elif video := msg.video or getattr(msg, "video_note", None):

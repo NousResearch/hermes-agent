@@ -25,7 +25,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.media_cache import ext_for_mime
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
+from gateway.platforms.helpers import voice_mention_gate_enabled
 from utils import TRUTHY_STRINGS
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
@@ -587,12 +588,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         # Mention gate BEFORE the attachment downloads: an unmentioned group message must not
         # pull every attachment through the REST API only to be dropped.
-        if is_group and self.require_mention:
+        # A captionless voice memo can match only once transcribed (opt-in, #102330).
+        spoken = (is_group and self.require_mention and not text and voice_mention_gate_enabled(self.config.extra)
+                  and any((a.get("mimeType") or "").lower().startswith("audio/") or (a.get("uti") or "").endswith("caf")
+                          for a in record.get("attachments") or ()))
+        if is_group and self.require_mention and not spoken:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
         media_urls, media_types, msg_type = await self._collect_attachments(record)
+        if spoken and not await spoken_mention_clips(media_urls, self._mention_patterns):
+            logger.debug("[bluebubbles] ignoring group voice memo (require_mention=true, no wake word spoken)")
+            return _ok()
         if not text and media_urls:
             text = "(attachment)"
         if not sender or not (chat_guid or chat_identifier) or not text:

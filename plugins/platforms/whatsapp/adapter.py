@@ -360,7 +360,7 @@ from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsap
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, spoken_mention_clips, voice_mention_gate_enabled
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import caption_is_command
 from utils import env_int
@@ -1428,16 +1428,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] Attached quoted-reply media: {path}", flush=True)
         return accepted
 
+    async def _spoken_mention_clips(self, data: dict[str, Any]) -> list[str]:
+        """A captionless group voice note (``ptt``) that only a wake word could admit: transcribe it
+        and match ``mention_patterns`` (opt-in ``voice_mention_patterns``, #102330)."""
+        body = str(data.get("body") or "").strip().lower()
+        if (str(data.get("mediaType") or "") != "ptt" or body not in ("", "[ptt received]") or not self._mention_patterns
+                or not voice_mention_gate_enabled(self.config.extra)
+                or not self._should_process_message(data, spoken_mention=True)):
+            return []
+        paths, _types = await self._collect_bridge_media(data, MessageType.VOICE)
+        return await spoken_mention_clips([p for p in paths if os.path.isabs(p)], self._mention_patterns)
+
     async def _build_message_event(self, data: dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if not self._should_process_message(data):
+            clips: list[str] = []
+            if not self._should_process_message(data) and not (clips := await self._spoken_mention_clips(data)):
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
                                        user_id=data.get("senderId"), user_name=data.get("senderName"),
                                        message_id=data.get("messageId"))
-            cached_urls, media_types = await self._collect_bridge_media(data, msg_type)
+            cached_urls, media_types = (clips, [data.get("mime") or "audio/ogg"] * len(clips)) if clips else (
+                await self._collect_bridge_media(data, msg_type))
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
@@ -1471,6 +1484,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
+                reply_expected=True if clips else None,  # a spoken wake word addressed the bot
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

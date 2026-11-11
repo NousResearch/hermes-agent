@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import logging
 import os
+import threading
+from collections import OrderedDict
 from typing import Optional
 
 from gateway.run_common import _UNSET
@@ -40,6 +42,37 @@ def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
                 duplicates.add(path)
             seen.add(digest)
     return [path for path in paths if path not in duplicates]
+
+
+# Transcripts the adapters' spoken-wake-word gate already paid for, by clip content: native admission
+# re-captures the clip under a new path and keeps no adapter attributes, so the turn finds it by bytes.
+_GATE_TRANSCRIPTS: OrderedDict[bytes, tuple[Optional[str], str]] = OrderedDict()
+_GATE_TRANSCRIPTS_MAX = 32
+_GATE_TRANSCRIPTS_LOCK = threading.Lock()
+
+
+def _clip_digest(path: str) -> Optional[bytes]:
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.file_digest(fh, "sha256").digest()
+    except OSError:
+        return None
+
+
+def remember_gate_transcript(path: str, result: tuple[Optional[str], str]) -> None:
+    if (digest := _clip_digest(path)) is None:
+        return
+    with _GATE_TRANSCRIPTS_LOCK:
+        _GATE_TRANSCRIPTS[digest] = result
+        while len(_GATE_TRANSCRIPTS) > _GATE_TRANSCRIPTS_MAX:
+            _GATE_TRANSCRIPTS.popitem(last=False)
+
+
+def _take_gate_transcript(path: str) -> Optional[tuple[Optional[str], str]]:
+    if not _GATE_TRANSCRIPTS or (digest := _clip_digest(path)) is None:
+        return None
+    with _GATE_TRANSCRIPTS_LOCK:
+        return _GATE_TRANSCRIPTS.pop(digest, None)
 
 
 class GatewayInboundTranscriptionMixin:
@@ -77,6 +110,10 @@ class GatewayInboundTranscriptionMixin:
             try:
                 if clip_memo is not None and path in clip_memo:
                     transcript, note = clip_memo[path]
+                elif gate := await asyncio.to_thread(_take_gate_transcript, path):
+                    transcript, note = gate
+                    if clip_memo is not None:
+                        clip_memo[path] = gate
                 else:
                     logger.debug("Transcribing user voice: %s", path)
                     transcript, note = await self._transcribe_one_clip(
@@ -193,29 +230,37 @@ class GatewayInboundTranscriptionMixin:
         return f"[voice message could not be transcribed automatically; the audio is available at: {cls._agent_audio_path(path)}]"
 
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
-        """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
-        result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
-            fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
-            if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
-                result = fallback
-        if not result["success"]:
-            logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
-            return None, self._untranscribed_audio_note(path)
-        transcript = result["transcript"]
-        # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
-        # empty quotes make the agent reply to nothing and can loop, so emit a sentinel note.
-        # See #41603.
-        if not (transcript or "").strip():
-            return None, (
-                "[The user sent a voice message but it came through "
-                "empty or inaudible — speech-to-text returned no "
-                "words. Do not guess at the content; ask the user "
-                "to resend or type it out.]"
-            )
-        # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead. The path follows on its own line, as every
-        # failure branch keeps it: ``content`` is the only record of where the audio lives, in
-        # ``_build_media_placeholder``'s marker grammar so a consumer parsing media markers finds it.
-        return transcript, f'"{transcript}"\n[User sent audio: {self._agent_audio_path(path)}]'
+        return await transcribe_one_clip(path, transcribe_audio, transcribe_audio_local_fallback)
+
+
+async def transcribe_one_clip(path: str, transcribe_audio=None, transcribe_audio_local_fallback=None) -> tuple[Optional[str], str]:
+    """``(transcript_or_None, note)`` for one clip via configured STT with local fallback. Also the
+    adapters' group mention gate (``gateway.platforms.helpers.spoken_mention_clips``)."""
+    if transcribe_audio is None:
+        from tools.transcription_tools import transcribe_audio, transcribe_audio_local_fallback
+    result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
+    if not result.get("success"):
+        fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
+        if fallback.get("success"):
+            logger.info("Configured STT failed for %s; recovered with local STT", path)
+            result = fallback
+    if not result["success"]:
+        logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
+        return None, GatewayInboundTranscriptionMixin._untranscribed_audio_note(path)
+    transcript = result["transcript"]
+    # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
+    # empty quotes make the agent reply to nothing and can loop, so emit a sentinel note.
+    # See #41603.
+    if not (transcript or "").strip():
+        return None, (
+            "[The user sent a voice message but it came through "
+            "empty or inaudible — speech-to-text returned no "
+            "words. Do not guess at the content; ask the user "
+            "to resend or type it out.]"
+        )
+    # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
+    # and made the LLM comment on voice mode instead. The path follows on its own line, as every
+    # failure branch keeps it: ``content`` is the only record of where the audio lives, in
+    # ``_build_media_placeholder``'s marker grammar so a consumer parsing media markers finds it.
+    agent_path = GatewayInboundTranscriptionMixin._agent_audio_path(path)
+    return transcript, f'"{transcript}"\n[User sent audio: {agent_path}]'

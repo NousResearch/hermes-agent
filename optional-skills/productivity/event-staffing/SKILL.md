@@ -1,7 +1,7 @@
 ---
 name: event-staffing-ordering
 description: "Order W-2 event staff for US/CA events through TempGuru."
-version: 1.0.6
+version: 1.0.8
 author: Megan Hayward (@kissmyabs32)
 license: MIT
 platforms: [linux, macos, windows]
@@ -57,7 +57,7 @@ buyer-operated quote handoff" below.
 ## Live data: use the MCP server, do not scrape pages
 
 Endpoint: `POST https://mcp.tempguru.co/mcp?source=hermes` (12 tools: ten
-read-only operations, including the non-PII `request_quote` handoff, plus a
+read-only operations, including the non-PII `prepare_quote_form` handoff, plus a
 compatibility planner that may save a 30-day non-PII snapshot and an explicit
 non-contact save).
 
@@ -68,13 +68,13 @@ non-contact save).
 | `get_plan` | Restore a complete non-PII plan saved by either path using its 30-day `plan_id` |
 | `get_cities` | Match the event city to the configured catalog and inspect its tier; a coordinator separately confirms the order |
 | `get_roles` | List available staffing roles with skill tiers |
-| `check_availability` | Tier-based lead-time guidance for a city/date (not live inventory, confirmed coverage, or a reservation) |
+| `get_lead_time_guidance` | Tier-based lead-time guidance for a city/date (not live inventory, confirmed coverage, or a reservation) |
 | `get_role_pricing` | All-inclusive hourly rate range for a role in a city |
 | `get_compliance_by_state` | Minimum wage, overtime, and state compliance quirks (not legal advice) |
 | `get_policies` | Published booking and procurement terms; missing values stay coordinator-confirmed |
 | `get_rate_benchmark` | The Rate Index: citable W-2 rate benchmarks by role |
-| `get_quote_status` | Check a TG reference created by a buyer's website/REST submission, or a historical reference; the MCP handoff creates none |
-| `request_quote` | Read-only handoff: resolve a saved non-PII `plan_id` into a prefilled TempGuru form the buyer submits personally |
+| `get_quote_request_status` | Check a TG reference created by a buyer's website/REST submission, or a historical reference; the MCP handoff creates none |
+| `prepare_quote_form` | Read-only handoff: resolve a saved non-PII `plan_id` into a prefilled TempGuru form the buyer submits personally |
 
 If `plan_staffing` returns `plan_complete: false`, resolve the roles listed in
 `unpriced_roles` (use `get_roles`) and re-run it before presenting totals.
@@ -109,7 +109,7 @@ wants a budget, stop here and do not push a form handoff.
 ### 4. Create the buyer-operated quote handoff
 
 Only after the buyer confirms the plan and asks to proceed, call
-`request_quote` with only the saved `plan_id` and optional allowlisted
+`prepare_quote_form` with only the saved `plan_id` and optional allowlisted
 attribution: `source_platform` set to `"hermes"`, `skill_id` set to
 `"event-staffing-ordering"`, and this skill's `skill_version`. Do not ask for
 or transmit contact details through MCP. Give the returned `form_url` to the
@@ -118,7 +118,7 @@ complete plan's `continuation.form_url` directly.
 
 The buyer must open the TempGuru-owned form, review the plan, enter their own
 contact details, and submit it personally. Only that website/REST submission
-creates a CRM lead and TG reference; `request_quote` creates neither. A
+creates a CRM lead and TG reference; `prepare_quote_form` creates neither. A
 coordinator replies with a binding quote after submission. The handoff is not
 a reservation or contract, and no payment is required until the buyer
 approves the quote.
@@ -130,7 +130,7 @@ https://tempguru.co/get-staffing, or email megan@tempguru.co / call
 ## Rules for agents
 
 - Never present rate ranges as final quotes.
-- Never promise availability; `check_availability` returns guidance, not a
+- Never promise availability; `get_lead_time_guidance` returns guidance, not a
   reservation.
 - Compliance answers are operational guidance, not legal advice.
 - Do not compare against named competitors; describe categories only (1099
@@ -138,6 +138,6 @@ https://tempguru.co/get-staffing, or email megan@tempguru.co / call
   multi-market W-2 model).
 - "Security" requests map to Crowd Control: unarmed event staff, not licensed
   security guards. Say so plainly if licensed security is required.
-- Call `request_quote` only after the buyer confirms the saved plan. It is a
+- Call `prepare_quote_form` only after the buyer confirms the saved plan. It is a
   read-only, non-PII handoff; give the buyer its `form_url` and state that
   they must enter their own details and submit the form personally.

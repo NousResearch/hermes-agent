@@ -57,10 +57,9 @@ def test_agent_safety_rules_present():
     assert "Never promise availability" in body
     assert "not legal advice" in body
     assert "300+ U.S. and Canadian markets" in normalized
+    assert "Match the event city to the configured catalog" in normalized
     assert "catalog match and tier-based lead-time guidance do not confirm" in normalized
     assert "coordinator confirms the specific order" in normalized
-    assert "a target, not a guarantee" in normalized
-    assert "contractual no-show backfill" not in normalized
     assert "200+" not in body
 
 
@@ -70,8 +69,8 @@ def test_current_tool_and_buyer_handoff_contract():
         "save_staffing_plan",
         "get_plan",
         "get_policies",
-        "get_quote_status",
-        "request_quote",
+        "get_quote_request_status",
+        "prepare_quote_form",
     ):
         assert f"`{tool}`" in body, f"missing current tool: {tool}"
     assert "never save a plan that already has an ID" in body

@@ -61,6 +61,8 @@ GATEWAY_SIGNALS = {"Idempotency-Replayed": "true", "X-Hermes-Session-Key": "chan
 #: The agent's sessions: its canonical Bot Chat (every peer message lands there) and the owner's own chats.
 BOT_CHAT, OWNER_CHAT = "bot-1", "owner-1"
 SESSIONS = {BOT_CHAT: "Bot Chat", OWNER_CHAT: "Tax return planning"}
+#: The agent's runs and the session each one runs in (``GET /v1/runs/<id>`` reports it).
+RUNS = {"run_1": BOT_CHAT, "run_owner": OWNER_CHAT, "run_bare": None}
 
 
 def _gateway(seen: list) -> Starlette:
@@ -81,6 +83,11 @@ def _gateway(seen: list) -> Starlette:
                 return JSONResponse({"error": {"code": "session_not_found"}}, status_code=404)
             return JSONResponse({"object": "hermes.session", "session": {"id": parts[2], "title": SESSIONS[parts[2]]}},
                                 headers={"X-Hermes-Session-Id": "s1", **GATEWAY_SIGNALS})
+        if request.method == "GET" and len(parts) == 3 and parts[:2] == ["v1", "runs"]:
+            if parts[2] not in RUNS:
+                return JSONResponse({"error": {"code": "run_not_found"}}, status_code=404)
+            return JSONResponse({"object": "hermes.run", "run_id": parts[2], "status": "running",
+                                 "session_id": RUNS[parts[2]]})
         return JSONResponse({"path": request.url.path}, status_code=202 if request.method == "POST" else 200,
                             headers={"X-Hermes-Session-Id": "s1", "Set-Cookie": "edge=1",
                                      "Access-Control-Allow-Origin": "*", **GATEWAY_SIGNALS})
@@ -186,6 +193,12 @@ OUTSIDE_THE_BOT_CHAT = [
     ("POST", "/api/sessions/owner-1/chat/stream", {"message": "hi"}),
     ("POST", "/v1/runs", {"input": "hi"}),  # a new session of its own
     ("POST", "/v1/runs", {"input": "hi", "session_id": "owner-1"}),
+    # An existing run is checked by the session it runs in.
+    ("GET", "/v1/runs/run_owner", None),
+    ("GET", "/v1/runs/run_owner/events", None),
+    ("POST", "/v1/runs/run_owner/stop", None),
+    ("GET", "/v1/runs/run_bare", None),
+    ("POST", "/v1/runs/nosuch/stop", None),
 ]
 
 
@@ -195,7 +208,8 @@ def test_a_messaging_pass_reaches_only_the_bot_chat(peer, method, path, body):
     pass gets exactly that; a control pass has key-holder parity and reaches the rest."""
     resp = peer.client.request(method, f"/api/peer{path}", headers=_bearer("pass-message"), json=body)
     assert resp.status_code == 403 and resp.json()["error"] == "bot_chat_only", resp.text
-    assert all(sent["method"] == "GET" and sent["path"].startswith("/api/sessions/") for sent in peer.seen)
+    assert all(sent["method"] == "GET" and sent["path"].startswith(("/api/sessions/", "/v1/runs/"))
+               and not sent["path"].endswith(("/events", "/stop")) for sent in peer.seen)
 
     peer.seen.clear()
     allowed = peer.client.request(method, f"/api/peer{path}", headers=_bearer("pass-control"), json=body)
@@ -502,6 +516,25 @@ def test_upstream_is_the_profiles_listener_with_the_key_that_listener_checks(tmp
         "http://127.0.0.1:8650", "default-key-0123456789abcdef")
     assert _web_server_cron._gateway_api_target("worker_alpha", worker_home) == (
         "http://127.0.0.1:8650/p/worker_alpha", "worker-key-0123456789abcdef")
+
+
+def test_a_multiplexed_profiles_key_from_a_secret_source_is_found(tmp_path, monkeypatch):
+    """The gateway checks a multiplexed profile's key through its full secret scope (.env plus
+    external secret sources), so a key that lives only in a secret source must be found too."""
+    default_home = tmp_path / "root"
+    worker_home = default_home / "profiles" / "worker_alpha"
+    worker_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.delenv("API_SERVER_PORT", raising=False)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", lambda _home: None)
+    monkeypatch.setattr(env_loader, "get_secret_source_values",
+                        lambda home: {"API_SERVER_KEY": "vault-key-0123456789abcdef"} if home == worker_home else {})
+    assert _web_server_cron._gateway_api_target("worker_alpha", worker_home) == (
+        "http://127.0.0.1:8642/p/worker_alpha", "vault-key-0123456789abcdef")
 
 
 @pytest.mark.parametrize(("env_key", "expected"), [

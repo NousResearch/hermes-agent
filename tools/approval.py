@@ -1253,10 +1253,13 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     allowlist, CLI prompt, gateway pending, once/session/always/deny, timeout fail-closed), so
     the LLM cannot skip it. Cron honors ``approvals.cron_mode``; any OTHER non-interactive
     context without an approval bridge fails CLOSED. ``rule_key`` controls the ``[a]lways``
-    allowlist grain; when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons
+    allowlist grain; it is stripped first (#153435: the ``pre_tool_call`` approve directive
+    already stripped it, so a whitespace-edged key minted two different permanent entries for
+    the same rule), and when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons
     on the same tool persist independently. Returns the ``check_dangerous_command`` result shape.
     """
     description = reason or f"Plugin requires approval for {tool_name}"
+    rule_key = rule_key.strip() if isinstance(rule_key, str) else ""
     if not rule_key:
         rule_key = f"{tool_name}:{hashlib.sha256(description.encode('utf-8')).hexdigest()[:12]}"
     subject = f"Tool '{tool_name}' requires approval ({description})"

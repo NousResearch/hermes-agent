@@ -261,11 +261,35 @@ def _stage_browser_file_attachment(session: dict, staged_upload: object, name: s
         staged=True)
 
 
+def _is_composer_paste(session: dict, path: Path) -> bool:
+    """Whether *path* is a Desktop-managed large paste, which the agent already reaches in place.
+
+    ``writeComposerPaste`` writes it under ``<HERMES_HOME>/composer-pastes`` — outside every chat
+    workspace by construction — but that dir is the one staging root that needs no copy: the
+    workspace guard admits the ref there (``agent/context_references.py::_resolve_path``) and
+    ``tools/credential_files.py::_CACHE_DIRS`` bind-mounts it into container/remote backends
+    (#110174), which is all the copy into ``attachments/`` ever bought. Mirroring it there only
+    left two identical ``pasted_content_*.txt`` files per paste (#153415). The desktop writes
+    pastes under the installation home while a session may belong to another profile, so that
+    profile's home is checked too.
+    """
+    from pathlib import Path
+    from agent.context_references import COMPOSER_PASTES_DIRNAME
+    from agent.file_safety import _hermes_dirs
+
+    profile_home = session.get("profile_home")
+    homes = [*_hermes_dirs()] + ([Path(profile_home).resolve()] if profile_home else [])
+    return any(path.is_relative_to(home / COMPOSER_PASTES_DIRNAME) for home in homes)
+
+
 def _referenced_in_place(session: dict, path: Path, workspace: Path, *, staged: bool) -> bool:
     """Whether an attached host file is referenced where it is: inside the workspace, and not a
-    browser upload staged in the profile's ``uploads/`` (pruned after 7 days, so always copied)."""
-    if staged or not path.is_relative_to(workspace):
+    browser upload staged in the profile's ``uploads/`` (pruned after 7 days, so always copied).
+    A Desktop paste is the one outside-workspace file referenced in place."""
+    if staged:
         return False
+    if not path.is_relative_to(workspace):
+        return _is_composer_paste(session, path)
     try:
         from hermes_cli.staged_uploads import is_staged_upload
     except ImportError:

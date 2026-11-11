@@ -1,0 +1,45 @@
+name: consequence-map
+title: ConsequenceMap
+repo: https://github.com/BitSempre/ConsequenceMap
+sha: 2f6d681e7bcdb0c19c1a5632663b24b3dc4b8a04
+subdir: ConsequenceMap/plugin
+version: "0.3.0"
+description: >-
+  Decision intelligence for AI agents: forecasts the consequence of an action
+  before it happens, preserves the decision and its evidence, and compares the
+  forecast with what actually occurred. An outcome that cannot be verified stays
+  NOT_VERIFIABLE, so the derived verdict is INCONCLUSIVE rather than a clean
+  pass. Five Hermes hooks (pre_tool_call, pre_approval_request,
+  post_approval_response, post_tool_call, transform_tool_result); a dashboard
+  tab and a command-palette entry. The agent proposes and escalates; it never
+  decides and never holds a key. Disclosure — the Security Guard that decides
+  and executes is a library and is NOT installed on any host, so the
+  authorization boundary this plugin exists to provide is not yet active; the
+  plugin records and escalates but cannot refuse. It reads the host's
+  operation stream and writes to its own database under the Hermes
+  plugin-data directory, reached through the public plugins.plugin_storage
+  surface; it imports no private Hermes module. No network calls, no
+  telemetry, no stored credentials, no background processes.
+maintainer: BitSempre
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/BitSempre/ConsequenceMap/tree/2f6d681e7bcdb0c19c1a5632663b24b3dc4b8a04/ConsequenceMap
+readme: true
+platforms:
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - pre_approval_request
+    - post_approval_response
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "The Security Guard is not installed on any host, so the authorization boundary is not enforced; the plugin escalates and records but cannot refuse."
+  - "Revocation of an Ed25519 key is not observed by a verifier that was already constructed."
+  - "The audit trail exposes no public API for full chain verification; the checkpoint detects a tampered record_hash only."
+  - "The repository contains an older duplicated snapshot of the tree alongside the live one; it is history, not a second product."

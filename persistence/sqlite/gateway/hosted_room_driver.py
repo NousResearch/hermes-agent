@@ -7,7 +7,7 @@ normalization before ``admit_task``) run in the gateway before each call; the ba
 JSON and digest with the same normalization and encodes results as compact JSON. Every write that changes a
 task runs the work-record capture after its update in the same transaction.
 
-Every driver verb opens the file with ``DRIVER_STEP`` only, without the rooms step: existing tables get the task-status migration when their CHECK is old and are validated on every open, so an incompatible draft fails the driver verbs only.
+Every driver verb opens the file with ``DRIVER_STEP`` only, without the rooms step: existing tables get the task-status migration when their CHECK is old and are validated on every open, so an incompatible draft fails the driver verbs only. ``room_change_rows`` is the exception: it reads the rooms table and the task table only where it exists, so it opens the file with ``ROOMS_STEP`` and a reader answers a file whose driver tables were never set up.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from session_rules.hosted_tasks import (
 
 from .._backend import SQLiteStore, register_repository, translated
 from ._hosted_rooms_common import fenced_update, table_columns
+from ._hosted_rooms_schema import ROOMS_STEP
 from ._hosted_store import HostedFiles, SchemaStep
 from ._hosted_work import capture_transition_locked
 
@@ -368,6 +369,7 @@ class SQLiteHostedRoomDriverRepository:
 
     def __init__(self, store: SQLiteStore) -> None:
         self._files = HostedFiles(store, (DRIVER_STEP,))
+        self._room_files = HostedFiles(store, (ROOMS_STEP,))
 
     def _transition(
         self, placement: HostedPlacement, identity: HostedTaskIdentity, *, sql: str, set_params: tuple[Any, ...],
@@ -873,7 +875,7 @@ class SQLiteHostedRoomDriverRepository:
                         next_seq, revision, tuple(sorted(tuple(row) for row in conn.execute(query, (room_id, *statuses)))))
                     for room_id, next_seq, revision in rooms}
         with translated():
-            return self._files._hosted_read(placement, _read)
+            return self._room_files._hosted_read(placement, _read)
 
     # The task bound to this thread and turn, or None.
     def get_task_for_turn(self, identity: HostedTaskIdentity, *,

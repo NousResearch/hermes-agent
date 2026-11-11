@@ -46,8 +46,7 @@ def cleanup_dead_connections(agent) -> bool:
     owner.  Returns True if dead connections were found and cleaned up.
     """
     primary = getattr(agent, "client", None)
-    cache = getattr(agent, "_request_client_cache", None)
-    request_client = cache.get("client") if isinstance(cache, dict) else None
+    request_client = getattr(getattr(agent, "_request_client_cache", None), "client", None)
 
     clients: list[tuple[str, Any]] = []
     if primary is not None:

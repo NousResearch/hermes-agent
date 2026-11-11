@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.agent_runtime_helpers_dead_connections import cleanup_dead_connections
+from agent.client_lifecycle import _RequestSlot
 
 
 class _ProbeSocket:
@@ -35,7 +36,7 @@ def test_cleanup_retires_dead_cached_request_client():
     request = _client_with_socket(_ProbeSocket(dead=True))
     agent = SimpleNamespace(
         client=primary,
-        _request_client_cache={"client": request},
+        _request_client_cache=_RequestSlot(request, key=None, in_use=False),
         _replace_primary_openai_client=MagicMock(),
         _close_cached_request_openai_client=MagicMock(),
     )
@@ -53,7 +54,7 @@ def test_cleanup_rebuilds_dead_primary_client():
     request = _client_with_socket(_ProbeSocket(dead=False))
     agent = SimpleNamespace(
         client=primary,
-        _request_client_cache={"client": request},
+        _request_client_cache=_RequestSlot(request, key=None, in_use=False),
         _replace_primary_openai_client=MagicMock(),
         _close_cached_request_openai_client=MagicMock(),
     )

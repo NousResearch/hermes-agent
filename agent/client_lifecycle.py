@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 from contextlib import suppress
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
@@ -52,11 +53,15 @@ _ROUTE_DEFAULT_HEADERS = (
 )
 
 
-def _reset_slot(cache: dict, *, in_use: bool = False) -> None:
-    cache["client"] = None
-    cache["key"] = None
-    cache["poisoned"] = False
-    cache["in_use"] = in_use
+@dataclass(frozen=True)
+class _RequestSlot:
+    """A cached per-request client (an empty slot is ``None``). ``in_use`` keeps concurrent calls off one pool;
+    ``poisoned`` marks a pool whose sockets were shut from a stranger thread (never reuse it)."""
+
+    client: Any
+    key: Any
+    in_use: bool = True
+    poisoned: bool = False
 
 
 def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
@@ -258,8 +263,8 @@ class ClientLifecycleMixin:
         ):
             try:
                 with self._openai_client_lock():
-                    cache = getattr(self, slot_attr, None)
-                    cached = cache["client"] if cache else None
+                    slot = getattr(self, slot_attr, None)
+                    cached = slot.client if slot is not None else None
                 if cached is not None:
                     abort(cached, reason=reason)
             except Exception:
@@ -349,61 +354,49 @@ class ClientLifecycleMixin:
         )
 
     # ------------------------------------------------------------------ per-request client slots
-    # One single-slot cache per client kind: {"client", "key", "poisoned", "in_use"}. Reuse keeps the warm httpx
-    # pool between sequential calls; ``in_use`` keeps concurrent calls off one pool; ``poisoned`` marks a pool
-    # whose sockets were shut from a stranger thread (never reuse it).
+    # One single-slot cache per client kind, a ``_RequestSlot`` or None. Reuse keeps the warm httpx pool between
+    # sequential calls.
     # Reuse reasons: closes from the FD-owning worker's own finally after a response — the only closes that
     # attest a healthy pool. Poisoning still wins.
     _REQUEST_CLIENT_REUSE_REASONS = frozenset({"request_complete", "stream_request_complete"})
 
-    def _request_slot(self, slot_attr: str) -> dict:
-        cache = getattr(self, slot_attr, None)  # lazy: tests build agents via AIAgent.__new__ without __init__
-        if cache is None:
-            setattr(self, slot_attr, cache := {})
-            _reset_slot(cache)
-        return cache
-
     def _checkout_request_slot(self, slot_attr: str, key: Any) -> tuple:
         """Return ``(reusable_client, stale_client)``; at most one is non-None."""
         with self._openai_client_lock():
-            cache = self._request_slot(slot_attr)
-            cached = cache["client"]
-            if cached is None or cache["in_use"]:
+            slot = getattr(self, slot_attr, None)  # absent on agents tests build via AIAgent.__new__
+            if slot is None or slot.in_use:
                 return None, None
-            if not cache["poisoned"] and cache["key"] == key and not self._is_openai_client_closed(cached):
-                cache["in_use"] = True
-                return cached, None
+            if not slot.poisoned and slot.key == key and not self._is_openai_client_closed(slot.client):
+                setattr(self, slot_attr, replace(slot, in_use=True))
+                return slot.client, None
             # Key changed / poisoned / externally closed — rebuild. in_use was False, so closing the stale
             # client from this thread is FD-safe (no worker owns it).
-            _reset_slot(cache)
-            return None, cached
+            setattr(self, slot_attr, None)
+            return None, slot.client
 
     def _store_request_slot(self, slot_attr: str, client: Any, key: Any) -> None:
         with self._openai_client_lock():
-            cache = self._request_slot(slot_attr)
-            if cache["client"] is None:
-                cache.update(client=client, key=key, poisoned=False, in_use=True)
+            if getattr(self, slot_attr, None) is None:
+                setattr(self, slot_attr, _RequestSlot(client, key))
             # else: a concurrent call holds the slot — hand this client out untracked (fully closed later).
 
     def _release_request_slot(self, slot_attr: str, client: Any, reason: str) -> bool:
         """Owner-thread release; True when the client stays cached (clean finish, not poisoned)."""
         with self._openai_client_lock():
-            cache = self._request_slot(slot_attr)
-            if cache["client"] is client:
-                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not cache["poisoned"]:
-                    cache["in_use"] = False
+            slot = getattr(self, slot_attr, None)
+            if slot is not None and slot.client is client:
+                if reason in self._REQUEST_CLIENT_REUSE_REASONS and not slot.poisoned:
+                    setattr(self, slot_attr, replace(slot, in_use=False))
                     return True
-                _reset_slot(cache)
+                setattr(self, slot_attr, None)
         return False
 
     def _take_request_slot(self, slot_attr: str) -> tuple:
         """Teardown: empty the slot and return ``(client, was_in_use)``."""
         with self._openai_client_lock():
-            cache = getattr(self, slot_attr, None)
-            client, in_use = (cache["client"], bool(cache["in_use"])) if cache else (None, False)
-            if cache is not None:
-                _reset_slot(cache)
-        return client, in_use
+            slot = getattr(self, slot_attr, None)
+            setattr(self, slot_attr, None)
+        return (None, False) if slot is None else (slot.client, slot.in_use)
 
     def _abort_request_slot_client(self, slot_attr: str, client: Any, *, reason: str) -> None:
         """Cross-thread abort (interrupt loop, stale detector): ``shutdown(SHUT_RDWR)`` without releasing FDs.
@@ -417,9 +410,9 @@ class ClientLifecycleMixin:
         label = "Anthropic" if anthropic else "OpenAI"
         context = self._anthropic_log_context() if anthropic else self._client_log_context()
         with self._openai_client_lock():
-            cache = self._request_slot(slot_attr)
-            if cache["client"] is client:
-                cache["poisoned"] = True
+            slot = getattr(self, slot_attr, None)
+            if slot is not None and slot.client is client:
+                setattr(self, slot_attr, replace(slot, poisoned=True))
         try:
             # Non-HTTP providers cancel without closing owner-thread file descriptors.
             if callable(getattr(type(client), "cancel", None)):

@@ -1,6 +1,6 @@
 name: homework-coach
 repo: https://github.com/andrewjsoukup/homework-coach
-sha: 4320a9ed54e7e3c9536a5ead5637d74903d1c274
+sha: 241497d5dfd6dbac2d7e42490b2d0fd2f7250527
 title: Homework Coach
 description: Homework photos and teacher updates become checked daily math practice PDFs and a separate
   parent key. Parent I/S/N feedback guides difficulty. Includes a class plan, read-back corrections,
@@ -11,15 +11,15 @@ maintainer: andrewjsoukup
 tier: community
 category: tools
 requires_hermes: '>=0.22.5'
-version: "0.2.2"
+version: "0.2.3"
 docs_url: https://github.com/andrewjsoukup/homework-coach#readme
-image: https://raw.githubusercontent.com/andrewjsoukup/homework-coach/4320a9ed54e7e3c9536a5ead5637d74903d1c274/docs/screenshots/banner.png
+image: https://raw.githubusercontent.com/andrewjsoukup/homework-coach/241497d5dfd6dbac2d7e42490b2d0fd2f7250527/docs/screenshots/banner.png
 screenshots:
-- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/4320a9ed54e7e3c9536a5ead5637d74903d1c274/docs/screenshots/01-homework-photo.png
-- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/4320a9ed54e7e3c9536a5ead5637d74903d1c274/docs/screenshots/02-child-packet-nova.png
-- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/4320a9ed54e7e3c9536a5ead5637d74903d1c274/docs/screenshots/03-parent-key.png
-- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/4320a9ed54e7e3c9536a5ead5637d74903d1c274/docs/screenshots/05-adapted-packet-nova-wed.png
-- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/4320a9ed54e7e3c9536a5ead5637d74903d1c274/docs/screenshots/06-desktop-panel.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/241497d5dfd6dbac2d7e42490b2d0fd2f7250527/docs/screenshots/01-homework-photo.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/241497d5dfd6dbac2d7e42490b2d0fd2f7250527/docs/screenshots/02-child-packet-nova.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/241497d5dfd6dbac2d7e42490b2d0fd2f7250527/docs/screenshots/03-parent-key.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/241497d5dfd6dbac2d7e42490b2d0fd2f7250527/docs/screenshots/05-adapted-packet-nova-wed.png
+- https://raw.githubusercontent.com/andrewjsoukup/homework-coach/241497d5dfd6dbac2d7e42490b2d0fd2f7250527/docs/screenshots/06-desktop-panel.png
 readme: true
 platforms:
 - linux

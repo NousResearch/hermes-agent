@@ -704,17 +704,22 @@ def has_invalid_sqlite_header_preopen(path: Path, *, probe_bytes: int = 100, for
 def state_db_holds_store(path: Path) -> bool:
     """Whether *path* is an initialised store a read-only lookup can query (#153048).
 
-    False for a missing path, a 0-byte file (an interrupted init or a copy that failed midway) and
-    a SQLite file with no tables at all (created, never given a schema): SQLite opens all of these
-    and then fails every query with "no such table", so a lookup that treats a missing store as
-    "nothing here" should treat them the same way. True for anything else, including a file that
-    is not SQLite, holds only part of the schema, is locked or cannot be opened: those reach the
-    caller's real open and keep their loud error. Never reads raw bytes (no byte-probe guard to trip)."""
+    False only for a missing path, a 0-byte regular file (an interrupted init or a copy that failed
+    midway) and a SQLite file with no tables at all (created, never given a schema): SQLite opens
+    all of these and then fails every query with "no such table", so a lookup that treats a missing
+    store as "nothing here" should treat them the same way. True for anything else (a directory or
+    other non-file, an unstattable path, a file that is not SQLite, holds only part of the schema,
+    is locked or cannot be opened): those reach the caller's real open and keep their loud error.
+    Never reads raw bytes (no byte-probe guard to trip)."""
     try:
-        if not path.is_file() or path.stat().st_size == 0:
+        if not path.exists():
+            return False
+        if not path.is_file():
+            return True
+        if path.stat().st_size == 0:
             return False
     except OSError:
-        return False
+        return True
     try:
         with contextlib.closing(_connect_tracked_db(
                 read_only_db_uri(path), tracking_path=path, uri=True, timeout=1.0)) as conn:

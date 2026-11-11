@@ -52,6 +52,18 @@ def test_unfinished_state_db_reads_as_no_store(tmp_path, monkeypatch, make):
     }
 
 
+def test_only_missing_or_unfinished_files_read_as_no_store(tmp_path):
+    from hermes_state_dbfile import state_db_holds_store
+
+    assert state_db_holds_store(tmp_path / "absent.db") is False
+    (tmp_path / "dir.db").mkdir()  # a bad path must reach the real open and report itself
+    assert state_db_holds_store(tmp_path / "dir.db") is True
+    conn = sqlite3.connect(tmp_path / "real.db")
+    conn.execute("CREATE TABLE sessions (id TEXT)")
+    conn.close()
+    assert state_db_holds_store(tmp_path / "real.db") is True
+
+
 def test_damaged_non_empty_state_db_stays_loud(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "state.db").write_bytes(b"not a database " * 400)

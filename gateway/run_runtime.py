@@ -692,9 +692,11 @@ async def recover_profile_native_sessions(runner, authority):
     """Bind one authority's queued native rows to the adapters connected now."""
     from gateway.session_authorities import owner_scope
     pending, bindings = await asyncio.to_thread(_native_recovery_bindings, runner, authority)
-    outcome = await authority.recover_native_sessions(bindings)
     from gateway.session_detached import recover_detached_sessions
+    # Recovery still performs per-session validation reads; its live-session publication and
+    # task creation must stay on the owner loop, under the same scope as the binding scan.
     with owner_scope(authority):
+        outcome = await authority.recover_native_sessions(bindings)
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)

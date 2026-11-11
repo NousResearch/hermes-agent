@@ -51,9 +51,11 @@ def noted_completion(row):
 
 def _closed_by_user(authority, session_id):
     """The user ended this chat's work: exit or /new refused its dispatches (``refuse_for_session``,
-    held in memory), or its row ended for a reason recovery does not resume (which outlives a restart).
-    An orphan reap (the last viewer vanished) and an agent close are not the user's. A wake in a closed
-    chat would also run its re-dispatched child inside the wake turn, refused the background."""
+    held in memory), its close is still pending in ``pending_closes`` (re-armed from the store after a
+    restart, while its FIFO is busy), or its row ended for a reason recovery does not resume (which
+    outlives a restart). An orphan reap (the last viewer vanished) and an agent close are not the user's.
+    A wake in a closed chat would also run its re-dispatched child inside the wake turn, refused the
+    background."""
     from tools.async_delegation import refused_for_session
     from gateway.session_viewer_close import ORPHAN_REASONS, _physical_target
     # A close still pending (its FIFO was busy) outlives a restart in ``pending_closes``; the refusal does not.

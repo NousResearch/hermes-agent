@@ -17,7 +17,16 @@ describe('shouldPreserveCtrlJNewline', () => {
   })
 
   it('keeps bare local POSIX LF-compatible prompts submitting on Ctrl+J', () => {
-    expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' })).toBe(false)
+    expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' }, () => false)).toBe(false)
+  })
+
+  it('preserves Ctrl+J on a normal WSL install — the distro name is not a Windows string (#77283)', () => {
+    expect(shouldPreserveCtrlJNewline({ WSL_DISTRO_NAME: 'Ubuntu' }, () => false)).toBe(true)
+    expect(shouldPreserveCtrlJNewline({ WSL_INTEROP: '/run/WSL/1_interop' }, () => false)).toBe(true)
+  })
+
+  it('detects WSL from the kernel when the WSL env vars are scrubbed', () => {
+    expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' }, () => true)).toBe(true)
   })
 })
 

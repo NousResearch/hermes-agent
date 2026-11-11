@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
@@ -49,6 +51,28 @@ const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
 type MinimalEnv = Record<string, string | undefined>
+
+let wslKernelMemo: boolean | undefined
+
+/**
+ * WSL2 kernels report "microsoft-standard-WSL2" in /proc/version, which answers
+ * what the environment can't when the WSL markers are scrubbed (sudo, some
+ * launchers). Mirrors the classic CLI's _preserve_ctrl_enter_newline (#22379) and
+ * is memoized because this runs on every Enter keypress.
+ */
+function looksLikeWslKernel(): boolean {
+  if (wslKernelMemo === undefined) {
+    wslKernelMemo = ['/proc/version', '/proc/sys/kernel/osrelease'].some((path) => {
+      try {
+        return readFileSync(path, 'utf8').toLowerCase().includes('microsoft')
+      } catch {
+        return false
+      }
+    })
+  }
+
+  return wslKernelMemo
+}
 
 const invert = (s: string) => INV + s + INV_OFF
 
@@ -254,7 +278,10 @@ export async function cutSelection(
   return ok
 }
 
-export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+export function shouldPreserveCtrlJNewline(
+  env: MinimalEnv = process.env,
+  kernelProbe: () => boolean = looksLikeWslKernel
+): boolean {
   if (env.WT_SESSION) {
     return true
   }
@@ -275,7 +302,14 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
     return true
   }
 
-  return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
+  // WSL_DISTRO_NAME is the distro registration name ("Ubuntu", "Debian"), never a
+  // Windows string, and both markers are absent under e.g. sudo — so presence is
+  // the signal and the kernel string is the fallback.
+  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) {
+    return true
+  }
+
+  return kernelProbe()
 }
 
 type ReturnDecisionKey = {

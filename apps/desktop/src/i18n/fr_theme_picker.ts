@@ -7,7 +7,7 @@ export const frThemePicker: ThemePickerCopy = {
   customColor: 'Couleur personnalisée',
   themeAccent: 'Par défaut du thème',
   basic: 'Basique',
-  basicDetail: 'Pour discuter avec Hermes.',
+  basicDetail: 'Pour discuter avec Unitalk.',
   elite: 'Élite',
   eliteDetail: 'Pour les développeurs : terminal, fichiers, diffs.',
   noPick: 'Aucun choix'

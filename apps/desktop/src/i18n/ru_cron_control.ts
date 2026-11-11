@@ -9,7 +9,7 @@ export const ruCronControl: CronControlCopy = {
   failedStop: 'Не удалось остановить запуск',
   lastCancelled: (reason: string) => (reason ? `Последний запуск отменён: ${reason}` : 'Последний запуск отменён'),
   catchUpLabel: 'Пропущенные запуски',
-  catchUpHint: 'Что делать с запусками, пропущенными, пока Hermes не работал.',
+  catchUpHint: 'Что делать с запусками, пропущенными, пока Unitalk не работал.',
   catchUpChoices: {
     default: 'По умолчанию',
     run: 'Запустить один раз после возврата',

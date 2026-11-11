@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const esClarify: Partial<ClarifyCopy> = {
   notReady: 'La solicitud de aclaración aún no está lista',
-  gatewayDisconnected: 'Hermes está sin conexión ahora mismo. Reconéctate y vuelve a enviarlo.',
+  gatewayDisconnected: 'Unitalk está sin conexión ahora mismo. Reconéctate y vuelve a enviarlo.',
   sendFailed: 'No se pudo enviar la respuesta de aclaración',
   loadingQuestion: 'Cargando pregunta…',
   other: 'Otro (escribe tu respuesta)',

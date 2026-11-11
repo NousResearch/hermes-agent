@@ -35,7 +35,7 @@ export const zhHantAssistant = {
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
-      loadingResponse: 'Hermes 正在載入回覆',
+      loadingResponse: 'Unitalk 正在載入回覆',
       resumeWhenBackgroundDone: count =>
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
       thinking: '思考中',
@@ -75,9 +75,9 @@ export const zhHantAssistant = {
       errorRetryAtResetShort: time => `${time} 重試`,
       errorRateLimitResetBody: (provider, time) => `你已達到 ${provider} 的速率限制，將於 ${time} 重設。`,
       errorLayerBodies: {
-        generic: 'Hermes 回覆時發生問題。請重試；若問題持續，請複製錯誤詳細資訊。',
+        generic: 'Unitalk 回覆時發生問題。請重試；若問題持續，請複製錯誤詳細資訊。',
         provider: 'AI 服務無法完成此請求。請稍後重試或切換服務商。',
-        endpoint: 'Hermes 無法連線至你的自訂模型伺服器。請確認它正在執行，然後重新傳送訊息。',
+        endpoint: 'Unitalk 無法連線至你的自訂模型伺服器。請確認它正在執行，然後重新傳送訊息。',
         streaming: '回覆完成前連線已中斷。請重試以重新傳送。'
       },
       errorCodes: {
@@ -112,7 +112,7 @@ export const zhHantAssistant = {
         },
         timeout: {
           title: provider => `無法連線到 ${provider}`,
-          body: provider => `Hermes 無法連線到 ${provider}。請檢查網路連線後重試。`
+          body: provider => `Unitalk 無法連線到 ${provider}。請檢查網路連線後重試。`
         },
         stream_drop: {
           title: '回覆被中斷',
@@ -120,7 +120,7 @@ export const zhHantAssistant = {
         },
         no_reply: {
           title: '未收到回覆',
-          body: 'Hermes 已完成本輪，但回覆沒有送達此視窗。請重試以重新傳送。'
+          body: 'Unitalk 已完成本輪，但回覆沒有送達此視窗。請重試以重新傳送。'
         },
         upstream_blocked: {
           title: provider => `${provider} 封鎖了此請求`,
@@ -170,20 +170,20 @@ export const zhHantAssistant = {
           body: provider => `${provider} 沒有為此訊息傳回內容。請稍後重試。`
         },
         loop_error: {
-          title: 'Hermes 無法完成此步驟',
+          title: 'Unitalk 無法完成此步驟',
           body: '處理回覆時發生問題。請重試；若再次發生，請從詳細資訊中傳送診斷資訊。'
         },
         agent_init_failed: {
           title: '無法開始此聊天',
-          body: provider => `Hermes 無法為此聊天連線到 ${provider}。請重試；若持續失敗，請在設定中檢查服務商。`
+          body: provider => `Unitalk 無法為此聊天連線到 ${provider}。請重試；若持續失敗，請在設定中檢查服務商。`
         },
         SESSION_NOT_OWNED: {
           title: '聊天已在別處開啟',
-          body: '此聊天已在另一個 Hermes 視窗或終端機中開啟。請在這裡開始新的聊天，或先在那裡關閉它。'
+          body: '此聊天已在另一個 Unitalk 視窗或終端機中開啟。請在這裡開始新的聊天，或先在那裡關閉它。'
         },
         disk_full: {
           title: '你的磁碟已滿',
-          body: 'Hermes 無法儲存此對話。請釋放空間後重試。'
+          body: 'Unitalk 無法儲存此對話。請釋放空間後重試。'
         },
         free_tier_disabled: {
           title: '登入以繼續聊天',
@@ -199,7 +199,7 @@ export const zhHantAssistant = {
         },
         free_tier_model_not_free: {
           title: '此模型需要登入',
-          body: 'Hermes 目前改用免費模型。使用 Nous 帳戶登入即可使用更多模型，完全免費。'
+          body: 'Unitalk 目前改用免費模型。使用 Nous 帳戶登入即可使用更多模型，完全免費。'
         },
         free_tier_route: {
           title: '無法連線到免費模型',
@@ -219,7 +219,7 @@ export const zhHantAssistant = {
         },
         session_read_only: {
           title: '此聊天為唯讀',
-          body: '它是 Hermes 只能顯示、無法繼續的已儲存歷史記錄，因此你的訊息未被執行。請開始新的聊天後再傳送。'
+          body: '它是 Unitalk 只能顯示、無法繼續的已儲存歷史記錄，因此你的訊息未被執行。請開始新的聊天後再傳送。'
         },
         usage_window: {
           title: '包含用量已用完',
@@ -237,7 +237,7 @@ export const zhHantAssistant = {
           title: '無法連線到本機模型伺服器',
           body: '本機模型伺服器尚未執行：它可能仍在啟動中。請稍後重試，或切換到其他模型。',
           bodyNoRetry:
-            '本機模型伺服器已關閉。請在 Hermes 桌面應用程式或終端機中的 `hermes model` 啟動它，或切換到其他模型。'
+            '本機模型伺服器已關閉。請在 Unitalk 桌面應用程式或終端機中的 `hermes model` 啟動它，或切換到其他模型。'
         }
       },
       errorLayers: {
@@ -291,7 +291,7 @@ export const zhHantAssistant = {
       attachingFile: '正在附加…'
     },
     approval: {
-      gatewayDisconnected: 'Hermes 閘道未連線',
+      gatewayDisconnected: 'Unitalk 閘道未連線',
       sendFailed: '無法傳送核准回應',
       run: '執行',
       command: '指令',
@@ -302,12 +302,12 @@ export const zhHantAssistant = {
       reject: '拒絕',
       alwaysTitle: '一律允許此指令？',
       alwaysDescription: pattern =>
-        `這會將「${pattern}」模式加入永久允許清單（~/.hermes/config.yaml）。Hermes 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
+        `這會將「${pattern}」模式加入永久允許清單（~/.hermes/config.yaml）。Unitalk 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
       alwaysAllow: '一律允許'
     },
     clarify: {
       notReady: '澄清請求尚未就緒',
-      gatewayDisconnected: 'Hermes 閘道未連線',
+      gatewayDisconnected: 'Unitalk 閘道未連線',
       sendFailed: '無法傳送澄清回應',
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',

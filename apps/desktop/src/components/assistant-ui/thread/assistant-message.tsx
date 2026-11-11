@@ -917,14 +917,14 @@ const withHaptic = (fn: () => void) => () => {
   fn()
 }
 
-// The profile whose Hermes home this chat runs in (a Bot chat owns its own).
+// The profile whose Unitalk home this chat runs in (a Bot chat owns its own).
 function useOwnerProfile(): string | null | undefined {
   const gatewayProfile = useStore($activeGatewayProfile)
 
   return useComposerScope().profile || gatewayProfile
 }
 
-// Open a folder under the profile's Hermes home in the OS file manager (via its logs root).
+// Open a folder under the profile's Unitalk home in the OS file manager (via its logs root).
 async function openProfileDir(
   profile: string | null | undefined,
   resolve: (logsRoot: string) => string,
@@ -1097,7 +1097,7 @@ const textButton = (className: string, onClick: () => void, label: ReactNode) =>
 
 // Out of credits runs the same recovery as the banner and toast: the failing provider's own
 // billing page (Nous → Settings → Billing). A plan limit is Nous billing. Without this chat's
-// billing descriptor Hermes doesn't know where a third-party provider bills, so no button.
+// billing descriptor Unitalk doesn't know where a third-party provider bills, so no button.
 const sameProvider = (a?: string | null, b?: string | null) =>
   Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase())
 

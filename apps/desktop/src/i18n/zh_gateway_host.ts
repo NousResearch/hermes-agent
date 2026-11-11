@@ -4,9 +4,9 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const zhGatewayHost: GatewayHostTranslations = {
   unavailableTitle: '网关设置不可用',
   unavailableDesc: '桌面 IPC 桥未暴露网关设置。',
-  webappHostTitle: 'Hermes 主机',
+  webappHostTitle: 'Unitalk 主机',
   webappHostDesc:
-    'Webapp 始终运行在提供它的 Hermes 主机上。下方已保存的连接是这台机器的列表，与 Hermes Desktop 应用共享；其他网关通过此主机访问。',
+    'Webapp 始终运行在提供它的 Unitalk 主机上。下方已保存的连接是这台机器的列表，与 Unitalk Desktop 应用共享；其他网关通过此主机访问。',
   webappOauthPaste: {
     title: '完成登录',
     description: '如果登录标签页停在无法打开的地址（此浏览器不在网关所在的机器上），请将该地址粘贴到这里。',
@@ -16,7 +16,7 @@ export const zhGatewayHost: GatewayHostTranslations = {
   },
   webAccess: {
     title: '网页访问',
-    intro: '用手机或其他电脑，以你的 Nous 账户登录并打开这台电脑上的 Hermes。登录的人可以在这台电脑上运行命令。',
+    intro: '用手机或其他电脑，以你的 Nous 账户登录并打开这台电脑上的 Unitalk。登录的人可以在这台电脑上运行命令。',
     failed: '无法更改网页访问',
     running: '运行中',
     stopped: '已停止',
@@ -24,7 +24,7 @@ export const zhGatewayHost: GatewayHostTranslations = {
     stopping: '正在停止',
     restartNeeded: '需要重启',
     unavailable: '不可用',
-    notRunningDetail: '启动后即可从其他设备打开 Hermes。',
+    notRunningDetail: '启动后即可从其他设备打开 Unitalk。',
     needsNous: '请先在“提供商”中登录你的 Nous 账户。',
     runningLan: '在同一网络中的设备上打开此地址。',
     runningPublic: '通过你的网址提供服务。',

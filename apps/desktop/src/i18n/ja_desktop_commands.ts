@@ -28,7 +28,7 @@ export const jaDesktopCommands = {
   historyHeader: (count: string) => `会話履歴（${count} 件のメッセージ）:`,
   historyEmpty: 'まだメッセージはありません。',
   historyYou: 'あなた',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: '使い方: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     '保存されませんでした: このゲートウェイは秘匿化・ファイル名指定・JSON 以外のコピーを書き出せません。ゲートウェイを更新するか、オプションなしで /save を実行してゲートウェイのホストに生の JSON を書き込んでください。',

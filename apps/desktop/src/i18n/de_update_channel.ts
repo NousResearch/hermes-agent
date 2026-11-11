@@ -6,7 +6,7 @@ export const deUpdateChannel = {
   main: 'Jeder Commit',
   stableConfirmTitle: 'Zu stabilen Releases wechseln?',
   stableConfirmBody:
-    'Hermes wechselt zum neuesten veröffentlichten Release, das älter sein kann als der Code, den du gerade nutzt. Von neuerem Code geschriebene Daten werden eventuell nicht korrekt gelesen – sichere sie vorher.',
+    'Unitalk wechselt zum neuesten veröffentlichten Release, das älter sein kann als der Code, den du gerade nutzt. Von neuerem Code geschriebene Daten werden eventuell nicht korrekt gelesen – sichere sie vorher.',
   stableConfirm: 'Zu Stabil wechseln',
   failed: 'Update-Kanal konnte nicht geändert werden',
   detailsLabel: 'Kanal',
@@ -15,9 +15,9 @@ export const deUpdateChannel = {
   latestRelease: (v: string) => `Du nutzt das neueste stabile Release (${v}).`,
   rollbackTitle: (v: string) => `Zurück zum stabilen Release ${v}`,
   rollbackBody: (v: string) =>
-    `Dieser Build ist neuer als das stabile Release ${v}. Die Installation setzt Hermes auf dieses Release zurück.`,
+    `Dieser Build ist neuer als das stabile Release ${v}. Die Installation setzt Unitalk auf dieses Release zurück.`,
   heldBody: (v: string) =>
-    `Dieser Build ist neuer als das stabile Release ${v}, und deine Sitzungen nutzen bereits seine Gateway-Laufzeit, die ${v} nicht öffnen kann. Hermes bleibt bei diesem Build, bis ein neueres stabiles Release erscheint.`,
+    `Dieser Build ist neuer als das stabile Release ${v}, und deine Sitzungen nutzen bereits seine Gateway-Laufzeit, die ${v} nicht öffnen kann. Unitalk bleibt bei diesem Build, bis ein neueres stabiles Release erscheint.`,
   rollbackAction: (v: string) => `Zurück auf ${v}`,
   allChanges: 'Alle Änderungen ansehen'
 }

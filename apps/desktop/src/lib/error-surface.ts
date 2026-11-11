@@ -318,7 +318,7 @@ export function formatErrorDiagnostics(input: {
   const model = input.surface?.model || input.model
 
   const lines = [
-    '── Hermes error details ──',
+    '── Unitalk error details ──',
     input.failedAt ? `time: ${new Date(input.failedAt * 1000).toISOString()}` : null,
     input.surface ? `layer: ${input.surface.layer}` : null,
     input.surface ? `code: ${input.surface.code}` : null,
@@ -377,7 +377,7 @@ const PROVIDER_SETTINGS_URLS: Record<string, string> = {
   nous: 'https://portal.nousresearch.com'
 }
 
-/** The provider's own settings page (privacy/data policy), when Hermes knows one. */
+/** The provider's own settings page (privacy/data policy), when Unitalk knows one. */
 export function providerSettingsUrl(surface?: ErrorSurface | null): string | undefined {
   return PROVIDER_SETTINGS_URLS[(surface?.provider || '').toLowerCase()]
 }

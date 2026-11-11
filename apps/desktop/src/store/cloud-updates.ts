@@ -1,5 +1,5 @@
 /**
- * Hermes Cloud owns updates for its agents: it replaces the agent's image, so
+ * Unitalk Cloud owns updates for its agents: it replaces the agent's image, so
  * no in-app updater may be offered there. Two shapes reach a Cloud agent:
  *
  * - the Webapp served BY a Cloud agent (the tab's own origin is the agent):
@@ -20,14 +20,14 @@ function connectedToHermesCloud(connection: HermesConnection | null): boolean {
   return connection?.mode === 'remote' && (connection.remoteKind === 'cloud' || isHermesCloudUrl(connection.baseUrl))
 }
 
-/** Whether Hermes Cloud owns updates for `target` under `connection`. */
+/** Whether Unitalk Cloud owns updates for `target` under `connection`. */
 export function cloudOwnsUpdates(target: UpdateTarget, connection: HermesConnection | null = $connection.get()): boolean {
   return servedByHermesCloud() || (target === 'backend' && connectedToHermesCloud(connection))
 }
 
 /**
- * The target a generic "Update Hermes" command acts on: the connected backend
- * in remote mode, unless Hermes Cloud owns it — then this machine's own app.
+ * The target a generic "Update Unitalk" command acts on: the connected backend
+ * in remote mode, unless Unitalk Cloud owns it — then this machine's own app.
  */
 export function updateTargetFor(connection: HermesConnection | null): UpdateTarget {
   return connection?.mode === 'remote' && !cloudOwnsUpdates('backend', connection) ? 'backend' : 'client'

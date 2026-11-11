@@ -16,7 +16,7 @@ import type { ProfileRoute, RosterRow } from './types'
 
 // ── cross-connection bot relay ────────────────────────────────────────────
 // Connections ARE the peer set: every gateway this Desktop holds a socket
-// to (local, remote URL, SSH, Hermes Cloud, docker) must be able to find
+// to (local, remote URL, SSH, Unitalk Cloud, docker) must be able to find
 // every other connection's agents and message them via message_agent. The
 // Desktop is the relay — it owns every socket. Two loops:
 //  - roster loop: pushes each gateway the union roster of agents on the

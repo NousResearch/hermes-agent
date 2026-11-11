@@ -20,7 +20,7 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   pluginMissing: 'モデルルートとプロファイルルートは Advanced Delegation プラグインが提供します。',
   pluginDisabled: 'Advanced Delegation はインストール済みですが、このプロファイルではオフです。',
   pluginNotLoaded:
-    'Advanced Delegation はオンですが、Hermes がまだ読み込んでいません。完了するには Hermes を再起動してください。',
+    'Advanced Delegation はオンですが、Unitalk がまだ読み込んでいません。完了するには Unitalk を再起動してください。',
   installPlugin: 'プラグインをインストール',
   installUnavailable:
     'Advanced Delegation はまだプラグインカタログにありません。スキルとツール › プラグイン からインストールしてください。',
@@ -29,11 +29,11 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   modeFailed: 'サブエージェントのルーティングを変更できませんでした',
   loadFailed: 'サブエージェントのルーティングを読み込めませんでした',
   blockedPill: '動作していません',
-  blockedDetail: 'このモードが保存されているため、Hermes は黙って既定を使わず、すべてのサブエージェントを拒否します。',
+  blockedDetail: 'このモードが保存されているため、Unitalk は黙って既定を使わず、すべてのサブエージェントを拒否します。',
   blockedMissing: 'Advanced Delegation をインストールするまで、サブエージェントは起動しません。',
   blockedDisabled: 'このプロファイルで Advanced Delegation をオンにするまで、サブエージェントは起動しません。',
   blockedNotLoaded:
-    'Hermes が Advanced Delegation を読み込むまで、サブエージェントは起動しません。Hermes を再起動して完了してください。',
+    'Unitalk が Advanced Delegation を読み込むまで、サブエージェントは起動しません。Unitalk を再起動して完了してください。',
   blockedUnavailable: label =>
     `${label} がここで動作できるようになるまで、サブエージェントは起動しません。そのプラグインは動作できないと報告しています。`,
   blockedUnregistered: name =>

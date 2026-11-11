@@ -10,7 +10,7 @@ export const frErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   session_read_only: {
     title: 'Cette conversation est en lecture seule',
-    body: 'C’est un historique enregistré que Hermes peut afficher mais pas poursuivre ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
+    body: 'C’est un historique enregistré que Unitalk peut afficher mais pas poursuivre ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
   },
   workspace_unavailable: {
     title: 'Le dossier de cette conversation a disparu',
@@ -24,6 +24,6 @@ export const frErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: 'Impossible de joindre le serveur de modèles local',
     body: 'Le serveur de modèles local ne tourne pas encore : il est peut-être encore en train de démarrer. Réessayez dans un instant, ou passez à un autre modèle.',
     bodyNoRetry:
-      'Le serveur de modèles local est arrêté. Démarrez-le depuis l’application de bureau Hermes ou avec `hermes model` dans un terminal, ou passez à un autre modèle.'
+      'Le serveur de modèles local est arrêté. Démarrez-le depuis l’application de bureau Unitalk ou avec `hermes model` dans un terminal, ou passez à un autre modèle.'
   }
 }

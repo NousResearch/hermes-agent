@@ -44,7 +44,7 @@ import type { Attachment, GroupMember, GroupMessage } from './types'
 // actually speaks is its own turn's choice — replying with exactly "(pass)"
 // (or nothing, or failing) is silence. Hard caps end every turn; a round in
 // which everyone passed means the conversation settled. Each member runs its
-// turn in its OWN persistent per-group Hermes session and is fed only the
+// turn in its OWN persistent per-group Unitalk session and is fed only the
 // room messages that are NEW since it last saw the room.
 
 /** Deterministic @mention parse. Handles @name, @"two words" via display

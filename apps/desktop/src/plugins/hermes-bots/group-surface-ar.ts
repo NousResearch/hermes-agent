@@ -109,7 +109,7 @@ export const GROUP_SURFACE_AR = {
     statusUnknown: "الحالة غير معروفة",
     unavailable: "غير متاح",
     retryNow: "إعادة المحاولة الآن",
-    rosterUnavailable: reason => `القائمة غير متاحة: ${reason}. إذا كانت البوابة لا تدعم profiles.list، فحدّث Hermes وأعد تشغيل البوابة.`,
+    rosterUnavailable: reason => `القائمة غير متاحة: ${reason}. إذا كانت البوابة لا تدعم profiles.list، فحدّث Unitalk وأعد تشغيل البوابة.`,
     waitingForGateway: "في انتظار الاتصال بالبوابة… (قد تستغرق البوابات البعيدة بضع ثوانٍ؛ تُعاد المحاولة تلقائيًا)"
   },
   sections: {

@@ -90,7 +90,7 @@ export interface ComposerAttachment {
   stagedUpload?: HermesStagedUpload
   /** Validated MIME returned by canonical owner staging. */
   mime?: string
-  /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
+  /** Bounded source text from a Unitalk-generated large paste, sent only to the title path. */
   titlePreview?: string
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session

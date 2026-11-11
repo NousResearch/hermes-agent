@@ -86,7 +86,7 @@ export function bindTerminalClipboard(
   // Ctrl+C with no selection still interrupts the running process.
   term.attachCustomKeyEventHandler(event => {
     // The window keybind dispatcher runs in capture, before xterm. A plain Alt
-    // chord it ran as a Hermes action (a browser tab's Alt+T, Alt+[) must not
+    // chord it ran as a Unitalk action (a browser tab's Alt+T, Alt+[) must not
     // also reach the shell as its Meta key (ESC t, ESC [). Ctrl chords stay
     // shared, as natively: Ctrl+D is still EOF and Ctrl+B a tmux prefix.
     if (keybindHandled(event) && event.altKey && !event.ctrlKey && !event.metaKey) {

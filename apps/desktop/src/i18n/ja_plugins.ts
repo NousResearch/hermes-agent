@@ -18,7 +18,7 @@ export const jaPluginSettings = {
     openFolder: 'デスクトッププラグインフォルダーを開く',
     installModal: {
       installUncertain:
-        'Hermes はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
+        'Unitalk はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
       installFromGit: 'Git からインストール',
       reviewRepository: 'リポジトリを確認',
       repoPlaceholder: 'https://github.com/owner/repo',
@@ -67,7 +67,7 @@ export const jaPluginsTab = {
     pickerTitle: (name: string) => `${name} 用のフォルダーを選択`,
     pickerButton: 'アクセスを許可',
     refusedProtected: (name: string) =>
-      `${name} はこのフォルダーを使用できません。Hermes の設定、キー、またはプラグインデータが含まれています。それらを含まないフォルダーを選択してください。`,
+      `${name} はこのフォルダーを使用できません。Unitalk の設定、キー、またはプラグインデータが含まれています。それらを含まないフォルダーを選択してください。`,
     loadFailed: (name: string) => `${name} と共有しているフォルダーを読み込めませんでした。`
   }
 } satisfies NonNullable<NonNullable<TranslationOverrides['skills']>['plugins']>

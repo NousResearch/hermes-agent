@@ -4,7 +4,7 @@ export const esNotifications = {
   intro: 'Notificaciones del sistema operativo (no avisos dentro de la app). Por dispositivo.',
   enableAll: 'Activar notificaciones',
   enableAllDesc: 'Desactivado silencia todas las notificaciones siguientes.',
-  focusedHint: 'Los avisos de finalización solo se activan cuando Hermes está en segundo plano.',
+  focusedHint: 'Los avisos de finalización solo se activan cuando Unitalk está en segundo plano.',
   kinds: {
     approval: {
       label: 'Se necesita aprobación',
@@ -12,11 +12,11 @@ export const esNotifications = {
     },
     input: {
       label: 'Se necesita información',
-      description: 'Hermes hizo una pregunta o necesita una contraseña o un secreto.'
+      description: 'Unitalk hizo una pregunta o necesita una contraseña o un secreto.'
     },
     turnDone: {
       label: 'Respuesta lista',
-      description: 'Terminó un turno mientras Hermes estaba en segundo plano.'
+      description: 'Terminó un turno mientras Unitalk estaba en segundo plano.'
     },
     turnError: {
       label: 'El turno falló',
@@ -32,7 +32,7 @@ export const esNotifications = {
     },
     plugin: {
       label: 'Notificaciones de complementos',
-      description: 'Un complemento de escritorio envió una notificación mientras Hermes estaba en segundo plano.'
+      description: 'Un complemento de escritorio envió una notificación mientras Unitalk estaba en segundo plano.'
     }
   },
   browserPermission: {
@@ -49,7 +49,7 @@ export const esNotifications = {
     }
   },
   test: 'Enviar notificación de prueba',
-  testTitle: 'Hermes',
+  testTitle: 'Unitalk',
   testBody: 'Las notificaciones funcionan.',
   testSent:
     'Prueba enviada. Si no aparece nada, revisa los permisos de notificaciones del sistema operativo y el modo Concentración o No molestar.',

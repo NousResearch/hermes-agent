@@ -37,7 +37,7 @@ export const zhHantFirstRun: FirstRunCopy = {
     notNow: '暫時不要'
   },
   intro: {
-    greeting: '你好，我是 Hermes。',
+    greeting: '你好，我是 Unitalk。',
     plan: '我們先幫你把一切設定好，然後一起做點很酷的事。'
   },
   rerun: {

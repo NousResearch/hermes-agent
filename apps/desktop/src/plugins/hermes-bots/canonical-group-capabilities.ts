@@ -263,7 +263,7 @@ export function groupCreationEngine(mode: GroupExecutionMode | 'checking', selec
 
   if (!connectionId || mode === 'unavailable') {return { engine: 'unavailable', reason: 'owner_unavailable' }}
 
-  // A gateway too old to run group chats cannot own one: the person updates Hermes there.
+  // A gateway too old to run group chats cannot own one: the person updates Unitalk there.
   if (mode === 'legacy') {return { engine: 'unavailable', reason: 'owner_update_required' }}
 
   if (selection.some(bot => !botOnConnection(bot, connectionId) && !peerReachable(bot))) {return { engine: 'unavailable', reason: 'route_unavailable' }}

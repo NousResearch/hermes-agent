@@ -1,7 +1,7 @@
 /**
  * The Browser bar's key button: fill a saved login into THIS tab's page.
  *
- * Lists vault logins (Hermes vault + every unlocked password manager + any
+ * Lists vault logins (Unitalk vault + every unlocked password manager + any
  * other login source the backend lists) whose saved origins match the page,
  * offers an unlock for each locked manager, and on a pick asks the backend to
  * fill it (`vault.preview.fill`). The renderer never holds the password: it

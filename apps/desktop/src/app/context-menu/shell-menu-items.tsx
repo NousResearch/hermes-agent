@@ -34,7 +34,7 @@ function shellSections(
     onSelect: () => navigateToWorkspacePage(navigate, SETTINGS_ROUTE)
   })
 
-  // A Webapp served by Hermes Cloud has nothing to update. Desktop connected to Cloud keeps
+  // A Webapp served by Unitalk Cloud has nothing to update. Desktop connected to Cloud keeps
   // the row: it updates this machine's app and skips the agent.
   const updateHidden = cloudOwnsUpdates('client')
 

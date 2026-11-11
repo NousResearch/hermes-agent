@@ -217,7 +217,7 @@ function relativeTime(ms: number | undefined, u: Translations['updates']): strin
 }
 
 /**
- * The "Hermes Desktop / version / brand mark" hero shared by the About page
+ * The "Unitalk Desktop / version / brand mark" hero shared by the About page
  * and the updates overlay, including the bundle-out-of-sync warning. The
  * heading render is injectable so a dialog surface can emit a DialogTitle
  * for its accessible name while About keeps a plain h2.

@@ -14,5 +14,5 @@ export const esPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptRevoke: (origin: string) => `Revocar el acceso a ${origin}`,
   previewScriptRevoked: (plugin: string, origin: string) => `${plugin} ya no puede ejecutar scripts en ${origin}.`,
   previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
-    `No se pudo guardar el cambio, así que solo dura hasta que Hermes se reinicie. ${plugin} queda bloqueado en ${origin} por ahora.`
+    `No se pudo guardar el cambio, así que solo dura hasta que Unitalk se reinicie. ${plugin} queda bloqueado en ${origin} por ahora.`
 }

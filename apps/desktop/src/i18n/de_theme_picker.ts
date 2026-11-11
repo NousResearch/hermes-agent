@@ -7,7 +7,7 @@ export const deThemePicker: ThemePickerCopy = {
   customColor: 'Eigene Farbe',
   themeAccent: 'Standard des Themes',
   basic: 'Basic',
-  basicDetail: 'Zum Chatten mit Hermes.',
+  basicDetail: 'Zum Chatten mit Unitalk.',
   elite: 'Elite',
   eliteDetail: 'Für Entwickler: Terminal, Dateien, Diffs.',
   noPick: 'Keine Auswahl'

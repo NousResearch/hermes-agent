@@ -11,7 +11,7 @@ export const jaNotices = {
   butterbar: {
     goTo: (index, total) => `お知らせ ${index} / ${total} を表示`,
     legal: {
-      before: 'Hermes Agent のご利用には',
+      before: 'Unitalk のご利用には',
       terms: '利用規約',
       between: 'および',
       privacy: 'プライバシーポリシー',
@@ -32,9 +32,9 @@ export const jaNotices = {
     desktopCommands: jaDesktopCommands
   },
   keepAwakeOffer: {
-    title: 'Hermes の作業中にコンピューターがスリープしました',
+    title: 'Unitalk の作業中にコンピューターがスリープしました',
     message:
-      'タスクの実行中は、Hermes がコンピューターのスリープを防げます。画面はいつもどおりオフになり、バッテリー駆動中はスリープすることがあります。',
+      'タスクの実行中は、Unitalk がコンピューターのスリープを防げます。画面はいつもどおりオフになり、バッテリー駆動中はスリープすることがあります。',
     action: '実行中はスリープしない'
   },
   billingBlock: {

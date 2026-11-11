@@ -56,7 +56,7 @@ export function installBrowserViewport(): () => void {
       return
     }
 
-    // Hermes' UI scale is CSS zoom on <html>, separate from pinch zoom.
+    // Unitalk' UI scale is CSS zoom on <html>, separate from pinch zoom.
     const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1
     root.style.setProperty('--browser-viewport-height', `${height / zoom}px`)
     root.style.setProperty('--browser-viewport-top', `${top / zoom}px`)

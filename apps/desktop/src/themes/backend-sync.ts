@@ -1,5 +1,5 @@
 /**
- * Live skin sync from the Hermes backend.
+ * Live skin sync from the Unitalk backend.
  *
  * The backend resolves the active skin (built-in or `$HERMES_HOME/skins/*.yaml`)
  * and announces it on `gateway.ready` / `skin.changed`, and answers `config.get
@@ -12,7 +12,7 @@
  *      `$pendingSkinApply`, which the ThemeProvider drains through `setTheme`.
  *
  * `gateway.ready` seeds the baseline WITHOUT applying, so a fresh connect never
- * stomps the user's persisted desktop theme; only a genuine name change (Hermes
+ * stomps the user's persisted desktop theme; only a genuine name change (Unitalk
  * authoring/activating a skin from a prompt, or `/skin` elsewhere) repaints.
  */
 
@@ -46,7 +46,7 @@ export const localDisplaySkinProfile = localDisplaySkinName
 const cacheable = (name: string) => !BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name)
 
 // Dropped entries are written back out, so a stale shadow (the reverted #130015
-// build cached the CLI `default` skin as a second "Classic Hermes") is gone from
+// build cached the CLI `default` skin as a second "Classic Unitalk") is gone from
 // disk on the first launch, not only hidden until the next registry change.
 const readCached = (): Record<string, DesktopTheme> => {
   const stored = Object.entries(readJson<Record<string, unknown>>(BACKEND_THEMES_KEY) ?? {})

@@ -40,7 +40,7 @@ export interface PluginFiles {
   /** Handle of this plugin's private data folder (always available). */
   readonly dataFolder: 'data'
   /** Ask the user for a folder with the app's own picker. `folder` is null on
-   *  cancel. A folder holding Hermes data is refused (`error: 'protected'`)
+   *  cancel. A folder holding Unitalk data is refused (`error: 'protected'`)
    *  and the app tells the user why. */
   requestFolder: () => Promise<PluginFilesResult<{ folder: PluginFolder | null }>>
   /** Folders the user has granted this plugin and not revoked. */
@@ -70,7 +70,7 @@ export interface PluginFiles {
   trash: (folder: string, path: string) => Promise<PluginFilesResult>
 }
 
-const unavailable = { ok: false as const, error: 'unavailable', message: 'This Hermes Desktop build has no plugin file access.' }
+const unavailable = { ok: false as const, error: 'unavailable', message: 'This Unitalk Desktop build has no plugin file access.' }
 
 const bridge = () => (typeof window === 'undefined' ? undefined : window.hermesDesktop?.pluginFiles)
 

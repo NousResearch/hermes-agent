@@ -9,7 +9,7 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   runtimeReady: backend => `就绪 · ${backend}`,
   serverRunning: '运行中',
   runtimeInstalled: '已安装 llama.cpp 运行时',
-  runtimeInstalledDetail: (tag, backend) => `构建 ${tag}，${backend} 后端。Hermes 会为您启动并管理服务器。`,
+  runtimeInstalledDetail: (tag, backend) => `构建 ${tag}，${backend} 后端。Unitalk 会为您启动并管理服务器。`,
   installTitle: '安装本地运行时',
   installDetail: '下载 llama.cpp 推理引擎（几百 MB）。下载的模型完全在本机运行——无需账号，数据不会离开您的电脑。',
   installAction: '安装运行时',
@@ -59,7 +59,7 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   updateDetail: (next, current) =>
     `新的 llama.cpp 构建（${next}）可以安装——当前为 ${current}。下载期间模型仍可正常使用。`,
   updateSameBuildDetail: tag =>
-    `Hermes 现在为 llama.cpp ${tag} 附带运行所需的文件。更新会重新下载引擎，下载期间模型仍可正常使用。`,
+    `Unitalk 现在为 llama.cpp ${tag} 附带运行所需的文件。更新会重新下载引擎，下载期间模型仍可正常使用。`,
   updateAction: '更新引擎',
   updating: '正在更新引擎…',
   upToDateTitle: '引擎已是最新',

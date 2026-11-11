@@ -7,7 +7,7 @@ export const zhHantThemePicker: ThemePickerCopy = {
   customColor: '自訂顏色',
   themeAccent: '主題預設',
   basic: '基礎',
-  basicDetail: '用來與 Hermes 對話。',
+  basicDetail: '用來與 Unitalk 對話。',
   elite: '菁英',
   eliteDetail: '給開發者：終端機、檔案、差異。',
   noPick: '未選擇'

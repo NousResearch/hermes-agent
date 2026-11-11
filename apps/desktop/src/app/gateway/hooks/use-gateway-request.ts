@@ -66,7 +66,7 @@ export function useGatewayRequest() {
     // gatewayStateRef mirrors $gatewayState through a render + effect, so it
     // still reads 'open' for a beat after a socket drop rejected the caller's
     // in-flight request. Trusting it alone skipped the reconnect and re-sent
-    // on the dead socket ("Hermes gateway is not connected", #121680). Ask the
+    // on the dead socket ("Unitalk gateway is not connected", #121680). Ask the
     // socket itself.
     if (gatewayStateRef.current === 'open' && existing.connectionState === 'open') {
       return existing
@@ -108,7 +108,7 @@ export function useGatewayRequest() {
         const conn = await withTimeout(
           desktop.getConnection(),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
-          'Timed out reconnecting to Hermes backend'
+          'Timed out reconnecting to Unitalk backend'
         )
 
         if (!ownsForeground()) {
@@ -161,7 +161,7 @@ export function useGatewayRequest() {
       const gateway = gatewayRef.current ?? activeGateway()
 
       if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
+        throw new Error('Unitalk gateway unavailable')
       }
 
       // Bind retries to the dispatch owner, not whichever source is focused

@@ -9,7 +9,7 @@ export const deCronControl: CronControlCopy = {
   failedStop: 'Lauf konnte nicht gestoppt werden',
   lastCancelled: (reason: string) => (reason ? `Letzter Lauf abgebrochen: ${reason}` : 'Letzter Lauf abgebrochen'),
   catchUpLabel: 'Verpasste Läufe',
-  catchUpHint: 'Was mit Läufen geschieht, die verpasst wurden, während Hermes nicht lief.',
+  catchUpHint: 'Was mit Läufen geschieht, die verpasst wurden, während Unitalk nicht lief.',
   catchUpChoices: {
     default: 'Standard verwenden',
     run: 'Einmal nachholen',

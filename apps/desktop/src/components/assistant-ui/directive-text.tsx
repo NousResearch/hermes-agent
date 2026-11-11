@@ -345,7 +345,7 @@ function safeDirectiveSegments(text: string): Unstable_DirectiveSegment[] {
 }
 
 /**
- * Renders text containing Hermes directives (`@file:...`, `@image:...`) as
+ * Renders text containing Unitalk directives (`@file:...`, `@image:...`) as
  * inline chips. Embedded MEDIA images render below as a thumbnail row.
  */
 export function DirectiveContent({ text }: { text: string }) {

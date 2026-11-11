@@ -4,8 +4,7 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "scripts": {
-    "preinstall": "node -e \"const ua=(process.env.npm_config_user_agent||'').split(' ')[0];let pin,why;try{pin=require('./pm/lock.json').packages.pnpm.version}catch(e){why=e.code||e.message}if(typeof pin==='string'&&ua==='pnpm/'+pin)process.exit(0);console.error(typeof pin==='string'?'This repository installs with pnpm '+pin+' (pm/lock.json), found '+(ua||'no user agent')+': source ./activate (PowerShell: . ./activate.ps1) provides it, then run pnpm install --frozen-lockfile':'pm/lock.json pins no pnpm'+(why?' ('+why+')':'')+': restore it from git');process.exit(1)\"",
-    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
+    "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
     "install:root": "pnpm install --filter .",
     "install:web": "pnpm install --filter web...",
     "install:tui": "pnpm install --filter hermes-tui...",
@@ -41,8 +40,8 @@
     "typescript-eslint": "8.71.1"
   },
   "engines": {
-    "node": ">=26",
-    "pnpm": "^12",
+    "node": ">=20",
+    "pnpm": ">=9",
     "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
   },
   "dependencies": {

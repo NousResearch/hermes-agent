@@ -37,7 +37,7 @@ export const enFirstRun: FirstRunCopy = {
     notNow: 'Not now'
   },
   intro: {
-    greeting: "Hi, I'm Hermes.",
+    greeting: "Hi, I'm Unitalk.",
     plan: "Let's set things up for you. Then we'll get something cool done."
   },
   rerun: {

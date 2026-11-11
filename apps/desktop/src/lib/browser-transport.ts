@@ -50,7 +50,7 @@ export function endpointUrl(path: string, basePath: string, profile?: null | str
   const url = new URL(`${normalizedBase}${suffix}`, window.location.origin)
 
   if (url.origin !== window.location.origin) {
-    throw new Error('Hermes API paths must remain on the Webapp origin')
+    throw new Error('Unitalk API paths must remain on the Webapp origin')
   }
 
   if (
@@ -58,7 +58,7 @@ export function endpointUrl(path: string, basePath: string, profile?: null | str
     url.pathname !== normalizedBase &&
     !url.pathname.startsWith(`${normalizedBase}/`)
   ) {
-    throw new Error('Hermes API paths must remain inside the configured base path')
+    throw new Error('Unitalk API paths must remain inside the configured base path')
   }
 
   if (profile && !url.searchParams.has('profile')) {
@@ -213,7 +213,7 @@ export async function browserApi<T>(bootstrap: BrowserBootstrap, request: Hermes
   if (!text) {return null as T}
 
   if (/^\s*<(?:!doctype|html)/i.test(text)) {
-    throw new Error(`Hermes API returned HTML for ${request.path}`)
+    throw new Error(`Unitalk API returned HTML for ${request.path}`)
   }
 
   return JSON.parse(text) as T
@@ -258,7 +258,7 @@ export async function fileEndpointUrl(
 
     const ticket = String(result?.ticket || '')
 
-    if (!ticket) {throw new Error('Hermes did not return a file ticket')}
+    if (!ticket) {throw new Error('Unitalk did not return a file ticket')}
     url.searchParams.set('ticket', ticket)
   }
 
@@ -301,7 +301,7 @@ export async function ticketedWebsocketUrl(
 
   const ticket = String(result?.ticket || '').trim()
 
-  if (!ticket) {throw new Error(`Hermes did not return a ticket for ${path}`)}
+  if (!ticket) {throw new Error(`Unitalk did not return a ticket for ${path}`)}
 
   if (!gateway) {return websocketUrl(bootstrap.basePath, path, { ticket }, profile)}
 

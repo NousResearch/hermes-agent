@@ -9,7 +9,7 @@ export const esCronControl: CronControlCopy = {
   failedStop: 'No se pudo detener la ejecución',
   lastCancelled: (reason: string) => (reason ? `Última ejecución cancelada: ${reason}` : 'Última ejecución cancelada'),
   catchUpLabel: 'Ejecuciones perdidas',
-  catchUpHint: 'Qué hacer con las ejecuciones perdidas mientras Hermes no estaba en marcha.',
+  catchUpHint: 'Qué hacer con las ejecuciones perdidas mientras Unitalk no estaba en marcha.',
   catchUpChoices: {
     default: 'Usar el valor predeterminado',
     run: 'Ejecutar una vez al volver',

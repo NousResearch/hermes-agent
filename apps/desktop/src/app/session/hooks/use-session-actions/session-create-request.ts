@@ -23,7 +23,7 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
 
 /** A backend predating a `session.create` field rejects the whole create at
  *  admission (`tui_gateway/contracts/registry.py::validate_params`, code 4000,
- *  handler never runs) — e.g. a Hermes Cloud backend behind a Desktop that
+ *  handler never runs) — e.g. a Unitalk Cloud backend behind a Desktop that
  *  updates from main (#128971). Each field below is safe to drop for them:
  *  - `cwd_explicit` (#122899): those backends always honoured the client `cwd`.
  *  - `service_tier` (Ultrafast): `fast` still rides, so they get Priority.

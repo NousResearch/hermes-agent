@@ -3,10 +3,10 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 // Settings → Gateways copy where the connection cannot change, spread into en.ts.
 export const enGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Gateway settings unavailable',
-  unavailableDesc: 'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
-  webappHostTitle: 'Hermes host',
+  unavailableDesc: 'Connection settings can only be changed from the Unitalk Desktop app on the computer running it.',
+  webappHostTitle: 'Unitalk host',
   webappHostDesc:
-    'The Webapp always runs on the Hermes host that serves it. The saved connections below are this machine\'s list, shared with the Hermes Desktop app; other gateways are reached through this host.',
+    'The Webapp always runs on the Unitalk host that serves it. The saved connections below are this machine\'s list, shared with the Unitalk Desktop app; other gateways are reached through this host.',
   webappOauthPaste: {
     title: 'Finish signing in',
     description: 'If the sign-in tab ended on an address that would not load (this browser is not on the gateway\'s machine), paste that address here.',
@@ -16,7 +16,7 @@ export const enGatewayHost: GatewayHostTranslations = {
   },
   webAccess: {
     title: 'Web access',
-    intro: 'Open Hermes on this computer from your phone or another computer, signed in with your Nous account. Whoever signs in can run commands on this computer.',
+    intro: 'Open Unitalk on this computer from your phone or another computer, signed in with your Nous account. Whoever signs in can run commands on this computer.',
     failed: "Couldn't change web access",
     running: 'Running',
     stopped: 'Stopped',
@@ -24,7 +24,7 @@ export const enGatewayHost: GatewayHostTranslations = {
     stopping: 'Stopping',
     restartNeeded: 'Restart needed',
     unavailable: 'Unavailable',
-    notRunningDetail: 'Start it to open Hermes from another device.',
+    notRunningDetail: 'Start it to open Unitalk from another device.',
     needsNous: 'Sign in to your Nous account under Providers first.',
     runningLan: 'Open this address on a device on the same network.',
     runningPublic: 'Served through your URL.',

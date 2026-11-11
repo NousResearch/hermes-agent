@@ -85,7 +85,7 @@ function bridge() {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
-    throw new Error('Hermes Desktop bridge is unavailable')
+    throw new Error('Unitalk bridge is unavailable')
   }
 
   return desktop

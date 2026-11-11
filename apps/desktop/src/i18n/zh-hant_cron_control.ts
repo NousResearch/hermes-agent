@@ -9,7 +9,7 @@ export const zhHantCronControl: CronControlCopy = {
   failedStop: '無法停止執行',
   lastCancelled: (reason: string) => (reason ? `上次執行已取消: ${reason}` : '上次執行已取消'),
   catchUpLabel: '錯過的執行',
-  catchUpHint: 'Hermes 未執行期間錯過的執行如何處理。',
+  catchUpHint: 'Unitalk 未執行期間錯過的執行如何處理。',
   catchUpChoices: {
     default: '使用預設設定',
     run: '恢復後補跑一次',

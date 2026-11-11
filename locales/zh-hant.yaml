@@ -748,7 +748,7 @@ gateway:
     draining_maintenance: "⏳ 此代理正在為維護操作收尾，目前不接受新的回合。稍後即會恢復 — 請稍後重新傳送。"
     another_turn_running: "⏳ 此工作階段仍有另一輪在執行中。為保護對話紀錄，這則訊息未被處理。請等目前這一輪結束後再重新傳送。"
     setup_timeout: "⏳ 本輪準備工作卡住且代理沒有任何活動，已取消。請重新傳送你的訊息。"
-    setup_waiting: "⏳ 本輪仍在啟動中（{minutes} 分鐘，代理尚無活動）。你的訊息已排入佇列。如需取消，請使用 /stop。"
+    setup_waiting: "⏳ 本輪仍在啟動中（{minutes} 分鐘，代理尚無活動）。你的訊息已排入佇列。使用 /stop 可取消本輪及佇列中的全部訊息。"
     behavior_queue_short: "排入下一輪佇列"
     behavior_queue_long: "Hermes 忙碌時，訊息會排入下一輪的佇列。"
     behavior_steer_short: "引導至目前的執行（於下一次工具呼叫後）"

@@ -748,7 +748,7 @@ gateway:
     draining_maintenance: "⏳ Este agente está sendo drenado para uma ação de manutenção e não está aceitando novos turnos agora. Ele voltará em instantes — reenvie em breve."
     another_turn_running: "⏳ Outro turno ainda está em execução nesta sessão. Para proteger a transcrição, esta mensagem não foi processada. Aguarde o turno ativo terminar e reenvie."
     setup_timeout: "⏳ A preparação do turno travou sem atividade do agente e foi cancelada. Envie sua mensagem novamente."
-    setup_waiting: "⏳ Este turno ainda está iniciando ({minutes} min, sem atividade do agente ainda). Sua mensagem está na fila. Use /stop se ele deve ser cancelado."
+    setup_waiting: "⏳ Este turno ainda está iniciando ({minutes} min, sem atividade do agente ainda). Sua mensagem está na fila. Use /stop para cancelá-lo junto com tudo o que está na fila."
     behavior_queue_short: "enfileira para o próximo turno"
     behavior_queue_long: "As mensagens serão enfileiradas para o próximo turno enquanto o Hermes estiver ocupado."
     behavior_steer_short: "redireciona para a execução atual (após a próxima chamada de ferramenta)"

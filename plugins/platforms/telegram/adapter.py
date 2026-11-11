@@ -177,7 +177,7 @@ _MEDIA_KIND_KEYS = {
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
-    _probe_video_geometry, _probe_voice_duration_seconds, _video_thumbnail_jpeg, audio_player_fields)
+    _coerce_duration_seconds, _probe_video_geometry, _probe_voice_duration_seconds, _video_thumbnail_jpeg, audio_player_fields)
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
 from plugins.platforms.telegram.telegram_entities import (
     addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)

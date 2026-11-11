@@ -1,7 +1,7 @@
 name: lethe
 title: Lethe
 repo: https://github.com/itsflownium/hermes-lethe
-sha: f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1
+sha: 58e8ad70a14e35970c487a2d3c1e0c0b46786dbd
 description: "Take one chat off the record with /lethe: nothing reaches memory, your profile or skills, the transcript is deleted, and a river shows every write it kept out."
 maintainer: itsflownium
 tier: community
@@ -9,14 +9,14 @@ category: memory
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/itsflownium/hermes-lethe#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/itsflownium/hermes-lethe/f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1/assets/social-preview.png
+image: https://raw.githubusercontent.com/itsflownium/hermes-lethe/58e8ad70a14e35970c487a2d3c1e0c0b46786dbd/assets/social-preview.png
 screenshots:
-  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1/assets/review/panel-light.png
-  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/f81b7fc0e4dd0fb648d096e33ee4b3c77475afd1/assets/review/panel-dark.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/58e8ad70a14e35970c487a2d3c1e0c0b46786dbd/assets/review/panel-light.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/58e8ad70a14e35970c487a2d3c1e0c0b46786dbd/assets/review/panel-dark.png
 readme: true
 platforms: [linux, macos]
 known_issues:
-  - External memory providers (memory.provider) are not covered; Hermes syncs them outside tool calls. The README has a prompt for extending a local copy.
+  - "External memory providers (memory.provider) are not covered out of the box. Ask Hermes: \"Extend my local Lethe plugin (~/.hermes/plugins/lethe) so off-the-record chats also skip my <PROVIDER> memory provider's per-turn sync, session-end extraction and save tools when store.is_on(session_id) is true. Show me the diff, add a test, then run hermes gateway restart.\""
   - The end-of-chat receipt can't print at /exit in the CLI/TUI yet (the shared gateway drops plugin end-of-session messages); use /lethe-end first. The transcript is deleted either way.
   - In a brand-new Desktop chat, typing /lethe first hits Hermes's "Submission destination changed" error; use the panel's Start off the record.
 capabilities:

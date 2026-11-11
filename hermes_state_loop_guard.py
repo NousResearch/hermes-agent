@@ -44,10 +44,11 @@ def _on_event_loop():
 
 def _caller(stack):
     """The innermost frame outside the store and this guard: the code that made the call."""
-    here = os.path.dirname(os.path.abspath(__file__))
+    from hermes_cli._startup_fast import project_root_str
+    here = os.path.normcase(project_root_str())
     for frame in reversed(stack):
         name = os.path.basename(frame.filename)
-        if os.path.dirname(os.path.abspath(frame.filename)) == here and (
+        if os.path.normcase(os.path.realpath(os.path.dirname(frame.filename))) == here and (
                 name.startswith('hermes_state') or name == 'contextlib.py'):
             continue
         if name == 'contextlib.py':

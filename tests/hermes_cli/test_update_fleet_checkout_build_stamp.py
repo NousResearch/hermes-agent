@@ -10,6 +10,7 @@ shim always answers "unknown", which left the stamped-image branch dead code.
 import pytest
 
 from hermes_cli import update_cmd_fleet_checkout as chk
+from hermes_cli import update_custody
 from hermes_cli import version_info
 
 STAMPED_SOURCES = ["build", "commit-build", "ci", "docker", "fallback", "local", "nix"]
@@ -29,7 +30,7 @@ def test_stamped_image_contains_exactly_its_stamp(monkeypatch, source):
     # The premise is a stamped IMAGE: no .git, nothing for a merge-base to walk.
     monkeypatch.setattr(chk, "_has_git_history", lambda: False)
     # no git call may be attempted on a stamped image: make one blow up if it is
-    monkeypatch.setattr(chk.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("git probe on a stamped image")))
+    monkeypatch.setattr(update_custody, "run_git", lambda git_cmd, args, **k: (_ for _ in ()).throw(AssertionError("git probe on a stamped image")))
     assert chk.checkout_contains(stamped) is True
     assert chk.checkout_contains(stamped[:12]) is True  # short form recorded by an older writer
     assert chk.checkout_contains("0000000000aa0d2e6d0f7c3d1a9c5e8f2b4d6a70") is False
@@ -46,7 +47,7 @@ def test_stamped_checkout_with_git_walks_ancestry_past_the_stamp(monkeypatch):
     class _R:
         returncode = 0
 
-    monkeypatch.setattr(chk.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _R())
+    monkeypatch.setattr(update_custody, "run_git", lambda git_cmd, args, **k: calls.append(list(git_cmd) + list(args)) or _R())
     # The recorded sha is NOT the stamp's sha and not equal/prefix to it — only ancestry
     # (the merge-base verdict mocked True) can say HEAD contains it.
     assert chk.checkout_contains("cafebabe" * 5) is True
@@ -69,7 +70,7 @@ def test_unstamped_unknown_identity_stays_fail_closed(monkeypatch):
     """No stamp and no git: unknown ancestry is not evidence the fleet serves the update."""
     _identity(monkeypatch, None, "unknown")
     monkeypatch.setattr(chk, "_has_git_history", lambda: False)
-    monkeypatch.setattr(chk.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("git probe without provenance")))
+    monkeypatch.setattr(update_custody, "run_git", lambda git_cmd, args, **k: (_ for _ in ()).throw(AssertionError("git probe without provenance")))
     assert chk.checkout_contains("b936546561aa0d2e6d0f7c3d1a9c5e8f2b4d6a70") is False
 
 
@@ -82,7 +83,7 @@ def test_git_checkout_still_walks_ancestry(monkeypatch):
     class _R:
         returncode = 0
 
-    monkeypatch.setattr(chk.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _R())
+    monkeypatch.setattr(update_custody, "run_git", lambda git_cmd, args, **k: calls.append(list(git_cmd) + list(args)) or _R())
     assert chk.checkout_contains("cafebabe" * 5) is True
     from hermes_cli.update_custody import git_subcommand
 

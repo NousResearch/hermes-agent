@@ -1438,6 +1438,40 @@ interface ProfileSquareProps {
   remoteHost: null | string
 }
 
+interface ProfileSquareContentProps
+  extends Pick<ProfileSquareProps, 'active' | 'failed' | 'label' | 'pending' | 'remoteHost'> {
+  summary: ProfileDotSummary | null
+}
+
+function ProfileSquareContent({ active, failed, label, pending, remoteHost, summary }: ProfileSquareContentProps) {
+  return (
+    <>
+      {pending ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : profileShortLabel(label)}
+      {/* The remote globe stays at the top, separate from switch/session status. */}
+      {remoteHost && (
+        <span
+          aria-hidden="true"
+          className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
+          data-slot="profile-remote-badge"
+        >
+          <Codicon name="globe" size="0.5rem" />
+        </span>
+      )}
+      {/* Failed picks take precedence over the inactive profile's session rollup. */}
+      {failed && (
+        <span aria-hidden="true" className="absolute -bottom-0.5 -right-0.5 grid place-items-center">
+          <ErrorIcon size="0.5rem" />
+        </span>
+      )}
+      {!failed && !active && summary && (
+        <span className="absolute -bottom-0.5 -right-0.5">
+          <ProfileStatusDot summary={summary} />
+        </span>
+      )}
+    </>
+  )
+}
+
 // Hold this long without moving (a drag would have started first) to open the
 // color picker — the "hard press" gesture, distinct from tap-to-select.
 const LONG_PRESS_MS = 450
@@ -1584,36 +1618,14 @@ function ProfileSquare({
                     onPointerMove={notePointerMove}
                     onPointerUp={clearPress}
                   >
-                    {pending ? (
-                      <Loader2 aria-hidden="true" className="size-3 animate-spin" />
-                    ) : (
-                      profileShortLabel(label)
-                    )}
-                    {/* The "remote" badge: a tiny globe pinned to the corner of an
-                        overridden profile's square, so which profiles leave this
-                        machine is visible at a glance (#91349). */}
-                    {remoteHost && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
-                        data-slot="profile-remote-badge"
-                      >
-                        <Codicon name="globe" size="0.5rem" />
-                      </span>
-                    )}
-                    {/* A failed pick's error mark, else the profile's session
-                        rollup (#91710): bottom-right so it never fights the
-                        remote globe. */}
-                    {failed && (
-                      <span aria-hidden="true" className="absolute -bottom-0.5 -right-0.5 grid place-items-center">
-                        <ErrorIcon size="0.5rem" />
-                      </span>
-                    )}
-                    {!failed && !active && summary && (
-                      <span className="absolute -bottom-0.5 -right-0.5">
-                        <ProfileStatusDot summary={summary} />
-                      </span>
-                    )}
+                    <ProfileSquareContent
+                      active={active}
+                      failed={failed}
+                      label={label}
+                      pending={pending}
+                      remoteHost={remoteHost}
+                      summary={summary}
+                    />
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>

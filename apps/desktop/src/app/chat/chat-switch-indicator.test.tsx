@@ -56,6 +56,23 @@ describe('ChatSwitchIndicator', () => {
     expect(indicator().getAttribute('data-switch-state')).toBe('idle')
   })
 
+  it('restarts the grace period when retrying the same failed target', () => {
+    const rendered = render(<ChatSwitchIndicator failure={null} syncing={null} target="research" />)
+    root = rendered.container
+    act(() => vi.advanceTimersByTime(SWITCH_STALLED_MS))
+
+    rendered.rerender(
+      <ChatSwitchIndicator failure={{ profile: 'research', retry: () => {} }} syncing={null} target={null} />
+    )
+    rendered.rerender(<ChatSwitchIndicator failure={null} syncing={null} target="research" />)
+
+    expect(indicator().getAttribute('data-switch-state')).toBe('pending')
+    expect(screen.queryByText(/Switching to research|will wait/)).toBeNull()
+    act(() => vi.advanceTimersByTime(SWITCH_SLOW_MS))
+    expect(indicator().getAttribute('data-switch-state')).toBe('slow')
+    expect(screen.queryByText(/will wait/)).toBeNull()
+  })
+
   it('renders the paint-first sync as the quiet state', () => {
     root = render(<ChatSwitchIndicator failure={null} syncing="shadow" target={null} />).container
 

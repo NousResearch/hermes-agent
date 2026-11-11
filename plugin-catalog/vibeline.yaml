@@ -1,6 +1,6 @@
 name: vibeline
 repo: https://github.com/ListeningPost/vibeline
-sha: ec0a27f766744430955d0623d3547a0b72639ac4
+sha: d5d0f425a64906ae1a50c1222314a5420da404d5
 description: Show agent work as rails in the TUI, web and CLI. One lane per agent, tool calls and acceptance-criteria results as marks.
 maintainer: ListeningPost
 tier: community
@@ -9,9 +9,9 @@ requires_hermes: ">=0.22.0"
 docs_url: "https://github.com/ListeningPost/vibeline#readme"
 version: "0.2.0"
 screenshots:
-  - "https://raw.githubusercontent.com/ListeningPost/vibeline/ec0a27f766744430955d0623d3547a0b72639ac4/docs/web-sessions.png"
-  - "https://raw.githubusercontent.com/ListeningPost/vibeline/ec0a27f766744430955d0623d3547a0b72639ac4/docs/web-ledger.png"
-  - "https://raw.githubusercontent.com/ListeningPost/vibeline/ec0a27f766744430955d0623d3547a0b72639ac4/docs/cli-panel.png"
+  - "https://raw.githubusercontent.com/ListeningPost/vibeline/d5d0f425a64906ae1a50c1222314a5420da404d5/docs/web-sessions.png"
+  - "https://raw.githubusercontent.com/ListeningPost/vibeline/d5d0f425a64906ae1a50c1222314a5420da404d5/docs/web-ledger.png"
+  - "https://raw.githubusercontent.com/ListeningPost/vibeline/d5d0f425a64906ae1a50c1222314a5420da404d5/docs/cli-panel.png"
 platforms: [linux, macos]
 capabilities:
   provides_tools: [vibeline_rails, vibeline_dashboard]

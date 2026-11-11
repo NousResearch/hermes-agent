@@ -1,0 +1,28 @@
+name: rea-video-hermes
+repo: https://github.com/wusanjay/hermes-plugin-rea-video
+sha: 13566bcfab5f980709bdcccecb2b3a82b5fa026f
+description: >-
+  Reverse-engineer any video shot by shot: production-method classification per shot
+  (live action / AI video / 3D / screen capture / code-template render), caption and
+  sticker timelines, voice vs music stems, editing rhythm, and a concrete replication
+  plan. Powered by JuneYaooo/rea-video (Apache-2.0, pinned commit d904b1e8). The five
+  stdio-MCP tools expose the full pipeline; for shots the pipeline flags as
+  low-confidence, the agent reviews the tiled frames with its own vision and merges
+  the verdict back via submit_review — no external VLM key required. Local runtime
+  deps: ffmpeg and the pinned rea-video package (installed from the repo's venv).
+maintainer: wusanjay
+tier: community
+category: tools
+docs_url: https://github.com/wusanjay/hermes-plugin-rea-video#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - resolve_douyin
+    - decompose_video
+    - video_summary
+    - shot_tiles
+    - submit_review
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

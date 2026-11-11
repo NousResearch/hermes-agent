@@ -3,18 +3,7 @@ title: Enterprise Pathfinder
 repo: https://github.com/DavidDiazMerino/hermes-pathfinder
 sha: c212f61384b4e7d2320b2f3af69f667649d3a2e0
 version: "0.2.0"
-description: >-
-  Routes SAP questions to documented sources and reads official references on request.
-  Parses OData metadata, tests contract claims and checks evidence before saving SAP skills.
-  Measured on a 500 KB synthetic OData contract: 52% to 65% fewer tokens across four models
-  (2 to 3 scored runs per model and condition); no accuracy gain is claimed.
-  Disclosure — pre_tool_call checks skill writes and can block tool calls involving plugin data
-  paths or direct SAP skill writes. post_tool_call records skill evidence links and
-  transform_tool_result labels Hermes web results and records relevant page reads.
-  pathfinder_read starts HTTPS GET requests at official or standards sources and checks the final URL.
-  Set network to off to disable it. Parsed contracts, hashes, lab results, source metadata, skill
-  evidence links and downloaded documents are stored under plugin-data/enterprise-pathfinder.
-  Pathfinder does not read credentials or call SAP systems or APIs.
+description: "Routes SAP questions to documented sources and reads official references on request. Parses OData metadata, tests contract claims and checks evidence before saving SAP skills. Measured on a 500 KB synthetic OData contract: 52% to 65% fewer tokens across four models (2 to 3 scored runs per model and condition); no accuracy gain is claimed. Disclosure — pre_tool_call checks skill writes and can block tool calls involving plugin data paths or direct SAP skill writes. post_tool_call records skill evidence links and transform_tool_result labels Hermes web results and records relevant page reads. pathfinder_read starts HTTPS GET requests at official or standards sources and checks the final URL. Set network to off to disable it. pathfinder_inspect reads any local file path the model names (up to 5 MB) and parses it as OData metadata. Parsed contracts, hashes, lab results, source metadata, skill evidence links and downloaded documents are stored under plugin-data/enterprise-pathfinder. Pathfinder does not read credentials or call SAP systems or APIs."
 maintainer: DavidDiazMerino
 tier: community
 category: tools

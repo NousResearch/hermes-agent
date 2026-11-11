@@ -41,7 +41,10 @@ class WsPublisherTransport:
         if self._dead:
             return
         try:
-            self._ws = ws_connect(url, open_timeout=connect_timeout, max_size=None)
+            from agent.proxy_bypass import loopback_connect_kwargs
+
+            # The sidecar is the dashboard's own loopback socket: websockets>=14 would route it through HTTP(S)_PROXY.
+            self._ws = ws_connect(url, open_timeout=connect_timeout, max_size=None, **loopback_connect_kwargs(url))
         except Exception as exc:
             _log.debug("event publisher connect failed: %s", exc)
             self._dead = True

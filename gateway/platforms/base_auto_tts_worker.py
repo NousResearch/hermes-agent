@@ -62,12 +62,16 @@ async def synthesize(text: str, output_path: str) -> dict:
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
         # detached-spawn: ok -- awaited worker; cancellation/deadline reaps its group
         stderr=asyncio.subprocess.DEVNULL, start_new_session=(os_family() != "win32")))
+    cancelled = False
     try:
         proc = await asyncio.shield(spawn)
         await proc.communicate(json.dumps({"text": text, "output_path": output_path}).encode())
         if proc.returncode:
             raise RuntimeError("Auto-TTS worker failed")
         return await asyncio.to_thread(_read_result, directory)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
         # Cancellation during spawn still owns the eventual child. A second
         # cancellation (runner + adapter shutdown) cannot interrupt reaping.
@@ -76,15 +80,17 @@ async def synthesize(text: str, output_path: str) -> dict:
             await _reap(proc)
 
         cleanup_task = asyncio.create_task(cleanup())
-        cancelled = False
-        while not cleanup_task.done():
-            try:
-                await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                cancelled = True
-        cleanup_task.result()
-        if cancelled:
-            raise asyncio.CancelledError
+        try:
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup_task.result()
+        finally:
+            # Spawn/reap failures must not turn cancellation into a late notice.
+            if cancelled:
+                raise asyncio.CancelledError
 
 
 def main():

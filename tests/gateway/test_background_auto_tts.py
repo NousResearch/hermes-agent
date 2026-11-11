@@ -258,7 +258,52 @@ async def test_live_voice_channel_keeps_audio_before_text(tmp_path):
 
 @pytest.mark.platforms("any")
 @pytest.mark.asyncio
-async def test_worker_cleanup_preserves_cancellation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancellations", [0, 1, 2])
+async def test_failed_worker_spawn_preserves_delivery_cancellation(tmp_path, monkeypatch, cancellations):
+    from gateway.platforms import base_auto_tts
+    from hermes_constants import get_hermes_home
+
+    adapter, event = adapter_and_event()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    adapter.send_voice = AsyncMock()
+    entered, release = asyncio.Event(), asyncio.Event()
+    spawn = asyncio.create_subprocess_exec
+
+    async def failed_spawn(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await spawn(str(tmp_path / "missing-python-executable"), **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failed_spawn)
+    task = asyncio.create_task(base_auto_tts._deliver(adapter, event, "reply", "text-1", {}))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        for _ in range(cancellations):
+            task.cancel()
+            await asyncio.sleep(0)
+        release.set()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert task in done
+        assert task.cancelled() == bool(cancellations)
+        if not cancellations:
+            task.result()
+            adapter.send.assert_awaited_once()
+            assert adapter.send.await_args is not None
+            assert adapter.send.await_args.args[1] == base_auto_tts.FAILURE_NOTICE
+        else:
+            adapter.send.assert_not_awaited()
+        adapter.send_voice.assert_not_awaited()
+        assert not list((get_hermes_home() / "cache" / "auto_tts").iterdir())
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reap_failure", [False, True])
+async def test_worker_cleanup_preserves_cancellation(tmp_path, monkeypatch, reap_failure):
     from gateway.platforms import base_auto_tts_worker as worker
 
     spawn = asyncio.create_subprocess_exec
@@ -276,6 +321,9 @@ async def test_worker_cleanup_preserves_cancellation(tmp_path, monkeypatch):
         cleaning.set()
         await release.wait()
         await reap(proc)
+        assert proc.returncode is not None
+        if reap_failure:
+            raise OSError("Reaping failed after process exit")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_stub)
     monkeypatch.setattr(worker, "_reap", slow_reap)
@@ -286,8 +334,9 @@ async def test_worker_cleanup_preserves_cancellation(tmp_path, monkeypatch):
         await asyncio.sleep(0)
         task.cancel()  # runner and adapter may both cancel the same job
         release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert task in done
+        assert task.cancelled()
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)

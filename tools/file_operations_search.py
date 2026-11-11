@@ -38,7 +38,8 @@ def _macos_protected_search_exclusions(
         return []
     root = Path(path).expanduser()
     if not root.is_absolute():
-        root = Path(cwd or os.getcwd()) / root
+        from agent.runtime_cwd import process_cwd
+        root = Path(cwd or process_cwd() or os.path.expanduser("~")) / root
     root = Path(os.path.normpath(str(root)))
     home_path = Path(os.path.normpath(str(Path(home or Path.home()).expanduser())))
     exclusions: list[str] = []

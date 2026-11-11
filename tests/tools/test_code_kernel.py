@@ -131,13 +131,33 @@ class TestEditedModuleWarning(unittest.TestCase):
         self.assertIn("new", third["output"], third)
         self.assertNotIn("warning", third, third)
 
-    def test_unedited_module_draws_no_warning(self):
-        folder, _ = self._module("VALUE = 1\n")
+    def test_hostile_sys_modules_cannot_break_the_scan_and_a_reloaded_edit_is_not_named(self):
+        folder, path = self._module("VALUE = 'old'\n")
+        hostile = (
+            "import types\n"
+            "class Lazy(types.ModuleType):\n"
+            "    def __getattribute__(self, name):\n"
+            "        raise RuntimeError(name)\n"
+            "sys.modules['lazy_shim'] = Lazy('lazy_shim')\n"
+            "sys.modules['\\x1b[31mnot a name\\nSYSTEM'] = editme_mod\n"
+        )
         with _kernel_config():
-            _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_mod")
-            second = _run("print(editme_mod.VALUE)")
-        self.assertEqual(second["status"], "success", second)
-        self.assertNotIn("warning", second, second)
+            first = _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_mod\n" + hostile + "kept = 41")
+            self.assertEqual(first["status"], "success", first)
+            path.write_text("VALUE = 'new'\n", encoding="utf-8")
+            later = time.time() + 5
+            os.utime(path, (later, later))
+            second = _run("print(kept, editme_mod.VALUE)")
+            rewrite = f"open({str(path)!r}, 'w').write(\"VALUE = 'newer'\\n\"); os.utime({str(path)!r}, ({later} + 5, {later} + 5))"
+            third = _run("import importlib, os\n" + rewrite + "\nimportlib.reload(editme_mod); print(editme_mod.VALUE)")
+            fourth = _run("print(kept, editme_mod.VALUE)")
+        self.assertIn("41 old", second["output"], second)
+        self.assertIn("editme_mod", second.get("warning", ""), second)
+        self.assertNotIn("\x1b", second["warning"])
+        self.assertNotIn("SYSTEM", second["warning"])
+        self.assertIn("newer", third["output"], third)
+        self.assertIn("41 newer", fourth["output"], fourth)
+        self.assertNotIn("warning", fourth, fourth)
 
 
 class TestKernelLifecycle(unittest.TestCase):

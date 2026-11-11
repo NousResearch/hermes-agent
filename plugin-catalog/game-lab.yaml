@@ -1,0 +1,49 @@
+name: game-lab
+title: Game Lab
+repo: https://github.com/flabanabba8/game-lab
+sha: 3173e1b09860be1c4aac3c952cf97b9447cdc55e
+version: 0.2.2
+description: Game Lab combines ModLab, Game Localization Studio, Sprites and experimental
+  Playtest Pilot. ModLab works on a private game copy and invokes separately installed
+  tools; localization drafts and exports RPG Maker text; Sprites inspects and previews
+  character sheets. Playtest Pilot uses approved X11 input, captures screen pixels
+  within the selected window, stores private evidence frames and returns reduced previews
+  and optional local OCR hints. The plugin makes no network calls of its own.
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: '>=0.22.0'
+docs_url: https://github.com/flabanabba8/game-lab/blob/3173e1b09860be1c4aac3c952cf97b9447cdc55e/README.md
+image: https://raw.githubusercontent.com/flabanabba8/game-lab/3173e1b09860be1c4aac3c952cf97b9447cdc55e/assets/thumbnail.jpg
+platforms:
+- linux
+capabilities:
+  provides_tools:
+  - modlab_resources
+  - modlab_toolkit
+  - modlab_rea_native
+  - modlab_create
+  - modlab_inspect
+  - modlab_apply
+  - modlab_rollback
+  - modlab_select_preserved
+  - localize_inspect
+  - localize_get
+  - localize_translate
+  - localize_validate
+  - localize_export
+  - localize_list_drafts
+  - playtest_run
+  - playtest_start
+  - playtest_action
+  - playtest_check
+  - playtest_read_value
+  - playtest_replay
+  - playtest_observe
+  - playtest_report
+  - sprite_inspect_mv
+  - sprite_preview_mv
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

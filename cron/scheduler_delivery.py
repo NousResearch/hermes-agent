@@ -964,8 +964,8 @@ def _send_media_via_adapter(
                     job_ref, f"cannot send media {media_path}: gateway loop unavailable", errors)
                 return errors
             try:
-                # Large attachments can exceed 30s; configurable via _get_media_send_timeout().
-                result = future.result(timeout=_script._get_media_send_timeout())
+                # Large attachments can exceed 30s: _get_media_send_timeout(), widened by file size.
+                result = future.result(timeout=_script._media_send_timeout_for(media_path))
             except TimeoutError:
                 future.cancel()
                 raise
@@ -1227,6 +1227,16 @@ def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
     return bool(getattr(runtime_adapter, "supports_inchannel_continuable", False))
 
 
+def _named_dm_topic(t: _TargetDelivery) -> Optional[str]:
+    """The topic NAME of a ``telegram:<positive chat id>:<topic name>`` target, else None."""
+    from gateway.config import Platform
+    from gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
+    if (t.platform == Platform.TELEGRAM and t.thread_id is not None
+            and looks_like_telegram_private_chat_id(str(t.chat_id)) and not _looks_like_int(str(t.thread_id))):
+        return str(t.thread_id)
+    return None
+
+
 def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]:
     """Compute ``(route_thread_id, route_metadata, media_metadata)`` for a live send, ONCE so text
     and media agree. ``telegram:<positive_chat_id>:<numeric_thread_id>`` is ambiguous (private
@@ -1260,7 +1270,10 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         # key bypasses that check and lets the adapter route via a plain message_thread_id. See #52060.
         route_thread_id = str(thread_id) if thread_id is not None else None
         route_metadata = {"job_id": job["id"], "notify": t.notify_delivery}
-        if route_thread_id:
+        # A named private-DM topic stays on the target only: the router resolves the name
+        # (ensure_dm_topic) and refreshes it on "thread not found" only when metadata carries no
+        # thread routing key (#80483).
+        if route_thread_id and _named_dm_topic(t) is None:
             route_metadata["thread_id"] = route_thread_id
         media_metadata = {"notify": t.notify_delivery}
         if thread_id:
@@ -1377,9 +1390,31 @@ def _live_send_text(
     return True, False, delivered_message_id
 
 
+def _resolve_named_dm_topic(t: _TargetDelivery, topic_name: str, metadata: dict, delivery_errors: list,
+                            n_media: int, *, refresh: bool) -> bool:
+    """Resolve a named DM topic to its thread id through the router's resolver (cached by the
+    adapter, so after a text send this is the id that send used), writing it to ``t.thread_id``
+    (mirroring/seeding key on the numeric id) and ``metadata``. False = media dropped, never General."""
+    from agent.async_utils import safe_schedule_threadsafe
+    from gateway.delivery import _ensure_named_dm_topic
+    future = safe_schedule_threadsafe(
+        _ensure_named_dm_topic(t.runtime_adapter, str(t.chat_id), topic_name, refresh=refresh), t.loop)
+    try:
+        if future is None:
+            raise RuntimeError("gateway loop unavailable")
+        t.thread_id = future.result(timeout=30)
+    except Exception as e:  # any resolver/adapter failure drops the media for this target
+        logger.warning("Job '%s': named DM topic %r unresolved", t.job["id"], topic_name, exc_info=True)
+        if n_media:
+            delivery_errors.append(f"{n_media} media attachment(s) not delivered to {t.where}: {e}")
+        return False
+    metadata.update(thread_id=t.thread_id, telegram_dm_topic_created_for_send=True)
+    return True
+
+
 def _live_send_media(
     t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list,
-    unverified_targets: list) -> None:
+    unverified_targets: list, topic_name: Optional[str] = None) -> None:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
@@ -1394,6 +1429,13 @@ def _live_send_media(
         t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
         platform=t.platform,
     )
+    if (topic_name and len(media_files) == sum("thread not found" in e.lower() for e in _media_errors)
+            and _resolve_named_dm_topic(t, topic_name, routed_media_metadata, delivery_errors,
+                                        len(media_files), refresh=True)):
+        # The named topic vanished (a media-only job never runs the router's text refresh): recreate once.
+        _media_errors = _send_media_via_adapter(
+            t.runtime_adapter, t.chat_id, media_files, routed_media_metadata, t.loop, t.job,
+            platform=t.platform)
     if t.job.pop("_media_ack_lost", False) and t.where not in unverified_targets:
         unverified_targets.append(t.where)
     # Surface per-file failures into run status: text delivered but attachment lost is not ok.
@@ -1486,8 +1528,11 @@ def _deliver_via_live_adapter(
         # gateway loop is contended, so each media send would also block its 30s budget, and the text
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
+        if (topic_name := _named_dm_topic(t)) is not None and adapter_ok and not timed_out:
+            adapter_ok = _resolve_named_dm_topic(
+                t, topic_name, media_metadata, delivery_errors, len(media_files), refresh=False) or bool(text_to_send)
         if adapter_ok and not timed_out and media_files:
-            _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets)
+            _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets, topic_name)
         elif timed_out and media_files:
             _note_target_error(
                 job,
@@ -1523,14 +1568,15 @@ def _standalone_send(
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
-    send_timeout = _get_standalone_send_timeout()
+    send_timeout = _script._media_scaled_timeout(base_timeout := _get_standalone_send_timeout(), media_files)
 
     async def _send():
         # The bound lives inside the coroutine: the running-loop fallback below closes ``coro``
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
+        # notify: the live lane's metadata["notify"] (cron.delivery.notify), so a brief rings either way.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+            media_files=media_files, notify=t.notify_delivery), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1555,7 +1601,7 @@ def _standalone_send(
     except TimeoutError:
         # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
         # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
-        msg = (f"standalone send to {t.where} timed out after {send_timeout}s "
+        msg = (f"standalone send to {t.where} timed out after {send_timeout:g}s "
                "(the send may still be in flight)")
         logger.error("Job '%s': %s", job["id"], msg)
         return None, msg
@@ -1571,7 +1617,7 @@ def _standalone_send(
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
                 return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
-                    timeout=30), None
+                    timeout=30 + send_timeout - base_timeout), None
             finally:
                 pool.shutdown(wait=False)
         except Exception as e:

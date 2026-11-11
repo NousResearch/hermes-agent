@@ -338,6 +338,7 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _send_url_as_file(self, chat_id: str, url: str, caption: Optional[str], reply_to: Optional[str],
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
+        from gateway.platforms.base import read_httpx_body_with_limit
         from tools.url_safety import is_safe_url
 
         async def fallback() -> SendResult:
@@ -356,8 +357,13 @@ class MattermostAdapter(BasePlatformAdapter):
                     elif resp.status >= 400:
                         return await fallback()
                     else:
-                        file_data, ct = await resp.read(), resp.content_type or "application/octet-stream"
+                        file_data = await read_httpx_body_with_limit(
+                            resp, media_type="image", body=resp.content.iter_chunked(65536))
+                        ct = resp.content_type or "application/octet-stream"
                         break
+            except ValueError as exc:  # over gateway.max_inbound_media_bytes; a retry would refetch it
+                logger.warning("Mattermost: refusing %s: %s", url[:80], exc)
+                return await fallback()
             except (TimeoutError, aiohttp.ClientError) as exc:
                 if attempt == 2:
                     logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
@@ -391,6 +397,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.warning("Mattermost: skipping missing image %s", local_path)
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
+        from gateway.platforms.base import read_httpx_body_with_limit
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
@@ -400,7 +407,9 @@ class MattermostAdapter(BasePlatformAdapter):
                 if resp.status >= 400:
                     logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
                     return None
-                file_data, ct = await resp.read(), resp.content_type or "image/png"
+                file_data = await read_httpx_body_with_limit(
+                    resp, media_type="image", body=resp.content.iter_chunked(65536))
+                ct = resp.content_type or "image/png"
         except Exception as dl_err:
             logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
             return None
@@ -417,12 +426,19 @@ class MattermostAdapter(BasePlatformAdapter):
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
-            file_ids, caption_parts = [], []
+            file_ids, caption_parts, retry = [], [], list(chunk)  # retry: refused links already went out
             try:
                 for image_url, alt_text in chunk:
+                    loaded = await self._load_batch_image(image_url, len(file_ids))
+                    if loaded is None and not image_url.startswith("file://"):
+                        # Refused/failed remote image already left the reply text: keep the link.
+                        sent = await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
+                                               metadata=metadata)
+                        delivered = delivered or sent.success
+                        retry.remove((image_url, alt_text))
+                        continue
                     if alt_text:
                         caption_parts.append(alt_text)
-                    loaded = await self._load_batch_image(image_url, len(file_ids))
                     if loaded is not None and (fid := await self._upload_file(chat_id, *loaded)):
                         file_ids.append(fid)
                 if not file_ids:
@@ -434,12 +450,12 @@ class MattermostAdapter(BasePlatformAdapter):
                     delivered = True
                 else:
                     logger.warning("Mattermost: multi-image post failed, falling back")
-                    fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    fallback = await super().send_multiple_images(chat_id, retry, metadata, human_delay=human_delay)
                     delivered = delivered or fallback.success
             except Exception as e:
                 logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
                                chunk_idx + 1, len(chunks), e, exc_info=True)
-                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, retry, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
@@ -624,10 +640,10 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         return send_error("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
     headers = {**upload_headers, "Content-Type": "application/json"}
-    try:
-        # One ClientSession (with proxy) covers the optional uploads + final post.
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="MATTERMOST_PROXY"))
+    from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
+    proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY")
+    try:  # one ClientSession (with proxy) covers the optional uploads + final post
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(proxy)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
             file_ids: list[str] = []
             for media in media_files or []:
@@ -656,10 +672,10 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                     return send_error(f"Mattermost API error ({resp.status}): {body[:400]}")
                 data = await resp.json()
             return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
-    except aiohttp.ClientError as exc:
-        return send_error(f"Mattermost send failed (network): {exc}")
+    except aiohttp.ClientError as exc:  # the text may echo the proxy URL: it reaches the model
+        return send_error(f"Mattermost send failed (network): {describe_proxy_error(exc, proxy) or exc}")
     except Exception as exc:
-        return send_error(f"Mattermost send failed: {exc}")
+        return send_error(f"Mattermost send failed: {describe_proxy_error(exc, proxy) or exc}")
 
 
 # --- Interactive setup wizard ---

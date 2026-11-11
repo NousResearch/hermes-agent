@@ -21,6 +21,7 @@ with a name allows that one name only.
 |---|---|---|
 | `agent.account_usage` | whole module | developer-guide / plugins docs |
 | `agent.acp_client` | whole module | developer-guide / plugins docs |
+| `agent.browser_page_backend` | `BrowserPageBackend` | developer-guide / plugins docs |
 | `agent.browser_provider` | whole module | developer-guide / plugins docs |
 | `agent.context_engine` | whole module | developer-guide / plugins docs |
 | `agent.credential_pool` | whole module | developer-guide / plugins docs |
@@ -38,6 +39,8 @@ with a name allows that one name only.
 | `agent.terminal_env_provider` | whole module | developer-guide / plugins docs |
 | `agent.transports` | whole module | developer-guide / plugins docs |
 | `agent.transports.chat_completions` | whole module | developer-guide / plugins docs |
+| `agent.vault_backends.base` | `LoginBackend` | developer-guide / plugins docs |
+| `agent.vault_store` | `VaultItemMeta` | developer-guide / plugins docs |
 | `agent.video_gen_provider` | whole module | developer-guide / plugins docs |
 | `agent.web_search_provider` | whole module | developer-guide / plugins docs |
 | `cli` | whole module | developer-guide / plugins docs |
@@ -84,6 +87,12 @@ with a name allows that one name only.
 | `gateway.platforms.access_policy_mixin` | `OwnAccessPolicyMixin` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.approval` | `resolve_gateway_approval` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.approval` | `resolve_gateway_approval_card` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `approval_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `refusal_text` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `slash_confirm_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `clarify_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `picker_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `update_prompt_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `get_pending` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `resolve_gateway_clarify` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `mark_awaiting_text` | adding-platform-adapters.md § Public helpers for platform plugins |
@@ -100,6 +109,8 @@ with a name allows that one name only.
 | `hermes_cli.setup` | `prompt_choice` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.setup` | `prompt_yes_no` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.cli_output` | whole module | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.platforms.session_model` | `SessionModelPickerProvider` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
+| `gateway.platforms.session_model` | `SessionModelSettings` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
 | `tools.skills_tool` | `find_all_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `sort_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `skill_search_dirs` | plugins/index.md § Read the skill catalog |

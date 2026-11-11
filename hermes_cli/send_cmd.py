@@ -70,6 +70,8 @@ def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
     if json_mode:
         print(json.dumps(payload, indent=2))
     elif not quiet:
+        for warning in payload.get("warnings") or ():  # the cause behind an error, or a partial send
+            print(f"hermes send: warning: {warning}", file=sys.stderr)
         if payload.get("error"):
             print(f"hermes send: {payload['error']}", file=sys.stderr)
         elif payload.get("success"):

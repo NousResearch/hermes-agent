@@ -28,6 +28,8 @@ _INPUT_FILES = (
     "pyproject.toml", "uv.lock", "pm/lock.json", "pm/pyproject.toml", "pm/uv.lock",
     "scripts/ci/desktop_build_cache.py", "scripts/ci/setup_toolchain.py", "scripts/ci/pnpm_lock.py",
     "scripts/build/node-deps.mjs", "scripts/build/electron-runtime.mjs", "scripts/build/pnpm-lock.mjs",
+    "scripts/build/node-deps-lock.mjs", "scripts/build/node-deps-heartbeat.mjs",
+    "scripts/build/node-deps-watcher.mjs", "scripts/build/node-deps-relay.mjs",
     "scripts/build/frontend-common.mjs", "scripts/build/python.mjs",
     "scripts/build/windows-deps.ps1", "scripts/windows-build-deps.ps1",
     "apps/desktop/scripts/stage-native-deps.mjs", "apps/desktop/scripts/prepare-packaging-tools.mjs",

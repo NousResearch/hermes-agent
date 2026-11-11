@@ -63,6 +63,7 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { CockpitSidebarSlot } from "@/components/CockpitSidebarSlot";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
@@ -670,38 +671,16 @@ export default function App() {
                 ))}
               </ul>
 
-              {sidebarNav.pluginItems.length > 0 && (
-                <div
-                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
-                  role="group"
-                >
-                  <span
-                    className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-                      isDesktopCollapsed && "lg:hidden",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
-                  >
-                    {t.app.pluginNavSection}
-                  </span>
-
-                  <ul className="flex flex-col">
-                    {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        collapsed={isDesktopCollapsed}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                        tooltipWarmRef={tooltipWarmRef}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <SidebarPluginNav
+                closeMobile={closeMobile}
+                collapsed={isDesktopCollapsed}
+                items={sidebarNav.pluginItems}
+                t={t}
+                tooltipWarmRef={tooltipWarmRef}
+              />
             </nav>
+
+            <CockpitSidebarSlot layoutVariant={layoutVariant} />
 
             <SidebarSystemActions
               collapsed={isDesktopCollapsed}
@@ -932,6 +911,38 @@ function SidebarNavLink({
         <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
+  );
+}
+
+function SidebarPluginNav({
+  items,
+  ...linkProps
+}: Omit<SidebarNavLinkProps, "item"> & { items: NavItem[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div
+      aria-labelledby="hermes-sidebar-plugin-nav-heading"
+      className="flex flex-col border-t border-current/10 pb-2"
+      role="group"
+    >
+      <span
+        className={cn(
+          "px-5 pt-2.5 pb-1",
+          "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
+          linkProps.collapsed && "lg:hidden",
+        )}
+        id="hermes-sidebar-plugin-nav-heading"
+      >
+        {linkProps.t.app.pluginNavSection}
+      </span>
+
+      <ul className="flex flex-col">
+        {items.map((item) => (
+          <SidebarNavLink {...linkProps} item={item} key={item.path} />
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -216,6 +216,40 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
             reset_hermes_home_override(home_token)
 
 
+@contextlib.contextmanager
+def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = None) -> Iterator[None]:
+    """Bind *home*'s home + secret + terminal scope for a body that reads and writes its config.
+
+    The launch home (``launch_home``, default ``get_process_hermes_home()``) gets its launch secret
+    scope with no home override or terminal scope (an enclosing secondary's are unbound for the
+    body), or the full :func:`launch_profile_runtime_scope` once the process multiplexes. Any other
+    home gets only its own files, stamped as foreign. No external-source hydration.
+    """
+    from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
+
+    home = Path(home)
+    launch = Path(launch_home if launch_home is not None else get_process_hermes_home())
+    with contextlib.ExitStack() as stack:
+        if home.resolve() == launch.resolve():
+            if is_multiplex_active():
+                stack.enter_context(launch_profile_runtime_scope(launch))
+            else:
+                # Unbind an enclosing secondary's home and terminal, or the launch secrets would
+                # pair with that profile's config. Unset resolves to the process home, which is the
+                # launch home for every caller (``launch_home`` defaults to it; the RPC passes it).
+                stack.callback(reset_hermes_home_override, set_hermes_home_override(None))
+                stack.callback(reset_secret_scope, set_secret_scope(launch_secret_scope(launch)))
+                stack.callback(reset_terminal_scope, set_terminal_scope(None))
+        else:
+            secrets = build_profile_secret_scope(home)
+            stack.callback(reset_hermes_home_override, set_hermes_home_override(str(home)))
+            stack.callback(reset_secret_scope, set_secret_scope(secrets, profile_home=str(home)))
+            stack.callback(reset_terminal_scope, install_profile_terminal_scope(home))
+        yield
+
+
 def launch_profile_scope_if_multiplexed():
     """The launch profile's own runtime scope once this process multiplexes; ``nullcontext``
     before.

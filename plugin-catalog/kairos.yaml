@@ -1,0 +1,37 @@
+name: kairos
+repo: https://github.com/Gens-ai/Kairos
+sha: 368ae2d9a111bca750bd3a06787f11208b207aed
+description: "Your coding agent, paying attention to when you stop. Hermes was already in the room at 3am, so it knows whether the build is green and whether you are mid-thought before it says anything — then offers a wind-down against the bedtime you chose, saves your place so stopping costs nothing, and refuses to report a correlation the sample cannot support. Disclosure — reads Hermes's own session store (state.db, read-only: message timestamps, roles and tool names, no message text) to chart when you work; `sleep_import` reads the sleep export file you or the agent name (CSV, Gadgetbridge SQLite, Xiaomi folder), and `kairos_wearable` calls only MCP servers you list in `plugins.entries.kairos.mcp_allowlist`; adds short blocks to the conversation through `pre_llm_call` (wind-down nudge, break suggestion, and once per new session the handoff note the agent saved when you last stopped, kept in the plugin's data folder); the optional quiet-hours guard can require approval for or block destructive terminal/file/code tool calls during hours you set."
+maintainer: Gens-ai
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Gens-ai/Kairos#readme
+version: "0.6.0"
+screenshots:
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/368ae2d9a111bca750bd3a06787f11208b207aed/docs/screenshots/pane.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/368ae2d9a111bca750bd3a06787f11208b207aed/docs/screenshots/settings-1.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/368ae2d9a111bca750bd3a06787f11208b207aed/docs/screenshots/settings-2.png
+readme: true
+platforms: [linux, macos]
+title: Kairos
+capabilities:
+  provides_tools:
+    - sleep_log
+    - sleep_import
+    - kairos_activity
+    - kairos_report
+    - kairos_guard
+    - kairos_goal
+    - kairos_commitment
+    - kairos_winddown
+    - kairos_checkin
+    - kairos_wearable
+    - kairos_ping
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

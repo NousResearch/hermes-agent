@@ -1,0 +1,37 @@
+name: cardlake
+repo: https://github.com/cardleforall/cardlake-hermes
+sha: c49c43b8251ae8620a8f24affb3368560b9cc99f
+description: >-
+  Cardlake keeps what you mean to get back to (reminders, articles and videos to learn from, links,
+  work) in one daily feed. This plugin puts that feed in your Telegram chat with Hermes: /cardlake
+  feed and today show your cards with Done, Tomorrow, Next week and Undo buttons and a pinned Today
+  checklist, a morning message sends what's due, and you can send Hermes a link to save it. Free
+  account at cardlake.app, or host your own. Disclosure — talks to Cardlake only through Hermes'
+  "cardlake" MCP connection (cardlake.app or a self-hosted copy); sends and pins card messages in
+  your private Telegram chat, and adds /cardlake to the bot's command menu unless you set that menu up
+  yourself, through the bot Hermes already runs; /cardlake save sends your text (with passwords, keys
+  and tokens removed in code) to your own Hermes model; stores only the id of the pinned Today message
+  in plugin state. No shell commands, credentials, background processes or telemetry; the morning
+  job exists only if you create it from the blueprint, and it cannot change cards.
+maintainer: cardleforall
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/cardleforall/cardlake-hermes
+version: "0.7.9"
+title: Cardlake
+image: https://raw.githubusercontent.com/cardleforall/cardlake-hermes/c49c43b8251ae8620a8f24affb3368560b9cc99f/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/cardleforall/cardlake-hermes/c49c43b8251ae8620a8f24affb3368560b9cc99f/docs/your-cards-in-telegram.gif
+  - https://raw.githubusercontent.com/cardleforall/cardlake-hermes/c49c43b8251ae8620a8f24affb3368560b9cc99f/docs/today-in-telegram.jpg
+platforms: []
+capabilities:
+  provides_tools:
+    - cardlake_today
+    - cardlake_show_cards
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

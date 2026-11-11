@@ -283,7 +283,7 @@ _RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"}
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
-    "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
+    "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "acp",
 })
 
 
@@ -526,6 +526,9 @@ def check_alias_collision(name: str) -> Optional[str]:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
         return f"'{canon}' conflicts with a hermes subcommand"
+    from plugins.memory import list_memory_provider_names
+    if canon in list_memory_provider_names():  # a memory provider registers `hermes <name>`
+        return f"'{canon}' conflicts with the `hermes {canon}` memory provider command"
     try:
         result = subprocess.run(
             ["where" if sys.platform == "win32" else "which", canon],
@@ -1308,7 +1311,7 @@ def cloned_plugin_names(profile_dir: Path) -> list[str]:
 
 
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
-                           sync_imports: bool = False) -> None:
+                           sync_imports: bool = False, seed_model: bool = True) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
     AND user-installed skills), and memory/identity files from *source_dir*.
@@ -1321,8 +1324,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
     if source_dir is None:
-        _seed_model_config(profile_dir)
-        return
+        return _seed_model_config(profile_dir) if seed_model else None  # seed may hold inline api_keys
     for relpath in _CLONE_CONFIG_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     _strip_multiplex_flag(profile_dir / "config.yaml")
@@ -1341,7 +1343,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
-    clone_channels: bool = False, sync_imports: bool = False, soul: Optional[str] = None,
+    clone_channels: bool = False, sync_imports: bool = False, soul: Optional[str] = None, seed_model: bool = True,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -1354,7 +1356,8 @@ def create_profile(
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
     ``sync_imports`` (``--clone`` only; ``--clone-all`` copies the file anyway) also copies the
-    ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees."""
+    ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees.
+    ``seed_model=False``: a fresh profile gets no launch model block (it may hold an inline api_key)."""
     if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
@@ -1404,7 +1407,7 @@ def create_profile(
         if clone_all and source_dir:
             clone_key = _clone_all_into(source_dir, staging, canon)
         else:
-            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
+            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports, seed_model=seed_model)
         if source_dir is not None and not clone_channels:
             from hermes_cli.profile_channels import strip_channel_settings
             stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
@@ -2285,10 +2288,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     from hermes_cli.profile_identity import _record_profile_rename
     _record_profile_rename(new_dir, old_canon)
 
-    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
-    from hermes_cli.profiles_honcho import migrate_honcho_profile_host
-    migrate_honcho_profile_host(old_canon, new_canon, new_dir)
-    # 3b. Let the profile's memory provider re-key what it stores under the old name.
+    # 3. Let the profile's memory provider re-key what it stores under the old name.
     from hermes_cli.profile_memory_config import notify_memory_provider
     notify_memory_provider(new_dir, lambda p: p.on_profile_renamed(old_canon, new_canon, str(new_dir)))
 

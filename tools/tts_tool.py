@@ -744,4 +744,5 @@ registry.register(
         **{k: args.get(k) for k in ("output_path", "speed", "instructions", "voice_id", "find_voices")}),
     check_fn=check_tts_requirements,
     emoji="🔊",
+    compat_args=("voice_id", "find_voices"),  # advertised per provider; find_voices needs no text
     dynamic_schema_overrides=_tts_schema_overrides)

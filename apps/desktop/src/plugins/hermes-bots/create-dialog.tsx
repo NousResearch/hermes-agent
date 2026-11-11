@@ -526,9 +526,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         // the remote box doesn't have.
         clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
         no_skills: noSkills,
-        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
-        // profile, so refreshes can't invalidate each other. Older gateways
-        // ignore the param and copy — still functional, just forked.
+        // Shared (not copied) auth keeps ONE OAuth/token pool with the default
+        // profile, so refreshes can't invalidate each other. From a named launch
+        // profile the gateway copies its logins instead (single-use OAuth still
+        // read from the default profile). Older gateways ignore the param and copy.
         share_auth: shareAuth,
         soul: composeSoul({
           name: slug,

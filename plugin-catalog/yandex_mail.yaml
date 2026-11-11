@@ -1,15 +1,15 @@
 name: yandex_mail
 repo: https://github.com/akinfold/hermes-yandex-mail
-sha: f44cf3aff9393d4dc3d420879469d1ebe4735c66
+sha: 34b650089939867a553dfa82db9d888945c7e403
 subdir: hermes_yandex_mail
 title: "Yandex Mail"
-image: https://raw.githubusercontent.com/akinfold/hermes-yandex-mail/f44cf3aff9393d4dc3d420879469d1ebe4735c66/docs/banner.png
-description: "Search and read Yandex Mail, organize messages, save attachments, and send replies. Read-only access is configurable; saving attachments and sending require explicit opt-in. Disclosure — reads and changes your Yandex Mail over IMAP at imap.yandex.ru and sends over SMTP at smtp.yandex.ru (or the hosts in YANDEX_MAIL_IMAP_HOST / YANDEX_MAIL_SMTP_HOST if you set them, which are not restricted to Yandex), over verified TLS, with your YANDEX_MAIL_LOGIN and YANDEX_MAIL_APP_PASSWORD read through Hermes; flagging, moving and deleting, including irreversible permanent deletion, are offered unless YANDEX_MAIL_ACTIONS narrows them (read gives a read-only mailbox); saving attachments and sending are off until YANDEX_MAIL_ACTIONS names save_attachment and send_message; once on, sending asks no per-message confirmation, also in cron and other unattended runs, and reaches any address unless YANDEX_MAIL_SEND_TO fences recipients; saved attachments go to Hermes' shared document cache, where other tools can read them, and are pruned after 24 hours; mail written by other people reaches the agent as tool output; uses Hermes' private tools.credential_files helper to map saved paths into sandboxes; no other endpoint, no telemetry, no shell access, no background process. Independent community plugin, not affiliated with Yandex."
+image: https://raw.githubusercontent.com/akinfold/hermes-yandex-mail/34b650089939867a553dfa82db9d888945c7e403/docs/banner.png
+description: "Search and read Yandex Mail, organize messages and reply through IMAP/SMTP. Choose which folders and actions Hermes can use; saving attachments and sending require explicit opt-in. Disclosure — reads and changes your Yandex Mail over IMAP at imap.yandex.ru and sends over SMTP at smtp.yandex.ru (or the hosts in YANDEX_MAIL_IMAP_HOST / YANDEX_MAIL_SMTP_HOST if you set them, which are not restricted to Yandex), over verified TLS, with your YANDEX_MAIL_LOGIN and YANDEX_MAIL_APP_PASSWORD read through Hermes; flagging, moving and deleting, including irreversible permanent deletion, are offered unless YANDEX_MAIL_ACTIONS narrows them (read gives a read-only mailbox); saving attachments and sending are off until YANDEX_MAIL_ACTIONS names save_attachment and send_message; once on, sending asks no per-message confirmation, also in cron and other unattended runs, and reaches any address unless YANDEX_MAIL_SEND_TO fences recipients; saved attachments go to Hermes' shared document cache, where other tools can read them, and are pruned after 24 hours; mail written by other people reaches the agent as tool output; uses Hermes' private tools.credential_files helper to map saved paths into sandboxes; no other endpoint, no telemetry, no shell access, no background process. Independent community plugin, not affiliated with Yandex."
 maintainer: akinfold
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-version: "0.4.3"
+version: "0.4.4"
 docs_url: https://github.com/akinfold/hermes-yandex-mail#readme
 readme: true
 platforms: [linux, macos]

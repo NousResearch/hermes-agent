@@ -132,8 +132,6 @@ def _runner_for_stall(adapter):
     r.adapters = {"fake": adapter}
     r._profile_adapters = {}
     r._running_agents = {}
-    r._running_agents_ts = {}
-    r._queued_events = {}
     r._session_stall_notified = {}
     r._thread_metadata_for_source = lambda source, *a, **k: {}
     return r

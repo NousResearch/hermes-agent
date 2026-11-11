@@ -1,7 +1,7 @@
 name: qqq-ai-visibility
 title: QQQ AI Visibility Checker
 repo: https://github.com/meelis545/qqq-ai-visibility-mcp
-sha: 06278fa89aef5ad40605722f494b069905f62732
+sha: 38c9b83dd77540923bafd25542704402a8026e33
 version: "1.2.0"
 description: "Free AI visibility and GEO check for any website through QQQ's hosted MCP server (Streamable HTTP at https://qqq.ee/mcp, no sign-in, no keys in config): whether AI crawlers such as GPTBot, ClaudeBot and PerplexityBot may read a site, its technical readiness for AI search with the three most important fixes, and the latest public report of brand mentions and citations in ChatGPT, Gemini and Perplexity answers. Three read-only tools and one workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to qqq.ee, and check_ai_visibility makes that server load a few public pages of the domain you name (limit five checks a day per IP address). The IP address is only the key of a daily counter, deleted after two days; usage statistics keep the step, language, domain, status, country and duration for 90 days. The server calls no AI model and stores no conversation. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
 maintainer: QQQ OÜ
@@ -9,7 +9,7 @@ tier: community
 category: tools
 docs_url: https://qqq.ee/en/mcp-server/
 requires_hermes: ">=0.21.6"
-image: https://raw.githubusercontent.com/meelis545/qqq-ai-visibility-mcp/06278fa89aef5ad40605722f494b069905f62732/icon.png
+image: https://raw.githubusercontent.com/meelis545/qqq-ai-visibility-mcp/38c9b83dd77540923bafd25542704402a8026e33/icon.png
 readme: true
 platforms: []
 capabilities:

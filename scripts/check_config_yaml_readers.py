@@ -47,7 +47,6 @@ ALLOWED_FILES = {ROOT / "hermes_cli" / "config_backend.py", ROOT / "utils.py"}
 # Modules whose ``config_path`` / ``path`` names are their OWN config file, never a hermes
 # config.yaml (the name heuristic would flag every line of them).
 FOREIGN_CONFIG_FILES = {
-    "plugins/memory/honcho": "Honcho's own honcho.json",
     "plugins/memory/openviking": "OpenViking's own ovcli config",
     "agent/proxy_sources/iron_proxy.py": "iron-proxy's proxy.yaml",
 }

@@ -2,8 +2,8 @@
 name: hermes-studio
 title: Hermes Studio — local video workflow
 repo: https://github.com/Morkeeth/hermes-studio
-sha: cf9d0894d21ab09ec14bcea900a96a53b8c5e6f6
-version: "0.4.1"
+sha: 3f9c01035d69cfb7dc15d70c139f0c5a82b2075e
+version: "0.5.0"
 description: Local camera takes to reviewed editable portrait Shorts, with explicit
   media-library discovery and an optional SSH conversation queue. Uses a separately
   installed noncommercial native editor; no paid generation or automatic public posting.
@@ -11,7 +11,7 @@ maintainer: Morkeeth
 category: tools
 tier: community
 requires_hermes: '>=0.21.5'
-docs_url: https://github.com/Morkeeth/hermes-studio/blob/cf9d0894d21ab09ec14bcea900a96a53b8c5e6f6/README.md
+docs_url: https://github.com/Morkeeth/hermes-studio/blob/3f9c01035d69cfb7dc15d70c139f0c5a82b2075e/README.md
 readme: true
 capabilities:
   provides_tools:

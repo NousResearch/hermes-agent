@@ -2,30 +2,7 @@ name: herd
 repo: https://github.com/welliv/hermes-herd
 sha: 7895e856ed7dc575c6e43adc8077eecb284d405d
 requires_hermes: ">=0.23"
-description: >-
-  Keep one Hermes across every machine. Settings, skills, memory and SOUL.md
-  follow the user between devices, while each machine keeps what belongs to it
-  — Docker paths, ports, bot tokens. `config.yaml` is merged per key against a
-  stored base, with machine-bound paths resolved locally before any comparison,
-  so a pull cannot delete the section the machine is running on. API keys never
-  sync: herd does not open `.env`. The store is encrypted with a key stretched
-  from a recovery code before anything leaves the device; every pull leaves a
-  restorable backup and `hermes sync undo` puts it back, removing files the pull
-  added. Ships a per-device manifest store over any folder or git remote, three
-  agent tools (`sync_status`, `sync_diff`, `sync_now`), session hooks that pull
-  at start and push at end in interactive sessions, and a `hermes sync` CLI.
-  Pairing is one command that prints a 20-character code, valid once for 15
-  minutes, written as a sealed `pairing.json` in the store folder. A machine
-  that can see that folder reads and deletes it. The file is not pushed to a
-  git remote, because it wraps the recovery code and would remain in history
-  after deletion; a machine that only has the git remote joins with
-  `hermes sync join <git-url> --code HERD-…`. Disclosure — reads the profile's
-  config, memory, SOUL.md and skills and writes the ones that changed; never
-  reads `.env`, `auth.json` or `state.db`; `sync_now` asks for approval and is
-  blocked under cron and other non-interactive sessions, where the session
-  hooks also skip; `sync_status` and `sync_diff` only `git fetch`; the store is
-  any folder or git remote the user names, and nothing is sent anywhere else.
-  Sessions and cron are not synced by default.
+description: "Keep one Hermes across every machine. Settings, skills, memory and SOUL.md follow the user between devices, while each machine keeps what belongs to it — Docker paths, ports, bot tokens. `config.yaml` is merged per key against a stored base, with machine-bound paths resolved locally before any comparison, so a pull cannot delete the section the machine is running on. API keys never sync: herd does not open `.env`. The store is encrypted with a key stretched from a recovery code before anything leaves the device; every pull leaves a restorable backup and `hermes sync undo` puts it back, removing files the pull added. Ships a per-device manifest store over any folder or git remote, three agent tools (`sync_status`, `sync_diff`, `sync_now`), session hooks that pull at start and push at end in interactive sessions, and a `hermes sync` CLI. Pairing is one command that prints a 20-character code, valid once for 15 minutes, written as a sealed `pairing.json` in the store folder. A machine that can see that folder reads and deletes it. The file is not pushed to a git remote, because it wraps the recovery code and would remain in history after deletion; a machine that only has the git remote joins with `hermes sync join <git-url> --code HERD-…`. Disclosure — reads the profile's config, memory, SOUL.md and skills and writes the ones that changed; credential-named keys in config.yaml and `mcp_servers.*.env`/`headers` stay on each machine; never reads `.env`, `auth.json` or `state.db`; in interactive sessions the session hooks pull and apply other machines' settings, skills, memory and SOUL.md at session start and push at session end without a prompt (turn off with `auto_pull`/`auto_push`); `sync_now` asks for approval and is blocked under cron and other non-interactive sessions, where the hooks also skip; cron jobs sync only on machines paired with `--cron`; the store is any folder or git remote the user names, and nothing is sent anywhere else."
 maintainer: welliv
 tier: community
 category: tools

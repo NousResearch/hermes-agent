@@ -1,7 +1,7 @@
 name: butler-assistant
 title: Butler
 repo: https://github.com/haykguy/butler
-sha: "366b448866c76ec1d2df4a218594504da2eca715"
+sha: "37fcdad5682c96babed8eceda7593e62d5680cbf"
 version: "0.3.0"
 description: "Turns Hermes into a proactive personal assistant. You set your daily non-negotiables and Butler checks in until they are done or deferred; you tell it about a commitment and it follows up before it slips. You choose its tone (Gentle to Strict), how persistent it is, quiet hours, time zone and a daily cap on check-ins, and can pause it in one click. A concierge-style Hermes Desktop page shows today's non-negotiables, upcoming commitments, recent activity and preferences, with a 4-step Quick Setup; the same controls are available to the agent as tools in chat. Disclosure: a background runner thread in the gateway process schedules check-ins, which run as normal turns in your admitted DM or local chat on your configured model, billed like any message; with background wakes enabled it sets allow_gateway_injection for this plugin; with system controls on it writes notification, display and nudge settings into your Hermes config.yaml (keys listed in the README, including agent.gateway_notify_interval, skills.creation_nudge_interval, gateway.message_timestamps.enabled, platforms.*.gateway_restart_notification and the top-level timezone once confirmed), replacing existing per-platform values for those keys; the agent can change Butler's own settings through butler_controls when asked, while DM capture and notification arming stay user-only; the optional prompt review writes to SOUL.md and a butler-capabilities skill only after you select and apply each change, keeping backups; the optional 'verify time zone via IP' action calls ipapi.co or worldtimeapi.org only when you ask; iMessage voice and image helpers run local ffmpeg/ffprobe; watches read the local file path you ask it to watch; inbound DM event capture is off by default and needs two separate opt-ins; all state is stored in plaintext SQLite in the profile's plugin-data; no telemetry."
 maintainer: haykguy
@@ -9,12 +9,12 @@ tier: community
 category: automation
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/haykguy/butler#readme
-image: https://raw.githubusercontent.com/haykguy/butler/366b448866c76ec1d2df4a218594504da2eca715/docs/media/banner.png
+image: https://raw.githubusercontent.com/haykguy/butler/37fcdad5682c96babed8eceda7593e62d5680cbf/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/haykguy/butler/366b448866c76ec1d2df4a218594504da2eca715/docs/media/overview-full.jpg
+  - https://raw.githubusercontent.com/haykguy/butler/37fcdad5682c96babed8eceda7593e62d5680cbf/docs/media/overview-full.jpg
 readme: true
 known_issues:
-  - "Hermes Desktop keeps a packaged plugin's page off until you enable it once: Settings → Plugins → Proactive Assistant."
+  - "Hermes Desktop keeps a packaged plugin's page off until you enable it once: Capabilities → Plugins → Butler - Proactive Assistant."
   - "The plugin's manifest name is `butler`; it cannot be installed alongside another plugin whose manifest name is also `butler`."
   - "Message reactions and threaded replies (butler_expression / butler_imessage react, reply, edit, unsend) are disabled and fail closed until the gateway can bind a message ID to the active chat; only Photon screen/bubble effects can succeed."
   - "Watches are polled local files; there is no webhook receiver and Butler does not place phone calls."

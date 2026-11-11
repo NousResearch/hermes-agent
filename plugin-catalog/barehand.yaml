@@ -1,0 +1,69 @@
+name: barehand
+title: Barehand
+repo: https://github.com/mrv777/barehand
+sha: 7e62bc9419afbe70f175de0515abca3ede66dd38
+subdir: barehand
+description: Lets an agent operate a machine with no OS, network or agent on it (firmware menus, boot loaders, installers,
+  rescue shells such as grub>) through the screen and keyboard alone. It provides a computer_use provider for QEMU
+  virtual machines over QMP (or a VNC console), a barehand_machine tool, a hermes barehand CLI, a skill and a flight
+  recorder. `hermes barehand up` starts local qemu processes that keep running after Hermes exits until `hermes
+  barehand down`; no API key reaches them and the plugin makes no network calls. In recorded runs a model installed
+  Debian 13 from the network installer (it repaired a grub> prompt on first boot from the installer's rescue mode)
+  and Ubuntu Server 26.04 (it finished the stalled installer by hand) on blank aarch64 machines. `hermes barehand
+  demo` replays a bundled recording. Evidence and the full disclosure are in the README and docs/results.
+maintainer: mrv777
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+version: 0.1.0
+docs_url: https://github.com/mrv777/barehand/blob/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/README.md
+platforms:
+- linux
+- macos
+readme: true
+image: https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/banner.png
+screenshots:
+- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-1-firmware.png
+- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-2-grub.png
+- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-3-screen-text.png
+- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/walk-4-proof.png
+- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/flight-recorder.png
+- https://raw.githubusercontent.com/mrv777/barehand/7e62bc9419afbe70f175de0515abca3ede66dd38/barehand/docs/img/debian-installed-login.png
+known_issues:
+- 'With `plugins.isolation: host`, Hermes skips register_cli_command, so the `hermes barehand ...` commands are
+  unavailable. The default mode (`in_process`) registers them. The plugin was not run in host mode, so whether the
+  barehand_machine tool and the computer_use provider load there is unverified. Use the default.'
+- Only QEMU guests on an Apple Silicon Mac were run. The Linux KVM and Intel Mac paths are covered by unit tests
+  only.
+- 'The VNC transport (transport: vnc) was tested only against QEMU''s own VNC server. No KVM-over-IP hardware, BMC,
+  PiKVM or other hypervisor was tested. VNC is not encrypted and has no snapshot, reset, eject or power control.'
+- One model per machine, because QEMU serves one QMP client. Typing is US-layout ASCII. Windows hosts are unsupported.
+- Screen text was measured under QEMU on Alpine 3.24, Debian 13.7 and Ubuntu Server 26.04.1. Their GRUB menus are
+  text consoles and read without calibration. Fedora and other distros are untested.
+- 'Calibration is per console font: run calibrate_text at a shell on the same console as the screens to read.'
+- Debian-installer dialogs and graphical installers return no text. Screens dominated by non-ASCII are partly readable,
+  with unreadable cells marked by a replacement character. Box drawing reads as a shade glyph on the Linux console.
+  aarch64 UEFI shell text reading is unverified.
+- A slowly changing screen (period near 0.8 s) can be reported as a confirmed change.
+- You supply QEMU, UEFI firmware (edk2/OVMF) and the ISO; Barehand installs and downloads nothing. The model must
+  receive tool-result images.
+- Every key, type and click is a Hermes approval prompt; grant a session scope for long runs. Unattended (cron or
+  gateway) use needs approvals granted beforehand.
+- 'QEMU receives an environment allowlist (PATH, HOME, TMPDIR, LANG, LC_* and similar), never Hermes'' environment.
+  The guest has QEMU user-mode networking. QMP is unauthenticated: a unix socket in a 0700 directory by default,
+  loopback TCP as a fallback, non-loopback only with allow_remote. The optional VNC transport is unencrypted (weak
+  DES password, keystrokes in clear), contacts only the configured host, and needs allow_remote for a non-loopback
+  host.'
+- 'The flight recorder is on by default: screenshots and key chords under the plugin data dir (mode 0600). Typed
+  text is off by default (length only). `record: false` disables the recorder and `hermes barehand recordings purge
+  --yes` deletes recordings.'
+- One pre_tool_call hook only escalates reset, power_off, eject_media, send_ctrl_alt_del, snapshot_load and snapshot_delete
+  to Hermes' approval prompt. status, snapshot_list, snapshot_save, calibrate_text (types the 94 printable ASCII
+  characters at a Linux prompt) and wait_for_text do not ask.
+capabilities:
+  provides_tools:
+  - barehand_machine
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

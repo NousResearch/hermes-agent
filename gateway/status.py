@@ -787,12 +787,13 @@ def _record_argv() -> list[str]:
 
 
 def _build_pid_record() -> dict:
+    from hermes_state_pidns import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
-        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())), "pidns": pid_namespace_id(),
     }
 
 
@@ -1544,15 +1545,14 @@ def _acquire_scoped_lock_at(
         _unlink_quietly(lock_path)
     if existing:
         existing_pid = _pid_from_record(existing)
-        # Our own PID: always self-reacquire. start_time guards reuse of OTHER PIDs; requiring
-        # equality here rejects reconnects when the on-disk record has start_time null.
         # Same live PID as this process: always self-reacquire. ``start_time`` is a PID-reuse guard for
         # *other* PIDs; it cannot distinguish two processes that share the caller's own PID (impossible
         # while we are alive). Requiring start_time equality here falsely rejects reconnects when the
         # on-disk record has ``start_time: null`` (older writers / psutil failure at first write) while the
         # freshly built record has a real value — the gateway then reports itself as the foreign squatter of
         # its own token (#81468).
-        if existing_pid == os.getpid():
+        from gateway.status_scoped_locks import scoped_lock_pid_is_ours
+        if existing_pid == os.getpid() and scoped_lock_pid_is_ours(existing):
             _write_json_file(lock_path, record)
             return True, existing
         if not _scoped_lock_record_is_stale(existing, existing_pid):

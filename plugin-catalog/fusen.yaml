@@ -1,0 +1,20 @@
+name: fusen
+repo: https://github.com/Tokagehausu/hermes-fusen
+sha: 77dc01b95ea4551d2004860736f1a58836d21b83
+description: 'Fusen (付箋, Japanese for sticky note) are notes pinned to conversations: one editable body shared by every chat it is pinned to, handed to the model only when its view is stale, and rewriteable by Hermes with your approval.'
+maintainer: Tokagehausu
+tier: community
+category: desktop
+requires_hermes: '>=0.22.5'
+version: '0.1.0'
+title: 'Fusen'
+readme: true
+capabilities:
+  provides_tools: [fusen_notes, fusen_pin, fusen_write]
+  provides_hooks: [pre_llm_call, post_compaction, on_session_delete]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - The composer banner follows the focused chat, not the split tile it renders in; the panel is the reliable place with split panes.
+  - A note armed for "new chat with this note" can land on a different chat if you switch and never send in the draft.
+  - Sidebar grouping by note and a per-row context submenu need core seams that do not exist at HEAD, so neither ships.

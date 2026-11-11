@@ -153,6 +153,19 @@ def caption_with_footer(adapter: Any, images: list, footer: str) -> tuple[list, 
     return [*images[:-1], (url, caption)], True
 
 
+def caption_landed(result: Any, last_url: str) -> bool:
+    """The batch delivered its LAST photo (the one the footer rode): ``success`` means at least one
+    photo landed, so a last photo listed in ``raw_response["failed"]`` (``(path_or_url, error)``)
+    took the footer with it."""
+    if not getattr(result, "success", False):
+        return False
+    failed = (getattr(result, "raw_response", None) or {}).get("failed") if isinstance(
+        getattr(result, "raw_response", None), dict) else None
+    from urllib.parse import unquote
+    lost = {str(item[0]) for item in failed or () if item}
+    return last_url not in lost and unquote(last_url.removeprefix("file://")) not in lost
+
+
 def footer_onto_photo_caption(adapter: Any, extracted: Any, image_exts: Iterable[str]) -> Any:
     """The adapter send path's ``_ExtractedResponse``, with a footer-only text moved onto the last
     photo's caption (MEDIA photos join the photo batch): otherwise the footer is its own message."""

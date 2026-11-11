@@ -259,7 +259,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         non-streaming chain turns into attachments. See #20834 and #141806.
         """
         from urllib.parse import quote as _quote
-        from gateway.runtime_footer import caption_with_footer
+        from gateway.runtime_footer import caption_landed, caption_with_footer
         captioned = False
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
@@ -303,7 +303,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     images, captioned = caption_with_footer(adapter, [*images, *url_images], footer_line)
                     result = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
-                    captioned = captioned and bool(getattr(result, "success", False))
+                    captioned = captioned and caption_landed(result, images[-1][0])
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:

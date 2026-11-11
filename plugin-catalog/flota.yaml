@@ -1,0 +1,37 @@
+name: flota
+title: Flota
+repo: https://github.com/Bto-03/hermes-flota
+sha: 4c2e089f8ab333373baf72b94645993e15fc47c3
+version: "0.2.1"
+description: >-
+  Run delegate_task subagents on your own machines over SSH (delegation.backend: flota). Flota
+  wakes the chosen machine (Wake-on-LAN, a relay host on its LAN, any command, or the machine's
+  own wake timer), falls back to another machine if it does not come up, and suspends it after
+  its last subagent, never a busy one (the model cannot force it). `hermes flota setup
+  user@host` detects OS, MAC, broadcast and how the machine can sleep; `doctor` prints fixes;
+  `uninstall` undoes it; fleet pairing with two codes (public keys only); a fleet map page for
+  Hermes Desktop and the web dashboard. Python standard library only.
+maintainer: Francisco Bastidas
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+# Linux is the verified target (Hermes host and controlled machines). macOS and Windows ships are
+# experimental: power commands and wake timers exist and are unit-tested, not tested on hardware.
+platforms: [linux]
+readme: true
+capabilities:
+  provides_tools: [flota]
+  provides_hooks: [subagent_start, subagent_stop]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Only one delegation backend is active at a time; delegation.backend: flota replaces any other delegation route."
+  - "Auto-sleep timers live in the running process, so auto-sleep needs a long-lived gateway."
+  - "Hermes routes the tasks of one delegate_task call sequentially, so a slow wake delays the later tasks of that batch."
+  - "Hooks carry no route, so subagents are matched to machines by calling thread plus goal text; identical goals for different machines from the same thread can still be mixed up."
+  - "Plain Wake-on-LAN needs the Hermes host on the machine's LAN; use wake: wol_via, wake: command or wake: timer across networks."
+  - "The hermes flota sleep/off CLI and the dashboard see busy machines only while a gateway is running (it publishes busy counts to a state file); without one they cannot tell."
+  - "One busy-state file per profile: a gateway and a separate chat session running subagents at the same time overwrite each other's counts."
+  - "A machine with wake: timer cannot be woken on demand; a task for it waits only if its own alarm is due within wake_timeout."
+  - "macOS and Windows ships are experimental and untested on real hardware; wake: timer is unit-tested only."
+  - "hermes plugins validate warns about private core imports (profiles, cron jobs, atomic config write, the SSH terminal class); a core release can break them."

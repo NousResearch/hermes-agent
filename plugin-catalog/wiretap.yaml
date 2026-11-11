@@ -1,0 +1,23 @@
+name: wiretap
+repo: https://github.com/aka-lacie/hermes-wiretap
+sha: 10f9a8afab1b9fcb9b8783c8541b244bcf2ce675
+description: "Inspect the exact request each model call put on the wire (system prompt, tool schemas, messages, blocks added at send time) and the model's response, aligned to the stored transcript, in a dashboard tab and a Desktop page; also per-call latency, tokens, prefix-cache hits with miss forensics and cost, and a read-only CLI. Disclosure: stores full prompts, tool results and responses locally (72 hours by default), reads Hermes's state.db read-only, reads the calling frame and wraps httpx's send step in-process to record the outgoing body, adds an X-Wiretap-Call header to model requests sent to loopback hosts, imports two private Hermes modules, and makes no network calls of its own."
+maintainer: aka-lacie
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/aka-lacie/hermes-wiretap#readme
+version: "0.6.0"
+title: "Wiretap"
+screenshots:
+  - https://raw.githubusercontent.com/aka-lacie/hermes-wiretap/10f9a8afab1b9fcb9b8783c8541b244bcf2ce675/docs/screenshots/01-wire-inspector.png
+  - https://raw.githubusercontent.com/aka-lacie/hermes-wiretap/10f9a8afab1b9fcb9b8783c8541b244bcf2ce675/docs/screenshots/02-calls-cache-miss.png
+  - https://raw.githubusercontent.com/aka-lacie/hermes-wiretap/10f9a8afab1b9fcb9b8783c8541b244bcf2ce675/docs/screenshots/03-wire-json.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+  provides_middleware: []
+  requires_env: []

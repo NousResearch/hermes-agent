@@ -18,7 +18,7 @@ description: >-
 maintainer: Nnadijoshuac
 tier: community
 category: desktop
-requires_hermes: ">=0.23.0"
+requires_hermes: ">=0.23.1"
 docs_url: https://github.com/Nnadijoshuac/Hermes-chalk#readme
 version: "0.1.0"
 title: "Chalk"

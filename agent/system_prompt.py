@@ -563,10 +563,19 @@ def _memory_parts(agent: Any) -> list[str]:
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> tuple[list[str], bool]:
     """SOUL.md (primary identity; cron keeps the persona while skipping cwd
     instructions, scoped to the agent's OWN home) or the default identity.
-    Returns ``(parts, soul_loaded)``."""
+    Returns ``(parts, soul_handled)``; *soul_handled* tells the context-file
+    builder to skip SOUL.md (it is already in the identity slot, or blocked).
+
+    A SOUL.md the injection scan blocked comes back as a ``[BLOCKED: ...]``
+    notice, not an identity: the default identity stays in the slot and the
+    notice follows it once, so the model is never left without an identity."""
     wants_soul = agent.load_soul_identity or not agent.skip_context_files
     _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
-    return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
+    if not _soul_content:
+        return [DEFAULT_AGENT_IDENTITY], False
+    if _soul_content.lstrip().startswith("[BLOCKED:"):
+        return [DEFAULT_AGENT_IDENTITY, _soul_content.strip()], True
+    return [_soul_content], True
 
 
 def _guidance_parts(agent: Any) -> list[str]:
@@ -760,7 +769,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
-    stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
+    stable_parts, _soul_handled = _identity_parts(agent, _ctx_len)
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
@@ -787,7 +796,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ephemeral_system_prompt is injected at API-call time only, never cached.
     if system_message is not None:
         context_parts.append(system_message)
-    context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    context_parts.extend(_context_files_part(agent, _ctx_len, _soul_handled))
     if coding_workspace_parts:
         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
     else:

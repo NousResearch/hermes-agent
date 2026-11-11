@@ -1,0 +1,26 @@
+name: hermes-shortcuts
+title: "Hermes Shortcuts (Share Sheet, Siri, Photo)"
+repo: https://github.com/sergo565456/hermes-shortcuts
+sha: 17049074caf69645b1615ed6aef7fcfb7c8a1393
+version: "0.1.0"
+description: "Share to Hermes from any iPhone or Android app, ask Hermes with Siri and hear the answer, or photograph a receipt, whiteboard or document as a task. iOS Shortcuts and Android HTTP Shortcuts call one token-protected endpoint; replies return in the HTTP response and are forwarded to your Telegram home channel. Setup is three steps: `hermes shortcuts pair` prints a QR code, the iPhone \"Hermes Setup\" shortcut scans it into iCloud Drive/Shortcuts/hermes.json, and the shared shortcuts (which contain no token) read it. Disclosure: off until SHORTCUTS_TOKEN (32+ random chars; weak or placeholder tokens are refused) is set and the plugin is enabled; then the gateway runs an HTTP listener on 127.0.0.1:8645 (non-loopback bind needs SHORTCUTS_ALLOW_PUBLIC_BIND=true) that you expose through your own HTTPS tunnel or proxy. A single bearer token is the only authentication and every request acts as the owner. Requests run agent turns on shared, untrusted content; by default each action gets only the toolsets it needs (web, vision, plus memory for remember and cronjob for remind/ask; events get cronjob/todo only; no terminal, file, code execution, browser or MCP servers), enforced by toolsets_for_source and by a pre_tool_call hook that only acts in shortcuts sessions: it blocks any other tool, limits cronjob to create/list and makes created reminder jobs run once with no tools. `@file:`/`@url:`-style references in shared text are defanged (Hermes core would otherwise inline local files before the agent runs). Forwarded replies show URLs as code (no Telegram link previews). SHORTCUTS_TOOL_PROFILE=full opts into the platform's full toolset (then shared content can reach the terminal, directly or through cron jobs). Approvals are not bypassed. Uploads are cached in Hermes' media cache; sessions are stored in Hermes' session database; replies are sent to the configured platform's home channel. Registers the CLI command `hermes shortcuts pair`, which prints a QR code containing the server URL and SHORTCUTS_TOKEN (optional 0600 PNG; token text only with --show-token) and may query the local cloudflared metrics endpoint on 127.0.0.1:20241-20245 to find a quick-tunnel URL. On the phone the token is stored in plain text in iCloud Drive/Shortcuts/hermes.json (synced to iCloud; end-to-end encrypted only with Advanced Data Protection) or, with manual setup, inside the shortcut."
+maintainer: sergo565456
+tier: community
+category: platform
+docs_url: https://github.com/sergo565456/hermes-shortcuts/blob/17049074caf69645b1615ed6aef7fcfb7c8a1393/README.md
+requires_hermes: ">=0.23.1"
+readme: true
+platforms: [linux, macos]
+onboarding: false
+known_issues:
+  - "Needs an HTTPS tunnel or reverse proxy (Cloudflare Tunnel, Tailscale, Caddy) for the phone to reach the loopback listener."
+  - "No approval buttons on this surface: commands that need approval fail or time out; use Telegram for those."
+  - "HEIC photos are rejected; the recipes convert to JPEG first."
+  - "Prompt injection in shared pages or files cannot be fully prevented by fencing; the default safe tool profile limits what it can do. `remember` stores shared content in long-term memory, which every later session (including full-tool ones) sees; use it only on content you trust."
+  - "Every shortcuts turn sees your memory/user profile like any session; a malicious page could try to make the agent put that text into a web_extract URL."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_commands: [shortcuts]
+  provides_middleware: []
+  requires_env: [SHORTCUTS_TOKEN]

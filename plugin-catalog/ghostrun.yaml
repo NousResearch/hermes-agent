@@ -1,6 +1,6 @@
 name: ghostrun
 repo: https://github.com/kdcyberdude/ghostrun
-sha: 74b312e62d1965c80c663216f004415f3940a752
+sha: f60fd815175ddc75ff9ff06f290c57b11ecd857b
 title: GhostRun
 description: "Recreate NES games as editable browser games. Train an AI player, rebuild levels and gameplay in Three.js, and add optional 3D visuals. Disclosure — Downloads and compiles pinned NeSLE source; runs local build and training commands; reads your ROM and project folders; starts training, a reference service and a watcher that can prompt reward edits and training restarts (up to 3 fixes per game). No credentials or telemetry."
 maintainer: kdcyberdude
@@ -8,7 +8,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/kdcyberdude/ghostrun#readme
-version: "0.2.7"
+version: "0.3.0"
 platforms: [linux]
 known_issues:
   - Training needs Linux and an NVIDIA GPU with CUDA (nvcc, a C++20 compiler and PyTorch in the configured Python).

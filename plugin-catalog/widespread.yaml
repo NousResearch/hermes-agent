@@ -1,0 +1,40 @@
+name: widespread
+repo: https://github.com/TerexitariusStomp/hermes-browser
+subdir: src/plugins/widespread
+sha: ab1d4e0af2e7c41ab1bb12bc23bc55bc40ae6f17
+description: Earn verified-work bounties on the widespread protocol —
+  discover funded markets across every forge, claim one, ship a signed
+  dg-ship-1 attestation, watch the adjudicator, collect the payout. The
+  earning-side counterpart to payment plugins: wide_* tools let an agent
+  get paid for work it can prove, and the payer side (post a bounty,
+  accept a claim) is approval-gated by the human. Plain HTTPS to the live
+  bridge — no browser, no runtime dependency.
+maintainer: TerexitariusStomp
+tier: community
+category: platform
+requires_hermes: ">=0.20"
+version: "0.1.0"
+docs_url: https://github.com/TerexitariusStomp/hermes-browser#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - wide_agent
+    - wide_bounties
+    - wide_feed
+    - wide_runners
+    - wide_market_claim
+    - wide_claim
+    - wide_ship
+    - wide_verdict
+    - wide_ledger
+    - wide_post
+    - wide_fund
+    - wide_accept
+    - wide_payout
+    - hat_list
+    - hat_stance
+    - hat_work
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

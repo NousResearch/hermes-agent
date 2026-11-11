@@ -30,6 +30,7 @@ host ``_IS_WINDOWS`` is already False, so no patching is needed at all.
 """
 
 import os
+import subprocess
 import time
 from unittest.mock import patch
 
@@ -417,3 +418,18 @@ class TestRunBashScriptTransport:
         assert seen, "no command was spawned"
         assert "-c" in seen[-1]
         assert not seen[-1][-1].endswith(".sh")
+
+    @pytest.mark.platforms("linux")
+    def test_script_writer_preserves_terminal_backslash_at_eof(self, tmp_path, monkeypatch):
+        """The file transport must match bash -c for a trailing unquoted escape."""
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=120)
+        monkeypatch.setattr(env, "get_temp_dir", lambda: str(tmp_path))
+        command = "printf '%s' data\\"
+        path = env._write_run_script(command)
+        try:
+            inline = subprocess.run(["bash", "-c", command], capture_output=True, check=True)
+            from_file = subprocess.run(["bash", path], capture_output=True, check=True)
+            assert inline.stdout == b"data\\"
+            assert from_file.stdout == inline.stdout
+        finally:
+            os.unlink(path)

@@ -1231,6 +1231,10 @@ class LocalEnvironment(BaseEnvironment):
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write(cmd_string)
+                # Bash consuming a script drops an odd trailing backslash at EOF;
+                # bash -c preserves it. Double only that final escape for parity.
+                if (len(cmd_string) - len(cmd_string.rstrip("\\"))) % 2:
+                    handle.write("\\")
                 if not cmd_string.endswith("\n"):
                     handle.write("\n")
         except BaseException:

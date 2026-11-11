@@ -5,25 +5,7 @@ sha: 5edd3288ff825605830e6cc44320eebabd6208c6
 subdir: plugin/lastgood
 version: "0.4.2"
 requires_hermes: ">=0.22.7"
-description: >-
-  LastGood records which of your preset checks passed on which tested
-  state, and what restoring files will not undo. Checks you choose
-  (file opens, words present, files exist, page loads) run after
-  write_file or patch in an opted-in project, and on demand via
-  /lastgood and /blame. Results are PASS, FAIL, or UNKNOWN, with a
-  content fingerprint so changed files mark old results stale. Blame
-  shows the first failing step and bounded configured-string presence
-  deltas, not the cause. A ledger lists recognised tool calls a file
-  rollback will not undo, without storing their arguments. Disclosure:
-  the optional url_loads check fetches the http(s) address you
-  configure. Link-local and cloud-metadata addresses are refused,
-  including after redirects. Only you can add a page check, with
-  /lastgood setup or by editing lastgood-config.json; the
-  lastgood_setup tool cannot. Private ranges need the
-  allow_private_urls setting. No shell commands, credentials, or
-  background processes. Refuses a home folder, drive or filesystem
-  root, or system folder as the project, and explains invalid setups
-  with the accepted check types.
+description: "LastGood records which of your preset checks passed on which tested state, and what restoring files will not undo. Checks you choose (file opens, words present, files exist, page loads) run after write_file or patch in an opted-in project, and on demand via /lastgood and /blame. Results are PASS, FAIL, or UNKNOWN, with a content fingerprint so changed files mark old results stale. Blame shows the first failing step and bounded configured-string presence deltas, not the cause. A ledger lists recognised tool calls a file rollback will not undo, without storing their arguments. Disclosure — the optional url_loads check fetches the http(s) address set in the project's lastgood-config.json (loopback and public hosts; link-local and cloud-metadata addresses are always refused, including after redirects; private ranges only when you turn on allow_private_urls). The lastgood_setup tool refuses page checks, but the agent's own file tools can still edit lastgood-config.json, so leave allow_private_urls off unless you trust what the session writes."
 maintainer: Kenneth Ausmus (Dr-Enuf)
 tier: community
 category: tools

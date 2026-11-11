@@ -286,3 +286,32 @@ async def test_the_gate_honours_the_runners_stt_setting(tmp_path, monkeypatch):
     with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], adapter=adapter) == []
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_gate_transcript_never_crosses_profiles(tmp_path):
+    """The same forwarded clip in a chat routed to another profile is transcribed with THAT profile's
+    STT settings: the gate cache is keyed by profile as well as by clip content."""
+    import re
+    from gateway.platforms.helpers import spoken_mention_clips
+    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    clip = tmp_path / "gate.ogg"
+    clip.write_bytes(OGG)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    transcribe, calls = _stt("hermes, what is on today")
+    runner = GatewayInboundTranscriptionMixin()
+    runner.config = SimpleNamespace(stt_enabled=True)
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        token = set_hermes_home_override(str(tmp_path / "a"))
+        try:
+            assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], keep=frozenset({str(clip)}))
+        finally:
+            reset_hermes_home_override(token)
+        token = set_hermes_home_override(str(tmp_path / "b"))
+        try:
+            await runner._enrich_message_with_transcription("", [str(clip)])
+        finally:
+            reset_hermes_home_override(token)
+    assert len(calls) == 2

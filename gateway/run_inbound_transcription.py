@@ -50,9 +50,10 @@ def stt_enabled_for_turn(runner) -> bool:
     return getattr(getattr(runner, "config", None), "stt_enabled", True)
 
 
-# Transcripts the adapters' spoken-wake-word gate already paid for, by clip content: native admission
-# re-captures the clip under a new path and keeps no adapter attributes, so the turn finds it by bytes.
-_GATE_TRANSCRIPTS: OrderedDict[bytes, tuple[Optional[str], str]] = OrderedDict()
+# Transcripts the adapters' spoken-wake-word gate already paid for, by profile and clip content: native
+# admission re-captures the clip under a new path and keeps no adapter attributes, so the turn finds it
+# by bytes. Profiles never share an entry (their STT provider and language can differ for one clip).
+_GATE_TRANSCRIPTS: OrderedDict[tuple[str, bytes], tuple[Optional[str], str]] = OrderedDict()
 _GATE_TRANSCRIPTS_MAX = 32
 _GATE_TRANSCRIPTS_LOCK = threading.Lock()
 
@@ -65,20 +66,26 @@ def _clip_digest(path: str) -> Optional[bytes]:
         return None
 
 
+def _gate_key(path: str) -> Optional[tuple[str, bytes]]:
+    from hermes_constants import hermes_home_key
+    digest = _clip_digest(path)
+    return None if digest is None else (hermes_home_key(), digest)
+
+
 def remember_gate_transcript(path: str, result: tuple[Optional[str], str]) -> None:
-    if (digest := _clip_digest(path)) is None:
+    if (key := _gate_key(path)) is None:
         return
     with _GATE_TRANSCRIPTS_LOCK:
-        _GATE_TRANSCRIPTS[digest] = result
+        _GATE_TRANSCRIPTS[key] = result
         while len(_GATE_TRANSCRIPTS) > _GATE_TRANSCRIPTS_MAX:
             _GATE_TRANSCRIPTS.popitem(last=False)
 
 
 def _take_gate_transcript(path: str) -> Optional[tuple[Optional[str], str]]:
-    if not _GATE_TRANSCRIPTS or (digest := _clip_digest(path)) is None:
+    if not _GATE_TRANSCRIPTS or (key := _gate_key(path)) is None:
         return None
     with _GATE_TRANSCRIPTS_LOCK:
-        return _GATE_TRANSCRIPTS.pop(digest, None)
+        return _GATE_TRANSCRIPTS.pop(key, None)
 
 
 class GatewayInboundTranscriptionMixin:

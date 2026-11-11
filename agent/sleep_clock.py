@@ -1,6 +1,6 @@
 """Clocks that stop while the computer sleeps.
 
-A laptop that sleeps in the middle of a request freezes Hermes and the local model server
+A laptop that sleeps in the middle of a request freezes Unitalk and the local model server
 together. Timers measured on the wall clock or on Python's ``time.monotonic`` on Windows keep
 counting through the sleep, so every stall watchdog fires the moment the machine wakes and kills
 work that was about to continue. Watchdogs that judge "no progress" use these clocks instead.

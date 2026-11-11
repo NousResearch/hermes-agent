@@ -824,8 +824,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             chunks = self._split_text_chunks(self._accumulated, self._safe_limit, self._len_fn)
         reply_to = self._initial_reply_to_id
         heads_delivered = len(chunks) > 1
-        for chunk in chunks[:-1]:
-            new_id = await self._send_new_chunk(chunk, reply_to, final=tick.got_done)
+        for index, chunk in enumerate(chunks[:-1]):
+            new_id = await self._send_new_chunk(chunk, reply_to, final=tick.got_done, first=index == 0)
+            if new_id == "__partial__":
+                # The first head landed in part: edits are over, got_done sends only the unseen tail.
+                if tick.got_done:
+                    await self._send_fallback_final(self._accumulated)
+                return tick.got_done
             if new_id is None or new_id == reply_to:
                 heads_delivered = False  # keep the full text intact for the gateway fallback
                 break

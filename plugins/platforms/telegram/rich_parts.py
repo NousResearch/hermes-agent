@@ -257,9 +257,10 @@ async def send_rich_parts(
         if result is None:
             # A later part was refused for good (or rich went away): its text never reached the chat,
             # so the rest goes out as MarkdownV2 after the parts already shown, never re-sending them.
-            return await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata)
+            return _with_delivered_prefix(
+                await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata), content, parts, sent)
         if not result.success:
-            return _partial_failure(result, sent, len(parts))
+            return _with_delivered_prefix(_partial_failure(result, sent, len(parts)), content, parts, sent)
         sent.append(result)
     logger.info("Telegram: delivered an oversized rich message in %d parts (%d chars)", len(parts), len(content))
     return SendResult(
@@ -376,6 +377,17 @@ async def _send_legacy_tail(
     result = await adapter._resume_partial_send(chat_id, pending, reply_to=None, metadata=metadata)
     if result is None:  # nothing to resume over (no bot): report the honest partial
         return _partial_failure(None, sent, len(sent) + len(rest))
+    return result
+
+
+def _with_delivered_prefix(result: SendResult, content: str, parts: list[str], sent: list[SendResult]) -> SendResult:
+    """Name the raw text the landed rich parts show (``delivered_prefix``), so the stream consumer
+    resends only what follows it: exact only while no MarkdownV2 chunk landed after them and the
+    parts are a raw prefix of *content* (a reopened ``<details>`` part is not)."""
+    raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+    prefix = _BLOCK_SEPARATOR.join(parts[:len(sent)])
+    if sent and raw.get("partial_overflow") and raw.get("delivered_chunks") == len(sent) and content.startswith(prefix):
+        raw["delivered_prefix"] = prefix
     return result
 
 

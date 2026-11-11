@@ -287,7 +287,7 @@ class TestNotificationQuietExit:
         """A model that acted on a notification with a tool call is mid-task;
         _notification_turn_without_tool_round is False, so the quiet exit path
         is skipped. The post-tool nudge fires instead (verdict is 'continue'
-        with two scaffolding rows added to messages)."""
+        with the nudge queued as a request-only hint; the transcript is untouched)."""
         agent = _agent()
         agent._last_content_with_tools = "mid-task reply"
         agent._last_content_tools_all_housekeeping = False
@@ -303,14 +303,12 @@ class TestNotificationQuietExit:
         verdict = _recover(agent, messages)
         # Should not exit via notification_no_reply.
         assert verdict.turn_exit_reason != ter.NOTIFICATION_NO_REPLY_EXIT
-        # Post-tool nudge fired: verdict is "continue" and scaffolding was added.
+        # Post-tool nudge fired: verdict is "continue" and the nudge rides the next request only.
         assert verdict.action == "continue"
-        # Two scaffolding rows: (empty) assistant + nudge user.
-        assert len(messages) == 5
-        assert messages[3].get("content") == "(empty)"
-        assert messages[3].get("_empty_recovery_synthetic") is True
-        assert messages[4].get("role") == "user"
-        assert messages[4].get("_empty_recovery_synthetic") is True
+        from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+
+        assert agent._empty_response_retry_hint == _EMPTY_TOOL_RESPONSE_NUDGE
+        assert len(messages) == 3
 
 
 class TestNotificationNoReplyExitConstant:

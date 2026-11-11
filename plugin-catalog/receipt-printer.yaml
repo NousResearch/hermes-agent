@@ -1,0 +1,32 @@
+name: receipt-printer
+repo: https://github.com/thedavidmurray/hermes-receipts
+sha: d27c056c9c4ad05f7232cbb17a1c7ef23fb3e507
+title: Receipts
+description: "Your agent says it's done. Get the receipt. Receipts detects completion and action claims in agent answers (\"tests pass\", \"pushed\", \"task done\") and checks each one against observed evidence: tool calls, file digests, test runs after the version, and git remote readbacks. It prints a receipt with a verdict per claim (supported, contradicted, unverified, not evaluable), where missing evidence is unverified, never called a lie. Output is a PNG, an ASCII receipt, a Desktop pane, or an optional USB thermal printer. Users configure kits, fields, five styles (thermal, minimal-mono, bold, ASCII, dot-matrix), paper width, header/footer/logo, and automatic triggers (on demand, task/goal completion, unattended session end; exceptions-only by default). The verdict block cannot be hidden or recolored by any setting. Disclosure: reads the selected profile's state.db conversations and tool arguments read-only, and stores tool names, argument hashes, coarse results and generated images under its plugin-data directory. No model calls or telemetry. Chat or printer delivery only when the user configures that destination; the USB printer needs explicit device IDs and a separately installed python-escpos."
+maintainer: thedavidmurray
+tier: community
+category: desktop
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/thedavidmurray/hermes-receipts
+version: "0.2.0"
+screenshots:
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/d27c056c9c4ad05f7232cbb17a1c7ef23fb3e507/assets/kits/contact-sheet.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/d27c056c9c4ad05f7232cbb17a1c7ef23fb3e507/assets/custom/shop-58mm-dot-matrix.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/d27c056c9c4ad05f7232cbb17a1c7ef23fb3e507/assets/integration/task-before.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/d27c056c9c4ad05f7232cbb17a1c7ef23fb3e507/assets/integration/task-after.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+    - pre_tool_call
+    - post_llm_call
+    - kanban_task_completed
+    - kanban_task_blocked
+    - on_session_end
+    - subagent_stop
+    - agent_loop_stopped
+  provides_middleware: []
+  requires_env: []

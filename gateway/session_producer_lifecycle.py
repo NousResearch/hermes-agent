@@ -13,7 +13,9 @@ admission's own adapter task already brackets it):
 - typing lives as long as execution, so it stops before the reply is sent (#117300 pauses it there);
 - the outcome is reported once: an interrupted turn as CANCELLED and a failed one as FAILURE when
   execution ends; a completed one after its settlement, by the reply's send (``deliver_settled``),
-  or as FAILURE when settlement dropped the reply (``drop_producer_turn``).
+  or as FAILURE when settlement dropped the reply (``drop_producer_turn``). A busy follow-up's reply
+  is sent by its observer after settlement, so the observer reports it, by that send's result
+  (``close_observed_turn``): a failed send never shows success.
 """
 import asyncio
 from contextlib import asynccontextmanager
@@ -34,6 +36,17 @@ def mark_producer_admission(authority, event, row):
     row is the executor's to bracket. A re-send of a row already running or settled is not marked."""
     if getattr(event, '_producer_delivery', False) and row['status'] == 'queued':
         _turns(authority).setdefault(row['admission_id'], None)
+        if getattr(event, '_busy_observed', False):
+            _observed(authority).add(row['admission_id'])
+            event._observed_turn = (authority, row['admission_id'])
+
+
+def _observed(authority):
+    """Admissions whose busy observer sends the reply, and so reports the completed outcome."""
+    observed = getattr(authority, 'observed_producer_turns', None)
+    if observed is None:
+        observed = authority.observed_producer_turns = set()
+    return observed
 
 
 class _Bracket:
@@ -126,6 +139,24 @@ async def close_producer_turn(authority, admission_id, outcome):
     bracket = _turns(authority).pop(admission_id, None)
     if bracket is not None:
         await bracket.close(outcome)
+
+
+async def close_settled_turn(authority, admission_id):
+    """Settled with nothing left for the drain to send: SUCCESS, unless a busy observer still owes
+    the send (``close_observed_turn`` reports it then)."""
+    if admission_id not in _observed(authority):
+        await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
+
+
+async def close_observed_turn(event, delivered):
+    """A busy follow-up's observer finished: report its turn by whether the reply was delivered (a
+    turn that failed or was cancelled while executing was already reported; this is a no-op then)."""
+    authority, admission_id = getattr(event, '_observed_turn', (None, None))
+    if authority is None:
+        return
+    _observed(authority).discard(admission_id)
+    await close_producer_turn(
+        authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
 
 
 def drop_producer_turn(authority, admission_id):

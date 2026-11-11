@@ -63,3 +63,58 @@ async def test_busy_followup_fires_processing_hooks_once(monkeypatch):
         ('m1', 'start'), ('m1', 'complete', ProcessingOutcome.SUCCESS),
         ('m2', 'start'), ('m2', 'complete', ProcessingOutcome.SUCCESS)]
     assert adapter.hooks.index(('m2', 'start')) < adapter.hooks.index(('m2', 'complete', ProcessingOutcome.SUCCESS))
+
+
+async def _busy_hook_owner(monkeypatch, adapter):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_results import execution_result
+
+    monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', 'fixture-user')
+    runner = GatewayRunner(GatewayConfig())
+    adapter.gateway_runner = runner
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter)
+    gate = asyncio.Event()
+
+    async def turn(event, source, quick_key, run_generation):
+        if event.text == 'one':
+            await gate.wait()
+        execution_result.get()['result'] = {'final_response': 'reply to ' + event.text, 'messages': []}
+        return 'reply to ' + event.text
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    return authority, adapter.build_source(chat_id='busy-chat', chat_type='dm', user_id='fixture-user'), gate
+
+
+@pytest.mark.asyncio
+async def test_busy_followup_success_waits_for_its_reply_and_a_failed_send_reports_failure(monkeypatch):
+    """The follow-up's observer sends its reply after settlement: SUCCESS only once that send
+    succeeded, FAILURE when it failed (a thumbs-up on an unanswered message misleads the user)."""
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.event import MessageEvent, ProcessingOutcome
+
+    send_gate, send_entered = asyncio.Event(), asyncio.Event()
+
+    class HeldSendAdapter(HookAdapter):
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            if content == 'reply to two':
+                send_entered.set()  # settlement (and the drain's own completion report) came first
+                await send_gate.wait()
+                self.sent.append(content)
+                return SendResult(success=False, error='network down')
+            return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    adapter = HeldSendAdapter()
+    authority, source, gate = await _busy_hook_owner(monkeypatch, adapter)
+    await adapter.handle_message(MessageEvent(text='one', source=source, message_id='m1'))
+    await _wait_for(lambda: _statuses(authority).get('one') == 'started')
+    await asyncio.wait_for(adapter.handle_message(MessageEvent(text='two', source=source, message_id='m2')), 5)
+    gate.set()
+    await asyncio.wait_for(send_entered.wait(), 15)
+    assert [h for h in adapter.hooks if h[0] == 'm2'] == [('m2', 'start')], 'completed before its reply was sent'
+    send_gate.set()
+    await _wait_for(lambda: not adapter._background_tasks, 15)
+    await _wait_for(lambda: any(h[0] == 'm2' and h[1] == 'complete' for h in adapter.hooks))
+    assert [h for h in adapter.hooks if h[0] == 'm2'] == [('m2', 'start'), ('m2', 'complete', ProcessingOutcome.FAILURE)]

@@ -48,7 +48,10 @@ def _stamp_client(client: Any, pool: Any, wire_model: Optional[str]) -> None:
     """Record on ``client`` the pool entry it sends (``""``: none, e.g. a singleton fallback) and
     the wire model it sends, for the check on a cache hit."""
     try:
-        client._hermes_aux_pool_entry = (getattr((_sent_selection(client, pool) or (None, None))[1], "id", ""), wire_model)
+        # Nothing available for the model: the client sends a singleton fallback, even when its token
+        # equals a pooled entry's, so it records no entry (else every hit would rebuild it).
+        sent = _sent_selection(client, pool) if pool is not None and pool.has_available(model=wire_model) else None
+        client._hermes_aux_pool_entry = (getattr((sent or (None, None))[1], "id", ""), wire_model)
     except Exception as exc:  # an unstamped client never holds, so the next call rebuilds it
         logger.debug("Auxiliary client: could not record its pool entry: %s", exc, exc_info=True)
 
@@ -66,7 +69,10 @@ def _cached_credential_holds(client: Any, pool: Any) -> bool:
         if not entry_id:
             return not pool.has_available(model=wire_model)
         with pool._lock:  # has_available()'s filter (the one peek() applies), matched by id
-            return any(e.id == entry_id for e in pool._available_entries(model=wire_model)[0])
+            available = pool._available_entries(model=wire_model)[0]
+        # The filter can resync an entry from the auth store; a rotated token no longer holds.
+        sent = getattr(client, "api_key", None)
+        return any(e.id == entry_id and e.runtime_api_key == sent for e in available)
     except Exception as exc:
         logger.debug("Auxiliary client: could not check its cached pool entry: %s", exc, exc_info=True)
         return False

@@ -49,8 +49,8 @@ def isolated_home(tmp_path, monkeypatch):
     # Every request goes through httpx.MockTransport; any real connect or child process is a test bug.
     def blocked(*_a, **_k):
         raise AssertionError("network or subprocess use in a cache-key test")
-    for target, name in ((socket.socket, "connect"), (socket, "create_connection"), (socket, "getaddrinfo"),
-                         (subprocess, "Popen")):
+    for target, name in ((socket.socket, "connect"), (socket.socket, "connect_ex"), (socket, "create_connection"),
+                         (socket, "getaddrinfo"), (subprocess, "Popen")):
         monkeypatch.setattr(target, name, blocked)
     return tmp_path / "hermes"
 
@@ -239,11 +239,11 @@ def _key(canonical, i, **fields):
 
 
 def _pool_route_calls(provider, rows, *, strategy="fill_first", calls=1, cold=False, model=OR_MODEL, current=None,
-                      between=None):
+                      between=None, singleton=None):
     """``calls`` sequential ``_get_cached_client`` calls plus one request each, on ONE long-lived
     pool over ``rows`` (``current``: its current entry). ``cold`` clears the cache before each call;
-    ``between(pool, sent_id)`` edits the pool after the first. Returns (tokens sent, builds,
-    ``select()`` calls, request count per entry)."""
+    ``between(pool, sent_id)`` edits the pool after the first; ``singleton`` is the auth.json Codex
+    token. Returns (tokens sent, builds, ``select()`` calls, request count per entry)."""
     pool = None
     sent, builds, selects = [], [], []
     real_select, real_resolve = CredentialPool.select, aux.resolve_provider_client
@@ -261,7 +261,7 @@ def _pool_route_calls(provider, rows, *, strategy="fill_first", calls=1, cold=Fa
          patch.object(CredentialPool, "_persist", lambda self, **_k: None), \
          patch.object(CredentialPool, "select", counted_select), \
          patch.object(aux, "resolve_provider_client", side_effect=lambda *a, **k: builds.append(1) or real_resolve(*a, **k)), \
-         patch.object(aux, "_read_codex_singleton_token", return_value=None), \
+         patch.object(aux, "_read_codex_singleton_token", return_value=singleton), \
          patch.object(auth, "resolve_xai_oauth_runtime_credentials", side_effect=auth.AuthError("no singleton")), \
          patch.object(aux, "load_pool", side_effect=lambda _p: pool), \
          patch.object(aux, "_openai_http_client_kwargs", side_effect=lambda *_a, async_mode=False, **_k: {
@@ -346,3 +346,34 @@ def test_cached_client_rebuilds_when_the_entry_it_sends_changes_on_a_hit(
     sent, builds, selects, _counts = _pool_route_calls(provider, rows, calls=2, between=between)
     assert sent == expected
     assert builds == selects == 2
+
+
+def _resync_entry_in(pool, entry_id):
+    """The hit's availability filter itself resyncs the entry from the auth store (a rotated token)."""
+    real = pool._available_entries
+
+    def resyncing(**kw):
+        _refresh_entry_in(pool, entry_id)
+        pool._available_entries = real
+        return real(**kw)
+    pool._available_entries = resyncing
+
+
+@pytest.mark.parametrize("provider", _SENDING_ROUTES)
+def test_a_token_rotated_by_the_hit_check_rebuilds_the_cached_client(isolated_home, no_side_lookups, provider):
+    """The availability check can rotate the cached entry's token; the old bearer is not resent."""
+    rows = [_key(provider, 0), _key(provider, 1)]
+    sent, builds, _selects, _counts = _pool_route_calls(provider, rows, calls=2, between=_resync_entry_in)
+    assert sent == ["tok-k0", "tok-k0-new"]
+    assert builds == 2
+
+
+def test_a_singleton_fallback_with_a_pooled_token_stays_cached(isolated_home, no_side_lookups):
+    """The only Codex entry cools down for the model, so its auth.json singleton (the same token) is
+    sent: that client stays cached across calls instead of rebuilding on every hit."""
+    provider = "openai-codex"
+    wire = aux._normalize_resolved_model(OR_MODEL, provider)
+    rows = [_key(provider, 0, model_cooldowns={wire: time.time() + 600})]
+    sent, builds, _selects, _counts = _pool_route_calls(provider, rows, calls=4, singleton="tok-k0")
+    assert sent == ["tok-k0"] * 4
+    assert builds == 1

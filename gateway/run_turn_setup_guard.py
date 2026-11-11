@@ -154,11 +154,15 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
                 await runner._persist_prompt_pins(session_key, session_entry.session_id)
     except (PreagentSetupTimeout, PreagentSetupStopped) as ended:
         runner._clear_session_env([])  # prepare may have bound them before the hang
+        from gateway.session_results import execution_result, record_unexecuted_failure
         if isinstance(ended, PreagentSetupStopped):
-            from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:  # a claimed admission settles interrupted, as the Stop would have
                 captured['result'] = {'final_response': '', 'messages': [], 'interrupted': True}
+        else:
+            # The turn never ran: a failed result, so /goal never grades the resend notice as an
+            # answer (``_turn_failed``) and the admission does not settle "completed".
+            record_unexecuted_failure(t("gateway.busy.setup_timeout"))
         from gateway.bot_peer_notices import automatic_notices_allowed
         timed_out = isinstance(ended, PreagentSetupTimeout) and automatic_notices_allowed(source)
         return None, (t("gateway.busy.setup_timeout") if timed_out else None)

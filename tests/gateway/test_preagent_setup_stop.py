@@ -95,3 +95,21 @@ async def test_setup_past_its_deadline_ends_with_a_visible_notice(monkeypatch):
 
     assert "Turn setup stalled" in reply and "resend" in reply  # never dropped silently
     assert runner._peek_session_state(key).turn.setup_stop is None
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_setup_is_a_failed_turn_so_goal_never_grades_the_resend_notice(monkeypatch):
+    """The stalled notice is the turn's reply, not its answer: with ``/goal`` active the judge must
+    not grade "Turn setup stalled … Please resend" and queue a continuation into a setup that may
+    hang again. ``_turn_failed`` reads the owner's captured result, as for any turn that never ran."""
+    from gateway.session_results import execution_result
+    captured: dict = {}
+    token = execution_result.set(captured)  # the owner's capture around _handle_message
+    try:
+        _runner, _source, _key, task, entered = _wedged_turn(monkeypatch, "0.2")
+        await asyncio.wait_for(entered.wait(), 5)
+        reply = await asyncio.wait_for(task, 15)
+        assert "Turn setup stalled" in reply
+        assert GatewayRunner._turn_failed(), captured
+    finally:
+        execution_result.reset(token)

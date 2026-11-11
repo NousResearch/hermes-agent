@@ -313,3 +313,68 @@ class TestMountBuilderIntegration:
         volume_args, _writable = docker_env.DockerEnvironment._mount_args(
             env, ["/host/data/x:/in-sandbox"], None, False, "t1")
         assert self._volumes(volume_args) == ["/host/data/x:/in-sandbox"]
+
+
+class TestManualMappingConfig:
+    """terminal.docker_host_path_mapping (config.yaml) overrides auto-detection
+    wholesale."""
+
+    @staticmethod
+    def _hermes_home(tmp_path, monkeypatch):
+        home = tmp_path / "hermes-home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    @staticmethod
+    def _write_config(home, value):
+        import hermes_yaml as yaml
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"terminal": {"docker_host_path_mapping": value}}), encoding="utf-8")
+
+    def test_manual_overrides_auto_even_on_bare_metal(self, tmp_path, monkeypatch):
+        home = self._hermes_home(tmp_path, monkeypatch)
+        self._write_config(home, {"/opt/data": "/host/data"})
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: False)
+        monkeypatch.setattr(dhm, "build_auto_host_mapping",
+                            lambda: {"/should": "/not-be-used"})
+        assert dhm.resolve_host_mapping() == {"/opt/data": "/host/data"}
+
+    def test_empty_mapping_is_explicit_optout(self, tmp_path, monkeypatch):
+        home = self._hermes_home(tmp_path, monkeypatch)
+        self._write_config(home, {})
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: True)
+        monkeypatch.setattr(dhm, "build_auto_host_mapping", lambda: {"/a": "/b"})
+        assert dhm.resolve_host_mapping() == {}
+
+    def test_non_mapping_rejected_with_clear_warning(self, tmp_path, monkeypatch, caplog):
+        home = self._hermes_home(tmp_path, monkeypatch)
+        self._write_config(home, ["/opt/data=/host/data"])
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: False)
+        assert dhm.resolve_host_mapping() == {}
+        assert any("must be a mapping" in r.message and "list" in r.message for r in caplog.records)
+
+    def test_invalid_entries_skipped_valid_kept(self, tmp_path, monkeypatch, caplog):
+        home = self._hermes_home(tmp_path, monkeypatch)
+        self._write_config(home, {"/opt/data": "/host/data/", "relative/key": "/host/x",
+                                  "/opt/empty": "  ", 5: "/host/five"})
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: False)
+        assert dhm.resolve_host_mapping() == {"/opt/data": "/host/data"}
+        assert sum("ignoring invalid entry" in r.message for r in caplog.records) == 3
+
+    def test_cached_per_home_until_reset(self, tmp_path, monkeypatch):
+        home_a = self._hermes_home(tmp_path, monkeypatch)
+        self._write_config(home_a, {"/a": "/A"})
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: False)
+        assert dhm.resolve_host_mapping() == {"/a": "/A"}
+        (home_a / "config.yaml").write_text("terminal:\n  docker_host_path_mapping:\n    /b: /B\n",
+                                            encoding="utf-8")
+        assert dhm.resolve_host_mapping() == {"/a": "/A"}  # cached
+        dhm.reset_host_mapping_caches()
+        assert dhm.resolve_host_mapping() == {"/b": "/B"}  # re-read after reset
+
+    def test_absent_key_uses_auto_detection(self, tmp_path, monkeypatch):
+        self._hermes_home(tmp_path, monkeypatch)
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: True)
+        monkeypatch.setattr(dhm, "build_auto_host_mapping", lambda: {"/opt/data": "/host/data"})
+        assert dhm.resolve_host_mapping() == {"/opt/data": "/host/data"}

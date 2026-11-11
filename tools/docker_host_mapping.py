@@ -12,9 +12,9 @@ new security surface) and builds a ``{container_path: host_path}`` mapping. Call
 (:func:`apply_host_mapping`) translate auto-generated bind-mount sources to the host
 view; every failure path degrades to the pre-fix behavior with WARNING-level logs.
 
-Resolution: auto-detection (this module) or an empty mapping — identical to the
-pre-feature behavior. A manual ``terminal.docker_host_path_mapping`` config override
-is layered on top of this in Phase 3.
+Resolution order: manual ``terminal.docker_host_path_mapping`` config override wins
+wholesale when present; else auto-detection (this module); else an empty mapping —
+identical to the pre-feature behavior.
 """
 
 from __future__ import annotations
@@ -216,12 +216,62 @@ def apply_host_mapping(path: str, mapping: dict[str, str]) -> str:
 
 
 _fallback_warned = False
+# Manual mapping cache, one entry per profile home (mirrors credential_files._config_files:
+# the multiplexed gateway must never apply one profile's override to another's sandboxes).
+_manual_mapping_cache: dict[str, Optional[dict[str, str]]] = {}
+
+
+def _load_manual_mapping() -> Optional[dict[str, str]]:
+    """``terminal.docker_host_path_mapping`` ({container_prefix: host_prefix}).
+
+    None = key absent (auto-detection applies). A present dict is used INSTEAD of
+    auto-detection — including an empty ``{}``, which is the explicit opt-out of the
+    whole translation (#92571). Non-mapping values are rejected with a WARNING and
+    auto-detection continues; entries are validated individually (absolute container
+    key, non-empty host value) and normalized by stripping trailing slashes.
+    """
+    from hermes_cli.config import cfg_get, read_raw_config
+    from hermes_constants import hermes_home_key
+
+    home_key = hermes_home_key()
+    if home_key in _manual_mapping_cache:
+        return _manual_mapping_cache[home_key]
+    result: Optional[dict[str, str]] = None
+    try:
+        raw = cfg_get(read_raw_config(), "terminal", "docker_host_path_mapping")
+    except Exception:  # deliberate catch-all boundary: config stack errors are varied
+        logger.warning("docker_host_mapping: could not read terminal.docker_host_path_mapping",
+                     exc_info=True)
+        raw = None
+    if raw is not None:
+        if not isinstance(raw, dict):
+            logger.warning(
+                "docker_host_mapping: terminal.docker_host_path_mapping must be a mapping "
+                "{container_path: host_path}, got %s — ignoring it and using auto-detection.",
+                type(raw).__name__)
+        else:
+            entries: dict[str, str] = {}
+            for key, value in raw.items():
+                container_prefix = key.strip().rstrip("/") if isinstance(key, str) else ""
+                host_prefix = value.strip().rstrip("/") if isinstance(value, str) else ""
+                if not container_prefix.startswith("/") or not host_prefix:
+                    logger.warning(
+                        "docker_host_mapping: ignoring invalid entry %r -> %r (keys must be "
+                        "absolute container paths, values non-empty host paths)", key, value)
+                    continue
+                entries[container_prefix] = host_prefix
+            result = entries
+    _manual_mapping_cache[home_key] = result
+    return result
 
 
 def resolve_host_mapping() -> dict[str, str]:
-    """The mapping to apply to auto-generated bind-mount sources: auto-detection
-    (Docker gateway only), else an empty mapping — identical to pre-feature behavior.
-    The manual ``terminal.docker_host_path_mapping`` override is added in Phase 3."""
+    """The mapping to apply to auto-generated bind-mount sources: manual config wins
+    wholesale when present, else auto-detection (Docker gateway only), else an empty
+    mapping — identical to pre-feature behavior."""
+    manual = _load_manual_mapping()
+    if manual is not None:
+        return dict(manual)
     if not is_running_in_docker():
         return {}
     auto = build_auto_host_mapping()
@@ -231,13 +281,15 @@ def resolve_host_mapping() -> dict[str, str]:
         logger.warning(
             "docker_host_mapping: gateway looks containerized but no host mapping could be "
             "built (docker inspect unavailable?); sandbox bind mounts fall back to "
-            "gateway-internal paths and may appear empty inside sandboxes.")
+            "gateway-internal paths and may appear empty inside sandboxes. Configure "
+            "terminal.docker_host_path_mapping in config.yaml to override.")
     return dict(auto)
 
 
 def reset_host_mapping_caches() -> None:
-    """Clear all process caches (auto mapping, warn-once flag); tests call this around
-    detection-fixture changes."""
+    """Clear all process caches (auto mapping, per-home manual config, warn-once flag);
+    tests call this around detection-fixture changes."""
     global _auto_mapping_cache, _fallback_warned
     _auto_mapping_cache = None
+    _manual_mapping_cache.clear()
     _fallback_warned = False

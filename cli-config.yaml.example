@@ -508,6 +508,15 @@ terminal:
 #   # docker_extra_args:
 #   #   - "--cap-add"
 #   #   - "SETUID"
+#   # Optional: override the automatic host-path translation for sandbox bind
+#   # mounts when the GATEWAY itself runs inside a Docker container. Bind-mount
+#   # sources must be host-visible paths; by default the gateway's own paths
+#   # (e.g. /opt/data -> its host directory) are discovered via `docker inspect`
+#   # on the gateway's own container. Set this mapping ({gateway_path: host_path})
+#   # to skip discovery and declare it yourself, or set an empty mapping to
+#   # disable the translation entirely.
+#   docker_host_path_mapping:
+#     "/opt/data": "/home/you/dockerdata/hermes/data"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container (the official `singularity` plugin)

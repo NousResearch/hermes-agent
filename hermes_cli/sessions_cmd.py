@@ -284,6 +284,14 @@ def _surface_reader(db):
     return SurfaceLabelReader(db)
 
 
+def filter_by_workspace(sessions, workspace):
+    """Sessions whose workspace key contains *workspace* (path substring) or whose basename equals it."""
+    from hermes_state_sessions import workspace_key as _ws_key
+    needle = workspace.lower()
+    keyed = ((s, (_ws_key(s) or "").lower()) for s in sessions)
+    return [s for s, key in keyed if key and (needle in key or needle == os.path.basename(key.rstrip("/\\")))]
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
@@ -298,11 +306,7 @@ def _cmd_list(db, args):
     # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
     if _ws_filter:
-        _needle = _ws_filter.lower()
-        keyed = ((s, (_ws_key(s) or "").lower()) for s in sessions)
-        sessions = [
-            s for s, key in keyed if key and (_needle in key or _needle == os.path.basename(key.rstrip("/\\")))
-        ]
+        sessions = filter_by_workspace(sessions, _ws_filter)
     if not sessions:
         print("No sessions found.")
         return

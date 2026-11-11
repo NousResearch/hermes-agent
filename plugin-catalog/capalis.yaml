@@ -1,0 +1,36 @@
+name: capalis
+title: Capalis
+repo: https://github.com/Femtech-web/Capalis
+sha: 78843af2e15812fc391a74fe1cbcf2ac82a03de1
+subdir: plugin
+description: >-
+  Describe a job in one sentence, and Capalis sets it up, runs it and checks it really happened. It finds your
+  channels and repository by name, picks the right tool for each step and does a practice run that sends
+  nothing. It runs only after you approve that exact version, from your phone on Telegram if you like. For
+  example, a bug posted in Discord or Slack becomes one GitHub issue, a Slack notice and a reply to the
+  reporter, who hears back again when the issue is closed. Every write is read back, nothing is done twice,
+  and the job stops itself when a token, permission or tool changes.
+maintainer: Femtech-web
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Femtech-web/Capalis#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/telegram-approval-request.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/discord-ack-and-fixed.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/slack-notice.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/github-issue-closed.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/evidence.png
+  - https://raw.githubusercontent.com/Femtech-web/Capalis/78843af2e15812fc391a74fe1cbcf2ac82a03de1/docs/assets/slack-thread-reply.png
+platforms: []
+known_issues:
+  - Reports from Discord or Slack reach Capalis only after the report channel and the reporters are added to Hermes's gateway settings. /capalis setup prints the exact hermes config set commands.
+  - Waiting jobs, schedules and alerts need the Hermes gateway running (hermes gateway install).
+  - Telegram is used for approvals and alerts. Telegram and Slack-webhook posts can't be read back, so they are marked unverifiable.
+capabilities:
+  provides_tools: [capalis_status, capalis_setup, capalis_capabilities, capalis_recipe, capalis_run, capalis_contract, capalis_pause]
+  provides_hooks: [pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

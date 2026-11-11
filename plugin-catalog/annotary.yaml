@@ -1,0 +1,35 @@
+name: annotary
+repo: https://github.com/josh-andrews-dev/annotary-hermes
+sha: 253abf811b4be90f57834f8233730fbc688e7ced
+description: "Review your agents' plans and documents with comments, from Desktop, the Webapp and your phone: an agent shares a Markdown plan, you comment on exact lines in the Annotary page, and Send back or Approve wakes the agent in the chat that shared it (an @mention wakes only the Bot it names; a plain comment wakes nobody). Disclosure — at first use downloads one `annotary` binary from Annotary's official GitHub Release (josh-andrews-dev/annotary), pinned by version and SHA-256 in the source and checked before use, never self-updated; runs it as a long-lived background server (`annotary serve`) on 127.0.0.1 only, detached so it outlives gateway restarts, with its data under $HERMES_ROOT/annotary/; stores a generated owner password and one Annotary Token per profile in mode-600 files in its own data folders; reads each profile's folder names, profile.yaml and avatar to keep one Annotary Member and face per profile; runs `hermes` subcommands (`plugins enable` on `hermes annotary enable`, and a single-query `hermes chat` turn to wake a Bot that has no chat yet, only after the person turns wake-ups on); no third-party network calls and no telemetry."
+maintainer: josh-andrews-dev
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/josh-andrews-dev/annotary-hermes#readme
+title: Annotary
+readme: true
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/josh-andrews-dev/annotary-hermes/253abf811b4be90f57834f8233730fbc688e7ced/docs/media/document-with-threads.png
+  - https://raw.githubusercontent.com/josh-andrews-dev/annotary-hermes/253abf811b4be90f57834f8233730fbc688e7ced/docs/media/agent-reply-in-thread.png
+  - https://raw.githubusercontent.com/josh-andrews-dev/annotary-hermes/253abf811b4be90f57834f8233730fbc688e7ced/docs/media/phone-webapp.png
+known_issues:
+  - "Windows is not supported (Annotary ships for macOS and Linux; WSL counts as Linux)."
+  - "In the Webapp, turn on Annotary once per browser in Capabilities → Plugins before the page shows."
+  - "After updating the plugin, restart the gateway and the dashboard; Hermes reloads neither for a loaded plugin."
+capabilities:
+  provides_tools:
+    - annotary_share
+    - annotary_read
+    - annotary_comment
+    - annotary_threads
+    - annotary_reply
+    - annotary_push_version
+    - annotary_handoff
+    - annotary_act
+    - annotary_list
+    - annotary_set_name
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

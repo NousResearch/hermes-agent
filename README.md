@@ -17,6 +17,14 @@
   <a href="https://unitalk.ai/home/marketplace/profils-metier"><img src="https://img.shields.io/badge/Store-Expertises%20M%C3%A9tier-FFD700?style=for-the-badge" alt="Marketplace"></a>
 </p>
 
+<p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-blue?style=for-the-badge" alt="English"></a>
+  <a href="README.fr.md"><img src="https://img.shields.io/badge/Lang-Fran%C3%A7ais-0055A5?style=for-the-badge" alt="Français"></a>
+  <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Espa%C3%B1ol-orange?style=for-the-badge" alt="Español"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-%E4%B8%AD%E6%96%87-red?style=for-the-badge" alt="中文"></a>
+  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-%D8%A7%D8%B1%D8%AF%D9%88-green?style=for-the-badge" alt="اردو"></a>
+</p>
+
 ---
 
 ## Overview

@@ -1,15 +1,15 @@
 name: hermes-a2ui
 title: Hermes A2UI
 repo: https://github.com/Revenue-Architect/hermes-kaizen-ui
-sha: "69e06a0d98ba0296d03d23f75c2b113e3b336a40"
+sha: "98d3f29337e9ab2b1651e047914d7363f89782c9"
 subdir: packages/a2ui
-description: "Interactive A2UI v0.9 views in the Hermes Desktop and Webapp chat: status, plans, tables, charts, forms and choices, with exact validation errors the model can fix and a text fallback for other clients. Disclosure — no network calls of its own, subprocesses or credentials; a view can load https images the model names; reads local image files the model names and stores a copy in the view's file; saves each view in the plugin's data folder (newest 500, at most 2 GB); clicking a view sends an ordinary message in that chat."
+description: "Interactive A2UI views in the Hermes Desktop and Webapp chat: status, plans, tables, charts, forms and choices. The model writes A2UI Express, which the plugin compiles to A2UI 1.0 with the official a2ui-agent-sdk (pinned 0.11.0, Apache-2.0); 1.0 or v0.9 JSON is also accepted and views saved as v0.9 still open. Exact validation errors the model can fix, and a text fallback for other clients. Disclosure — no network calls of its own, subprocesses or credentials; installs one Python package, a2ui-agent-sdk; a view can load https images the model names; reads local image files the model names and stores a copy in the view's file; saves each view in the plugin's data folder (newest 500, at most 2 GB); clicking a view sends an ordinary message in that chat."
 maintainer: Revenue-Architect
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Revenue-Architect/hermes-kaizen-ui/tree/main/packages/a2ui#readme
-version: "1.1.0"
+version: "2.0.0"
 readme: true
 platforms: []
 known_issues:

@@ -1,0 +1,22 @@
+name: plugin-safehouse
+repo: https://github.com/LaithAskar/hermes-plugin-safehouse
+sha: 8e2e5ced6ece60b3c33a9ae36a0da5cf04a95fee
+version: "0.1.0"
+description: "Runs one local Hermes plugin inside a disposable, canary-seeded macOS profile; invokes its registered handlers and reports observed file, environment, network, process, persistence, and model-context behavior as FLAGGED, REVIEW, INCONCLUSIVE, or NO_FLAGS_OBSERVED. Disclosure — launches a short-lived Python worker under sandbox-exec, reads the selected plugin directory and local Hermes runtime, and writes only to a temporary trial root before removing it. It imports PluginManager and calls the private _scan_directory loader inside the disposable worker so the candidate registers through Hermes' real loader; this is a disclosed compatibility risk. The installed plugin makes no third-party network calls, stores no credentials, sends no telemetry, and starts no long-running background process. Optional repository-only launch scripts invoke local ffmpeg."
+maintainer: LaithAskar
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/LaithAskar/hermes-plugin-safehouse/blob/8e2e5ced6ece60b3c33a9ae36a0da5cf04a95fee/README.md
+readme: true
+platforms: [macos]
+known_issues:
+  - "Dynamic trials require macOS sandbox-exec; other operating systems receive a static INCONCLUSIVE report."
+  - "Only standalone registration and exclusive-provider registration are driven; backend, model-provider, platform, portable, and exclusive-provider lifecycle behavior remains INCONCLUSIVE."
+  - "The disposable worker uses Hermes' private PluginManager._scan_directory loader and may need an update when that internal seam changes."
+capabilities:
+  provides_tools:
+    - safehouse_trial
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,140 @@
+"""Backend-neutral persistence contracts for Hermes.
+
+This package defines what the application is allowed to ask persistence to do: identity primitives, the profile scope, an error taxonomy, capability declarations, and (in sibling capability modules) the 22 repository protocols a store handle carries as named attributes, among 34 ``Protocol`` classes, with their typed domain records. It never imports a database driver, SQL type, or backend package; backends implement these contracts elsewhere.
+
+Core surface: identifiers, paging, JSON value shape, scope, errors, capabilities, timestamp and visibility conventions. Contract folders import ``persistence.core``; ``conversation`` also imports ``authority``, ``gateway`` imports ``conversation``, and ``workers`` imports ``authority`` and ``conversation``.
+
+There is no public unit-of-work at this boundary: atomic transitions are domain operations on the owning repository.
+"""
+
+from __future__ import annotations
+
+from .core.artifacts import SessionArtifacts
+from .core.capabilities import PersistenceCapabilities
+from .core.context import ProfileScope
+from .core.conventions import RowVisibility, ensure_utc
+from .core.aio import AwaitableRepository, AwaitableStore
+from .core.errors import (
+    AuthorityRefusal,
+    CapabilityUnsupported,
+    CompressionBusy,
+    CompressionClosed,
+    CompressionInProgress,
+    CompressionPublishRefused,
+    Conflict,
+    CooldownRestoreRefused,
+    CorruptStoreError,
+    DeclarativeDrift,
+    DeletedWalGeneration,
+    DiskFull,
+    ExportTooLarge,
+    FenceStale,
+    HeldRowRewritten,
+    MUTATION_GUARD_REFUSALS,
+    MalformedSchema,
+    NotFound,
+    PERSISTENCE_ERROR_CAUSES,
+    PermanentStoreError,
+    PersistenceError,
+    ProofRejected,
+    PruneRowStale,
+    PruneRowUnresolved,
+    RetiredSessionError,
+    RewindRefusalReason,
+    RewindRefused,
+    STORE_FAILURES,
+    SearchIndexCorrupt,
+    SessionLedgered,
+    SessionRowMissing,
+    SessionWriteGuarded,
+    StaleFenceKind,
+    StoreContention,
+    StoreQuarantined,
+    StoreReplaced,
+    StoreUnavailable,
+    TransientStoreError,
+    TurnLeaseLost,
+    UnknownExecution,
+    busy_refusal,
+)
+from .core.fences import AuthorityEpoch, ExecutionGeneration, SessionRevision
+from .core.health import StorageHealth, StorageProbe, StorageState
+from .core.identity import (
+    ClaimToken,
+    ContinuationToken,
+    DelegationId,
+    JsonValue,
+    MessageId,
+    Page,
+    PageRequest,
+    SessionId,
+)
+from .gateway.routing import TopicAlreadyLinked
+from .housekeeping.profile_identity import ProfileIdentityCollision
+
+__all__ = [
+    "MUTATION_GUARD_REFUSALS",
+    "PERSISTENCE_ERROR_CAUSES",
+    "STORE_FAILURES",
+    "AuthorityEpoch",
+    "AuthorityRefusal",
+    "AwaitableRepository",
+    "AwaitableStore",
+    "CapabilityUnsupported",
+    "ClaimToken",
+    "CompressionBusy",
+    "CompressionClosed",
+    "CompressionInProgress",
+    "CompressionPublishRefused",
+    "Conflict",
+    "ContinuationToken",
+    "CooldownRestoreRefused",
+    "CorruptStoreError",
+    "DeclarativeDrift",
+    "DelegationId",
+    "DeletedWalGeneration",
+    "DiskFull",
+    "ExecutionGeneration",
+    "ExportTooLarge",
+    "FenceStale",
+    "HeldRowRewritten",
+    "JsonValue",
+    "MalformedSchema",
+    "MessageId",
+    "NotFound",
+    "Page",
+    "PageRequest",
+    "PermanentStoreError",
+    "PersistenceCapabilities",
+    "PersistenceError",
+    "ProfileIdentityCollision",
+    "ProfileScope",
+    "ProofRejected",
+    "PruneRowStale",
+    "PruneRowUnresolved",
+    "RetiredSessionError",
+    "RewindRefusalReason",
+    "RewindRefused",
+    "RowVisibility",
+    "SearchIndexCorrupt",
+    "SessionArtifacts",
+    "SessionId",
+    "SessionLedgered",
+    "SessionRevision",
+    "SessionRowMissing",
+    "SessionWriteGuarded",
+    "StaleFenceKind",
+    "StorageHealth",
+    "StorageProbe",
+    "StorageState",
+    "StoreContention",
+    "StoreQuarantined",
+    "StoreReplaced",
+    "StoreUnavailable",
+    "TopicAlreadyLinked",
+    "TransientStoreError",
+    "TurnLeaseLost",
+    "UnknownExecution",
+    "busy_refusal",
+    "ensure_utc",
+]

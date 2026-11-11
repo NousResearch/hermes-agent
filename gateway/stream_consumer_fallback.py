@@ -15,6 +15,11 @@ from gateway.stream_consumer_fences import ensure_closed_code_fences, open_code_
 logger = logging.getLogger("gateway.stream_consumer")
 
 
+def _edit_skipped(result: Any) -> bool:
+    raw = getattr(result, "raw_response", None)
+    return isinstance(raw, dict) and bool(raw.get("skipped"))
+
+
 class StreamFallbackMixin:
     """Non-streaming delivery paths used once progressive edits fail or the turn ends oddly."""
 
@@ -96,7 +101,8 @@ class StreamFallbackMixin:
             cut = lead + len(prefix)
             span = open_code_fence_span(final_text, cut)
             if span is None:
-                return final_text[self._prose_resume_point(final_text, cut):].lstrip()
+                resume = self._prose_resume_point(final_text, cut)
+                return final_text if resume <= lead else final_text[resume:].lstrip()
             # The tail starts inside a code block the user saw closed: reopen it with the model's
             # own opener (a cut inside its language tag must not turn the tag's rest into code),
             # and keep the code's indentation. A cut mid-line re-sends that whole line: a code
@@ -124,6 +130,11 @@ class StreamFallbackMixin:
             boundary = max(final_text.rfind(" ", 0, cut), final_text.rfind("\n", 0, cut))
             if boundary >= 0:
                 return boundary + 1
+            # The preview is a fragment of the answer's first word (``<<A-fin-stre``) and that word
+            # ends later: resuming here starts the continuation mid-word, so send the whole answer
+            # (the full-resend path then deletes the fragment).
+            if any(ch.isspace() for ch in final_text[cut:]):
+                return 0
         return cut
 
     @staticmethod
@@ -455,7 +466,13 @@ class StreamFallbackMixin:
             return
         with contextlib.suppress(Exception):  # never block the fallback path
             result = await self._edit_message(message_id=self._message_id, content=prefix)
-            if getattr(result, "success", False):
+            if _edit_skipped(result):
+                # The adapter deferred a preview edit (Telegram's shared send+edit slot, armed by
+                # the refused edit just before): nothing changed on screen. This is the preview's
+                # last edit, so send it as the final one, which is never deferred.
+                result = await self._edit_message(message_id=self._message_id, content=prefix,
+                                                  finalize=True)
+            if getattr(result, "success", False) and not _edit_skipped(result):
                 self._last_sent_text = prefix
 
     async def _send_commentary(self, text: str) -> bool:

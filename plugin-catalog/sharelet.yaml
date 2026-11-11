@@ -1,0 +1,24 @@
+name: sharelet
+title: Sharelet
+repo: https://github.com/TANGBUDU/sharelet
+sha: 06e58ce218f3a684e4fa6cfdfbbc654142e55a8e
+version: "0.5.1"
+requires_hermes: ">=0.23.0"
+description: "Share a Hermes tool as a link anyone can use in a browser. Pick a tool on the local creator page, create the link and send it: the guest needs no Hermes, account or API key, and the tool keeps running on your computer. Each link has a run limit and an expiry and can be closed at any time; guests can change only the inputs you leave open, and a tool that is not marked read-only needs a separate confirmation for every share. Links stay the same across restarts and tunnel reconnects. Works with native Hermes plugin tools and MCP servers you allow. Disclosure — while enabled it serves the creator page and guest pages on 127.0.0.1; for public links it downloads cloudflared from Cloudflare's official GitHub release (SHA-256 checked) and runs it as a background process that exposes the guest port only; it reports a random host ID, a secret and the current tunnel address to a link relay (relay_url, default run by the author, never receives link tokens; set it to an empty string to turn it off); it runs each shared tool through Hermes with guest inputs; it writes links, run records, results and its signing keys to its own data folder. The optional built-in image recipes are off until set up and then call api.openai.com with a key entered in Sharelet (stored in its data folder) or the host's OPENAI_API_KEY. No telemetry, no self-update."
+maintainer: TANGBUDU
+tier: community
+category: tools
+docs_url: https://github.com/TANGBUDU/sharelet/tree/06e58ce218f3a684e4fa6cfdfbbc654142e55a8e#readme
+screenshots:
+  - https://raw.githubusercontent.com/TANGBUDU/sharelet/06e58ce218f3a684e4fa6cfdfbbc654142e55a8e/docs/creator.png
+  - https://raw.githubusercontent.com/TANGBUDU/sharelet/06e58ce218f3a684e4fa6cfdfbbc654142e55a8e/docs/guest-weather.png
+readme: true
+platforms: [windows, linux]
+known_issues:
+  - "Public links depend on a Cloudflare quick tunnel and, for stable addresses, on the link relay; while your computer is off, guests see an offline page."
+  - "Shared tools run with your Hermes setup. Review each tool's output and costs before sharing; anyone holding a link can use its runs."
+capabilities:
+  provides_tools: [sharelet_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

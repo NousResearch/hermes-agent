@@ -6,6 +6,7 @@ run, a ``local_automation_v1`` completion, a native automation envelope) has nob
 settles ``interrupted`` (never replayed), the transcript gets a notice, and the FIFO moves on.
 Real ``SessionStore`` SQLite, two real owner epochs; no store monkeypatching.
 """
+import asyncio
 import queue
 from types import SimpleNamespace
 
@@ -17,7 +18,7 @@ from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_controls import AuthorityConnection
 from hermes_state_keys import CRON_PRINCIPAL_ID
-from hermes_state_runtime import admit_session_input, claim_session_input, list_session_admissions
+from hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission, list_session_admissions
 from tests.waiting import async_wait_until
 
 
@@ -170,6 +171,70 @@ async def test_automation_fenced_unknown_in_this_owner_settles_on_the_drain(tmp_
         # Nothing restarted on this path: the notice must not claim a restart (review #141357).
         notices = [m['content'] for m in db.get_messages('s') if m.get('display_kind') == 'failed_turn']
         assert notices and all('restart' not in n.lower() for n in notices), notices
+    finally:
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_retried_cron_turn_commits_the_answer_its_resolution_left_without_result(tmp_path, monkeypatch):
+    """#153356: a cron fire resolved ``interrupted`` without a result must keep the re-run's answer.
+
+    A running automation turn the owner fences ``unknown`` settles through
+    ``resolve_unknown_session_input``, which stores no result for an interruption (there is none
+    to store). A late settlement of that same claim then arrives with the re-run's answer;
+    settlement found ``terminal`` + no stored result and raised ``storage_unavailable``, so the
+    drain discarded the answer and the cron execution was booked interrupted with an empty
+    delivery. The retry's result must commit to the already-terminal admission instead.
+    """
+    from gateway.session_results import admission_result
+    from gateway.session_settlement_recovery import settle_and_deliver
+    from gateway.session_unattended_unknown import settle_unattended_unknown
+
+    store, runner = _runner(tmp_path, monkeypatch, [])
+    db = store._db
+    db.create_session('s', source='telegram')
+    authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner-1')
+    authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='gw10'), 's')
+    ref = SessionRef('p', 's')
+    authority._schedule = lambda ref: None
+    try:
+        head = admit_session_input(db, epoch=authority.epoch, principal_id=CRON_PRINCIPAL_ID,
+                                   session_id='s', request_id='cron:job:exec-1', payload={'text': 'brief'})
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        assert row['admission_id'] == head['admission_id']
+        # The owner fences the running turn `unknown` (the verdict a lost worker records), then
+        # resolves it through the unattended path: terminal interrupted with no result blob.
+        db._execute_write(lambda c: c.execute(
+            "UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],)))
+        assert await settle_unattended_unknown(authority, ref)
+        terminal = get_session_admission(db, admission_id=row['admission_id'])
+        assert (terminal['status'], terminal['outcome']) == ('terminal', 'interrupted')
+        assert admission_result(db, row['admission_id']) is None
+
+        # The same claim's late settlement arrives with the re-run's answer.
+        answer = 'the morning brief'
+        authority.pending_results[row['admission_id']] = {'result': {
+            'final_response': answer, 'completed': True,
+            'cron_result': [True, 'collected', answer, ''], 'cron_job_flags': {}}, 'usage': {}}
+        frames = []
+        authority.sessions['s'].event_stream.observers.add(frames.append)
+        waiter = authority.waiters.setdefault(row['admission_id'], asyncio.get_running_loop().create_future())
+
+        assert await settle_and_deliver(authority, authority.sessions['s'], ref, row, answer, 'completed')
+
+        assert await waiter == answer
+        saved = admission_result(db, row['admission_id'])
+        assert saved['result']['final_response'] == answer
+        assert saved['result']['cron_result'] == [True, 'collected', answer, '']
+        assert get_session_admission(db, admission_id=row['admission_id'])['outcome'] == 'completed'
+        # The firing scheduler polls this receipt and books the run from its result: the retry is
+        # completed, not the interrupted outcome the lost first attempt settled with.
+        from gateway.session_cron import operation
+        status = await operation(authority, 'status', {'session_id': 's', 'admission_id': row['admission_id']})
+        assert status['status'] == 'terminal'
+        assert status['result'] == [True, 'collected', answer, '']
+        complete = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
+        assert complete and complete[-1]['text'] == answer
     finally:
         store.close_all_db_handles()
 

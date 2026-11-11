@@ -15,8 +15,8 @@ from gateway.hosted_room_driver import TaskIdentity
 from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_state_terminal import RESULTLESS_OUTCOMES as _RESULTLESS_OUTCOMES
 
-_RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 # Encoded receipts per ``results`` read; under the 512 KiB private-socket response line.
 _RESULTS_BUDGET_BYTES = 384 * 1024
 
@@ -137,9 +137,10 @@ class HostedRoomAuthorityRPC:
     def _terminal(self, row, task, generation, *, notify=True):
         from gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
-        # Unknown discard and queued cancellation never ran: no result exists to recover.
+        # Unknown discard and queued cancellation never ran: no result exists to recover. Any
+        # other terminal outcome missing its result is a data fault, not a storage outage.
         if saved is None and row['outcome'] not in _RESULTLESS_OUTCOMES:
-            raise RuntimeStoreError('storage_unavailable')
+            raise RuntimeStoreError('result_missing', detail='the terminal admission carries no stored result')
         value = saved['result'] if saved is not None else {}
         status = {'completed': 'settled', 'interrupted': 'cancelled', 'cancelled': 'cancelled'}.get(row['outcome'], 'failed')
         receipt = {'status': status, 'text': value.get('final_response', ''),

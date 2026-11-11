@@ -280,10 +280,10 @@ def test_discard_requires_exact_owned_unknown_tuple_without_replay(hosted_owner,
     assert rpc.history(**coords)[-1]['status'] == 'cancelled'
 
 
-def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(hosted_owner):
+def test_queued_cancellation_is_a_cancelled_receipt_not_a_missing_result(hosted_owner):
     """A queued task that is stopped never ran, so it has no execution result; history/info
     must project it as cancelled instead of failing the whole room read. A completed row with
-    a missing result is still storage corruption."""
+    a missing result is a result fault, not a storage outage."""
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import RuntimeStoreError, claim_session_input, settle_session_input
@@ -303,7 +303,7 @@ def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(host
     rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task2', 'thread', 'turn2'), execution_generation=2, on_terminal=receipts.append)
     row = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
     settle_session_input(authority.db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed', result=None)
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+    with pytest.raises(RuntimeStoreError, match='result_missing'):
         rpc.history(**coords, session_id=sid)
 
 

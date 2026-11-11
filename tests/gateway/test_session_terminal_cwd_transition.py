@@ -29,6 +29,11 @@ def test_nonboundary_repoint_keeps_cwd_but_new_discards_it(tmp_path, monkeypatch
     assert switched is not None
     assert switched.metadata.get("terminal_cwd") == str(project)
 
+    # /resume (and handoff) opt out: the conversation it lands on doesn't inherit this one's cwd.
+    resumed = store.switch_session(entry.session_key, "other-conversation", preserve_prompt_pin=False)
+    assert resumed is not None and "terminal_cwd" not in resumed.metadata
+    assert store.set_session_metadata(entry.session_key, "terminal_cwd", str(project))
+
     # /new is a deliberate conversation boundary; the older cwd must not leak.
     fresh = store.reset_session(entry.session_key)
     assert fresh is not None

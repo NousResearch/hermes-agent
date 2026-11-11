@@ -40,6 +40,9 @@ class TurnRetryState:
     reasoning_mandatory_retry_visit: int | None = None
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
+    # One reasoning-off retry after a live reasoning-channel repetition cut.
+    # A fresh state is created per API call, so the write-up after tools gets its own try.
+    reasoning_runaway_retry_attempted: bool = False
 
     # Transport / rate-limit recovery
     primary_recovery_attempted: bool = False

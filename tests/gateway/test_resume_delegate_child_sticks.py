@@ -45,3 +45,29 @@ def test_adoption_keeps_the_childs_delegate_lineage(tmp_path):
     assert not db._is_compression_child_row(db.get_session(child))
     assert store.get_or_create_session(source).session_id == child
     db.close()
+
+
+def test_a_failed_adoption_leaves_the_old_route_in_place(tmp_path, monkeypatch):
+    """The marker write fails (a busy writer): the chat must stay on its own conversation, not point
+    at a still-marked child the next message would reject."""
+    import pytest
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    store._db = db
+    source = SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="1", chat_type="dm")
+    entry = store.get_or_create_session(source)
+    child = entry.session_id + "-worker"
+    db.create_session(child, "subagent", parent_session_id=entry.session_id,
+                      model_config={"_delegate_from": entry.session_id})
+
+    def locked(*_a, **_k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db, "patch_session_model_config", locked)
+    with pytest.raises(RuntimeError):
+        store.switch_session(entry.session_key, child)
+
+    assert store.get_or_create_session(source).session_id == entry.session_id
+    assert db.get_session(entry.session_id)["end_reason"] is None
+    db.close()

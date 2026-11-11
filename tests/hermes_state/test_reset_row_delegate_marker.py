@@ -90,3 +90,33 @@ def test_a_new_keyed_row_with_only_a_delegate_marker_stays_hidden(tmp_path):
         assert LIVE not in _listed(db)
     finally:
         db.close()
+
+
+def test_a_healed_reset_row_is_indexed_for_substring_search(tmp_path):
+    """The marker kept the row's messages out of the trigram index; the heal must put them in."""
+    path = tmp_path / "state.db"
+    db = SessionDB(db_path=path)
+    db.create_session(OLD, "telegram", **PEER)
+    db.end_session(OLD, "session_reset")
+    db.create_session(LIVE, "telegram", parent_session_id=OLD, model_config={"_reset_from": OLD}, **PEER)
+    trigram = db._trigram_available
+    db.close()
+    if not trigram:
+        import pytest
+        pytest.skip("SQLite build without the trigram tokenizer")
+    con = sqlite3.connect(path)  # an older build: the marker landed first, so the triggers skip the message
+    con.execute("UPDATE sessions SET model_config = json_set(model_config, '$._delegate_from', ?) WHERE id = ?",
+                (OLD, LIVE))
+    con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', ?, 1.0)",
+                (LIVE, "登录页面打不开怎么办"))
+    con.commit()
+    con.close()
+
+    db = SessionDB(db_path=path)
+    try:
+        hits = db._conn.execute(
+            "SELECT rowid FROM messages_fts_trigram WHERE messages_fts_trigram MATCH ?", ('"页面打不开"',)).fetchall()
+        assert hits, "the healed chat's message is missing from substring search"
+        db._conn.execute("INSERT INTO messages_fts_trigram(messages_fts_trigram, rank) VALUES('integrity-check', 1)")
+    finally:
+        db.close()

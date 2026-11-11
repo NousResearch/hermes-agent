@@ -320,7 +320,7 @@ class SessionRecoveryMixin:
             else:
                 logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
 
-    def _adopt_delegate_row(self, session_key: str, session_id: str) -> None:
+    def _adopt_delegate_row(self, session_key: str, session_id: str) -> bool:
         """An explicit repoint (``/resume <child> --all``, handoff) makes a delegate subagent's row the
         chat's conversation: mark it adopted so the route guard (``is_delegate_child_row``, #138210) does
         not read the session the user chose as a stale capture and move the chat off it. ``_delegate_from``
@@ -328,8 +328,18 @@ class SessionRecoveryMixin:
         from gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
         db = self._db_for_key(session_key)
         row = db.get_session(session_id)
-        if row and is_delegate_child_row(row):
-            db.patch_session_model_config(session_id, {CHAT_ADOPTED_MARKER: True})
+        if not (row and is_delegate_child_row(row)):
+            return False
+        db.patch_session_model_config(session_id, {CHAT_ADOPTED_MARKER: True})
+        return True
+
+    def _unadopt_delegate_row(self, session_key: str, session_id: str) -> None:
+        """Undo :meth:`_adopt_delegate_row` for a switch that was refused after it ran."""
+        from gateway.session_lifecycle import CHAT_ADOPTED_MARKER
+        try:
+            self._db_for_key(session_key).patch_session_model_config(session_id, {CHAT_ADOPTED_MARKER: None})
+        except Exception as exc:  # health: allow BLE001 -- the refusal stands; a stale mark only keeps a row routable
+            logger.warning("Could not undo the adoption of %s after a refused switch: %s", session_id, exc)
 
     def _record_gateway_session_peer(
         self, session_id: str, session_key: str, source: Optional[SessionSource],

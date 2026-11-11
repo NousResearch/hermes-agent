@@ -1341,27 +1341,34 @@ class SessionStore(
         Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
         starts a different conversation on the same routing key.
         """
+        # Adopt a delegate target BEFORE the route moves: a failed marker write then leaves the old route
+        # intact instead of a chat pointing at a row the route guard rejects. A refused switch undoes it.
+        adopted = bool(self._db_for_key(session_key)) and self._adopt_delegate_row(session_key, target_session_id)
         with self._lock:
             old_entry = self._entry_locked(session_key)
-            if old_entry is None:
-                return None
-            if expected_session_id is not None and old_entry.session_id != expected_session_id:
+            refused = old_entry is None or (
+                expected_session_id is not None and old_entry.session_id != expected_session_id)
+            if refused and old_entry is not None:
                 logger.info(
                     "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
                     session_key, expected_session_id, old_entry.session_id,
                 )
-                return None
-            if old_entry.session_id == target_session_id:
-                return old_entry
-            new_entry = self._replace_route_locked(
-                session_key, old_entry, target_session_id, _now(),
-                display_name=old_entry.display_name, model_override=old_entry.model_override,
-                yolo=old_entry.yolo,
-                prompt_pin=(
-                    dict(old_entry.prompt_pin)
-                    if preserve_prompt_pin and old_entry.prompt_pin is not None else None
-                ),
-            )
+            if not refused and old_entry.session_id != target_session_id:
+                new_entry = self._replace_route_locked(
+                    session_key, old_entry, target_session_id, _now(),
+                    display_name=old_entry.display_name, model_override=old_entry.model_override,
+                    yolo=old_entry.yolo,
+                    prompt_pin=(
+                        dict(old_entry.prompt_pin)
+                        if preserve_prompt_pin and old_entry.prompt_pin is not None else None
+                    ),
+                )
+        if refused:
+            if adopted:
+                self._unadopt_delegate_row(session_key, target_session_id)
+            return None
+        if old_entry.session_id == target_session_id:
+            return old_entry
 
         try:
             if self._db_for_key(session_key) and old_entry.session_id:
@@ -1376,7 +1383,6 @@ class SessionStore(
                 self._reopen_session_row(
                     session_key, target_session_id, log_prefix="Session DB reopen_session failed"
                 )
-                self._adopt_delegate_row(session_key, target_session_id)
                 self._record_gateway_session_peer(
                     target_session_id, session_key, new_entry.origin,
                     display_name=new_entry.display_name, include_compression_ancestors=True,

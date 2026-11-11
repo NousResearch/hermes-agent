@@ -46,7 +46,7 @@ from gateway.approval_actor import approval_refusal, clarify_refusal, refusal_te
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    platform_gate_env as _scoped_gate_env, send_error
+    platform_gate_env as _scoped_gate_env, request_never_left, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
@@ -6707,7 +6707,7 @@ async def _standalone_send(
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.
     tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
-        return send_error("Slack send failed: SLACK_BOT_TOKEN not configured")
+        return send_error("Slack send failed: SLACK_BOT_TOKEN not configured", nothing_sent=True)
     token = tokens[0]
     # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve
@@ -6758,7 +6758,8 @@ async def _standalone_send(
                     break
         return send_error(f"Slack API error: {last_error}")
     except Exception as e:  # the text may echo the proxy URL: it reaches the model
-        return send_error(f"Slack send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}")
+        return send_error(f"Slack send failed: {describe_proxy_error(e, resolve_proxy_url()) or e}",
+                          nothing_sent=request_never_left(e))
 
 
 _SETUP_STEPS = (

@@ -1059,7 +1059,7 @@ class _TargetDelivery:
     # Telegram's "Not connected" is retryable while the bot client rebuilds, permanent when the fatal
     # is not — so the queue gate keys on this flag, not on widening a string set.
     live_retryable: Optional[bool] = None
-    standalone_in_flight: bool = False  # the standalone send timed out and may still land
+    standalone_in_flight: bool = False  # the standalone send may have delivered (timeout, lost answer, partial)
 
     @property
     def is_relay(self) -> bool:
@@ -1512,18 +1512,19 @@ def _deliver_standalone(
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], err)
-        # The sender's own timeout / lost answer: as ambiguous as cron's outer timeout.
-        t.standalone_in_flight = t.standalone_in_flight or result.get("delivery_uncertain") is True
+        # A sender's failure dict may follow a delivered (or partly delivered) payload: only its
+        # explicit ``retryable`` (nothing reached the chat) makes a replay safe.
+        t.standalone_in_flight = t.standalone_in_flight or result.get("retryable") is not True
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
         if t.standalone_in_flight:
-            # A timed-out (or answer-lost) send may still land; queueing it would let the redelivery sweep replay
-            # a payload that in fact went out. Possible loss over certain duplication: surface
-            # the window loudly instead of queueing.
+            # The payload may be on screen (in full or in part); queueing it would let the
+            # redelivery sweep post it twice. Possible loss over certain duplication: surface the
+            # window loudly instead of queueing.
             logger.warning(
                 "Job '%s': NOT queueing %s for post-reconnect redelivery — the standalone "
-                "send timed out with the payload possibly in flight; a replay could duplicate it",
+                "send may have delivered the payload; a replay could duplicate it",
                 job["id"], t.where)
         else:
             # A satellite profile's worker has no platform token, so standalone cannot stand in

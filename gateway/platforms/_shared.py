@@ -167,12 +167,41 @@ def yaml_env_setter() -> Callable[[str, Any], None]:
     return set_env
 
 
-def send_error(message: Any) -> dict:
+def send_error(message: Any, *, nothing_sent: bool = False) -> dict:
     """Standalone-sender failure envelope with vendor exception text redacted (the same helper
     ``send_message`` uses), so a token or signed URL in an httpx/aiohttp error never reaches the
-    model transcript."""
+    model transcript.
+
+    ``nothing_sent=True`` adds ``"retryable": True``: the sender PROVES nothing reached the chat
+    (no credential, or the connection failed before the request left). Only that marker lets cron
+    queue the payload for a post-reconnect replay; any other failure may already be on screen, so
+    a replay would post it twice."""
     from tools.send_message_senders import _error
-    return _error(str(message))
+    return {**_error(str(message)), **({"retryable": True} if nothing_sent else {})}
+
+
+# Transport errors raised before a request is written: the connection (or a pool slot) was never
+# obtained. Matched by class name so this module stays free of httpx/aiohttp imports. A read or
+# write timeout, a reset, or any server answer is NOT here: the request may have been delivered.
+_NEVER_LEFT_ERRORS = frozenset({
+    "ConnectError", "ConnectTimeout", "PoolTimeout",  # httpx
+    "ClientConnectorError", "ClientConnectorDNSError", "ClientProxyConnectionError",  # aiohttp
+    "ConnectionTimeoutError", "ConnectionRefusedError"})
+
+
+def request_never_left(exc: BaseException) -> bool:
+    """True when ``exc`` (or a cause it wraps) proves the request was never sent."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if any(cls.__name__ in _NEVER_LEFT_ERRORS for cls in type(cur).__mro__):
+            return True
+        stack.extend(x for x in (cur.__cause__, cur.__context__) if x is not None)
+    return False
 
 
 # kind -> (applies-when predicate over (cfg, key), env encoder). "lower"/"json" bridge whenever the key

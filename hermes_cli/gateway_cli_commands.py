@@ -8,8 +8,8 @@ thing:
   under the session's frozen checkpoint policy (``--checkpoints`` included) and returns it as data
   for main's terminal renderer. Working-tree modes stay main's local git read of the same checkout.
 - ``/reload``: ``reload.env`` re-reads ``.env`` where turns and tools run (this process re-reads too).
-- ``/handoff``: no gateway verb carries a handoff yet; refused as Ink and Desktop refuse it, instead
-  of the store's ``request_handoff`` refusal dying silently in the process loop.
+- ``/handoff``: the pending row is written in the owner's store (``handoff.request``), where the
+  gateway's handoff watcher claims it; this process's own store write would never be seen.
 """
 from __future__ import annotations
 
@@ -39,58 +39,62 @@ def _reload(cli, connection, cmd):
 
 
 def _handoff(cli, connection, cmd):
-    from cli import _cprint
+    """``/handoff <platform>`` on the owner: ``handoff.request`` writes the pending row in the owner's
+    store and its watcher performs the transfer, polled here with main's two-phase wait
+    (``HermesCLI._handoff_wait``: 60 s to be claimed, then 15 min while the transfer runs)."""
     import time
-    platform_name = cmd.partition(" ")[2].strip().lower()
+    from hermes_cli.cli_commands_session_tools import _command_arg, _cp, _t
+    platform_name = _command_arg(cmd, lower=True)
     if not platform_name:
-        _cprint("  usage: /handoff <platform>")
+        _cp(f"  {_t('handoff.usage')}", f"  {_t('handoff.usage_detail_1')}", f"  {_t('handoff.usage_detail_2')}")
         return True
-    try:
-        result = connection.call("handoff.request", session_id=cli.session_id, platform=platform_name) or {}
-    except GatewayClientError as exc:
-        _cprint(f"  /handoff: {exc}")
+    if getattr(cli, "_agent_running", False):
+        _cp(f"  {_t('shared.agent_busy', command='/handoff')}")
         return True
-    if not result.get("queued"):
-        _cprint(f"  /handoff: {result}")
-        return True
-    _cprint(f"  Handoff queued to {platform_name} ({result.get('home_name', '')}); waiting...")
-    pending_deadline = time.time() + 60.0
-    running_deadline = None
-    next_heartbeat = None
+    queued = connection.call("handoff.request", session_id=cli.session_id, platform=platform_name) or {}
+    _cp(f"  {_t('handoff.queued', title=cli.session_id[:8], platform=platform_name, home=queued.get('home_name', ''))}",
+        f"  {_t('handoff.waiting')}")
+    pending_deadline, running_deadline, next_heartbeat = time.time() + cli._HANDOFF_PENDING_TIMEOUT, None, None
     while True:
-        try:
-            row = connection.call("handoff.state", session_id=cli.session_id) or {}
-        except GatewayClientError as exc:
-            _cprint(f"  /handoff: {exc}")
+        record = connection.call("handoff.state", session_id=cli.session_id) or {}
+        current = record.get("state") or "pending"
+        if current == "completed":
+            _cp("", f"  {_t('handoff.complete', platform=platform_name)}",
+                f"  {_t('handoff.resume_hint', title=cli.session_id)}", "")
+            from cli import _handed_off_session_ids
+            _handed_off_session_ids.add(cli.session_id)  # the gateway owns the row now (#88234)
+            cli._should_exit = True  # same exit semantics as /quit
             return True
-        state = row.get("state") or ""
-        if state == "completed":
-            _cprint("  Handoff completed.")
-            return False
-        if state == "failed":
-            _cprint(f"  Handoff failed: {row.get('error')}")
+        if current == "failed":
+            _cp(f"  {_t('handoff.failed', error=record.get('error') or _t('handoff.unknown_error'))}",
+                f"  {_t('handoff.session_intact_retry')}")
             return True
-        if state == "running":
+        now = time.time()
+        if current == "running":
             if running_deadline is None:
-                running_deadline = time.time() + 900.0
-                next_heartbeat = time.time() + 30.0
-            if time.time() >= running_deadline:
-                _cprint("  Handoff timed out; leaving row for the watcher.")
+                _cp(f"  {_t('handoff.picked_up')}")
+                running_deadline = now + cli._HANDOFF_RUNNING_TIMEOUT
+                next_heartbeat = now + cli._HANDOFF_HEARTBEAT_EVERY
+            elif now >= running_deadline:
+                # The watcher owns a claimed row: failing it here would split the session.
+                _cp(f"  {_t('handoff.taking_long')}", f"  {_t('handoff.check_platform', platform=platform_name)}",
+                    f"  {_t('handoff.no_longer_waiting')}", f"  {_t('handoff.retry_when_settled')}")
                 return True
-            if next_heartbeat and time.time() >= next_heartbeat:
-                _cprint("  ... still running ...")
-                next_heartbeat = time.time() + 30.0
-        else:
-            if time.time() >= pending_deadline:
-                try:
-                    connection.call("handoff.fail", session_id=cli.session_id, error="client poll timeout")
-                except GatewayClientError:
-                    pass
-                _cprint("  Handoff not claimed in time.")
-                return True
+            elif now >= next_heartbeat:
+                _cp(f"  {_t('handoff.still_transferring')}")
+                next_heartbeat = now + cli._HANDOFF_HEARTBEAT_EVERY
+        elif now >= pending_deadline:
+            # Unclaimed: CAS-fail it so the user can retry (a claim racing this instant wins).
+            if (connection.call("handoff.fail", session_id=cli.session_id,
+                                error="timed out waiting for gateway") or {}).get("state") == "completed":
+                continue
+            _cp(f"  {_t('handoff.timed_out')}", f"  {_t('handoff.session_intact')}")
+            return True
         time.sleep(0.5)
 
+
 _ROUTES = {"diff": _diff, "reload": _reload, "handoff": _handoff}
+# Named refusals: nothing runs, so the gateway is not told (no ``pre_command``).
 REFUSED = frozenset()
 
 

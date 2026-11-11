@@ -1,6 +1,6 @@
 """Classic CLI commands whose state lives in the gateway session are answered there (tracker #134889
 CLI-8, CLI-17, CLI-21): ``/diff session`` (the gateway tools' checkpoint baseline), ``/reload``
-(the gateway's ``.env``) and ``/handoff`` (no gateway verb yet: refused, never silent). Driven
+(the gateway's ``.env``) and ``/handoff`` (the owner's ``handoff.*`` verbs, #143608). Driven
 through ``HermesCLI.process_command`` with a scripted gateway connection."""
 from datetime import datetime
 from types import SimpleNamespace
@@ -97,12 +97,59 @@ def test_reload_rereads_env_in_the_gateway_and_reports_its_count(gateway_cli, mo
     assert "3" in capsys.readouterr().out
 
 
-def test_handoff_is_refused_with_a_message_on_the_gateway(gateway_cli, capsys):
-    cli, conn = gateway_cli()
-    assert cli.process_command("/handoff telegram") is True  # the session stays
-    assert "/handoff is not available on the shared gateway yet" in capsys.readouterr().out
-    assert conn.calls == []  # a named refusal runs nothing: no command.observe (pre_command) either
+class _HandoffConn(_Conn):
+    """``handoff.state`` answers its scripted states in order (the watcher's progress)."""
 
+    def __init__(self, states, **replies):
+        super().__init__(replies)
+        self.states = list(states)
+
+    def call(self, method, **params):
+        if method == "handoff.state":
+            self.calls.append((method, params))
+            return {"state": self.states.pop(0), "platform": "telegram", "error": "boom"}
+        return super().call(method, **params)
+
+
+@pytest.fixture
+def handoff_cli(monkeypatch):
+    def make(states, **replies):
+        conn = _HandoffConn(states, **{"handoff.request": {"queued": True, "session_key": "local-s",
+                                                          "platform": "telegram", "home_name": "Phone"}, **replies})
+        monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.session_id, cli._agent_running, cli._should_exit = "local-s", False, False
+        return cli, conn
+    return make
+
+
+def test_handoff_to_telegram_is_queued_on_the_gateway_and_the_cli_exits_once_it_lands(handoff_cli, capsys):
+    """#143608: the pending row is written in the owner's store (where its watcher claims it), never
+    this process's, and a completed transfer ends the CLI session like /quit."""
+    from cli import _handed_off_session_ids
+    cli, conn = handoff_cli(["pending", "running", "completed"])
+    assert cli.process_command("/handoff Telegram") is True
+    assert ("handoff.request", {"session_id": "local-s", "platform": "telegram"}) in conn.calls
+    assert cli._should_exit is True and "local-s" in _handed_off_session_ids
+    out = capsys.readouterr().out
+    assert "Phone" in out and "Handoff complete" in out
+    _handed_off_session_ids.discard("local-s")
+
+
+def test_handoff_failure_keeps_the_cli_session(handoff_cli, capsys):
+    cli, _conn = handoff_cli(["running", "failed"])
+    assert cli.process_command("/handoff telegram") is True
+    assert cli._should_exit is False
+    assert "Handoff failed: boom" in capsys.readouterr().out
+
+
+def test_handoff_refusal_from_the_gateway_is_shown_and_nothing_waits(handoff_cli, capsys):
+    from hermes_cli.gateway_client import GatewayClientError
+    cli, conn = handoff_cli([], **{"handoff.request": GatewayClientError("no home channel configured for telegram")})
+    assert cli.process_command("/handoff telegram") is True
+    assert "no home channel configured for telegram" in capsys.readouterr().out
+    assert not [call for call in conn.calls if call[0] == "handoff.state"]
 
 
 def _save_cli(conn, tmp_path, monkeypatch):

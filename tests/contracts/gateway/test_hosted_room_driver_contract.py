@@ -19,6 +19,8 @@ from persistence.gateway.hosted_rooms import (
     InvalidTaskTransitionError,
     LeaseHeldError,
     LeaseRelease,
+    SHOWN_TASK_STATUSES,
+    RoomChangeRows,
     RoomUnavailableError,
     StaleLeaseError,
     StaleTaskError,
@@ -365,6 +367,60 @@ def test_list_tasks_reads_the_room_in_event_order_with_an_optional_status(backen
     assert [task["identity"].task_id for task in driver.list_tasks(placement="profile", room_id=ROOM, status="queued")] == ["task-3", "task-1"]
     assert [task["status"] for task in driver.list_tasks(placement="profile", room_id=ROOM, status="running")] == ["running"]
     assert driver.list_tasks(placement="profile", room_id="other") == ()
+
+
+def test_room_task_summary_counts_every_status_and_reads_only_the_asked_ones_in_task_order(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    lease = _lease(store)
+    _admit(store, 3, seq=2)
+    _admit(store, 2, seq=2, now=90.0)
+    _admit(store, 1, seq=5)
+    _settle(store, _start(store, lease, 2))
+    _start(store, lease, 3, now=125.0)
+    driver = store.hosted_room_driver
+    counts, tasks = driver.room_task_summary(placement="profile", room_id=ROOM, statuses=("queued", "running"))
+    # CONTRACT: every status of the room is counted; only the asked statuses are read as task views, in list_tasks order.
+    assert dict(counts) == {"settled": 1, "running": 1, "queued": 1}
+    assert [(task["identity"].task_id, task["status"]) for task in tasks] == [("task-3", "running"), ("task-1", "queued")]
+    assert tasks[1] == driver.list_tasks(placement="profile", room_id=ROOM, status="queued")[0]
+    assert driver.room_task_summary(placement="profile", room_id=ROOM, statuses=())[1] == ()
+    assert driver.room_task_summary(placement="profile", room_id="other", statuses=("queued",)) == ({}, ())
+
+
+def test_room_change_rows_sign_each_live_room_and_leave_disbanded_rooms_out(backend, scope_a):
+    store = backend.open(scope_a)
+    driver = store.hosted_room_driver
+    # CONTRACT: a placement holding no rooms answers no rows.
+    assert dict(driver.room_change_rows(placement="profile")) == {}
+    _room(store)
+    _room(store, room_id="gone")
+    lease = _lease(store)
+    _admit(store, 1)
+    _admit(store, 2, seq=2)
+    _settle(store, _start(store, lease, 1))
+
+    def expected(room_id: str, *statuses: str) -> RoomChangeRows:
+        room = store.hosted_rooms.room_state(placement="profile", room_id=room_id)
+        tasks = [task for status in statuses for task in driver.list_tasks(placement="profile", room_id=room_id, status=status)]
+        return RoomChangeRows(room["latest_seq"] + 1, room["revision"], tuple(sorted(
+            (task["identity"].task_id, task["status"], task["execution_generation"], task["cancel_generation"])
+            for task in tasks)))
+
+    # CONTRACT: per live room, its next sequence, revision and the shown tasks' (task_id, status, generations), sorted.
+    assert dict(driver.room_change_rows(placement="profile")) == {
+        ROOM: expected(ROOM, *SHOWN_TASK_STATUSES), "gone": expected("gone", *SHOWN_TASK_STATUSES)}
+    assert driver.room_change_rows(placement="profile")[ROOM].tasks == (("task-2", "queued", 0, 0),)
+    assert driver.room_change_rows(placement="profile", statuses=("settled",))[ROOM] == expected(ROOM, "settled")
+    before = driver.room_change_rows(placement="profile")[ROOM]
+    store.hosted_rooms.rename_room(placement="profile", room_id=ROOM, event_id="rename-1", name="Renamed", now=130.0)
+    after = driver.room_change_rows(placement="profile")[ROOM]
+    # CONTRACT: a rename moves the room's revision and its next sequence.
+    assert (after.revision, after.next_seq) != (before.revision, before.next_seq)
+    store.hosted_rooms.disband_room(placement="profile", room_id="gone", expected_gateway_id="gw", expected_epoch=1, now=140.0)
+    # CONTRACT: a disbanded room is left out.
+    assert set(driver.room_change_rows(placement="profile")) == {ROOM}
+    assert dict(driver.room_change_rows(placement="shared")) == {}
 
 
 def test_placements_keep_driver_tables_apart(backend, scope_a, scope_b):

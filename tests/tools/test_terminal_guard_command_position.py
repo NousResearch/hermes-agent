@@ -63,6 +63,8 @@ FALSE_POSITIVES = [
     "pip list | column -t | grep uvicorn",
     "grep -n uvicorn requirements.txt && tail -n 20 logs/app.log",
     "git -P grep uvicorn",
+    "pip -q install fastapi uvicorn",
+    "ls node_modules/vite && docker compose -f dev.yml logs web",
     "grep -c vite package.json" + " && true" * 250,
 ]
 
@@ -165,6 +167,8 @@ TRUE_POSITIVES = [
     "grep -n uvicorn requirements.txt && command tail -f logs/app.log",
     "tail -f logs/app.log; grep -n uvicorn requirements.txt",
     "vite build && docker compose logs -f",
+    "grep -n uvicorn requirements.txt && docker-compose logs -f",
+    "grep -n uvicorn requirements.txt && (docker compose logs --follow)",
     "npm --prefix install run dev:uvicorn",
     "uv --directory sync run uvicorn app:app",
     "echo npm run dev >/dev/null+x; sh /dev/null+x",

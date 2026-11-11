@@ -113,7 +113,10 @@ _NULL_REDIRECT_RE = re.compile(r"(?<!\d)\d*>>?\s*/dev/null(?![^\s)}])")
 # Past this many segments nothing is excused: the command keeps the plain anywhere match, which
 # bounds the cost of a pathological input.
 _MAX_EXCUSABLE_SEGMENTS = 2000
-_LOG_FOLLOWERS = frozenset({"tail", "docker", "podman", "kubectl", "journalctl"})
+_LOG_FOLLOWERS = frozenset({"tail", "docker", "docker-compose", "podman", "nerdctl", "kubectl", "oc", "journalctl"})
+_PACKAGE_PLAIN_OPTIONS = frozenset({"-q", "--quiet", "-y", "--yes", "-g", "--global", "-v", "--verbose",
+                                    "--no-cache", "--no-cache-dir", "--no-input", "--disable-pip-version-check"})
+_FLAG_END_RE = re.compile(r"[>)}]")
 _GIT_PLAIN_GLOBAL_OPTIONS = frozenset({"--no-pager", "-P", "-p", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs"})
 
 
@@ -258,9 +261,12 @@ def _is_data_command(word: str, args: list) -> bool:
     elif word not in _PACKAGE_TOOLS:
         runs_or_follows = _DATA_COMMAND_EXCEPTIONS.get(word)
         return word in _DATA_COMMANDS and not (runs_or_follows and runs_or_follows(args))
-    # The subcommand must come first: after an option, a "subcommand" may be that option's
-    # value (`npm --prefix install run dev`).
-    return "".join(args[:1]) in _PACKAGE_DATA_SUBCOMMANDS
+    # Only options known to take no value may precede the subcommand: after any other, a
+    # "subcommand" may be that option's value (`npm --prefix install run dev`).
+    i = 0
+    while i < len(args) and args[i] in _PACKAGE_PLAIN_OPTIONS:
+        i += 1
+    return "".join(args[i:i + 1]) in _PACKAGE_DATA_SUBCOMMANDS
 
 
 def _follows_logs(tokens: list) -> bool:
@@ -268,16 +274,20 @@ def _follows_logs(tokens: list) -> bool:
     `docker compose logs -f`). It names no server, so it must be found by its own shape."""
     seen = set()  # a name's first occurrence has every later one's arguments after it
     for i, token in enumerate(tokens):
-        name = token.lstrip("({").rsplit("/", 1)[-1]
+        name = token.lstrip("({").rsplit("/", 1)[-1].lower()
         if name not in _LOG_FOLLOWERS or name in seen:
             continue
         seen.add(name)
-        rest = tokens[i + 1:]
+        # A flag may be glued to a closer or a redirect: `(… logs --follow)`, `-f>out.txt`.
+        rest = [_FLAG_END_RE.split(arg, 1)[0] for arg in tokens[i + 1:]]
         if name == "tail":
             if _DATA_COMMAND_EXCEPTIONS["tail"](rest):
                 return True
-        elif (name == "journalctl" or "logs" in rest) and _has_flag(rest, "f", ("--follow",)):
-            return True
+        elif name == "journalctl" or "logs" in rest:
+            # Before `logs`, `-f` is compose's file option.
+            own = rest if name == "journalctl" else rest[rest.index("logs") + 1:]
+            if _has_flag(own, "f", ("--follow",)):
+                return True
     return False
 
 

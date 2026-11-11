@@ -2,7 +2,6 @@
 """
 
 import logging
-from dataclasses import replace
 import os
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -18,7 +17,6 @@ from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.transcription_common import STT_MODEL_CATALOG
 from tools.wake_word import _PROVIDER_PREFERENCE
-from hermes_cli.model_assignment import persist_custom_endpoint_secret
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -661,15 +659,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     from hermes_cli.free_tier_bootstrap import reconcile_record
     from hermes_cli.model_assignment import (
         BARE_CUSTOM_SELECTORS, apply_main_model_assignment, entry_points_elsewhere, is_explicit_custom_endpoint,
+        persist_custom_endpoint_secret,
     )
     # Recorded from the SUBMITTED args, before preparation fills a URL from a named entry.
     explicit_endpoint = is_explicit_custom_endpoint(provider, base_url)
-    requested_provider = provider
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
-    if requested_provider.strip().lower().startswith("custom:"):
-        provider = requested_provider.strip()
-        result = replace(result, target_provider=provider)
     provider_entry = _provider_entry(cfg, provider)
     # Snapshot BEFORE the new assignment overwrites cfg["model"]: this is the state the user
     # (CLI setup, a prior dashboard save) already had on disk, and it decides whether the
@@ -682,7 +677,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env, provider
+        cfg.get("model", {}), result, api_key, assignment_key_env
     )
     if not assignment_key_env and not api_key and not (
         explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)

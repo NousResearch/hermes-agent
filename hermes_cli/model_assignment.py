@@ -162,12 +162,13 @@ def validated_main_model_selection(
         url = base_url.strip()
         result = replace(result, base_url=url,
                          api_mode=determine_api_mode(result.target_provider, url))
+    if provider_norm.startswith("custom:"):
+        result = replace(result, target_provider=provider.strip())
     return result
 
 
 def apply_main_model_assignment(
     model_cfg: Any, result: ModelSwitchResult, api_key: str = "", key_env: str = "",
-    provider: str = "",
 ) -> dict:
     """Apply a main-slot selection, preserving credential bindings and remote masks.
 
@@ -184,8 +185,6 @@ def apply_main_model_assignment(
     old_url = str(previous.get("base_url") or "").strip().rstrip("/")
     new_url = str(result.base_url or "").strip().rstrip("/")
     endpoint_changed = bool(new_url and old_url and new_url != old_url)
-    if provider and provider != result.target_provider:
-        result = replace(result, target_provider=provider)
     # Remote Config: the caller saves the effective block as a whole document, so a cleared
     # inherited key must be masked (null), and a locked route key refuses the whole assignment.
     model_cfg = apply_model_selection(model_cfg, result, mask_cleared=not supports_file_tooling())

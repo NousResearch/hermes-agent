@@ -8,7 +8,8 @@ reading everything?
   `worker.py` with the key passed by environment only. Run it with `PYTHONPATH=<tree>` and the tree's
   interpreter.
 - `worker.py`: temp `HERMES_HOME` with `isolate_host`, a repo-shaped workspace carrying an `AGENTS.md`,
-  and three children built the way `tools/delegate_tool.py` builds them, run one after another: A, then B
+  and three subagent-shaped agents whose system prompt carries a hand-built per-session tail (not the real
+  delegate prompt builder), run one after another: A, then B
   with different task text, then C with A's task text. Each does a small real task with real tools.
   Per-call prompt, cache-read and cache-write tokens come from the agent's own usage accounting.
 

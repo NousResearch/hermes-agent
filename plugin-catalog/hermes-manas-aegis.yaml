@@ -3,120 +3,7 @@ title: Manas Aegis
 repo: https://github.com/elianjuan-g/hermes-manas-aegis
 sha: ea1be1c103de0f5dedf6b6993855e17da49cca95
 version: "2.6.6"
-description: >-
-  [ALPHA] Experimental Hermes guardrail (prototype, not standalone security):
-  pattern-based pre-tool checks that can block or rewrite some risky tool
-  arguments, with a canary honeypot, local telemetry and a loopback HUD,
-  plus STIX 2.1 export. Opt-in, test environments only.
-  Disclosure — the plugin makes HTTPS calls ONLY to two public, no-key
-  sources, for the global threat-intel panel: CISA KEV
-  (cisa.gov known_exploited_vulnerabilities.json) and the NVD CVE API 2.0
-  (20 most recent CVEs). Auto-refresh: the HUD server re-checks the cache
-  every 10 minutes and refetches when empty or older than 6 hours (max 40
-  items, 12s timeout, 2 MB cap); a manual refresh button exists; without
-  internet the last cache is kept and labelled possibly stale. No LLM call,
-  no subprocess, no credentials read, no telemetry out. Intercepts pre_tool_call and
-  pre_llm_call to scan arguments with 10 defined rules mapped to CWE / CAPEC /
-  MITRE ATT&CK / OWASP Top 10 / CVSS / CWSS / EPSS / SSVC (10 experimental,
-  0 planned — all enforced since v2.6.0); on a match it blocks the call or
-  rewrites the arguments (honeypot redirect to a sandboxed decoy, or a
-  safe-flag rewrite for git). v2.6.0 adds per-session taint tracking
-  (credential read -> egress blocked), a real shell parser (chained
-  commands split per segment, dangerous python -c blocked), SSRF
-  fail-closed on DNS error (with an allowlist), a Posture Score (0-100 +
-  grade), a Guard Arena (10 attack scenarios run against the live
-  enforcement path on a disposable core), a time-travel audit (re-checks
-  stored events against the new rules), and HUD hardening (CSRF token on
-  all POSTs, 20/60s rate limit, opt-in token auth). CI runs unit + contract
-  tests with a 70% coverage gate (measured 79%).
-  v2.6.1 moves the Posture Score card into a compact minimalist box
-  shown only on the Activity tab, moves all Activity content (KPIs,
-  history, scope, scans) into the Activity panel so each tab shows
-  fully different content, and adds a 180ms fade transition on tab
-  switch.
-  v2.6.2 fixes nine Argon-audit items against v2.6.1: the shell parser
-  honours $(...)/backticks/newlines, argument inspection is recursive
-  (with ~/ expansion), SSRF blocks multicast/unspecified, packaging is
-  verified from real sdist/wheel contents, HUD writes are locked and
-  atomic, clear-history also clears findings, the sound button is removed
-  (no audio exists), the intel-refresh button shows a loading state, and
-  five doc contradictions are fixed. Tests: 83/83 unit + contract
-  (61 in v2.6.0 + 22 new).
-  v2.6.3 addresses the catalog maintainer's review of the v2.6.2 pin
-  (teknium1, CHANGES_REQUESTED): the plugin root shim uses a relative
-  import; the RCE pattern has no unbounded lazy segments and the scan
-  is capped at 8 KB (a 40 KB near-miss input now checks in ~0.09 s);
-  credential-file contents are never read (os.stat fingerprints;
-  .env / auth.json / config.yaml skipped by the filesystem scan);
-  the HUD rejects non-loopback Host headers and no longer embeds the
-  CSRF token in an unauthenticated GET (login always on, auto-generated
-  token); the Desktop HUD renders via SandboxedFrame with the port
-  read from config; all state lives under plugin-data/
-  (get_hermes_home()); detection patterns are plain raw strings.
-  Detection/test vectors (arena scenarios, python -c dangerous tokens,
-  two test payloads) moved from code literals to fixtures/vectors.json,
-  loaded at import. Tests: 94/94 unit + contract; e2e HTTP 17/17;
-  hermes plugins validate fully green (14/14 checks, security scan safe).
-  v2.6.4 fixes a load failure found by live verification: register()
-  called register_tool with a parameters= keyword that matches no
-  0.21.5 signature, so real discovery raised TypeError and the loader
-  discarded ALL of the plugin's registrations (hooks included) while
-  the HUD still served. Both tools now register with one
-  register_tool(name, toolset, schema, handler) call, and new
-  args-dict wrapper handlers read the arguments core passes
-  positionally (the bare functions would have bound the dict to
-  action/view and silently returned the default branch). Tests:
-  99/99 unit + contract (94 + 5 new, including a strict fake
-  context mimicking the real 0.21.5 signature); e2e HTTP 17/17;
-  hermes plugins validate fully green (14/14 checks, security scan
-  safe); live load test 33/33 through the real PluginManager.
-  v2.6.5 resolves catalog review item 7 (teknium1): the remaining
-  Base64 constants are now plain readable values — PROTECTED_FILES
-  and SAFE_GIT_PREFIX are plain literals, and the 6 barrage-simulation
-  vectors moved into fixtures/vectors.json. The protected-path list
-  then moved into the same fixture because the install-time scanner
-  flags the system password-file literal in code (JSON data is inert
-  to the scanner); the loader requires all five fixture keys
-  (fail closed). Tests: 104/104 unit + contract (99 + 5 new,
-  including regression tests locking item 7 in); hermes plugins
-  validate fully green (14/14 checks, security scan safe); live
-  load test 33/33 through the real PluginManager.
-  v2.6.6 addresses the maintainer's second review (teknium1,
-  CHANGES_REQUESTED on the v2.6.4 pin): settings are now read through
-  the public ctx.get_config reader (the old getattr(ctx, "config", {})
-  never worked — the context has no config attribute), so
-  auto_launch_hud_server: false really keeps the HUD server and its
-  threat-intel thread from starting and a custom hud_port flows to the
-  server and the Desktop page; the 8 KB scan cap now also covers the
-  per-segment pass and the XSS scrubber, and the open regex
-  quantifiers are bounded exactly as reviewed; the three hardcoded
-  Path.home()/".hermes" sites now use hermes_constants.get_hermes_home()
-  (guarded import with a home fallback) so the integrity monitor, the
-  full scan and the arena decoy follow the active profile, and the
-  full scan no longer walks into profiles/; the full scan skips
-  webhook_subscriptions.json, anything under mcp-tokens/, and
-  auth.json.bak / .env.bak / config.yaml.bak. Tests: 115/115 unit +
-  contract (104 + 11 new, including regression tests locking all four
-  items in); hermes plugins validate fully green (14/14 checks,
-  security scan safe); live load test 33/33 through the real
-  PluginManager.
-  Serves a loopback-only HUD (http://127.0.0.1:18777) shown via a SandboxedFrame in
-  the Desktop Manas Aegis tab; writes redacted interception telemetry
-  (manas_telemetry.json, live file + append-only archive, unlimited) and a
-  local STIX 2.1 feed (stix21_taxii_feed.json) under the plugin data folder.
-  The 6-vector barrage button runs the same 10 rules against synthetic
-  attacks (labelled SIMULASI, counted separately, summary shown
-  persistently) and reloads the HUD. The HUD is multilingual (15 languages,
-  English default), supports user-defined rules
-  (~/.hermes/manas-aegis-custom-rules.json), quick/full/network scans with
-  on-HUD findings, and a global threat-intel panel fed by CISA KEV and the
-  NVD CVE API (free, no key; awareness only, never presented as a device
-  scan). The HUD visual system follows the C3iHub CISO dashboard design
-  (deep slate, one severity scale, sidebar navigation, Lucide SVG icons)
-  with dark + light themes (toggle, saved in the browser). The two query tools (manas_tactical_core,
-  manas_stix_intelligence) register on Hermes 0.21.5+ via one
-  register_tool(name, toolset, schema, handler) call; the core
-  guard hooks work on 0.21.0+.
+description: "[ALPHA] Experimental Hermes guardrail (prototype, not standalone security): pattern-based pre-tool checks that can block or rewrite some risky tool arguments, with a canary honeypot, local telemetry and a loopback HUD, plus STIX 2.1 export. Opt-in, test environments only. Disclosure — alpha guardrail: its pre_tool_call / pre_llm_call / transform hooks can block tool calls or rewrite their arguments (honeypot redirect to a decoy file, safe-flag git rewrite) and scrub tool results; serves a token-protected loopback-only HUD on 127.0.0.1 (default port 18777, off with auto_launch_hud_server: false); fetches public CISA KEV and NVD CVE feeds over HTTPS (no key) for the threat-intel panel, refreshed every 6 hours while the HUD runs; the full scan reads files under the active Hermes home (skipping .env, auth.json, config.yaml, webhook_subscriptions.json, mcp-tokens/, *.bak backups and other profiles); writes redacted telemetry and a STIX 2.1 feed under the plugin data folder; no credentials read, no telemetry sent out."
 maintainer: elianjuan-g
 tier: community
 category: tools
@@ -124,11 +11,7 @@ requires_hermes: ">=0.21.0"
 docs_url: https://github.com/elianjuan-g/hermes-manas-aegis
 known_issues:
   - "Alpha release: prototype guardrail, not standalone security; opt-in, test environments only."
-  - "The HUD's big KPI cards count only local activity and the plugin's
-    internal rule/indicator count; the live CISA KEV + NVD feed appears
-    only in the separate global-intel panel, as awareness only — the
-    plugin does not check whether this device is affected by any
-    listed CVE."
+  - "The HUD's big KPI cards count only local activity and the plugin's internal rule/indicator count; the live CISA KEV + NVD feed appears only in the separate global-intel panel, as awareness only — the plugin does not check whether this device is affected by any listed CVE."
 capabilities:
   provides_tools:
     - manas_tactical_core

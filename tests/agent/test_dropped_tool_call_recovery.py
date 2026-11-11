@@ -104,6 +104,45 @@ class TestDroppedToolCallRecovery:
         assert "All checks pass" in result["final_response"]
 
 
+    def test_reasoning_markup_is_reprompted_instead_of_delivered(self, loop_agent):
+        """Tool-call markup stranded in promoted reasoning is a dropped call."""
+        from tests.agent.test_run_agent import _mock_response
+
+        # Keep the malformed shape that survives think-block stripping. A complete
+        # <tool_call> block is intentionally stripped before this guard and would not
+        # exercise the dropped-call recovery path.
+        leaked = "<tool>\n<parameter=name>write_file</parameter>"
+        response = SimpleNamespace(
+            id="chatcmpl-reasoning-leak",
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    content="", tool_calls=None, reasoning=leaked,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            response,
+            _mock_response(content="Recovered.", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("write the file")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert "<tool_call>" not in result["final_response"]
+        assert "Recovered." in result["final_response"]
+        second_call = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call.kwargs.get("messages") or second_call.args[0].get("messages")
+        assert leaked not in str(msgs)
+
     def test_clean_stop_text_turn_is_unaffected(self, loop_agent):
         """A genuine finish_reason=stop text response must exit normally — the
         recovery path must not fire on ordinary final answers."""

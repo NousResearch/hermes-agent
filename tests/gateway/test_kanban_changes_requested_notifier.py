@@ -183,3 +183,127 @@ def test_changes_requested_reason_is_redacted_path_safe_and_truncated(tmp_path, 
     assert "abcdefghijklmnopqrstuvwxyz" not in text
     assert "[local path]" in text
     assert "… — reviewer @claude-qa" in text
+
+
+# --- Batched delivery: the wake must report the CURRENT state, not the batch ---
+
+
+def _create_batched_card(delivery_mode):
+    """A card whose events arrive in one undelivered batch (client restart)."""
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(
+            conn,
+            title="batched review cycle card",
+            assignee="implementer",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kbn.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="dm",
+            delivery_mode=delivery_mode,
+        )
+        return task_id
+    finally:
+        conn.close()
+
+
+def _append_event(task_id, kind, payload):
+    conn = kbc.connect()
+    try:
+        kb._append_event(conn, task_id, kind=kind, payload=payload)
+    finally:
+        conn.close()
+
+
+def _complete_card(task_id, summary):
+    conn = kbc.connect()
+    try:
+        assert kb.complete_task(conn, task_id, summary=summary) is True
+    finally:
+        conn.close()
+
+
+def _wake_status_line(text):
+    """``[kanban] Task <id> <status>.`` — the composed current-state line."""
+    return text.splitlines()[0]
+
+
+def test_batched_review_cycle_wake_names_only_the_current_state(tmp_path, monkeypatch):
+    """review_requested + changes_requested + completed in ONE batch.
+
+    That is exactly what a desktop/client restart produces: everything queued
+    while delivery was down arrives at once. The wake must name the newest
+    state (completed) and carry only that event's detail. Before the fix it
+    joined every kind present in ``_WAKE_KINDS`` tuple order and paired the
+    round-3 completion handoff with the round-1 review verdict, so an APPROVED
+    card woke the creator with "review requested changes (BLOCK); implementation
+    is not approved".
+    """
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "batched.db"))
+    kb.init_db()
+    task_id = _create_batched_card("notify+wake")
+    _append_event(task_id, "review_requested", {"summary": "round 3 handoff for review"})
+    _append_event(task_id, "changes_requested", {
+        "reason": "round 1: four precise corrections",
+        "reviewer": "claude-qa",
+        "implementer": "codex-cua",
+        "status": "ready",
+    })
+    _complete_card(task_id, "Reviewed and APPROVED (round 3)")
+    adapter = RecordingAdapter()
+
+    asyncio.run(_run_one_tick(monkeypatch, _runner(adapter)))
+
+    assert len(adapter.handled) == 1, "one wake for the whole batch"
+    wake = adapter.handled[0].text
+    assert _wake_status_line(wake) == f"[kanban] Task {task_id} completed."
+    assert "handed off for review" not in wake
+    assert "review requested changes" not in wake
+    assert "implementation is not approved" not in wake
+    # Only the current (completed) event's detail rides along.
+    assert "Result: Reviewed and APPROVED (round 3)" in wake
+    assert "Review feedback" not in wake
+    assert "round 1: four precise corrections" not in wake
+    # Pings stay per-event: every claimed event is still reported on its own.
+    assert len(adapter.sent) == 3
+
+
+def test_closed_card_never_wakes_with_a_superseded_block(tmp_path, monkeypatch):
+    """A card that is already ``done`` must never emit BLOCK wording later.
+
+    The completion is delivered first, then a verdict that reached the event log
+    after the card closed (queued while delivery was down) arrives on its own.
+    The card is done at send time, so that verdict is history: report the card's
+    real state, never "review requested changes (BLOCK); implementation is not
+    approved".
+    """
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "closed.db"))
+    kb.init_db()
+    task_id = _create_batched_card("notify+wake")
+    _complete_card(task_id, "Reviewed and APPROVED (round 3)")
+    adapter = RecordingAdapter()
+
+    asyncio.run(_run_one_tick(monkeypatch, _runner(adapter)))
+
+    # completed-only batch: unchanged single-event rendering.
+    assert len(adapter.handled) == 1
+    assert _wake_status_line(adapter.handled[0].text) == f"[kanban] Task {task_id} completed."
+    assert "Result: Reviewed and APPROVED (round 3)" in adapter.handled[0].text
+
+    _append_event(task_id, "changes_requested", {
+        "reason": "round 1: needs work",
+        "reviewer": "claude-qa",
+        "status": "ready",
+    })
+    asyncio.run(_run_one_tick(monkeypatch, _runner(adapter)))
+
+    assert len(adapter.handled) == 2, "the late verdict still wakes, as the card's real state"
+    late = adapter.handled[1].text
+    assert _wake_status_line(late) == f"[kanban] Task {task_id} completed."
+    assert "review requested changes" not in late
+    assert "implementation is not approved" not in late
+    assert "round 1: needs work" not in late

@@ -48,6 +48,12 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+# Kinds whose wording asserts an UNRESOLVED verdict ("review requested changes
+# (BLOCK); implementation is not approved", "blocked; needs attention", "routed
+# to triage"). A closed card can still claim a queued one of these, because a
+# batch spans delivery downtime: that event is history, never the card's state.
+_CLOSED_SUPERSEDED_KINDS = frozenset({"changes_requested", "blocked", "block_loop_detected"})
+_CLOSED_TASK_STATUSES = frozenset({"done", "archived"})
 
 
 def diagnostic_event(ev) -> bool:
@@ -366,7 +372,7 @@ def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], 
 
 
 # --- Per-event message formatting: kind -> (msg, wake_handoff, wake_review_detail) ---
-# ``None`` for handoff / review_detail leaves the accumulated wake value untouched.
+# ``None`` for handoff / review_detail means the event carries no such detail.
 
 
 def _payload(ev: Any, key: str) -> Any:
@@ -560,24 +566,65 @@ class _KanbanNotification:
     # -- formatting --
 
     def format_event(self, ev: Any) -> Optional[str]:
-        """Render one event; accumulates wake handoff/review detail. None → silent kind."""
+        """Render one event as its text ping; None → silent kind.
+
+        Wake detail (handoff / review verdict) is deliberately NOT accumulated
+        here: one batch can carry several superseded states, so
+        ``build_wake_text`` derives it from the single current event only.
+        """
         formatter = _EVENT_FORMATTERS.get(ev.kind)
-        if formatter is None:
+        return formatter(ev, self)[0] if formatter is not None else None
+
+    def _current_wake_event(self) -> Optional[Any]:
+        """The batch's newest wake event: the card's CURRENT state.
+
+        A batch is a delivery artefact, not a history. With the desktop client or
+        gateway down the events queue, so one delivery can carry several
+        superseded states (``review_requested`` → ``changes_requested`` →
+        ``completed``). Only the newest wake event by ``created_at`` — tie-break
+        on the event row id, since a burst shares one epoch second — is current;
+        older ones must never be rendered as if they were concurrent with it.
+        """
+        events = [ev for ev in self.d["events"] if ev.kind in _WAKE_KINDS]
+        if not events:
             return None
-        msg, handoff, review_detail = formatter(ev, self)
-        if handoff is not None:
-            self.wake_handoff = handoff
-        if review_detail is not None:
-            self.wake_review_detail = review_detail
-        return msg
+        return max(events, key=lambda ev: (int(ev.created_at or 0), int(ev.id or 0)))
 
     def build_wake_text(self) -> None:
-        """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
+        """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths.
+
+        The message reports one state — the newest wake event in the batch — and
+        carries only THAT event's detail. Joining every kind present in a batch,
+        or pairing the newest handoff with an older review verdict, told the
+        recipient an APPROVED card was "not approved".
+        """
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
-        self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
-        if not self.wake_kinds:
+        current = self._current_wake_event() if self.wake_agent else None
+        self.wake_handoff = self.wake_review_detail = ""
+        self.wake_kinds = set()
+        if current is None:
             return
+        kind: Optional[str] = current.kind
+        status = (getattr(task, "status", "") or "").lower()
+        if status in _CLOSED_TASK_STATUSES and kind in _CLOSED_SUPERSEDED_KINDS:
+            # The card is already closed at send time, so a queued verdict is
+            # superseded: emitting it would tell the recipient a finished card
+            # still needs work. Report the card's real state, or (archived, where
+            # no wake is meaningful) suppress this wake.
+            if status != "done":
+                return
+            kind = "completed"
+            # No ``completed`` event left in the batch: the card's own result is
+            # the handoff.
+            if task is not None and task.result:
+                self.wake_handoff = _first_line(str(task.result), 160)
+        else:
+            formatter = _EVENT_FORMATTERS.get(kind)
+            if formatter is not None:
+                _, handoff, review_detail = formatter(current, self)
+                self.wake_handoff, self.wake_review_detail = handoff or "", review_detail or ""
+        self.wake_kinds = {kind}
+        self.wake_diagnostic = diagnostic_event(current)
         if self.is_push_adapter:
             self.session_key = getattr(task, "session_id", None) or ""
         else:
@@ -586,8 +633,7 @@ class _KanbanNotification:
             # for child tasks; use it only for legacy rows.
             self.session_key = sub["chat_id"] or getattr(task, "session_id", None) or ""
         # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
-        _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
-        _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
+        _status = t(f"gateway.kanban.wake.{kind}")
         synth = t(
             "gateway.kanban.wake.message",
             task_id=sub["task_id"], status=_status, title=self.title,
@@ -783,9 +829,6 @@ class _KanbanNotification:
                 if not events:
                     continue
                 self.d = {**self.d, "events": events}
-                self.wake_handoff = self.wake_review_detail = ""
-                for ev in events:
-                    self.format_event(ev)
                 self.build_wake_text()
                 if self.wake_kinds:
                     wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))

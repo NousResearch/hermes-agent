@@ -196,8 +196,20 @@ def refusal(exc: BaseException) -> tuple[str, dict]:
     from hermes_cli.gateway_client import ERROR_DATA_ITEMS, ERROR_DATA_TEXT
     text = redact_create_text(exc)
     kind = next((k for k in CREATE_REFUSALS if isinstance(exc, k)), None)
-    parts = [text[i:i + ERROR_DATA_TEXT] for i in range(0, len(text), ERROR_DATA_TEXT)][:ERROR_DATA_ITEMS]
+    kept = ERROR_DATA_TEXT * ERROR_DATA_ITEMS
+    shown = text if len(text) <= kept else text[:kept - len(_TRUNCATED)] + _TRUNCATED
+    parts = [shown[i:i + ERROR_DATA_TEXT] for i in range(0, len(shown), ERROR_DATA_TEXT)]
     return text, {"type": kind.__name__ if kind else type(exc).__name__, "message_parts": parts}
+
+
+#: Ends a refusal longer than ``error.data`` keeps (``error.message`` still has all of it).
+_TRUNCATED = " … [truncated]"
+
+
+def message_from(data: dict) -> str:
+    """The text a ``refusal`` ``error.data`` carries, redacted again here; "" when it carries none."""
+    parts = data.get("message_parts")
+    return redact_create_text("".join(p for p in parts if isinstance(p, str))) if isinstance(parts, list) else ""
 
 
 def refusal_from(data: dict) -> Optional[Exception]:
@@ -205,9 +217,7 @@ def refusal_from(data: dict) -> Optional[Exception]:
     kind = next((k for k in CREATE_REFUSALS if k.__name__ == data.get("type")), None)
     if kind is None:
         return None
-    parts = data.get("message_parts")
-    text = redact_create_text("".join(p for p in parts if isinstance(p, str))) if isinstance(parts, list) else ""
-    return kind(text or "the gateway refused the create; nothing was created")
+    return kind(message_from(data) or "the gateway refused the create; nothing was created")
 
 def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     """Create the profile, then apply every requested step in order.

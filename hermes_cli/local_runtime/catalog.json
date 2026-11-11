@@ -231,6 +231,34 @@
       },
       "quality": 85,
       "decode_fraction": 0.1
+    },
+    {
+      "id": "lfm2.5-vl-1.6b",
+      "display_name": "LFM2.5-VL 1.6B",
+      "description": "Small vision-language model; sees images; long context",
+      "repo": "LiquidAI/LFM2.5-VL-1.6B-GGUF",
+      "variants": [
+        {
+          "quant": "UD-Q8_K_XL",
+          "files": [
+            {
+              "path": "LFM2.5-VL-1.6B-UD-Q8_K_XL.gguf",
+              "size_bytes": 1372083808
+            }
+          ]
+        }
+      ],
+      "n_ctx_train": 128000,
+      "full_layers": 6,
+      "recurrent_layers": 10,
+      "per_layer_f16": 2048,
+      "n_vocab": 65536,
+      "mmproj": {
+        "path": "mmproj-LFM2.5-VL-1.6b-Q8_0.gguf",
+        "size_bytes": 583109888,
+        "local": "mmproj-LFM2.5-VL-1.6b-Q8_0.gguf"
+      },
+      "quality": 70
     }
   ]
 }

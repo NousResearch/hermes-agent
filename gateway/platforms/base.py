@@ -24,6 +24,7 @@ from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
+from gateway.platforms.base_auto_tts import AutoTTSMixin
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.file_safety import is_project_env_basename
 from agent.i18n import t
@@ -1799,7 +1800,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
+class BasePlatformAdapter(_SessionModelSettingsMixin, AutoTTSMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3346,6 +3347,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if session_key and session_key in self._active_sessions:
             self._active_sessions[session_key].set()
         await self._stop_typing_quietly(chat_id, metadata)
+        from gateway.platforms.base_auto_tts import cancel_auto_tts
+        await cancel_auto_tts(self._background_tasks, session_key)
 
     def register_post_delivery_callback(
         self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:
@@ -3870,6 +3873,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             except Exception:
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
+        from gateway.platforms.base_auto_tts import cancel_auto_tts
+        await cancel_auto_tts(self._background_tasks, session_key)
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
@@ -4061,36 +4066,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str, source: Optional[SessionSource] = None,
-                                   ) -> tuple[list[str], Optional[str]]:
-        """``(existing_paths, requested_path)``, synthesized in ``source``'s profile scope (the turn's
-        scope is gone post-handler); platform-aware path built HERE (HERMES_SESSION_PLATFORM is cleared)."""
-        from gateway.platforms.base_auto_tts import synthesize_auto_tts
-        return await synthesize_auto_tts(self, text_content, source, build_auto_tts_output_path)
-
-    def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
-                        text_content: str, media_files: list) -> bool:
-        """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
-        skipped when streaming TTS already delivered audio this turn."""
-        generation = getattr(interrupt_event, "_hermes_run_generation", None)
-        return bool(
-            self._should_auto_tts_for_chat(event.source.chat_id)
-            and event.message_type == MessageType.VOICE and text_content and not media_files
-            and not self._streaming_tts_turn_completed(session_key, generation, event=event))
-
-    async def _play_tts_file(
-        self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
-        metadata: dict[str, Any], record_delivery: Callable) -> bool:
-        """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
-        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
-        caption = None
-        if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
-            caption = text_content
-        tts_result = await self.play_tts(
-            chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
-        record_delivery(tts_result)
-        return bool(caption and getattr(tts_result, "success", False))
-
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
         delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
@@ -4212,7 +4187,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> tuple:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
         result, delivery_adapter = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
@@ -4220,6 +4195,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+        return result, delivery_adapter
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
@@ -4400,8 +4376,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
                 _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
+                _wants_tts = self._wants_auto_tts(
+                    event, session_key, interrupt_event, text_content, media_files)
+                _background_tts = _wants_tts and self.background_auto_tts(event.source.chat_id)
+                if _wants_tts and not _background_tts:
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content, event.source)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
@@ -4429,9 +4407,13 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                         or _tts_paths or _tts_caption_delivered:
                     self.pause_typing_for_chat(event.source.chat_id)
                 if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
+                    _text_result, _text_adapter = await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                    if _background_tts and _text_result.success and _text_result.message_id:
+                        from gateway.platforms.base_auto_tts import schedule_auto_tts
+                        await schedule_auto_tts(_text_adapter, event, session_key, text_content,
+                                                _text_result.message_id, _final_thread_metadata)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,

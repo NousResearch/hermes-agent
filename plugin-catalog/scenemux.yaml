@@ -1,0 +1,37 @@
+name: scenemux
+title: SceneMux
+repo: https://github.com/ep150de/scenemux
+sha: 8cc4c5fc0ee017a830f64207f395b5193f7b8db7
+subdir: hermes-plugin
+version: "0.4.2"
+description: "Turn an MP3 into a beat-aligned, lip-synced music video from any Hermes agent. Eight tools: scenemux_doctor (health/keys), scenemux_setup (start the studio server: Docker or native Python, provisions keys from the agent secret scope), scenemux_project (upload audio + references, beat-grid analysis, Whisper lyrics), scenemux_plan (LLM storyboard with beat-locked scenes, shown for review before anything is generated), scenemux_render (spend-gated: cost estimate first, requires explicit confirm), scenemux_status, scenemux_export (final MP4, optional 9:16 vertical cut), scenemux_cancel. The storyboard director can run on a cloud LLM, a local Ollama model, or the agent itself (director_backend=hermes) via the local Hermes API server. A bundled skill (scenemux:studio) carries the operator workflow. Disclosure - the plugin talks only to the user's own SceneMux studio server (default http://127.0.0.1:8000) and reads the audio/reference paths the agent passes it; scenemux_setup starts one local server process (Docker container or python -m server.main) that runs until the session ends; planning and stills call the LLM/image/video backends configured on that server; the default cloud preset spends Comfy Cloud credits on renders, which is why renders are estimate-first and never start without confirm=true; secrets are read only through the agent secret scope and are never written outside the server's own env file; no telemetry."
+maintainer: ep150de
+tier: community
+category: tools
+docs_url: https://github.com/ep150de/scenemux/tree/main/hermes-plugin
+readme: true
+platforms: []
+known_issues:
+  - "A running SceneMux studio server is required. scenemux_setup starts one via Docker (needs the repo_path setting pointed at a full repo clone, or the server already running). ffmpeg on PATH is needed for export/assembly."
+  - "The cloud pipeline preset spends Comfy Cloud credits on stills and video; the estimate tool reports the rough cost before render."
+  - "LLM planning quality depends on the configured model; a local Ollama model works for free and keeps the director lane private. director_backend=hermes needs the Hermes API server (API_SERVER_ENABLED=true + API_SERVER_KEY in ~/.hermes/.env, then `hermes gateway`)."
+  - "First Docker run builds the image (a few minutes)."
+capabilities:
+  provides_tools:
+    - scenemux_doctor
+    - scenemux_setup
+    - scenemux_project
+    - scenemux_plan
+    - scenemux_render
+    - scenemux_status
+    - scenemux_export
+    - scenemux_cancel
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - COMFY_CLOUD_API_KEY
+    - OLLAMA_API_KEY
+    - OPENCODE_API_KEY
+    - FAL_KEY
+    - HOME_AGENT_PASSWORD
+    - API_SERVER_KEY

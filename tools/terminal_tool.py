@@ -793,8 +793,10 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     default_cwd = _backend_default_cwd(env_type)
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
-    # The backend's own default is an in-sandbox path: its ``~`` is the sandbox home, not ours.
-    if cwd and cwd != default_cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
+    from tools.environments.sandbox_scope import hosted_scope
+    # The backend's own default is an in-sandbox path: its ``~`` is the sandbox home, not ours. So is a
+    # hosted scope's ``~``: it names that agent's sandbox home, never this host's HOME.
+    if cwd and cwd != default_cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd) and hosted_scope() is None:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:

@@ -1,6 +1,6 @@
 name: strategic-arena
 repo: https://github.com/trillionverselabs-boop/strategic-arena
-sha: 8d878c7223a857c2231e9b557eedf59be34d55c1
+sha: 1bce14ee83924605389406d42b5e34fc435693b5
 title: Strategic Arena
 description: >-
   Understand the landscape before you invest: give it a link and get the room that
@@ -12,9 +12,9 @@ category: tools
 version: "0.6.3"
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/trillionverselabs-boop/strategic-arena/blob/main/docs/POSITIONING.md
-image: https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/8d878c7223a857c2231e9b557eedf59be34d55c1/assets/banner.png
+image: https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/1bce14ee83924605389406d42b5e34fc435693b5/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/8d878c7223a857c2231e9b557eedf59be34d55c1/assets/how-it-works.png
+  - https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/1bce14ee83924605389406d42b5e34fc435693b5/assets/how-it-works.png
 readme: true
 platforms: []
 capabilities:

@@ -139,3 +139,49 @@ def test_launch_profile_chat_reads_its_own_secret_once_multiplexed(plugin_homes)
     output = res["result"]["output"]
     assert output.startswith("probe@"), output
     assert output.endswith(":launch-key"), output
+
+
+def test_builtin_slash_exec_runs_when_the_profile_secret_bind_fails(plugin_homes, monkeypatch):
+    """Only a plugin command needs the profile's secrets: a secret source that fails to load must
+    not turn every built-in reaching slash.exec into ``Plugin command error`` (review of #153538)."""
+    from hermes_cli import env_loader
+
+    from tui_gateway import server
+
+    def _boom(home):
+        raise RuntimeError("secret source unavailable")
+
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", _boom)
+    worker = MagicMock()
+    worker.run.return_value = "help-output"
+    worker.pop_seed.return_value = ""
+    session = {**_infra_session(plugin_homes["secondary"]), "slash_worker": worker}
+    server._sessions["sid-infra"] = session
+    try:
+        builtin = server._methods["slash.exec"](1, {"session_id": "sid-infra", "command": "/help"})
+        plugin = server._methods["slash.exec"](1, {"session_id": "sid-infra", "command": "/infraonly hi"})
+    finally:
+        server._sessions.pop("sid-infra", None)
+    assert builtin["result"]["output"] == "help-output"
+    assert plugin["result"]["output"] == "Plugin command error: secret source unavailable"
+
+
+@pytest.mark.parametrize("name, expected", [("infraonly", ":infra-key"), ("launchonly", None)])
+def test_sessionless_dispatch_runs_the_named_profiles_plugin(plugin_homes, monkeypatch, name, expected):
+    """``command.dispatch`` with ``profile`` and no session resolves AND runs in that profile: its
+    own plugin with its own secret, and never the launch profile's plugin with the launch secret."""
+    from agent.secret_scope import set_multiplex_active
+
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_profile_home",
+                        lambda p: plugin_homes["secondary"] if p == "infra" else None)
+    set_multiplex_active(True)
+    try:
+        res = server._methods["command.dispatch"](1, {"name": name, "arg": "hi", "profile": "infra"})
+    finally:
+        set_multiplex_active(False)
+    if expected is None:
+        assert res["error"]["code"] == 4018, res
+    else:
+        assert res["result"]["output"].endswith(expected), res

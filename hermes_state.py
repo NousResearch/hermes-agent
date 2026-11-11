@@ -212,6 +212,8 @@ class _SessionDB:
     def _open(self) -> "tuple[_ExitStack, Any]":
         from persistence_assembly import open_persistence, open_persistence_reader
 
+        if not self.read_only:
+            _ensure_reaper()  # before the acquire, so a reaper that cannot start leaves no handle open
         stack = _ExitStack()
         try:
             if self.read_only:
@@ -224,7 +226,6 @@ class _SessionDB:
             raise
         if not self.read_only:
             # This handle's release: at close(), or by the reaper when this SessionDB is collected unclosed.
-            _ensure_reaper()
             self._reference = _weakref.finalize(self, _collected_stacks.put, stack)
             self._reference.atexit = False
         return stack, store

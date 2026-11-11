@@ -330,7 +330,8 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
         # Persist the provider-reported limit BEFORE compression/retry: rate limit,
         # missing usage, or restart must not lose confirmed metadata. Probe flags
         # remain a fallback if this write fails.
-        save_provider_context_length(agent.model, agent.base_url, new_ctx, agent.provider)
+        from agent.copilot_context import context_cache_url
+        save_provider_context_length(agent.model, context_cache_url(agent), new_ctx, agent.provider)
         # Probe flags only on the built-in compressor (plugin engines manage their
         # own); provider-sourced value, so safe to cache.
         if hasattr(compressor, "_context_probed"):

@@ -98,3 +98,20 @@ async def test_telegram_long_followup_uses_send_time_before_default_batch_flush(
 
     runner._resolve_busy_steer_or_redirect.assert_not_awaited()
     runner._busy_interrupt_and_ack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sent_at, edited_at, waits", [(95.0, 102.0, True), (101.0, 110.0, False)])
+async def test_telegram_edited_followup_is_judged_by_its_edit_time(monkeypatch, sent_at, edited_at, waits):
+    """An edit keeps the message's original ``date``; the grace reads the edit's own time instead."""
+    from datetime import UTC, datetime
+
+    monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+    runner, event, source, key = _busy_telegram_turn()
+    runner._resolve_busy_steer_or_redirect.side_effect = None  # the out-of-grace edit is expected to preempt
+    event.timestamp = datetime.fromtimestamp(sent_at, UTC)  # the turn started at 100
+    event.raw_message = SimpleNamespace(date=event.timestamp, edit_date=datetime.fromtimestamp(edited_at, UTC))
+    with patch("gateway.run_inbound.time.time", return_value=edited_at + 0.2):
+        await runner._hm_busy_preempt(event, source, key)
+    preempted = runner._busy_interrupt_and_ack.await_count + runner._resolve_busy_steer_or_redirect.await_count
+    assert (preempted == 0) is waits

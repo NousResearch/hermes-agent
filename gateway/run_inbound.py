@@ -738,8 +738,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
         _grace_state = self._peek_session_state(_quick_key)
         _started_at = _grace_state.turn.started_ts if _grace_state else 0
-        # Telegram text batching preserves the send time while admission may wait another 1.5s.
-        _sent = event.timestamp if getattr(event, "raw_message", None) else None
+        # Send time (batching can admit 1.5s later); an edit keeps its message's ``date``, so use ``edit_date``.
+        _raw = getattr(event, "raw_message", None)
+        _sent = (_edit if isinstance(_edit := getattr(_raw, "edit_date", None), type(event.timestamp)) else event.timestamp) if _raw else None
         _arrived = _sent.timestamp() if hasattr(_sent, "timestamp") else time.time()
         if not (source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
                 and _grace > 0 and _started_at and -1 <= (_arrived - _started_at) <= _grace):

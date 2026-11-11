@@ -1,0 +1,22 @@
+# Exact qualified source pin; catalog admission requires maintainer review.
+name: hermes-verify
+repo: https://github.com/BrandonDucar/hermes-verify
+sha: d80cfa66345de89dd99289af8680e9b9b010be16
+description: Configurable tool-risk flags, bounded local receipt metadata and held unverified-prose labels.
+maintainer: BrandonDucar
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.5.0"
+readme: true
+known_issues:
+  - Default observation mode logs and allows; optional blocking is a heuristic, not OS containment.
+  - Whole-output labeling and lexical source comparison do not establish factual truth.
+  - Local receipt records are unauthenticated; action returns do not prove completion.
+  - Host storage-helper errors can select a fallback directory that is not guaranteed to follow the active profile.
+  - End-to-end agent stream delivery and integrated strict-mode actions are not yet qualified.
+capabilities:
+  provides_tools: [verify_claim, query_receipts]
+  provides_hooks: [pre_tool_call, post_tool_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

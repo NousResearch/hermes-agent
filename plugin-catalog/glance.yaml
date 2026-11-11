@@ -1,0 +1,25 @@
+name: glance
+title: Glance
+repo: https://github.com/Chinteyley/hermes-glance
+sha: 155f9f045e31509f3df9700379dd68b27e8af417
+description: "Hermes can't call a UI change done until it has looked. Glance screenshots the running iOS Simulator (or Android emulator) right before the agent's first UI edit, diffs it against the screen after the edit, and the pre_verify hook sends the agent back when the edit changed nothing, crashed to an error screen, or left the screen blank. On PASS the agent sees the before/after image, so it can catch a button that vanished. Desktop draws the result as a before/after slider. Disclosure — runs xcrun simctl (list, io screenshot) and adb (devices, exec-out screencap) as subprocesses; adb devices starts adb's own server if it is not running; on PASS calls Hermes' vision_analyze on the compare image through ctx.dispatch_tool, which is one auxiliary vision model call when the main model is text-only; writes screenshots and check records under plugin-data/glance; no network calls of its own, no credentials, no telemetry."
+maintainer: Chinteyley
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Chinteyley/hermes-glance#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/Chinteyley/hermes-glance/155f9f045e31509f3df9700379dd68b27e8af417/docs/desktop-pass-card.png
+  - https://raw.githubusercontent.com/Chinteyley/hermes-glance/155f9f045e31509f3df9700379dd68b27e8af417/docs/pass-button-gone.png
+platforms: [macos, linux]
+capabilities:
+  provides_tools:
+    - glance_check
+    - glance_baseline
+  provides_hooks:
+    - pre_tool_call
+    - pre_verify
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

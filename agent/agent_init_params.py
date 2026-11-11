@@ -18,7 +18,7 @@ _PASSTHROUGH_PARAMS = (
 # per-chat key (e.g. agent:main:telegram:dm:123).
 _GATEWAY_IDENTITY_PARAMS = (
     "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
-    "gateway_session_key",
+    "parent_chat_id", "gateway_session_key",
 )
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",

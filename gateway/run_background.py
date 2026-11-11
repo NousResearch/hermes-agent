@@ -104,6 +104,7 @@ class GatewayBackgroundMixin:
                     platform=platform_key,
                     **{k: getattr(source, k) for k in (
                         "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
+                        "parent_chat_id",
                     )},
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot.

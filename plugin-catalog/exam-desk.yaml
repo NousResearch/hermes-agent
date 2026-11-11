@@ -1,0 +1,38 @@
+name: exam-desk
+title: Exam Desk
+repo: https://github.com/darshak26/hermes-exam-desk
+sha: 72340210bb92c1f38831dbff271423785fda2f65
+description: >-
+  Practice exams inside Hermes Desktop. Add a paper by asking (Hermes finds an
+  official paper or drafts one to the same pattern), sit it on a server-side timer
+  in Assisted mode beside the chat or in Mock mode, get it scored per question with
+  negative marking and a section split, and review every miss into a one-click drill
+  paper. Disclosure: papers, attempts and evaluations are stored only in the plugin's
+  own data directory. Sourcing uses the agent's web tools and AI review uses the
+  agent's configured model, so both go to whatever services the user already
+  configured. The plugin makes no network calls of its own, runs no shell commands,
+  stores no credentials and has no self-updater. Assisted mode feeds the current
+  question to the chat model during a sitting; the answer key never leaves the
+  server until the attempt is submitted.
+maintainer: darshak26
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.13.2"
+docs_url: https://github.com/darshak26/hermes-exam-desk#readme
+readme: true
+platforms: []
+known_issues:
+  - AI review needs plugins.isolation set to in_process; under host isolation evaluation returns 503.
+  - Sourcing a paper needs the agent's web tools; without them, papers are written by hand.
+capabilities:
+  provides_tools:
+    - exam_desk_live
+    - exam_desk_attempt
+    - exam_desk_doubt
+    - exam_desk_topics
+    - exam_desk_papers
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

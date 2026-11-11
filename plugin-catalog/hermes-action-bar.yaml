@@ -8,6 +8,11 @@ tier: community
 category: desktop
 version: "0.1.0"
 docs_url: https://github.com/fquresh/hermes-action-bar#readme
+screenshots:
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/bar.jpg
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/reply-cards.jpg
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/answer-card.jpg
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/settings.jpg
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: []

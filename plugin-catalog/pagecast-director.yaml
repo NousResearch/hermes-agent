@@ -1,0 +1,47 @@
+name: pagecast-director
+title: "PageCast Director"
+repo: https://github.com/flabanabba8/pagecast-director
+sha: 340ee11b328ee352051884575b9cf9679b823fe5
+version: "0.3.2"
+description: "Editable cast narration with locked voices, source passage IDs, resumable synthesis and selective regeneration. Disclosure: Stores books and generated audio privately. Voices are local (Flite, or a Higgs server already running on your computer) unless you choose hosted Inworld, ElevenLabs or Google Gemini, which send passage text and voice choices to that provider with your own key or Google login and use your credits. Calls local FFmpeg for export. Optional Android app tools can download the app from GitHub after approval. One pre_tool_call hook. No background processes beyond a render you start."
+maintainer: flabanabba8
+tier: community
+category: voice
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/flabanabba8/pagecast-director/blob/340ee11b328ee352051884575b9cf9679b823fe5/README.md
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - pagecast_knowledge
+    - pagecast_setup
+    - pagecast_series_list
+    - pagecast_series_create
+    - pagecast_series_link
+    - pagecast_series_voice
+    - pagecast_overview
+    - pagecast_cast_note
+    - pagecast_reading_position
+    - pagecast_direction_context
+    - pagecast_direct
+    - pagecast_import
+    - pagecast_books
+    - pagecast_book
+    - pagecast_assign
+    - pagecast_voice
+    - pagecast_voice_audition
+    - pagecast_speech_options
+    - pagecast_edit
+    - pagecast_render
+    - pagecast_cancel
+    - pagecast_preview
+    - pagecast_retry
+    - pagecast_export
+    - pagecast_android_app
+    - pagecast_android_install
+    - pagecast_timeline
+    - pagecast_usage
+    - pagecast_inworld_voices
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

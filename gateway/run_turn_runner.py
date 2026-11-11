@@ -71,6 +71,9 @@ def _clarify_expired_notice() -> str:
 _LEDGER_PASSTHROUGH_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "cache_read_tokens", "cache_write_tokens",
     "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
+    # The proxy-reported models (agent.turn_finalizer), read by run_turn_persistence for the
+    # runtime footer's opt-in `served_model` field.
+    "requested_model", "served_model",
 )
 # Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
 # so the authority's ``message.complete`` carries the same error card the TUI path builds;

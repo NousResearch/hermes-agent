@@ -171,26 +171,22 @@ def _fg_bg_owner(task_id: str) -> str:
 
 
 def _backgrounded_command(command: str) -> str | None:
-    """*command* as it should be resent with background=true: minus a trailing
-    '&' and one leading nohup/setsid. None when fixing it would take more than
-    that (inline '&', disown, wrapper flags, chained wrappers) or the result is
-    too long to quote back -- the caller then shows the placeholder form rather
-    than a guessed rewrite."""
+    """*command* as it should be resent with background=true, or None for the placeholder form.
+
+    Built only by ``trailing_amp_background_command`` (the conversion rules and approval check
+    the trailing-`&` auto-background uses) after dropping at most one leading nohup/setsid; the
+    result must also keep *command*'s own approval identity. Inline '&', disown, ';' chains,
+    executable substitutions, wrapper flags and over-long results all fall back to the
+    placeholder rather than a guessed rewrite."""
     fixed = command.strip()
-    tail = _TRAILING_BACKGROUND_AMP_RE.search(fixed)
-    # Only strip an '&' the quote-masked command also ends with, so a quoted or
-    # heredoc '&' is never cut.
-    if tail and (masked := _TRAILING_BACKGROUND_AMP_RE.search(_strip_quotes(fixed))):
-        if masked.group(0) == tail.group(0):
-            fixed = fixed[:tail.start()].rstrip()
     if wrapper := _LEADING_DETACH_WRAPPER_RE.match(fixed):
         fixed = fixed[wrapper.end():]
-    rest = _strip_quotes(fixed)
-    if not fixed or len(fixed) > _CORRECTED_CALL_MAX_CHARS or (
-        _SHELL_LEVEL_BACKGROUND_RE.search(rest) or _uses_background_amp(rest)
-    ):
+    if not _TRAILING_AMP_ONLY_RE.search(_strip_quotes(fixed)):
+        fixed += " &"
+    fixed = trailing_amp_background_command(fixed)
+    if not fixed or len(fixed) > _CORRECTED_CALL_MAX_CHARS:
         return None
-    return fixed
+    return fixed if _approval_identity(fixed) == _approval_identity(command) else None
 
 
 def _escalated_guidance(command: str, msg: str, count: int) -> str:

@@ -185,8 +185,22 @@ class TestRepeatedBackgroundRejection:
         ("sleep 9 & disown", None),
         ("setsid -f ./srv", None),
         ("x" * 300 + " &", None),     # too long to quote back
+        ("python3 -m http.server 8000", "python3 -m http.server 8000"),
+        # Shapes the trailing-& conversion refuses never get an exact resend.
+        ('echo "$(sleep 9 & echo $!)" &', None),  # hidden second background job
+        ("a; b &", None),
+        ("nohup a; b &", None),
+        ("hermes gateway run &", None),            # approval keys on the '&' itself
+        ("nohup hermes gateway run", None),
     ])
     def test_corrected_command_is_only_offered_when_mechanical(self, command, expected):
         from tools.terminal_tool_guards import _backgrounded_command
 
         assert _backgrounded_command(command) == expected
+
+    def test_escalation_uses_the_placeholder_when_no_exact_resend_exists(self, run):
+        command = 'echo "$(sleep 9 & echo $!)" &'
+        results = [run(command, task_id="t") for _ in range(3)]
+        assert [self._escalated(r) for r in results] == [False, False, True]
+        assert 'terminal(command="<cmd>", background=true, notify_on_complete=true)' in results[2]["error"]
+        assert "Resend exactly this" not in results[2]["error"]

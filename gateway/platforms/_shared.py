@@ -193,16 +193,18 @@ def bridge_env_skipped() -> bool:
 
 
 def _supplied_by_operator(name: str) -> bool:
-    """True when ``name`` came from the launch profile's ``.env``: a deliberate value that wins (#109032).
+    """True when ``name`` came from the launch profile's ``.env`` or an external secret source (vault,
+    1Password...): a deliberate value that wins (#109032).
 
-    A ``.env`` entry can hold exactly the value a previous bridge wrote, so value comparison alone
-    cannot tell it from the bridge's own leftover — this is the one case it must not clobber.
+    Either can hold exactly the value a previous bridge wrote (a proxy URL moved from YAML into the
+    vault), so value comparison alone cannot tell it from the bridge's own leftover — the one case it
+    must not clobber or retract.
     """
     try:
-        from hermes_cli.env_loader import has_nonblank_dotenv_value
+        from hermes_cli.env_loader import has_nonblank_dotenv_value, source_supplied_names
     except ImportError:  # bridging must not fail because the loader is unavailable
         return False
-    return has_nonblank_dotenv_value(name)
+    return has_nonblank_dotenv_value(name) or name in source_supplied_names()
 
 
 @dataclass

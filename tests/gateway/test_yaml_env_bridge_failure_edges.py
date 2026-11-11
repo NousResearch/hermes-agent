@@ -102,3 +102,48 @@ def test_lowercase_dotenv_key_is_the_operators_value_on_windows(tmp_path, monkey
     load_yaml_layer(tmp_path, {})
 
     assert os.environ.get("TELEGRAM_REACTIONS") == "false"
+
+
+def test_a_force_reload_drops_the_failed_load_record(tmp_path, monkeypatch):
+    """A plugin whose import failed, then disabled: a force reload must let YAML cleanup resume."""
+    from gateway import platform_registry as registry_module
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginManager, PluginManifest
+
+    plugin_dir = tmp_path / "plugins" / "bridgeprobe"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text(
+        "import bridgeprobe_missing_sdk  # noqa: F401\n\ndef register(ctx):\n    pass\n", encoding="utf-8")
+    manifest = PluginManifest(name="bridgeprobe-platform", kind="platform", source="bundled",
+                              path=str(plugin_dir), key="bridgeprobe-platform")
+    registry = registry_module.PlatformRegistry()
+    monkeypatch.setattr(registry_module, "platform_registry", registry)
+    monkeypatch.setattr(plugins, "discover_plugins", lambda: None)
+    (tmp_path / "config.yaml").write_text("bridgeprobe:\n  flag: false\n", encoding="utf-8")
+    manager = PluginManager()
+    manager._register_deferred_platform(manifest)
+    load_yaml_layer(tmp_path, {})  # the import fails here and is recorded
+    # An unrelated setting the bridge wrote earlier, now removed from YAML.
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
+
+    manager.unload()  # force rediscovery's unload-all; the disabled plugin never registers again
+    load_yaml_layer(tmp_path, {})
+
+    assert "TELEGRAM_REACTIONS" not in os.environ
+
+
+@pytest.mark.parametrize("yaml_text", ["{}\n", "telegram:\n  proxy_url: 'http://other:3128'\n"])
+def test_a_value_an_external_secret_source_supplies_is_the_operators(tmp_path, monkeypatch, yaml_text):
+    """The proxy moved from config.yaml into the vault: neither a YAML removal nor a YAML edit touches it."""
+    from hermes_cli import env_loader
+
+    proxy = "http://user:pw@proxy:3128"
+    monkeypatch.setenv("TELEGRAM_PROXY", proxy)
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_PROXY"), bridged_env_digest(proxy))  # inherited
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "TELEGRAM_PROXY", "onepassword")
+    (tmp_path / "config.yaml").write_text(yaml_text, encoding="utf-8")
+
+    load_yaml_layer(tmp_path, {})
+
+    assert os.environ.get("TELEGRAM_PROXY") == proxy

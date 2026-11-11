@@ -266,6 +266,7 @@ class PlatformRegistry:
         with self._lock:
             entries, deferred = self._scope_maps(scope, create=True)
             self._consumed_loaders.pop((scope, name), None)
+            self._failed_loads.discard((scope, name))  # a new generation gets its own verdict
             if name not in entries:
                 deferred[name] = loader
 
@@ -444,6 +445,12 @@ class PlatformRegistry:
                 logger.info("Platform '%s' re-registered (was %s, now %s)", entry.name, prev.source, entry.source)
             entries[entry.name] = entry
             logger.debug("Registered platform adapter: %s (%s)", entry.name, entry.source)
+
+    def forget_failed_loads(self) -> None:
+        """Drop every failed-load record: a force reload re-decides which plugins exist, and a plugin
+        disabled or removed since its import failed must stop holding back YAML cleanup."""
+        with self._lock:
+            self._failed_loads.clear()
 
     def unregister(self, name: str, *, scope: Optional[str] = None) -> bool:
         """Remove a platform entry. Returns True if it existed."""

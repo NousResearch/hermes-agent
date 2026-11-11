@@ -1961,6 +1961,16 @@ def _append_event(
     )
 
 
+# Run outcomes that prove a worker got through whatever wall the persisted
+# ``last_failure_error`` describes. Once one of these closes the active run, the
+# stamp is history, not the card's current blocker. Leaving it behind let a
+# rate-limited requeue's quota text survive a later reviewer verdict and park a
+# healthy ``ready`` card under ``blocker_auth`` forever (t_a579461b).
+# ``consecutive_failures`` is deliberately untouched: only ``complete_task``
+# clears the breaker budget.
+_STAMP_SUPERSEDING_OUTCOMES = frozenset({"completed", "review_requested", "changes_requested"})
+
+
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
@@ -1992,6 +2002,12 @@ def _end_run(
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    if outcome in _STAMP_SUPERSEDING_OUTCOMES:
+        # The run just closed proves the worker reached a legitimate forward
+        # transition, so any earlier failure text no longer describes the card's
+        # blocker. ``check_respawn_guard`` reads this column; a stale quota stamp
+        # here would park the card under ``blocker_auth`` (t_a579461b).
+        conn.execute("UPDATE tasks SET last_failure_error = NULL WHERE id = ?", (task_id,))
     return run_id
 
 

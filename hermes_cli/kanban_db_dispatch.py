@@ -67,6 +67,13 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Outcomes that prove the run which produced the persisted ``last_failure_error``
+# has been superseded: a later run reached a legitimate forward transition, so the
+# stamp is history rather than the card's current blocker. Without this, a
+# rate-limit stamp survived a reviewer's ``changes_requested`` verdict and parked a
+# healthy ``ready`` card under ``blocker_auth`` on every dispatch pass (t_a579461b).
+_RESPAWN_STAMP_SUPERSEDED_BY = frozenset({"completed", "review_requested", "changes_requested"})
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1629,7 +1636,12 @@ def check_respawn_guard(
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if (
+        err
+        and latest_outcome not in _RESPAWN_STAMP_SUPERSEDED_BY
+        and latest_outcome != "crashed"
+        and _RESPAWN_BLOCKER_RE.search(err)
+    ):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

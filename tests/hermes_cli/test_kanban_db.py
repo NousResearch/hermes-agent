@@ -551,6 +551,76 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+def test_respawn_guard_ignores_stamp_superseded_by_a_later_verdict(
+    kanban_home, monkeypatch,
+):
+    """A quota stamp left by an earlier run must not park a card once a later
+    run ends in a legitimate forward transition (t_a579461b).
+
+    Live shape: run 1830 (reviewer) was rate-limited and stamped
+    ``last_failure_error``; run 1831 then ended ``changes_requested`` and put the
+    card back at ``ready`` for the implementer. The rate-limit branch only looks
+    at the LATEST run, so it never cleared the stamp, and ``blocker_auth`` then
+    refused every dispatch pass for 49 minutes while the dispatcher itself was
+    healthy.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale stamp", assignee="a")
+
+        # Run 1: rate-limited requeue — stamps the quota text without billing a failure.
+        kb.claim_task(conn, tid)
+        rl_run = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?", (now, rl_run),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued without counting a failure", tid),
+        )
+
+        # Run 2: the reviewer's run ends with a verdict, not a failure.
+        kb.claim_task(conn, tid)
+        verdict_run = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='changes_requested', status='ready', "
+            "ended_at=? WHERE id=?", (now + 60, verdict_run),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL WHERE id=?", (tid,),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 120)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_end_run_clears_a_stamp_the_run_supersedes(kanban_home):
+    """``_end_run`` drops the persisted failure text when the closing run proves
+    the worker got through the wall; the breaker budget is left alone."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="end run clears", assignee="a")
+        kb.claim_task(conn, tid)
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=?, consecutive_failures=2 WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall)", tid),
+        )
+        conn.commit()
+
+        kb._end_run(conn, tid, outcome="changes_requested", status="ready", summary="fix x")
+        conn.commit()
+        task = kb.get_task(conn, tid)
+        assert task.last_failure_error is None
+        assert task.consecutive_failures == 2
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

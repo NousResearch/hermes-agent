@@ -48,9 +48,9 @@ export default function Success() {
           }
         >
           <span>
-            <span>Hermes is ready</span>
+            <span>Unitalk is ready</span>
           </span>
-          <span aria-hidden="true">Hermes is ready</span>
+          <span aria-hidden="true">Unitalk is ready</span>
         </p>
 
         <p className="m-0 text-center text-base leading-normal tracking-tight text-muted-foreground">

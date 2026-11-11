@@ -81,6 +81,13 @@ def test_a_refused_create_answers_with_its_type_and_whole_text(root, monkeypatch
     assert error["message"] == long_text  # Desktop shows it whole
     assert str(refusal_from(rpc_error(error).data)) == long_text  # and the CLI gets it whole too
 
+    huge = "Profile name '" + "n" * 4000 + "' is invalid. Then run `hermes profile create ok`."
+    monkeypatch.setattr(profile_provision, "provision_profile", _raise(ValueError(huge)))
+    error = server._methods["profiles.create"](1, {"name": "other", "no_alias": True})["error"]
+    assert error["message"] == huge
+    kept = str(refusal_from(rpc_error(error).data))
+    assert kept.endswith(" … [truncated]") and len(kept) == 3200 and kept.startswith("Profile name 'nnn")
+
     secret = "sk-proj-" + "X" * 40
     monkeypatch.setattr(profile_provision, "provision_profile",
                         _raise(ValueError("bad config.yaml line: api_key: " + secret)))
@@ -89,27 +96,32 @@ def test_a_refused_create_answers_with_its_type_and_whole_text(root, monkeypatch
 
 
 class _Client:
-    def __init__(self, outcome):
-        self.outcome = outcome
+    def __init__(self, outcome, sent):
+        self.outcome, self.sent = outcome, sent
 
     async def rpc(self, method, *, _timeout=None, **params):
         assert method == "profiles.create" and params["report"] is True and params["no_alias"] is True
-        if isinstance(self.outcome, BaseException):
-            raise self.outcome
-        return self.outcome
+        self.sent.append(params)
+        outcome = self.outcome(params) if callable(self.outcome) else self.outcome  # a callable: side effects
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
-def _gateway(monkeypatch, outcome, *, reachable=True):
+def _gateway(monkeypatch, outcome, *, reachable=True) -> list[dict]:
+    """A gateway answering *outcome* (a callable gets the params); returns the params each request sent."""
     from hermes_cli import gateway_client, gateway_runtime
+    sent: list[dict] = []
 
     @contextlib.asynccontextmanager
     async def connect(endpoint=None):
         if not reachable:
             raise ConnectionRefusedError("refused")
-        yield _Client(outcome)
+        yield _Client(outcome, sent)
     monkeypatch.setattr(gateway_client, "connect_gateway", connect)
     monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint",
                         lambda home: SimpleNamespace(state="ready", endpoint=object()))
+    return sent
 
 
 def _receipt(**over):
@@ -132,7 +144,13 @@ def test_typed_refusals_and_fallbacks(root, monkeypatch):
         assert create_through_gateway(request) is None
     _gateway(monkeypatch, None, reachable=False)
     assert create_through_gateway(request) is None
+    _gateway(monkeypatch, GatewayRPCError("runtime_draining", 4001))  # refused before routing: nothing made
+    assert create_through_gateway(request) is None
     # A gateway named by URL is never replaced by a local create.
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://gw.invalid/api/ws")
+    _gateway(monkeypatch, GatewayRPCError("runtime_draining", 4001))
+    with pytest.raises(GatewayCreateError, match="is restarting; retry"):
+        create_through_gateway(request)
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://gw.invalid/api/ws?token=secret-in-url")
     _gateway(monkeypatch, GatewayRPCError("old", -32601))
     with pytest.raises(GatewayCreateError, match="predates"):
@@ -202,19 +220,41 @@ def test_gateway_answers_that_create_nothing_here_or_report_the_unknown(root, mo
     _gateway(monkeypatch, TimeoutError())  # recovery is checked where the profile was made
     with pytest.raises(GatewayCreateError, match="on the gateway's machine"):
         create_through_gateway(request)
-    # Rejected by urlsplit (fullwidth colon; bad port), hostless, a password an unencoded "/" pushed into
-    # the path, or not a ws URL: never named, never dialed.
+    # Rejected by urlsplit (fullwidth colon; bad port, incl. a password an unencoded "/" made the port),
+    # hostless, or not a ws URL: never named, never dialed.
+    _gateway(monkeypatch, AssertionError("dialed"), reachable=False)
     for bad in ("ws://me:pw@gw\uff1a8443/api/ws", "ws://me:pw@gw:99999/api/ws", "wss:me:pw@gw.invalid/api/ws",
-                "https://me:pw@gw.invalid/api/ws", "ws://me:pw/cd@gw.invalid/api/ws", "ws://me:12/pw@gw.invalid/api/ws"):
+                "https://me:pw@gw.invalid/api/ws", "ws://me:pw/cd@gw.invalid/api/ws"):
         monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", bad)
-        with pytest.raises(GatewayCreateError) as malformed:
+        with pytest.raises(GatewayCreateError, match="nothing was created") as malformed:
             create_through_gateway(request)
         assert "pw" not in str(malformed.value) and "HERMES_TUI_GATEWAY_URL" in str(malformed.value)
+    # Dialable, but not showable safely (an "@" past the authority: a token like an email, or a password
+    # an unencoded "/" pushed into the path): dialed as connect_gateway would, named by the variable only.
+    for odd in ("wss://gw.invalid/api/ws?token=owner@example.com", "ws://me:12/pw@gw.invalid/api/ws"):
+        monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", odd)
+        sent = _gateway(monkeypatch, {"ok": True, "receipt": _receipt()})
+        assert create_through_gateway(request).path == "/p/x" and len(sent) == 1
+        _gateway(monkeypatch, TimeoutError())
+        with pytest.raises(GatewayCreateError) as lost:
+            create_through_gateway(request)
+        assert "HERMES_TUI_GATEWAY_URL gateway" in str(lost.value)
+        assert not any(s in str(lost.value) for s in ("owner@", "example", "12", "pw"))
 
 
-def test_the_wrapper_is_written_here_only_for_this_machines_profile(root, monkeypatch):
-    """Written when the gateway's profile is the one ``-p x`` selects here (same directory, exists),
-    whatever the URL says: a loopback tunnel or container can serve another home."""
+def _creating(path: Path):
+    """A gateway that makes *path* during the request and reports it."""
+    def answer(params):
+        path.mkdir(parents=True)
+        return {"ok": True, "receipt": _receipt(path=str(path))}
+    return answer
+
+
+def test_the_wrapper_is_written_here_only_when_this_create_made_the_local_profile(root, monkeypatch):
+    """Written when ``-p x``'s directory here was absent before the request and the gateway made it at that
+    path, whatever the URL says: a loopback tunnel or container can serve another home, and another
+    machine with the same home layout reports the same path."""
+    import shutil
     from hermes_cli.profile_provision_gateway import create_through_gateway
     wrote = []
     monkeypatch.setattr(profiles, "create_wrapper_script", lambda name: wrote.append(name) or Path("/bin") / name)
@@ -222,21 +262,61 @@ def test_the_wrapper_is_written_here_only_for_this_machines_profile(root, monkey
     here = root / "profiles" / "x"
     _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(here))})
     assert create_through_gateway(request).alias_path is None  # this path, but nothing there: not ours
-    here.mkdir(parents=True)
+    _gateway(monkeypatch, _creating(here))
     assert create_through_gateway(request).alias_path == "/bin/x"  # a discovered local owner made it here
+    shutil.rmtree(here)
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "wss://gw.invalid/api/ws")
     assert create_through_gateway(request).alias_path == "/bin/x"  # any URL, as long as it landed here
+    # Another machine, same layout: local x already existed, the gateway reports its own x at that path.
+    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(here))})
+    assert create_through_gateway(request).alias_path is None
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:9/api/ws?token=t")
-    elsewhere = root.parent / "container-home" / "profiles" / "x"  # exists here too, but is not `-p x`
-    elsewhere.mkdir(parents=True)
-    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(elsewhere))})
-    assert create_through_gateway(request).alias_path is None  # loopback, but another home: no wrapper
+    _gateway(monkeypatch, _creating(root.parent / "container-home" / "profiles" / "x"))
+    assert create_through_gateway(ProfileCreateRequest(name="y")).alias_path is None  # loopback, another home
+    # Local x appeared during the request (a concurrent local create), but the gateway made its own elsewhere.
+    shutil.rmtree(here)
+    def appeared_here(params):
+        here.mkdir(parents=True)
+        return {"ok": True, "receipt": _receipt(path=str(root.parent / "container-home" / "profiles" / "x"))}
+    _gateway(monkeypatch, appeared_here)
+    assert create_through_gateway(request).alias_path is None
     assert wrote == ["x", "x"]
 
-    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(here))})
+    shutil.rmtree(here)
+    _gateway(monkeypatch, _creating(here))
     monkeypatch.setattr(profiles, "check_alias_collision", _raise(RuntimeError("memory provider lookup failed")))
     made = create_through_gateway(request)  # the profile exists: a wrapper failure is a warning
     assert made.alias_path is None and made.warnings == ["alias wrapper: memory provider lookup failed"]
+
+
+def test_a_url_gateway_creates_in_this_terminals_profile(root, monkeypatch):
+    """A URL's connection carries no profile-bound ticket: the terminal's profile is named, so ``-p work``
+    copies work, not the gateway's launch profile. A profile it can't serve refuses before any create."""
+    from hermes_cli.gateway_client import rpc_error
+    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from tui_gateway import ws_legacy_fallback
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "wss://gw.invalid/api/ws")
+    request = ProfileCreateRequest(name="x", alias=False, clone_config=True)
+    sent = _gateway(monkeypatch, {"ok": True, "receipt": _receipt()})
+    create_through_gateway(request)
+    work = root / "profiles" / "work"
+    work.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(work))
+    create_through_gateway(request)
+    assert [params["profile"] for params in sent] == ["default", "work"]
+    _gateway(monkeypatch, rpc_error(ws_legacy_fallback._unavailable({"id": 1})["error"]))
+    with pytest.raises(GatewayCreateError, match=r"cannot serve this terminal's profile \(work\); nothing was created"):
+        create_through_gateway(request)
+    import hermes_constants
+    with monkeypatch.context() as patched:
+        patched.setattr(hermes_constants, "profile_name_for_home", lambda home: None)  # no name resolves
+        with pytest.raises(GatewayCreateError, match="not a named profile.*nothing was created"):
+            create_through_gateway(request)
+    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    sent = _gateway(monkeypatch, {"ok": True, "receipt": _receipt()})
+    create_through_gateway(request)
+    assert "profile" not in sent[0]  # a local owner's ticket already names it
 
 
 def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
@@ -303,6 +383,9 @@ def test_a_config_outage_mid_create_is_an_unknown_outcome(root, monkeypatch, whe
     assert error["code"] == 5062
     _gateway(monkeypatch, rpc_error(error))
     with pytest.raises(GatewayCreateError, match="may have created 'w2'"):
+        create_through_gateway(ProfileCreateRequest(name="w2", alias=False))
+    _gateway(monkeypatch, rpc_error(error))
+    with pytest.raises(GatewayCreateError, match="backend down"):  # the reason, not "request_failed"
         create_through_gateway(ProfileCreateRequest(name="w2", alias=False))
     _gateway(monkeypatch, rpc_error({"code": 4064, "message": "profile unavailable"}))  # never "nothing made"
     with pytest.raises(GatewayCreateError, match="may have created 'w2'"):

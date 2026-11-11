@@ -1,0 +1,67 @@
+name: pokeit
+title: PokeIt
+repo: https://github.com/kbtbc/pokeit-hermes
+sha: 990c4126db513d69292ce68d48aa756ad7852123
+description: >-
+  Real-time Pokémon GO hunting inside Hermes, with a live Radar,
+  nearby catches and raids, approved scans, and desktop alerts.
+maintainer: kbtbc
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/kbtbc/pokeit-hermes/blob/990c4126db513d69292ce68d48aa756ad7852123/README.md
+version: "0.1.25"
+image: https://raw.githubusercontent.com/kbtbc/pokeit-hermes/990c4126db513d69292ce68d48aa756ad7852123/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/kbtbc/pokeit-hermes/990c4126db513d69292ce68d48aa756ad7852123/assets/desktop-radar.webp
+platforms: []
+known_issues:
+  - Results come from PokeIt's own scanning network. They are not exhaustive and an observation can expire before you arrive.
+  - The server runs separately from this repository and can change after you install; its tool list is served at runtime.
+  - The Radar and desktop alerts need Hermes Desktop 0.23.0 or newer with the plugin enabled on the profile you chat in. CLI and messaging clients get the tools and the skill only.
+  - After installing or updating, restart the Hermes gateway that serves your chat and open a new chat so the PokeIt tools load.
+  - Desktop alerts need an area with ongoing scan coverage (https://pokeit.cc/coverage).
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+```
+
+Notes:
+- **Screenshots.** The catalog parser accepts the pinned `desktop-radar.webp` URL. The older `desktop-card.png` is deliberately omitted.
+- **Category.** `desktop` highlights the Radar and desktop alerts.
+- **Capabilities are empty** because the tools come from the server at runtime.
+
+## PR title and body
+
+Title: `plugin-catalog: add pokeit (Plugin Hackathon entry)`
+
+```md
+Adds `plugin-catalog/pokeit.yaml` (one data-only file), pinned to `990c4126db513d69292ce68d48aa756ad7852123` (0.1.25). Submitted by the repository owner (rule 5). My entry for the Plugin Hackathon.
+
+## What it does
+Real-time Pokémon GO hunting near you, inside Hermes Desktop. Ask "What Pokémon are worth catching near me?", say where you are, and the PokeIt Radar opens beside the chat by itself: the best catches on a live map with IVs, a countdown and whether the walk is worth it. Ask about raids and the map switches to raid bosses. Where there is no data the agent can request a fresh scan (49 points, 371 m radius), and Hermes asks first. Press Watch and your desktop tells you when a match appears.
+
+![PokeIt](https://raw.githubusercontent.com/kbtbc/pokeit-hermes/990c4126db513d69292ce68d48aa756ad7852123/assets/catalog-banner.png)
+
+Portable Agent Plugins v1 package: `plugin.json`, `mcp.json` (hosted Streamable HTTP server), one skill, `desktop/plugin.js` (SDK only) and `dashboard/plugin_api.py` (read-only proxy). No `plugin.yaml`, hooks, dependencies or build step. It works without Desktop on the CLI and in chat apps.
+
+## Disclosure (rule 13, same facts as the README)
+- **Network.** Each tool call sends coordinates, place text and filters to `https://mcp.pokeit.cc`, which I run behind Cloudflare. No files, credentials or conversation text are sent. The tool list is served at runtime and is not covered by the pin; the service can change after install. Results are not exhaustive.
+- **Retention.** The service keeps tool names, filters, timings and result counts for about 14 days. A scan request keeps coordinates and request ID for 24 hours, plus a keyed hash of the network address for the trial limit (20 scans per network per 24 hours). Ordinary web logs hold IP, path, time and status.
+- **Approval.** `plugin.json` marks the server `untrusted`, and the server marks its read tools `readOnlyHint`. Hermes asks before `request_scan`, the one tool that starts a scan. Reading never starts a scan.
+- **Desktop proxy.** It runs in the gateway, calls read tools on the same server (`find_pokemon`, `find_raids`, `find_gyms`, `find_pokestops`, `get_coverage`, `get_scan_status`, `search_places`), caches in memory and fetches species icons from `https://pokeit.cc/assets` (no location sent). The Radar and the watch save the last spot, radius and filter locally per gateway profile. The watch polls about once a minute for up to two hours and never starts scans.
+- **Map resources.** The embedded Radar map loads tiles directly from `https://tile.openstreetmap.org` and icons from `https://pokeit.cc/assets`. Tile requests reveal the displayed map area and network address to the tile provider. Species translations can come from WatWowMap's public GitHub files without user data. Service-generated map previews are cached for 60 seconds.
+- **Analytics and execution.** The plugin sends no separate analytics events or place-search diagnostics header. The hosted service retains the operational logs disclosed above. The plugin does not read credentials, run shell commands, install a separate background service or update its own files. The user-started watch polls only while Hermes is running.
+- Place data is © OpenStreetMap contributors (ODbL). Unofficial; not affiliated with Nintendo, Niantic, Scopely or The Pokémon Company.
+
+## Entry notes
+- `requires_hermes: ">=0.23.0"` declares the compatibility floor in the catalog for this portable package (rule 14).
+- `capabilities` are empty because the tools come from the server at runtime.
+
+## Checks run at the pin
+`hermes plugins validate`: passed (server trust untrusted; security scan safe; desktop surface in the SDK). No binaries. Repository tests: 50 Desktop tests and 18 proxy tests pass; the final commit is documentation-only. Tested on Windows 11 with Hermes Desktop 0.23.1 against a Mac Studio gateway, and on the CLI.
+
+## How to test
+`hermes plugins install kbtbc/pokeit-hermes --enable`, restart Hermes, open a new chat and ask: "What's worth catching near the Georgia Aquarium in Atlanta?" On Desktop, open PokeIt Radar from the status bar and press the amber button.

@@ -1,10 +1,10 @@
 name: leash
 repo: https://github.com/nicoarias81/leash
 sha: f3bf4f4dc3b4300aef0fabdaf5b08bd77bb63c9a
-description: "Lean OWASP Top 10 pentest toolkit run by the agent against your own dev app: scope-gated recon (TCP scan, same-origin crawl), multi-identity access-control testing with canary-based leak detection, parameter fuzzing, security-header audit and an evidence ledger that turns findings into a plain-language report grouped by OWASP category. Disclosure — all engine tools are network-active by design and fail closed without an authorized scope file; session tokens for test identities are stored locally in plugin-data and never enter the model context; enforce mode also blocks out-of-scope network-capable tool calls."
+description: "Lean OWASP Top 10 pentest toolkit run by the agent against your own dev app: scope-gated recon (TCP scan, same-origin crawl), multi-identity access-control testing with canary-based leak detection, parameter fuzzing, security-header audit and an evidence ledger that turns findings into a plain-language report grouped by OWASP category. Disclosure — sends TCP connects and HTTP requests (including model-chosen methods, headers, bodies and test payloads) only to hosts and CIDRs listed in the user's scope file, and refuses everything when no scope file is set; in the default audit mode its pre_tool_call hook only logs out-of-scope targets seen in terminal, web_extract and browser tool arguments (enforce mode blocks them); stores test-identity session cookies and tokens in plain JSON under plugin-data/leash, outside model context."
 maintainer: nicoarias81
 tier: community
-category: developer-tools
+category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/nicoarias81/leash#readme
 version: "0.1.0"

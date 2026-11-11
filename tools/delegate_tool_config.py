@@ -389,6 +389,11 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
 
 def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
+    if not v["base_url"].lower().startswith(("http://", "https://")):
+        raise ValueError(
+            "delegation.base_url must start with http:// or https:// for a direct endpoint. "
+            "For a process/SDK provider, remove base_url from the delegation route and set provider instead."
+        )
     # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
     # Foundry, MiniMax, Zhipu, LiteLLM) get the Messages transport instead of 404ing on chat_completions.
     # Without this, subagents would default to chat_completions and hit 404s on endpoints that only speak

@@ -1,0 +1,36 @@
+name: strategic-arena
+repo: https://github.com/trillionverselabs-boop/strategic-arena
+sha: 8d878c7223a857c2231e9b557eedf59be34d55c1
+title: Strategic Arena
+description: >-
+  Understand the landscape before you invest: give it a link and get the room that
+  reacts — who can block adoption, what each concession buys, and the claims you can
+  score later. Research papers also get a replication clock.
+maintainer: LeMultiFox
+tier: community
+category: tools
+version: "0.6.3"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/trillionverselabs-boop/strategic-arena/blob/main/docs/POSITIONING.md
+image: https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/8d878c7223a857c2231e9b557eedf59be34d55c1/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/8d878c7223a857c2231e9b557eedf59be34d55c1/assets/how-it-works.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - arena_run
+    - arena_status
+    - arena_report
+    - arena_history
+    - arena_calibration
+    - arena_due
+    - arena_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "A run uses the model the Hermes session is already on. There is no model picker by design."
+  - "A 24h review is ~$0.02 on a cheap paid model; a free model is fine but rate-limited, so the same run can take 15-30 minutes."
+  - "The desktop UI loads from the machine running the app, so a UI change needs Install from Git with the Desktop target on that machine."
+  - "PDFs outside arXiv need a text layer; a link that cannot be read is reported as SKIPPED in the run's provenance, never silently dropped."

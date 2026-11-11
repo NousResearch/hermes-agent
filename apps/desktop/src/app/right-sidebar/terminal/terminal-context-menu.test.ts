@@ -1,12 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { commandFocusedTerminal, registerTerminalContextMenu, terminalMenuHandleFor } from './terminal-context-menu'
+import {
+  commandFocusedTerminal,
+  registerTerminalContextMenu,
+  terminalMenuHandleFor,
+  wordEraseFocusedTerminal
+} from './terminal-context-menu'
 
 const handle = (overrides: Partial<Parameters<typeof registerTerminalContextMenu>[1]> = {}) => ({
   getSelection: () => '',
   paste: null,
   reload: vi.fn(),
   selectAll: vi.fn(),
+  wordErase: null,
   ...overrides
 })
 
@@ -104,5 +110,153 @@ describe('commandFocusedTerminal', () => {
     expect(first.reload).not.toHaveBeenCalled()
     expect(second.reload).toHaveBeenCalledTimes(1)
     scope.remove()
+  })
+})
+
+/** Mirror the production DOM shape (instance.tsx): the handle is registered
+ * on the inner xterm host while the markers live on the enclosing scope. */
+function mountScope(markers: 'interactive' | 'readonly'): { host: HTMLElement; scope: HTMLElement } {
+  const scope = document.createElement('div')
+  scope.dataset.terminal = ''
+
+  if (markers === 'interactive') {
+    scope.dataset.interactiveTerminal = ''
+  }
+
+  const host = document.createElement('div')
+  scope.append(host)
+  document.body.append(scope)
+
+  return { host, scope }
+}
+
+describe('wordEraseFocusedTerminal', () => {
+  const cleanups: Array<() => void> = []
+
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0)) {
+      cleanup()
+    }
+
+    document.body.replaceChildren()
+  })
+
+  it('routes the close chord to the focused interactive terminal and reports it consumed', () => {
+    const { host, scope } = mountScope('interactive')
+    const wordErase = vi.fn(() => true)
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase
+      })
+    )
+
+    scope.tabIndex = -1
+    scope.focus()
+
+    expect(wordEraseFocusedTerminal()).toBe(true)
+    expect(wordErase).toHaveBeenCalledOnce()
+  })
+
+  it('keys the registry by the [data-terminal] scope, not the nested host', () => {
+    const { host } = mountScope('interactive')
+    const wordErase = vi.fn(() => true)
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase
+      })
+    )
+
+    // The resolver walks up from a focus point INSIDE the host, exactly like
+    // the real xterm textareaFocus.
+    const focusPoint = document.createElement('textarea')
+    host.append(focusPoint)
+    focusPoint.focus()
+
+    expect(wordEraseFocusedTerminal()).toBe(true)
+    expect(terminalMenuHandleFor(focusPoint)).not.toBeNull()
+  })
+
+  it('keeps the read-only agent mirror closeable (null wordErase)', () => {
+    const { host, scope } = mountScope('readonly')
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: null,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: null
+      })
+    )
+
+    scope.tabIndex = -1
+    scope.focus()
+
+    expect(wordEraseFocusedTerminal()).toBe(false)
+  })
+
+  it('reports not consumed when the terminal has no live session', () => {
+    const { host, scope } = mountScope('interactive')
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: () => false
+      })
+    )
+
+    scope.tabIndex = -1
+    scope.focus()
+
+    // A sessionless terminal falls back to closing the tab.
+    expect(wordEraseFocusedTerminal()).toBe(false)
+  })
+
+  it('reports not consumed when focus is elsewhere', () => {
+    const { host } = mountScope('interactive')
+    cleanups.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => '',
+        paste: () => undefined,
+        reload: () => {},
+        selectAll: () => undefined,
+        wordErase: () => true
+      })
+    )
+
+    const elsewhere = document.createElement('textarea')
+    document.body.append(elsewhere)
+    elsewhere.focus()
+
+    expect(wordEraseFocusedTerminal()).toBe(false)
+  })
+
+  it('stops routing after the handle unregisters (idempotent remove)', () => {
+    const { host, scope } = mountScope('interactive')
+    const wordErase = vi.fn(() => true)
+
+    const unregister = registerTerminalContextMenu(host, {
+      getSelection: () => '',
+      paste: () => undefined,
+      reload: () => {},
+      selectAll: () => undefined,
+      wordErase
+    })
+
+    scope.tabIndex = -1
+    scope.focus()
+    unregister()
+
+    expect(wordEraseFocusedTerminal()).toBe(false)
+    expect(wordErase).not.toHaveBeenCalled()
   })
 })

@@ -152,7 +152,7 @@ def main():
                         code = ("import runpy; ns=runpy.run_path(" + repr(str(Path(__file__).resolve()))
                                 + "); ns['rows_worker']()")
                         proc = subprocess.run([sys.executable, "-c", code], cwd=repo, env=env,
-                                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45)
+                                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45, check=False)
                         transcript = proc.stdout + proc.stderr
                         if proc.returncode:
                             raise RuntimeError(transcript)

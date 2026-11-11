@@ -31,6 +31,55 @@ with third-party bridges. When this happens, Hermes will update the bridge depen
 bot stops working after a WhatsApp update, pull the latest Hermes version and re-pair.
 :::
 
+## Multiple profiles
+
+The host multiplexer can serve a separate paired WhatsApp session for each profile.
+Run `hermes -p work whatsapp` to pair a secondary profile, then enable WhatsApp
+for that profile. An enabled profile without `creds.json` is skipped with the
+`whatsapp_unpaired` status and its pairing command.
+
+An explicit `platforms.whatsapp.extra.bridge_port` takes precedence. Otherwise,
+a secondary selects the first free port in 3001 to 3999 that no other profile's
+record claims, and saves it in its own `platforms/whatsapp/bridge_port` file for
+subsequent starts. Operators can pre-create that file with a port number; delete
+it to have a new port allocated. The launch profile uses port 3000 unless it
+already has that file (from serving as a secondary), in which case its gateway
+and `hermes send --to whatsapp:<chat_id>` both keep using the recorded port.
+
+A secondary adopts a bridge already running on its port only when its own
+session pidfile identifies that process (pid, kernel start time, and the port it
+was started on), which is
+what a gateway crash leaves behind. An unhealthy one is reaped by that same
+identity and restarted. Any other process bound on the port is a fatal error
+for that profile only. Set `platforms.whatsapp.extra.bridge_port` to a
+distinct free port, or stop the process holding it. Other
+profiles continue running. `hermes gateway status --profile work` reports the
+profile's own WhatsApp adapter rather than shared ingress.
+
+Profiles that each run their own gateway, rather than one multiplexed gateway,
+all use port 3000 unless configured otherwise. Give each one a distinct port in
+that profile's `config.yaml`:
+
+```yaml
+platforms:
+  whatsapp:
+    extra:
+      bridge_port: 3001        # one distinct port per profile
+```
+
+A gateway identifies a running bridge by the session directory the bridge
+reports in `/health`. A bridge serving another profile's session is never
+adopted and never stopped: the second profile's WhatsApp fails to start with
+`whatsapp_bridge_foreign_session`, naming the port and the other session. A
+process that holds the port but does not answer `/health` in time is left
+running too, and WhatsApp fails with the retryable
+`whatsapp_bridge_unresponsive`. `hermes send --to whatsapp:<chat_id>` and cron
+delivery check the same field and send nothing through another profile's bridge
+or through one whose `/health` fails. If you
+override `session_path`, keep it distinct per profile, or the profiles share one
+WhatsApp login. Bridges started by an older Hermes report no session directory
+and are restarted once, as after a bridge update.
+
 ## Two Modes
 
 | Mode | How it works | Best for |
@@ -42,10 +91,11 @@ bot stops working after a WhatsApp update, pull the latest Hermes version and re
 
 ## Prerequisites
 
-- **Node.js v18+** and **npm** — the WhatsApp bridge runs as a Node.js process
+- **Node.js v20+** and **npm** — the WhatsApp bridge runs as a Node.js process
 - **A phone with WhatsApp** installed (for scanning the QR code)
 
-Unlike older browser-driven bridges, the current Baileys-based bridge does **not** require a local Chromium or Puppeteer dependency stack.
+Ordinary QR pairing does not need a browser. Accounts that require passkey verification
+also need an installed Chrome or Edge browser with access to that account's passkey.
 
 ---
 
@@ -70,6 +120,32 @@ The wizard will:
 4. Point your camera at the terminal QR code
 
 Once paired, the wizard confirms the connection and exits. Your session is saved automatically.
+
+### Accounts requiring a passkey
+
+If WhatsApp requests a passkey after the QR scan, run the interactive setup with
+the path to your installed Chrome or Edge executable:
+
+```text
+hermes whatsapp --passkey-browser "/absolute/path/to/browser"
+```
+
+The path above is a placeholder; replace it with the actual browser executable
+on your machine. Setup opens WhatsApp Web in a temporary browser window to
+complete its passkey request. Approve the request using your account's passkey.
+If setup displays a confirmation code, compare it with your phone and confirm
+only if the codes match. The browser closes when the request completes or is
+cancelled. Hermes enables WhatsApp only after pairing succeeds.
+
+The temporary window does not inherit your regular Chrome or Edge profile or
+its signed-in password manager. Your passkey must be available through the
+authentication options that window offers. Availability of phone and OS passkeys,
+and real-account WhatsApp acceptance, still need end-to-end validation.
+
+This path needs an interactive terminal and graphical browser on the machine
+running setup. It is not available through dashboard onboarding or a headless
+SSH session. The browser is needed during passkey pairing, not for normal
+messaging after pairing.
 
 :::tip
 If the QR code looks garbled, make sure your terminal is at least 60 columns wide and supports
@@ -198,6 +274,12 @@ whatsapp:
 ```
 
 When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+Delivery and read status of the messages Hermes sends is logged to `gateway.log`, one line per status change (`server_ack`, `delivered`, `read`, `played`, or `error` with WhatsApp's error code). In groups, each recipient's receipt is its own line with `recipient=`. Messages typed by a person on the linked phone are not logged.
+
+```
+[WhatsApp] WhatsApp delivery status: message=3EB0A1 chat=15551234567@s.whatsapp.net status=read at=1760000000
+```
 
 ---
 

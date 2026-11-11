@@ -1,0 +1,27 @@
+name: refusal
+repo: https://github.com/0ldev/refusal
+sha: b1bd080caeba423309d437f7df6ee564bd5d27dd
+version: "0.2.0"
+description: "Detects when a model refuses a request or deflects to an educational alternative, and retries the turn on the next model in your fallback_providers chain; optionally appends your own text to the retry's system prompt after a refusal. Detection is local and rule-based (regex patterns over the response prose); tool-calling responses, code blocks and partial answers are treated as genuine answers. Disclosure — an llm_execution middleware inspects every model response before the agent loop uses it, and when it detects a refusal it sets finish_reason to content_filter (Anthropic: stop_reason to refusal) so Hermes activates its fallback model; this is logged and counted identically to a real provider-signalled refusal (reason=content_policy_blocked), with no way for a plugin to register a distinct reason, so the detection log line carries session/model/provider/api_request_id to let the two be told apart by hand; a triggered fallback resends the full conversation to the fallback provider and spends tokens there; with no fallback provider configured, Hermes replaces the response with its standard safety-refusal notice, so a false positive discards a valid answer. Optional (off by default, empty preprompt/preprompt_escalated settings): an llm_request middleware appends your configured text to the system prompt of requests in an armed session, so a same-route retry of the same model carries it; armed state is memory-only unless persist_state is enabled, in which case session ids/levels/turn ids (never text or credentials) are kept in Hermes's plugin state. No network calls, no files read or written outside the plugin package (and, if persist_state is on, its own plugin-data file), no shell commands, no background processes, no stored credentials, no telemetry sent anywhere."
+maintainer: 0ldev
+tier: community
+category: models
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/0ldev/refusal/blob/b1bd080caeba423309d437f7df6ee564bd5d27dd/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_finalize
+    - on_session_reset
+    - on_session_delete
+    - post_compaction
+  provides_middleware:
+    - llm_execution
+    - llm_request
+  requires_env: []
+known_issues:
+  - "Detection is pattern-based, so an unusual refusal phrasing can be missed and a response that quotes refusal language can occasionally be flagged. Configure at least one fallback model so a false positive does not discard an answer."
+  - "A detected refusal appears under Hermes's own content_policy_blocked failover reason, identically to a real provider-signalled refusal; plugins cannot register a distinct reason (hermes-agent#138900). The detection log line carries session/model/provider/api_request_id so the two can be correlated and told apart by hand, but no plugin can fix Hermes's own aggregate counts."
+  - "The optional preprompt (off by default) rewrites the system prompt of the retry. Hermes skips a fallback entry that resolves to the same provider+model as the one that just failed, so retrying the SAME model needs a different route to it in fallback_providers (see README). This is a prompt-injection mechanism by design — read the disclosure before enabling it."

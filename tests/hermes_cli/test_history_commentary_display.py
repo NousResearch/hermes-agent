@@ -61,6 +61,18 @@ def test_gateway_history_uses_same_display_projection():
     assert row["reasoning"].endswith("I will inspect the files.")
 
 
+def test_rest_history_shows_a_steer_as_the_users_own_words():
+    from agent.prompt_builder import steer_user_row
+
+    row = steer_user_row("fix the header too")
+    projected = _project_for_display([row])[0]
+
+    # Same words session.resume shows; the model-facing marker stays in the source.
+    assert projected["display_content"] == "fix the header too"
+    assert _history_to_messages([row])[0]["text"] == "fix the header too"
+    assert row["content"].startswith("[OUT-OF-BAND USER MESSAGE")
+
+
 def test_history_applies_live_stripping_and_redaction_without_changing_raw_items(
     monkeypatch,
 ):

@@ -7,7 +7,7 @@ and then runs ``-m platforms("macos")``. A file whose tests only pass because th
 the interpreter believe it is on macOS (``is_macos`` patched to ``True``,
 ``sys.platform`` set to ``"darwin"``) but that carries no marker is invisible to
 that lane: it is green on Linux over a faked branch and never imported on the
-host it exists for (#111866). Root ``AGENTS.md`` § "Don't fake the host OS" is
+host it exists for (#111866). ``tests/AGENTS.md`` § "Don't fake the host OS" is
 the rule; this check makes a violation a red job instead of a review catch.
 
 Flags, per ``tests/**/test_*.py`` without a whole-word ``platforms("macos")``:
@@ -108,7 +108,7 @@ def main(argv: list[str]) -> int:
     if new:
         print(
             f"\n{len(new)} test file(s) make the interpreter believe it is on macOS but carry no "
-            f"`{MARKER}` marker, so the macOS lane never imports them (AGENTS.md § Don't fake the "
+            f"`{MARKER}` marker, so the macOS lane never imports them (tests/AGENTS.md § Don't fake the "
             f"host OS). Split the macOS arm into its own `@pytest.mark.{MARKER}` test that runs the "
             f"real branch, or mark `# {OPT_OUT} — <why>` on a host-independent line.",
             file=sys.stderr,

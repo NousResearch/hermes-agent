@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    isolated_python as isolated_python,
-    plugin_world as plugin_world,
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 import hermes_yaml as yaml
 
@@ -284,6 +284,46 @@ def test_force_reinstall_does_not_drift_pin_without_explicit_new_ref(
     assert _metadata(home)["demo"]["revision"] == new_sha
 
 
+@pytest.mark.parametrize("move", ["pinned-new-ref", "unpinned-reinstall", "other-source"])
+def test_force_reinstall_of_the_same_source_keeps_the_users_files(monkeypatch, tmp_path, move):
+    """Moving a pin is documented as ``install --force --ref``; like ``update`` it replaces the plugin's
+    code, not the user's state. Untracked/ignored files stay live, edits to tracked files go to
+    plugins-backup, and nothing the new revision ships is overwritten by the old tree. Another
+    repository under the same plugin name is another plugin and still starts clean."""
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    (tmp_path / "first").mkdir()
+    repo, _old, _new = _plugin_repo(tmp_path / "first")
+    (repo / ".gitignore").write_text("data/\n", encoding="utf-8")
+    old_sha = _commit(repo, "ignore data", "old")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=False, ref=old_sha if move == "pinned-new-ref" else None)
+    (target / "data").mkdir()
+    (target / "data" / "state.json").write_text('{"user": 1}', encoding="utf-8")
+    (target / "settings.local.yaml").write_text("mode: mine\n", encoding="utf-8")
+    (target / "marker.txt").write_text("edited", encoding="utf-8")
+    new_sha = _commit(repo, "newer", "newer")
+    if move == "other-source":
+        (tmp_path / "other").mkdir()
+        repo, _old, new_sha = _plugin_repo(tmp_path / "other")
+
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=True, ref=new_sha if move == "pinned-new-ref" else None)
+
+    assert _git(target, "rev-parse", "HEAD") == new_sha
+    kept = move != "other-source"
+    assert (target / "marker.txt").read_text() == ("newer" if kept else "new")
+    assert (target / "data" / "state.json").exists() is kept
+    assert (target / "settings.local.yaml").exists() is kept
+    backups = list((home / "plugins-backup").glob("demo-*"))
+    assert [(b / "marker.txt").read_text() for b in backups] == (["edited"] if kept else [])
+    if kept:
+        assert (target / "data" / "state.json").read_text() == '{"user": 1}'
+        assert (target / "settings.local.yaml").read_text() == "mode: mine\n"
+
+
 def test_unpinned_install_and_force_reinstall_keep_tracking_head(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core
 
@@ -530,11 +570,11 @@ def test_install_refuses_a_non_https_update_url(monkeypatch, tmp_path, update_ur
 def test_install_saves_an_https_update_url_tag(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core
 
-    repo, _old, sha = _plugin_repo(tmp_path)
+    repo, _old, _sha = _plugin_repo(tmp_path)
     (repo / "plugin.yaml").write_text(
         yaml.safe_dump({"name": "demo", "version": "1.0.0", "update_url": " https://feed.example/f.yml "}),
         encoding="utf-8")
-    sha = _commit(repo, "feed", "feed")
+    _commit(repo, "feed", "feed")
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
 

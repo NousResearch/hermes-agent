@@ -20,11 +20,14 @@
  * The request is one-shot per (connection, profile) scope per renderer:
  * the server side is idempotent and never overwrites a non-NULL owner, so a
  * repeat is harmless but pointless. A transport failure re-arms the scope so
- * the next refresh retries; a backend without the endpoint (version skew)
- * stays armed-off for this renderer lifetime.
+ * the next refresh retries; a backend without the endpoint (version skew) or a
+ * backend that refuses offline maintenance because it owns the profile (409,
+ * the steady state while that gateway runs) stays armed-off for this renderer
+ * lifetime — retrying either every enumeration is a request storm the backend
+ * will keep refusing.
  */
 import { getApiRequestConnection, hermesApi } from '@/api/client'
-import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
+import { isMissingRestEndpoint, isOfflineMaintenance } from '@/lib/gateway-rpc'
 import { resolveLegacyOwnerBackfillScope } from '@/lib/session-owner-stamp'
 import { $connectionsRegistry, hasRegistryTopology } from '@/store/connection-registry-state'
 
@@ -81,9 +84,10 @@ export function maybeBackfillLegacySessionOwners(): void {
       }
     })
     .catch(error => {
-      // Version skew: this backend predates the endpoint. Keep the scope
-      // marked so we don't re-probe a known-dead route every refresh.
-      if (isMissingRestEndpoint(error)) {
+      // Terminal for this scope: version skew (no endpoint) or the owning
+      // gateway's 409 maintenance refusal. Keep the scope marked so we don't
+      // re-probe a route that will answer the same way every refresh.
+      if (isMissingRestEndpoint(error) || isOfflineMaintenance(error)) {
         return
       }
 

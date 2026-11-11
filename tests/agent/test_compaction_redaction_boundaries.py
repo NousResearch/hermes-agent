@@ -55,6 +55,14 @@ def _response(content: str):
     return mock_response
 
 
+def _request_text(messages: list) -> str:
+    return "\n".join(
+        message.get("content") or ""
+        for message in messages
+        if isinstance(message.get("content"), str)
+    )
+
+
 def _assert_clean(text: str):
     assert SECRET not in text
     assert "sk-proj-" not in text
@@ -143,7 +151,7 @@ def test_manual_focus_topic_redacted_before_summary_prompt():
         )
 
     assert result is not None
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = _request_text(mock_call.call_args.kwargs["messages"])
     _assert_clean(prompt)
 
 
@@ -178,7 +186,7 @@ def test_previous_summary_redacted_before_iterative_prompt_reentry():
         )
 
     assert result is not None
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = _request_text(mock_call.call_args.kwargs["messages"])
     assert "PREVIOUS SUMMARY:" in prompt
     _assert_clean(prompt)
     # After generation, _previous_summary holds the new (clean) LLM output —
@@ -218,6 +226,6 @@ def test_resumed_handoff_summary_redacted_before_iterative_prompt():
     ) as mock_call:
         c.compress(messages)
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = _request_text(mock_call.call_args.kwargs["messages"])
     assert "PREVIOUS SUMMARY:" in prompt
     _assert_clean(prompt)

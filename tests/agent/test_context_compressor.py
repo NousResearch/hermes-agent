@@ -3140,7 +3140,7 @@ class TestSummaryPromptBounding:
         whose body contains blank lines, which are not record delimiters."""
         compressor = ContextCompressor(
             model="test/model", threshold_percent=0.85, protect_first_n=2, protect_last_n=2,
-            quiet_mode=True, tail_mode="lean",
+            quiet_mode=True, tail_mode="lean", api_mode="anthropic_messages",
         )
         body = "para1\n\npara2 " + ("x" * 1200)
         messages = [{"role": "user", "content": f"record-{i:04d} {body}"} for i in range(1200)]
@@ -3225,7 +3225,7 @@ class TestSummaryPromptBounding:
         mock_response.choices[0].message.content = "updated summary"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=272000):
-            c = ContextCompressor(model="test", quiet_mode=True)
+            c = ContextCompressor(model="test", quiet_mode=True, api_mode="anthropic_messages")
         cap = c._SUMMARY_INPUT_MAX_CHARS
         c._previous_summary = "PREV_HEAD " + ("p" * (cap * 2)) + " PREV_TAIL"
 

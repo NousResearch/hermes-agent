@@ -50,7 +50,7 @@ def compressor() -> ContextCompressor:
     return instance
 
 
-def _captured_prompt(compressor: ContextCompressor) -> str:
+def _captured_messages(compressor: ContextCompressor) -> list:
     captured: dict = {}
 
     def _capture(*args, **kwargs):
@@ -60,22 +60,27 @@ def _captured_prompt(compressor: ContextCompressor) -> str:
                 if isinstance(a, list):
                     messages = a
                     break
-        captured["prompt"] = "\n".join(
-            str(m.get("content", "")) for m in (messages or []) if isinstance(m, dict)
-        )
+        captured["messages"] = list(messages or [])
         return _response("## Goal\nStub summary.")
 
     with patch("agent.context_compressor.call_llm", side_effect=_capture):
         compressor._generate_summary(_user_turns())
-    return captured.get("prompt", "")
+    return captured.get("messages", [])
 
 
 @pytest.mark.parametrize("previous_summary", [None, "## Goal\nEarlier summary."], ids=["first", "iterative"])
 def test_summary_prompt_carries_stance_rule_and_section(compressor, previous_summary):
-    # Wiring, not wording: the rule sits in the preamble (ahead of the turns) and the section in the
-    # output template (after them), on both prompt forms.
+    # Wiring, not wording: the rule and the UNVERIFIED section sit in the system
+    # preamble/template, ahead of the role-typed turns, on both prompt forms.
     compressor._previous_summary = previous_summary
-    prompt = _captured_prompt(compressor)
-    turns_at = prompt.index(_user_turns()[0]["content"])
-    assert 0 <= prompt.find(EPISTEMIC_STANCE_RULE) < turns_at
-    assert prompt.find(UNVERIFIED_HYPOTHESES_SECTION) > turns_at
+    messages = _captured_messages(compressor)
+    assert messages[0]["role"] == "system"
+    system = messages[0]["content"]
+    user_ask = _user_turns()[0]["content"]
+    assert EPISTEMIC_STANCE_RULE in system
+    assert UNVERIFIED_HYPOTHESES_SECTION in system
+    assert user_ask not in system
+    assert any(
+        row.get("role") == "user" and user_ask in (row.get("content") or "")
+        for row in messages[1:-1]
+    )

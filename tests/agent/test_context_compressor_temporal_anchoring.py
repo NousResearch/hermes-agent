@@ -67,7 +67,11 @@ def test_clock_failure_omits_rule_but_compaction_still_runs():
     # call_llm was still invoked -> compaction was not blocked by the clock error.
     assert mock_call.called
     assert result is not None
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = "\n".join(
+        message.get("content") or ""
+        for message in mock_call.call_args.kwargs["messages"]
+        if isinstance(message.get("content"), str)
+    )
     assert "TEMPORAL ANCHORING" not in prompt
     # Structured template still intact.
     assert HISTORICAL_TASK_HEADING in prompt
@@ -82,5 +86,9 @@ def test_anchoring_rule_uses_date_from_hermes_time_now():
     ) as mock_call:
         compressor._generate_summary(_turns())
 
-    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    prompt = "\n".join(
+        message.get("content") or ""
+        for message in mock_call.call_args.kwargs["messages"]
+        if isinstance(message.get("content"), str)
+    )
     assert "2025-12-31" in prompt

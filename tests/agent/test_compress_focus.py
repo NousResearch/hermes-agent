@@ -57,8 +57,13 @@ def test_focus_topic_injected_into_summary_prompt():
         result = compressor._generate_summary(turns, focus_topic="database schema")
 
     assert result is not None
-    prompt_text = captured_prompt["messages"][0]["content"]
+    prompt_text = "\n".join(
+        message.get("content") or ""
+        for message in captured_prompt["messages"]
+        if isinstance(message.get("content"), str)
+    )
     assert "database schema" in prompt_text
+    assert "FOCUS TOPIC" in prompt_text
 
 
 def test_no_focus_topic_no_injection():
@@ -81,7 +86,11 @@ def test_no_focus_topic_no_injection():
     with patch("agent.context_compressor.call_llm", mock_call_llm):
         compressor._generate_summary(turns)
 
-    prompt_text = captured_prompt["messages"][0]["content"]
+    prompt_text = "\n".join(
+        message.get("content") or ""
+        for message in captured_prompt["messages"]
+        if isinstance(message.get("content"), str)
+    )
     assert "FOCUS TOPIC" not in prompt_text
 
 

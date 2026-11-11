@@ -117,7 +117,7 @@ class TestLeanSingleAuxiliaryCall:
         assert "session_search" in summary
 
     def test_oversized_region_sampled_not_split_into_more_requests(self):
-        c = _mk_compressor()
+        c = _mk_compressor(api_mode="anthropic_messages")
         turns = _big_region(n_rounds=120, tool_chars=6_000)  # ~720K chars raw
         with patch(
             "agent.context_compressor.call_llm",
@@ -151,7 +151,7 @@ class TestSampledSummaryInput:
         assert "<seg09>" in out
 
     def test_legacy_mode_keeps_head_tail_bound(self):
-        c = _mk_compressor(tail_mode="legacy")
+        c = _mk_compressor(tail_mode="legacy", api_mode="anthropic_messages")
         turns = _big_region(n_rounds=120, tool_chars=6_000)
         with patch(
             "agent.context_compressor.call_llm",

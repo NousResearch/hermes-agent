@@ -47,7 +47,6 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from generate_shims import generated as generated_files
 from renames import config_keys, current_name, git, module_renames, renamed_paths
 
 #: Files and trees the rewrite never touches. Frozen surfaces keep the old names on purpose, generated pages
@@ -506,15 +505,17 @@ def _glob(path: str, pattern: str) -> bool:
 
 @functools.cache
 def _generated() -> frozenset[str]:
-    """Repo-relative paths of the shims and byte copies at old module paths."""
-    return frozenset(generated_files())
+    """Repo-relative paths of the shims and byte copies at old module paths (all .py files)."""
+    from generate_shims import generated
+
+    return frozenset(generated())
 
 
 def rewrite_file(path: str, source: str, plan: Plan, stats: Stats) -> str:
     if excluded(path):
         stats.skips["excluded-file"] += 1
         return source
-    if path in _generated():
+    if path.endswith(".py") and path in _generated():
         stats.skips["generated-shim"] += 1
         return source
     if path.endswith(".py"):

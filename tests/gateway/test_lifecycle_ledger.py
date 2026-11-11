@@ -67,7 +67,7 @@ def _exit_diag_records(home: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
+@pytest.mark.platforms("linux")  # /proc is Linux-only
 def test_sample_memory_has_expected_keys_on_linux() -> None:
     sample = sample_memory()
     assert sample.get("rss_kib", 0) > 0
@@ -143,6 +143,8 @@ def test_record_startup_persists_unclean_report_and_reclaims(tmp_path: Path) -> 
     assert sentinel["pid"] == os.getpid()
 
 
+
+
 def test_record_startup_carries_unclean_flags_onto_new_sentinel(
     tmp_path: Path,
 ) -> None:
@@ -214,3 +216,39 @@ def test_prior_exit_label_survives_corrupt_sentinel(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("garbage", encoding="utf-8")
     assert read_prior_exit_label(tmp_path) == "unknown"
+
+
+def test_sentinel_carries_process_birth_through_exit(tmp_path: Path, monkeypatch) -> None:
+    """The running sentinel stamps the process ``create_time`` (psutil birth, not the later ledger
+    claim) and the exited sentinel keeps it, so the Windows start attestation can match a clean
+    exit by incarnation, not by reusable PID (#110020)."""
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1234.5)
+    record_startup(home=tmp_path)
+    running = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
+    assert running["create_time"] == 1234.5
+    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
+    exited = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
+    assert exited["phase"] == "exited"
+    assert (exited["start_time"], exited["create_time"]) == (running["start_time"], 1234.5)
+
+
+def test_replace_handover_is_not_a_death_and_pid_reuse_is(tmp_path: Path, monkeypatch) -> None:
+    """The live-owner guard compares the sentinel's psutil ``create_time`` with the live PID's
+    (same producer, epoch seconds). The ledger's ``start_time`` (claim time) is never compared
+    with ``get_process_start_time`` (proc ticks / centiseconds): that comparison could not match,
+    so a ``--replace`` handover was reported as an unclean death."""
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 5000.0)
+    live = {"phase": "running", "pid": 4242, "start_time": 5003.7, "started_at": "x"}
+
+    _write_sentinel(tmp_path, {**live, "create_time": 5000.0})
+    assert detect_unclean_exit(home=tmp_path) is None  # same incarnation still alive: handover
+
+    _write_sentinel(tmp_path, {**live, "create_time": 4000.0})
+    assert detect_unclean_exit(home=tmp_path) is not None  # PID reused by another process: death
+
+    # Pre-stamp sentinel (no create_time): the owner was born before it claimed; a reuser after.
+    _write_sentinel(tmp_path, live)  # birth 5000.0 <= claim 5003.7 → owner
+    assert detect_unclean_exit(home=tmp_path) is None
+    _write_sentinel(tmp_path, {**live, "start_time": 4000.0})  # born after the claim → reuser → death
+    assert detect_unclean_exit(home=tmp_path) is not None

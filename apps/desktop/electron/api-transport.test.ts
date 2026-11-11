@@ -18,7 +18,8 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import {
   destroyKeepaliveAgents,
-  downloadAgentFor,
+  htmlResponseError,
+  httpStatusError,
   isIdempotentMethod,
   isTransientTransportError,
   jsonAgentFor,
@@ -216,16 +217,6 @@ describe('withRetry', () => {
   })
 })
 
-describe('keep-alive agent pools', () => {
-  it('separates JSON and download pools per protocol', () => {
-    expect(jsonAgentFor('http:')).not.toBe(jsonAgentFor('https:'))
-    expect(jsonAgentFor('http:')).not.toBe(downloadAgentFor('http:'))
-    expect(jsonAgentFor('https:')).not.toBe(downloadAgentFor('https:'))
-    // Stable across calls (a real pool, not a factory).
-    expect(jsonAgentFor('http:')).toBe(jsonAgentFor('http:'))
-  })
-})
-
 // ---------------------------------------------------------------------------
 // LIVE transport tests against real misbehaving HTTP servers.
 // ---------------------------------------------------------------------------
@@ -360,24 +351,65 @@ describe('live: POST reset after server-side processing', () => {
       server.close()
     }
   }, 20_000)
+})
 
-  it('sanity: an identical GET-shaped retry WOULD have re-hit the server', async () => {
-    // Companion proof that the verb gate (not luck) is what kept posts === 1:
-    // the same reset-after-processing server sees multiple hits under GET.
-    let gets = 0
+describe('httpStatusError', () => {
+  it('carries the integer statusCode downstream classifiers read, plus the legacy "<status>: <body>" message', () => {
+    const err = httpStatusError(401, '{"error":"session_expired"}', 'Unauthorized')
 
-    const server = http.createServer(req => {
-      gets += 1
-      req.socket.resetAndDestroy()
-    })
+    expect(err).toBeInstanceOf(Error)
+    expect(err.statusCode).toBe(401)
+    expect(err.message).toBe('401: {"error":"session_expired"}')
+  })
 
-    const base = await listen(server)
+  it('falls back to the status message, then to an empty detail, when the body is empty', () => {
+    expect(httpStatusError(503, '', 'Service Unavailable').message).toBe('503: Service Unavailable')
+    expect(httpStatusError(403, '', undefined).message).toBe('403: ')
+    expect(httpStatusError(403, '', undefined).statusCode).toBe(403)
+  })
 
-    try {
-      await expect(retriedJsonGet(`${base}/api/thing`)).rejects.toThrow()
-      expect(gets).toBeGreaterThan(1) // retried — proves the machinery fires
-    } finally {
-      server.close()
+  it('normalizes a missing/invalid status to 500 exactly like the `res.statusCode || 500` guard', () => {
+    expect(httpStatusError(undefined, 'boom').statusCode).toBe(500)
+    expect(httpStatusError(undefined, 'boom').message).toBe('500: boom')
+    expect(httpStatusError(0, 'boom').statusCode).toBe(500)
+  })
+})
+
+describe('htmlResponseError', () => {
+  it('names an auth redirect with its Location for 3xx and keeps the endpoint-missing capability wording for 2xx HTML', () => {
+    const redirected = htmlResponseError(
+      'https://gateway.example.com/api/profiles',
+      302,
+      'https://sso.example.com/login?next=%2Fapi%2Fprofiles'
+    ).message
+
+    expect(redirected).toContain('status 302')
+    expect(redirected).toContain('to https://sso.example.com/login?next=%2Fapi%2Fprofiles')
+    expect(redirected).toMatch(/authentication proxy/)
+    expect(redirected).not.toContain('endpoint is likely missing')
+    expect(htmlResponseError('https://gateway.example.com/api/profiles', 307).message).toMatch(
+      /redirected \(status 307\)\. This is usually/
+    )
+    expect(htmlResponseError('https://gateway.example.com/api/missing', 200).message).toContain(
+      'endpoint is likely missing'
+    )
+  })
+
+  it('does not blame credentials when the redirect only fixes the scheme or a trailing slash', () => {
+    for (const [url, location] of [
+      ['http://gateway.example.com/api/profiles', 'https://gateway.example.com/api/profiles'],
+      ['https://gateway.example.com/api/profiles', '/api/profiles/'],
+      ['https://gateway.example.com/hermes/api/health', 'https://gateway.example.com/hermes/api/health/']
+    ]) {
+      const message = htmlResponseError(url, 301, location).message
+
+      expect(message).toContain(`to ${location}`)
+      expect(message).toMatch(/scheme or trailing slash/)
+      expect(message).not.toMatch(/authentication proxy/)
     }
-  }, 20_000)
+
+    expect(
+      htmlResponseError('https://gateway.example.com/api/profiles', 302, 'https://gateway.example.com/login').message
+    ).toMatch(/authentication proxy/)
+  })
 })

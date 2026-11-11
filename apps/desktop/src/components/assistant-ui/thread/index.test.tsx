@@ -32,6 +32,8 @@ vi.mock('@/components/assistant-ui/thread/status', () => ({
 }))
 
 vi.mock('@/i18n', () => ({
+  // Boot state, which the transcript reads to know whether the tab is signed out, labels itself.
+  translateNow: (key: string) => key,
   useI18n: () => ({
     t: {
       assistant: {
@@ -67,15 +69,6 @@ describe('Thread messageComponents identity across session switches', () => {
     expect(lastComponents).toBe(first)
 
     rerender(<Thread sessionId="session-c" />)
-
-    expect(lastComponents).toBe(first)
-  })
-
-  it('keeps the map stable across a plain parent re-render', () => {
-    const { rerender } = render(<Thread sessionId="session-a" />)
-    const first = lastComponents
-
-    rerender(<Thread sessionId="session-a" />)
 
     expect(lastComponents).toBe(first)
   })

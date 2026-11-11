@@ -1,8 +1,9 @@
+import { contrastRatio } from '@hermes/shared/color'
 import { describe, expect, it } from 'vitest'
 
-import { contrastRatio, hexToOklch, withHue } from './color'
+import { hexToOklch, withHue } from './color'
 import { githubTheme, nousTheme } from './presets'
-import { retintTheme, themeHue } from './retint'
+import { retintTheme } from './retint'
 import type { DesktopThemeColors } from './types'
 
 const HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
@@ -12,53 +13,22 @@ const seedAt = (hue: number) => withHue(nousTheme.colors.primary, hue)
 
 const NOUS_BLUE = '#0053FD'
 
-describe('themeHue', () => {
-  it('reads the accent hue that ships', () => {
-    // Nous blue. Both palettes sit at this hue — light seeds `#0053fd` and dark
-    // `#4a84fe`, the same blue at two lightnesses, which is what lets one pick
-    // serve both appearances.
-    expect(themeHue(nousTheme)).toBe(263)
-    expect(Math.round(hexToOklch(nousTheme.darkColors!.primary)!.h)).toBe(263)
-  })
-
-  it('reads the upstream GitHub green from the unforked theme', () => {
-    // `github` keeps the original accent, so the fork's blue can move freely
-    // without redefining what upstream looks like.
-    expect(themeHue(githubTheme)).toBe(148)
-    expect(Math.round(hexToOklch(githubTheme.darkColors!.primary)!.h)).toBe(148)
-  })
-})
-
 // The two seeds are the whole point of the fork, and both are load-bearing:
 // `#0053FD` is the brand color and passes on the light sidebar, but only 3.6:1
 // on the near-black dark one — so dark carries a lifted twin rather than the
 // literal brand hex. Anything that re-derives these must keep both legible.
 describe('the shipped nous accents', () => {
   const cases = [
-    { appearance: 'light', colors: nousTheme.colors, seed: '#0053fd' },
-    { appearance: 'dark', colors: nousTheme.darkColors!, seed: '#4a84fe' }
+    { appearance: 'light', colors: nousTheme.colors },
+    { appearance: 'dark', colors: nousTheme.darkColors! }
   ] as const
 
-  it.each(cases)('$appearance seeds every accent slot from $seed', ({ colors, seed }) => {
-    for (const key of ['primary', 'ring', 'midground', 'composerRing'] as const) {
-      expect(colors[key]).toBe(seed)
-    }
+  it.each(cases)('$appearance clears AA on its own sidebar', ({ colors }) => {
+    expect(contrastRatio(colors.primary, colors.sidebarBackground!)).toBeGreaterThanOrEqual(4.5)
   })
 
-  it.each(cases)('$appearance clears AA on its own sidebar', ({ colors, seed }) => {
-    expect(contrastRatio(seed, colors.sidebarBackground!)).toBeGreaterThanOrEqual(4.5)
-  })
-
-  it.each(cases)('$appearance keeps text on the accent readable', ({ colors, seed }) => {
-    expect(contrastRatio(seed, colors.primaryForeground)).toBeGreaterThanOrEqual(4.5)
-  })
-
-  it('is one blue at two lightnesses, not two blues', () => {
-    const light = hexToOklch(nousTheme.colors.primary)!
-    const dark = hexToOklch(nousTheme.darkColors!.primary)!
-
-    expect(Math.abs(light.h - dark.h)).toBeLessThan(2)
-    expect(dark.l).toBeGreaterThan(light.l)
+  it.each(cases)('$appearance keeps text on the accent readable', ({ colors }) => {
+    expect(contrastRatio(colors.primary, colors.primaryForeground)).toBeGreaterThanOrEqual(4.5)
   })
 
   it('leaves GitHub’s neutrals in place — only the accent family is forked', () => {

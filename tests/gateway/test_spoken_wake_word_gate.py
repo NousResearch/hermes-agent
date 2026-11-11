@@ -397,3 +397,27 @@ async def test_a_sender_the_runner_refuses_is_never_transcribed(tmp_path):
         assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], adapter=adapter,
                                           source=SimpleNamespace(user_id="blocked")) == []
     assert asked == ["blocked"] and calls == []
+
+
+@pytest.mark.asyncio
+async def test_photon_caf_attachment_voice_note_wakes_on_the_spoken_wake_word(tmp_path, monkeypatch):
+    """iMessage voice notes also arrive as ``attachment`` payloads named ``.caf``: the gate treats
+    them as voice exactly as normalisation does."""
+    import base64
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    adapter.handle_message = AsyncMock()
+    transcribe, calls = _stt("hermes, what is on today")
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._dispatch_inbound({
+            "messageId": "caf1", "space": {"id": "group-guid", "type": "group", "phone": None},
+            "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z",
+            "content": {"type": "attachment", "name": "Audio Message.caf", "mimeType": "audio/x-caf",
+                        "data": base64.b64encode(b"caff" + b"\x00" * 60).decode()}})
+
+    assert len(calls) == 1 and adapter.handle_message.await_count == 1
+    assert adapter.handle_message.await_args.args[0].message_type == MessageType.VOICE

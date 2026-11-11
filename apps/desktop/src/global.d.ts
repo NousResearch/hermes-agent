@@ -677,6 +677,8 @@ declare global {
         callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
+      /** Clerk SSO OAuth callback listener: token arrives from the system browser redirect. */
+      onUnitalkOauthCallback?: (callback: (token: string) => void) => () => void
       probePluginRepo?: (payload: { identifier?: string; repo?: string }) => Promise<{
         ok: boolean
         agent: boolean

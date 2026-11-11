@@ -18,6 +18,7 @@ _PERSISTABLE_PROVIDER_SOURCES = frozenset({
     ("minimax-oauth", "oauth"),
     ("nous", "device_code"),
     ("openai-codex", "device_code"),
+    ("unitalk", "clerk_oauth"),
     ("xai-oauth", "device_code"),
 })
 

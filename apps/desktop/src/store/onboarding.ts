@@ -37,6 +37,7 @@ import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onbo
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import { requestRoute } from '@/store/recovery-requests'
 import { setModelPickerOpen } from '@/store/session'
+import { startClerkAuth } from '@/store/unitalk-auth'
 import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -996,6 +997,41 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   const generation = flowGeneration
   flowScope = ctx.scope
   clearPoll()
+
+  // Unitalk Cloud: Clerk SSO in the system browser, not a backend OAuth session.
+  // The token arrives via the Electron 'unitalk-oauth-callback' IPC channel;
+  // completeWithModelConfirm runs when the callback store fires the token.
+  if (provider.id === 'unitalk') {
+    setFlow({ status: 'starting', provider })
+
+    try {
+      await startClerkAuth()
+
+      if (generation !== flowGeneration) {
+        return
+      }
+
+      // Open onboarding to the success state — the IPC callback in
+      // unitalk-auth.ts will persist the token and we treat it as
+      // an approved credential. Mark success immediately; the model
+      // confirm step loads the provider's default.
+      setFlow({ status: 'success', provider })
+      await completeWithModelConfirm(
+        ctx,
+        provider.name,
+        [provider.id],
+        reason => setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) })
+      )
+    } catch (error) {
+      if (generation !== flowGeneration) {
+        return
+      }
+
+      setFlow({ status: 'error', provider, ...signInDidNotFinish(provider, error) })
+    }
+
+    return
+  }
 
   if (provider.flow === 'external') {
     setFlow({ status: 'external_pending', provider, copied: false })

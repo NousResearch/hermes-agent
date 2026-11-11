@@ -1806,6 +1806,17 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
       supportFetchAPI: true
     }
+  },
+  {
+    scheme: 'unitalk',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      allowServiceWorkers: false,
+      stream: false
+    }
   }
 ])
 
@@ -17352,7 +17363,7 @@ ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMark
 // ---------------------------------------------------------------------------
 const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
 /** Schemes accepted when parsing inbound URLs (dev accepts both). */
-const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
+const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes', 'unitalk'] : ['hermes', 'unitalk']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
@@ -17386,6 +17397,20 @@ function handleDeepLink(url) {
   if (!DEEPLINK_SCHEMES.includes(scheme)) {
     rememberLog(`[deeplink] ignoring scheme ${scheme} (expected ${DEEPLINK_SCHEMES.join(' or ')})`)
 
+    return
+  }
+
+  // unitalk://callback?token=X — Clerk SSO OAuth callback: relay the token
+  // to the renderer so the Unitalk Cloud auth store can persist it.
+  if (scheme === 'unitalk') {
+    const token = parsed.searchParams.get('token') || ''
+    if (token && mainWindow && !mainWindow.isDestroyed()) {
+      activateWindow(mainWindow)
+      mainWindow.webContents.send('unitalk-oauth-callback', token)
+      rememberLog(`[deeplink] unitalk callback token delivered`)
+    } else if (!token) {
+      rememberLog(`[deeplink] unitalk callback missing token`)
+    }
     return
   }
 

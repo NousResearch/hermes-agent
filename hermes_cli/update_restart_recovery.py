@@ -107,8 +107,9 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
 
     One updater environment relaunches EVERY profile, so a child for another profile would inherit
     this process's authorization gates (``DISCORD_ALLOWED_CHANNELS``, ``GATEWAY_ALLOW_ALL_USERS`` ...)
-    and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270). Gates are
-    dropped when *profile* is not the launch profile; a same-profile child keeps an operator export.
+    and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270) — and the
+    launch profile's bot tokens, so an API-only sibling polled the root bot (#135792). A sibling's env is
+    the one the normal restart watcher gets; a same-profile child keeps an operator export.
 
     Restarting the host multiplexer from a named profile does not copy this process's environ: the
     child is ``host_gateway_child_env`` (``served_profile_child_env`` for the default root) so the
@@ -120,10 +121,12 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
         from tools.environments.local import host_gateway_child_env
         env = host_gateway_child_env()
     else:
-        env = os.environ.copy()
+        env = None
         if profile is not None and profile != launch:
-            from tools.environments.local_env_policy import strip_profile_gate_env
-            strip_profile_gate_env(env)
+            from hermes_cli.gateway_restart_env import profile_gateway_restart_env
+            from hermes_cli.profiles import get_profile_dir
+            env = profile_gateway_restart_env(str(get_profile_dir(profile)))
+        env = os.environ.copy() if env is None else env
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"

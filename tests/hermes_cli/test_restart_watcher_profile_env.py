@@ -112,3 +112,26 @@ def test_the_root_dotenv_model_key_never_follows_a_sibling(homes, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "")  # recorded, so teardown also removes what the load sets
     load_hermes_dotenv(hermes_home=root)
     assert _watcher_env(monkeypatch, "api1").get("OPENROUTER_API_KEY") is None
+
+
+@pytest.mark.platforms("posix")
+def test_abort_recovery_restarts_a_sibling_without_the_updaters_token(homes, monkeypatch):
+    """An aborted restart phase relaunches every profile from a fresh interpreter that inherited the
+    updater's env: the sibling's ``gateway restart`` child must get the same env as the normal path."""
+    _root, api1 = homes
+    from hermes_cli import update_restart_recovery as recovery
+
+    seen = []
+
+    def _run(argv, **kwargs):
+        seen.append((argv, kwargs["env"]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(recovery, "_host_served_profiles", set)
+    recovery.restart_profiles(["api1"], run=_run)
+    (argv, env), = seen
+    assert argv[argv.index("-p") + 1] == "api1"
+    assert env.get("HERMES_HOME") == str(api1)
+    assert env.get("TELEGRAM_BOT_TOKEN") != _ROOT_TOKEN
+    assert env.get("API_SERVER_ENABLED") == "true"
+    assert env[recovery._RECOVERY_ENV] == "1"

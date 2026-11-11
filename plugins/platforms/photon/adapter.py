@@ -462,6 +462,16 @@ def _is_voice_payload(payload: dict[str, Any]) -> bool:
         str(payload.get("name") or "").lower().endswith(".caf") or payload.get("mimeType") == "audio/x-caf")
 
 
+def _cached_media_type(payload: dict[str, Any], mime: str, is_voice: bool) -> str:
+    """A voice payload is cached as audio, so its media type says audio too (a ``.caf`` sent as
+    ``application/octet-stream`` would otherwise count as voice yet never reach STT)."""
+    if not is_voice:
+        return mime or "application/octet-stream"
+    if mime.lower().startswith("audio/"):
+        return mime
+    return "audio/x-caf" if str(payload.get("name") or "").lower().endswith(".caf") else "audio/mp4"
+
+
 def _normalize_binary_payload(payload: dict[str, Any]) -> _Normalized:
     """Cache an inline attachment/voice payload; fall back to a text marker."""
     is_voice = _is_voice_payload(payload)
@@ -471,7 +481,7 @@ def _normalize_binary_payload(payload: dict[str, Any]) -> _Normalized:
     label = "voice" if is_voice else "attachment"
     cached = _cache_inbound_attachment(payload, name, mime, force_audio=is_voice)
     if cached:
-        return f"({label})", mtype, [cached], [mime or ("audio/mp4" if is_voice else "application/octet-stream")]
+        return f"({label})", mtype, [cached], [_cached_media_type(payload, mime, is_voice)]
     duration = payload.get("duration")
     duration_text = f", duration: {duration}s" if isinstance(duration, (int, float)) else ""
     return f"[Photon {label} received: {name} ({mime or 'unknown MIME'}{duration_text})]", mtype, [], []

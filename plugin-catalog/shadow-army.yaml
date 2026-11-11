@@ -1,6 +1,6 @@
 name: shadow-army
 repo: https://github.com/SilentKnight87/shadow-army
-sha: aa340f06ffe10dce5c63cfabc0e0c6de3e9d1e41
+sha: 22d59a0bc79ce9b7c7305b6256ba8e4446e16486
 subdir: shadow-army
 title: Shadow Army
 description: A different model family must PASS the exact code before the agent closes a Kanban card; it asks before a push of unreviewed code and flags deleted test assertions.
@@ -11,12 +11,12 @@ requires_hermes: ">=0.23.0"
 version: "0.4.0"
 readme: true
 screenshots:
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/aa340f06ffe10dce5c63cfabc0e0c6de3e9d1e41/docs/img/readme-real-catch.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/aa340f06ffe10dce5c63cfabc0e0c6de3e9d1e41/docs/img/readme-ledger.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/aa340f06ffe10dce5c63cfabc0e0c6de3e9d1e41/docs/img/readme-hero.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/aa340f06ffe10dce5c63cfabc0e0c6de3e9d1e41/docs/img/readme-removed.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/aa340f06ffe10dce5c63cfabc0e0c6de3e9d1e41/docs/img/readme-push-guard.png
-  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/aa340f06ffe10dce5c63cfabc0e0c6de3e9d1e41/docs/img/readme-workspace.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-real-catch.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-ledger.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-hero.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-removed.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-push-guard.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-workspace.png
 platforms: [linux, macos]
 known_issues:
   - Refuses only the agent's kanban_complete tool and asks only on its terminal git push and gh pr create; manual board moves, other shell commands, aliases and disabling the plugin bypass it.

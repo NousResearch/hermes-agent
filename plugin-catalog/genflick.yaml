@@ -6,7 +6,7 @@ title: Genflick
 maintainer: buildngrowsv
 tier: community
 category: tools
-description: "Connect Hermes to Genflick creative and business workspaces for films, series, music videos, ads and marketing, with email-link sign-in and host-owned OAuth."
+description: "Connect Hermes to Genflick creative and business workspaces for films, series, music videos, ads and marketing, with email-link sign-in and host-owned OAuth. Disclosure — tool calls send your prompts, project inputs and media requests to Genflick's hosted MCP server at genflick.com (which may pass work to its own downstream providers), its tools can spend from your Genflick account and publish ads, social posts and outreach under the server's `trust: untrusted` approval, sign-in needs a hand-added `mcp_servers.genflick` OAuth entry in config.yaml, and the bundled skill may read the Genflick sign-in email through your connected mailbox tools and open its link."
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/buildngrowsv/genflick-hermes/blob/c00b13ebdd9ecf3f9a25e451cb9d155bc50e725f/README.md
 readme: true

@@ -164,10 +164,13 @@ def _store_executor() -> ThreadPoolExecutor:
 @contextmanager
 def _home_bound(home: Path) -> Iterator[None]:
     """``home`` as the current Hermes home while a store opens, so the opening reads that profile's configuration
-    (``database.*`` connection settings among it), as main's open under the served profile's scope does."""
+    (``database.*`` connection settings among it), as main's open under the served profile's scope does. A folder
+    without a ``config.yaml`` has no settings of its own and is left unbound: reading the configuration under a
+    bound home sets that folder up as a Hermes home (``sessions/``, ``logs/``, ``SOUL.md`` and the rest)."""
     from hermes_constants import get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
-    token = None if hermes_home_key(home) == hermes_home_key(get_hermes_home()) else set_hermes_home_override(home)
+    bind = (home / "config.yaml").is_file() and hermes_home_key(home) != hermes_home_key(get_hermes_home())
+    token = set_hermes_home_override(home) if bind else None
     try:
         yield
     finally:

@@ -120,6 +120,15 @@ def test_a_store_opens_with_its_own_profiles_database_settings_whichever_profile
         backend.close()
 
 
+def test_a_store_in_a_folder_without_its_own_settings_opens_without_setting_the_folder_up_as_a_home(backend, scope_a):
+    folder = store_for(scope_a).parent
+    before = set(os.listdir(folder))
+    backend.open(scope_a).state_meta.set("k", "v")
+    backend.close()
+    added = set(os.listdir(folder)) - before
+    assert not added & {"sessions", "cron", "logs", "memories", "skills", "SOUL.md"}, sorted(added)
+
+
 def test_close_refuses_further_use(backend, scope_a):
     store = backend.open(scope_a)
     store.state_meta.set("k", "v")

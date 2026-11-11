@@ -2,7 +2,7 @@
 name: antemuse
 title: Antemuse
 repo: https://github.com/roosiq/antemuse-plugin
-sha: 0d35baa96582cd52e3fdeb5e482fb6c461f412d9
+sha: e49d890d4e21147e5b544d453e0b3147193e163f
 description: 'The agent takes a walk, daydreams, dreams, doomscrolls, or gets unstuck: a bounded change
   to how it works, with a dose rather than a duration. Walks step through WordNet, dreams recombine FrameNet
   roles, daydreams draw on stored memories, doomscrolls on live feeds. No model calls on the state path.'
@@ -10,7 +10,7 @@ maintainer: roosiq
 tier: community
 category: general
 docs_url: https://github.com/roosiq/antemuse-plugin#readme
-version: "0.10.39"
+version: "0.10.40"
 requires_hermes: '>=0.21.6'
 platforms:
 - linux
@@ -37,8 +37,8 @@ known_issues:
   path, so the pane is expected to work but is unverified there.'
 - The exploration library (spark, keep, collider, selection) is present but runtime-gated behind experimental.enabled
   and makes no quality claim.
-image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/0d35baa96582cd52e3fdeb5e482fb6c461f412d9/docs/screenshots/banner.png
+image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/e49d890d4e21147e5b544d453e0b3147193e163f/docs/screenshots/banner.png
 screenshots:
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/0d35baa96582cd52e3fdeb5e482fb6c461f412d9/docs/screenshots/pane-walk.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/0d35baa96582cd52e3fdeb5e482fb6c461f412d9/docs/screenshots/return-account.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/0d35baa96582cd52e3fdeb5e482fb6c461f412d9/docs/screenshots/blocked-tool.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/e49d890d4e21147e5b544d453e0b3147193e163f/docs/screenshots/pane-walk.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/e49d890d4e21147e5b544d453e0b3147193e163f/docs/screenshots/return-account.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/e49d890d4e21147e5b544d453e0b3147193e163f/docs/screenshots/blocked-tool.png

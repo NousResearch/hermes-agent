@@ -4695,6 +4695,7 @@ export const zhOverrides = {
     zoomIn: '放大',
     zoomOut: '缩小',
     resetZoom: '重置缩放',
+    close: '关闭',
     imagePreviewFailed: '图片预览失败',
     imageAttach: '附加图片',
     imageWriteFailed: '无法将图片写入磁盘。',

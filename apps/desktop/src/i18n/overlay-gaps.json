@@ -664,6 +664,7 @@
   "cron.tabs.blueprints": ["ar"],
   "cron.tabs.jobs": ["ar"],
   "cron.title": ["ar"],
+  "desktop.close": ["de","es","fr","ru"],
   "desktop.handoff.startMessaging": ["ar","ja","ru","zh","zh-hant"],
   "desktop.hydrationSyncing": ["ru"],
   "desktop.pasteAttachFailed": ["ru"],

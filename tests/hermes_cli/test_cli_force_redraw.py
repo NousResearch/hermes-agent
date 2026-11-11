@@ -77,8 +77,8 @@ class TestForceFullRedraw:
         was painted at, before prompt_toolkit repaints. When the viewport holds the whole
         history, only its rows and the chrome are erased: rows above it (the startup banner)
         were never recorded; once the chrome is known to reach the last row (startup and /clear
-        arm the floor), they are refilled from the row its top is on. A widen truncates nothing
-        and is left alone."""
+        arm the floor), the replay is also handed the row the recorded rows start on (``top`` in
+        ``fit``), from which it re-arms the floor. A widen truncates nothing and is left alone."""
         import time
         from collections import deque
 

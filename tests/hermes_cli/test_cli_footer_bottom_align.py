@@ -1,11 +1,12 @@
 """The classic CLI keeps its composer and status bar on the terminal's last rows.
 
 prompt_toolkit does not shrink a non-full-screen app from one paint to the next: ``Renderer.render``
-paints into ``max(rows below the cursor, the last frame's height, the preferred height)``. So when a
-panel in the live area closes (the slash-command menu, a clarify or approval panel), the root
+paints into ``max(rows below the cursor, the last frame's height, the preferred height)``, and only a
+reset of the renderer (every print, a resize, Ctrl+L, ``/redraw``, ``/clear``) drops the last frame. So
+when a panel in the live area closes (the slash-command menu, a clarify or approval panel), the root
 container is handed more rows than its children ask for. ``HSplit``'s default ``JUSTIFY`` left them
 blank at the bottom, under the composer or (modern layout) the status bar; bottom-aligned, they pad
-the space above the composer, which stays on the terminal's last rows.
+the space above the composer, which stays on, or returns to, the terminal's last rows.
 """
 from contextlib import contextmanager
 

@@ -12,12 +12,13 @@ tool call, so the placeholder sits there looking like a geometry error.
 
 The CLI builds it bottom-aligned (``footer_root``). prompt_toolkit does not shrink a non-full-screen
 app from one paint to the next: ``Renderer.render`` paints into ``max(rows below the cursor, the last
-frame's height, the preferred height)``, and only a print, which resets the renderer, drops the last
-frame. So after a panel closes the root is handed more rows than its children ask for. ``HSplit``'s
-default ``JUSTIFY`` laid the children out from the top and left those rows blank at the bottom: a
-closed clarify or approval panel pulled the composer up by its height, and a closed completion menu
-(below the composer) left it as high as the open menu had pushed it. Bottom-aligned, the spare rows
-pad the space above the composer, which stays on, or returns to, the terminal's last rows.
+frame's height, the preferred height)``, and only a reset of the renderer drops the last frame (every
+print resets it, and so do a resize, Ctrl+L, ``/redraw`` and ``/clear``). So after a panel closes the
+root is handed more rows than its children ask for. ``HSplit``'s default ``JUSTIFY`` laid the children
+out from the top and left those rows blank at the bottom: a closed clarify or approval panel pulled the
+composer up by its height, and a closed completion menu (below the composer) left it as high as the
+open menu had pushed it. Bottom-aligned, the spare rows pad the space above the composer, which stays
+on, or returns to, the terminal's last rows.
 """
 from __future__ import annotations
 

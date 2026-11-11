@@ -1,6 +1,6 @@
 name: rung
 repo: https://github.com/miguelangeloazevedo/rung
-sha: 3928b7aef7c150d69f63c52c348182b1eb41df44
+sha: 558b5dc86b738cb107dccea955e2986569af9369
 title: Rung
 description: 'Stops an agent from marking its own work done until the tests you approved pass. Tests are approved
   before any code; when an agent reports claimed work done (rung_report, kanban_complete or a todo item), a deterministic
@@ -11,11 +11,11 @@ maintainer: miguelangeloazevedo
 tier: community
 category: automation
 requires_hermes: ">=0.22.5"
-version: "1.2.0"
+version: "1.2.1"
 docs_url: https://github.com/miguelangeloazevedo/rung
 screenshots:
-  - https://raw.githubusercontent.com/miguelangeloazevedo/rung/3928b7aef7c150d69f63c52c348182b1eb41df44/docs/media/pane.png
-  - https://raw.githubusercontent.com/miguelangeloazevedo/rung/3928b7aef7c150d69f63c52c348182b1eb41df44/docs/media/milestone.png
+  - https://raw.githubusercontent.com/miguelangeloazevedo/rung/558b5dc86b738cb107dccea955e2986569af9369/docs/media/pane.png
+  - https://raw.githubusercontent.com/miguelangeloazevedo/rung/558b5dc86b738cb107dccea955e2986569af9369/docs/media/milestone.png
 platforms: []
 capabilities:
   provides_tools:

@@ -43,6 +43,13 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    @pytest.mark.parametrize("bad_path", ["", "   ", None, 123])
+    @patch("tools.file_tools._get_file_ops")
+    def test_empty_or_non_string_path_is_rejected_before_any_read(self, mock_get, bad_path):
+        result = json.loads(read_file_tool(bad_path))
+        assert "non-empty string path" in result["error"]
+        mock_get.assert_not_called()
+
 
 class TestWriteFileHandler:
 

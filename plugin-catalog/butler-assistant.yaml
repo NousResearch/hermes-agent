@@ -1,0 +1,31 @@
+name: butler-assistant
+title: Butler
+repo: https://github.com/haykguy/butler
+sha: "a84f432ea0789978f5e83472b46f4a76416747e7"
+version: "0.3.0"
+description: "Turns Hermes into a proactive personal assistant. You set your daily non-negotiables and Butler checks in until they are done or deferred; you tell it about a commitment and it follows up before it slips. You choose its tone (Gentle to Strict), how persistent it is, quiet hours, time zone and a daily cap on check-ins, and can pause it in one click. A concierge-style Hermes Desktop page shows today's non-negotiables, upcoming commitments, recent activity and preferences, with a 4-step Quick Setup; the same controls are available to the agent as tools in chat. Disclosure: a background runner thread in the gateway process schedules check-ins, which run as normal turns in your admitted chat on your configured model, billed like any message; with background wakes enabled it sets allow_gateway_injection for this plugin; with system controls on it writes notification and display settings into your Hermes config.yaml (only the keys listed in the README); the optional prompt review writes to SOUL.md and a butler-capabilities skill only after you select and apply each change, keeping backups; the optional 'verify time zone via IP' action calls ipapi.co or worldtimeapi.org only when you ask; iMessage voice and image helpers run local ffmpeg/ffprobe; inbound DM event capture is off by default and needs two separate opt-ins; all state is stored in plaintext SQLite in the profile's plugin-data; no telemetry."
+maintainer: haykguy
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/haykguy/butler#readme
+image: https://raw.githubusercontent.com/haykguy/butler/a84f432ea0789978f5e83472b46f4a76416747e7/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/haykguy/butler/a84f432ea0789978f5e83472b46f4a76416747e7/docs/media/overview-full.jpg
+readme: true
+known_issues:
+  - "Hermes Desktop keeps a packaged plugin's page off until you enable it once: Settings → Plugins → Proactive Assistant."
+  - "The plugin's manifest name is `butler`; it cannot be installed alongside another plugin whose manifest name is also `butler`."
+  - "butler/routes.py reads three gateway.session_context helpers to identify the active chat route (validator warning, catalog rule 9); a public seam for this would let it drop them."
+capabilities:
+  provides_tools:
+    - butler_create
+    - butler_manage
+    - butler_expression
+    - butler_imessage
+    - butler_controls
+  provides_hooks:
+    - post_gateway_admission
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

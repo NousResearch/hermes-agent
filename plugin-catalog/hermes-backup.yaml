@@ -1,6 +1,6 @@
 name: hermes-backup
 repo: https://github.com/nizini-london/hermes-backup
-sha: 8e3ff78de189d41bb78776ba8243ae133013f411
+sha: d9310525ab9d2fd0cd33e766f456941d069418a1
 description: Encrypted restic backup and verified restore for the Hermes home — dual-target (local disk + S3), hot-database shadow copies, and a DR drill that proves restores actually come back.
 maintainer: Shaun Xenon
 tier: community

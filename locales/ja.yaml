@@ -332,7 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — タイトルなしでセッションを開始しました。"
     title_empty_untitled: "\n⚠️ クリーンアップ後にタイトルが空になりました — タイトルなしでセッションを開始しました。"
     tip: "\n✦ ヒント: {tip}"
-    paused_left: "\n⚠️ 前の会話が一時停止中に送った {count} 件のメッセージは、前の会話に保存されたまま未回答です。実行するには: /resume {session_id} の後に /discard。"
+    paused_left: "\n⚠️ 前の会話が一時停止中に送った {count} 件のメッセージは、前の会話に保存されたまま未回答です。実行するには: /resume {session_id} の後に {discard}。"
   restart:
     in_progress: "⏳ ゲートウェイの再起動はすでに進行中です..."
     restarting: "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"

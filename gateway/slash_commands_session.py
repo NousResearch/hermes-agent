@@ -137,22 +137,27 @@ async def discard_lost_turns(authority, session_id) -> str:
     return t("gateway.discard.done", count=done) if done else t("gateway.discard.nothing")
 
 
-async def paused_followers(runner, session_key) -> tuple[str, int]:
-    """``(session_id, count)`` of the chat messages saved behind a turn lost in a restart on this
-    chat's current conversation, else ``("", 0)``. ``/new`` leaves them saved there (the pause notice
-    promised so), so its reply names them and the way back: ``/resume`` that id, then ``/discard``
-    (#145177). Telegram and the other chats have no resume button, so unsaid they look lost."""
+async def paused_followers(runner, session_id) -> int:
+    """How many chat messages are saved behind a turn lost in a restart on *session_id*, else 0.
+    ``/new`` leaves them saved there (the pause notice promised so), so its reply names them and the
+    way back: ``/resume`` that id, then ``/discard`` (#145177). Telegram and the other chats have no
+    resume button, so unsaid they look lost. Counted after the route rotated: nothing can join the
+    old queue from then on, so the count includes a message admitted while the reset ran."""
     from gateway.session_authorities import active_authority
     from hermes_state_runtime import list_session_admissions
     authority = active_authority(runner)
-    sid = authority.logical_owner(runner.session_store.peek_session_id(session_key)) if authority else None
-    if not sid:
-        return "", 0
-    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
+    if authority is None or not session_id:
+        return 0
+    rows = await asyncio.to_thread(list_session_admissions, authority.db,
+                                   session_id=authority.logical_owner(session_id))
     if not any(row['status'] == 'unknown' for row in rows):
-        return "", 0
-    count = sum(row['status'] == 'queued' and row['principal_id'].startswith('messaging:') for row in rows)
-    return (sid, count) if count else ("", 0)
+        return 0
+    return sum(row['status'] == 'queued' and row['principal_id'].startswith('messaging:') for row in rows)
+
+
+def discard_command_for(source) -> str:
+    """The lost-turn discard command this chat can send: Slack registers no native ``/discard``."""
+    return '/hermes discard' if getattr(getattr(source, 'platform', None), 'value', None) == 'slack' else '/discard'
 
 
 class GatewaySessionCommandsMixin:
@@ -243,7 +248,6 @@ class GatewaySessionCommandsMixin:
         source = event.source
         session_key = self._session_key_for_source(source)
         await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
-        paused_sid, paused_count = await paused_followers(self, session_key)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -273,6 +277,7 @@ class GatewaySessionCommandsMixin:
         async with route_owner_lock(self, _old_sid):
             new_entry = await self.async_session_store.reset_session(session_key)
             await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
+            paused_count = await paused_followers(self, _old_sid)
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
         # Scoped to the profile serving this source so a multiplexed /new banner reports the
@@ -307,7 +312,9 @@ class GatewaySessionCommandsMixin:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header
         if paused_count:
-            body += t("gateway.reset.paused_left", count=paused_count, session_id=paused_sid)
+            from gateway.session_authorities import active_authority
+            body += t("gateway.reset.paused_left", count=paused_count, discard=discard_command_for(source),
+                      session_id=active_authority(self).logical_owner(_old_sid))
         return EphemeralReply(f"{body}{_tip_line}")
 
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:

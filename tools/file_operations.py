@@ -735,14 +735,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         encoded = base64.b64encode(snippet.encode("utf-8")).decode("ascii")
         if py is None:
             py = self._python_interpreter_cmd()
-
-        def run(command: str) -> ExecuteResult:
-            if fallback is not None:  # shell command for backends without ``py``
-                command = f"if command -v {py} >/dev/null 2>&1; then {command}; else ({fallback}); fi"
-            return self._exec(command, stdin_data=stdin_data)
-        return run(
+        command = (
             f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
         )
+        if fallback is not None:  # shell command for backends without ``py``
+            command = f"if command -v {py} >/dev/null 2>&1; then {command}; else ({fallback}); fi"
+        return self._exec(command, stdin_data=stdin_data)
 
     def _try_read_utf16(self, path: str, offset: int, limit: int,
                         file_size: int) -> Optional[ReadResult]:

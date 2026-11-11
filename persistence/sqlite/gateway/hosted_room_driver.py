@@ -15,12 +15,13 @@ from __future__ import annotations
 import dataclasses
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, Callable
 
 from persistence import JsonValue
 from persistence.gateway.hosted_rooms import (
+    SHOWN_TASK_STATUSES,
     TERMINAL_STATUSES,
     DriverLease,
     DriverStateError,
@@ -30,6 +31,7 @@ from persistence.gateway.hosted_rooms import (
     InvalidTaskTransitionError,
     LeaseHeldError,
     LeaseRelease,
+    RoomChangeRows,
     RoomRecovery,
     RoomUnavailableError,
     StaleLeaseError,
@@ -822,6 +824,54 @@ class SQLiteHostedRoomDriverRepository:
                    status: TaskStatus | None = None) -> tuple[Mapping[str, JsonValue], ...]:
         def _read(conn: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
             return tuple(_task_from_row(row) for row in _tasks_in_order(conn, room_id, status))
+        with translated():
+            return self._files._hosted_read(placement, _read)
+
+    def room_task_summary(self, *, placement: HostedPlacement, room_id: str,
+                          statuses: Collection[str]) -> tuple[Mapping[str, int], tuple[Mapping[str, JsonValue], ...]]:
+        statuses = tuple(statuses)
+
+        def _read(conn: sqlite3.Connection) -> tuple[dict[str, int], tuple[dict[str, Any], ...]]:
+            # Python's sqlite3 runs SELECTs in autocommit; the explicit BEGIN makes both reads one WAL snapshot,
+            # so a task moving between them is neither doubled nor lost.
+            began = not conn.in_transaction
+            if began:
+                conn.execute("BEGIN")
+            try:
+                counts = {str(status): int(count) for status, count in conn.execute(
+                    "SELECT status, COUNT(*) FROM hosted_room_driver_tasks WHERE room_id=? GROUP BY status",
+                    (room_id,))}
+                rows = conn.execute(
+                    f"""SELECT * FROM hosted_room_driver_tasks
+                        WHERE room_id=? AND status IN ({','.join('?' * len(statuses))}) {_TASK_ORDER}""",
+                    (room_id, *statuses)).fetchall() if statuses else []
+            finally:
+                if began:
+                    conn.rollback()
+            return counts, tuple(_task_from_row(row) for row in rows)
+        with translated():
+            return self._files._hosted_read(placement, _read)
+
+    def room_change_rows(self, *, placement: HostedPlacement,
+                         statuses: Collection[str] = SHOWN_TASK_STATUSES) -> Mapping[str, RoomChangeRows]:
+        statuses = tuple(statuses)
+
+        # Each room's rows are read through the status index (``room_id, status`` prefix) and sorted here: an
+        # ``ORDER BY task_id`` would make SQLite walk the room's retained terminal tasks through the primary key.
+        def _read(conn: sqlite3.Connection) -> dict[str, RoomChangeRows]:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('hosted_rooms', 'hosted_room_driver_tasks')")}
+            if "hosted_rooms" not in tables:
+                return {}
+            rooms = conn.execute(
+                "SELECT room_id, next_seq, revision FROM hosted_rooms WHERE disbanded_at IS NULL").fetchall()
+            if "hosted_room_driver_tasks" not in tables:
+                return {room_id: RoomChangeRows(next_seq, revision, ()) for room_id, next_seq, revision in rooms}
+            query = f"""SELECT task_id, status, execution_generation, cancel_generation FROM hosted_room_driver_tasks
+                        WHERE room_id=? AND status IN ({','.join('?' * len(statuses))})"""
+            return {room_id: RoomChangeRows(
+                        next_seq, revision, tuple(sorted(tuple(row) for row in conn.execute(query, (room_id, *statuses)))))
+                    for room_id, next_seq, revision in rooms}
         with translated():
             return self._files._hosted_read(placement, _read)
 

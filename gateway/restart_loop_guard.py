@@ -7,6 +7,10 @@ restart-interrupted session, whose next turn re-runs the offending logic.  Boots
 persisted to ``<HERMES_HOME>/gateway/restart_loop.json`` and CHAIN while gaps stay
 within ``max_gap_seconds`` (a ~150s watchdog-kill cycle trips like a ~10s loop).
 Tripped → caller SKIPS auto-resume.  Any I/O failure fails OPEN, never wedging.
+
+The same chain, kept in its own file, mutes the home-channel shutdown broadcast
+(``notice_loop_tripped``): a loop with nothing to resume still posts one notice
+per cycle otherwise.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ import logging
 import time
 from typing import List, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_process_hermes_home
 
 logger = logging.getLogger("gateway.run")
 
@@ -38,10 +42,15 @@ def _state_path():
     return get_hermes_home() / "gateway" / "restart_loop.json"
 
 
-def _load_boots() -> list[float]:
+def _notice_state_path():
+    # The host process's home, like the planned-restart marker it pairs with: one process, one loop.
+    return get_process_hermes_home() / "gateway" / "lifecycle_notice_loop.json"
+
+
+def _load_boots(path=None) -> list[float]:
     try:
         # utf-8-sig: our BOM-tolerant read fix for the persisted boot log.
-        raw = _state_path().read_text(encoding="utf-8-sig")
+        raw = (path or _state_path()).read_text(encoding="utf-8-sig")
         data = json.loads(raw)
         boots = data.get("boots", [])
         return [float(t) for t in boots if isinstance(t, (int, float))]
@@ -49,9 +58,9 @@ def _load_boots() -> list[float]:
         return []
 
 
-def _save_boots(boots: list[float]) -> None:
+def _save_boots(boots: list[float], path=None) -> None:
     with contextlib.suppress(OSError):
-        path = _state_path()
+        path = path or _state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"boots": boots}), encoding="utf-8")
 
@@ -113,5 +122,26 @@ def check_and_record(
             "Restart-interrupted sessions stay resume-pending and will continue on the next real user message. "
             "If this is a false positive, delete %s.",
             len(boots), int(_chain_gap(window_seconds, max_gap_seconds)), max_restarts, _state_path(),
+        )
+    return tripped
+
+
+def notice_loop_tripped(
+    max_restarts: int = DEFAULT_MAX_RESTARTS, window_seconds: int = DEFAULT_WINDOW_SECONDS, *,
+    now: Optional[float] = None, max_gap_seconds: int = DEFAULT_MAX_GAP_SECONDS,
+) -> bool:
+    """Record one home-channel shutdown broadcast; True when ``max_restarts`` already went out in this
+    chain, so this one stays quiet. Muted broadcasts are recorded too: the loop stays muted until the
+    gateway has been up longer than the chain gap."""
+    ts = time.time() if now is None else now
+    path = _notice_state_path()
+    chain = _chain_ending_at(_load_boots(path), ts, _chain_gap(window_seconds, max_gap_seconds))
+    _save_boots((chain + [ts])[-_MAX_STORED_BOOTS:], path)
+    tripped = max_restarts > 0 and len(chain) >= max_restarts
+    if tripped:
+        logger.warning(
+            "Restart loop: %d home-channel shutdown notices already sent with no gap wider than %ds; this one "
+            "stays quiet until the gateway stays up. If this is a false positive, delete %s.",
+            len(chain), int(_chain_gap(window_seconds, max_gap_seconds)), path,
         )
     return tripped

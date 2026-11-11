@@ -14,6 +14,7 @@ the way any other installed plugin does, on the next scan of ``desktop-plugins/`
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -131,11 +132,23 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
             # row); a standalone plugin carries none.
             marker = {"package": package_name, "repo": git_url, "source": str(target),
                       "sourceMtimeMs": halves.mtime_ms((source_dir / "plugin.js").stat())} if package_name else None
+            # A standalone plugin installed from a catalog entry records that entry, so the card shows it.
+            # ``sha`` = the commit checked out; ``pin`` = the catalog pin it satisfies when that names an
+            # annotated-tag object (the agent's catalog record keeps both the same way).
+            origin = ({"catalogName": catalog_name, "repo": git_url, "sha": head,
+                       **({"pin": catalog_sha.lower()} if catalog_sha and catalog_sha.lower() != head else {})}
+                      if catalog_name and not package_name else None)
             # The exists check and the publish must not interleave with a reconcile pass.
             with halves.ROOT_WRITER:
-                if (target.is_symlink() or target.exists()) and not force:
-                    return _failure(f"Desktop plugin '{folder}' already exists. Enable force reinstall to replace it.")
-                halves.publish_desktop_tree(source_dir, target, marker)
+                if origin and not force and _adoptable(target, source_dir):
+                    # Already installed from this very tree (a card that never showed it installed sent
+                    # the user back to Install): record its catalog entry, replace nothing.
+                    halves.write_install_origin(target, origin)
+                elif (halves._is_link(target) or target.exists()) and not force:
+                    return {**_failure(f"Desktop plugin '{folder}' already exists. Enable force reinstall to replace it."),
+                            "exists": True}
+                else:
+                    halves.publish_desktop_tree(source_dir, target, marker, origin=origin)
     except pc.PluginOperationError as exc:
         return {**_failure(str(exc)), **({"source_moved": True} if isinstance(exc, pc.PluginSourceMoved) else {})}
     except OSError as exc:
@@ -143,6 +156,14 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
 
     return {"ok": True, "plugin_name": folder, "path": str(target), "sha": sha,
             "paired_with_agent": bool(package_name), "warnings": []}
+
+
+def _adoptable(target: Path, source_dir: Path) -> bool:
+    """*target* is a plain standalone folder whose ``plugin.js`` is byte for byte the one *source_dir*
+    would publish: an install of that same tree by a build that recorded no origin, which a catalog
+    install adopts in place instead of asking for Force (that would replace the folder and what it keeps)."""
+    return (not halves._is_link(target) and target.is_dir() and not os.path.lexists(target / halves.PACKAGE_MARKER)
+            and halves._same_file(target / "plugin.js", source_dir / "plugin.js"))
 
 
 def _desktop_tree(plugin_root: Path) -> Path:
@@ -167,7 +188,7 @@ def remove_desktop_plugin(name: str, *, force: bool = False) -> dict[str, Any]:
     except _pc().PluginOperationError as exc:
         return _failure(str(exc))
     target = desktop_plugins_root() / folder
-    if target.is_symlink():
+    if halves._is_link(target):
         return _failure(
             f"'{folder}' is linked from somewhere else on this host; remove that link where it lives."
         )

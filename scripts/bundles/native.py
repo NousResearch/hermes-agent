@@ -16,12 +16,14 @@ from pm.install import _lockfile
 from pm.lock import Facts
 from pm.registry import get_package, walk
 from pm.store import current_target
+from pm.testenv import DEVELOPER_TOOLS
 
 def _bundle_package_names() -> list[str]:
     names = [
         n
         for n in _lockfile().names()
-        if not get_package(n).internal or n == "uv"
+        # Developer tools (just) are never part of a user install.
+        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS
     ]
     if "python" not in names:
         names.append("python")
@@ -67,6 +69,12 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
     source — so they stay out. Built wheel ZIPs (including the copies uv keeps
     beside sdist metadata.msgpack shards) ship: without them an offline
     rebuild falls back to wanting the sdist download and fails closed.
+
+    On macOS and Linux, uv's wheel entries (``wheels-v*/pypi/<name>/<version>``,
+    a hash directory deeper for URL, git and named-index sources) are relative
+    symlinks into ``archive-v0/``, and they ship as links. Following them
+    stored every unpacked wheel a second time and gave the seeded machine
+    cache directories where uv renames its own links (#141891).
     """
     def ignore(directory: str, names: list[str]) -> set[str]:
         path = Path(directory)
@@ -80,7 +88,7 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
             return {"src"}
         return set()
 
-    shutil.copytree(source, destination, ignore=ignore)
+    shutil.copytree(source, destination, ignore=ignore, symlinks=True)
 
 
 def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = False,
@@ -257,8 +265,8 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     facts.record_state("venv", Venv(repo_dir).expected_stamp(features, plugin_dirs=[]), features)
     print(f"✓ enabled-features.json ({len(features)} extras recorded)")
 
-    # Ship the full uv cache (build-only sdist sources and wheel ZIPs are
-    # already excluded by stage_uv_cache). Any per-install venv rebuild —
+    # Ship the full uv cache (build-only sdist sources are already excluded by
+    # stage_uv_cache). Any per-install venv rebuild —
     # plugin extras, feature changes — resolves entirely from the shipped
     # wheels with zero network access, on every profile of this install.
     payload_cache = out / "uv-cache"
@@ -272,6 +280,10 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         print(f"✓ uv-cache (lock-scoped: pruned {pruned} stale entries; offline rebuilds resolve from shipped wheels)", flush=True)
     else:
         raise InstallError("uv-cache", "runtime dependency cache is missing")
+    if current_target().startswith("win32-"):
+        from scripts.bundles.msix_names import drop_msix_reserved_names
+        for tree in drop_msix_reserved_names(out):
+            print(f"✓ msix: dropped {tree.as_posix()} (holds a package-reserved name, never read at runtime)")
 
     bad = _arch_guard(store_dir)
     for line in bad:
@@ -291,7 +303,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     relativize_links(out)
     from scripts.bundles.bytecode import bake_bytecode
     baked = bake_bytecode(out, python_bin)
-    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, read-only caches)")
+    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, owner-writable caches)")
     inputs = AgentInputs(
         project=repo_dir / "pyproject.toml", code=repo_dir, repo="hermes-agent",
         placement="contained", target=current_target(), python=python_bin,

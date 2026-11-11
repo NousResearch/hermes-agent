@@ -1,0 +1,23 @@
+name: stage
+repo: https://github.com/adindamochamad/stage
+sha: b298921580a29a6a3b1f4e9195433be32505a4f0
+description: "Stage Hermes write_file and patch calls in a scratch copy. Original files stay unchanged until stage_apply. Disclosure — while enabled, write_file and patch land in a scratch copy under the Hermes plugin-data directory and the real files change only when the model calls stage_apply (the model can apply without asking the user); writes outside the session workspace are refused, terminal commands that would modify workspace files (redirects, tee, sed -i, rm/mv/cp, git checkout/restore/reset --hard) are blocked, and any execute_code that uses subprocess, os.system or file-writing calls is blocked; stage_apply re-checks Hermes' write denylist and approval-gated paths before writing."
+maintainer: adindamochamad
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/adindamochamad/stage#readme
+version: "0.2.6"
+capabilities:
+  provides_tools:
+    - stage_apply
+    - stage_discard
+    - stage_status
+    - stage_diff
+    - stage_receipts
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

@@ -71,7 +71,7 @@ export async function buildWebapp({ source, workspace, out }) {
   ;({ source, out } = productOutput(source, out, [
     // The output lives inside the Desktop workspace: protect its siblings, not the directory.
     ...readdirSync(join(resolve(source), app)).filter(name => !['dist', 'dist-webapp', 'build'].includes(name)).map(name => `${app}/${name}`),
-    'apps/shared', 'package.json', 'package-lock.json', 'scripts/build', 'node_modules',
+    'apps/shared', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'scripts/build', 'node_modules',
     relative(resolve(source), workspace),
   ]))
   const inputs = buildInputs(source, 'webapp')

@@ -97,6 +97,9 @@ class SessionSource:
     # Discord auto-thread continuity: the thread id a CHANNEL message WILL be delivered into, so
     # the initiating message and later in-thread follow-ups share ONE session.
     prospective_thread_id: Optional[str] = None
+    # The adapter declares this chat's session shared by every participant even though the
+    # sender id is kept (Telegram observe mode: commands keep user_id for slash access checks).
+    shared_session: bool = False
     # Wire-INVISIBLE trust signal (never in to_dict/from_dict, so a peer cannot forge it): came
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
@@ -151,6 +154,8 @@ class SessionSource:
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         _optional(self._OPTIONAL_TAIL)
+        if self.shared_session:
+            d["shared_session"] = True
         return d
 
     @classmethod
@@ -164,7 +169,8 @@ class SessionSource:
             platform=Platform(data["platform"]), chat_id=str(data["chat_id"]),
             chat_type=data.get("chat_type", "dm"),
             scope_id=data.get("scope_id", data.get("guild_id")),
-            auto_thread_created=bool(data.get("auto_thread_created", False)), **plain,
+            auto_thread_created=bool(data.get("auto_thread_created", False)),
+            shared_session=bool(data.get("shared_session", False)), **plain,
         )
 
 
@@ -174,6 +180,12 @@ class SessionContext:
     source: SessionSource
     connected_platforms: list[Platform]
     home_channels: dict[Platform, HomeChannel]
+    # The current inbound actor may differ from the session route. Telegram observe mode, for
+    # example, deliberately removes a group sender from ``source`` to share the conversation.
+    # Keep that trusted event identity task-local; it must never alter the stored route.
+    actor_user_id: Optional[str] = None
+    actor_user_name: Optional[str] = None
+    turn_event: Any = None  # the MessageEvent the actor came from; a later fold may clear it (session_context)
     shared_multi_user_session: bool = False
     session_key: str = ""
     session_id: str = ""
@@ -364,11 +376,6 @@ _STATIC_PLATFORM_NOTES = {
         "will be delivered as its own iMessage bubble, so write accordingly: one idea per bubble, "
         "1–3 sentences each. If the user needs a detailed answer, give the short version first and "
         "offer to elaborate."
-    ),
-    Platform.YUANBAO: (
-        "**Platform notes:** You are running inside Yuanbao. To send a private (DM) message to a "
-        "user in the current group, use the yb_send_dm tool (look up the recipient by name or pass "
-        "their user_id). Your normal reply is delivered to the group you are responding in."
     ),
 }
 
@@ -664,6 +671,8 @@ def is_shared_multi_user_session(
     isolation rules in :func:`build_session_key`)."""
     if source.chat_type == "dm":
         return False
+    if getattr(source, "shared_session", False):
+        return True
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
@@ -718,7 +727,10 @@ def build_session_key(
     else:
         # Threads are shared by default; per-user isolation only via thread_sessions_per_user or
         # outside a thread.
-        isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+        isolate_user = (
+            group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+            and not getattr(source, "shared_session", False)
+        )
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
@@ -974,7 +986,7 @@ class SessionStore(
                 self._route_reset_reason(observed),
             )
         # Phase 2 (lock): apply the decisions to _entries.
-        decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
+        decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now, source)
 
         # Phase 3 (no lock): recovery + create + save + DB ops.
         if decision.needs_recover and decision.prev_session_id is None:
@@ -1005,7 +1017,7 @@ class SessionStore(
 
     def _apply_route_checks(
         self, session_key: str, checks: Optional[_RouteChecks], force_new: bool,
-        touch_activity: bool, now: datetime,
+        touch_activity: bool, now: datetime, source: SessionSource,
     ) -> _RouteDecision:
         """Apply stale/reset decisions to ``_entries`` under ``_lock``. If another thread replaced
         the entry during the lock-free window the snapshot no longer applies: route is healthy."""
@@ -1045,9 +1057,19 @@ class SessionStore(
                 # Internal/system events preserve the user-activity clock.
                 if touch_activity:
                     entry.updated_at = now
+                # Creation is the only other writer of origin, so an entry persisted without one
+                # (#146696) stays unroutable for completions, recovery and lane naming until an
+                # inbound turn on this very route fills it.
+                if touch_activity and entry.origin is None:
+                    entry.origin = source
                 decision.entry = entry
                 decision.needs_save = touch_activity or healed
                 decision.metadata_only_save = touch_activity and not healed
+                # Only creation wrote the receiving bot, and /reset, /new and switches copy it, so a
+                # route saved before the column existed stays NULL and its completions stay pending
+                # after a restart. Its next inbound turn records the bot that verifiably received it.
+                if touch_activity and entry.transport_profile is None:
+                    entry.transport_profile = transport_profile_of(source)
         return decision
 
     def _route_recover(
@@ -1276,6 +1298,33 @@ class SessionStore(
                         len(dropped), "y" if len(dropped) == 1 else "ies", session_id)
         return len(dropped)
 
+    def release_route(self, session_key: str, session_id: str) -> bool:
+        """Drop *session_key*'s routing entry while it still names *session_id*: the conversation
+        moved onto another lane (a handoff into another Telegram topic), so this one starts a fresh
+        conversation at its next message instead of sharing it. Nothing is ended. True = dropped."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.session_id != session_id:
+                return False
+            self._entries.pop(session_key, None)
+            self._save()
+        return True
+
+    def restore_route(self, entry: SessionEntry, *, expected_session_id: str) -> bool:
+        """Undo a ``switch_session`` that could not complete: put *entry* (the route as it was, pins
+        and overrides included) back while its key still names *expected_session_id*, and reopen the
+        row the switch ended. False = the route moved on since (a newer switch owns it)."""
+        with self._lock:
+            current = self._entry_locked(entry.session_key)
+            if current is None or current.session_id != expected_session_id:
+                return False
+            self._entries[entry.session_key] = entry
+            self._save()
+        if self._db_for_key(entry.session_key):
+            self._reopen_session_row(entry.session_key, entry.session_id)
+        self._announce_route(entry.session_key, entry)
+        return True
+
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
@@ -1374,7 +1423,7 @@ class SessionStore(
 
 
 def build_session_context(
-    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
+    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None, event: Any = None,
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
     connected = config.get_connected_platforms()
@@ -1382,9 +1431,11 @@ def build_session_context(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
     )
+    actor = event if getattr(event, "user_id", None) is not None else source
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
-        home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
+        actor_user_id=getattr(actor, "user_id", None), actor_user_name=getattr(actor, "user_name", None),
+        turn_event=event, home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
     )
     if session_entry:
         context.session_key = session_entry.session_key

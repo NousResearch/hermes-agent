@@ -1,0 +1,18 @@
+name: agentstatus-index
+title: AgentStatus Index
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 8678c389f76a928a530d868eb9f51ead14e02783
+version: "1.0.0"
+description: "Live public MCP Index through Carmel Labs' hosted server (Streamable HTTP at https://index.mcp.agentstatus.dev/mcp, no authentication, no keys). Search, recommend, compare, and look up public MCP servers, then call one published tool with call_indexed_tool. Bundles the agentstatus-index skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to index.mcp.agentstatus.dev. call_indexed_tool forwards one call to a public MCP server the user already picked from a search or recommendation. The Index does not store credentials. Destructive tool names are not forwarded. The tool set is served by that server at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Carmel Labs
+tier: community
+category: tools
+docs_url: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

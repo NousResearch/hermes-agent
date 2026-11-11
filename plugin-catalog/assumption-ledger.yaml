@@ -1,0 +1,28 @@
+name: assumption-ledger
+title: Assumption Ledger
+version: "0.2.2"
+repo: https://github.com/itzebe/hermes-assumption-ledger
+sha: 07bfaaaeb58fed1fa2d717f2c201e7bb17a61965
+description: "Persistent operational-assumption ledger. Captures the assumptions an agent states in its own messages (never from tool output), keeps the sentence each came from as provenance, verifies them with deterministic checks, and warns in context when work recorded in a session depends on an assumption evidence has contradicted. Disclosure — all state is local: assumptions, evidence and decisions are stored in a plain SQLite database under HERMES_HOME/plugin-data/assumption-ledger/ (created on first use, never pruned by the plugin; delete the directory to clear it). It needs no credentials. HTTP checks (http_status, http_json_field) are the only outbound traffic; they accept only http/https and refuse loopback, private, link-local, CGNAT and cloud-metadata destinations unless you set allow_private_urls, and metadata endpoints stay blocked even then. Command checks (command_succeeds) are disabled until you set command_allowlist; only a listed bare executable name runs (a path is refused), resolved to an absolute path on the child's PATH, with a minimal environment. The allowlist restricts which program may run, not the safety of the arguments the model passes it. Git checks run in a model-chosen directory with the repository's core.fsmonitor and core.hooksPath settings overridden and with a minimal environment; filter drivers set in that repository's own .git/config still apply to git status, so point git checks only at repositories whose local git config you trust. It reads local files, git state, environment variables and SQLite databases, warns rather than blocking a turn, scopes warnings to the session that recorded the decision, and exposes no tools that write to external systems."
+maintainer: itzebe
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/itzebe/hermes-assumption-ledger#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - assumption_record
+    - assumption_check
+    - assumption_status
+    - assumption_decide
+    - assumption_resolve
+    - assumption_drop
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - post_tool_call
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

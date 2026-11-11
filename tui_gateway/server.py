@@ -189,7 +189,7 @@ _LONG_HANDLERS = frozenset({
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
     "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
-    "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
+    "image.render", "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
     "mcp.servers.oauth.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
@@ -198,7 +198,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
-    "onboarding.start", "onboarding.state",
+    "onboarding.start", "onboarding.state", "subagent.roster",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -658,9 +658,8 @@ def _approval_request_payload(data: dict | None) -> dict:
             if payload.get("allow_permanent") is not False:
                 choices.append("always")
         payload["choices"] = choices + ["deny"]
-    if "command" in payload:
-        from gateway.run import _redact_approval_command
-        payload["command"] = _redact_approval_command(payload.get("command"))
+    from gateway.run import _redact_approval_command  # description too: consent prompts carry MCP/vault text
+    payload.update({k: _redact_approval_command(payload[k]) for k in ("command", "description") if k in payload})
     return payload
 
 
@@ -676,7 +675,7 @@ def _open_requests(sid: str) -> list[dict]:
     if (session := _sessions.get(sid)) is not None:
         with session.get("history_lock", threading.Lock()):
             mirrored = session.get("_compute_host_open_request")
-            return [dict(mirrored)] if isinstance(mirrored, dict) else []
+            return [dict(mirrored)] if isinstance(mirrored, dict) and mirrored.get("replayable", True) else []
     return []
 
 
@@ -1233,13 +1232,13 @@ def _write_config_key(key_path: str, value):
 
 
 def _write_config_keys(updates: dict) -> None:
-    """Set related dotted keys together: ONE backend write without a config file (remote), so a
-    refused key changes none of them; one raw round-trip save with the file backend."""
+    """Set related dotted keys in ONE write (remote: one backend write; file: one raw save): a refused key changes none."""
+    from .methods_config_set import _refuse_managed_keys
+    _refuse_managed_keys(*updates)  # an administrator-pinned key: refused whole, nothing written
     if not supports_file_tooling():
         _write_config_changes(updates)
         return
-    # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
-    cfg = _load_cfg_raw()
+    cfg = _load_cfg_raw()  # write-back round-trip: raw, never the overlaid/expanded view
     for key_path, value in updates.items():
         current = cfg
         *parents, leaf = key_path.split(".")
@@ -1265,21 +1264,17 @@ _BOOL_WORDS = {
 
 
 def _restart_slash_worker(sid: str, session: dict):
-    # Close the slash-worker subprocess as part of finalize itself, not just in the callers.
-    # Defense-in-depth: every session-end path goes through _finalize_session (it's the single
-    # ``_finalized``-guarded chokepoint), so folding worker cleanup in here means a future code path that
-    # calls _finalize_session directly — without the surrounding _teardown_session / _shutdown_sessions
-    # worker.close() — can't reintroduce the #38095 leak. Idempotent: _SlashWorker.close() is
-    # poll()-guarded, so the explicit close() still in those callers is harmless.
-    worker = session.get("slash_worker")
+    # Respawn on the agent's current route (model, provider, base_url) after a switch or compression.
+    worker, agent = session.get("slash_worker"), session.get("agent")
     if worker is None:
         return  # never spawned one; spawning here would fork the per-worker MCP fleet for nothing
     with contextlib.suppress(Exception):
         worker.close()
     try:
-        new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
+        new_worker = _SlashWorker(session["session_key"], getattr(agent, "model", _resolve_model()),
                                   profile_home=session.get("profile_home"),
-                                  provider=getattr(session.get("agent"), "provider", None) or None)
+                                  provider=getattr(agent, "provider", None) or None,
+                                  base_url=getattr(agent, "base_url", None) or None)
     except Exception:
         session["slash_worker"] = None
         return

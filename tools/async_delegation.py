@@ -9,6 +9,7 @@ crash-recovery wiring. Only the async lifecycle lives here; the child run is an 
 
 from __future__ import annotations
 
+import collections
 import contextvars
 import json
 import logging
@@ -74,6 +75,14 @@ _offered: set = set()
 # ``startup_replay`` on the sweep's later re-offers too, so a refused one stays gated.
 _startup_replayed: set = set()
 _last_orphan_sweep: dict[str, float] = {}
+# (home key, delegation_id) -> when the sweep last re-offered a lost copy. A consumer that keeps
+# handing the copy back would otherwise be re-offered every tick: re-offering touches no ledger
+# column, so each re-offer gets its own ``_CLAIM_LEASE_S`` here, and only the first one warns.
+_reoffered_at: dict[tuple[str, str], float] = {}
+# delegation_id -> number of copies a consumer holds off-queue (``mark_copy_held``). The sweep counts
+# them as live alongside the queued ones, so it never adds a duplicate beside a held copy.
+_held_copies: collections.Counter = collections.Counter()
+_held_lock = threading.Lock()  # taken after a queue's mutex, never before
 
 # ── Stale-delegation detection (progress-based, on by default) ──────────────
 # A runner wedged before returning never reaches its finalizer, so it would show
@@ -238,6 +247,10 @@ def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
     result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
     fidelity, never the live result."""
     entry = redact_child_result(entry)
+    if isinstance(entry.get("task_index"), int):  # a stall or runner crash keeps it (``_keep_finished_children``)
+        with _records_lock:
+            if (record := _records.get(delegation_id)) is not None and record.get("status") in _ACTIVE_STATES:
+                record.setdefault("_finished_children", {})[entry["task_index"]] = entry
     if remote := worker_ledger():
         return remote.child(delegation_id, entry)
     try:
@@ -400,37 +413,126 @@ def _replay_pending(conn, rows, target_queue, now: float, *, startup: bool = Fal
     return restored
 
 
+def completion_copy_id(evt: Any) -> str:
+    """The delegation id ``evt`` is the final-result copy of, or "" (other events, interim notices)."""
+    if not isinstance(evt, dict) or evt.get("type") != "async_delegation" or is_interim_delegation_event(evt):
+        return ""
+    return str(evt.get("delegation_id") or "")
+
+
+def mark_copy_held(delegation_id: str) -> None:
+    """Record that a consumer holds a copy of ``delegation_id`` off every queue (a poller between dequeue and
+    requeue, a parked copy). The orphan sweep treats a held copy like a queued one. A holder that moves a copy
+    onto a queue marks before it dequeues, or under the queue's mutex, and unmarks only after any requeue, so
+    the sweep never sees the copy as neither queued nor held. Pair every call with ``unmark_copy_held``."""
+    if delegation_id:
+        with _held_lock:
+            _held_copies[delegation_id] += 1
+
+
+def unmark_copy_held(delegation_id: str) -> None:
+    """End one ``mark_copy_held`` hold on ``delegation_id``."""
+    if delegation_id:
+        with _held_lock:
+            _held_copies[delegation_id] -= 1
+            if _held_copies[delegation_id] <= 0:
+                del _held_copies[delegation_id]
+
+
+def _queued_completion_ids(*queues) -> Optional[set]:
+    """Delegation ids with a final-result copy sitting in any of ``queues`` or held off-queue by a consumer
+    (``mark_copy_held``), or None when a queue cannot be inspected. Each queue is read under its own mutex
+    (the lock ``put``/``get`` and ``take_ready`` take) with the held ids read inside it, so a copy moving
+    between a queue and a hold is always seen in one of them. Interim per-task notices share their batch's
+    id but are not the result, so they never count as its copy."""
+    ids: set = set()
+    for q in {id(q): q for q in queues if q is not None}.values():
+        mutex, items = getattr(q, "mutex", None), getattr(q, "queue", None)
+        if mutex is None or items is None:
+            return None
+        with mutex:
+            snapshot = list(items)
+            with _held_lock:
+                ids.update(_held_copies)
+        ids.update(completion_copy_id(evt) for evt in snapshot)
+    ids.discard("")
+    return ids
+
+
+def _copy_may_be_live(delegation_id: str, pid, updated_at: float, live_ids: set, home: str,
+                      offered: set, now: float) -> bool:
+    """For a row whose copy this process made (it owns the row or offered it): whether that copy may still be
+    delivered, so the sweep must not add another. Live = queued or held (``live_ids``), or the row or this
+    process's last re-offer was touched within a claim lease, the span after which a silent claim counts as
+    abandoned. A row owned by ANOTHER live process is left to it: its queue is out of sight."""
+    if not (delegation_id in offered or int(pid) == os.getpid()):
+        return True
+    if delegation_id in live_ids or updated_at >= now - _CLAIM_LEASE_S:
+        return True
+    with _orphan_lock:
+        return _reoffered_at.get((home, delegation_id), float("-inf")) >= now - _CLAIM_LEASE_S
+
+
+def _note_reoffers(home: str, lost: list, now: float) -> None:
+    """Start each lost copy's re-offer lease and log it: WARNING the first time a row is re-offered, DEBUG
+    after that (a consumer that keeps handing the copy back would otherwise warn once per lease)."""
+    with _orphan_lock:
+        first = [d for d in lost if (home, d) not in _reoffered_at]
+        for key in [k for k, at in _reoffered_at.items() if now - at > _MAX_COMPLETION_REPLAY_AGE_S]:
+            del _reoffered_at[key]  # its row is past the replay cap, so it was dropped
+        _reoffered_at.update({(home, d): now for d in lost})
+        _offered.difference_update({(home, d) for d in lost})
+    log = logger.warning if first else logger.debug
+    log("Re-offering %d pending async completion(s) whose in-memory copy was lost while this process ran: %s",
+        len(lost), ", ".join(lost))
+
+
 def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> int:
-    """Offer this home's completions whose owner died after THIS process started (#97202).
+    """Re-offer this home's pending completions that no live in-memory copy will deliver (#97202, #140718).
 
     Startup replay (``restore_undelivered_completions``) covers owners that died before the process
     started; this covers the rest while it runs. Abandoned in-flight rows are first classified by
     ``recover_abandoned_delegations``. A terminal row qualifies when it is pending with an event, idle
-    past ``_ORPHAN_STALE_S``, not under a live delivery claim, and its owner fails the shared liveness
-    check. A row is offered once per live in-memory copy: a consumer that discards the copy with the row
-    still pending hands it back for the next sweep. The consumer's ``claim_completion_delivery`` stays
-    the atomic cross-process gate, so two processes offering one row never both deliver it. Rows past
-    the delivery budget or the replay age converge to ``dropped``. Reads the current profile's ledger:
-    callers bind the owning profile first."""
+    past ``_ORPHAN_STALE_S`` and not under a live delivery claim, and then:
+
+    - its owner is dead and this process has not offered it yet; or
+    - its owner is THIS process, or this process already offered it, the row has been idle for a whole
+      ``_CLAIM_LEASE_S`` and no copy of it sits in ``target_queue`` or the producers'
+      ``completion_queue``: the one in-memory copy was lost (a consumer discarded it, or it went onto
+      a queue no delivery loop drains), and without this the row would stay pending with zero
+      attempts until a restart (#144563).
+
+    The sweep never adds a copy beside a live one: queued, held off-queue by a consumer
+    (``mark_copy_held``), under a claim lease (filtered above), or touched within a lease (a claim, defer
+    or release refreshes ``updated_at``). Each re-offer starts its own lease, so a consumer that keeps
+    handing the copy back sees it at most once per lease, and only the first re-offer warns. A row owned
+    by ANOTHER live process is left to that process, whose queue this one cannot see. The consumer's
+    ``claim_completion_delivery`` stays the atomic cross-process gate, so a duplicate copy can never
+    deliver twice. Rows past the delivery budget or the replay age converge to ``dropped``. Reads the
+    current profile's ledger: callers bind the owning profile first."""
     alive = _owner_liveness()
     if alive is None or not _db_path().exists():
         return 0  # never create a ledger just to sweep it
     recover_abandoned_delegations()
     now = time.time() if now is None else now
     home = hermes_home_key(get_hermes_home())
+    from tools.process_registry import process_registry
+    live = _queued_completion_ids(target_queue, process_registry.completion_queue)
     with _orphan_lock:
         offered = {delegation_id for key, delegation_id in _offered if key == home}
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
-                      owner_pid, owner_started_at, delivery_attempts
+                      owner_pid, owner_started_at, delivery_attempts, updated_at
                FROM async_delegations
                WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
                  AND event_json IS NOT NULL AND updated_at < ?
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
                ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
-        orphans = []
-        for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts in rows:
-            if delegation_id in offered or alive(pid, started):
+        orphans, lost = [], []
+        for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts, updated_at in rows:
+            copy_lost = alive(pid, started) or delegation_id in offered
+            if copy_lost and (live is None or _copy_may_be_live(delegation_id, pid, updated_at, live, home,
+                                                                  offered, now)):
                 continue
             if (attempts or 0) >= _MAX_DELIVERY_ATTEMPTS:
                 # Its last claimant died holding the final attempt; converge like release_completion_delivery.
@@ -442,6 +544,10 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
                                delegation_id, _MAX_DELIVERY_ATTEMPTS)
                 continue
             orphans.append((delegation_id, payload, completed_at, dispatched_at))
+            if copy_lost:
+                lost.append(delegation_id)
+        if lost:
+            _note_reoffers(home, lost, now)
         return _replay_pending(conn, orphans, target_queue, now)
 
 
@@ -687,10 +793,9 @@ def failed_delegations_for_session(
     for delegation_id, state, dispatched_at, completed_at, task_json, result_json in rows:
         task, result = _json_object(task_json), redact_child_result(_json_object(result_json))
         goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
-        goal_for = dict(zip(task.get("task_indexes") or range(len(goals)), goals))
         tasks = result["results"] if isinstance(result.get("results"), list) else [] if task.get("is_batch") else [result]
-        if not tasks and str(state).lower() in _FAILED_TASK_STATES:
-            tasks = [{"task_index": 0, "error": result.get("error")}]
+        if not tasks and str(state).lower() in _FAILED_TASK_STATES:  # crash, stall or owner exit: no per-task rows
+            tasks = [{"task_index": i, "error": result.get("error")} for i in task.get("task_indexes") or [0]]
         for entry in tasks:
             status = str(entry.get("status") or state or "").lower()
             if status not in _FAILED_TASK_STATES:
@@ -699,7 +804,9 @@ def failed_delegations_for_session(
             error = entry.get("error") or result.get("error")
             failed.append({
                 "delegation_id": delegation_id, "task_index": index, "status": status,
-                "goal": str(goal_for.get(index, goals[0]) or ""), "error": str(error) if error else None,
+                # ``goals`` is the whole call's list (split units store it too); task_index indexes it.
+                "goal": str((goals[index] if 0 <= index < len(goals) else goals[0]) or ""),
+                "error": str(error) if error else None,
                 "dispatched_at": dispatched_at, "completed_at": completed_at})
     return failed[:limit]
 
@@ -964,6 +1071,17 @@ def dispatch_async_delegation_batch(
 
 
 # ── Finalization + completion events ────────────────────────────────────────
+def _keep_finished_children(record: dict[str, Any], result: Any, status: str) -> Any:
+    """A batch unit that stalled or whose runner raised has no per-task results: children that already
+    finished (``record_unit_child``) keep theirs, and only the rest take the unit's status."""
+    finished = record.get("_finished_children")  # only batch units record children
+    if not finished or result.get("results"):
+        return result
+    indexes = record.get("task_indexes") or range(len(record.get("goals") or []))
+    return {**result, "results": [finished.get(i) or {"task_index": i, "status": status, "summary": None,
+                                                      "error": result.get("error")} for i in indexes]}
+
+
 def _finalize(delegation_id: str, result: Any, status: str) -> None:
     """Atomically claim terminal delivery, push the completion event, then mark ``status``.
     ``result`` is a dict or a callable receiving the record snapshot (stall path). The record
@@ -974,15 +1092,22 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record = _records.get(delegation_id)
         if record is None or record.get("status") not in _ACTIVE_STATES:
             return
+        # Read before the status flips: the stall monitor stopped this unit (``_push_completion_event``).
+        record["_stall_stopped"] = record.get("status") == "stalling"
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
-    _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    final = result(snapshot) if callable(result) else result
+    _push_completion_event(snapshot, _keep_finished_children(snapshot, final, status), status)
     with _records_lock:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status
+            # Only an active record is ever force-finalized under its dispatcher's Context; a
+            # retained completed one would otherwise pin that turn's agent and history.
+            _records[delegation_id].pop("_context", None)
+            _records[delegation_id].pop("_finished_children", None)
         _prune_completed_locked()
 
 
@@ -995,6 +1120,10 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
     The queued event is the parent's in-process copy and honours ``security.redact_secrets: false``;
     ``_persist_completion`` re-scrubs with force for the durable row (and the worker IPC)."""
     result = redact_child_result(result, force=False)
+    if record.get("_stall_stopped") and "stall_grace_seconds" not in result:
+        # Its runner unwound on the stall monitor's stop inside the grace window: the children read as
+        # interrupted, exactly like a user stop. The stall context says which one it was.
+        result = {**result, **_stall_meta(record)}
     is_batch = bool(record.get("is_batch"))
     label = " batch" if is_batch else ""
     try:
@@ -1181,20 +1310,24 @@ def _stalled_error_text(event_record: dict[str, Any]) -> str:
             "ask me to run it again if you still need it.")
 
 
+def _stall_meta(event_record: dict[str, Any]) -> dict[str, Any]:
+    """Structured stall context: lets parents/UIs tell a stall-monitor stop from other outcomes
+    without parsing the error string."""
+    stall_in_tool = event_record.get("_stall_in_tool")
+    return {
+        "stalled_after_quiet_seconds": event_record.get("_stall_quiet_seconds"),
+        "stall_threshold_seconds": event_record.get("_stall_threshold_seconds"),
+        "stall_phase": "in_tool" if stall_in_tool else "idle" if stall_in_tool is not None else None,
+        "stall_grace_seconds": _STALL_GRACE_SECONDS}
+
+
 def _stalled_result(delegation_id: str, event_record: dict[str, Any]) -> dict[str, Any]:
     """Synthetic terminal result for a stalling delegation whose runner never returned."""
     completed_at = event_record.get("completed_at") or time.time()
     duration = round(completed_at - (event_record.get("dispatched_at") or completed_at), 2)
     error = _stalled_error_text(event_record)
     logger.error("Async delegation %s force-finalized as stalled after %.0fs", delegation_id, duration)
-    # Structured stall metadata lets parents/UIs distinguish a stall-monitor
-    # kill from other failures without parsing the error string.
-    stall_in_tool = event_record.get("_stall_in_tool")
-    stall_meta = {
-        "stalled_after_quiet_seconds": event_record.get("_stall_quiet_seconds"),
-        "stall_threshold_seconds": event_record.get("_stall_threshold_seconds"),
-        "stall_phase": "in_tool" if stall_in_tool else "idle" if stall_in_tool is not None else None,
-        "stall_grace_seconds": _STALL_GRACE_SECONDS}
+    stall_meta = _stall_meta(event_record)
     if event_record.get("is_batch"):
         return {**_batch_crash(error, duration), **stall_meta}
     return {**_single_crash(error, duration), "status": "stalled", "exit_reason": "stalled", **stall_meta}
@@ -1303,6 +1436,12 @@ def refuse_for_session(token: Any, *, session_key: str = "", parent_session_ids=
             _refused_by.setdefault(selector, set()).add(token)
 
 
+def refused_for_session(token: Any) -> bool:
+    """Whether *token*'s session is closed to new dispatches (``refuse_for_session``, not yet lifted)."""
+    with _records_lock:
+        return token in _refused
+
+
 def allow_for_session(token: Any) -> None:
     """Lift ONE session's refusal: a viewer attached again, or the owner retired its live state."""
     with _records_lock:
@@ -1339,3 +1478,6 @@ def _reset_for_tests() -> None:
         _offered.clear()
         _startup_replayed.clear()
         _last_orphan_sweep.clear()
+        _reoffered_at.clear()
+    with _held_lock:
+        _held_copies.clear()

@@ -128,7 +128,6 @@ ownership for a redelivered event.
 ├── session_model_usage   — Per-model/per-task usage attribution rows
 ├── messages_fts          — FTS5 virtual table (content + tool_name + tool_calls)
 ├── messages_fts_trigram  — FTS5 virtual table with trigram tokenizer (CJK / substring search)
-├── messages_fts_cjk      — FTS5 virtual table with cjk_unicode61 tokenizer
 ├── state_meta            — Key/value metadata table
 ├── gateway_routing       — Gateway routing metadata
 ├── compression_locks     — Cross-process compression locking

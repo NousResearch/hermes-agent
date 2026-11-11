@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — mudar de modelo"
     usage_switch_provider: "`/model <name> --provider <slug>` — mudar de fornecedor"
     usage_persist: "`/model <name> --global` — guardar permanentemente"
+    usage_reset: "`/model reset` — limpar o override desta sessão"
+    reset_done: "Override de modelo da sessão removido — agora usando `{model}` (o padrão do canal/global). Histórico da conversa mantido."
+    reset_none: "Nenhum override de modelo ativo nesta sessão — já está usando `{model}` (o padrão do canal/global)."
     err_skew: "Este gateway está executando código de {boot_rev}, mas o checkout em disco agora está em {disk_rev}. Trocar de modelo poderia causar uma falha por módulo obsoleto — reinicie o gateway para carregar o novo código: hermes gateway restart"
     err_switch_failed: "Falha ao trocar para o modelo {model} ({error}); permanecendo em {current}."
     err_config_not_updated: "config.yaml não foi atualizado ({error})"
@@ -484,8 +487,6 @@ gateway:
     root_new: "Para iniciar um novo chat paralelo do Hermes, abra o tópico All Messages no topo desta interface do bot e envie qualquer mensagem lá. O Telegram criará um novo tópico para ela.\n\nCada tópico é uma sessão independente do Hermes. Use /new dentro de um tópico existente apenas se quiser substituir a sessão atual daquele tópico."
     new_header: "Nova sessão do Hermes iniciada neste tópico.\n\nDica: para trabalho paralelo, abra All Messages e envie uma mensagem lá para criar um tópico separado, em vez de usar /new aqui. /new substitui a sessão vinculada ao tópico atual."
     help: "/topic — ativa o modo DM multissessão (um bot, vários chats paralelos)\n\nUso:\n  /topic             Ativa o modo de tópicos ou mostra o status se já estiver ativo\n  /topic help        Mostra esta mensagem\n  /topic off         Desativa o modo de tópicos e limpa os vínculos de tópicos\n  /topic <id>        Dentro de um tópico: restaura uma sessão anterior pelo ID\n\nComo funciona:\n1. Execute /topic uma vez nesta DM — o Hermes verifica se Threads\n   Settings está ativado no BotFather e liga o modo multissessão.\n2. Toque em All Messages no topo do bot e envie qualquer mensagem.\n   O Telegram cria um novo tópico para essa mensagem; cada tópico é\n   uma sessão independente do Hermes (histórico e contexto novos).\n3. A DM raiz vira um lobby do sistema — envie /topic, /status,\n   /help, /usage lá. Prompts normais vão em um tópico.\n4. /new dentro de um tópico reinicia apenas a sessão daquele tópico.\n5. /topic <id> dentro de um tópico restaura uma sessão antiga nele."
-    system_topic_name: "Sistema"
-    system_topic_intro: "Tópico do sistema para comandos e status do Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Não foi possível determinar o ID do chat."
     mode_not_enabled: "O modo de tópicos multissessão não está ativado para este chat no momento."
@@ -513,6 +514,7 @@ gateway:
     not_git_repo: "✗ Não é um repositório git — não é possível atualizar."
     hermes_cmd_not_found: "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
     start_failed: "✗ Falha ao iniciar a atualização: {error}"
+    already_running: "⏳ Já há uma atualização em andamento; só quem a iniciou pode responder às perguntas dela. Aguarde terminar e tente /update novamente."
     starting: "☤ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
     reply_failed: "✗ Falha ao enviar a resposta ao processo de atualização: {error}"
     reply_sent: "✓ `{label}` enviado ao processo de atualização."
@@ -622,6 +624,8 @@ gateway:
     action_always: "Sempre permitir"
     action_deny: "Negar"
     deadline: "Se não responder em {window}, ele NÃO será executado."
+    not_requester: "Apenas {requester} pode responder a esta aprovação."
+    not_requester_admins_only: "Apenas um administrador ou um aprovador listado pode responder a esta aprovação."
     text_choice_once: "Responda `{prefix}approve` para executar uma vez"
     text_choice_session: "`{prefix}approve session` para permitir este padrão pelo restante desta sessão"
     text_choice_always: "`{prefix}approve always` para permitir permanentemente"
@@ -629,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", ou {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    truncated_full_above: "Pré-visualização encurtada: o comando completo ({total} caracteres) está na mensagem acima."
+    truncated_deny_only: "Pré-visualização encurtada ({total} caracteres) e não foi possível mostrar o comando completo aqui, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
+    text_prompt_deny_only: "O pedido de aprovação completo é demasiado longo para esta plataforma, por isso só é oferecido Negar. Revê-o na CLI ou na app Desktop."
   notify:
     media_kind:
       audio: "áudio"
@@ -971,9 +978,6 @@ platform:
     approved: "✅ Aprovado."
     denied: "❌ Negado."
     approval_expired: "⌛ Aprovação expirada — o comando não foi executado (já excedeu o tempo limite ou foi resolvido em outro lugar)."
-  yuanbao:
-    slow_response_notice: "Esta tarefa é um pouco complexa — ainda estou trabalhando nela, aguarde um momento..."
-    owner_command_denied: "⚠️ {command} só está disponível para o criador no modo de chat privado"
   shared:
     truncated_suffix: "\n...(truncado)"
     unknown: "desconhecido"
@@ -1368,6 +1372,12 @@ platform:
       unauthorized: "Somente um usuário autorizado do Matrix pode usar estes controles."
       not_requester: "Somente o usuário que solicitou esta ação pode usar estes controles."
   feishu:
+    clarify:
+      title: "O Hermes precisa da sua resposta"
+      other: "✏️ Outro (digitar resposta)"
+      awaiting_typed: "Aguardando resposta digitada de {user}…"
+    picker:
+      apply_error: "Erro ao aplicar a seleção: {error}"
     approval:
       action_session: "Sessão"
       action_always: "Sempre"
@@ -1471,6 +1481,8 @@ platform:
     prompt_other: "✏️ Outro (digitar resposta)"
     prompt_expired: ⌛ Essa solicitação não está mais aguardando resposta. Envie sua resposta como uma mensagem normal.
 slash:
+  rewind:
+    description: "Retroceder a um prompt anterior para editá-lo e reenviá-lo, ou bifurcar a partir dali (Esc Esc)"
   approve:
     description: "Aprovar um comando perigoso pendente"
   bg:
@@ -1698,6 +1710,20 @@ slash:
   quit:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
+  backtrack:
+    title: "↺ Transcrição — escolha um prompt para editar"
+    keys_hint: "Navegando na transcrição · ↑↓/jk rolar · ←→/hl prompts · ↵ editar · f bifurcar · esc voltar"
+    prime_hint: "esc de novo para editar a mensagem anterior"
+    no_previous: "Nenhuma mensagem anterior para editar."
+    editing_hint: "↺ Editando o prompt {number} — Enter retrocede até aqui e envia · Esc Esc cancela"
+    edit_cancelled: "↺ Retrocesso cancelado; nada foi removido."
+    rewound: "↺ Retrocedido ao prompt {number} ({count} mensagem(ns) arquivada(s)); enviando a edição."
+    forked: "⑂ Bifurcado antes do prompt {number}; a sessão original {parent} não foi alterada. Edite o prompt abaixo e pressione Enter para enviar."
+    nothing: "(._.) Não há prompts anteriores para retroceder."
+    target_changed: "(x_x) A sessão mudou desde que você escolheu o prompt {number}; nada foi removido. Sua edição voltou para o editor."
+    invalid: "(._.) Não existe o prompt {value} — escolha de 1 a {total}."
+    usage: "Uso: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Falha ao retroceder; o histórico não foi alterado: {error}"
   modern:
     thought_for: "Pensou por {seconds}s"
     thought: "Pensou"
@@ -2009,6 +2035,8 @@ cli:
     usage_switch_reasoning: "trocar e definir o esforço de raciocínio"
     usage_switch_provider: "trocar fornecedor"
     usage_refresh: "buscar novamente as listas de modelos"
+    reset_none: "Já está no padrão configurado ({model}) — nada para redefinir."
+    reset_no_default: "Nenhum model.default no config.yaml — nada para onde voltar."
     choice_switch_anyway: "Trocar mesmo assim"
     desc_switch_anyway: "Usar este modelo na sessão atual do Hermes."
     choice_cancel: "Cancelar"
@@ -2159,6 +2187,7 @@ cli:
     images_attached_other: "📎 {count} imagens anexadas"
     command_interrupted: "Comando interrompido."
     welcome: "Bem-vindo ao Hermes Agent! Digite sua mensagem ou /help para ver os comandos."
+    vscode_images_hint: "O VS Code pode mostrar imagens em resolução total aqui: ative terminal.integrated.enableImages nas configurações."
     activated_skills_label: "Skills ativadas:"
     redaction_disabled_title: "⚠  A redação de segredos está DESATIVADA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Chaves de API e tokens podem aparecer sem máscara na saída do chat, nos JSONs de sessão e nos logs. Defina {setting} em config.yaml para reativar."
@@ -2613,6 +2642,7 @@ cli:
     goal_turns: "⊙ objetivo {used}/{max}"
     goal: "⊙ objetivo"
     ctx_pinned: " fixado"
+    ctx_fallback: " padrão"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Guardados ({count} item)"
@@ -3952,3 +3982,8 @@ plan_usage:
   large_notice_limit: "Modelo grande: o seu limite {name} foi atingido ({resets})."
   large_notice_limit_stops: "Modelo grande: o seu limite {name} foi atingido ({resets}), por isso não funcionará até lá."
   large_notice_percent: "Modelo grande: usa mais do uso do seu plano por mensagem. Limite mensal de modelos grandes: {percent} usado."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Arquivos alterados nos turnos desfeitos: {files}. Execute /rollback para listar os checkpoints e restaurar um."
+    more: "+{count} mais"

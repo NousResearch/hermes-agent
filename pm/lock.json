@@ -304,6 +304,47 @@
       },
       "version": "0.39.0"
     },
+    "just": {
+      "artifacts": {
+        "darwin-arm64": {
+          "sha256": "6574cea774ed4cae12e24b6aa11857de33e80dab4667cf628fd5840df96a2a9d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-apple-darwin.tar.gz"
+        },
+        "darwin-x64": {
+          "sha256": "036ead9df9bc31dbae9934ae3b4236ed124d0bafcffd33439460ae084d5c9cb7",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-apple-darwin.tar.gz"
+        },
+        "linux-arm64": {
+          "sha256": "23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "linux-arm64-bionic": {
+          "sha256": "23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "linux-arm64-musl": {
+          "sha256": "23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
+        },
+        "linux-x64": {
+          "sha256": "409044617b6f06517c1035e55ca38c8c856ff8b650e41bc2aa1ef82d5903a23e",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz"
+        },
+        "linux-x64-musl": {
+          "sha256": "409044617b6f06517c1035e55ca38c8c856ff8b650e41bc2aa1ef82d5903a23e",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz"
+        },
+        "win32-arm64": {
+          "sha256": "a72808bc8f8028c25aaae87cf26405d2bd85d2769a779380b344c69607216971",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-pc-windows-msvc.zip"
+        },
+        "win32-x64": {
+          "sha256": "9c5463e2d0974e31bee71346aa5cbf19167de1585a4abc1bae7b3b04604ea9c0",
+          "url": "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-pc-windows-msvc.zip"
+        }
+      },
+      "version": "1.59.0"
+    },
     "llamacpp-cpu": {
       "artifacts": {
         "darwin-arm64": {
@@ -334,14 +375,26 @@
             "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb"
           }
         ],
-        "win32-arm64": {
-          "sha256": "80bae6519b3f8bd1e637789cbd3f65ce2112e60b50fb7f934fa1ef34e31f1b54",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-cpu-arm64.zip"
-        },
-        "win32-x64": {
-          "sha256": "a9a407979a351add66016ffb558a53de8b6655fed1eec362591d66ea671fec81",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-cpu-x64.zip"
-        }
+        "win32-arm64": [
+          {
+            "sha256": "80bae6519b3f8bd1e637789cbd3f65ce2112e60b50fb7f934fa1ef34e31f1b54",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-cpu-arm64.zip"
+          },
+          {
+            "sha256": "4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8/Microsoft.VC.14.51.CRT.Redist.ARM64.base.vsix"
+          }
+        ],
+        "win32-x64": [
+          {
+            "sha256": "a9a407979a351add66016ffb558a53de8b6655fed1eec362591d66ea671fec81",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-cpu-x64.zip"
+          },
+          {
+            "sha256": "24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af/Microsoft.VC.14.51.CRT.Redist.X64.base.vsix"
+          }
+        ]
       },
       "version": "11671"
     },
@@ -383,6 +436,10 @@
           {
             "sha256": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774",
             "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/cudart-llama-bin-win-cuda-13.4-arm64.zip"
+          },
+          {
+            "sha256": "4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8/Microsoft.VC.14.51.CRT.Redist.ARM64.base.vsix"
           }
         ],
         "win32-x64": [
@@ -393,6 +450,10 @@
           {
             "sha256": "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668",
             "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/cudart-llama-bin-win-cuda-13.4-x64.zip"
+          },
+          {
+            "sha256": "24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af/Microsoft.VC.14.51.CRT.Redist.X64.base.vsix"
           }
         ]
       },
@@ -410,10 +471,16 @@
             "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb"
           }
         ],
-        "win32-x64": {
-          "sha256": "8fccdbf3081ba8140daaea20b6aaa31b9f16300487d274b32dc6ab94456e7300",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-rocm-10.0-x64.zip"
-        }
+        "win32-x64": [
+          {
+            "sha256": "8fccdbf3081ba8140daaea20b6aaa31b9f16300487d274b32dc6ab94456e7300",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-rocm-10.0-x64.zip"
+          },
+          {
+            "sha256": "24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af/Microsoft.VC.14.51.CRT.Redist.X64.base.vsix"
+          }
+        ]
       },
       "version": "11671"
     },
@@ -452,10 +519,16 @@
             "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb"
           }
         ],
-        "win32-x64": {
-          "sha256": "53758a131e48b51b284a41cec997a89446286b90340dd30f33f7e2532d1b7195",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-vulkan-x64.zip"
-        }
+        "win32-x64": [
+          {
+            "sha256": "53758a131e48b51b284a41cec997a89446286b90340dd30f33f7e2532d1b7195",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11671/llama-b11671-bin-win-vulkan-x64.zip"
+          },
+          {
+            "sha256": "24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af/Microsoft.VC.14.51.CRT.Redist.X64.base.vsix"
+          }
+        ]
       },
       "version": "11671"
     },
@@ -508,6 +581,101 @@
         }
       },
       "version": "12.0.2"
+    },
+    "pnpm": {
+      "artifacts": {
+        "darwin-arm64": [
+          {
+            "sha256": "fab38e479012776fa3810313bd8c7e1fd39f883f915c111ca980112f0695515e",
+            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-arm64/-/exe.darwin-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "darwin-x64": [
+          {
+            "sha256": "22ed4197d26923300ccda62b12a3d4b27ed00cd7996cde416883c6b81359eda6",
+            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-x64/-/exe.darwin-x64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-arm64": [
+          {
+            "sha256": "8117d65f28e627e949d5fc65d63342266326826a56fa374317bf13fe1166a50e",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-arm64-bionic": [
+          {
+            "sha256": "3356eb9f4552e2299464c843447fdae01c80dde10436af046fae6b443c7c186d",
+            "url": "https://registry.npmjs.org/@pnpm/exe.android-arm64/-/exe.android-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-arm64-musl": [
+          {
+            "sha256": "cf6d6d7a08107743ef0c768389c2935c1ffb7002b02ab00682d2ee5650e0483d",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64-musl/-/exe.linux-arm64-musl-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-x64": [
+          {
+            "sha256": "402f7045b1e0587acb1542f18d38afbccb6babf3c7451394e6fb3d9f0160c6ca",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-x64-musl": [
+          {
+            "sha256": "f1a7ff47e20ad534f0cea26709b9ca7cc24b15ec66151dfb915271e546ae4e08",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64-musl/-/exe.linux-x64-musl-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "win32-arm64": [
+          {
+            "sha256": "6b33bef9e52268c8d3f98fb8018a0c66e3c4d565209d6aacd4851239554f359a",
+            "url": "https://registry.npmjs.org/@pnpm/exe.win32-arm64/-/exe.win32-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "win32-x64": [
+          {
+            "sha256": "330357f1c8227b90fb016d28713b024318c60ef06ef97aa38e81394823c47556",
+            "url": "https://registry.npmjs.org/@pnpm/exe.win32-x64/-/exe.win32-x64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ]
+      },
+      "version": "12.15.0"
     },
     "python": {
       "artifacts": {
@@ -642,10 +810,16 @@
     },
     "whispercpp-cpu": {
       "artifacts": {
-        "win32-arm64": {
-          "sha256": "799543b926ab5b6c2d60cab269a2092e0ae8d27820e9e15429e59de3699546fc",
-          "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-win-cpu-arm64.zip"
-        }
+        "win32-arm64": [
+          {
+            "sha256": "799543b926ab5b6c2d60cab269a2092e0ae8d27820e9e15429e59de3699546fc",
+            "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-win-cpu-arm64.zip"
+          },
+          {
+            "sha256": "4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8",
+            "url": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8/Microsoft.VC.14.51.CRT.Redist.ARM64.base.vsix"
+          }
+        ]
       },
       "version": "b5130"
     }

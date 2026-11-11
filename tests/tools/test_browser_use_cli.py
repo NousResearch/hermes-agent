@@ -9,6 +9,7 @@ Covers the seams the integration relies on:
 * ``browser_exec`` execution — code is piped on stdin, ``session`` becomes
   ``BU_NAME``, bad session names and a missing CLI produce actionable errors.
 """
+import ipaddress
 import json
 import os
 import socket
@@ -1069,15 +1070,23 @@ class TestExecHybridPrivateUrlRouting:
         monkeypatch.setattr(bs, "get_session_info", session_info)
         cli = _fake_cli(tmp_path, 'cat >/dev/null; printf "%s" "${BU_NAME:-default}"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        # Public hostnames (example.com) resolve to a public address from a fixture: the SSRF
+        # guard refuses a name it cannot resolve, so these cases followed the host's resolver.
+        self._dns(monkeypatch, "93.184.216.34", "93.184.216.34")
 
     @staticmethod
     def _dns(monkeypatch, first_ip, later_ip):
-        """A rebinding host: ``first_ip`` for the first lookup, ``later_ip`` for every later one."""
+        """A rebinding host: ``first_ip`` for the first lookup, ``later_ip`` for every later one.
+        Address literals resolve to themselves, as they do without DNS."""
         lookups = []
 
         def fake_getaddrinfo(host, *a, **kw):
-            lookups.append(host)
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (first_ip if len(lookups) == 1 else later_ip, 0))]
+            try:
+                ip = str(ipaddress.ip_address(host))
+            except ValueError:
+                lookups.append(host)
+                ip = first_ip if len(lookups) == 1 else later_ip
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 

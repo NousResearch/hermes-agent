@@ -31,7 +31,7 @@
 | :--- | :--- | :--- |
 | **Onboarding** | Requires terminal `curl \| bash` | **1-click signed installers (`.exe` & `.dmg`)** |
 | **Identity** | Anonymized CLI bot prompt | **Single embodied Collaborator with customer-chosen name** |
-| **Multimodal** | Fragmented sub-agents | **Built-in modules: Chat, Images, Videos, Meetings** |
+| **Multimodal** | Fragmented sub-agents | **Built-in modules : Images, Videos, Meetings** |
 | **Authentication** | Local terminal single-user | **Native Clerk SSO (Google Workspace, M365, Corporate email)** |
 | **AI Routing & Billing** | Multiple manual API keys or Nous Portal | **Unitalk AI Gateway (LiteLLM) with 10,000 free trial credits (€5)** |
 | **Business Skills** | Manual prompt scripting | **Free Business Expertises Store (`unitalk.ai/home/marketplace/`)** |
@@ -42,8 +42,8 @@
 ## Key Capabilities (Phase 1)
 
 1. **Embodied Identity (Single Persona)**:
-   - Your AI Collaborator has a single first name chosen by your organization (*Emma*, *Thomas*, etc.).
-   - No confusing sub-personas: specialized tasks are handled through native capability tabs (**Images**, **Videos**, **Meetings**).
+   - Your AI Collaborator has a single first, face and voice you choose.
+   - Built in profiles specialized tasks (**Images**, **Videos**, **Meetings**).
 
 2. **Pre-Provisioned AI Gateway**:
    - Access top frontier models (OpenAI, Anthropic, Google, open-source) through a unified, optimized gateway powered by LiteLLM.

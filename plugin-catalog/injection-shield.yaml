@@ -4,7 +4,7 @@
 # at this exact commit against a fresh clone.
 name: injection-shield
 repo: https://github.com/MOTHR/hermes-security-suite
-sha: 9394c4e1678046efe86a135b7aa40e15c85b3113
+sha: 8090692e8c29fa9d847fe9155f242cb840bc9dde
 subdir: "injection-shield"
 description: "Injection-Shield — defends Hermes agents against prompt-injection attacks via tool outputs and untrusted content. Validates LLM responses, audits risky tool calls. Modes: audit / enforcement."
 maintainer: MOTHR

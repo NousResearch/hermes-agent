@@ -379,12 +379,12 @@ def _groups_sig() -> dict:
     from tui_gateway.hosted_room_service import live_room_services
     services = live_room_services()
     # Each file with how it is read: a served home's own store, the install's shared room store through the
-    # active home, and each room service's store through its own handle.
+    # active home, and each room service's store through its own handle; a store with no file is skipped.
     stores = {Path(path).resolve(): reader for path, reader in (
         *((location, (location, "profile"))
           for location in (store_location(profile_scope(home=root)) for root in _watched_homes())),
         (default_db_path(), (store_location(profile_scope()), "shared")),
-        *((service.db_path, (service.store, service.placement)) for service in services))}
+        *((service.db_path, (service.store, service.placement)) for service in services)) if reader[0] is not None}
     rooms: dict[str, list] = {}
     for store, (target, placement) in stores.items():
         read = partial(_room_rows_sig, target, placement)

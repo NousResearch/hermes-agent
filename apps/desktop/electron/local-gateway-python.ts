@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import path from 'node:path'
 
-import type { GatewayTicketPurpose } from './local-gateway'
+import { type GatewayTicketPurpose, ticketFailure } from './local-gateway'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 interface TicketEndpoint {
@@ -54,6 +54,9 @@ interface PendingTicket {
   timer: ReturnType<typeof setTimeout>
 }
 
+/** How much of the helper's stderr is kept as the reason a mint failed. */
+const TICKET_STDERR_TAIL = 400
+
 const bridges = new Map<string, TicketBridge>()
 let bridgeGeneration = 0
 
@@ -65,24 +68,31 @@ class TicketBridge {
   private output = ''
   private idleTimer?: ReturnType<typeof setTimeout>
   private closed = false
+  /** Why this bridge is gone plus the helper's own last words: with `dispose()` rejecting every
+   *  waiter with the bare message, this was the only cause a failed mint ever had. */
+  private exitReason = 'the ticket bridge was closed'
+  private stderrTail = ''
 
   constructor(command: string, cwd: string, env: NodeJS.ProcessEnv, private key: string) {
     this.child = spawn(command, ['-P', '-u', '-c', TICKET_SCRIPT], hiddenWindowsChildOptions({
       cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe']
     }))
-    this.child.stderr.resume()
+    // Read, never discard: a helper that dies on startup (a `python3` too old for `-P`, a checkout
+    // missing from PYTHONPATH) says why on stderr, and that line is the whole diagnosis.
+    this.child.stderr.setEncoding('utf8')
+    this.child.stderr.on('data', data => { this.stderrTail = `${this.stderrTail}${String(data)}`.slice(-TICKET_STDERR_TAIL) })
     this.child.stdout.setEncoding('utf8')
     this.child.stdout.on('data', data => this.receive(String(data)))
-    this.child.on('error', () => this.dispose())
-    this.child.stdin.on('error', () => this.dispose())
-    this.child.on('close', () => this.dispose())
+    this.child.on('error', error => this.dispose(`the ticket bridge failed to start: ${error.message}`))
+    this.child.stdin.on('error', error => this.dispose(`the ticket bridge request pipe failed: ${error.message}`))
+    this.child.on('close', code => this.dispose(`the ticket bridge exited (code ${code ?? 'unknown'})`))
   }
 
   request(endpoint: TicketEndpoint, purpose: GatewayTicketPurpose): Promise<string> {
     clearTimeout(this.idleTimer)
 
     return new Promise((resolve, reject) => {
-      if (this.closed) { reject(new Error('Gateway ticket bootstrap failed'));
+      if (this.closed) { reject(ticketFailure(this.exitReason));
 
  return }
 
@@ -93,7 +103,7 @@ class TicketBridge {
 
  return }
 
-      const timer = setTimeout(() => this.dispose(), 10_000)
+      const timer = setTimeout(() => this.dispose('the ticket bridge did not answer within 10000ms'), 10_000)
       this.pending.set(id, { resolve, reject, timer })
       // Private stdin carries identity as data. EOF also retires the helper if Desktop exits.
       this.child.stdin.write(request)
@@ -125,7 +135,10 @@ class TicketBridge {
         clearTimeout(waiter.timer)
 
         if (typeof reply.ticket === 'string' && reply.ticket) { waiter.resolve(reply.ticket) }
-        else { waiter.reject(Object.assign(new Error('Gateway ticket bootstrap failed'),
+        // The helper's own verdict (`DiscoveryError.reason`, `ticket_failed`) stayed a side property
+        // that nothing printed; it is the cause, so it belongs in the message too. `reason` is kept
+        // for `mintGroupWritableHome` / `plugin-ws-url`, which route a refusal by it.
+        else { waiter.reject(Object.assign(ticketFailure(typeof reply.error === 'string' ? reply.error : ''),
           typeof reply.error === 'string' ? { reason: reply.error } : {})) }
       } catch { this.dispose();
 
@@ -135,16 +148,23 @@ class TicketBridge {
     if (!this.pending.size) { this.idleTimer = setTimeout(() => this.dispose(), 30_000) }
   }
 
-  dispose(): void {
+  dispose(reason = 'the ticket bridge was closed'): void {
     if (this.closed) { return }
     this.closed = true
     clearTimeout(this.idleTimer)
+    // The helper's stderr is the only record of why it went away, and both shapes matter: a CLI
+    // usage error opens with the real problem (`Unknown option: -P`) and trails off into `usage:`,
+    // a Python crash ends with the exception (`ModuleNotFoundError: No module named 'hermes_cli'`)
+    // under a traceback. Keep the first line and the last one rather than choosing between them.
+    const lines = this.stderrTail.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    const detail = lines.length > 1 ? `${lines[0]} … ${lines[lines.length - 1]}` : lines[0]
+    this.exitReason = detail ? `${reason}: ${detail}` : reason
 
     if (bridges.get(this.key) === this) { bridges.delete(this.key) }
 
     for (const waiter of this.pending.values()) {
       clearTimeout(waiter.timer)
-      waiter.reject(new Error('Gateway ticket bootstrap failed'))
+      waiter.reject(ticketFailure(this.exitReason))
     }
 
     this.pending.clear()

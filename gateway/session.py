@@ -1321,7 +1321,7 @@ class SessionStore(
                 return False
             self._entries[entry.session_key] = entry
             self._save()
-        if self._db_for_key(entry.session_key):
+        if self._persistence_for_key(entry.session_key):
             self._reopen_session_row(entry.session_key, entry.session_id)
         self._announce_route(entry.session_key, entry)
         return True

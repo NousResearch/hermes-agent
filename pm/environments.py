@@ -391,10 +391,17 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     shim composed ``lib/python3.11/site-packages`` inside a 3.14 venv, found no
     tree, and failed *after* a successful update.
     """
+    cfg_version: tuple[int, int] | None = None
+    decoded_cleanly = True
     try:
-        # Corrupt bytes must not discard the ASCII version lines around them: Windows
-        # has no lib/pythonX.Y to fall back on.
-        text = (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig", errors="replace")
+        raw = (venv / "pyvenv.cfg").read_bytes()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            # Corrupt bytes must not discard the ASCII version lines around them: Windows
+            # has no lib/pythonX.Y to fall back on.
+            decoded_cleanly = False
+            text = raw.decode("utf-8-sig", errors="replace")
         for line in text.splitlines():
             key, _, value = line.partition("=")
             if key.strip() not in ("version", "version_info"):  # venv / uv, virtualenv
@@ -402,19 +409,22 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")
             if major.isdigit() and minor.isdigit():
-                return int(major), int(minor)
+                cfg_version = int(major), int(minor)
+                break
     except (OSError, ValueError):
         pass
+    if cfg_version is not None and decoded_cleanly:
+        return cfg_version
     try:
         candidates = sorted((venv / "lib").glob("python3*"))
     except (OSError, ValueError):
-        return None
+        return cfg_version
     for candidate in candidates:
         major, _, rest = candidate.name.removeprefix("python").partition(".")
         minor, _, _ = rest.partition(".")
         if major.isdigit() and minor.isdigit():
             return int(major), int(minor)
-    return None
+    return cfg_version
 
 
 def site_packages(venv: Path) -> Path:

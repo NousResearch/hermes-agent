@@ -194,3 +194,34 @@ def test_windows_scheduler_cfg_reader_keeps_parseable_lines_through_corrupt_byte
 
     venv = _windows_style_venv(tmp_path, b"home = C:\\py\nversion = 3.99.1\n\xff\xfebad\n")
     assert scheduler_script._read_windows_pyvenv_cfg(venv)["version"] == "3.99.1"
+
+
+def test_scheduler_cfg_reader_keeps_the_keys_its_consumer_reads(tmp_path):
+    from cron import scheduler_script
+
+    venv = _windows_style_venv(tmp_path, b"home = C:\\py\nuv = true\n\xff\xfebad\n")
+    cfg = scheduler_script._read_windows_pyvenv_cfg(venv)
+    assert cfg["home"] == "C:\\py"
+    assert "uv" in cfg
+
+
+def test_macos_anchor_interpreter_source_survives_undecodable_cfg_bytes(tmp_path):
+    from hermes_cli import macos_tcc_anchor
+
+    base = tmp_path / "store" / "python-3.13.1" / "bin"
+    base.mkdir(parents=True)
+    (base / "python3.13").write_bytes(b"")
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_bytes(b"")  # a real file, so only the cfg names the base
+    (venv / "pyvenv.cfg").write_bytes(f"home = {base}\nuv = true\n".encode() + b"\xff\xfebad\n")
+    assert macos_tcc_anchor._interpreter_source(venv) == str(base / "python3.13")
+
+
+def test_posix_lib_dir_outranks_a_drifted_cfg_version_when_cfg_is_corrupt(tmp_path):
+    from pm import environments
+
+    venv = tmp_path / "venv"
+    (venv / "lib" / "python3.13" / "site-packages").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_bytes(b"version_info = 3.99.0\n\xffbad\n")
+    assert environments.venv_python_version(venv) == (3, 13)

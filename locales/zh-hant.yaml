@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — 工作階段以未命名方式啟動。"
     title_empty_untitled: "\n⚠️ 清理後標題為空 — 工作階段以未命名方式啟動。"
     tip: "\n✦ 提示：{tip}"
+    paused_left: "\n⚠️ 上一個對話暫停期間你傳送的 {count} 則訊息仍儲存在上一個對話中，尚未回覆。要執行它們：/resume {session_id}，然後 /discard。"
   restart:
     in_progress: "⏳ 閘道重新啟動已在進行中……"
     restarting: "♻ 正在重新啟動閘道。如果 60 秒內未收到通知，請在主控台執行 `hermes gateway restart` 重新啟動。"

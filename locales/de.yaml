@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — Sitzung ohne Titel gestartet."
     title_empty_untitled: "\n⚠️ Titel ist nach Bereinigung leer — Sitzung ohne Titel gestartet."
     tip: "\n✦ Tipp: {tip}"
+    paused_left: "\n⚠️ {count} Nachricht(en), die du gesendet hast, während das vorherige Gespräch pausiert war, sind noch im vorherigen Gespräch gespeichert und unbeantwortet. Zum Ausführen: /resume {session_id}, dann /discard."
   restart:
     in_progress: "⏳ Gateway-Neustart läuft bereits..."
     restarting: "♻ Gateway wird neu gestartet. Falls Sie nicht innerhalb von 60 Sekunden benachrichtigt werden, starten Sie über die Konsole mit `hermes gateway restart` neu."

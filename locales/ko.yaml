@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — 제목 없이 세션을 시작했습니다."
     title_empty_untitled: "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
     tip: "\n✦ 팁: {tip}"
+    paused_left: "\n⚠️ 이전 대화가 일시 중지된 동안 보낸 메시지 {count}개가 이전 대화에 저장된 채 답변되지 않았습니다. 실행하려면: /resume {session_id} 후 /discard."
   restart:
     in_progress: "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
     restarting: "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."

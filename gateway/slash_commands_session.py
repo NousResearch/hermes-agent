@@ -137,6 +137,24 @@ async def discard_lost_turns(authority, session_id) -> str:
     return t("gateway.discard.done", count=done) if done else t("gateway.discard.nothing")
 
 
+async def paused_followers(runner, session_key) -> tuple[str, int]:
+    """``(session_id, count)`` of the chat messages saved behind a turn lost in a restart on this
+    chat's current conversation, else ``("", 0)``. ``/new`` leaves them saved there (the pause notice
+    promised so), so its reply names them and the way back: ``/resume`` that id, then ``/discard``
+    (#145177). Telegram and the other chats have no resume button, so unsaid they look lost."""
+    from gateway.session_authorities import active_authority
+    from hermes_state_runtime import list_session_admissions
+    authority = active_authority(runner)
+    sid = authority.logical_owner(runner.session_store.peek_session_id(session_key)) if authority else None
+    if not sid:
+        return "", 0
+    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
+    if not any(row['status'] == 'unknown' for row in rows):
+        return "", 0
+    count = sum(row['status'] == 'queued' and row['principal_id'].startswith('messaging:') for row in rows)
+    return (sid, count) if count else ("", 0)
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -225,6 +243,7 @@ class GatewaySessionCommandsMixin:
         source = event.source
         session_key = self._session_key_for_source(source)
         await self._hm_stop_owner_turn(session_key)  # idle and confirmed resets too (N53)
+        paused_sid, paused_count = await paused_followers(self, session_key)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -287,6 +306,8 @@ class GatewaySessionCommandsMixin:
         except Exception:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header
+        if paused_count:
+            body += t("gateway.reset.paused_left", count=paused_count, session_id=paused_sid)
         return EphemeralReply(f"{body}{_tip_line}")
 
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:

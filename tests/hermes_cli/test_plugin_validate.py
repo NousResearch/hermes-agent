@@ -241,16 +241,19 @@ class TestCapabilityProbe:
         assert report.ok, report.failures
 
 
-    def test_probe_service_attributes_are_usable_as_paths(self, tmp_path):
-        """``Path(ctx.state.data_dir)`` is how plugins find their data dir in register(); the probe's
-        inert service must hand back something ``Path()`` accepts, not a bare function."""
+    def test_probe_state_matches_plugin_state_shape(self, tmp_path):
+        """``ctx.state`` in register() behaves like PluginState: real Path values and get() defaults,
+        as the authoring guide shows (``ctx.state.get("cursor", default={...})``)."""
         d = _make_plugin(
             tmp_path,
             manifest={**BASE_MANIFEST, "provides_tools": ["t"]},
             init_py=(
                 "from pathlib import Path\n"
                 "def register(ctx):\n"
-                "    (Path(ctx.state.data_dir) / 'cache').mkdir(parents=True, exist_ok=True)\n"
+                "    (Path(ctx.state.data_dir) / 'a').mkdir(parents=True, exist_ok=True)\n"
+                "    (ctx.state.data_dir / 'b').mkdir(parents=True, exist_ok=True)\n"
+                "    Path(ctx.state.path).write_text('{}')\n"
+                "    assert ctx.state.get('cursor', default={'page': 0})['page'] == 0\n"
                 "    ctx.register_tool('t', schema={}, handler=lambda **kw: None)\n"),
         )
         report = validate_plugin_dir(d)

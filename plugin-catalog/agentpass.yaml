@@ -1,0 +1,28 @@
+name: agentpass
+repo: https://github.com/shagghiesuperstar/agentpass-plugin
+sha: 5ac84898e454015464084c94851b7625f8b97013
+description: >-
+  Score any public site on the Agent Readiness Index (ARI-100) — 120 checks across
+  eight weighted domains, 32 live AI-crawler probes, a grade and an L0-L5 level —
+  and turn the failures into one ordered, paste-ready remediation prompt for a
+  coding agent, ranked by the points each fix returns. Two tools over a
+  hand-rolled MCP client (JSON and SSE transports, retry, timeout, and per-session
+  caching), so a scan behind a slow or flaky endpoint returns a structured error
+  envelope instead of raising. Works with any MCP-speaking scanner; defaults to
+  the hosted endpoint and is fully configurable. Disclosure — the scanned URL is
+  sent to the configured scanner endpoint over the network, and nothing else is:
+  no page content, no credentials, no local paths leave the machine.
+maintainer: Scott Scheferman
+tier: community
+category: tools
+docs_url: https://github.com/shagghiesuperstar/agentpass-plugin#readme
+version: "1.0.4"
+requires_hermes: ">=0.23"
+platforms: []
+capabilities:
+  provides_tools:
+    - agent_readiness_scan
+    - agent_readiness_fix_prompt
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -32,7 +32,7 @@ def test_missing_required_argument_is_refused_before_the_handler_runs(monkeypatc
 
 def test_unknown_argument_reaches_the_handler_and_is_flagged(monkeypatch):
     received = {}
-    monkeypatch.setattr("tools.process_registry._handoff_process",
+    monkeypatch.setattr("tools.process_registry_handoff.handoff_process",
                         lambda session_id, args, task_id: received.update(args) or {"status": "ok"})
     call = {"action": "handoff", "session_id": "proc_1", "sesion_id": "proc_2"}
 

@@ -127,6 +127,14 @@ RULES: tuple[Rule, ...] = (
     Rule("PS-P06", "raw platform credential getenv", "read it through the profile's secret"
          " scope (`get_secret`)", "regex", exclude=SINGLE_PROFILE,
          blocking=WARN_UNTIL_REPLAYED, pattern_id="P06"),
+    Rule("HX016", "legacy profile setter", "bind a scope:"
+         " `agent.runtime_scope.bind_profile_scope(home)` moves home, secrets and terminal policy"
+         " together (`bind_turn(session_id, turn_id, fence)` inside it for a turn); `bind_state(scope, ...)` for a host"
+         " that binds less on purpose. A raw `set_hermes_home_override` / `set_secret_scope` /"
+         " `set_terminal_scope` / `install_profile_terminal_scope` call blocks only when it is new: an"
+         " existing call stays until someone migrates it", "ast",
+         exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
+                                   "agent/secret_scope.py", "tools/terminal_scope.py")),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"
          " `gateway.status.looks_like_gateway_command_line` /"

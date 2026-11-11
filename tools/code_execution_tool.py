@@ -53,10 +53,11 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
-def _truncate_stdout_text(stdout_text: str) -> tuple[str, dict[str, Any]]:
+def _truncate_stdout_text(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
     """Cap stdout by bytes (40% head / 60% tail) with explicit truncation metadata: byte counts
     ride alongside the textual marker because a client layer can miss or re-truncate it. The
-    omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun)."""
+    omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun);
+    in a hosted scope it is spilled into *env*, the agent's own sandbox, never on this host."""
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
     total = len(stdout_bytes)
     captured = min(total, MAX_STDOUT_BYTES)
@@ -71,7 +72,7 @@ def _truncate_stdout_text(stdout_text: str) -> tuple[str, dict[str, Any]]:
     metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
                            "the captured head/tail output is included. Re-run only with "
                            "narrower output if the omitted data is required.")
-    spill_path = _spill_full_stdout(stdout_text)
+    spill_path = _spill_full_stdout(stdout_text, env)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path
         metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
@@ -80,20 +81,25 @@ def _truncate_stdout_text(stdout_text: str) -> tuple[str, dict[str, Any]]:
     return text, metadata
 
 
-def _spill_full_stdout(stdout_text: str) -> Optional[str]:
+def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
     """Write full stdout to cache/exec; return its path (None on failure — best-effort,
     the truncated inline output is still returned). Keyed by content digest so identical
-    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files)."""
+    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files).
+    In a hosted scope the file goes into the agent's own sandbox (*env*) or nowhere: the
+    output is the tenant's and this host keeps none of it."""
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
         from tools.spill_safety import write_text_exclusive
+        from tools.tool_result_storage import _persist_hosted
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
             stdout_text = (stdout_text[:MAX_SPILLED_STDOUT_BYTES]
                            + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]")
+        digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+        if (hosted_path := _persist_hosted(stdout_text, f"exec-stdout-{digest}", env)) is not None:
+            return hosted_path or None
         cache_dir = get_hermes_dir("cache/exec", "exec_spill")
         cache_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
         path = cache_dir / f"stdout-{digest}.txt"
         write_text_exclusive(path, stdout_text, private=False, overwrite=True)
         return str(path)
@@ -413,9 +419,10 @@ def _get_or_create_env(task_id: str):
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
     )
     effective_task_id = _resolve_container_task_id(task_id)
+    from tools.environments.sandbox_scope import admit_env
     def _cached():
         with _env_lock:
-            env = _active_environments.get(effective_task_id)
+            env = admit_env(_active_environments.get(effective_task_id))
             if env is not None:
                 _last_activity[effective_task_id] = time.time()
         return env
@@ -512,12 +519,12 @@ def _format_interrupted_output(stdout_text: str) -> str:
     return f"{stdout_text}\n{marker}" if stdout_text else marker
 
 
-def _clean_output(stdout_text: str) -> tuple[str, dict[str, Any]]:
+def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
     """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
     output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
     from tools.ansi_strip import strip_ansi
     from agent.redact import redact_sensitive_text
-    stdout_text, metadata = _truncate_stdout_text(stdout_text)
+    stdout_text, metadata = _truncate_stdout_text(stdout_text, env)
     return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
 
 
@@ -546,10 +553,10 @@ _REMOTE_EXIT_STATUS = {124: "timeout", 130: "interrupted"}
 
 
 def _remote_result(status: str, raw_stdout: str, exec_start: float, fields: dict[str, Any],
-                   kernel: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                   kernel: Optional[dict[str, Any]] = None, *, env: Any = None) -> dict[str, Any]:
     """Common remote reply shape: status, cleaned output, *fields*, duration, optional kernel
     info, then truncation metadata (key order is part of the result contract)."""
-    stdout_text, stdout_metadata = _clean_output(raw_stdout)
+    stdout_text, stdout_metadata = _clean_output(raw_stdout, env)
     result: dict[str, Any] = {"status": status, "output": stdout_text, **fields,
                               "duration_seconds": round(time.monotonic() - exec_start, 2)}
     if kernel is not None:
@@ -564,7 +571,7 @@ def _apply_timeout(result: dict[str, Any], timeout_msg: str) -> None:
 
 
 def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
-                                 timeout: int, exec_start: float) -> str:
+                                 timeout: int, exec_start: float, env: Any = None) -> str:
     """Post-process a remote-kernel cell result into the tool's JSON reply. Timeout messaging
     mirrors the local kernel contract (kernel killed, state lost, next call fresh)."""
     stdout_text = kernel_result.get("stdout", "") or ""
@@ -576,7 +583,7 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
         stdout_text = stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
                             {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
-                            kernel=kernel_result.get("kernel", {"remote": True}))
+                            kernel=kernel_result.get("kernel", {"remote": True}), env=env)
     if kernel_result.get("tool_errors"):
         result["tool_errors"] = kernel_result["tool_errors"]
     if result["status"] == "timeout":
@@ -641,7 +648,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
-                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]})
+                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]}, env=env)
     tool_errors = tool_errors_since(tool_call_log)
     if tool_errors:
         result["tool_errors"] = tool_errors
@@ -693,7 +700,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
                 kernel_result = None
             if kernel_result is not None:
-                return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
+                return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start, env=env)
             logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
         except Exception as exc:
             return _remote_failure(exc, exec_start, 0)
@@ -784,7 +791,9 @@ def execute_code(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
     from hermes_cli.observability.shared_metrics_loop import record_execution_backend
-    if env_type != "local":
+    from tools.environments.sandbox_scope import hosted_scope
+    # A hosted agent's code runs only in its sandbox, never in a kernel on this host.
+    if env_type != "local" or hosted_scope() is not None:
         return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above

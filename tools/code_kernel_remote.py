@@ -18,6 +18,7 @@ failure fails OPEN to the per-call path with a note.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import logging
 import secrets
@@ -123,9 +124,32 @@ class RemoteKernel:
     attached: int = 0
     # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
     pinned: bool = False
+    # The bound hosted scope at spawn (None outside a hosted scope): kernel maintenance (reap,
+    # eviction kill, session-boundary shutdown) may run on another agent's thread or none at all,
+    # and its commands reach the sandbox only under the scope that owns it.
+    owner_scope: Any = None
 
     def sh(self, cmd: str, timeout: int = 15) -> str:
-        return _sh(self.env, cmd, timeout)
+        with self._owning_scope():
+            return _sh(self.env, cmd, timeout)
+
+    @contextlib.contextmanager
+    def _owning_scope(self):
+        """Bind the captured owning scope for trusted teardown: the kernel record itself is the
+        authority for whose sandbox its commands may reach, never a caller's bound scope. With the
+        owning sandbox already bound (a later turn of it: its own, newer fence) or never hosted
+        this is the identity."""
+        from tools.environments.sandbox_scope import hosted_scope, sandbox_identity
+        scope, bound = self.owner_scope, hosted_scope()
+        if scope is None or (bound is not None and sandbox_identity(bound) == sandbox_identity(scope)):
+            yield
+            return
+        from hermes_scope import push_state
+        token = push_state(scope=scope, home=None, secrets=None, terminal=None)
+        try:
+            yield
+        finally:
+            token.reset()
 
     def is_alive(self) -> bool:
         """Bounded liveness probe: kill -0 through the transport. Any transport
@@ -168,9 +192,12 @@ def shutdown_all_remote_kernels() -> None:
 
 def shutdown_remote_kernels_for_owner(owner: str) -> None:
     """Session-boundary disposal — wired to the same clear_session hook as
-    local kernels, so /new and session close reap both kinds."""
+    local kernels, so /new and session close reap both kinds. The owner is
+    resolved for the CURRENT scope, so a session close touches only the
+    current agent's remote kernels, never another hosted agent's."""
     if owner:
-        _REGISTRY.shutdown(owner)
+        from tools.code_kernel import session_close_owner
+        _REGISTRY.shutdown(session_close_owner(owner))
 
 
 def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
@@ -272,6 +299,8 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                            idle_exit: int) -> tuple[Optional[RemoteKernel], bool, bool, bool]:
     """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, state_lost); reaps
     idle-expired entries on the way in."""
+    from tools.environments.sandbox_scope import hosted_scope
+    owner_scope = hosted_scope()
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
     state_lost = state_reset = False
     with _REGISTRY.lock:
@@ -294,6 +323,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         if kernel is not None:
             from agent.delegation_context import is_delegated_child_context
             kernel.pinned = is_delegated_child_context()
+            kernel.owner_scope = owner_scope
             with _REGISTRY.lock:
                 _REMOTE_KERNELS[key] = kernel
     return kernel, reused, state_reset, state_lost

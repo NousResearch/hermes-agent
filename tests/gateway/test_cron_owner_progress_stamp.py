@@ -80,3 +80,68 @@ def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
     with _transaction() as conn:
         stamped = conn.execute('SELECT progress_at FROM executions WHERE id=?', (execution['id'],)).fetchone()[0]
     assert stamped is not None, "the firer's row never saw the owner's progress"
+
+
+def test_owner_cron_run_binds_its_claim_fence(tmp_path, monkeypatch):
+    """The owner runs a canonical cron fire as one turn of the cron session, fenced by its claim."""
+    from cron import jobs, scheduler
+    from cron.executions import create_execution, mark_execution_running
+    from cron.scheduler_authority import run_canonical_job
+    from gateway import run, session_cron
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_local_recovery import local_adapter_map
+    from hermes_scope import Fence, TurnScope, current_scope
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(executions_mod, 'EXECUTIONS_FILE', tmp_path / 'cron' / 'executions.db')
+    monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'p', 'model': 'm'})
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
+    execution = create_execution('job', source='cron')
+    mark_execution_running(execution['id'])
+    db = SessionDB(tmp_path / 'state.db')
+    runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()),
+                             adapters={})
+    begin_runtime_epoch(db, instance_id='test')
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='test'))  # epoch 2
+    runner.session_authority = authority
+    admitted = threading.Event()
+    monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
+    seen = []
+
+    def run_job(job, *, extra_prompt, execution_id, cancel_event):
+        seen.append(current_scope())
+        return (True, 'doc', 'answer', None)
+    monkeypatch.setattr(scheduler, 'run_job', run_job)
+
+    async def probe():
+        session_cron.bind_owner(authority)
+        try:
+            firer = asyncio.create_task(asyncio.to_thread(run_canonical_job, {'id': 'job'},
+                                                          execution_id=execution['id']))
+            assert await asyncio.to_thread(admitted.wait, 10), firer
+            sid = next(iter(authority.sessions))
+            row = claim_session_input(db, epoch=authority.epoch, session_id=sid)
+            policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
+            await session_cron.execute(authority, SessionRef(authority.profile_id, sid), row, policy)
+            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
+                                 generation=row['generation'], outcome='completed',
+                                 result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})
+            await asyncio.wait_for(firer, 10)
+            return sid, row
+        finally:
+            session_cron.unbind_owner(authority)
+
+    try:
+        sid, row = asyncio.run(probe())
+    finally:
+        db.close()
+    [scope] = seen
+    assert isinstance(scope, TurnScope), scope
+    assert (scope.session, scope.turn) == (sid, row['admission_id'])
+    assert scope.fence == Fence(2, row['generation'])

@@ -254,6 +254,36 @@ def _warn_stale_serve_runtimes(rows) -> None:
         print("    For launchd-managed backends: `launchctl kickstart -k gui/$UID/<label>`.")
 
 
+def _warn_pre_update_sessions(*, since: float | None, code_changed: bool) -> None:
+    """Name open ``hermes`` chat sessions (ledger purpose ``cli``) older than this update. Notice
+    only: an update never restarts or interrupts a chat. The standalone TUI and ``hermes-acp``
+    have no ledger row, so they get one fixed line."""
+    if not code_changed:
+        return
+    pids: list[int] = []
+    try:
+        import psutil
+
+        from hermes_cli.process_identity import ledger_entries
+        own = {os.getpid(), *(parent.pid for parent in psutil.Process().parents())}
+        pids = sorted(
+            entry["pid"] for entry in ledger_entries()
+            if since is not None and entry.get("purpose") == "cli" and entry.get("pid") not in own
+            and isinstance(entry.get("create_time"), (int, float)) and entry["create_time"] < since)
+    except Exception:  # the notice is optional; an unreadable ledger never fails the update
+        logger.debug("Pre-update chat session probe failed", exc_info=True)
+        pids = []
+    if pids:
+        print(
+            f"  ⚠ {len(pids)} open `hermes` chat session(s) still run pre-update code"
+            f" (they started before the update): pid {', '.join(map(str, pids))}")
+        print("    Exit and start them again. Editor agent servers (`hermes-acp`) and TUI sessions"
+              " started before the update need a restart too.")
+    else:
+        print("  ℹ Editor agent servers (`hermes-acp`) and TUI sessions started before the update"
+              " still run pre-update code; restart them.")
+
+
 def _owed_stale_serve_rows(rows) -> list[dict]:
     """Survivors the updater itself owes a restart for. A Desktop-supervised serve is excluded: the
     recovery pass is forbidden to restart it (it hosts the live Desktop chats), so counting it would

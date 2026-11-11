@@ -15,6 +15,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import utf16_len
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.waiting import async_wait_until
 
 
 class _Flood(Exception):
@@ -66,10 +67,8 @@ async def _stream(adapter, deltas, final, *, cursor=" ▉"):
     for delta in deltas:
         before = adapter._bot.send_message_draft.await_count
         consumer.on_delta(delta)
-        for _ in range(200):
-            if adapter._bot.send_message_draft.await_count > before:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: adapter._bot.send_message_draft.await_count > before, timeout=5,
+                               what=f"a draft frame for {delta!r}")
     consumer.finish(final)
     await asyncio.wait_for(task, timeout=10)
     return consumer

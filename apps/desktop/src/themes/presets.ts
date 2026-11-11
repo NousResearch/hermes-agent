@@ -441,8 +441,23 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Unitalk — the canonical brand identity. Light: warm paper with magenta accents.
+ *  Dark: deep ink with lifted magenta. Built from the unitalk.ai design system. */
+export const unitalkTheme: DesktopTheme = {
+  name: 'unitalk',
+  label: 'Unitalk',
+  description: 'Warm paper & magenta — the Unitalk brand',
+  ...THEME_PRESET_PALETTES.unitalk,
+  typography: {
+    fontSans: SYSTEM_SANS,
+    fontMono: SYSTEM_MONO,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
+  unitalk: unitalkTheme,
   github: githubTheme,
   catppuccin: catppuccinTheme,
   everforest: everforestTheme,
@@ -459,7 +474,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'unitalk'
 
 /** Names that no longer resolve to a skin of their own. A stored pick of one
  *  falls back to DEFAULT_SKIN_NAME, and a cached backend theme under one is

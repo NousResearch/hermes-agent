@@ -549,6 +549,68 @@ export const THEME_PRESET_PALETTES = {
       userBubble: '#1e2a38',
       userBubbleBorder: '#2e4060'
     }
+  },
+  /** Unitalk — the canonical brand theme. Light: warm paper (#F3EFE6) with
+   *  magenta accents (#D10E63). Dark: deep ink (#1C1A17) with the same
+   *  accent colour lifted for readability. Both modes share the Unitalk
+   *  identity: warm, professional, readable. */
+  unitalk: {
+    colors: {
+      background: '#F3EFE6',
+      foreground: '#1C1A17',
+      card: '#FFFFFF',
+      cardForeground: '#1C1A17',
+      muted: '#EDE8DD',
+      mutedForeground: '#7A7468',
+      popover: '#FFFFFF',
+      popoverForeground: '#1C1A17',
+      primary: '#D10E63',
+      primaryForeground: '#FFFFFF',
+      secondary: '#F8E8EF',
+      secondaryForeground: '#1C1A17',
+      accent: '#F5D9E5',
+      accentForeground: '#1C1A17',
+      border: '#D8D0C2',
+      input: '#FFFFFF',
+      ring: '#D10E63',
+      midground: '#D10E63',
+      midgroundForeground: '#FFFFFF',
+      composerRing: '#D10E63',
+      destructive: '#C62828',
+      destructiveForeground: '#FFFFFF',
+      sidebarBackground: '#F8F4ED',
+      sidebarBorder: '#D8D0C2',
+      userBubble: '#F5D9E5',
+      userBubbleBorder: '#D8D0C2'
+    },
+    darkColors: {
+      background: '#1C1A17',
+      foreground: '#F3EFE6',
+      card: '#282520',
+      cardForeground: '#F3EFE6',
+      muted: '#2E2B25',
+      mutedForeground: '#9E9888',
+      popover: '#24211C',
+      popoverForeground: '#F3EFE6',
+      primary: '#E83E7E',
+      primaryForeground: '#FFFFFF',
+      secondary: '#3D1A2A',
+      secondaryForeground: '#F3EFE6',
+      accent: '#2E1D25',
+      accentForeground: '#F3EFE6',
+      border: '#3D3930',
+      input: '#2E2B25',
+      ring: '#E83E7E',
+      midground: '#E83E7E',
+      midgroundForeground: '#FFFFFF',
+      composerRing: '#E83E7E',
+      destructive: '#EF5350',
+      destructiveForeground: '#FFFFFF',
+      sidebarBackground: '#161410',
+      sidebarBorder: '#3D3930',
+      userBubble: '#2E1D25',
+      userBubbleBorder: '#3D3930'
+    }
   }
 } satisfies Record<string, ThemePresetPalette>
 

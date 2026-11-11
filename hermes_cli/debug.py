@@ -636,7 +636,7 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
           else f"  (no view URL returned; upload id: {res.get('id', '?')})")
     print(f"\n⏱  Auto-deletes at {expires_at} (14-day retention)." if expires_at
           else "\n⏱  Auto-deletes after 14 days.")
-    print("\nShare this private link with the Nous team — only Nous staff "
+    print("\nShare this private link with the Nous team. Nous staff and allowlisted Discord mods "
           "(via Google login) can open it.\n"
           "\nPick up the discussion in:\n"
           "  GitHub Issues        https://github.com/NousResearch/hermes-agent/issues\n"
@@ -689,8 +689,9 @@ Options (share):
   --lines N    Number of log lines to include (default: 200)
   --expire N   dpaste.com fallback retention in days (default: 1)
   --local      Print report locally instead of uploading
-  --nous       Upload to Nous-internal storage (private, staff-only,
-               auto-deletes in 14 days) instead of a public paste
+  --nous       Upload to private Nous-internal storage, viewable by
+               Nous staff and allowlisted Discord mods via Google login;
+               auto-deletes in 14 days (instead of a public paste)
   --no-redact  Disable upload-time secret redaction (default: redact)
 
 Options (delete):

@@ -1,7 +1,7 @@
 name: workroom
 title: Workroom
 repo: https://github.com/Pratiikpy/workroom-for-hermes
-sha: "97b311fa0086b8c077cd38312cb3662f3c9b41e5"
+sha: "c5f6bf334c1163951e203dc7c5777faadfe49795"
 description: >-
   Gives the agent a room to work on Word, PowerPoint and Excel files while you
   stay in charge. Figures are linked to their source cells and kept in step when
@@ -38,12 +38,12 @@ version: "0.4.0"
 docs_url: https://github.com/Pratiikpy/workroom-for-hermes#readme
 readme: true
 platforms: [windows, macos, linux]
-image: https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/97b311fa0086b8c077cd38312cb3662f3c9b41e5/docs/screenshots/00-hero-change-map.png
+image: https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/c5f6bf334c1163951e203dc7c5777faadfe49795/docs/screenshots/00-hero-change-map.png
 screenshots:
-  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/97b311fa0086b8c077cd38312cb3662f3c9b41e5/docs/screenshots/pane-needs-you.png
-  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/97b311fa0086b8c077cd38312cb3662f3c9b41e5/docs/screenshots/pane-made-gallery.png
-  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/97b311fa0086b8c077cd38312cb3662f3c9b41e5/docs/screenshots/pane-figure-proof.png
-  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/97b311fa0086b8c077cd38312cb3662f3c9b41e5/docs/screenshots/05-before-and-after.png
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/c5f6bf334c1163951e203dc7c5777faadfe49795/docs/screenshots/pane-needs-you.png
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/c5f6bf334c1163951e203dc7c5777faadfe49795/docs/screenshots/pane-made-gallery.png
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/c5f6bf334c1163951e203dc7c5777faadfe49795/docs/screenshots/pane-figure-proof.png
+  - https://raw.githubusercontent.com/Pratiikpy/workroom-for-hermes/c5f6bf334c1163951e203dc7c5777faadfe49795/docs/screenshots/05-before-and-after.png
 known_issues:
   - "Verified on Windows with the real Hermes Desktop and Office. The test suite passes on Windows, Linux (fresh clone) and in macOS CI; the Hermes Desktop screens were run on Windows only."
   - "The safety net reverts files that other plugins' tools wrote inside registered projects, and appends one line to those tool results; this is by design and listed in docs/LIMITS.md."

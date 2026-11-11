@@ -28,6 +28,10 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
         for key in (
             "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
             "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+            # The cached hover summary belongs to the LIVE conversation, not to the
+            # historical root that compression sealed (issue #45103). Projecting it
+            # from the tip keeps the card consistent with the tip's preview/title.
+            "summary", "summary_updated_at", "summary_model",
         ):
             if key in tip_row:
                 merged[key] = tip_row[key]

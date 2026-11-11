@@ -530,6 +530,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_read_at REAL,
     tool_names TEXT,
     transcript_revision INTEGER NOT NULL DEFAULT 0,
+    -- ── Session hover summary (issue #45103) ────────────────────────
+    -- Cached AI-generated summary of the conversation, surfaced in the
+    -- Desktop sidebar's hover card. Pre-generated in the background so
+    -- hover is instant (no LLM call on hover). ``summary_model`` records
+    -- which model produced the text so a future schema-driven
+    -- regeneration policy can detect stale summaries.
+    summary TEXT,
+    summary_updated_at REAL,
+    summary_model TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );

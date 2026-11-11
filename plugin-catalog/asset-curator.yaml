@@ -1,0 +1,30 @@
+name: asset-curator
+repo: https://github.com/dev-willbird1936/Asset-Curator
+sha: e7fc4be169c68b681ef80e01e1dc7b6515d28340
+subdir: hermes/asset-curator
+description: >-
+  Find existing assets or create them from code with saved license/browser
+  preferences, optional relevance checks and preserved provenance.
+maintainer: dev-willbird1936
+tier: community
+category: tools
+title: Asset Curator
+version: "0.2.0"
+requires_hermes: ">=0.23.1"
+readme: true
+# Windows was actually exercised. Extend only after equivalent platform checks.
+platforms: [windows]
+screenshots: []
+known_issues:
+  - "Explicit one-time Node >=20.18.1/npm dependency setup; no launch-time install."
+  - "Browser assistance needs an installed Chrome/Edge and saved consent."
+  - "External generator projects require deliberate runtime setup and rendering."
+  - "License filtering is not legal clearance; Pixel Search needs any mode."
+# Portable package has no native register() tools/hooks/middleware. Its separate
+# mcp.json declares one stdio server exposing 16 tools; see TOOL-INVENTORY.md.
+# All classifier keys are OPTIONAL config_schema secrets, not required env.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

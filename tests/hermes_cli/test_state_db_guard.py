@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-from hermes_cli.backup import verify_sqlite_integrity
+from hermes_cli.backup_integrity import verify_sqlite_integrity
 
 
 @pytest.fixture()
@@ -31,6 +31,32 @@ def valid_db(tmp_path):
 
 
 
+
+
+@pytest.mark.parametrize("max_bytes", [1, 1 << 30])
+def test_readable_header_sqlite_open_failure_is_indeterminate(
+    valid_db, tmp_path, monkeypatch, max_bytes
+):
+    """#147938: CANTOPEN/IOERR after a readable header must stay indeterminate.
+
+    A healthy file can yield its raw SQLite magic and still refuse the later
+    read-only probe (sharing violation, AV, filter driver). That access failure
+    must not authorize a post-update restore — both the full PRAGMA path and the
+    oversized schema-probe path.
+    """
+    from hermes_state_holders import read_only_db_uri
+    import hermes_cli.backup_integrity as integrity
+
+    with pytest.raises(sqlite3.OperationalError) as caught:
+        sqlite3.connect(read_only_db_uri(tmp_path / "missing.db"), uri=True)
+    assert caught.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
+
+    monkeypatch.setattr(
+        integrity, "_query_ro_sqlite", lambda _path, _probe: (None, caught.value)
+    )
+    result = verify_sqlite_integrity(valid_db, max_bytes=max_bytes)
+    assert result["valid"] is None, result
+    assert "unable to open database file" in result["message"]
 
 
 def test_oversized_db_probe_catches_malformed_schema(tmp_path):

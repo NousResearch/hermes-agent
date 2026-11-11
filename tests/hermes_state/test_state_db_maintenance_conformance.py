@@ -35,11 +35,8 @@ import pytest
 
 import hermes_state_repair
 from hermes_state import SessionDB
-from hermes_cli.backup import (
-    _safe_copy_db,
-    create_quick_snapshot,
-    verify_sqlite_integrity,
-)
+from hermes_cli.backup import _safe_copy_db, create_quick_snapshot
+from hermes_cli.backup_integrity import verify_sqlite_integrity
 
 # ---------------------------------------------------------------------------
 # Fixtures — real WAL-mode SessionDB in tmp dirs

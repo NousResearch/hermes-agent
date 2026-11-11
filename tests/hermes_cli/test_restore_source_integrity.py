@@ -8,7 +8,7 @@ from contextlib import closing
 
 import pytest
 
-from hermes_cli import backup
+from hermes_cli import backup, backup_integrity
 
 # Unescaped in a file: URI, '#' truncates the path and '%23' decodes to a different one.
 HOME_NAMES = ["x#y", "x%23y", "x y"]
@@ -111,7 +111,7 @@ def test_corrupt_source_cannot_replace_a_healthy_database(
     else:
         del contents[page_size:]
     source.write_bytes(contents)
-    assert not backup.verify_sqlite_integrity(source)["valid"]
+    assert not backup_integrity.verify_sqlite_integrity(source)["valid"]
     before = live.read_bytes()
     inode = live.stat().st_ino
 

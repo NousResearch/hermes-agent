@@ -1087,15 +1087,6 @@ class GatewaySessionCommandsMixin:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
         return target_id, name
 
-    async def _adopt_resumed_delegate_row(self, target_id: str) -> None:
-        """An explicit /resume of a delegate subagent's row makes it the chat's conversation: drop its
-        ``_delegate_from`` so the route guard (``is_delegate_child_row``, #138210) does not read the
-        deliberately chosen session as a stale capture and move the next message off it."""
-        from gateway.session_lifecycle import is_delegate_child_row
-        row = await self._session_db.get_session(target_id)
-        if row and is_delegate_child_row(row):
-            await self._session_db.patch_session_model_config(target_id, {"_delegate_from": None})
-
     async def _resume_access_denied_reply(self, source, target_id: str, name: str, allow_all: bool,
                                           allow_cross_room: bool) -> Optional[str]:
         """IDOR guard: a session id/title is a routing handle, not authority — bind /resume to the
@@ -1159,7 +1150,6 @@ class GatewaySessionCommandsMixin:
             )
             if not new_entry:
                 return t("gateway.resume.switch_failed")
-            await self._adopt_resumed_delegate_row(target_id)
             try:
                 await self._follow_telegram_topic_switch(source, new_entry, reason="resume-command",
                                                          departed=current_entry)

@@ -320,6 +320,16 @@ class SessionRecoveryMixin:
             else:
                 logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
 
+    def _adopt_delegate_row(self, session_key: str, session_id: str) -> None:
+        """An explicit repoint (``/resume <child> --all``, handoff) makes a delegate subagent's row the
+        chat's conversation: drop its ``_delegate_from`` so the route guard (``is_delegate_child_row``,
+        #138210) does not read the session the user chose as a stale capture and move the chat off it."""
+        from gateway.session_lifecycle import is_delegate_child_row
+        db = self._db_for_key(session_key)
+        row = db.get_session(session_id)
+        if row and is_delegate_child_row(row):
+            db.patch_session_model_config(session_id, {"_delegate_from": None})
+
     def _record_gateway_session_peer(
         self, session_id: str, session_key: str, source: Optional[SessionSource],
         display_name: Optional[str] = None, include_compression_ancestors: bool = False,

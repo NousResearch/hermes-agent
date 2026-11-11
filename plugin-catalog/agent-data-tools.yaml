@@ -1,11 +1,11 @@
 name: agent-data-tools
 title: Agent Data Tools
 repo: https://github.com/Nutshell2000/agent-data-tools
-sha: cbe8db23f1eb5dfb908d4fa567530f5b46cefbb9
+sha: c3b9c596a792c19bd4e3e28b177ca3dd1892b198
 subdir: integrations/hermes
-version: "1.0.0"
+version: "1.0.1"
 description: |
-  Over 600 hosted data and AI tools through three MCP tools (find_tool, tool_details, call_tool), so the agent's context holds three definitions: web search and news, the text of a web page or PDF, screenshots, weather, FX, stock and token prices, wallet and chain reads, sanctions and company checks, DNS lookups, LLM chat, speech to text, converters and calculators. 25 free calls with no key or sign-up, and one bundled skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only.
+  Over 600 hosted data and AI tools through three MCP tools (find_tool, tool_details, call_tool), so the agent's context holds three definitions: web search, the text of a web page or PDF, screenshots, weather, FX, stock and token prices, wallet and chain reads, sanctions and company checks, DNS lookups, LLM chat, speech to text, converters and calculators. 25 free calls with no key or sign-up, and one bundled skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only.
 
   Disclosures
   - Hosted-only connector with no local code: every tool call, with its arguments (the words given to find_tool; search words, URLs, addresses or text given to call_tool), goes to agent-data-tools.revmesh2074.workers.dev, which fetches named pages from the public web and sends each request to the public data source or model behind the tool that was called.

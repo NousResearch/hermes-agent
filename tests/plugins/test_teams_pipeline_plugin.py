@@ -314,7 +314,7 @@ class TestTeamsMeetingPipeline:
         assert teams_record["message_id"] == "msg-1"
 
 
-    async def test_missing_transcript_and_recording_schedules_retry(self, tmp_path, monkeypatch):
+    async def test_missing_transcript_and_recording_awaits_replay(self, tmp_path, monkeypatch):
         from plugins.teams_pipeline import pipeline as pipeline_module
 
         monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
@@ -338,7 +338,7 @@ class TestTeamsMeetingPipeline:
             }
         )
 
-        assert job.status == "retry_scheduled"
+        assert job.status == "awaiting_replay"
         assert job.error_info["retryable"] is True
         assert "Recording unavailable" in job.error_info["message"]
 

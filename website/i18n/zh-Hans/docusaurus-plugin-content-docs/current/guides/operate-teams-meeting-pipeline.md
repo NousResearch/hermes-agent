@@ -203,7 +203,11 @@ hermes teams-pipeline show <job-id>
 - 订阅中的 client state 是否与 `MSGRAPH_WEBHOOK_CLIENT_STATE` 匹配
 - 订阅是否在远端仍然存在且未过期
 
-### 任务停留在重试状态或在摘要生成前失败
+### 任务停留在 awaiting_replay 状态或在摘要生成前失败
+
+转录或录制尚不可用、或转写失败时，任务进入 `awaiting_replay`。系统不会自动重新运行它：
+用 `hermes teams-pipeline list --status awaiting_replay` 列出这些任务，待产物就绪后用
+`hermes teams-pipeline run <job-id>` 逐个重放。
 
 检查：
 - 转录权限及可用性

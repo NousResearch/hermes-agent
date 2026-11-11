@@ -210,7 +210,12 @@ Check:
 - the client state in the subscription matches `MSGRAPH_WEBHOOK_CLIENT_STATE`
 - subscriptions still exist remotely and are not expired
 
-### Jobs stay in retry or fail before summarization
+### Jobs stay in awaiting_replay or fail before summarization
+
+A job lands in `awaiting_replay` when its transcript or recording is not available yet, or
+transcription failed. Nothing re-runs it automatically: list these jobs with
+`hermes teams-pipeline list --status awaiting_replay` and replay each with
+`hermes teams-pipeline run <job-id>` once the artifact exists.
 
 Check:
 - transcript permissions and availability

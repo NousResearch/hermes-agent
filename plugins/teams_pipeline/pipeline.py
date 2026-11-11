@@ -32,7 +32,7 @@ from tools.transcription_tools import transcribe_audio
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_PIPELINE_STATES = {"completed", "failed", "retry_scheduled"}
+TERMINAL_PIPELINE_STATES = {"completed", "failed", "awaiting_replay"}
 ACTIVE_PIPELINE_STATES = {
     "received", "resolving_meeting", "fetching_transcript", "downloading_recording",
     "transcribing_audio", "summarizing", "writing_notion", "writing_linear", "sending_teams"}
@@ -43,7 +43,7 @@ _SUMMARY_SYSTEM_PROMPT = (
 
 
 class TeamsPipelineError(RuntimeError): """Base class for Teams meeting pipeline failures."""
-class TeamsPipelineRetryableError(TeamsPipelineError): """Raised when the pipeline should be retried later."""
+class TeamsPipelineRetryableError(TeamsPipelineError): """Raised when the job can complete on a later `hermes teams-pipeline run`."""
 class TeamsPipelineSinkError(TeamsPipelineError): """Raised when an output sink fails."""
 class TeamsPipelineArtifactNotFoundError(TeamsPipelineRetryableError): """Raised when meeting artifacts are not yet available."""
 
@@ -239,7 +239,8 @@ class TeamsMeetingPipeline:
             await self._write_sinks(job, summary_payload)
             return self._persist_job(job, status="completed")
         except TeamsPipelineRetryableError as exc:
-            return self._persist_job(job, status="retry_scheduled", error_info={"message": str(exc), "retryable": True})
+            # Nothing re-runs the job on its own: the operator replays it once the artifact exists.
+            return self._persist_job(job, status="awaiting_replay", error_info={"message": str(exc), "retryable": True})
         except Exception as exc:
             return self._persist_job(job, status="failed", error_info={"message": str(exc), "type": type(exc).__name__})
 

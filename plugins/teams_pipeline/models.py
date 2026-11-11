@@ -192,7 +192,6 @@ class TeamsMeetingPipelineJob(_Model):
     source_event_type: str
     dedupe_key: str
     status: str
-    retry_count: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
     meeting_ref: TeamsMeetingRef | None = None
@@ -202,14 +201,10 @@ class TeamsMeetingPipelineJob(_Model):
 
     _REQUIRED = ("job_id", "event_id", "source_event_type", "dedupe_key", "status")
     _CONVERT = {
-        **dict.fromkeys(_REQUIRED, _str), "retry_count": lambda value: value or 0, "error_info": _dict,
+        **dict.fromkeys(_REQUIRED, _str), "error_info": _dict,
         "meeting_ref": _nested(TeamsMeetingRef), "summary_payload": _nested(TeamsMeetingSummaryPayload),
     }
     _DATETIMES = ("created_at", "updated_at")
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        self.retry_count = int(self.retry_count)
 
 
 __all__ = ["ArtifactType", "GraphSubscription", "MeetingArtifact", "TeamsMeetingPipelineJob", "TeamsMeetingRef", "TeamsMeetingSummaryPayload"]

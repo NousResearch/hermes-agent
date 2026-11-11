@@ -110,6 +110,7 @@ class PoolGeneration(httpx.AsyncBaseTransport):
         self._active = 0
         self._retired = False
         self._closed = False
+        self._grace: Optional[asyncio.TimerHandle] = None
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self._active += 1
@@ -139,6 +140,9 @@ class PoolGeneration(httpx.AsyncBaseTransport):
         if self._closed:
             return
         self._closed = True
+        if self._grace is not None:
+            self._grace.cancel()  # the timer holds this generation; drop it once closed
+            self._grace = None
         try:
             await self._inner.aclose()
         except (OSError, RuntimeError, httpx.HTTPError) as exc:  # a broken pool's close never masks the caller's error
@@ -151,7 +155,8 @@ class PoolGeneration(httpx.AsyncBaseTransport):
         if self._active <= 0:
             await self._close()
             return
-        asyncio.get_running_loop().call_later(RETIRE_GRACE_S, lambda: _spawn(self._close()))
+        if self._grace is None:
+            self._grace = asyncio.get_running_loop().call_later(RETIRE_GRACE_S, lambda: _spawn(self._close()))
 
     async def aclose(self) -> None:
         await self.retire()

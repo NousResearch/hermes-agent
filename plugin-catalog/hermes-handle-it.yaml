@@ -1,13 +1,15 @@
 name: hermes-handle-it
 repo: https://github.com/casualsav/hermes-handle-it
-sha: 08b78ef44eda747674699a582c0c3c3ca8bbe3d0
+sha: b3a3916840fe6083b94224a85a4e401bf900b056
 description: "Handle It: your agent sits in the customer support chat so you don't have to. Hermes holds a company's live customer-support
   chat for you in its own browser, negotiates toward your goal for as long as it takes, and asks
   you before it agrees to an offer, pays, cancels or shares a detail you did not allow. Ends with
   the outcome and a saved transcript. Disclosure: opens the support pages you name in a local
   Chromium (Playwright) with its own profile under $HERMES_HOME/hermes-handle-it, types messages
   into them on your behalf, reads a password from Hermes's vault only for a login handle it is given
-  and types it only on that login's own origin, and saves transcripts and screenshots there; no other network calls,
+  and types it only on that login's own origin, and saves transcripts and screenshots there. For phone calls: talks to bland.ai's API
+  with your own key (BLAND_API_KEY), places phone calls to the numbers you name, bland.ai records
+  the call when you ask, and call costs are yours, billed by bland.ai. No other network calls,
   no telemetry, no stored credentials."
 maintainer: casualsav
 tier: community
@@ -23,6 +25,9 @@ capabilities:
     - support_chat_send
     - support_chat_wait
     - support_chat_end
+    - support_call_start
+    - support_call_wait
+    - support_call_end
   provides_hooks:
     - pre_tool_call
     - on_session_finalize

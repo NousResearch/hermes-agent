@@ -1,0 +1,69 @@
+name: chalkline
+title: Chalkline — Voice note in. Paperwork out.
+repo: https://github.com/levi-lvjp/chalkline
+sha: "e10ba31d612d07e529e757654574d89c63d92cca"
+maintainer: levi-lvjp
+tier: community
+category: automation
+version: "0.1.0"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/levi-lvjp/chalkline/blob/e10ba31d612d07e529e757654574d89c63d92cca/README.md
+image: https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/approval.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/pipeline.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/job.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/quote.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/export.png
+readme: true
+description: >-
+  A Hermes back office for solo tradespeople: capture enquiries, prepare quote
+  and invoice PDFs, retain receipts and agreed extras, review follow-ups and
+  export an accountant ZIP. Customer sends require payload-bound owner approval,
+  except three template kinds approved once by hash. Disclosure — WhatsApp uses
+  Hermes' unofficial Baileys bridge and can expose the linked number to restriction
+  or ban; use a dedicated business number. Three-account live tests verified
+  text/photo/voice intake, owner-only quote approval, customer PDF receipt and
+  one reminder from two accelerated real scheduler runs. Records, evidence copies,
+  PDFs and exports persist in the active profile's SQLite database and plugin data
+  folder. Intake makes no model call, but customer text/transcript evidence can
+  reach the configured model when the owner queries a job. Owner messages/media
+  follow Hermes provider configuration, and receipt extraction explicitly sends
+  the selected cached image to the configured vision provider. Customer voice
+  is stored without automatic transcription. The plugin adds no telemetry endpoint.
+  Approved sends spawn the public hermes send CLI. A 15-minute no-agent Python
+  script runs scheduled work; Telegram uses Hermes handler integration.
+  Local Desktop API and 390px page rendering
+  were verified. Cloud/Webapp and native Desktop activation remain unverified.
+  Adds /office owner commands, a Desktop page, authenticated dashboard API,
+  Telegram approval buttons, and one recurring no-agent cron job. Installation
+  takes over non-owner WhatsApp intake. Setup requires explicit restrict_toolsets=true
+  consent on a named dedicated business profile, backs up config.yaml.bak, then
+  restricts WhatsApp, Telegram, CLI and cron toolsets. Run it as a standalone
+  gateway for this dedicated profile. No payment processing, email or jurisdiction-specific tax rules.
+known_issues:
+  - "Cloud deployment and native Desktop activation remain unverified."
+  - "Customer voice notes are stored without automatic transcription."
+capabilities:
+  provides_tools:
+    - office_capture
+    - office_customer
+    - office_quote_draft
+    - office_extra_propose
+    - office_extra_record_agreement
+    - office_schedule
+    - office_complete
+    - office_invoice_draft
+    - office_receipt
+    - office_payment_record
+    - office_query
+    - office_export
+    - office_tick
+  provides_hooks:
+    - pre_gateway_dispatch
+    - post_gateway_admission
+    - pre_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []
+

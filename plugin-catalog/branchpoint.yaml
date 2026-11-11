@@ -1,8 +1,8 @@
 name: branchpoint
 repo: https://github.com/Sahil-SS9/hermes-branchpoint
-sha: "87ebeb0c06e622b4768b7e6d48c3704e372b3fba"
+sha: "7051eda3b968b90602c3c183c45f97f72153d8f7"
 title: Branchpoint
-version: "0.2.1"
+version: "0.2.2"
 maintainer: Sahil-SS9
 tier: community
 category: tools
@@ -29,6 +29,7 @@ description: >-
   session-local TODO bookkeeping. No telemetry, self-updater, stored credentials or direct external
   network calls by the plugin; model transport is handled by Hermes.
 known_issues:
+  - "Screenshots are pinned to the 0.2.1 release commit: the docs images are unchanged, and that is the revision whose immutable raw URLs are on the review-approved list."
   - "Real builds require matching Branchpoint hooks installed and enabled in the child's Hermes home; absent, disabled or stale hooks stop the build."
   - "Child token caps are not a live cross-process budget. Missing usage is explicitly estimated; inherited failing checks and skipped evidence remain visible."
   - "Replay produces a paste-ready prompt, not a programmatically forked Hermes session. Undo restores the entire pre-adopt tree, replacing later edits."

@@ -21,7 +21,7 @@ from typing import List, Tuple
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
 
-SCANNER_VERSION = "skills-guard-v12"
+SCANNER_VERSION = "skills-guard-v13"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -724,31 +724,41 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
 _DOCSTRING_EXEMPT_PATTERN_IDS = frozenset({"python_os_environ"})
 
 
-def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> list[Finding]:
-    """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
-    name). Regex findings dedupe per pattern per line; invisible chars yield one per line. *skill* adds the
-    skill-only credential rules (``tools.skills_guard_credentials``)."""
-    rel_path = rel_path or file_path.name
-    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
-        return _unscanned_text_padded_code(file_path, rel_path)
+def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], list[Finding]]:
+    """Every text the file can execute as, plus findings for the decoding tricks seen. The scanner must
+    read what the interpreter runs: a ``.py`` PEP 263 cookie (e.g. utf-7) re-decodes an ASCII-clean file,
+    and bash drops NUL bytes, so ``c\\0url ... | ba\\0sh`` runs while beating every regex."""
     try:
-        raw = file_path.read_bytes()
-    except OSError:
-        return []
-    try:
-        text = raw.decode('utf-8-sig')
-        findings = []
+        texts, findings = [raw.decode('utf-8-sig')], []
     except UnicodeDecodeError as exc:
         # Malformed input raises suspicion instead of silencing the scan: decode with replacement so every
         # pattern pass still runs, and flag the file (one bad byte used to exempt it entirely).
-        text = raw.decode('utf-8-sig', errors='replace')
+        texts = [raw.decode('utf-8-sig', errors='replace')]
         bad_line = exc.object[:exc.start].count(b'\n') + 1  # offsets index the BOM-stripped bytes
         findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
                             "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
+    if suffix == ".py":
+        with suppress(SyntaxError, LookupError):  # an unusable cookie means CPython refuses the file too
+            codec = tokenize.detect_encoding(io.BytesIO(raw).readline)[0]
+            if codec not in ("utf-8", "utf-8-sig"):
+                texts.append(raw.decode(codec, errors='replace'))
+                findings.append(Finding("non_utf8_source_encoding", "high", "obfuscation", rel_path, 1,
+                                        f"coding: {codec}", f"Python source declares the {codec} encoding "
+                                        "(possible encoding-obfuscated payload)"))
+    if '\x00' in texts[0]:
+        texts.append(texts[0].replace('\x00', ''))
+        findings.append(Finding("nul_byte", "high", "obfuscation", rel_path, texts[0][:texts[0].index('\x00')]
+                                .count('\n') + 1, "NUL byte", "NUL byte in a text file (possible "
+                                "pattern-splitting obfuscation)"))
+    return texts, findings
+
+
+def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Finding]:
     lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')  # read_bytes skips newline translation
+    findings: list[Finding] = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
-    traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
-    suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
+    traversal_lines = _mask_prose_link_destinations(lines) if suffix == ".md" else lines
+    owners = _statement_owners(lines)  # per-file context for the demotion
     patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
     views = code_views(lines) if skill and suffix == ".py" else None  # tokenized: code vs comment/string
     for pattern, pid, severity, category, description in patterns:
@@ -809,6 +819,29 @@ def _unscanned_text_padded_code(file_path: Path, rel_path: str) -> list[Finding]
         return _padded_code_findings(data.decode("utf-8-sig").split("\n"), rel_path)
     except (UnicodeDecodeError, OSError):
         return []
+
+
+def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> list[Finding]:
+    """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
+    name). Regex findings dedupe per pattern per line; invisible chars yield one per line. *skill* adds the
+    skill-only credential rules (``tools.skills_guard_credentials``)."""
+    rel_path = rel_path or file_path.name
+    if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
+        return _unscanned_text_padded_code(file_path, rel_path)
+    try:
+        raw = file_path.read_bytes()
+    except OSError:
+        return []
+    suffix = file_path.suffix.lower()
+    texts, findings = _decoded_views(raw, rel_path, suffix)
+    primary = _scan_text(texts[0], rel_path, suffix, skill)
+    seen = {(f.pattern_id, f.line) for f in primary}
+    findings += primary  # the extra views below only add hits the primary decode missed
+    for f in (f for text in texts[1:] for f in _scan_text(text, rel_path, suffix, skill)):
+        if (f.pattern_id, f.line) not in seen:
+            seen.add((f.pattern_id, f.line))
+            findings.append(f)
+    return findings
 
 
 # Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:

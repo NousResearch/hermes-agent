@@ -99,17 +99,6 @@ def _standalone_send(
         return _failed(e)
 
 
-def _standalone_credential_missing(t: _TargetDelivery) -> bool:
-    """True when the credential the standalone sender will consume resolved empty, so the attempt
-    is guaranteed to fail closed before any network IO. Keyed on the exact value the dispatch
-    passes — Telegram's sender is invoked with ``pconfig.token`` — never a re-derived check that
-    could miss env/plugin secret-source shapes. Platforms whose consumption isn't provable from
-    the resolved config are attempted as before."""
-    if t.platform_name == "telegram":
-        return not str(getattr(t.pconfig, "token", "") or "").strip()
-    return False
-
-
 def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: list, delivery_errors: list) -> None:
     """Hand a payload the live lane rejected retryably and the standalone lane then definitively
     failed (or provably could not attempt) to the delivery ledger, as a failed row owned by the

@@ -8,9 +8,6 @@
 2. A standalone TIMEOUT is never queued: the dispatch shield keeps a timed-out send
    un-cancelled ("the send may still be in flight"), so a post-reconnect replay would
    duplicate it. Possible loss is surfaced loudly instead of certain duplication.
-3. A credential-less (satellite) worker skips the guaranteed-to-fail-closed standalone attempt
-   and goes straight to the queue gate — the check reads the exact value the dispatch passes
-   (``pconfig.token`` for Telegram), never a re-derived one.
 """
 
 import asyncio
@@ -162,31 +159,6 @@ def test_standalone_send_definitive_failure_is_not_in_flight(monkeypatch):
     _result, _err, in_flight = sd._standalone_send(t, "the report", [])
     # A result-dict error surfaces at the caller; the send itself completed (definitive).
     assert in_flight is False
-
-
-# --- gate 3: credential-less (satellite) workers skip the doomed standalone attempt -----------
-
-def test_satellite_skips_standalone_and_queues_straight(monkeypatch, gateway_loop):
-    t = _target(gateway_loop, token="")
-    standalone_calls, errors = _run_lanes(
-        t, gateway_loop, monkeypatch, standalone_outcome=(None, "must not be reached", False))
-    assert standalone_calls == []  # the guaranteed-to-fail attempt never ran
-    assert any("no telegram credential resolved" in e for e in errors)
-    assert any("queued text for telegram:-100:42" in e for e in errors)
-    claimed = dl.sweep_failed_for_runtime("telegram", now=time.time() + 120, profile="primary")
-    assert [(row["chat_id"], row["content"]) for row in claimed] == [("-100", "the report")]
-
-
-def test_credential_check_reads_the_exact_dispatch_value():
-    """Telegram's dispatch is `_send_telegram(pconfig.token, ...)`; the skip keys on that exact
-    attribute (whitespace-only counts as missing; a present token attempts standalone)."""
-    t = _target(None, token="   ")
-    assert sd._standalone_credential_missing(t) is True
-    t = _target(None, token="tok")
-    assert sd._standalone_credential_missing(t) is False
-    t.platform_name = "discord"  # consumption not provable from config: attempt as before
-    t.pconfig = type("PConfig", (), {"token": ""})()
-    assert sd._standalone_credential_missing(t) is False
 
 
 # --- gate 1b: queueing arms the in-process drain timer (#127188 review, Enough1122) -----------

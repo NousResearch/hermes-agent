@@ -1,13 +1,13 @@
 name: leitmotif
 repo: https://github.com/JustSteez/hermes-leitmotif
-sha: 0d43079e3880a79750d87d07ce759769bd182acd
-description: "Hear what your agent is doing. Every tool call becomes a short musical motif from a pure-Python synth, so reads, writes, shell commands, loops (the motif repeats and climbs), error streaks (dissonant, sinking), pending approvals (a heartbeat until you answer) and finished turns (a V-I cadence) are audible without watching the screen; also a non-visual status channel for blind and low-vision developers. Modes full / ambient / alerts-only, themes studio / arcade / zen, and /leitmotif export saves a session as WAV, MIDI and a piano-roll SVG. Disclosure — observer-only hooks, never blocks or approves anything; starts the OS audio player (afplay, pw-play, paplay or aplay) as a short-lived subprocess per sound, or uses winsound on Windows; keeps tool names and argument hashes in memory only; caches rendered notes and writes exports in its plugin data directory; no network calls, no telemetry, no credentials."
+sha: 7d2212929efffdb5ff99a3e60182f8b3647a14f2
+description: "Hear what your agent is doing. Every tool call becomes a short musical motif from a pure-Python synth, so reads, writes, shell commands, loops (the motif repeats and climbs), error streaks (dissonant, sinking), pending approvals (a heartbeat, then a distinct still-waiting cue until you answer) and finished turns (a V-I cadence) are audible without watching the screen; also a non-visual status channel for blind and low-vision developers. Modes full / ambient / alerts-only, themes studio / arcade / zen, and /leitmotif export saves a session as WAV, MIDI and a piano-roll SVG. Disclosure — observer-only hooks, never blocks or approves anything; starts the OS audio player (afplay, pw-play, paplay or aplay) as a short-lived subprocess per sound, or uses winsound on Windows; keeps tool names and argument hashes in memory only; caches rendered notes and writes exports in its plugin data directory; no network calls, no telemetry, no credentials."
 maintainer: JustSteez
 tier: community
 category: voice
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/JustSteez/hermes-leitmotif#readme
-version: "0.1.0"
+version: "0.1.1"
 readme: true
 platforms: []
 title: Leitmotif

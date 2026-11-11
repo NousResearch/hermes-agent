@@ -55,11 +55,16 @@ def request_may_have_delivered(error: Exception) -> bool:
     return bool(getattr(error, _REQUEST_ERROR_ATTR, False)) and kinds.may_have_delivered(error)
 
 
-def unconfirmed_media_result(error: Exception, what: str) -> Optional[SendResult]:
-    """The ambiguous result for an upload request that may already be in the chat, else ``None``."""
+def unconfirmed_media_result(error: Exception, what: str, *, as_failure: bool = False) -> Optional[SendResult]:
+    """The ambiguous result for an upload request that may already be in the chat, else ``None``.
+    ``as_failure``: the URL photo/animation senders keep their failed result (no consumer resends
+    a URL send), marked uncertain and notice-suppressed instead of falling back to a re-upload."""
     if not request_may_have_delivered(error):
         return None
     from plugins.platforms.telegram.adapter import _redact_telegram_error_text
     safe_error = _redact_telegram_error_text(error)
     logger.warning("[Telegram] %s unconfirmed (it may already be in the chat, not resending): %s", what, safe_error)
+    if as_failure:
+        return SendResult(success=False, error=safe_error, retryable=False,
+                          raw_response={"delivery_uncertain": True, "failure_notice_sent": True})
     return SendResult(success=True, raw_response={"ambiguous": True, "error": safe_error})

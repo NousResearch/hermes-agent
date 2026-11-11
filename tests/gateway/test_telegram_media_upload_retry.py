@@ -113,6 +113,33 @@ async def test_upload_lost_after_the_request_left_is_never_resent(adapter, tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["send_image", "send_animation"])
+async def test_url_media_lost_after_the_request_left_falls_back_to_nothing(adapter, monkeypatch, method):
+    """A URL photo whose request may have posted is not downloaded and re-uploaded, and a lost
+    animation is not resent as a photo: one request, no notice."""
+    calls = []
+
+    async def lost(**kwargs):
+        calls.append(kwargs)
+        raise _read_error()
+
+    adapter._bot.send_photo = lost
+    adapter._bot.send_animation = lost
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+    base_send_image = AsyncMock()
+    monkeypatch.setattr(BasePlatformAdapter, "send_image", base_send_image)
+    monkeypatch.setattr("tools.url_safety.create_ssrf_safe_async_client", MagicMock(
+        side_effect=AssertionError("the photo must not be downloaded for a re-upload")))
+
+    result = await getattr(adapter, method)("123", "https://example.com/a.gif")
+
+    assert len(calls) == 1
+    assert result.success is False and result.raw_response.get("delivery_uncertain") is True
+    assert result.raw_response.get("failure_notice_sent") is True  # the dispatcher posts no notice
+    base_send_image.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_local_error_before_the_request_is_still_a_failure(adapter, tmp_path, monkeypatch):
     """An OSError raised before any request (the file vanished between check and open) never left:
     it is a plain failure with its notice, not a maybe-delivered upload."""

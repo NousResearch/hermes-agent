@@ -1,6 +1,6 @@
 name: its-in-your-head
 repo: https://github.com/hi4c0ck/its-in-your-head
-sha: e53f8e251bf4b05556aec16a474eae976e9c15e1
+sha: cbce42995ae72e59d018f3b003fd0db28e1ce39b
 subdir: ""
 description: >-
   It's in Your Head — observes how you work (tools, turns, friction) with
@@ -23,9 +23,13 @@ category: desktop
 requires_hermes: ">=0.23"
 docs_url: https://github.com/hi4c0ck/its-in-your-head#readme
 version: "0.1.24"
-image: https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/e53f8e251bf4b05556aec16a474eae976e9c15e1/assets/iyyh-banner.jpg
+image: https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/cbce42995ae72e59d018f3b003fd0db28e1ce39b/assets/iyyh-banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/e53f8e251bf4b05556aec16a474eae976e9c15e1/assets/iyyh-main-view.jpg
+  - https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/cbce42995ae72e59d018f3b003fd0db28e1ce39b/assets/iyyh-main-view.jpg
+  - https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/cbce42995ae72e59d018f3b003fd0db28e1ce39b/assets/shot-pulse-strip.png
+  - https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/cbce42995ae72e59d018f3b003fd0db28e1ce39b/assets/shot-workspace-pulse.png
+  - https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/cbce42995ae72e59d018f3b003fd0db28e1ce39b/assets/shot-workspace-portrait.png
+  - https://raw.githubusercontent.com/hi4c0ck/its-in-your-head/cbce42995ae72e59d018f3b003fd0db28e1ce39b/assets/shot-workspace-drift.png
 readme: true
 platforms: []
 capabilities:

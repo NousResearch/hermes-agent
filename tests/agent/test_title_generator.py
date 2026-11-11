@@ -1,8 +1,9 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
-import pytest
+import unicodedata
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from agent.title_generator import (
     MAX_TITLE_INPUT_CHARS,
@@ -283,6 +284,19 @@ class TestGenerateTitle:
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("这个对你有用吗") is None
+
+    def test_rejects_canonically_equivalent_hangul_replies(self):
+        """NFC and NFD forms of the same long Korean reply must both be rejected (#139667)."""
+        for form in ("NFC", "NFD"):
+            reply = unicodedata.normalize(
+                form, "로그인 페이지가 열리지 않아서 캐시를 지우고 다시 시도하겠습니다",
+            )
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = reply
+
+            with patch("agent.title_generator.call_llm", return_value=mock_response):
+                assert generate_title("로그인 문제를 해결하고 싶어요") is None, form
 
     def test_accepts_a_short_cjk_title(self):
         """A real CJK title (13 characters) stays under the character budget."""

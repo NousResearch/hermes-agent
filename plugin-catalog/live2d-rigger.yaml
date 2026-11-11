@@ -1,33 +1,51 @@
 name: live2d-rigger
-title: "Live2D Rigger"
+title: Live2D Rigger
 repo: https://github.com/flabanabba8/live2d-rigger
-sha: 776facb4709d78b0c78524d738b68b01606aefc2
-version: "0.4.0"
-description: "Create and rig editable Live2D characters from a brief, using native image tools and a selected real authoring/SDK toolchain, with motion review. Also opens a character you already have, shows how she is put together, changes how her hair or skirt swings on a copy, and renders the same motion before and after. Disclosure: Works on a copy of a Live2D model you supply and never changes the original; edits physics and writes motion; renders clips locally through your own Cubism SDK viewer folder, Playwright and ffmpeg. One optional download of an official free sample model from Live2D's own host, only after you have accepted Live2D's licence. No Live2D SDK, Cubism Core, viewer, sample model or character artwork is bundled."
+sha: 657345a77bd59088e66fdbaa2aed58007d16b9ce
+version: 0.5.0
+description: 'Create a provisional Live2D character from a brief with complete image
+  parts, local cutout, placement, an experimental Umamo/JDK rig and Core motion review;
+  also inspect and adjust a copy of an existing model. Disclosure: runs the user-configured
+  JDK and Kotlin/Umamo compiler, FFmpeg and a local headless browser; the host image
+  tool may use its configured provider. Optional official sample download requires
+  the user’s licence acceptance. No SDK, Core, viewer, sample model, model layers
+  or textures are bundled; the approved thumbnail contains character artwork. XY head
+  turns, independent limbs and polished eyes are not provided.'
 maintainer: flabanabba8
 tier: community
 category: tools
-requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/live2d-rigger/blob/776facb4709d78b0c78524d738b68b01606aefc2/README.md
-image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/776facb4709d78b0c78524d738b68b01606aefc2/assets/thumbnail.jpg
-platforms: [linux]
+requires_hermes: '>=0.22.0'
+docs_url: https://github.com/flabanabba8/live2d-rigger/blob/657345a77bd59088e66fdbaa2aed58007d16b9ce/README.md
+image: https://raw.githubusercontent.com/flabanabba8/live2d-rigger/657345a77bd59088e66fdbaa2aed58007d16b9ce/assets/thumbnail.jpg
+platforms:
+- linux
 capabilities:
   provides_tools:
-    - live2d_begin_model
-    - live2d_model_layer
-    - live2d_model_rig
-    - live2d_build_model
-    - live2d_render_model_motion
-    - live2d_model_status
-    - live2d_open_model
-    - live2d_inspect_model
-    - live2d_adjust_physics
-    - live2d_render_clip
-    - live2d_write_motion
-    - live2d_inspect_resources
-    - live2d_check_motion
-    - live2d_reference_samples
-    - live2d_fetch_reference_sample
+  - live2d_begin_model
+  - live2d_clone_model
+  - live2d_remove_layer
+  - live2d_model_layer
+  - live2d_arrange_layers
+  - live2d_place_layer
+  - live2d_set_canvas
+  - live2d_register_layer
+  - live2d_default_layout
+  - live2d_configure_umamo
+  - live2d_check_rig_domains
+  - live2d_rebuild_prototype
+  - live2d_model_rig
+  - live2d_build_model
+  - live2d_render_model_motion
+  - live2d_model_status
+  - live2d_open_model
+  - live2d_inspect_model
+  - live2d_adjust_physics
+  - live2d_render_clip
+  - live2d_write_motion
+  - live2d_inspect_resources
+  - live2d_check_motion
+  - live2d_reference_samples
+  - live2d_fetch_reference_sample
   provides_hooks: []
   provides_middleware: []
   requires_env: []

@@ -117,3 +117,35 @@ async def test_same_voice_note_sent_again_while_idle_is_echoed_again(tmp_path, m
         assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']
     finally:
         authority.db.close()
+
+
+async def _admit_busy_voice(runner, authority, source, clip):
+    task = asyncio.ensure_future(runner._handle_message(MessageEvent(
+        text='', message_type=MessageType.VOICE, source=source, message_id='v1',
+        media_urls=[str(clip)], media_types=['audio/ogg'])))
+    await async_wait_until(lambda: _rows(authority), timeout=10, what='the voice note admitted')
+    task.cancel()
+    return restore_native(_rows(authority)[0]['payload'], runner)
+
+
+@pytest.mark.asyncio
+async def test_same_clip_forwarded_to_another_chat_still_echoes_there(tmp_path, monkeypatch):
+    """The "already echoed" hand-off belongs to the busy MESSAGE: the same clip arriving idle in
+    another chat before that message's FIFO turn runs is echoed in that chat, and only once overall."""
+    monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
+                        lambda path, model=None, source=None: {'success': True, 'transcript': 'hi', 'provider': 'f'})
+    runner, authority, source, _agent, sent = await _busy_rig(tmp_path, monkeypatch)
+    clip = tmp_path / 'note.ogg'
+    clip.write_bytes(b'OggS forwarded clip')
+    other = runner.adapters[Platform.WHATSAPP].build_source(
+        chat_id='15557654321@s.whatsapp.net', user_id=CHAT, chat_type='dm')
+    try:
+        restored = await _admit_busy_voice(runner, authority, source, clip)
+        forwarded = MessageEvent(text='', message_type=MessageType.VOICE, source=other, message_id='f1',
+                                 media_urls=[str(clip)], media_types=['audio/ogg'])
+        await runner._prepare_inbound_message_text(event=forwarded, source=other, history=[])
+        assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']  # busy echo + chat B's own
+        await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
+        assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']  # chat A's turn: already shown
+    finally:
+        authority.db.close()

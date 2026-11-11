@@ -89,10 +89,21 @@ def _take_gate_transcript(path: str) -> Optional[str]:
         return _GATE_TRANSCRIPTS.pop(key, None)
 
 
-# Clips a busy follow-up already transcribed AND echoed before native admission, by profile and clip
-# content: the FIFO turn restores a fresh event (a re-captured clip, no ``_gateway_pending_stt_*``), so
-# without this its preprocessing paid STT and echoed the transcript a second time (#152457).
-_ECHOED_CLIPS: OrderedDict[tuple[str, bytes], None] = OrderedDict()
+# Clips a busy follow-up already transcribed AND echoed before native admission, by the MESSAGE that
+# carried them (profile, platform, chat, message id) and clip content: the FIFO turn restores a fresh
+# event (a re-captured clip, no ``_gateway_pending_stt_*``) but keeps the chat and message id, so
+# without this its preprocessing echoed the transcript a second time (#152457). The same clip
+# forwarded into another chat is another message and echoes there as usual.
+_ECHOED_CLIPS: OrderedDict[tuple, None] = OrderedDict()
+
+
+def _echo_key(event, path: str) -> Optional[tuple]:
+    source = getattr(event, "source", None)
+    message_id = getattr(event, "message_id", None)
+    if source is None or not message_id or (key := _gate_key(path)) is None:
+        return None  # no message identity: never suppress another turn's echo
+    platform = getattr(getattr(source, "platform", None), "value", None)
+    return (key[0], platform, str(source.chat_id), str(message_id), key[1])
 
 
 def hand_prepared_voice_to_turn(event) -> None:
@@ -102,21 +113,19 @@ def hand_prepared_voice_to_turn(event) -> None:
     done = [(path, transcript) for path, (transcript, _note) in clip_memo.items() if transcript is not None]
     echoed = 0 < len(done) <= int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
     for path, transcript in done:
-        if (key := _gate_key(path)) is None:
-            continue
         remember_gate_transcript(path, transcript)
-        if echoed:
+        if echoed and (key := _echo_key(event, path)) is not None:
             with _GATE_TRANSCRIPTS_LOCK:
                 _ECHOED_CLIPS[key] = None
                 while len(_ECHOED_CLIPS) > _GATE_TRANSCRIPTS_MAX:
                     _ECHOED_CLIPS.popitem(last=False)
 
 
-def take_echoed_clips(paths: list[str]) -> set[str]:
-    """The *paths* whose transcript the chat was already shown (consumed: one turn skips the echo)."""
+def take_echoed_clips(event, paths: list[str]) -> set[str]:
+    """The *paths* of *event* whose transcript the chat was already shown (consumed: one turn skips the echo)."""
     if not _ECHOED_CLIPS:
         return set()
-    keys = {path: _gate_key(path) for path in paths}
+    keys = {path: _echo_key(event, path) for path in paths}
     shown = set()
     with _GATE_TRANSCRIPTS_LOCK:
         for path, key in keys.items():
@@ -195,7 +204,7 @@ class GatewayInboundTranscriptionMixin:
     async def _enrich_inbound_voice(
         self, event, source, message_text: str, audio_paths: list[str]
     ) -> str:
-        shown = await asyncio.to_thread(take_echoed_clips, audio_paths)  # echoed when it arrived busy
+        shown = await asyncio.to_thread(take_echoed_clips, event, audio_paths)  # echoed when it arrived busy
         clips: dict = {}
         message_text, _ = await self._enrich_message_with_transcription(message_text, audio_paths, clips)
         _successful_transcripts = [clips[p][0] for p in audio_paths

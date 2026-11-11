@@ -19,6 +19,7 @@ from unittest.mock import patch, MagicMock
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
+    patch_tool,
     _is_blocked_device,
     _DEFAULT_MAX_READ_CHARS,
 )
@@ -661,7 +662,13 @@ class TestOverlappingReadDedup(unittest.TestCase):
 
     def test_edit_makes_the_whole_window_readable_again(self):
         self._read(2158, 15)
-        write_file_tool(self._tmpfile, "".join(f"new {i}\n" for i in range(1, 3001)), task_id="ov")
+        # write_file_tool would refuse this: the task only read a partial view, and
+        # an overwrite requires the whole file. Any successful edit invalidates the
+        # path's seen lines, so a patch proves the same point.
+        edit = json.loads(patch_tool(mode="replace", path=self._tmpfile,
+                                     old_string="line 2158\n", new_string="new 2158\n",
+                                     task_id="ov"))
+        self.assertNotIn("error", edit, edit)
         r = self._read(2150, 20)
         self.assertEqual(_shown_line_numbers(r), list(range(2150, 2170)))
         self.assertNotIn("omitted_lines", r)

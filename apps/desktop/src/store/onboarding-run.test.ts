@@ -18,7 +18,7 @@ import { isOnboardingChat } from './onboarding-session'
 import { $activeGatewayProfile, $freshSessionRequest, $newChatProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
 import { $sessionTiles } from './session-states'
-import { $agentSidebarChoice } from './simplified-agent-mode'
+import { $shellChoice } from './shell-variant'
 
 const ensureProfile = async (): Promise<void> => undefined
 
@@ -47,7 +47,7 @@ function backend(state: { eligible: boolean; run: boolean }, runId: null | strin
 }
 
 beforeEach(() => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   // SAFETY: factsSource reads only `mode`; a local connection skips the machine comparison.
   $connection.set({ mode: 'local' } as never)
   setPrimaryGatewayConnectionId('local')
@@ -311,7 +311,7 @@ it('ignores a pending classic start after switching to redesigned setup', async 
   resume.mockClear()
   const starting = startOnboarding(request as OnboardingRequest, resume, { ensureProfile, intro })
   await vi.waitFor(() => expect(request).toHaveBeenCalled())
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   response.resolve({ resumed: false, run_id: 'late', session_id: 'late', stored_session_id: 'late' })
   expect(await starting).toBe(false)
   expect(intro.started).not.toHaveBeenCalled()

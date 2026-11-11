@@ -164,15 +164,15 @@
   font-size: 13px;
   line-height: 18px;
 }
-:root:has([data-portal-redesign='true']) .agent-settings-instructions :is(.cm-scroller, .cm-content, .cm-line) {
+:root[data-shell='portal'] .agent-settings-instructions :is(.cm-scroller, .cm-content, .cm-line) {
   font-family: var(--portal-font-body);
   font-size: 13px;
   line-height: 21px;
 }
-:root:has([data-portal-redesign='true']) .agent-settings-instructions .cm-scroller {
+:root[data-shell='portal'] .agent-settings-instructions .cm-scroller {
   padding: 8px;
 }
-:root:has([data-portal-redesign='true']) .agent-settings-instructions .cm-line {
+:root[data-shell='portal'] .agent-settings-instructions .cm-line {
   padding: 0;
 }
 .agent-settings-instructions-meta {

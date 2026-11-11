@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -24,7 +24,7 @@ function Host({ topEdge = false }: { topEdge?: boolean }) {
 
 beforeEach(() => {
   // The tab strip and phone picker are classic-shell controls.
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   stubResizeObserver()
   stubMenuDomApis()
   vi.stubGlobal('CSS', { escape: (value: string) => value })
@@ -40,7 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   disposers.splice(0).forEach(dispose => dispose())
   $layoutTree.set(null)
   $narrowViewport.set(false)

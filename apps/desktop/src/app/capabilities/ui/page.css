@@ -61,9 +61,9 @@
   justify-content: space-between;
   gap: 12px;
   padding: 14px 16px;
-  border: 0.5px solid var(--portal-brand-blue);
+  border: 0.5px solid var(--portal-brand-ink);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--portal-brand-blue) 10%, transparent);
+  background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
 }
 
 .agent-capability-banner p {

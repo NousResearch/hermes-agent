@@ -99,6 +99,7 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
+import { usePortalShell } from '@/store/shell-variant'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
@@ -118,7 +119,6 @@ import {
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
 import { HudShell } from '../hud/hud-shell'
-import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { $terminalCollapsedRail, $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
@@ -791,7 +791,7 @@ registerPaneCloser('files', () =>
 
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
-  const portal = usePortalRedesign()
+  const portal = usePortalShell()
   const statusbarVisible = useStore($statusbarVisible) && !portal
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
@@ -837,7 +837,6 @@ export function ContribController() {
           // painted by <body> is the only thing between the page and the
           // vibrancy material.
           data-contrib-shell=""
-          data-portal-redesign={portal || undefined}
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
           <div className="flex min-h-0 flex-1">

@@ -1,5 +1,5 @@
 /* The normal agent sidebar; classic rollback keeps its own styling. */
-:root:has(.portal-sidebar) {
+:root[data-shell='portal'] {
   --sessions-pane-width: 20rem;
 }
 
@@ -10,7 +10,7 @@
   min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--sidebar-edge-border);
-  border-bottom: 3px solid var(--portal-brand-blue);
+  border-bottom: 3px solid var(--portal-brand-fill);
   border-radius: 9px 9px 0 0;
   background: var(--ui-sidebar-surface-background);
   color: var(--ui-text-primary);
@@ -32,7 +32,7 @@
   height: 3.5rem;
   flex-shrink: 0;
   border-radius: 0.375rem;
-  background: var(--portal-brand-blue);
+  background: var(--portal-brand-fill);
 }
 
 .portal-sidebar-badge img {
@@ -138,36 +138,36 @@
 }
 
 /* The select is portaled to body; scope it to the mounted Portal sidebar. */
-:root:has(.portal-sidebar) .new-session-picker {
+:root[data-shell='portal'] .new-session-picker {
   border-radius: 0.625rem;
 }
 
-:root:has(.portal-sidebar) .new-session-picker [data-slot='select-label'] {
+:root[data-shell='portal'] .new-session-picker [data-slot='select-label'] {
   padding-block: 0;
   height: 0;
   overflow: hidden;
 }
 
-:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'] {
+:root[data-shell='portal'] .new-session-picker [data-slot='select-item'] {
   border-radius: 0.4375rem;
   font-size: 0.8125rem;
 }
 
-:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'][data-state='checked'] {
+:root[data-shell='portal'] .new-session-picker [data-slot='select-item'][data-state='checked'] {
   background: color-mix(in srgb, var(--dt-primary) 15%, var(--dt-popover));
 }
 
-:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'] > span:first-child {
+:root[data-shell='portal'] .new-session-picker [data-slot='select-item'] > span:first-child {
   color: var(--dt-primary);
 }
 
-:root:has(.portal-sidebar) .new-session-picker [data-slot='new-session-option-avatar'] {
+:root[data-shell='portal'] .new-session-picker [data-slot='new-session-option-avatar'] {
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 0.4375rem;
 }
 
-:root:has(.portal-sidebar) .new-session-picker [data-slot='select-item'] .text-xs {
+:root[data-shell='portal'] .new-session-picker [data-slot='select-item'] .text-xs {
   font-size: 0.6875rem;
 }
 
@@ -582,7 +582,7 @@
 }
 
 .portal-hidden-dot[data-attention='running'] {
-  background: var(--portal-brand-blue);
+  background: var(--portal-brand-fill);
 }
 
 .portal-hidden-dot[data-attention='unread'] {
@@ -667,6 +667,6 @@
   width: 1.9375rem;
   height: 1.9375rem;
   border-radius: 0.25rem;
-  background: color-mix(in srgb, var(--portal-brand-blue) 15%, transparent);
+  background: color-mix(in srgb, var(--portal-brand-fill) 15%, transparent);
   color: var(--dt-primary);
 }

@@ -21,7 +21,7 @@ import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
 import { $reviewScopeCwd, $reviewScopeTarget, closeReview } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, setSessions } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { DeveloperRail } from './developer-rail'
 
@@ -37,7 +37,7 @@ beforeEach(() => {
   $interfaceMode.set('advanced')
   $previewTabs.set([])
   $rightRailActiveTabId.set(null)
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $narrowViewport.set(false)
   $narrowOverlayPaneIds.set(new Set())
   $dismissedPanes.set(new Set())
@@ -56,7 +56,7 @@ afterEach(() => {
   $previewTabs.set([])
   $rightRailActiveTabId.set(null)
   disposers.splice(0).forEach(dispose => dispose())
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   $layoutTree.set(null)
   $narrowViewport.set(false)
   $narrowOverlayPaneIds.set(new Set())
@@ -133,7 +133,7 @@ it('keeps classic and full-page destinations free of the chat tool rail', () => 
   view.unmount()
   mount()
   expect(screen.getByRole('navigation', { name: 'Right sidebar panels' })).toBeTruthy()
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(screen.queryByRole('navigation')).toBeNull()
 })
 
@@ -182,7 +182,7 @@ it('shows developer tools only in Advanced mode with the redesign enabled', () =
   expect(screen.queryByRole('button', { name: 'Terminal' })).toBeNull()
   act(() => {
     $interfaceMode.set('advanced')
-    $agentSidebarChoice.set(false)
+    $shellChoice.set(false)
   })
   expect(screen.queryByRole('navigation')).toBeNull()
 })

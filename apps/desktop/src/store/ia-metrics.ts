@@ -2,12 +2,12 @@ import { $apiRequestScope } from '@/api/client'
 
 import { $desktopMetricsGate, type DesktopActionVia, desktopMetricsEnabled, recordAction } from './desktop-metrics'
 import type { IaAction } from './ia-metrics-contract'
-import { $simplifiedAgentMode } from './simplified-agent-mode'
+import { $portalPreferred } from './shell-variant'
 
 // A consent change invalidates in-flight work even if collection is subsequently re-enabled.
 let consentGeneration = 0
 $desktopMetricsGate.listen(() => consentGeneration++)
-$simplifiedAgentMode.listen(() => consentGeneration++)
+$portalPreferred.listen(() => consentGeneration++)
 $apiRequestScope.listen((next, previous) => {
   if (next.connectionId !== previous.connectionId || next.profile !== previous.profile) {
     consentGeneration++
@@ -15,7 +15,7 @@ $apiRequestScope.listen((next, previous) => {
 })
 
 export function recordIaAction(action: IaAction, via: DesktopActionVia = 'click'): void {
-  if ($simplifiedAgentMode.get()) {
+  if ($portalPreferred.get()) {
     recordAction(action, via)
   }
 }
@@ -24,7 +24,7 @@ export function recordIaAction(action: IaAction, via: DesktopActionVia = 'click'
 export function captureIaRecorder(): (action: IaAction) => void {
   const scope = $apiRequestScope.get()
   const generation = consentGeneration
-  const enabled = desktopMetricsEnabled() && $simplifiedAgentMode.get()
+  const enabled = desktopMetricsEnabled() && $portalPreferred.get()
 
   return action => {
     const current = $apiRequestScope.get()

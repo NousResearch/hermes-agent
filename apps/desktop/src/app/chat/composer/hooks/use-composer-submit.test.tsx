@@ -26,7 +26,7 @@ import {
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $connection } from '@/store/session'
 import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -1078,7 +1078,7 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
 })
 
 describe('useComposerSubmit with a setup card waiting in the onboarding chat', () => {
-  beforeEach(() => $agentSidebarChoice.set(false))
+  beforeEach(() => $shellChoice.set(false))
 
   // The card is a live setup_beat server request; its answer is that request's response frame.
   const parkCard = (beat: 'layout' | 'name') => {
@@ -1103,7 +1103,7 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
     $setupBeatRequests.set({})
     $onboardingSession.set(null)
     $onboardingPhase.set('idle')
-    $agentSidebarChoice.set(null)
+    $shellChoice.set(null)
   })
 
   it('closes the card unanswered and sends the words as the next turn, never into the card turn', () => {
@@ -1218,7 +1218,7 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
   })
 
   it('allows normal slash commands in redesigned mode despite cached classic setup metadata', () => {
-    $agentSidebarChoice.set(true)
+    $shellChoice.set(true)
     $onboardingPhase.set('shown')
     $onboardingSession.set({
       connectionId: null,

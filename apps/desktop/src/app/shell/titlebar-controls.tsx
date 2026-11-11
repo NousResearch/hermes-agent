@@ -34,9 +34,9 @@ import {
 } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
+import { usePortalShell } from '@/store/shell-variant'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
-import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
@@ -185,7 +185,7 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
-  const portal = usePortalRedesign()
+  const portal = usePortalShell()
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()

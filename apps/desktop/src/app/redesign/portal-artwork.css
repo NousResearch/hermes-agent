@@ -1,6 +1,6 @@
 /* Opacity lives in the SVG (following the parent color-scheme), so transparent
    native glass surfaces cannot expose the full-strength wing. */
-:root:has([data-portal-redesign='true']) :is(
+:root[data-shell='portal'] :is(
   .portal-sidebar,
   [data-slot='composer-bounds'],
   [data-page-surface],
@@ -15,11 +15,11 @@
 }
 
 /* Figma's light rail (606:13784) is opaque. */
-:root:not(.dark):has([data-portal-redesign='true']) :is(.portal-sidebar, [data-page-surface] [data-tour='overlay-nav']) {
+:root[data-shell='portal']:not(.dark) :is(.portal-sidebar, [data-page-surface] [data-tour='overlay-nav']) {
   background-image: none;
 }
 
 /* The new-chat pane already has its own landing illustration. */
-:root:has([data-portal-redesign='true']) [data-chat-landing='true'] [data-slot='composer-bounds'] {
+:root[data-shell='portal'] [data-chat-landing='true'] [data-slot='composer-bounds'] {
   background-image: none;
 }

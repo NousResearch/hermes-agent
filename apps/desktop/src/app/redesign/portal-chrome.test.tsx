@@ -17,20 +17,18 @@ import {
   $unlistedSessionOwnerRows
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
+import { $shellChoice } from '@/store/shell-variant'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { PortalConversationHeader, usePortalConversation } from './portal-conversation-header'
 import { PortalStatusMenu } from './portal-status-menu'
-import { usePortalRedesign } from './use-portal-redesign'
-
-vi.mock('./use-portal-redesign', () => ({ usePortalRedesign: vi.fn(() => true) }))
 
 beforeEach(() => {
   stubResizeObserver()
   stubMenuDomApis()
-  vi.mocked(usePortalRedesign).mockReturnValue(true)
+  $shellChoice.set(null)
   $workspaceIsPage.set(false)
   $apiRequestScope.set({ connectionId: 'local', profile: 'default' })
   $activeGatewayProfile.set('default')
@@ -110,7 +108,7 @@ it('only replaces conversation chrome in Portal, leaving settings and tools alon
   expect(screen.getByRole('status').textContent).toBe('true')
   view.rerender(<Gate pane="terminal" />)
   expect(screen.getByRole('status').textContent).toBe('false')
-  vi.mocked(usePortalRedesign).mockReturnValue(false)
+  act(() => $shellChoice.set(false))
   view.rerender(<Gate pane="session-tile:chat" />)
   expect(screen.getByRole('status').textContent).toBe('false')
 })

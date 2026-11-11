@@ -5,20 +5,6 @@
 @import '@vscode/codicons/dist/codicon.css';
 @import './app/chat/landing.css';
 
-/* Shell geometry and decoration must not depend on the selected skin. */
-:root {
-  --portal-brand-blue: var(--dt-primary);
-  --portal-brand-hover: var(--dt-ring);
-  --portal-on-brand: var(--dt-primary-foreground);
-  --portal-spectrum-red: #aa1515;
-  --portal-spectrum-yellow: #ddd61c;
-}
-
-[data-portal-redesign] {
-  --terminal-panel-min-width: min(22rem, 40vw);
-  --radius-scalar: 0.6;
-}
-
 /* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
    unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
 .titlebar-icon-button .codicon[class*='codicon-'] {

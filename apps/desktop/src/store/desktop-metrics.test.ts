@@ -32,7 +32,7 @@ import {
   trackArea,
   trackFlow
 } from './desktop-metrics'
-import { $agentSidebarChoice, setSimplifiedAgentMode } from './simplified-agent-mode'
+import { $shellChoice, setPortalPreferred } from './shell-variant'
 
 type Call = [string, Record<string, unknown>]
 
@@ -571,11 +571,11 @@ it('records explicit shell transitions once without an opt-in offer', async () =
   const { calls, request } = requester()
   setDesktopMetricsGate('on')
   bindDesktopMetrics(request)
-  $agentSidebarChoice.set(null)
-  setSimplifiedAgentMode(false)
-  setSimplifiedAgentMode(false)
-  setSimplifiedAgentMode(true)
-  setSimplifiedAgentMode(true)
+  $shellChoice.set(null)
+  setPortalPreferred(false)
+  setPortalPreferred(false)
+  setPortalPreferred(true)
+  setPortalPreferred(true)
   vi.setSystemTime(DAY2)
   tickDesktopMetrics()
   await flush()
@@ -592,5 +592,5 @@ it('records explicit shell transitions once without an opt-in offer', async () =
       ([method, params]) => method === 'shared_metrics.desktop_dislike' && params.signal === 'feature_disabled'
     )
   ).toEqual([['shared_metrics.desktop_dislike', { signal: 'feature_disabled', target: 'simplified_sidebar' }]])
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })

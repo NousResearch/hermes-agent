@@ -2,17 +2,17 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { Wrench } from '@/lib/icons'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { OverlayBreadcrumbHeader } from './overlay-breadcrumb-header'
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 it('shares the V2 destination title while retaining breadcrumb and toolbar actions in classic', () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   const openGroup = vi.fn()
   const openChild = vi.fn()
   const refresh = vi.fn()
@@ -36,7 +36,7 @@ it('shares the V2 destination title while retaining breadcrumb and toolbar actio
   expect(openChild).toHaveBeenCalledOnce()
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
 
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(screen.queryByRole('heading')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
   expect(refresh).toHaveBeenCalledTimes(2)

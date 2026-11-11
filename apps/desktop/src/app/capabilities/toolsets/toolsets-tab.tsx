@@ -1,5 +1,4 @@
 import { compactNumber } from '@hermes/shared'
-import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useState } from 'react'
 
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -9,7 +8,7 @@ import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { notify, notifyError } from '@/store/notifications'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 import type { ToolsetInfo } from '@/types/hermes'
 
 import { asText, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
@@ -47,7 +46,7 @@ interface ToolsetsTabProps {
 /** Classic management catalog; redesigned mode uses it as read-only inventory. */
 export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: ToolsetsTabProps) {
   const { t } = useI18n()
-  const readOnly = useStore($simplifiedAgentMode)
+  const readOnly = usePortalShell()
   const [bulkBusy, setBulkBusy] = useState(false)
   const ts = t.catalog.toolsets
   const toolCalls = useToolCalls(profile)

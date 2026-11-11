@@ -1,6 +1,5 @@
 import './ui/page.css'
 
-import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -13,7 +12,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -74,7 +73,7 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
-  const redesignEnabled = useStore($simplifiedAgentMode)
+  const redesignEnabled = usePortalShell()
   const agentRedesign = redesignEnabled && Boolean(fixedProfile)
   const agentControls = !redesignEnabled || Boolean(fixedProfile)
   const redesigned = redesignEnabled && !embedded

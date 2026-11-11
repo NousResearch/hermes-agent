@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 import { bindDesktopMetrics, resetDesktopMetricsForTests, setDesktopMetricsGate } from '@/store/desktop-metrics'
-import { $agentSidebarChoice, $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $portalPreferred, $shellChoice } from '@/store/shell-variant'
 import { ThemeProvider } from '@/themes/context'
 
 import { AppearanceSettings } from './appearance-settings'
@@ -34,7 +34,7 @@ beforeEach(() => {
   resetDesktopMetricsForTests()
   localStorage.clear()
   request.mockClear()
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $apiRequestScope.set({ connectionId: 'sample', profile: 'default' })
   bindDesktopMetrics(request, 'sample|default')
 })
@@ -42,7 +42,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   resetDesktopMetricsForTests()
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   $apiRequestScope.set(initialScope)
 })
 
@@ -50,7 +50,7 @@ it('restores the original sidebar immediately and accepts one optional reason in
   setDesktopMetricsGate('on')
   renderSettings()
   fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
-  expect($simplifiedAgentMode.get()).toBe(false)
+  expect($portalPreferred.get()).toBe(false)
   expect(screen.queryByRole('dialog')).toBeNull()
   const feedback = screen.getByRole('combobox', { name: 'Why switch back? (optional)' })
   fireEvent.keyDown(feedback, { key: 'ArrowDown' })
@@ -69,7 +69,7 @@ it('does not ask for feedback or report a disable when usage sharing is off', as
   setDesktopMetricsGate('off')
   renderSettings()
   fireEvent.click(screen.getByRole('switch', { name: 'Redesigned interface' }))
-  expect($simplifiedAgentMode.get()).toBe(false)
+  expect($portalPreferred.get()).toBe(false)
   expect(screen.queryByRole('combobox', { name: 'Why switch back? (optional)' })).toBeNull()
   await act(async () => {})
   expect(request).not.toHaveBeenCalled()

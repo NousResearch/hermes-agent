@@ -16,14 +16,14 @@
   src: url('../../fonts/MonaSans.ttf') format('truetype');
 }
 
-:root:has([data-portal-redesign='true']) {
+:root[data-shell='portal'] {
   --portal-font-display: 'Oswald', var(--dt-font-sans);
   --portal-font-body: 'Mona Sans', var(--dt-font-sans);
 }
 
-:root:has([data-portal-redesign='true'])
+:root[data-shell='portal']
   :is(
-    [data-portal-redesign],
+    [data-contrib-shell],
     [data-page-surface],
     [data-slot='dialog-content'],
     [data-slot='dropdown-menu-content'],
@@ -37,7 +37,7 @@
   font-family: var(--portal-font-body);
 }
 
-:root:has([data-portal-redesign='true']) [data-page-surface] h1 {
+:root[data-shell='portal'] [data-page-surface] h1 {
   font-family: var(--portal-font-display);
   font-size: 2.5rem;
   line-height: 1.1;
@@ -45,7 +45,7 @@
   letter-spacing: -0.01em;
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='dialog-title'] {
+:root[data-shell='portal'] [data-slot='dialog-title'] {
   font-family: var(--portal-font-display);
   font-size: 1.875rem;
   font-weight: 300;

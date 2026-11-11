@@ -207,7 +207,7 @@
 }
 
 .agent-management-tabs button[aria-current] {
-  border-bottom-color: var(--portal-brand-blue);
+  border-bottom-color: var(--portal-brand-ink);
 }
 
 .agent-management-tabs button:focus-visible {

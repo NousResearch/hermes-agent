@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ArtifactsView } from './index'
 
@@ -31,7 +31,7 @@ vi.mock('@/hermes', async () => ({
 afterEach(() => {
   cleanup()
   $connection.set(null)
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   vi.clearAllMocks()
   vi.unstubAllGlobals()
 })
@@ -39,7 +39,7 @@ afterEach(() => {
 it.each([false, true])(
   'keeps file paths and originating scope intact through remote opening (V2=%s)',
   async enabled => {
-    $agentSidebarChoice.set(enabled)
+    $shellChoice.set(enabled)
     getSessionMessages.mockResolvedValue({
       messages: [
         {

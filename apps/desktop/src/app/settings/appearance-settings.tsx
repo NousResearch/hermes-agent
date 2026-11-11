@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import { useContext, useEffect, useState } from 'react'
 
 import { useDebounced } from '@/app/hooks/use-debounced'
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -30,6 +29,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { usePortalShell } from '@/store/shell-variant'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -410,7 +410,7 @@ interface AppearanceSettingsProps {
 }
 
 export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const [showFeedback, setShowFeedback] = useState(false)
 
   return (
@@ -856,7 +856,7 @@ function AppearanceChatPresentationSettings() {
 function AppearanceChatInteractionSettings() {
   const { t } = useI18n()
   const a = t.settings.appearance
-  const labels = usePortalRedesign() ? a.redesign : a
+  const labels = usePortalShell() ? a.redesign : a
   const toolViewMode = useStore($toolViewMode)
   const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
@@ -952,7 +952,7 @@ function AppearanceChatInteractionSettings() {
 function AppearanceBehaviorSettings({ subpage }: AppearanceSettingsProps) {
   const { t } = useI18n()
   const a = t.settings.appearance
-  const labels = usePortalRedesign() ? a.redesign : a
+  const labels = usePortalShell() ? a.redesign : a
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const fileBrowserShadowed = useStore($modeShadowed('fileBrowserOpen'))

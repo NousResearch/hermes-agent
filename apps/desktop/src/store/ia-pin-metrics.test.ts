@@ -11,7 +11,7 @@ import {
   setDesktopMetricsGate
 } from './desktop-metrics'
 import { captureIaPinCounts } from './ia-pin-metrics'
-import { $agentSidebarChoice } from './simplified-agent-mode'
+import { $shellChoice } from './shell-variant'
 
 const row = (id: string, profile = 'default', pinned = true) =>
   makeSessionInfo({ id, profile, pinned, connection_id: 'alpha' })
@@ -33,14 +33,14 @@ const actions = () => {
 beforeEach(() => {
   window.localStorage.clear()
   resetDesktopMetricsForTests()
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $apiRequestScope.set({ connectionId: 'alpha', profile: 'default' })
   bindDesktopMetrics(null, 'alpha|default')
   setDesktopMetricsGate('on')
 })
 afterEach(() => {
   resetDesktopMetricsForTests()
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   $apiRequestScope.set({ connectionId: null, profile: null })
 })
 
@@ -94,7 +94,7 @@ it('does not collect before consent, after revocation, across a gateway switch, 
   bindDesktopMetrics(null, 'beta|default')
   setDesktopMetricsGate('on')
   oldOwner(page())
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   captureIaPinCounts('all')(page())
   expect(actions()).toEqual({})
 })

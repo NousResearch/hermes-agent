@@ -7,7 +7,7 @@ import { $activePresetId, $layoutTree } from '@/components/pane-shell/tree/store
 import { applyAppearance } from '@/store/appearance-apply'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { openDemoLayout } from './assembly'
 import { openIntro, skipIntro } from './intro'
@@ -19,7 +19,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { chatOnboarding: { size } }

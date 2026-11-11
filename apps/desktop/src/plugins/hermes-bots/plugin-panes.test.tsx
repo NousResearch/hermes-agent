@@ -26,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // eslint-disable-next-line no-restricted-imports
 import { I18nProvider } from '@/i18n'
 // eslint-disable-next-line no-restricted-imports
-import { $agentSidebarChoice, setSimplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $shellChoice, setPortalPreferred } from '@/store/shell-variant'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
@@ -172,7 +172,7 @@ afterEach(() => {
 describe('the Bots pane dock', () => {
   it('renders its tab label from the live locale, not the register-time string', () => {
     paneStores()
-    setSimplifiedAgentMode(false)
+    setPortalPreferred(false)
 
     const harness = recordingContext()
 
@@ -193,7 +193,7 @@ describe('the Bots pane dock', () => {
     expect(inLocale('ru')).not.toBe(inLocale('en'))
 
     harness.dispose()
-    $agentSidebarChoice.set(null)
+    $shellChoice.set(null)
   })
 })
 
@@ -349,15 +349,15 @@ describe('a desktop without host.paneVisibility', () => {
 
 
 it('removes only the Bots sidebar tab while simplified agents is enabled and restores it when disabled', () => {
-  setSimplifiedAgentMode(false)
+  setPortalPreferred(false)
   paneStores()
   const harness = recordingContext()
   plugin.register(harness.ctx)
   expect(harness.find('pane')).toBeDefined()
-  setSimplifiedAgentMode(true)
+  setPortalPreferred(true)
   expect(harness.find('pane')).toBeUndefined()
-  setSimplifiedAgentMode(false)
+  setPortalPreferred(false)
   expect(harness.find('pane')).toMatchObject({ data: { dock: { pane: 'sessions', pos: 'center', enforce: true } } })
   harness.dispose()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })

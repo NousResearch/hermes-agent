@@ -9,7 +9,7 @@ import type * as ConfigApi from '@/api/config'
 import type * as Notifications from '@/store/notifications'
 import { notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from './config-draft'
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
@@ -88,7 +88,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   vi.clearAllMocks()
 })
 
@@ -112,7 +112,7 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simplified => {
-  beforeEach(() => $agentSidebarChoice.set(simplified))
+  beforeEach(() => $shellChoice.set(simplified))
 
   it.each(['record', 'schema'])('recovers from a failed %s read without writing settings', async failedRead => {
     scopeProfileMock.set('research')
@@ -346,7 +346,7 @@ it.each([false, true])(
 )
 
 it('keeps compact Limits destinations distinct when moving between runtime, terminal and output', async () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   getHermesConfigRecord.mockResolvedValue({
     agent: { max_turns: 42 },
     terminal: { timeout: 17 },

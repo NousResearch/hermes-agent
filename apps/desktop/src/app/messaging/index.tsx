@@ -41,13 +41,13 @@ import { $activeConnectionId } from '@/store/connections'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { usePortalShell } from '@/store/shell-variant'
 import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
-import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { credentialPreview } from '../settings/helpers'
 import { ListRow } from '../settings/primitives'
@@ -291,7 +291,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // the active profile; the API helpers treat null as "target primary").
   const requestedProfile = useStore($settingsRequestProfile)
   const pinnedOwner = useSettingsOwner()
-  const agentLayout = usePortalRedesign() && Boolean(pinnedOwner)
+  const agentLayout = usePortalShell() && Boolean(pinnedOwner)
   const scopeProfile = pinnedOwner ?? requestedProfile
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a

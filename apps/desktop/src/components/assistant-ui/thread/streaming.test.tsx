@@ -14,7 +14,7 @@ import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import { $activeSessionId } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 
@@ -443,7 +443,7 @@ describe('assistant-ui streaming renderer', () => {
     $activeSessionId.set(null)
     $onboardingSession.set(null)
     $onboardingPhase.set('idle')
-    $agentSidebarChoice.set(null)
+    $shellChoice.set(null)
   })
 
   it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
@@ -708,7 +708,7 @@ describe('assistant-ui streaming renderer', () => {
   })
 
   it.each([false, true])('scopes onboarding reasoning collapse to classic mode (redesign: %j)', redesign => {
-    $agentSidebarChoice.set(redesign)
+    $shellChoice.set(redesign)
     $activeSessionId.set('onboarding-chat')
     $onboardingSession.set({
       connectionId: null,

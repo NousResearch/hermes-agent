@@ -1,6 +1,5 @@
 import './surface.css'
 
-import { useStore } from '@nanostores/react'
 import { type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -9,7 +8,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { closeManualOnboarding } from '@/store/onboarding'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 interface OnboardingSurfaceProps {
   bare: boolean
@@ -20,7 +19,7 @@ interface OnboardingSurfaceProps {
 
 export function OnboardingSurface({ bare, children, leaving, manual }: OnboardingSurfaceProps) {
   const { t } = useI18n()
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
   // Capture before a key form's native autofocus runs in the portal.
   const [opener] = useState(() => document.activeElement)
 

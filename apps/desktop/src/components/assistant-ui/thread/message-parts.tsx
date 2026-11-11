@@ -10,7 +10,6 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
@@ -38,6 +37,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { onboardingChatStore } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
+import { usePortalShell } from '@/store/shell-variant'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $showToolActivity } from '@/store/tool-activity'
 
@@ -234,7 +234,7 @@ const ThinkingDisclosure: FC<{
   timerKey: string
 }> = ({ children, completedAt, messageRunning = false, pending = false, timestamp, timerKey }) => {
   const { t } = useI18n()
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const sessionId = useStore(useSessionView().$runtimeId)
   const onboardingChat = useStore(useMemo(() => onboardingChatStore(sessionId), [sessionId]))
   // Classic setup rests reasoning collapsed; redesigned chat follows the user's preference.

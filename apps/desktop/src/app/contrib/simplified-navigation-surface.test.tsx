@@ -12,7 +12,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { $sidebarOpen, setSidebarOpen } from '@/store/layout'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { SimplifiedNavigationSurface } from './simplified-navigation-surface'
 
@@ -41,7 +41,7 @@ function mount(route = '/') {
 }
 
 beforeEach(() => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $hiddenStripTabs.set(new Set())
   $hiddenTreePanes.set(new Set())
   $layoutTree.set(null)
@@ -51,7 +51,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   $hiddenStripTabs.set(new Set())
   $hiddenTreePanes.set(new Set())
   $layoutTree.set(null)
@@ -84,16 +84,16 @@ it('hides sessions on global pages, including after an attempted pane reveal, wi
 
 it('restores classic page visibility when v2 is disabled while preserving explicit tab hides', () => {
   mount('/capabilities')
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(screen.queryByRole('navigation')).toBeNull()
   expect($hiddenTreePanes.get().has('sessions')).toBe(false)
   act(() => {
     $hiddenStripTabs.set(new Set(['sessions']))
-    $agentSidebarChoice.set(true)
+    $shellChoice.set(true)
   })
   fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
   expect($hiddenTreePanes.get().has('sessions')).toBe(true)
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect($hiddenTreePanes.get().has('sessions')).toBe(true)
 })
 

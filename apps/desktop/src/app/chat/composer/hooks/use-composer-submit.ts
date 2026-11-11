@@ -24,7 +24,7 @@ import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $portalPreferred } from '@/store/shell-variant'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -440,7 +440,7 @@ export function useComposerSubmit({
       return 'answered'
     }
 
-    const classicSetup = !$simplifiedAgentMode.get()
+    const classicSetup = !$portalPreferred.get()
     const yielded = classicSetup && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
 
     if (hasClarifyRequest(sessionId)) {
@@ -463,7 +463,7 @@ export function useComposerSubmit({
   // Slash commands come after setup. Every send action asks here first, so the words stay put and one
   // note (re-shown, never stacked) says why.
   const refusedDuringSetup = (text: string): boolean => {
-    if ($simplifiedAgentMode.get() || !isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
+    if ($portalPreferred.get() || !isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
       return false
     }
 

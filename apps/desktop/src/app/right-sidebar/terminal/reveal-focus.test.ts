@@ -24,7 +24,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { $interfaceMode } from '@/store/interface-mode'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { $activeTerminalId, $terminals } from './terminals'
 
@@ -339,7 +339,7 @@ describe('terminal reveal keyboard focus', () => {
 it.each([false, true])('hides the closed terminal rail only in the redesign (%s), preserving shells on reopen', redesigned => {
   installRaf()
   $interfaceMode.set('advanced')
-  $agentSidebarChoice.set(redesigned)
+  $shellChoice.set(redesigned)
   const terminal = { id: 'retained-shell', kind: 'user' as const, title: 'Shell', cwd: '/tmp', auto: true }
   $terminals.set([terminal])
   $activeTerminalId.set(terminal.id)
@@ -357,6 +357,6 @@ it.each([false, true])('hides the closed terminal rail only in the redesign (%s)
   } finally {
     $terminals.set([])
     $activeTerminalId.set(null)
-    $agentSidebarChoice.set(null)
+    $shellChoice.set(null)
   }
 })

@@ -11,7 +11,6 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useCallback, useMemo } from 'react'
 import { Navigate, Route, Routes, useParams } from 'react-router'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
@@ -21,6 +20,7 @@ import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
@@ -60,7 +60,7 @@ export const SidebarSurface = memo(function SidebarSurface({
 }) {
   const latestActions = useMemo(() => latestSidebarActions(actions), [actions])
 
-  const portal = usePortalRedesign()
+  const portal = usePortalShell()
   const Sidebar = portal ? PortalSidebar : ChatSidebar
 
   return <Sidebar currentView={currentView} {...latestActions} />
@@ -90,7 +90,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   commandCenterOpen: boolean
   onClose?: () => void
 }) {
-  const portal = usePortalRedesign()
+  const portal = usePortalShell()
   const { t } = useI18n()
   const advanced = useStore($showsAdvancedChrome)
   const activeConnectionId = useStore($activeConnectionId)

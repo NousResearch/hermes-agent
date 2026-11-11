@@ -1,7 +1,7 @@
 import type { DesktopTheme } from './types'
 
 // Portal /ds primitives and Figma Brand rev, adapted to readable desktop pairs.
-// Blue stays saturated on filled actions; dark-mode text uses a lighter blue.
+// Dark mode's primary is the lighter blue that reads as text on the navy canvas.
 export const portalTheme: DesktopTheme = {
   name: 'portal',
   label: 'Hermes Portal',
@@ -62,38 +62,12 @@ export const portalTheme: DesktopTheme = {
     lineHeight: '1.5',
     letterSpacing: '0'
   },
+  // Palette surfaces only; brand marks and the flat-overlay look belong to the redesigned shell
+  // (app/redesign/portal-colors.css), so they follow the shell rather than this skin.
   customCSS: `
     :root {
-      --portal-brand-blue: #0000f2;
-      --portal-brand-hover: #2020ff;
-      --portal-on-brand: #f2f2f2;
       --ui-bg-chrome: var(--theme-background-seed);
       --ui-bg-elevated: var(--theme-elevated-seed);
-    }
-
-    :is(
-      [data-slot="dropdown-menu-content"],
-      [data-slot="dropdown-menu-sub-content"],
-      [data-slot="context-menu-content"],
-      [data-slot="context-menu-sub-content"],
-      [data-slot="select-content"],
-      [data-slot="popover-content"]:not([data-variant="accent"]),
-      .hermes-floating-surface
-    ) {
-      --popover-surface: var(--ui-bg-elevated);
-      background-color: var(--ui-bg-elevated);
-      backdrop-filter: none;
-      box-shadow: none;
-    }
-
-    [data-slot="popover-arrow"],
-    [data-slot="dialog-overlay"] {
-      backdrop-filter: none;
-    }
-
-    [data-slot="dialog-content"] {
-      background-color: var(--ui-bg-elevated);
-      box-shadow: none;
     }
   `
 }

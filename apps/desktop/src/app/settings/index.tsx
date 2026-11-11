@@ -40,7 +40,7 @@ import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
@@ -162,7 +162,7 @@ function SettingsSearchPill() {
 }
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()

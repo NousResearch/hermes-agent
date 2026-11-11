@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { TerminalSlot } from './persistent'
 import { TerminalRail } from './rail'
@@ -15,7 +15,7 @@ import { $terminals } from './terminals'
  *  its close affordance; closing the last one hides the pane (reopen re-creates). */
 export function TerminalPaneChrome() {
   const terminals = useStore($terminals)
-  const redesigned = usePortalRedesign()
+  const redesigned = usePortalShell()
 
   return (
     <div className={cn('flex min-h-0 min-w-0 flex-1', redesigned && 'flex-col')}>

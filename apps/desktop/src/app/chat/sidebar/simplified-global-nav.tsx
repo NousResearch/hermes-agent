@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 import { useLocation } from 'react-router'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import figmaRobot from '@/assets/figma-agent-robot.svg'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -12,6 +11,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
+import { usePortalShell } from '@/store/shell-variant'
 
 import {
   appViewForPath,
@@ -30,7 +30,7 @@ import { useIaNavigationMetrics } from './use-ia-navigation-metrics'
 import { useSimplifiedPluginPages } from './use-simplified-plugin-pages'
 
 export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item: SidebarNavItem) => void; footer?: ReactNode }) {
-  const portal = usePortalRedesign()
+  const portal = usePortalShell()
   const { t } = useI18n()
   const { pathname, search } = useLocation()
   const sessionId = useStore($focusedStoredSessionId)

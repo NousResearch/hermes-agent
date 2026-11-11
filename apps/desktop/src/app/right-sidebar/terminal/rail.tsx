@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 
 import { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
@@ -17,6 +16,7 @@ import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connections'
 import { $bindings } from '@/store/keybinds'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { setTerminalTakeover } from '../store'
 
@@ -41,7 +41,7 @@ const RAIL_ACTION =
  *  terminal exists. Each square is a tab (name + hotkey on hover); close via the
  *  shell's `exit`, middle-click, or the context menu. */
 export function TerminalRail() {
-  const redesigned = usePortalRedesign()
+  const redesigned = usePortalShell()
   const { t } = useI18n()
   const terminals = useStore($terminals)
   const activeId = useStore($activeTerminalId)

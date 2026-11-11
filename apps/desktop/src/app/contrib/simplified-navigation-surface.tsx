@@ -4,7 +4,7 @@ import { useLocation } from 'react-router'
 
 import { $hiddenStripTabs, $hiddenTreePanes, setTreePaneHidden } from '@/components/pane-shell/tree/store'
 import { $focusedSessionIsTile } from '@/store/session-focus'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { SimplifiedGlobalNav } from '../chat/sidebar/simplified-global-nav'
 import { appViewForPath } from '../routes'
@@ -13,7 +13,7 @@ import { useTitlebarHeight } from '../shell/use-touch-titlebar'
 type Props = ComponentProps<typeof SimplifiedGlobalNav>
 
 export function SimplifiedNavigationSurface(props: Props) {
-  const enabled = useStore($simplifiedAgentMode)
+  const enabled = usePortalShell()
 
   return enabled ? <NavigationWithChatSidebar {...props} /> : null
 }

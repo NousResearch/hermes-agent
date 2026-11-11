@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { Select as SelectPrimitive } from 'radix-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -18,8 +18,7 @@ import { $activeGatewayProfile, $profileColors, $profiles } from '@/store/profil
 import { knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
-import { SIMPLIFIED_NEW_SESSION_EVENT } from '@/store/simplified-new-session'
+import { claimSimplifiedNewSession } from '@/store/simplified-new-session'
 
 import { tileOwnerRoute } from '../session-tile-owner'
 
@@ -107,21 +106,12 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
     }
   }
 
-  useEffect(() => {
-    const onRequest = (event: Event) => {
-      if (!$simplifiedAgentMode.get()) {
-        return
-      }
-
-      event.preventDefault()
-      recordIaAction('ia.new_session.command')
-      request()
-    }
-
-    window.addEventListener(SIMPLIFIED_NEW_SESSION_EVENT, onRequest)
-
-    return () => window.removeEventListener(SIMPLIFIED_NEW_SESSION_EVENT, onRequest)
+  const onCommand = useEffectEvent(() => {
+    recordIaAction('ia.new_session.command')
+    request()
   })
+
+  useEffect(() => claimSimplifiedNewSession(() => onCommand()), [])
 
   return (
     <div className="@container/new-session flex min-h-9.5 w-full items-stretch" data-slot="new-session-split" ref={splitButton}>

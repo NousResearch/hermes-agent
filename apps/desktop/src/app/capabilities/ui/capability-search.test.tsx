@@ -2,17 +2,17 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { CapabilitySearch } from './capability-search'
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 it.each([false, true])('keeps search, clear, and catalog actions independent (V2=%s)', enabled => {
-  $agentSidebarChoice.set(enabled)
+  $shellChoice.set(enabled)
   const install = vi.fn()
 
   function Search() {

@@ -1,5 +1,13 @@
 /* Figma uses distinct neutral agent/global surfaces; keep theme-aware foregrounds. */
-:root:has([data-portal-redesign='true']) {
+:root[data-shell='portal'] {
+  /* Brand marks belong to the shell, not the skin: every theme and mode fills actions and selection
+     with the same saturated blue and light ink. Thin rings, underlines and small blue text use
+     --portal-brand-ink, which lightens on dark canvases for contrast. */
+  --portal-brand-fill: #0000f2;
+  --portal-on-brand: #f2f2f2;
+  --portal-brand-ink: #0000f2;
+  --portal-spectrum-red: #aa1515;
+  --portal-spectrum-yellow: #ddd61c;
   --theme-fill-primary-accent-mix: 0%;
   --theme-fill-secondary-accent-mix: 0%;
   --theme-fill-tertiary-accent-mix: 0%;
@@ -20,46 +28,74 @@
   --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 62%, transparent);
   --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
   --sidebar-edge-border: var(--ui-stroke-quaternary);
-  --portal-selection-background: color-mix(in srgb, var(--portal-brand-blue) 10%, transparent);
+  --portal-selection-background: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
   --portal-neutral-selection-background: color-mix(in srgb, var(--ui-base) 5%, transparent);
   --portal-neutral-selection-stroke: color-mix(in srgb, var(--ui-base) 5%, transparent);
 }
 
-:root.dark:has([data-portal-redesign='true']) {
+:root.dark[data-shell='portal'] {
   --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 50%, transparent);
   --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 40%, transparent);
-  --portal-selection-background: color-mix(in srgb, var(--portal-brand-blue) 25%, transparent);
+  --portal-brand-ink: #8585ff;
+  --portal-selection-background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='global-nav'] button:not([aria-current]) {
+:root[data-shell='portal'] [data-slot='global-nav'] button:not([aria-current]) {
   background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
   color: var(--ui-text-quaternary);
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='global-nav'] button:not([aria-current]):hover {
+:root[data-shell='portal'] [data-slot='global-nav'] button:not([aria-current]):hover {
   background-color: var(--ui-bg-primary);
   color: var(--ui-text-secondary);
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='global-nav'] button[aria-current='page'] {
+:root[data-shell='portal'] [data-slot='global-nav'] button[aria-current='page'] {
   background-color: var(--portal-selection-background);
   color: var(--ui-text-primary);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='switch'] {
+:root[data-shell='portal'] [data-slot='switch'] {
   border-color: transparent;
   box-shadow: none;
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='switch'][data-state='unchecked'] {
+:root[data-shell='portal'] [data-slot='switch'][data-state='unchecked'] {
   background: color-mix(in srgb, var(--ui-base) 10%, transparent);
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='switch'][data-state='checked']:not(:disabled) {
-  background: var(--portal-brand-blue);
+:root[data-shell='portal'] [data-slot='switch'][data-state='checked']:not(:disabled) {
+  background: var(--portal-brand-fill);
 }
 
-:root:has([data-portal-redesign='true']) [data-slot='switch-thumb'][data-state='checked'] {
+:root[data-shell='portal'] [data-slot='switch-thumb'][data-state='checked'] {
   background: var(--portal-on-brand);
+}
+
+/* Flat floating surfaces: menus, popovers and dialogs sit on the theme's elevated fill without
+   shadow or backdrop blur. Body-portalled, so gated on the root alone. */
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content'],
+    [data-slot='popover-content']:not([data-variant='accent']),
+    .hermes-floating-surface
+  ) {
+  --popover-surface: var(--ui-bg-elevated);
+  background-color: var(--ui-bg-elevated);
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+:root[data-shell='portal'] :is([data-slot='popover-arrow'], [data-slot='dialog-overlay']) {
+  backdrop-filter: none;
+}
+
+:root[data-shell='portal'] [data-slot='dialog-content'] {
+  background-color: var(--ui-bg-elevated);
+  box-shadow: none;
 }

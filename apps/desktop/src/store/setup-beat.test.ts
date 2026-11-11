@@ -13,7 +13,7 @@ import {
 } from './parked-card-answers'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
 import { $setupBeatRequests, answerSetupBeat, clearSetupBeat, parkSetupBeat } from './setup-beat'
-import { $agentSidebarChoice } from './simplified-agent-mode'
+import { $shellChoice } from './shell-variant'
 
 function parkCard(requestId: string, open = true, beat: 'layout' | 'name' = 'name') {
   const respond = vi.fn()
@@ -43,7 +43,7 @@ function parkCard(requestId: string, open = true, beat: 'layout' | 'name' = 'nam
 }
 
 beforeEach(() => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   // A run is shown whenever its chat is named (startOnboarding).
   $onboardingPhase.set('shown')
   $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'rt-1', storedId: 'stored-1' })

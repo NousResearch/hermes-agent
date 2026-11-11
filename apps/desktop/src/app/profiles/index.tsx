@@ -15,7 +15,7 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -44,7 +44,7 @@ interface ProfilesViewProps {
 const AgentDirectory = lazy(async () => ({ default: (await import('../agent-settings/directory')).AgentDirectory }))
 
 export function ProfilesView({ onClose }: ProfilesViewProps) {
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
   const { search } = useLocation()
 
   return simplified && new URLSearchParams(search).get('manage') !== 'true' ? (

@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -30,6 +29,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { usePortalShell } from '@/store/shell-variant'
 import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
@@ -54,7 +54,7 @@ interface SessionsSettingsProps {
 
 export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
   useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
 
   if (subpage === 'default-directory') {
     return (
@@ -70,7 +70,7 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
 function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const ArchiveContainer = redesign ? 'details' : 'div'
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)

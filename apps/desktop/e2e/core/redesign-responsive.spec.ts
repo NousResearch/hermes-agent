@@ -39,7 +39,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
       await page.setViewportSize(viewport)
       await go('/')
       await expect(composer(page)).toBeVisible()
-      await expect(page.locator('[data-portal-redesign="true"]')).toBeVisible()
+      await expect(page.locator('html')).toHaveAttribute('data-shell', 'portal')
       const nav = page.getByRole('navigation', { name: 'Hermes', exact: true })
       await nav.getByRole('button', { name: 'Capabilities', exact: true }).tap()
       await expect(page).toHaveURL(/capabilities/)
@@ -68,8 +68,10 @@ test('redesigned web app stays usable on touch screens and restores the classic 
       await expect(toggle).toBeChecked()
       await toggle.tap()
       await expect(toggle).not.toBeChecked()
+      await expect(page.locator('html')).not.toHaveAttribute('data-shell', /.*/)
       await toggle.tap()
       await expect(toggle).toBeChecked()
+      await expect(page.locator('html')).toHaveAttribute('data-shell', 'portal')
       await go('/')
       await expect(composer(page)).toBeVisible()
       const consent = page.locator('[data-slot="composer-status-stack"]')
@@ -158,6 +160,10 @@ test('redesigned web app stays usable on touch screens and restores the classic 
 
     await page.getByRole('button', { name: 'New group chat', exact: true }).tap()
     await expect(page.getByRole('dialog')).toBeVisible()
+    // Body-portalled dialogs sit outside the shell and must still wear its rounder geometry.
+    await expect
+      .poll(() => page.getByRole('dialog').evaluate(dialog => getComputedStyle(dialog).getPropertyValue('--radius-scalar').trim()))
+      .toBe('0.6')
     await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).tap()
     await expect(page.getByRole('dialog')).not.toBeVisible()
     await page.getByRole('button', { name: 'Terminal', exact: true }).tap()

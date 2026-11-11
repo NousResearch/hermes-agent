@@ -1,13 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { type ReactElement, useEffect } from 'react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
 import { useI18n } from '@/i18n'
 import { RefreshCw } from '@/lib/icons'
 import { $cloudOwnsUpdates } from '@/store/cloud-updates'
 import { $connection } from '@/store/session'
+import { usePortalShell } from '@/store/shell-variant'
 import { $desktopVersion, checkBackendUpdates, refreshDesktopVersion } from '@/store/updates'
 
 import { SectionHeading, SettingsContent } from './primitives'
@@ -40,7 +40,7 @@ interface AppUpdatesSettingsProps {
 
 function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): ReactElement {
   const { t } = useI18n()
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const version = useStore($desktopVersion)
   const connection = useStore($connection)
   const remote = connection?.mode === 'remote'

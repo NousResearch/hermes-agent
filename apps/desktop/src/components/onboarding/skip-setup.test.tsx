@@ -6,7 +6,7 @@ import { $onboardingPhase } from '@/store/onboarding-phase'
 import { noteOnboardingEnded, startOnboarding } from '@/store/onboarding-run'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { OnboardingSkip } from './skip-setup'
 
@@ -26,7 +26,7 @@ async function onboardingChatOnScreen() {
 }
 
 beforeEach(() => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   // SAFETY: factsSource reads only `mode`.
   $connection.set({ mode: 'local' } as never)
   $onboardingPhase.set('idle')
@@ -34,7 +34,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
 })
 
 describe('Skip setup', () => {

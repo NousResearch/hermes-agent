@@ -49,8 +49,8 @@ async function importHost(webapp: boolean) {
     ])
 
   // Static imports would bind the pre-reset store, not this host's fresh module graph.
-  const { $agentSidebarChoice } = await import('@/store/simplified-agent-mode')
-  $agentSidebarChoice.set(false)
+  const { $shellChoice } = await import('@/store/shell-variant')
+  $shellChoice.set(false)
 
   return { $layoutTree, ChatSidebar, group, prefs, SidebarProvider, useStatusbarItems }
 }

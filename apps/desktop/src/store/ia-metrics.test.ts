@@ -17,7 +17,7 @@ import {
 } from './desktop-metrics'
 import { captureIaRecorder, recordIaAction } from './ia-metrics'
 import { IA_ACTION_IDS } from './ia-metrics-contract'
-import { $agentSidebarChoice } from './simplified-agent-mode'
+import { $shellChoice } from './shell-variant'
 
 function stored(): string {
   return Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '')
@@ -31,7 +31,7 @@ beforeEach(() => {
   resetDesktopMetricsForTests()
   $apiRequestScope.set({ connectionId: 'private-gateway', profile: 'private-profile' })
   bindDesktopMetrics(null, 'private-gateway|private-profile')
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
 })
 
 afterEach(() => {
@@ -47,7 +47,7 @@ it('collects only consenting v2 interactions and closed codes, never identity or
   recordIaAction('private-session-title' as Parameters<typeof recordIaAction>[0])
   expect(stored()).toContain('ia.rail.capabilities|click')
   expect(stored()).not.toMatch(/private-/)
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   recordIaAction('ia.rail.chat')
   expect(stored()).not.toContain('ia.rail.chat')
   setDesktopMetricsGate('off')

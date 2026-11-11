@@ -9,7 +9,7 @@ import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { $connection } from '@/store/session'
 import { $onboardingSettleFrom as $guideSettleFrom } from '@/store/setup-guide'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import type { LocalCatalogModel } from '@/types/hermes'
 
 import { OnboardingEnd } from './onboarding-end'
@@ -45,7 +45,7 @@ const LOCAL: HermesConnection = {
 }
 
 beforeEach(() => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   vi.useFakeTimers()
   // The quiet check: a focused, visible window with the boot onboarding check answered.
   vi.spyOn(window.document, 'hasFocus').mockReturnValue(true)
@@ -68,7 +68,7 @@ afterEach(() => {
 
 describe('OnboardingEnd', () => {
   it.each([false, true])('offers the local model once after settlement (redesign=%s)', async redesign => {
-    $agentSidebarChoice.set(redesign)
+    $shellChoice.set(redesign)
     const settled = redesign ? $guideSettleFrom : $onboardingSettleFrom
     render(<OnboardingEnd />)
 

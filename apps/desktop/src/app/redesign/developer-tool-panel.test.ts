@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest'
 import { DEFAULT_TREE } from '@/app/contrib/layout-presets'
 import { allPaneIds, findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $collapsedTreeSides, $hiddenTreePanes, $layoutTree, $narrowViewport, $userPlacedPanes, isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from './developer-tool-panel'
 
@@ -13,11 +13,11 @@ afterEach(() => {
   $hiddenTreePanes.set(new Set())
   $userPlacedPanes.set(new Set())
   $narrowViewport.set(false)
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 it('turns the legacy bottom-right tools into one side panel without losing chats or plugins', () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $layoutTree.set(split('row', [DEFAULT_TREE, group(['plugin:notes', 'session-tile:other'])]))
   const before = allPaneIds($layoutTree.get()!)
   prepareDeveloperToolPanel('terminal')
@@ -41,7 +41,7 @@ it('turns the legacy bottom-right tools into one side panel without losing chats
 })
 
 it('joins a browser to the existing panel without moving conversation tabs', () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $layoutTree.set(split('row', [DEFAULT_TREE, group(['preview-tile:browser', 'session-tile:other'])]))
   prepareDeveloperToolPanel('terminal')
   const panel = findGroupOfPane($layoutTree.get()!, 'terminal')!
@@ -59,7 +59,7 @@ it('joins a browser to the existing panel without moving conversation tabs', () 
 })
 
 it.each(['classic', 'narrow'])('keeps the %s layout unchanged', mode => {
-  $agentSidebarChoice.set(mode !== 'classic')
+  $shellChoice.set(mode !== 'classic')
   $narrowViewport.set(mode === 'narrow')
   $layoutTree.set(DEFAULT_TREE)
   prepareDeveloperToolPanel('terminal')

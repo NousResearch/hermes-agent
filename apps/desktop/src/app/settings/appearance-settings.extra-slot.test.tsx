@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registry } from '@/contrib/registry'
 import { $chatTextScale } from '@/store/chat-text-scale'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import { $tipsEnabled } from '@/store/tips'
 import { $toursEnabled } from '@/store/tours'
 import { modePref, ThemeProvider } from '@/themes/context'
@@ -17,7 +17,7 @@ import { AppearanceSettings } from './appearance-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 const disposers: Array<() => void> = []
-const initialChoice = $agentSidebarChoice.get()
+const initialChoice = $shellChoice.get()
 const initialScale = $chatTextScale.get()
 const initialTips = $tipsEnabled.get()
 const initialTours = $toursEnabled.get()
@@ -25,7 +25,7 @@ const profile = normalizeProfileKey($activeGatewayProfile.get())
 const initialMode = modePref.resolve(profile)
 
 beforeEach(() => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $chatTextScale.set(110)
   $tipsEnabled.set(true)
   $toursEnabled.set(true)
@@ -35,7 +35,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   disposers.splice(0).forEach(dispose => dispose())
-  $agentSidebarChoice.set(initialChoice)
+  $shellChoice.set(initialChoice)
   $chatTextScale.set(initialScale)
   $tipsEnabled.set(initialTips)
   $toursEnabled.set(initialTours)
@@ -131,7 +131,7 @@ describe('Appearance overview', () => {
     expect($chatTextScale.get()).toBe(175)
     unmount()
 
-    $agentSidebarChoice.set(false)
+    $shellChoice.set(false)
     const classic = renderPage('general')
     expect(classic.container.querySelector('[data-slot="appearance-overview"]')).toBeNull()
     expect(screen.getByRole('switch', { name: 'In-App Tips' })).toBeTruthy()

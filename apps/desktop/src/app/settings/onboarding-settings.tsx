@@ -1,13 +1,13 @@
 import { useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { $onboardingChatOpener, startOnboarding } from '@/store/onboarding-run'
 import { startOnboarding as startSetupGuide } from '@/store/setup-guide'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { ListRow } from './primitives'
 
@@ -15,7 +15,7 @@ import { ListRow } from './primitives'
 export function OnboardingSettings() {
   const { t } = useI18n()
   const copy = t.firstRun.rerun
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const { requestGateway } = useGatewayRequest()
   const [starting, setStarting] = useState(false)
 

@@ -8,7 +8,7 @@ import * as metrics from '@/store/ia-metrics'
 import * as profile from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import { requestSimplifiedNewSession } from '@/store/simplified-new-session'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -18,7 +18,7 @@ import { rankNewSessionAgents } from './simplified-new-session-model'
 beforeEach(() => {
   $selectedStoredSessionId.set(null)
   $sessionTiles.set([])
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $apiRequestScope.set({ connectionId: 'alpha', profile: 'research' })
   $connectionsRegistry.set(null)
   $fleetRoster.set(null)
@@ -35,7 +35,7 @@ afterEach(() => {
   $selectedStoredSessionId.set(null)
   $sessionTiles.set([])
   vi.restoreAllMocks()
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   $apiRequestScope.set({ connectionId: null, profile: null })
   profile.$activeGatewayProfile.set('default')
   profile.$profiles.set([])
@@ -98,10 +98,10 @@ it('claims the shortcut only while the toggle is on and the picker is mounted', 
   })
   expect(screen.queryByRole('listbox')).toBeNull()
   expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'research' })
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(requestSimplifiedNewSession()).toBe(false)
   view.unmount()
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   expect(requestSimplifiedNewSession()).toBe(false)
 })
 

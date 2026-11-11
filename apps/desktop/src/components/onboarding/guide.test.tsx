@@ -19,7 +19,7 @@ import {
   startOnboarding,
   suspendOnboarding
 } from '@/store/setup-guide'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 
 import { DesktopOnboardingOverlay } from '.'
@@ -74,7 +74,7 @@ beforeEach(() => {
   $guideRecovery.set(null)
   $guideSuspended.set(false)
   $setupGuidePhase.set('idle')
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $localModelsEnabled.set(true)
   setApiRequestConnection(null)
   setApiRequestProfile('default')
@@ -87,7 +87,7 @@ afterEach(() => {
   $setupGuidePhase.set('idle')
   $guideRecovery.set(null)
   $guideSuspended.set(false)
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   setComposerDraft('')
   mainComposerScope.$attachments.set([])
   $newChatProfile.set(null)
@@ -153,7 +153,7 @@ it('shows old-runtime upgrade instructions and retries setup without creating a 
 })
 
 it('keeps the classic manual local-model handoff free of the redesigned guide', async () => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   startManualOnboarding()
   render(<DesktopOnboardingOverlay enabled={false} profile="default" requestGateway={transport.request as never} />)
   fireEvent.click(await screen.findByRole('button', { name: /Run models locally/ }))
@@ -168,7 +168,7 @@ it('does not show late recovery after switching back to classic', async () => {
   const boot = decideOnboarding(transport.request as never, true)
   render(<DesktopOnboardingOverlay enabled={false} profile="default" requestGateway={transport.request as never} />)
   await act(async () => {
-    $agentSidebarChoice.set(false)
+    $shellChoice.set(false)
     reply.reject(new Error('sessionless: extra_forbidden'))
     await boot
   })

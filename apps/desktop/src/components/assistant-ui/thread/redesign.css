@@ -1,6 +1,6 @@
 /* Variation 1, Desktop 10 (147:7470): wide conversation, right-aligned
    content-sized prompts, and 661px left-aligned assistant prose. */
-[data-portal-redesign='true'] [data-slot='aui_thread-content'] {
+:root[data-shell='portal'] [data-slot='aui_thread-content'] {
   --conversation-text-base-size: 0.875rem;
   --conversation-base-line-height: 1.1875rem;
   --message-text-indent: 0px;
@@ -12,44 +12,44 @@
   padding-top: 1.25rem;
 }
 
-[data-portal-redesign='true'] [data-slot='aui_user-bubble-actions'] {
+:root[data-shell='portal'] [data-slot='aui_user-bubble-actions'] {
   width: fit-content;
   max-width: 100%;
   align-self: flex-end;
 }
 
-[data-portal-redesign='true'] [data-slot='aui_turn-pair'] {
+:root[data-shell='portal'] [data-slot='aui_turn-pair'] {
   gap: 2.5rem;
 }
 
-[data-portal-redesign='true'] [data-slot='aui_message-group'] {
+:root[data-shell='portal'] [data-slot='aui_message-group'] {
   padding-bottom: 2.5rem;
 }
 
 /* The existing hover actions reserve 32px; count that toward the turn gap. */
-[data-portal-redesign='true'] [data-slot='aui_message-group']:has([data-slot='aui_msg-actions']) {
+:root[data-shell='portal'] [data-slot='aui_message-group']:has([data-slot='aui_msg-actions']) {
   padding-bottom: 0.5rem;
 }
 
-[data-portal-redesign='true'] [data-slot='aui_user-message-root'] {
+:root[data-shell='portal'] [data-slot='aui_user-message-root'] {
   --human-msg-line-height: calc(17 / 14);
   padding-block: 0;
 }
 
-[data-portal-redesign='true'] [data-slot='aui_assistant-message-content'] {
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] {
   line-height: calc(19 / 14);
 }
 
-[data-portal-redesign='true'] [data-slot='aui_assistant-message-content'] > .aui-md {
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] > .aui-md {
   max-width: 41.3125rem;
   line-height: inherit;
 }
 
-[data-portal-redesign='true'] [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote) {
+:root[data-shell='portal'] [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote) {
   line-height: inherit;
 }
 
-[data-portal-redesign='true'] [data-slot='aui_user-bubble-actions'] [data-slot='timeline-timestamp'] {
+:root[data-shell='portal'] [data-slot='aui_user-bubble-actions'] [data-slot='timeline-timestamp'] {
   order: -1;
   margin-bottom: 0.5rem;
   padding: 0;
@@ -59,26 +59,26 @@
   color: color-mix(in srgb, var(--ui-base) 25%, transparent);
 }
 
-[data-portal-redesign='true'] [data-slot='aui_edit-composer-root'] .composer-human-message-container {
+:root[data-shell='portal'] [data-slot='aui_edit-composer-root'] .composer-human-message-container {
   max-width: 100%;
   align-self: flex-end;
 }
 
-[data-portal-redesign='true'] .composer-human-message {
+:root[data-shell='portal'] .composer-human-message {
   border-radius: 0.5rem;
   border-color: color-mix(in srgb, var(--ui-base) 30%, transparent);
   padding: calc(0.875rem - 1px) calc(1rem - 1px);
   line-height: var(--human-msg-line-height);
 }
 
-[data-portal-redesign='true'] .composer-human-message :has(> [data-slot='aui_user-message-text']) {
+:root[data-shell='portal'] .composer-human-message :has(> [data-slot='aui_user-message-text']) {
   min-height: 0;
 }
 
 /* Single-call runs have no aggregate header. Give their collapsed row the same
    frame; expanded payloads retain their existing controls and review surfaces. */
-[data-portal-redesign='true'] [data-slot='aui_thread-content'] [data-tool-summary],
-[data-portal-redesign='true'] [data-tool-count='1'] [data-tool-row]:not([data-tool-open]) {
+:root[data-shell='portal'] [data-slot='aui_thread-content'] [data-tool-summary],
+:root[data-shell='portal'] [data-tool-count='1'] [data-tool-row]:not([data-tool-open]) {
   --conversation-tool-font-size: calc(0.75rem * var(--chat-text-scale, 1));
   --conversation-line-height: calc(1.05rem * var(--chat-text-scale, 1));
   --disclosure-caret-rest: 0.6;
@@ -89,8 +89,8 @@
   opacity: 1;
 }
 
-[data-portal-redesign='true'] [data-tool-summary] > div > button,
-[data-portal-redesign='true'] [data-tool-count='1'] [data-tool-row]:not([data-tool-open]) > div > button {
+:root[data-shell='portal'] [data-tool-summary] > div > button,
+:root[data-shell='portal'] [data-tool-count='1'] [data-tool-row]:not([data-tool-open]) > div > button {
   flex: 1;
   max-width: none;
 }

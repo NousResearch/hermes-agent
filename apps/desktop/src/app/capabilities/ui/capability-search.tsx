@@ -1,11 +1,10 @@
 import './capability-search.css'
 
-import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { SearchField } from '@/components/ui/search-field'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 /** The one search field every Capabilities tab uses: the boxed SearchField
  *  with the tab's name as a scope badge and the tab's own actions (add, view
@@ -25,7 +24,7 @@ export function CapabilitySearch({
   scope: string
   value: string
 }) {
-  const redesigned = useStore($simplifiedAgentMode)
+  const redesigned = usePortalShell()
   const toolbarActions = actions ? (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end" data-catalog-actions>
       {actions}

@@ -3,13 +3,13 @@ import {
   $layoutTree, $narrowViewport, moveTreePane, moveTreePanes,
   setTreePaneHidden
 } from '@/components/pane-shell/tree/store'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $portalShell } from '@/store/shell-variant'
 
 const TOOLS = ['files', 'review', 'terminal']
 
 /** A deliberate tool reveal uses one side panel, retaining every pane and shell. */
 export function prepareDeveloperToolPanel(paneId: string): void {
-  if (!$simplifiedAgentMode.get() || $narrowViewport.get()) {return}
+  if (!$portalShell.get() || $narrowViewport.get()) {return}
   const tree = $layoutTree.get()
 
   if (!tree) {return}
@@ -35,7 +35,7 @@ export function prepareDeveloperToolPanel(paneId: string): void {
 
 /** Hide the panel, not a shell or a tab that would expose a sibling tool. */
 export function hideDeveloperToolPanel(paneId: string): boolean {
-  if (!$simplifiedAgentMode.get() || $narrowViewport.get()) {return false}
+  if (!$portalShell.get() || $narrowViewport.get()) {return false}
   const tree = $layoutTree.get()
   const panel = tree && findGroupOfPane(tree, paneId)
 

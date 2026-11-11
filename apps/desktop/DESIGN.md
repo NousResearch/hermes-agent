@@ -253,8 +253,21 @@ card fills remain subtle; custom theme choices and classic styling stay availabl
 
 The **Redesigned interface** preference gates the setup guide, catalog/agent
 controls, composer layout, machine menu, and hidden-agent presentation as well as
-the shell. Turning it off restores classic onboarding and all classic agent rows
-without migrating conversations or destroying the redesign's saved visibility.
+the shell. One seam owns it (`src/store/shell-variant.ts`): `usePortalShell()` /
+`$portalShell` say whether this window renders the redesign; `installShellAttribute()`
+(main.tsx, before first render) mirrors it to `<html data-shell="portal">` and follows
+every toggle (absent in classic). Every redesign selector is gated
+`:root[data-shell='portal'] …`; never gate on a mounted component
+(`:has(.portal-sidebar)`) or on a shell ancestor. The chromeless HUD and
+popped-out Browser windows stay classic in both modes. `$portalPreferred`, the
+window-independent preference, is only for behaviour every window must agree on
+(setup flow, metrics, session scope, the plugin SDK). Brand fills
+(`--portal-brand-fill`, `--portal-on-brand`) are the same in every theme and mode;
+thin rings and blue text use `--portal-brand-ink`, which lightens on dark. Flat
+menus, popovers and dialogs (no shadow or backdrop blur) are part of the redesign,
+not of the Hermes Portal theme, which carries palette and typography only.
+Turning it off restores classic onboarding and all classic agent rows without
+migrating conversations or destroying the redesign's saved visibility.
 Chat chrome leaves the keyboard tab order when covered by a route overlay, without
 remounting the draft-owning host. The session-search shortcut reopens and focuses
 the redesigned sidebar. Global settings keep seven primary destinations; extra
@@ -275,8 +288,8 @@ actions; enabled prompt timestamps sit above the bubble. Collapsed tool runs,
 including single-tool runs, use the dashed summary frame. The composer's static
 2px spectrum edge replaces animation; its native base text is 14px before the
 user's scale, retaining the browser minimum. Floating dialogs inherit redesigned padding, display typography, and
-brand-blue primary actions through root-scoped rules; their classic defaults
-remain unchanged. Route overlays and body-portalled dialogs are siblings of the
+brand-blue primary actions and the shell's corner radius through root-scoped
+rules; their classic defaults remain unchanged. Route overlays and body-portalled dialogs are siblings of the
 chat shell, so their redesign styles must not require the shell as an ancestor.
 
 Redesigned setup is a sessionless preferences/model guide. It resumes from

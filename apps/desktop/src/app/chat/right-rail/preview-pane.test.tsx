@@ -7,7 +7,7 @@ import { setTreePaneParked } from '@/components/pane-shell/tree/parked-panes'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { PreviewTilePane } from './preview'
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
@@ -56,7 +56,7 @@ describe('PreviewPane console state', () => {
     $rightRailActiveTabId.set(null)
     $connection.set(null)
     $selectedStoredSessionId.set(null)
-    $agentSidebarChoice.set(false)
+    $shellChoice.set(false)
     vi.unstubAllGlobals()
   })
 
@@ -135,7 +135,7 @@ describe('PreviewPane console state', () => {
 
   it.each([false, true])('keeps the browser iframe sandbox with V2=%s and gates its address bar', async simplified => {
     globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
-    $agentSidebarChoice.set(simplified)
+    $shellChoice.set(simplified)
 
     const target = {
       kind: 'url' as const,

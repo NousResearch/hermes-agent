@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ArtifactsView } from './index'
 
@@ -17,11 +17,11 @@ vi.mock('@/hermes', async () => ({
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 it.each([false, true])('keeps an indexed library recoverable after a search has no matches (V2=%s)', async enabled => {
-  $agentSidebarChoice.set(enabled)
+  $shellChoice.set(enabled)
   render(
     <MemoryRouter>
       <ArtifactsView />

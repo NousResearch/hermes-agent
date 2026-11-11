@@ -88,6 +88,7 @@ import {
 } from '@/store/session'
 import { decideOnboarding as decideSetupGuide } from '@/store/setup-guide'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
+import { usePortalShell } from '@/store/shell-variant'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -111,7 +112,6 @@ import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { PortalStatusMenu } from '../redesign/portal-status-menu'
-import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
@@ -223,7 +223,7 @@ function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): vo
 
 // Both modes own their decision promise; a live toggle re-reads without deleting a classic chat.
 function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResume, gatewayOpen: boolean): void {
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const lastMode = useRef<boolean | null>(null)
   // eslint-disable-next-line no-restricted-syntax -- previous processed mode detects transitions; never read as current state
   useEffect(() => {
@@ -1272,7 +1272,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     leftExtraCount,
     0,
     interfaceMode,
-    usePortalRedesign()
+    usePortalShell()
   )
 
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)

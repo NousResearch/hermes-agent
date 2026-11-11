@@ -24,7 +24,7 @@ import {
   saveGuideStep
 } from '@/store/setup-guide'
 import { answerSharedMetricsOffer, type SharedMetricsChoice, type SharedMetricsConsent } from '@/store/shared-metrics'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $portalPreferred } from '@/store/shell-variant'
 import { useTheme } from '@/themes/context'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -182,7 +182,7 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
       // Never provision over an already working provider, including a rerun.
       const current = await evaluateRuntimeReadiness(request)
 
-      if (!$simplifiedAgentMode.get()) {
+      if (!$portalPreferred.get()) {
         return
       }
 
@@ -196,7 +196,7 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
     act(async () => {
       const current = await evaluateRuntimeReadiness(request, { defaultReason: copy.providerNeeded })
 
-      if (!$simplifiedAgentMode.get()) {
+      if (!$portalPreferred.get()) {
         return
       }
       setRuntime(current)

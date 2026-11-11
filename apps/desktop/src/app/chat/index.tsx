@@ -5,7 +5,6 @@ import type * as React from 'react'
 import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
@@ -51,6 +50,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
@@ -526,7 +526,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const classicPrimary = !redesign && isPrimary && isMainWindow()
   const introHoldsThread = useStore($introHoldsThread) && classicPrimary
 

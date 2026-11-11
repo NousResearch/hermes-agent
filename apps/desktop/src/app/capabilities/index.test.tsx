@@ -69,7 +69,7 @@ vi.mock('react-router', async importOriginal => ({
 // component-tree transform is paid during collection, not billed against the
 // first test's testTimeout — same flake class as messaging/index.test.tsx.
 const { CapabilitiesView } = await import('./index')
-const { $agentSidebarChoice } = await import('@/store/simplified-agent-mode')
+const { $shellChoice } = await import('@/store/shell-variant')
 
 function toolset(overrides: Record<string, unknown> = {}) {
   return {
@@ -101,7 +101,7 @@ async function renderSkills(fixedProfile?: string, fixedConnection?: string) {
 }
 
 beforeEach(() => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $catalogCardView.set(true)
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
@@ -122,7 +122,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   vi.clearAllMocks()
   // Shared singleton client — drop cached skills/toolsets so each test refetches.
   queryClient.clear()
@@ -162,13 +162,13 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     'restores classic catalog switches and configuration without changing ownership (%s)',
     async profile => {
       await renderSkills(profile)
-      act(() => $agentSidebarChoice.set(false))
+      act(() => $shellChoice.set(false))
       const toggle = await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
       fireEvent.click(toggle)
       await waitFor(() => expect(setToolsetEnabled).toHaveBeenCalledWith('web', false, profile ?? 'default'))
       fireEvent.click(screen.getByRole('button', { name: 'Web Search' }))
       await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledWith('web', profile ?? 'default'))
-      act(() => $agentSidebarChoice.set(true))
+      act(() => $shellChoice.set(true))
 
       if (!profile) {
         expect(screen.queryByRole('switch')).toBeNull()
@@ -202,7 +202,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
   })
 
   it.each([false, true])('scopes Tools per profile (V2=%s)', async enabled => {
-    $agentSidebarChoice.set(enabled)
+    $shellChoice.set(enabled)
     // Two profiles → the "Configuring:" selector renders. Picking a non-active
     // profile must re-fetch toolsets scoped to THAT profile.
     // jsdom's scrollIntoView is missing/non-functional; Radix Select calls it
@@ -240,7 +240,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
   })
 
   it.each([false, true])('scopes Skills per profile (V2=%s)', async enabled => {
-    $agentSidebarChoice.set(enabled)
+    $shellChoice.set(enabled)
     // The selector is Capabilities-WIDE: picking a profile on the Skills tab
     // must refetch the skill list scoped to it, and route toggles there too.
     Element.prototype.scrollIntoView = vi.fn()

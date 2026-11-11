@@ -1,7 +1,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { isOnboardingChat, onboardingChatStore } from './onboarding-session'
-import { $simplifiedAgentMode } from './simplified-agent-mode'
+import { $portalPreferred } from './shell-variant'
 
 /** Answers a card parked on `sessionId` with composer text: null when no card of this kind takes it,
  *  else a promise of whether the answer reached the backend. */
@@ -25,7 +25,7 @@ export interface ParkedCardKind {
 const kinds = new Map<string, ParkedCardKind>()
 
 const kindsFor = (sessionId: string) => {
-  const onboarding = !$simplifiedAgentMode.get() && isOnboardingChat(sessionId)
+  const onboarding = !$portalPreferred.get() && isOnboardingChat(sessionId)
 
   return [...kinds.values()].filter(kind => onboarding || !kind.onboardingOnly)
 }
@@ -107,6 +107,6 @@ export function parkedCardWaiting(sessionId: string): boolean {
  *  answers only there; every other chat keeps its normal controls. */
 export const sessionOnboardingCardWaiting = (sessionId: null | string) =>
   computed(
-    [$revision, onboardingChatStore(sessionId), $simplifiedAgentMode],
+    [$revision, onboardingChatStore(sessionId), $portalPreferred],
     (_, onChat, redesign) => !redesign && onChat && parkedCardWaiting(sessionId ?? '')
   )

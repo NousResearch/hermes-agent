@@ -14,7 +14,6 @@
  * buttons, so a glyph here and a glyph on the strip are still the same button.
  */
 
-import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
@@ -26,7 +25,7 @@ import { hostHas } from '@/lib/host-capabilities'
 import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { PreviewVaultButton } from './preview-vault-picker'
@@ -106,7 +105,7 @@ export function normalizePreviewAddress(value: string): null | string {
 }
 
 export function PreviewBrowserToolbar(props: PreviewBrowserBarProps) {
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
   const nativeControls = hostHas('webviewPreview')
 
   return nativeControls || simplified ? <PreviewBrowserBar {...props} nativeControls={nativeControls} /> : null

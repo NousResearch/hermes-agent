@@ -4,13 +4,13 @@ import type { SidebarSessionsResponse } from '@/api/sessions'
 import { $desktopMetricsGate } from './desktop-metrics'
 import { captureIaRecorder } from './ia-metrics'
 import { sessionPinId } from './session'
-import { $simplifiedAgentMode } from './simplified-agent-mode'
+import { $portalPreferred } from './shell-variant'
 
 const bucket = (count: number) => (['zero', 'one', 'two', 'three', 'overflow'] as const)[Math.min(count, 4)]
 
 /** Pins are backfilled beyond page limits. Sample successful loads, never optimistic UI state. */
 export function captureIaPinCounts(requestedProfile: string): (page: SidebarSessionsResponse) => void {
-  if (!$simplifiedAgentMode.get() || $desktopMetricsGate.get() !== 'on') {
+  if (!$portalPreferred.get() || $desktopMetricsGate.get() !== 'on') {
     return () => undefined
   }
 

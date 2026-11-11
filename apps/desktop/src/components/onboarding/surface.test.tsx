@@ -7,7 +7,7 @@ import type * as HermesApi from '@/hermes'
 import { en } from '@/i18n/en'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 
@@ -48,12 +48,12 @@ afterEach(async () => {
   setTimeout(resolve, 0)
   await promise
   $desktopOnboarding.set(idle)
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   localStorage.clear()
 })
 
 it('bounds manual V2 setup, preserves key drafts on outside clicks, and returns focus on Escape', async () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $desktopOnboarding.set(idle)
   const closePage = vi.fn()
   render(
@@ -86,7 +86,7 @@ it('bounds manual V2 setup, preserves key drafts on outside clicks, and returns 
 })
 
 it('keeps classic manual setup and its existing close action', () => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   $desktopOnboarding.set({ ...idle, manual: true })
   render(<DesktopOnboardingOverlay enabled={false} profile="default" requestGateway={pendingGateway} />)
   expect(screen.queryByRole('dialog')).toBeNull()
@@ -97,7 +97,7 @@ it('keeps classic manual setup and its existing close action', () => {
 
 it('lets the nested model picker own Escape without closing provider setup', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $desktopOnboarding.set({
     ...idle,
     manual: true,
@@ -124,7 +124,7 @@ it('lets the nested model picker own Escape without closing provider setup', asy
 
 it('keeps V2 first-run setup as a page with the existing choose-later action', () => {
   markOnboardingDecided()
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $desktopOnboarding.set({ ...idle, configured: false })
   render(<DesktopOnboardingOverlay enabled profile="default" requestGateway={pendingGateway} />)
   expect(screen.queryByRole('dialog')).toBeNull()

@@ -3,13 +3,13 @@ import { useState } from 'react'
 import { afterEach, expect, it } from 'vitest'
 
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { PageSearchShell } from './page-search-shell'
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 function Page() {
@@ -35,21 +35,21 @@ function Page() {
 }
 
 it('keeps search and tab selection when switching between V2 and classic headers', () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   render(<Page />)
   expect(screen.getByRole('heading', { level: 1, name: 'Capabilities' })).toBeTruthy()
   fireEvent.change(screen.getByPlaceholderText('Search capabilities'), { target: { value: 'calendar' } })
   fireEvent.click(screen.getByRole('button', { name: 'Plugins' }))
   expect(screen.getByRole('status').textContent).toBe('plugins: calendar')
 
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(screen.queryByRole('heading')).toBeNull()
   expect(screen.getByRole('status').textContent).toBe('plugins: calendar')
   expect(screen.getByPlaceholderText<HTMLInputElement>('Search capabilities').value).toBe('calendar')
 })
 
 it('keeps embedded surfaces compact and names an empty full-page destination', () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   const { rerender } = render(<PageSearchShell searchHidden>Embedded capabilities</PageSearchShell>)
   expect(screen.queryByRole('heading')).toBeNull()
   rerender(
@@ -76,7 +76,7 @@ it('returns focus to a V2 page action after closing its task dialog', async () =
       </PageSearchShell>
     )
   }
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   render(<SettingsPage />)
   const opener = screen.getByRole('button', { name: 'Configure' })
   opener.focus()

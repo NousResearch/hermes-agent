@@ -6,7 +6,6 @@ import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { ComposerSurfaceBacking } from '@/app/redesign/composer-surface-backing'
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
@@ -29,6 +28,7 @@ import { $hudMode } from '@/store/hud'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { $gatewayState } from '@/store/session'
+import { usePortalShell } from '@/store/shell-variant'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
@@ -147,8 +147,7 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
-  const portalRedesign = usePortalRedesign()
-  const redesigned = portalRedesign && !hudMode
+  const redesigned = usePortalShell()
   const touchPointer = useStore($touchPointer)
   const tapFocus = useMemo(() => (touchPointer ? touchTapFocusHandlers() : undefined), [touchPointer])
   const hudWindowing = window.hermesDesktop?.hud?.windowing
@@ -204,7 +203,7 @@ export function ChatBar({
 
   const guidedChat = useSetupChatView()
   const onboardingSolo = useStore($chatOnboardingSolo)
-  const chatOnboardingSolo = !portalRedesign && onboardingSolo
+  const chatOnboardingSolo = !redesigned && onboardingSolo
 
   const composerTourMarker = useTourMarker('composer')
 
@@ -1102,7 +1101,7 @@ export function ChatBar({
       busy={busy}
       busyAction={busyAction}
       canSubmit={canSubmit}
-      cardWaiting={!portalRedesign && cardWaiting}
+      cardWaiting={!redesigned && cardWaiting}
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
@@ -1288,7 +1287,7 @@ export function ChatBar({
               request={requestBusyConfig}
               sessionKey={activeQueueSessionKey}
             />
-            {!portalRedesign && <OnboardingSkip sessionId={statusSessionId} />}
+            {!redesigned && <OnboardingSkip sessionId={statusSessionId} />}
           </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it
@@ -1422,7 +1421,7 @@ export function ChatBar({
                 data-slot="composer-surface"
                 ref={composerSurfaceRef}
               >
-                <ComposerSurfaceBacking guidedChat={guidedChat} hudMode={hudMode} />
+                <ComposerSurfaceBacking guidedChat={guidedChat} />
                 <ComposerCodingStatus
                   clearDraft={clearDraft}
                   collapsed={statusDrawerCollapsed}

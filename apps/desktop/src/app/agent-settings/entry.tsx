@@ -1,11 +1,10 @@
-import { useStore } from '@nanostores/react'
 import { lazy, Suspense, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { resolveOwnerNow } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
 import { $activeConnectionId } from '@/store/connections'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { SettingsView as ClassicSettingsView } from '../settings'
 import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from '../settings/config-draft'
@@ -17,7 +16,7 @@ const AgentSettingsView = lazy(async () => ({ default: (await import('./index'))
 
 /** An explicit agent route always opens the owner-pinned settings surface. */
 export function SettingsView(props: SettingsPageProps) {
-  const redesigned = useStore($simplifiedAgentMode)
+  const redesigned = usePortalShell()
   const { search } = useLocation()
   const params = new URLSearchParams(search)
   const profile = params.get('agentProfile')

@@ -53,8 +53,8 @@
 
 .appearance-mode-card:has(input:checked) {
   border-color: transparent;
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--portal-brand-blue) 38%, transparent);
-  background: color-mix(in srgb, var(--portal-brand-blue) 19%, transparent);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--portal-brand-ink) 38%, transparent);
+  background: color-mix(in srgb, var(--portal-brand-fill) 19%, transparent);
 }
 
 .appearance-mode-card:has(input:focus-visible) {
@@ -141,8 +141,8 @@
 }
 
 .appearance-reading-rows button[aria-pressed='true'] {
-  background: color-mix(in srgb, var(--portal-brand-blue) 25%, transparent);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
+  background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
 }
 
 .appearance-reading-rows > div > div > div:first-child > div:first-child {

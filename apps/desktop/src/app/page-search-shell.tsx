@@ -1,12 +1,11 @@
 import './page-search-shell.css'
 
-import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { SearchField } from '@/components/ui/search-field'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { cn } from '@/lib/utils'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 // Tabs are data, not nodes: the shell owns their presentation so every page
 // gets the same behavior — a centered TextTab row on wide viewports that
@@ -79,7 +78,7 @@ export function PageSearchShell({
   searchTrailingAction,
   ...props
 }: PageSearchShellProps) {
-  const redesigned = useStore($simplifiedAgentMode) && Boolean(pageTitle)
+  const redesigned = usePortalShell() && Boolean(pageTitle)
   const hasTabs = (tabs?.length ?? 0) > 0
 
   const search = !searchHidden && onSearchChange && (

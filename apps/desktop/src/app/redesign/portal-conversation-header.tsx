@@ -22,11 +22,10 @@ import {
   sessionMatchesStoredId
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
-
-import { usePortalRedesign } from './use-portal-redesign'
+import { usePortalShell } from '@/store/shell-variant'
 
 export function usePortalConversation(paneId: string) {
-  const portal = usePortalRedesign()
+  const portal = usePortalShell()
   const page = useStore($workspaceIsPage)
 
   return portal && isSessionStripPane(paneId) && (paneId !== 'workspace' || !page)

@@ -1,10 +1,9 @@
-import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ChevronRight } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { PAGE_INSET_X } from '../layout-constants'
 
@@ -26,7 +25,7 @@ export function OverlayBreadcrumbHeader({
   rootLabel,
   trailing
 }: OverlayBreadcrumbHeaderProps) {
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
 
   return (
     <header className={cn('shrink-0', simplified ? 'mb-6' : 'mb-3', PAGE_INSET_X)} data-slot="page-heading">

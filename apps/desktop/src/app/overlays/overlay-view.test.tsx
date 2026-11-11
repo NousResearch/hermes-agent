@@ -2,17 +2,17 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { OverlayView } from './overlay-view'
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 it('keeps full-page destinations open on background clicks and closes explicitly', () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   const close = vi.fn()
   const { container } = render(<OverlayView onClose={close}>Settings</OverlayView>)
   const surface = container.querySelector('[data-overlay-surface]')!
@@ -28,11 +28,11 @@ it('keeps full-page destinations open on background clicks and closes explicitly
 })
 
 it('restores backdrop dismissal when switching back to the classic layout', () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   const close = vi.fn()
   const { container } = render(<OverlayView onClose={close}>Settings</OverlayView>)
 
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(screen.queryByRole('button', { name: 'Back' })).toBeNull()
   expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
   fireEvent.click(container.querySelector('[data-overlay-surface]')!)
@@ -40,7 +40,7 @@ it('restores backdrop dismissal when switching back to the classic layout', () =
 })
 
 it('dismisses a nested dialog before the page and restores its trigger focus', async () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   const close = vi.fn()
   render(
     <OverlayView onClose={close}>

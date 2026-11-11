@@ -1,9 +1,8 @@
-import { useStore } from '@nanostores/react'
 
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { OverlayBreadcrumbHeader } from '../overlays/overlay-breadcrumb-header'
 import type { OverlayNavGroup } from '../overlays/overlay-split-layout'
@@ -21,7 +20,7 @@ interface CommandCenterHeaderProps {
 
 export function CommandCenterHeader({ group, onPeriodChange, onQueryChange, period, query }: CommandCenterHeaderProps) {
   const { t } = useI18n()
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
 
   return (
     <OverlayBreadcrumbHeader

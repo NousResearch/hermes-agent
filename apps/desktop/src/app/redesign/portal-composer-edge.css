@@ -9,7 +9,7 @@
   opacity: 0.8;
   background: linear-gradient(
     to right,
-    var(--portal-brand-blue),
+    var(--portal-brand-fill),
     var(--portal-spectrum-red) 84.135%,
     var(--portal-spectrum-yellow)
   );

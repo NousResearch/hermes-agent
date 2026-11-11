@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { RemoteSetupFields } from '@/components/remote-setup/fields'
 import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
@@ -25,6 +24,7 @@ import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Te
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
@@ -239,7 +239,7 @@ function useRegistryChanges(
  */
 export function ConnectionsRegistrySection() {
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const { t } = useI18n()
   const s = t.settings.connections
   const activeConnectionId = useStore($activeConnectionId)
@@ -981,7 +981,7 @@ function ConnectionLaunchPolicy({
   registry: DesktopConnectionsRegistry | null
 }) {
   const { t } = useI18n()
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const s = t.settings.connections
   // A registry reduced to local-only still needs its launch policy editable (#90174).
   if (loading || !registry) {

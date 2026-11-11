@@ -79,7 +79,7 @@ import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $portalPreferred } from '@/store/shell-variant'
 import { runGatewayRestart } from '@/store/system-actions'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -1558,7 +1558,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     completeFlow('command_palette')
     recordAction(item.action ?? 'other', 'palette')
 
-    if (!$simplifiedAgentMode.get()) {
+    if (!$portalPreferred.get()) {
       leaveIntro()
     }
 

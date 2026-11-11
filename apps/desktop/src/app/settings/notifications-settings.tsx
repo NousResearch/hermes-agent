@@ -3,7 +3,6 @@ import './notifications-settings.css'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect } from 'react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -28,6 +27,7 @@ import {
   setNativeNotifyKind
 } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
@@ -72,7 +72,7 @@ interface NotificationsSettingsProps {
 
 export function NotificationsSettings({ subpage }: NotificationsSettingsProps = {}) {
   const { t } = useI18n()
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const prefs = useStore($nativeNotifyPrefs)
   const muted = useStore($hapticsMuted)
   const completionSoundVariantId = useStore($completionSoundVariantId)

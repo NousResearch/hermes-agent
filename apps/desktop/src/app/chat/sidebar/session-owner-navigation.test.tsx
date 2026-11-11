@@ -12,7 +12,7 @@ import * as notifications from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId, $sessions, _resetSessionOwnerHintsForTests, mergeSessionPage } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
-import { setSimplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { setPortalPreferred } from '@/store/shell-variant'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { SidebarSessionRow } from './session-row'
@@ -25,7 +25,7 @@ const noop = () => {}
 const originalBridge = window.hermesDesktop
 
 function mountRow(redesign: boolean) {
-  setSimplifiedAgentMode(redesign)
+  setPortalPreferred(redesign)
 
   return render(
     <MemoryRouter><RootTooltipProvider>
@@ -58,7 +58,7 @@ afterEach(() => {
   noteActiveTreeGroup(null)
   window.hermesDesktop = originalBridge
   $apiRequestScope.set({ connectionId: null, profile: null })
-  setSimplifiedAgentMode(false)
+  setPortalPreferred(false)
   vi.restoreAllMocks()
 })
 

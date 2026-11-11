@@ -11,8 +11,8 @@ afterEach(() => {
 
 // Dynamic imports intentionally reload the renderer stores; static imports would retain the old launch.
 async function renderer(redesign = true) {
-  const { $agentSidebarChoice } = await import('./simplified-agent-mode')
-  $agentSidebarChoice.set(redesign)
+  const { $shellChoice } = await import('./shell-variant')
+  $shellChoice.set(redesign)
 
   return {
     guide: await import('./setup-guide'),

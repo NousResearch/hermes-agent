@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { createContext, type Dispatch, type SetStateAction, useContext, useLayoutEffect, useRef, useState } from 'react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -10,6 +9,7 @@ import { ErrorState } from '@/components/ui/error-state'
 import { getProfiles, getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { refreshFleetRoster } from '@/store/fleet-roster'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { CreateProfileDialog } from '../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../profiles/delete-profile-dialog'
@@ -160,7 +160,7 @@ export function AgentGeneralSettings({
 export function AgentInstructionsSettings({ owner }: { owner: AgentSettingsOwner }) {
   const { locale, t } = useI18n()
   const c = useAgentSettingsEditorCopy()
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const retainedDraft = useContext(AgentInstructionsDraftContext)
   const localDraft = useState(EMPTY_AGENT_INSTRUCTIONS_DRAFT)
   const [draft, setDraft] = retainedDraft ?? localDraft

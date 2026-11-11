@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { setOnboardingSurfaceActive } from './onboarding-presence'
-import { $simplifiedAgentMode } from './simplified-agent-mode'
+import { $portalPreferred } from './shell-variant'
 
 /**
  * The first-run intro as this window shows it, in memory only: whether it runs at all is the
@@ -27,6 +27,6 @@ export const $chatOnboardingSolo = atom(false)
 
 // While the intro runs, the provider picker, the free-tier ready screen and the tips wait for it.
 computed(
-  [$introView, $simplifiedAgentMode],
+  [$introView, $portalPreferred],
   (view, redesign) => !redesign && (view === 'starting' || view === 'intro')
 ).subscribe(active => setOnboardingSurfaceActive('intro', active))

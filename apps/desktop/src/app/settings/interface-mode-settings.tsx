@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { $desktopMetricsGate } from '@/store/desktop-metrics'
 import { $interfaceMode, INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
-import { $simplifiedAgentMode, setSimplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $portalPreferred, setPortalPreferred } from '@/store/shell-variant'
 
 import { ListRow, ToggleRow } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
@@ -21,7 +21,7 @@ export const InterfaceModeFeedbackContext = createContext<InterfaceModeFeedbackS
 export function InterfaceModeSettings() {
   const { t } = useI18n()
   const mode = useStore($interfaceMode)
-  const simplified = useStore($simplifiedAgentMode)
+  const preferred = useStore($portalPreferred)
   const ids = SETTING_IDS.appearance
   const metricsGate = useStore($desktopMetricsGate)
   const { setShowFeedback } = useContext(InterfaceModeFeedbackContext)!
@@ -29,13 +29,13 @@ export function InterfaceModeSettings() {
   return (
     <>
       <ToggleRow
-        checked={simplified}
+        checked={preferred}
         description={t.simplifiedAgents.description}
         id={settingElementId(ids.simplifiedAgents)}
         label={t.simplifiedAgents.title}
         onChange={enabled => {
-          setSimplifiedAgentMode(enabled)
-          setShowFeedback(simplified && !enabled && metricsGate === 'on')
+          setPortalPreferred(enabled)
+          setShowFeedback(preferred && !enabled && metricsGate === 'on')
         }}
       />
       <ListRow

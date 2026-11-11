@@ -23,11 +23,11 @@ it('renders the resolved browser binding in the first-run tip, tooltips and sett
   const { TIP_CATALOG } = await import('@/lib/tips/catalog')
   const { setBinding } = await import('@/store/keybinds')
   // resetModules must give this preference and the editor the same fresh store.
-  const { $agentSidebarChoice } = await import('@/store/simplified-agent-mode')
+  const { $shellChoice } = await import('@/store/shell-variant')
   const tip = TIP_CATALOG.find(entry => entry.id === 'new-session')!
   const anchor = window.document.createElement('button')
   window.document.body.append(anchor)
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
 
   const view = render(
     <I18nProvider configClient={null} initialLocale="en">

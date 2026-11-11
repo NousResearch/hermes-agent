@@ -6,7 +6,7 @@ import { $chatOnboardingSolo, $introStartExit, $introView } from '@/store/onboar
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { type OnboardingRequest, startOnboarding } from '@/store/onboarding-run'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { $introCopy } from './intro'
 import { firstRunIntro } from './kickoff'
@@ -32,7 +32,7 @@ const adopt = vi.fn(async (storedId: string) => {
 })
 
 beforeEach(() => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { chatOnboarding: { size } }
@@ -47,7 +47,7 @@ beforeEach(() => {
   adopt.mockClear()
 })
 
-afterEach(() => $agentSidebarChoice.set(true))
+afterEach(() => $shellChoice.set(true))
 
 describe('first-run kickoff', () => {
   it('lands on the chat onboarding.start returned and opens the intro over it', async () => {

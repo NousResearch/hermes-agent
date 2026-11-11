@@ -1,6 +1,5 @@
 import './panel.css'
 
-import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
@@ -11,7 +10,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { OVERLAY_TOP_CLEARANCE, OverlayView } from './overlay-view'
 
@@ -73,7 +72,7 @@ interface PanelHeaderProps {
 }
 
 export function PanelHeader({ actions, subtitle, title, simplifiedTitle, hideInClassic }: PanelHeaderProps) {
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
   const Heading = simplified ? 'h1' : 'h2'
 
   if (hideInClassic && !simplified) {return null}

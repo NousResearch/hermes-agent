@@ -10,7 +10,7 @@ import { $agentPlugins, $agentPluginsOwnerKey, $agentPluginsProfile, $agentPlugi
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection, $gatewayState } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { PageSearchShell } from '../../page-search-shell'
 import { parseCatalog } from '../catalog/catalog-data'
@@ -98,7 +98,7 @@ vi.mock('@/api/toolsets', async importOriginal => ({
 }))
 
 beforeEach(() => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $gatewayState.set('open')
   $pluginRecords.set({})
   $agentPlugins.set([])
@@ -119,7 +119,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   settleConfirm(false)
   $connection.set(null)
   queryClient.clear()
@@ -416,7 +416,7 @@ describe('PluginsTab', () => {
   it.each([false, true])(
     'only classic couples an agent plugin to its desktop half (redesigned=%s)',
     async redesigned => {
-      $agentSidebarChoice.set(redesigned)
+      $shellChoice.set(redesigned)
       publishPlugin(
         { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
         { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
@@ -560,7 +560,7 @@ describe('PluginsTab', () => {
   it.each([false, true])(
     'only classic couples the Desktop Kanban panel to agent tools (redesigned=%s)',
     async redesigned => {
-      $agentSidebarChoice.set(redesigned)
+      $shellChoice.set(redesigned)
       const status = 'disabled'
       $pluginDecisions.set({})
       publishPlugin(

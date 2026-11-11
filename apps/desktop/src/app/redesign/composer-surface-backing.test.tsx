@@ -1,7 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import { type ThemeContextValue, ThemeProvider, useTheme } from '@/themes/context'
 import { nousTheme } from '@/themes/presets'
 import { installUserTheme, removeUserTheme } from '@/themes/user-themes'
@@ -13,19 +13,26 @@ const customName = 'shell-integration-custom'
 afterEach(() => {
   cleanup()
   removeUserTheme(customName)
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   localStorage.clear()
 })
 
 it('keeps the normal shell across real light, dark and custom skins, with classic rollback', () => {
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   installUserTheme({ ...nousTheme, name: customName, label: 'Custom shell test' })
   let appearance!: ThemeContextValue
-  function Surface({ hudMode = false, guidedChat = false }) {
+
+  function Surface({ guidedChat = false }) {
     appearance = useTheme()
-    return <ComposerSurfaceBacking guidedChat={guidedChat} hudMode={hudMode} />
+
+    return <ComposerSurfaceBacking guidedChat={guidedChat} />
   }
-  const view = render(<ThemeProvider><Surface /></ThemeProvider>)
+
+  const view = render(
+    <ThemeProvider>
+      <Surface />
+    </ThemeProvider>
+  )
   const edge = () => view.container.querySelector('.portal-composer-edge')
 
   for (const skin of ['nous', 'portal', customName]) {
@@ -39,13 +46,16 @@ it('keeps the normal shell across real light, dark and custom skins, with classi
       expect(edge()?.getAttribute('aria-hidden')).toBe('true')
     }
   }
-  act(() => $agentSidebarChoice.set(false))
+
+  act(() => $shellChoice.set(false))
   expect(edge()).toBeNull()
   expect(appearance.themeName).toBe(customName)
-  act(() => $agentSidebarChoice.set(true))
+  act(() => $shellChoice.set(true))
   expect(edge()).not.toBeNull()
-  view.rerender(<ThemeProvider><Surface hudMode /></ThemeProvider>)
-  expect(edge()).toBeNull()
-  view.rerender(<ThemeProvider><Surface guidedChat /></ThemeProvider>)
+  view.rerender(
+    <ThemeProvider>
+      <Surface guidedChat />
+    </ThemeProvider>
+  )
   expect(edge()).toBeNull()
 })

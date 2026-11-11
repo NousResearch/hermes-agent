@@ -4,7 +4,6 @@ import type { ChangeEvent, ReactNode } from 'react'
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -33,6 +32,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { usePortalShell } from '@/store/shell-variant'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { useAgentSettingsEditorCopy } from '../agent-settings/settings-copy'
@@ -125,7 +125,7 @@ function useConfigSectionVisibility({
   hasOwner
 }: Pick<ConfigSettingsProps, 'activeSectionId' | 'agentModel' | 'subpage'> & { hasOwner: boolean }) {
   const includesSubpage = (...pages: string[]) => agentModel || subpage === undefined || pages.includes(subpage)
-  const portalSafety = usePortalRedesign() && activeSectionId === 'safety'
+  const portalSafety = usePortalShell() && activeSectionId === 'safety'
 
   return {
     showModelSettings: activeSectionId === 'model' && includesSubpage('main', 'auxiliary', 'moa'),
@@ -199,7 +199,7 @@ function ConfigSettingsInner({
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
   const owner = useSettingsOwner()
-  const compactAgent = usePortalRedesign() && agentLayout
+  const compactAgent = usePortalShell() && agentLayout
   const agentCopy = useAgentSettingsEditorCopy()
   const requestScope = owner ?? scopeProfile
   const c = t.settings.config

@@ -2,13 +2,13 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { Panel, PanelHeader, PanelListRow, PanelRowMenu } from './panel'
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 beforeAll(() => {
@@ -36,7 +36,7 @@ describe('PanelRowMenu', () => {
 })
 
 it('uses a default Portal page heading and preserves row selection when returning to classic', () => {
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
   const select = vi.fn()
   render(
     <Panel onClose={vi.fn()}>
@@ -50,7 +50,7 @@ it('uses a default Portal page heading and preserves row selection when returnin
   fireEvent.click(row)
   expect(select).toHaveBeenCalledOnce()
 
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(screen.getByRole('heading', { level: 2 })).toBeTruthy()
   expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Status report' }))
@@ -58,10 +58,10 @@ it('uses a default Portal page heading and preserves row selection when returnin
 })
 
 it('keeps the default Portal heading for an empty page without changing classic empty states', () => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   const { rerender } = render(<PanelHeader hideInClassic title="Agents" />)
   expect(screen.queryByRole('heading')).toBeNull()
-  act(() => $agentSidebarChoice.set(null))
+  act(() => $shellChoice.set(null))
   expect(screen.getByRole('heading', { level: 1, name: 'Agents' })).toBeTruthy()
   rerender(<PanelHeader hideInClassic={false} title="Agents" />)
   expect(screen.getAllByRole('heading')).toHaveLength(1)

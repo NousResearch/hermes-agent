@@ -10,7 +10,7 @@ import {
 } from '@/store/desktop-metrics'
 import { $fleetRoster } from '@/store/fleet-roster'
 import * as profile from '@/store/profile'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 import { requestSimplifiedNewSession } from '@/store/simplified-new-session'
 
 import type { AppView } from '../../routes'
@@ -30,7 +30,7 @@ function actions(): Record<string, number> {
 beforeEach(() => {
   window.localStorage.clear()
   resetDesktopMetricsForTests()
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   $apiRequestScope.set({ connectionId: null, profile: 'default' })
   bindDesktopMetrics(null, '|default')
   setDesktopMetricsGate('on')
@@ -43,7 +43,7 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
   vi.restoreAllMocks()
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   resetDesktopMetricsForTests()
 })
 

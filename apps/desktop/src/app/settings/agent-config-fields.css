@@ -32,7 +32,7 @@
 
 .agent-config-card [data-slot='segmented-control'] button[aria-pressed='true'] {
   background: var(--portal-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
 }
 
 .agent-config-advanced > summary {

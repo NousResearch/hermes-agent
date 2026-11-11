@@ -9,7 +9,7 @@ import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { notifyCronChanged, setChangeEventsAvailable } from '@/store/live-sync'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { CronView } from './index'
 
@@ -90,11 +90,11 @@ afterEach(() => {
   setCronFocusJobId(null)
   setChangeEventsAvailable(false)
   vi.clearAllMocks()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 it('returns keyboard focus after cancelling the page schedule editor', async () => {
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   await renderLoadedCron()
   const opener = screen.getByRole('button', { name: en.cron.newCron })
   opener.focus()

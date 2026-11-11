@@ -23,7 +23,7 @@ import { setSidebarOpen } from '@/store/layout'
 import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
 import { $paneStates, type PaneStateSnapshot } from '@/store/panes'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 // The demo is borrowed: nothing it changes is persisted as the user's layout.
 $chatOnboardingSolo.subscribe(solo => {
@@ -170,7 +170,7 @@ export function useOnboardingChatActive(): boolean {
  *  session ids are known; in `ended` or `off` the setup chat is a normal chat. */
 export function useSetupChatView(): boolean {
   const view = useSessionView()
-  const redesign = useStore($simplifiedAgentMode)
+  const redesign = usePortalShell()
   const solo = useStore($chatOnboardingSolo)
   const intro = useStore($introView) === 'intro'
   const runtimeId = useStore(view.$runtimeId)

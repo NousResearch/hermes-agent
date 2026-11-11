@@ -12,7 +12,7 @@ import type * as GatewayStore from '@/store/gateway'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $settingsScopeOverride } from '@/store/settings-scope'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { SettingsView } from './entry'
 
@@ -137,7 +137,7 @@ beforeEach(() => {
   $apiRequestScope.set({ connectionId: 'beta', profile: 'default' })
   $agentPlugins.set([])
   $agentPluginsStatus.set('idle')
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
 })
 afterEach(() => {
   cleanup()
@@ -145,7 +145,7 @@ afterEach(() => {
   window.hermesDesktop = originalDesktop
   $apiRequestScope.set({ profile: null, connectionId: null })
   $settingsScopeOverride.set(null)
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
 })
 
 function mount(path: string) {
@@ -184,7 +184,7 @@ it.each(['', '&connection=beta'])(
 
     expect(write.connectionId).toBe('beta')
     expect(write.profile).toBe('default')
-    act(() => $agentSidebarChoice.set(false))
+    act(() => $shellChoice.set(false))
     expect(await screen.findByLabelText(/Region/)).toBeTruthy()
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
       'beta',
@@ -194,20 +194,20 @@ it.each(['', '&connection=beta'])(
       undefined
     )
     expect(screen.queryByText('Owner instructions')).toBeNull()
-    act(() => $agentSidebarChoice.set(true))
+    act(() => $shellChoice.set(true))
     expect(await screen.findByText('Owner instructions')).toBeTruthy()
     act(() => $apiRequestScope.setKey('connectionId', 'alpha'))
     expect(await screen.findByRole('button', { name: 'Open agent' })).toBeTruthy()
     expect(screen.queryByText('Owner instructions')).toBeNull()
-    act(() => $agentSidebarChoice.set(false))
+    act(() => $shellChoice.set(false))
     expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
-    act(() => $agentSidebarChoice.set(true))
+    act(() => $shellChoice.set(true))
     expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
   }
 )
 
 it.each([false, true])('opens and saves the existing plugin route with redesign=%s', async redesigned => {
-  $agentSidebarChoice.set(redesigned)
+  $shellChoice.set(redesigned)
   mount(pluginSettingsRouteHref({ agent: plugin.key }, 'default'))
   const region = await screen.findByLabelText(/Region/)
 
@@ -256,11 +256,11 @@ it('keeps unsaved instructions on their owner across redesign and classic switch
   mount('/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:instructions')
   const editor = await screen.findByRole('textbox', { name: 'Instructions editor' })
   fireEvent.change(editor, { target: { value: 'Unsaved owner instructions' } })
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   expect(((await screen.findByRole('textbox', { name: 'Instructions editor' })) as HTMLTextAreaElement).value).toBe(
     'Unsaved owner instructions'
   )
-  act(() => $agentSidebarChoice.set(true))
+  act(() => $shellChoice.set(true))
   expect(((await screen.findByRole('textbox', { name: 'Instructions editor' })) as HTMLTextAreaElement).value).toBe(
     'Unsaved owner instructions'
   )
@@ -286,7 +286,7 @@ it('retains an in-flight instructions save across switching and clears only its 
   fireEvent.click(screen.getByRole('button', { name: en.profiles.saveSoul }))
   await waitFor(() => expect(api.mock.calls.filter(([request]) => request.method === 'PUT')).toHaveLength(1))
 
-  act(() => $agentSidebarChoice.set(false))
+  act(() => $shellChoice.set(false))
   const editor = await screen.findByRole('textbox', { name: 'Instructions editor' })
   expect((editor as HTMLTextAreaElement).disabled).toBe(true)
   const save = screen.getByRole('button', { name: en.profiles.saveSoul })
@@ -300,7 +300,7 @@ it('retains an in-flight instructions save across switching and clears only its 
     pending.resolve({ ok: true })
   })
   await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false))
-  act(() => $agentSidebarChoice.set(true))
+  act(() => $shellChoice.set(true))
   expect(((await screen.findByRole('textbox', { name: 'Instructions editor' })) as HTMLTextAreaElement).value).toBe(
     'Later instructions'
   )

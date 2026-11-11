@@ -16,16 +16,16 @@ import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { toggleReview } from '@/store/review'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from '../redesign/developer-tool-panel'
-import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 import { appViewForPath } from '../routes'
 import { useTitlebarHeight } from '../shell/use-touch-titlebar'
 
 /** Only presentation lives here; the existing pane owners handle reveal and focus. */
 export function DeveloperRail() {
-  const redesigned = usePortalRedesign()
+  const redesigned = usePortalShell()
   const advanced = useStore($showsAdvancedChrome)
   const focusedChat = useStore($focusedSessionIsTile)
   const { pathname } = useLocation()
@@ -87,7 +87,7 @@ function DeveloperTools() {
   return (
     <nav
       aria-label={t.rightSidebar.panelsAria}
-      className="relative z-40 mt-(--titlebar-height) flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) py-2"
+      className="relative z-40 mt-(--titlebar-height) flex w-[3.75rem] shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) py-2"
       data-slot="developer-rail"
       style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}
     >

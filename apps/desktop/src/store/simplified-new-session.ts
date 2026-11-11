@@ -1,10 +1,25 @@
-import { $simplifiedAgentMode } from './simplified-agent-mode'
+import { $portalShell } from './shell-variant'
 
-export const SIMPLIFIED_NEW_SESSION_EVENT = 'hermes:simplified-new-session'
+let claimant: (() => void) | null = null
 
-/** A mounted v2 sidebar claims the action; otherwise the existing path runs. */
+/** The mounted redesigned sidebar's picker claims the New session command; returns the release. */
+export function claimSimplifiedNewSession(handler: () => void): () => void {
+  claimant = handler
+
+  return () => {
+    if (claimant === handler) {
+      claimant = null
+    }
+  }
+}
+
+/** Runs the claimed picker when the portal shell has one mounted; false keeps the existing path. */
 export function requestSimplifiedNewSession(): boolean {
-  return (
-    $simplifiedAgentMode.get() && !window.dispatchEvent(new Event(SIMPLIFIED_NEW_SESSION_EVENT, { cancelable: true }))
-  )
+  if (!$portalShell.get() || !claimant) {
+    return false
+  }
+
+  claimant()
+
+  return true
 }

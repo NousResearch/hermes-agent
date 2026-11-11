@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useContext, useMemo, useState } from 'react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -32,6 +31,7 @@ import {
   resetAllBindings,
   resetBinding
 } from '@/store/keybinds'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
@@ -66,7 +66,7 @@ export function KeybindSettings({ subpage }: KeybindSettingsProps = {}) {
 
 function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean }) {
   const { t } = useI18n()
-  const redesign = usePortalRedesign()
+  const redesign = usePortalShell()
   const ShortcutContainer = redesign ? 'details' : 'div'
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const bindings = useStore($bindings)

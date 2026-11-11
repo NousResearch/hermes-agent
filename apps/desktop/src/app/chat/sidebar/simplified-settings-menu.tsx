@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
 
-import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -22,6 +21,7 @@ import { cn } from '@/lib/utils'
 import { recordIaAction } from '@/store/ia-metrics'
 import type { IA_ACTIONS } from '@/store/ia-metrics-contract'
 import { $interfaceMode, INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { COMMAND_CENTER_ROUTE, SETTINGS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
@@ -33,7 +33,7 @@ interface SimplifiedSettingsMenuProps {
 
 export function SimplifiedSettingsMenu({ active, onNavigate }: SimplifiedSettingsMenuProps) {
   const { t } = useI18n()
-  const portal = usePortalRedesign()
+  const portal = usePortalShell()
   const mode = useStore($interfaceMode)
   const n = t.settings.nav
   const s = t.settings.sections

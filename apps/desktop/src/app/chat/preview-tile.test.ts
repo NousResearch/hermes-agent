@@ -189,9 +189,9 @@ describe('preview tiles mirror the visible session tabs', () => {
   it('docks a redesigned browser into the prepared tool panel, including after a session switch', async () => {
     const { preview, session, tree, model } = await setup()
     const { registry } = await import('@/contrib/registry')
-    const { $agentSidebarChoice } = await import('@/store/simplified-agent-mode')
+    const { $shellChoice } = await import('@/store/shell-variant')
     const { prepareDeveloperToolPanel } = await import('../redesign/developer-tool-panel')
-    $agentSidebarChoice.set(true)
+    $shellChoice.set(true)
 
     for (const id of ['files', 'review', 'terminal']) {
       registry.register({ area: 'panes', id, data: { placement: 'right' }, render: () => null })

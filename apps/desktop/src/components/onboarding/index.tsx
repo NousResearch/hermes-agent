@@ -38,7 +38,7 @@ import {
 import { $setupGuidePhase } from '@/store/onboarding-phase'
 import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $guideRecovery, $guideSuspended, suspendOnboarding } from '@/store/setup-guide'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 import type { OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
@@ -214,7 +214,7 @@ export function DesktopOnboardingOverlay({
   const guidePhase = useStore($setupGuidePhase)
   const guideSuspended = useStore($guideSuspended)
   const guideRecovery = useStore($guideRecovery)
-  const redesign = useStore($simplifiedAgentMode)
+  const redesign = usePortalShell()
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   useStore($gateway)
@@ -550,7 +550,7 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
 
 function Header({ page }: { page: boolean }) {
   const { t } = useI18n()
-  const simplified = useStore($simplifiedAgentMode)
+  const simplified = usePortalShell()
   const Heading = simplified && page ? 'h1' : 'h2'
 
   return (

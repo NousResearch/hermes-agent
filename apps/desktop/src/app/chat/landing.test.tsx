@@ -1,17 +1,17 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { useChatLanding } from './landing'
 
 afterEach(() => {
   cleanup()
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 it('centers normal-shell drafts, preserving classic and onboarding', () => {
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
 
   const { result, rerender } = renderHook(
     ({ draft, onboarding, setup }) => useChatLanding(draft, onboarding, setup, 'friendly', 3),
@@ -19,7 +19,7 @@ it('centers normal-shell drafts, preserving classic and onboarding', () => {
   )
 
   expect(result.current.intro).toEqual({ personality: 'friendly', seed: 3 })
-  act(() => $agentSidebarChoice.set(true))
+  act(() => $shellChoice.set(true))
   expect(result.current).toEqual({ centered: true, intro: undefined })
   rerender({ draft: true, onboarding: true, setup: false })
   expect(result.current.centered).toBe(false)

@@ -38,7 +38,7 @@ import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onbo
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import { requestRoute } from '@/store/recovery-requests'
 import { setModelPickerOpen } from '@/store/session'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { $portalPreferred } from '@/store/shell-variant'
 import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
@@ -953,7 +953,7 @@ async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadin
   // Setup itself introduces the model. Completed/skipped guides must not reopen a second welcome overlay.
   afterOnboardingSurfaceClear(() => {
     if (
-      (!$simplifiedAgentMode.get() || !['done', 'skipped'].includes($setupGuidePhase.get())) &&
+      (!$portalPreferred.get() || !['done', 'skipped'].includes($setupGuidePhase.get())) &&
       freeTierReadyPending($freeTierStatus.get(), runtime.freeTier ?? null)
     ) {
       patch({ freeTierReady: true })

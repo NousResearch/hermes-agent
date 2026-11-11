@@ -1,11 +1,12 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ChatRoutesSurface } from './surfaces'
 import type { WiringActions } from './types'
@@ -23,7 +24,6 @@ vi.mock('../chat', () => ({
 }))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
 vi.mock('../chat/sidebar/portal/portal-sidebar', () => ({ PortalSidebar: () => null }))
-vi.mock('@/app/redesign/use-portal-redesign', () => ({ usePortalRedesign: () => false }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
 vi.mock('../shell/hooks/use-status-snapshot', () => ({ useStatusSnapshot: () => ({}) }))
 vi.mock('../shell/hooks/use-statusbar-items', () => ({
@@ -40,6 +40,10 @@ vi.mock('./latest-actions', () => ({ latestChatActions: () => ({}), latestSideba
 vi.mock('./panes', () => ({ setStatusbarItemGroup: vi.fn(), useStatusbarContributions: () => [] }))
 vi.mock('../shell/model-menu-panel', () => ({ ModelMenuPanel: () => null }))
 vi.mock('../shell/reasoning-menu-panel', () => ({ ReasoningMenuPanel: () => null }))
+
+// These routes are the classic shell's; the redesign has its own surface tests.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => $shellChoice.set(null))
 
 afterEach(() => {
   cleanup()

@@ -7,13 +7,14 @@ import { $workspaceIsPage } from '@/app/routes'
 import { group } from '@/components/pane-shell/tree/model'
 import { TreeGroup } from '@/components/pane-shell/tree/renderer/tree-group'
 import { registry } from '@/contrib/registry'
+import { $shellChoice } from '@/store/shell-variant'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
-import { usePortalRedesign } from './use-portal-redesign'
 
-vi.mock('./use-portal-redesign', () => ({ usePortalRedesign: vi.fn(() => true) }))
-
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $shellChoice.set(null)
+})
 
 it('replaces chat tabs without remounting drafts, preserves mixed tabs and minimized restore handles', () => {
   stubMenuDomApis()
@@ -75,13 +76,13 @@ it('replaces chat tabs without remounting drafts, preserves mixed tabs and minim
     expect((screen.getByRole('textbox', { name: 'Draft' }) as HTMLInputElement).value).toBe('Keep this draft')
     fireEvent.click(screen.getByRole('button', { name: 'Return to chat' }))
     expect(screen.getByRole('heading', { name: 'My chat' })).toBeTruthy()
-    vi.mocked(usePortalRedesign).mockReturnValue(false)
+    act(() => $shellChoice.set(false))
     view.rerender(host())
     expect(screen.getByRole('tab', { name: /My chat/ })).toBeTruthy()
     expect((screen.getByRole('textbox', { name: 'Draft' }) as HTMLInputElement).value).toBe('Keep this draft')
     expect(mounted).toHaveBeenCalledTimes(1)
     expect(unmounted).not.toHaveBeenCalled()
-    vi.mocked(usePortalRedesign).mockReturnValue(true)
+    act(() => $shellChoice.set(true))
     view.rerender(host({ ...node, panes: ['workspace', 'test-tool'] }))
     expect(screen.getByRole('tab', { name: /Tool/ })).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'My chat' })).toBeTruthy()

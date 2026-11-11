@@ -214,7 +214,7 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentMan
     <header className="agent-management-header">
       <FigmaAgentIcon
         className="agent-management-avatar [&>img]:brightness-0 dark:[&>img]:brightness-100"
-        color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-blue)', 12)}
+        color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-fill)', 12)}
       />
       <div className="agent-management-identity">
         <h1>{label}</h1>

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import type { SessionInfo } from '@/hermes'
 import { $sessions } from '@/store/session'
-import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { CommandCenterView } from './index'
 
@@ -24,7 +24,7 @@ vi.mock('./maintenance', () => ({ MaintenancePanel: () => null }))
 afterEach(() => {
   cleanup()
   $sessions.set([])
-  $agentSidebarChoice.set(null)
+  $shellChoice.set(null)
 })
 
 const SESSION = {
@@ -51,7 +51,7 @@ describe('Command Center session open carries the row', () => {
   })
 
   it.each([false, true])('passes the clicked ROW to onOpenSession in simplified mode %s', async simplified => {
-    $agentSidebarChoice.set(simplified)
+    $shellChoice.set(simplified)
     $sessions.set([SESSION, { ...SESSION, id: 'newer', title: 'Recent notes', last_active: SESSION.last_active! + 100 }])
     const onOpenSession = vi.fn()
     render(

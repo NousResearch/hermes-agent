@@ -1,4 +1,3 @@
-import { useStore } from '@nanostores/react'
 import { type CSSProperties, type ReactNode, useEffect } from 'react'
 
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
@@ -8,7 +7,7 @@ import { translateNow } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { PageToolbar } from './page-toolbar'
 
@@ -46,7 +45,7 @@ export function OverlayView({
   rootClassName,
   titlebarActions
 }: OverlayViewProps) {
-  const page = useStore($simplifiedAgentMode)
+  const page = usePortalShell()
 
   const closeOverlay = () => {
     triggerHaptic('close')

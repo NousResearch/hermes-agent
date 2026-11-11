@@ -5,8 +5,8 @@ vi.mock('./onboarding', () => ({ clearFreeTierIntro: vi.fn(), dismissFirstRunOnb
 // A module reload is the launch boundary: only backend state may resume the guide.
 beforeEach(async () => {
   vi.resetModules()
-  const { $agentSidebarChoice } = await import('./simplified-agent-mode')
-  $agentSidebarChoice.set(true)
+  const { $shellChoice } = await import('./shell-variant')
+  $shellChoice.set(true)
 })
 
 it('resumes durable setup without inference, a session, or a turn; finish and rerun only write guide state', async () => {
@@ -39,12 +39,12 @@ it('resumes durable setup without inference, a session, or a turn; finish and re
   await run.startOnboarding(request as never)
   expect(state.run).toBe(true)
   expect(run.$guideStep.get()).toBe('preferences')
-  const { $agentSidebarChoice } = await import('./simplified-agent-mode')
+  const { $shellChoice } = await import('./shell-variant')
   const { onboardingSurfaceActive } = await import('./onboarding-presence')
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   expect(onboardingSurfaceActive()).toBe(false)
   state.step = 'model'
-  $agentSidebarChoice.set(true)
+  $shellChoice.set(true)
   await run.decideOnboarding(request as never, true)
   expect(run.$guideStep.get()).toBe('model')
   expect(request.mock.calls.every(([, params]) => params?.sessionless === true)).toBe(true)
@@ -87,8 +87,8 @@ it('keeps the guide open on a failed skip and ignores a stale peer read after ne
   const pendingStep = Promise.withResolvers<unknown>()
   request.mockImplementationOnce(() => pendingStep.promise)
   const stepWrite = run.saveGuideStep('preferences')
-  const { $agentSidebarChoice } = await import('./simplified-agent-mode')
-  $agentSidebarChoice.set(false)
+  const { $shellChoice } = await import('./shell-variant')
+  $shellChoice.set(false)
   pendingStep.resolve({ run: true, eligible: true, started: true, step: 'preferences' })
   await stepWrite
   expect(run.$guideStep.get()).toBe('model')
@@ -153,13 +153,13 @@ it.each([
 
 it('offers recovery for Run again and keeps classic mode free of guide recovery', async () => {
   const run = await import('./setup-guide')
-  const { $agentSidebarChoice } = await import('./simplified-agent-mode')
+  const { $shellChoice } = await import('./shell-variant')
   const request = vi.fn().mockRejectedValue(new Error('sessionless: extra_forbidden'))
   expect(await run.startOnboarding(request as never)).toBe(false)
   expect(run.$guideRecovery.get()?.upgradeRequired).toBe(true)
 
   run.$guideRecovery.set(null)
-  $agentSidebarChoice.set(false)
+  $shellChoice.set(false)
   await run.decideOnboarding(request as never)
   expect(run.$guideRecovery.get()).toBeNull()
 })

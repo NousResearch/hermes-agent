@@ -215,10 +215,15 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
         """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
         requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
+        block = self._hmwa_reasoning_block(agent_result, response, source, _intentional_silence)
+        return f"{block}\n\n{response}" if block else response
+
+    def _hmwa_reasoning_block(self, agent_result, response, source, _intentional_silence) -> str:
+        """The rendered reasoning block for this turn's reply, or "" when none is shown."""
         if source.platform == Platform.LOCAL and not _acp_launch(self, source):
             # Local viewers receive reasoning.delta through their event stream; projecting it into
             # the final response duplicates it and leaks messaging-platform formatting into Desktop.
-            return response
+            return ""
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
@@ -227,12 +232,13 @@ class GatewayTurnPersistenceMixin:
                 require_platform_override_for={Platform.MATTERMOST},
             )
         except Exception:
+            logger.debug("show_reasoning resolution failed; using the gateway default", exc_info=True)
             _show_reasoning_effective = (
                 False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
             )
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
-            return response
+            return ""
         from gateway.stream_consumer_fences import escape_code_fences_for_display
         # Collapse long reasoning to keep messages readable
         lines = last_reasoning.strip().splitlines()
@@ -247,15 +253,16 @@ class GatewayTurnPersistenceMixin:
                 _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
             )
         except Exception:
+            logger.debug("reasoning_style resolution failed; using code", exc_info=True)
             _reasoning_style = "code"
         _quote = self._REASONING_QUOTE_STYLES.get(_reasoning_style)
         if _quote:
             header_key, prefix, empty = _quote
             _quoted = "\n".join(f"{prefix}{ln}" if ln else empty for ln in display_reasoning.splitlines())
-            return f"{t(header_key)}\n{_quoted}\n\n{response}"
+            return f"{t(header_key)}\n{_quoted}"
         # Escape ``` inside reasoning so inner fences don't break the outer code block.
         display_reasoning = escape_code_fences_for_display(display_reasoning)
-        return t("gateway.reasoning.block", reasoning=display_reasoning, response=response)
+        return t("gateway.reasoning.block", reasoning=display_reasoning, response="").rstrip()
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
@@ -798,6 +805,14 @@ class GatewayTurnPersistenceMixin:
                     response, event, adapter, footer_line="" if _intentional_silence else _footer_line)
             if response and adapter and agent_result.get("delivery_uncertain"):
                 await self._ledger_uncertain_streamed_final(event, session_key, response, adapter)
+            # The stream showed only the answer: the reasoning block prepended to ``response`` for
+            # show_reasoning never reached the chat, so it follows as its own message (#7251).
+            reasoning_block = self._hmwa_reasoning_block(agent_result, response, source, _intentional_silence)
+            if reasoning_block and adapter:
+                try:
+                    await adapter.send(source.chat_id, reasoning_block, metadata=self._event_thread_metadata(event, source))
+                except Exception:
+                    logger.debug("trailing reasoning send failed", exc_info=True)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter and not _intentional_silence and not _footer_captioned:
                 try:

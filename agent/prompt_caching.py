@@ -239,6 +239,7 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
         # The skill split is the only decoration marking the FIRST part of a user message, so the
         # marked shape identifies it even after the prefix registry evicted the entry.
         first_part_marked = user_pair and "cache_control" in content[0] and "cache_control" not in content[1]
+        first_system_marked = role == "system" and bool(content) and isinstance(content[0], dict) and "cache_control" in content[0]
         if _has_part_marker(content):
             content = msg["content"] = [
                 {k: v for k, v in part.items() if k != "cache_control"}
@@ -254,9 +255,11 @@ def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[di
         # An UNMARKED split (outside the marker window) only the registry tells from a genuine
         # two-part user message.
         skill_split = first_part_marked or (user_pair and find_stable_prefix(joined) == content[0]["text"])
-        # A system message is built as one string on every surface; two or three plain text parts
-        # are the planner's own split (static / session rest / ephemeral tail).
-        if len(content) == 1 or (role == "system" and len(content) in (2, 3)) or skill_split:
+        # Two plain system parts are joined as on main. Three are joined only when they are the
+        # planner's own split (static / session rest / ephemeral tail), which always marks part 0:
+        # a context engine's own three-part system message keeps its boundaries.
+        planner_system_split = role == "system" and (len(content) == 2 or (len(content) == 3 and first_system_marked))
+        if len(content) == 1 or planner_system_split or skill_split:
             msg["content"] = joined
     return api_messages
 

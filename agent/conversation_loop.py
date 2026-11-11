@@ -1325,7 +1325,7 @@ def _redecorate_prompt_cache_for_provider(
             cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
-            session_system_prompt=getattr(agent, "_cached_system_prompt", None),
+            session_system_prompt=agent._cached_system_prompt,
             direct_native_tool_cache=getattr(
                 agent, "_direct_native_anthropic_tool_cache_capability", lambda: False
             )(),

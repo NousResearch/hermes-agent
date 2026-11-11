@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { readableInk } from './color'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { everforestTheme, midnightTheme } from './presets'
+import { forestTheme, midnightTheme } from './presets'
 import type { DesktopTheme } from './types'
 import { installUserTheme } from './user-themes'
 
@@ -147,7 +147,7 @@ describe('ThemeProvider ← local bridge fallback', () => {
     const previous = Object.getOwnPropertyDescriptor(window, 'hermesDesktop')
 
     try {
-      window.localStorage.setItem('hermes-desktop-theme-v2', 'everforest')
+      window.localStorage.setItem('hermes-desktop-theme-v2', 'forest')
       Object.defineProperty(window, 'hermesDesktop', {
         configurable: true,
         value: { localSkin: { profile: 'research', skin: bloomberg('#ff9f0a') } }
@@ -162,7 +162,7 @@ describe('ThemeProvider ← local bridge fallback', () => {
         </FreshThemeProvider>
       )
 
-      expect(window.document.documentElement.dataset.hermesTheme).toBe('everforest')
+      expect(window.document.documentElement.dataset.hermesTheme).toBe('forest')
     } finally {
       cleanup()
       window.localStorage.clear()
@@ -207,9 +207,9 @@ describe('ThemeProvider highlight preview', () => {
 
     const committed = ctx.themeName
 
-    act(() => ctx.previewTheme('everforest', 'dark'))
+    act(() => ctx.previewTheme('forest', 'dark'))
 
-    expect(cssVar('--theme-foreground')).toBe(everforestTheme.darkColors!.foreground)
+    expect(cssVar('--theme-foreground')).toBe(forestTheme.darkColors!.foreground)
     // The commit surface does not change. The context name and the stored
     // preference keep their values.
     expect(ctx.themeName).toBe(committed)
@@ -219,22 +219,22 @@ describe('ThemeProvider highlight preview', () => {
   it('clearThemePreview repaints the committed appearance', () => {
     renderProbe()
 
-    act(() => ctx.previewTheme('everforest', 'dark'))
-    expect(cssVar('--theme-foreground')).toBe(everforestTheme.darkColors!.foreground)
+    act(() => ctx.previewTheme('forest', 'dark'))
+    expect(cssVar('--theme-foreground')).toBe(forestTheme.darkColors!.foreground)
 
     act(() => ctx.clearThemePreview())
-    expect(cssVar('--theme-foreground')).not.toBe(everforestTheme.darkColors!.foreground)
+    expect(cssVar('--theme-foreground')).not.toBe(forestTheme.darkColors!.foreground)
   })
 
   it('a commit replaces the preview and persists', () => {
     renderProbe()
 
-    act(() => ctx.previewTheme('everforest', 'dark'))
-    act(() => ctx.setTheme('mono'))
+    act(() => ctx.previewTheme('forest', 'dark'))
+    act(() => ctx.setTheme('slate'))
 
-    expect(ctx.themeName).toBe('mono')
-    expect(skinPref.resolve('default')).toBe('mono')
-    expect(cssVar('--theme-foreground')).not.toBe(everforestTheme.darkColors!.foreground)
+    expect(ctx.themeName).toBe('slate')
+    expect(skinPref.resolve('default')).toBe('slate')
+    expect(cssVar('--theme-foreground')).not.toBe(forestTheme.darkColors!.foreground)
   })
 
   it('ignores a preview of an unknown theme', () => {
@@ -317,7 +317,7 @@ describe('ThemeProvider customCSS injection', () => {
     act(() =>
       ingestBackendSkin(
         {
-          name: 'mono',
+          name: 'slate',
           colors: { background: '#ff00ff', ui_text: '#00ff00' },
           customCSS: '.status-bar { background: black; }'
         },
@@ -401,7 +401,7 @@ describe('ThemeProvider theme typography (#41766)', () => {
 
     // Built-ins carry no size/leading/tracking opinion — the inline values must
     // go away so :root's own declarations apply again.
-    act(() => ctx!.setTheme('mono'))
+    act(() => ctx!.setTheme('slate'))
 
     expect(cssVar('--dt-base-size')).toBe('')
     expect(cssVar('--dt-line-height')).toBe('')

@@ -6,7 +6,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $accentOverride, setAccentOverride } from './accent-override'
 import { skinPref, ThemeProvider, useTheme } from './context'
 import { persistAccent } from './persist-accent'
-import { nousTheme } from './presets'
+import { unitalkTheme } from './presets'
 import type { DesktopTheme } from './types'
 import { $userThemes, installUserTheme, resolveTheme } from './user-themes'
 
@@ -43,7 +43,7 @@ describe('persistAccent', () => {
     })
     const saved = theme.themeName
 
-    expect(saved).not.toBe(nousTheme.name)
+    expect(saved).not.toBe(unitalkTheme.name)
     expect(skinPref.resolve('default')).toBe(saved)
     expect($accentOverride.get()).toBeNull()
 
@@ -51,18 +51,18 @@ describe('persistAccent', () => {
     expect(theme.themeName).toBe(saved)
 
     act(() => persistAccent(null))
-    expect(theme.themeName).toBe(nousTheme.name)
-    expect(skinPref.resolve('default')).toBe(nousTheme.name)
+    expect(theme.themeName).toBe(unitalkTheme.name)
+    expect(skinPref.resolve('default')).toBe(unitalkTheme.name)
   })
 
   it('retints the active theme, keeping its own colours and CSS, exactly as the preview painted it', () => {
     const ember: DesktopTheme = {
-      ...nousTheme,
+      ...unitalkTheme,
       name: 'my-campfire',
       label: 'My campfire',
       description: 'A custom skin',
-      colors: { ...nousTheme.colors, background: '#fff4e8', foreground: '#2b1a0e', card: '#fffaf3', border: '#e8cfb5' },
-      darkColors: { ...nousTheme.darkColors!, background: '#1c120b', foreground: '#f5e6d6', card: '#24170e' },
+      colors: { ...unitalkTheme.colors, background: '#fff4e8', foreground: '#2b1a0e', card: '#fffaf3', border: '#e8cfb5' },
+      darkColors: { ...unitalkTheme.darkColors!, background: '#1c120b', foreground: '#f5e6d6', card: '#24170e' },
       customCSS: '.campfire-only { letter-spacing: 0.02em; }'
     }
 
@@ -122,7 +122,7 @@ describe('persistAccent', () => {
 
     expect(skinPref.resolve('work')).not.toBe(violet)
     expect(skinPref.resolve('home')).toBe(violet)
-    expect(resolveTheme(violet)!.accentOf).toBe(nousTheme.name)
+    expect(resolveTheme(violet)!.accentOf).toBe(unitalkTheme.name)
     expect(resolveTheme(skinPref.resolve('work'))!.label).toContain('#e0218a')
     expect(resolveTheme(violet)!.label).toContain('#8a2be2')
   })

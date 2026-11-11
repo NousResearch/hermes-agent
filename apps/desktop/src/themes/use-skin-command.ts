@@ -4,14 +4,14 @@ import { useTheme } from './context'
 
 // Old names land on a shipped theme so muscle memory works. `gold`/`hermes`
 // only ever meant the classic gold look, so they reach Classic Unitalk; `default`
-// stays Nous because it is also the stock config value, which Desktop reads as
+// stays Unitalk because it is also the stock config value, which Desktop reads as
 // "the Desktop default" everywhere else (boot, backend sync, setTheme).
 const ALIASES: Record<string, string> = {
   ares: 'ember',
-  default: 'nous',
+  default: 'unitalk',
   gold: 'classic',
   hermes: 'classic',
-  'nous-light': 'nous'
+  'nous-light': 'unitalk'
 }
 
 export function useSkinCommand() {

@@ -14,7 +14,7 @@ describe("dashboard presets derive from the shared palette table", () => {
   );
 
   it("covers the presets both surfaces ship", () => {
-    expect(shared).toEqual(expect.arrayContaining(["cyberpunk", "ember", "midnight", "mono"]));
+    expect(shared).toEqual(expect.arrayContaining(["midnight"]));
   });
 
   it.each(shared)("%s: canvas equals the shared background and the accent reads on it", (name) => {

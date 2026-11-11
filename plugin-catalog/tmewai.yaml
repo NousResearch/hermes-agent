@@ -1,7 +1,6 @@
 name: tmewai
 repo: https://github.com/tonidan369-maker/hermes-tmewai
-sha: f5c1018023d334ac765495ba8959c823d356ff64
-subdir: tmewai
+sha: 5f025915c7a415bc684667550c147ca5e6b304f9
 description: >-
   Local, offline index for your own Facebook JSON export (Meta's
   your_activity_across_facebook.zip). Imports messages, comments (including

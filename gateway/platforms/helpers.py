@@ -514,6 +514,16 @@ def _gate_stt_scope(adapter: Any, source: Any) -> Any:
     return enter(source)
 
 
+def _sender_may_use_bot(adapter: Any, source: Any) -> bool:
+    """The runner's own allowlist verdict for *source*, checked BEFORE gate STT: a sender the turn
+    would refuse must not spend the operator's STT provider. True outside a runner."""
+    authorize = getattr(getattr(adapter, "gateway_runner", None), "_is_user_authorized_for_source", None)
+    if source is None or not callable(authorize):
+        return True
+    adapter._canonicalize(source)
+    return bool(authorize(source))
+
+
 async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = None, source: Any = None,
                                keep: frozenset = frozenset()) -> list[str]:
     """Transcribe a group voice note that only a spoken wake word could admit and match ``patterns``
@@ -529,7 +539,7 @@ async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = Non
         async with _gate_stt_scope(adapter, source):
             from tools.transcription_tools import is_stt_enabled
             enabled = stt_enabled_for_turn(getattr(adapter, "gateway_runner", None)) \
-                and await asyncio.to_thread(is_stt_enabled)
+                and _sender_may_use_bot(adapter, source) and await asyncio.to_thread(is_stt_enabled)
             for path in paths if enabled else ():
                 try:
                     results[path] = await transcribe_one_clip(path)

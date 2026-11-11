@@ -378,3 +378,22 @@ async def test_the_turn_notes_name_its_own_audio_never_the_gate_copy(tmp_path):
 
     assert calls[2:] == [str(turn[1])]
     assert "gate_" not in text and "turn_2.ogg" in text
+
+
+@pytest.mark.asyncio
+async def test_a_sender_the_runner_refuses_is_never_transcribed(tmp_path):
+    """An open group forwards members the allowlist refuses; the runner refuses them only after the
+    gate, so the gate asks the runner's own authorization first and never spends STT on them."""
+    import re
+    from gateway.platforms.helpers import spoken_mention_clips
+    clip = tmp_path / "gate.ogg"
+    clip.write_bytes(OGG)
+    asked = []
+    runner = SimpleNamespace(config=SimpleNamespace(stt_enabled=True),
+                             _is_user_authorized_for_source=lambda src: asked.append(src.user_id) or False)
+    adapter = SimpleNamespace(gateway_runner=runner, _canonicalize=lambda _src: None)
+    transcribe, calls = _stt("hermes, what is on today")
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], adapter=adapter,
+                                          source=SimpleNamespace(user_id="blocked")) == []
+    assert asked == ["blocked"] and calls == []

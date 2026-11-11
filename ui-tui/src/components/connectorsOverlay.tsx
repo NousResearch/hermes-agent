@@ -27,6 +27,7 @@ import {
 import type { GatewayClient } from '../gatewayClient.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -339,11 +340,11 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       return onClose()
     }
 
-    if (key.upArrow && selectedIdx > 0) {
+    if (isListUp(ch, key) && selectedIdx > 0) {
       return setIdx(selectedIdx - 1)
     }
 
-    if (key.downArrow && selectedIdx < view.rows.length - 1) {
+    if (isListDown(ch, key) && selectedIdx < view.rows.length - 1) {
       return setIdx(selectedIdx + 1)
     }
 
@@ -362,13 +363,13 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
     }
   }
 
-  const addAppKey = (current: Extract<Stage, { kind: 'addApp' }>, key: KeyLike & { return: boolean }) => {
+  const addAppKey = (ch: string, current: Extract<Stage, { kind: 'addApp' }>, key: KeyLike & { return: boolean }) => {
     if (key.escape) {
       return setStage({ kind: 'list' })
     }
 
-    if (key.upArrow || key.downArrow) {
-      const next = (current.idx + (key.upArrow ? -1 : 1) + current.apps.length) % current.apps.length
+    if (isListUp(ch, key) || isListDown(ch, key)) {
+      const next = (current.idx + (isListUp(ch, key) ? -1 : 1) + current.apps.length) % current.apps.length
 
       return setStage({ ...current, idx: next })
     }
@@ -413,7 +414,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
         return
 
       case 'addApp':
-        return addAppKey(stage, key)
+        return addAppKey(ch, stage, key)
 
       case 'link':
         return linkKey(stage, key)
@@ -578,6 +579,7 @@ interface KeyLike {
   downArrow: boolean
   escape: boolean
   meta: boolean
+  shift: boolean
   tab: boolean
   upArrow: boolean
 }

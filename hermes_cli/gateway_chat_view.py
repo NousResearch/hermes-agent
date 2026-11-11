@@ -4,6 +4,7 @@ from contextlib import suppress
 import logging
 import sys
 import uuid
+from typing import Any
 
 from hermes_cli.gateway_client import GatewayClientError
 
@@ -600,7 +601,8 @@ class GatewayChatView:
             welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
             print(get_active_skin().get_branding("welcome", welcome), flush=True)
             # The classic status bar's leading segments: model, then the attached session.
-            prompt = PromptSession(erase_when_done=True,
+            prompt_options = await _composer_editing_options()
+            prompt = PromptSession(**prompt_options, erase_when_done=True,
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None
@@ -630,6 +632,24 @@ class GatewayChatView:
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer
+
+
+async def _composer_editing_options():
+    """Read profile preferences off-loop without creating or migrating config."""
+    from hermes_cli.config import load_config_readonly
+    from prompt_toolkit.enums import EditingMode
+    config = await asyncio.to_thread(load_config_readonly)
+    display = config.get("display") if isinstance(config, dict) else None
+    vim_mode = bool(display.get("vim_mode", False)) if isinstance(display, dict) else False
+    options: dict[str, Any] = {"editing_mode": EditingMode.VI if vim_mode else EditingMode.EMACS}
+    if vim_mode:
+        try:
+            from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
+        except ImportError:
+            pass  # Older prompt_toolkit still supports Vi editing without modal cursors.
+        else:
+            options["cursor"] = ModalCursorShapeConfig()
+    return options
 
 
 def _oneshot_admission(receipt):

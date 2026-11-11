@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { clarifyAnswerText, clarifyRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
@@ -60,6 +61,10 @@ export function approvalRows(req: ApprovalReq): readonly ApprovalChoice[] {
 }
 
 type ApprovalKey = {
+  ctrl?: boolean
+  meta?: boolean
+  shift?: boolean
+  super?: boolean
   downArrow?: boolean
   escape?: boolean
   return?: boolean
@@ -105,11 +110,11 @@ export function approvalAction(
     return { kind: 'page' }
   }
 
-  if (key.upArrow && sel > 0) {
+  if (isListUp(ch, key) && sel > 0) {
     return { kind: 'move', delta: -1 }
   }
 
-  if (key.downArrow && sel < opts.length - 1) {
+  if (isListDown(ch, key) && sel < opts.length - 1) {
     return { kind: 'move', delta: 1 }
   }
 
@@ -329,11 +334,11 @@ export function ClarifyPrompt({ cols = 80, onCancel, onQuestionAnswer, req, t }:
       return
     }
 
-    if (key.upArrow && sel > 0) {
+    if (isListUp(ch, key) && sel > 0) {
       setSel(s => s - 1)
     }
 
-    if (key.downArrow && sel < activeChoices.length) {
+    if (isListDown(ch, key) && sel < activeChoices.length) {
       setSel(s => s + 1)
     }
 
@@ -453,7 +458,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   useInput((ch, key) => {
     const lower = ch.toLowerCase()
 
-    if (key.escape || (key.ctrl && lower === 'c') || lower === 'n') {
+    if (key.escape || (key.ctrl && lower === 'c') || (lower === 'n' && !key.ctrl && !key.meta)) {
       return onCancel()
     }
 
@@ -461,11 +466,11 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
       return onConfirm()
     }
 
-    if (key.upArrow) {
+    if (isListUp(ch, key)) {
       setSel(0)
     }
 
-    if (key.downArrow) {
+    if (isListDown(ch, key)) {
       setSel(1)
     }
 

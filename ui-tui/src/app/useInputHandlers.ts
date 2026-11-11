@@ -8,6 +8,7 @@ import { useEffect, useRef } from 'react'
 import { DASHBOARD_TUI_MODE, NATIVE_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { t } from '../i18n/runtime.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -369,7 +370,7 @@ const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) =>
 }
 
 /** Keys while the text pager (`overlay.pager`) is open: scroll, page, jump, close. */
-function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
+export function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
   if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
     return patchOverlayState({ pager: null })
   }
@@ -388,11 +389,11 @@ function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
       return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
     })
 
-  if (key.upArrow || ch === 'k') {
+  if (isListUp(ch, key) || ch === 'k') {
     return move(-1)
   }
 
-  if (key.downArrow || ch === 'j') {
+  if (isListDown(ch, key) || ch === 'j') {
     return move(1)
   }
 
@@ -783,10 +784,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {
+    if (cState.completions.length && cState.input && cState.historyIdx === null && (isListUp(ch, key) || isListDown(ch, key))) {
       const len = cState.completions.length
 
-      cActions.setCompIdx(i => (key.upArrow ? (i - 1 + len) % len : (i + 1) % len))
+      cActions.setCompIdx(i => (isListUp(ch, key) ? (i - 1 + len) % len : (i + 1) % len))
 
       return
     }

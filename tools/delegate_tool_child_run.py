@@ -807,12 +807,20 @@ class _ChildRun:
         if delta:
             _safe_progress(self.child_progress_cb, "subagent.text", preview=delta)
 
-    def attach_worktree(self, entry_dict: dict[str, Any]) -> dict[str, Any]:
-        """Inspect + prune the child worktree, reporting into the entry (no-op without isolation)."""
+    def attach_worktree(self, entry_dict: dict[str, Any], *, worker_running: bool = False) -> dict[str, Any]:
+        """Inspect + prune the child worktree, reporting into the entry (no-op without isolation).
+
+        ``worker_running``: a timed-out worker that has not unwound still works in the tree, so a probe would measure
+        a tree that is still being written and the prune (or archive-then-remove) would delete it under the worker.
+        The tree is kept and reported as not inspected instead."""
         info = self.worktree_info
         if info is None:
             return redact_child_result(entry_dict, getattr(self.child, "_delegate_output_schema", None), force=False)
         from tools import subagent_worktree
+        if worker_running:
+            entry_dict["worktree"] = subagent_worktree.unproven_worktree_payload(
+                info, "not inspected: the timed-out worker is still running in it")
+            return redact_child_result(entry_dict, getattr(self.child, "_delegate_output_schema", None), force=False)
         try:
             entry_dict["worktree"] = subagent_worktree.finalize_subagent_worktree(info)
         except Exception as e:
@@ -855,16 +863,17 @@ class _ChildRun:
 
     def finish_failed(
         self, entry: dict[str, Any], late_steer: Optional[str], *, preview: str, summary: str = "", status: Optional[str] = None,
+        worker_running: bool = False,
     ) -> dict[str, Any]:
         """Shared tail of every failure path: emit ``subagent.complete`` (``status`` defaults to the entry's), note
-        the steer text that won the race with the failure, report the worktree."""
+        the steer text that won the race with the failure, report the worktree (see ``attach_worktree``)."""
         _safe_progress(
             self.child_progress_cb, "subagent.complete", preview=redact_child_text(preview, force=False), status=status or entry["status"],
             duration_seconds=entry["duration_seconds"],
             summary=redact_child_text(summary, force=False) if summary is not None else None,
         )
         _append_missed_steer(entry, late_steer)
-        return self.attach_worktree(entry)
+        return self.attach_worktree(entry, worker_running=worker_running)
 
     def close_steering(self) -> Optional[str]:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
@@ -1051,8 +1060,11 @@ class _ChildRun:
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }
-        _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
+        _error_entry = self.finish_failed(
+            _error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc),
+            worker_running=close_deferred,
+        )
         if close_deferred:
             _defer_close_after_timeout(child, future)
         return None, _error_entry, close_deferred

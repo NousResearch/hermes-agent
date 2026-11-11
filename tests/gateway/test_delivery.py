@@ -1,5 +1,6 @@
 """Tests for the delivery routing module."""
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,9 @@ from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.session import SessionSource
 
+# Synthetic Signal v2 group id: 32 bytes, padded standard base64 (44 chars) holding both ``+`` and ``/``.
+_SIGNAL_GROUP_ID = "group:" + base64.b64encode(bytes(range(0xF8, 0x100)) * 4).decode()
+
 
 class TestParseTargetPlatformChat:
     def test_explicit_telegram_chat(self):
@@ -20,6 +24,19 @@ class TestParseTargetPlatformChat:
         assert target.chat_id == "12345"
         assert target.is_explicit is True
 
+    def test_signal_group_chat_id_with_base64_slash_preserved(self):
+        target = DeliveryTarget.parse(f"signal:{_SIGNAL_GROUP_ID}")
+        assert target.platform == Platform.SIGNAL
+        assert target.chat_id == _SIGNAL_GROUP_ID
+        assert target.thread_id is None
+        assert target.is_explicit is True
+
+    def test_signal_group_chat_id_with_thread_segment_preserved_separately(self):
+        target = DeliveryTarget.parse(f"signal:{_SIGNAL_GROUP_ID}:thread-42")
+        assert target.platform == Platform.SIGNAL
+        assert target.chat_id == _SIGNAL_GROUP_ID
+        assert target.thread_id == "thread-42"
+        assert target.is_explicit is True
 
     def test_origin_with_source(self):
         origin = SessionSource(platform=Platform.TELEGRAM, chat_id="789", thread_id="42")
@@ -35,6 +52,26 @@ class TestTargetToStringRoundtrip:
         origin = SessionSource(platform=Platform.TELEGRAM, chat_id="111", thread_id="42")
         target = DeliveryTarget.parse("origin", origin=origin)
         assert target.to_string() == "origin"
+
+    def test_signal_group_roundtrip_preserves_full_group_id(self):
+        original = f"signal:{_SIGNAL_GROUP_ID}"
+        target = DeliveryTarget.parse(original)
+        assert target.to_string() == original
+
+        reparsed = DeliveryTarget.parse(target.to_string())
+        assert reparsed.platform == Platform.SIGNAL
+        assert reparsed.chat_id == _SIGNAL_GROUP_ID
+        assert reparsed.thread_id is None
+
+    def test_signal_group_roundtrip_preserves_thread_segment(self):
+        original = f"signal:{_SIGNAL_GROUP_ID}:thread-42"
+        target = DeliveryTarget.parse(original)
+        assert target.to_string() == original
+
+        reparsed = DeliveryTarget.parse(target.to_string())
+        assert reparsed.platform == Platform.SIGNAL
+        assert reparsed.chat_id == _SIGNAL_GROUP_ID
+        assert reparsed.thread_id == "thread-42"
 
 
 class TestCaseSensitiveChatIdParsing:

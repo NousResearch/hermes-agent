@@ -135,6 +135,11 @@ class DeliveryTarget:
             platform = Platform(parts[0].lower())
         except ValueError:
             return cls(platform=Platform.LOCAL, unknown_platform=target)
+        if platform == Platform.SIGNAL and len(parts) > 2 and parts[1] == "group":
+            # Signal group chat ids are themselves ``group:<base64>`` (base64 never holds ``:``), so
+            # the colon after ``group`` belongs to the chat id; only a later one starts a thread id.
+            group_id, _, thread_id = parts[2].partition(":")
+            return cls(platform=platform, chat_id=f"group:{group_id}", thread_id=thread_id or None, is_explicit=True)
         return (cls(platform=platform, chat_id=parts[1], thread_id=parts[2] if len(parts) > 2 else None, is_explicit=True)
                 if len(parts) > 1 else cls(platform=platform))
 

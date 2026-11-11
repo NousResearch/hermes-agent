@@ -697,6 +697,17 @@ def _canonical_participant(source: SessionSource) -> Optional[str]:
     return participant_id
 
 
+def session_key_chat_id(parts: list[str]) -> str:
+    """The chat id in a split session key (``parts[4]``, after ns/platform/chat_type).
+
+    Signal group chat ids are ``group:<base64>`` (base64 never holds ``:``), so in
+    ``agent:<ns>:signal:group:group:<base64>[:<user>]`` the id spans two segments.
+    """
+    if len(parts) > 5 and parts[2] == "signal" and parts[4] == "group":
+        return f"group:{parts[5]}"
+    return parts[4]
+
+
 def build_session_key(
     source: SessionSource, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False, profile: Optional[str] = None,

@@ -8,6 +8,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 """
 
 import asyncio
+import base64
 import contextlib
 import queue
 import threading
@@ -591,6 +592,29 @@ def test_parse_session_key_with_extra_parts():
     """6th part in a group key may be a user_id, not a thread_id — omit it."""
     result = _parse_session_key("agent:main:discord:group:chan123:thread456")
     assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
+
+
+# Synthetic Signal v2 group id: 32 bytes, padded standard base64 holding both ``+`` and ``/``.
+_SIGNAL_GROUP_ID = "group:" + base64.b64encode(bytes(range(0xF8, 0x100)) * 4).decode()
+_SIGNAL_USER = "00000000-0000-4000-8000-000000000001"
+
+
+@pytest.mark.parametrize("per_user", [False, True])
+def test_parse_session_key_recovers_full_signal_group_id(per_user):
+    """Signal group chat ids are ``group:<base64>`` and span two key segments; recovery from the key
+    (notifications, local session recovery) must return the whole id, not the literal ``group``."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_session_key
+
+    source = SessionSource(platform=Platform.SIGNAL, chat_id=_SIGNAL_GROUP_ID, chat_type="group",
+                           user_id=_SIGNAL_USER)
+    result = _parse_session_key(build_session_key(source, group_sessions_per_user=per_user))
+    assert result == {"platform": "signal", "chat_type": "group", "chat_id": _SIGNAL_GROUP_ID}
+
+
+def test_parse_session_key_signal_dm_unchanged():
+    result = _parse_session_key(f"agent:main:signal:dm:{_SIGNAL_USER}")
+    assert result == {"platform": "signal", "chat_type": "dm", "chat_id": _SIGNAL_USER}
 
 
 def test_parse_session_key_named_profile():

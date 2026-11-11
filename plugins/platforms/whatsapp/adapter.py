@@ -266,6 +266,14 @@ def _owner_only_opener(path, flags):
     return fd
 
 
+def _tighten_bridge_log(path: Path, *, private: bool) -> None:
+    """bridge.log sits outside the private store, and an adopted bridge keeps appending to the one an
+    older version left at the umask default, so it is tightened before the reuse check."""
+    if private:
+        with suppress(OSError):
+            os.chmod(path, 0o600)
+
+
 def _open_bridge_log(path: Path, *, private: bool):
     """Long-lived append handle handed to the bridge as stdout/stderr; it carries the QR pairing payloads."""
     return open(path, "a", encoding="utf-8", opener=_owner_only_opener if private else None)
@@ -879,6 +887,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # The session holds the account's keys and bridge.log its QR pairing payloads (#80090).
             store_umask = ensure_private_store(self._session_path, home=self._profile_home)
             self._bridge_token = _load_or_create_bridge_token(self._session_path)
+            _tighten_bridge_log(self._session_path.parent / "bridge.log", private=store_umask >= 0)
             # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
             # its historical adopt-or-clear-the-port path. A bridge this version started dies with
             # its gateway (spawn_owned), so what is adopted here is one a pre-update gateway or

@@ -49,8 +49,7 @@ def _assert_private(session):
         assert _mode(session / name) == 0o600, name
 
 
-@pytest.mark.asyncio
-async def test_gateway_bridge_writes_session_and_log_owner_only(host, tmp_path, monkeypatch):
+def _connectable_adapter(host, tmp_path, monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
     from gateway.config import Platform
@@ -73,6 +72,12 @@ async def test_gateway_bridge_writes_session_and_log_owner_only(host, tmp_path, 
     adapter._reuse_running_bridge = AsyncMock(return_value=False)
     adapter._wait_bridge_port_free = AsyncMock(return_value=True)
     adapter._bridge_env = lambda: dict(os.environ)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_gateway_bridge_writes_session_and_log_owner_only(host, tmp_path, monkeypatch):
+    adapter = _connectable_adapter(host, tmp_path, monkeypatch)
 
     async def wait_for_exit():
         adapter._bridge_process.wait(timeout=30)
@@ -84,6 +89,23 @@ async def test_gateway_bridge_writes_session_and_log_owner_only(host, tmp_path, 
     _assert_private(adapter._session_path)
     log = adapter._session_path.parent / "bridge.log"
     assert "pairing-payload" in log.read_text(encoding="utf-8")
+    assert _mode(log) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_adopting_a_running_bridge_tightens_its_existing_log(host, tmp_path, monkeypatch):
+    """An adopted bridge keeps appending to the bridge.log an older version created 0644."""
+    from unittest.mock import AsyncMock
+
+    adapter = _connectable_adapter(host, tmp_path, monkeypatch)
+    adapter._reuse_running_bridge = AsyncMock(return_value=True)
+    log = adapter._session_path.parent / "bridge.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("QR: 2@old-pairing-payload\n", encoding="utf-8")
+    os.chmod(log, 0o644)
+
+    assert await adapter.connect() is True
+
     assert _mode(log) == 0o600
 
 

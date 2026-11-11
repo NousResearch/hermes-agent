@@ -548,9 +548,10 @@ PRIVATE_IP_HEADER = "X-Hermes-Private-Ip"
 
 
 def _stamp_private_ip(response: Optional[Response]) -> None:
-    """Name this machine's 6PN address on the response, when Fly gave it one. Fly 6PN addresses
-    are routable only inside the org's private network, where ``<app>.internal`` already
-    resolves to them, so naming one here exposes nothing a caller could not already reach."""
+    """Name this machine's 6PN address on the response, when Fly gave it one. A 6PN address is
+    routable only inside the org's private network, where ``<app>.internal`` already resolves to
+    it. It does tell any caller the org's network id and this machine's host id: accepted, since
+    the router's wake request is unauthenticated and nothing outside the network can use them."""
     private_ip = os.environ.get("FLY_PRIVATE_IP", "").strip()
     if response is not None and private_ip.lower().startswith("fdaa:"):
         response.headers[PRIVATE_IP_HEADER] = private_ip

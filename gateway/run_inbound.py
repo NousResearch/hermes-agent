@@ -1705,7 +1705,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # A preview here silently loses later list items and code; keep that context intact.
             reply_text = event.reply_to_text
             own = bool(getattr(event, "reply_to_is_own_message", False))
-            message_text = f"{reply_pointer(str(reply_text), own_message=own)}\n\n{message_text}"
+            replied_to = (source.platform, source.chat_id, event.reply_to_message_id)
+            message_text = f"{reply_pointer(str(reply_text), own_message=own, replied_to=replied_to)}\n\n{message_text}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

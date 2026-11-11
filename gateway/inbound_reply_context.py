@@ -8,12 +8,43 @@ about the report, and is framed as reference material the new message has to sel
 
 from __future__ import annotations
 
+from typing import Any, Optional
+
 # The ``cron.wrap_response`` header (cron/scheduler_delivery.py); unwrapped deliveries carry no marker.
 CRON_DELIVERY_PREFIX = "Cronjob Response: "
+# rich_sent_store tag on every message a wrapped delivery was split into: only the first chunk
+# carries the header, so a reply to a later chunk is recognised by its message id.
+_CRON_MARKER = "cron_delivery"
 
 
-def reply_pointer(reply_text: str, *, own_message: bool = False) -> str:
-    """The prefix line for a reply to *reply_text*; cron deliveries are framed as reference-only."""
+def _chat_key(platform: Any, chat_id: Any) -> str:
+    return f"{str(getattr(platform, 'value', platform)).lower()}:{chat_id}"
+
+
+def _field(result: Any, key: str) -> Any:
+    return result.get(key) if isinstance(result, dict) else getattr(result, key, None)
+
+
+def record_cron_delivery(platform: Any, chat_id: Any, text: str, send_result: Any) -> None:
+    """Tag every message id of a delivered wrapped cron report with its header line."""
+    if not text.startswith(CRON_DELIVERY_PREFIX):
+        return
+    raw = _field(send_result, "raw_response")
+    ids = [_field(send_result, "message_id"), *(_field(send_result, "continuation_message_ids") or ()),
+           *((raw.get("message_ids") if isinstance(raw, dict) else None) or ())]
+    from gateway import rich_sent_store
+    rich_sent_store.record_marker(_chat_key(platform, chat_id), ids, _CRON_MARKER, text.splitlines()[0])
+
+
+def reply_pointer(reply_text: str, *, own_message: bool = False, replied_to: Optional[tuple] = None) -> str:
+    """The prefix line for a reply to *reply_text*; cron deliveries are framed as reference-only.
+    ``replied_to`` = ``(platform, chat_id, message_id)`` finds a later chunk of a split delivery."""
+    if not reply_text.lstrip().startswith(CRON_DELIVERY_PREFIX) and replied_to and replied_to[2]:
+        from gateway import rich_sent_store
+        platform, chat_id, message_id = replied_to
+        header = rich_sent_store.lookup_marker(_chat_key(platform, chat_id), message_id, _CRON_MARKER)
+        if header:
+            reply_text = f"{header}\n…\n{reply_text}"
     if reply_text.lstrip().startswith(CRON_DELIVERY_PREFIX):
         # Same ``[Replying to…: "…"]`` shape as every pointer: agent/context_compressor.py's
         # _GATEWAY_REPLY_POINTER_RE strips it so the quote never counts as the user's request.

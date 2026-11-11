@@ -16,6 +16,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+from gateway.inbound_reply_context import record_cron_delivery
+
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -1316,6 +1318,7 @@ def _live_send_text(
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
+    record_cron_delivery(t.platform_name, t.chat_id, text_to_send, send_result)
     if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
         requested_thread_id = send_raw_response.get("requested_thread_id") or t.thread_id
         _note_target_error(
@@ -1456,8 +1459,6 @@ def _deliver_via_live_adapter(
                 unverified_targets=unverified_targets,
             )
 
-        # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation
-        # timeout (loop contended, text already assumed delivered) — record the drop instead.
         # Send extracted media files as native attachments via the live adapter, using the same
         # DM-topic-aware routing as the text send (#22773 — media previously used a bare thread_id and
         # landed in the General lane for private DM topics). Skip on an in-flight confirmation timeout: the
@@ -1477,7 +1478,6 @@ def _deliver_via_live_adapter(
                 delivery_errors)
 
         if adapter_ok:
-            # Log WHERE it went: a ghost delivery in the wrong lane is otherwise indistinguishable.
             logger.info(
                 # Log WHERE it went, not just that it went: a ghost delivery that landed in the wrong lane
                 # (General topic instead of the routed thread) is indistinguishable from a real one without
@@ -1539,6 +1539,7 @@ def _deliver_standalone(
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
+    record_cron_delivery(t.platform_name, t.chat_id, content.strip(), result)  # replies to ANY chunk framed
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,

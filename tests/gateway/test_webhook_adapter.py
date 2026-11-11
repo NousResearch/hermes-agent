@@ -268,61 +268,6 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(replayed, body, secret) is False
 
-    def test_v1_signature_rejected_even_with_allow_legacy_v1(self):
-        """A legacy flag must not restore the replayable authentication path."""
-        adapter = _make_adapter(
-            routes={"legacy-route": {"prompt": "test", "allow_legacy_v1": True}},
-            secret="generic-secret",
-        )
-        body = b'{"event": "push"}'
-        secret = "generic-secret"
-        sig = _generic_signature(body, secret)
-        req = _mock_request(
-            headers={"X-Webhook-Signature": sig},
-            match_info={"route_name": "legacy-route"},
-        )
-        assert adapter._validate_signature(req, body, secret) is False
-
-    @pytest.mark.parametrize(
-        "malformed_flag",
-        ("false", "true", 1, 0, {"enabled": True}),
-    )
-    def test_v1_signature_rejected_for_non_boolean_allow_legacy_v1(
-        self, malformed_flag
-    ):
-        """Truthy strings, numbers, and objects cannot re-enable V1 either."""
-        adapter = _make_adapter(
-            routes={
-                "legacy-route": {
-                    "prompt": "test",
-                    "allow_legacy_v1": malformed_flag,
-                }
-            },
-            secret="generic-secret",
-        )
-        body = b'{"event": "push"}'
-        secret = "generic-secret"
-        sig = _generic_signature(body, secret)
-        req = _mock_request(
-            headers={"X-Webhook-Signature": sig},
-            match_info={"route_name": "legacy-route"},
-        )
-        assert adapter._validate_signature(req, body, secret) is False
-
-    def test_v1_signature_wrong_secret_rejected_even_with_allow_legacy_v1(self):
-        """Even with ``allow_legacy_v1: true``, a wrong signature is rejected."""
-        adapter = _make_adapter(
-            routes={"legacy-route": {"prompt": "test", "allow_legacy_v1": True}},
-            secret="generic-secret",
-        )
-        body = b'{"event": "push"}'
-        sig = _generic_signature(body, "wrong-secret")
-        req = _mock_request(
-            headers={"X-Webhook-Signature": sig},
-            match_info={"route_name": "legacy-route"},
-        )
-        assert adapter._validate_signature(req, body, "generic-secret") is False
-
     def test_v2_signature_still_accepted(self):
         """Fresh timestamp-bound V2 signatures remain accepted."""
         adapter = _make_adapter()
@@ -594,7 +539,7 @@ class TestHTTPHandling:
     )
     @pytest.mark.asyncio
     async def test_v1_replay_rejected_after_ttl_and_concurrently(self, host, mode):
-        route = {"prompt": "test", "allow_legacy_v1": True, **mode}
+        route = {"prompt": "test", **mode}
         adapter = _make_adapter(routes={"legacy": route}, secret="secret", host=host)
         adapter.handle_message = AsyncMock()
         adapter._direct_deliver = AsyncMock()

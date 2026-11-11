@@ -33,12 +33,13 @@ def test_unknown_argument_reaches_the_handler_and_is_flagged(monkeypatch):
     assert received == call
     assert result["status"] == "ok" and "sesion_id" in result["_warning"]
 
-    # A third-party schema's property list is no promise about what its handler accepts.
+    # A third-party schema's property list is no promise about what its handler accepts. The
+    # handler is a ``tools`` one, as an MCP tool's is, so only the ``mcp-*`` toolset exempts it.
     registry.register(
-        name="mcp_probe_echo", toolset="mcp-probe", handler=lambda args, **kw: json.dumps(args),
-        schema={"name": "mcp_probe_echo", "description": "echo",
+        name="mcp_probe_handoff", toolset="mcp-probe", handler=registry.get_entry("process_manage").handler,
+        schema={"name": "mcp_probe_handoff", "description": "probe",
                 "parameters": {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}})
     try:
-        assert json.loads(handle_function_call("mcp_probe_echo", {"b": 1}, task_id="t")) == {"b": 1}
+        assert json.loads(handle_function_call("mcp_probe_handoff", dict(call), task_id="t")) == {"status": "ok"}
     finally:
-        registry.deregister("mcp_probe_echo")
+        registry.deregister("mcp_probe_handoff")

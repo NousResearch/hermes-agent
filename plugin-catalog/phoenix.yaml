@@ -1,11 +1,12 @@
-name: phoenix
-title: Phoenix — crash-proof execution journal & deterministic wind tunnel
+﻿name: phoenix
+title: "Phoenix - The Black Box Flight Recorder for Hermes Agents"
 repo: https://github.com/Ratz00007/phoenix
-sha: 75326501b1f95da6afd6b3d29afd9d592a561bd5
+sha: 458654b5b415e55ce61ff4a04d250455be3ab5e7
 description: >-
-  Transactional SQLite WAL crash-recovery journal, pre/post SHA-256 state fingerprinting,
-  live idempotency guard, and deterministic ReplayLab fault-injection wind tunnel with
-  Zeller's ddmin minimizer for Hermes agents. Zero LLM calls in recovery.
+  Transactional SQLite WAL flight recorder, pre/post SHA-256 state fingerprinting,
+  live idempotency guard, and deterministic fault-injection wind tunnel with
+  Zeller ddmin for Hermes agents. Guarantees exactly-once tool execution across crashes
+  with zero duplicate writes and zero LLM calls in recovery.
 maintainer: Ratz00007
 tier: community
 category: tools

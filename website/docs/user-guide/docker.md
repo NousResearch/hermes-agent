@@ -326,6 +326,81 @@ Skill CLIs that store credentials under `~` must be initialized against the subp
 Never run two Hermes **gateway** containers against the same data directory simultaneously — session files and memory stores are not designed for concurrent write access.
 :::
 
+## Gateway in Docker with the Docker terminal backend
+
+You can run the gateway itself inside a Docker container *and* point
+the terminal tool at the Docker backend (`terminal.backend: docker`).
+The sandbox containers are then created by the same daemon that hosts
+the gateway, and Hermes auto-bind-mounts its own state (cache dirs,
+attachments, skills, credential files, sandbox home/workspace) into
+each sandbox.
+
+The Docker daemon resolves bind-mount **sources** on the host, while
+a containerized gateway only knows its gateway-internal paths (for
+example `/opt/data`). Hermes detects this and translates every
+auto-generated mount source through the gateway's own mount table:
+
+- Containerization is detected via `/.dockerenv`, podman's
+  `/run/.containerenv`, or cgroup entries; the gateway's container id
+  comes from `/etc/hostname`, `/proc/self/cgroup`, or
+  `/proc/self/mountinfo`.
+- Its own bind mounts are read with `docker inspect` on the gateway
+  container — the Docker socket is already required to use the Docker
+  backend, so this adds no new security surface.
+- The resulting `{container_path: host_path}` mapping is applied
+  longest-prefix-first to every auto-generated source (credential
+  files, skill dirs, cache dirs, sandbox home/workspace, cwd binds).
+  Named volumes, tmpfs, and user-authored `docker_volumes` specs are
+  never rewritten — write host paths in `docker_volumes` yourself.
+- If detection or `docker inspect` fails, Hermes logs a WARNING and
+  keeps the previous behavior; nothing crashes.
+
+### Example
+
+Host layout `/home/you/dockerdata/hermes/data` mounted into the
+gateway as `/opt/data`:
+
+```sh
+docker run -d --name hermes \
+  -v /home/you/dockerdata/hermes/data:/opt/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  nousresearch/hermes-agent:latest
+```
+
+When `web_extract` writes `cache/web/page.md`, the gateway sees
+`/opt/data/cache/web/page.md`; the sandbox container receives
+`-v /home/you/dockerdata/hermes/data/cache/web:...:ro` and reads
+`/root/.hermes/cache/web/page.md` — the same bytes, correct view.
+Gateway logs show the translation:
+
+```text
+Docker: mounting cache dir
+/home/you/dockerdata/hermes/data/cache/web -> /root/.hermes/cache/web
+(gateway view: /opt/data/cache/web)
+```
+
+### Manual override: `terminal.docker_host_path_mapping`
+
+```yaml
+terminal:
+  # {gateway_path: host_path}. When present this mapping REPLACES
+  # auto-detection.
+  docker_host_path_mapping:
+    "/opt/data": "/home/you/dockerdata/hermes/data"
+```
+
+- A present mapping wins wholesale — use it when you do not want the
+  gateway to inspect its own container, or when id detection fails.
+- `docker_host_path_mapping: {}` disables the translation entirely
+  (explicit opt-out, see issue #92571).
+- Keys must be absolute container-side paths, values non-empty host
+  paths; invalid entries are skipped with a WARNING and a
+  non-mapping value falls back to auto-detection.
+
+Related issues: #50798 (empty sandbox bind mounts), #72389
+(`web_extract` footer paths unreadable from sandboxes), #92571
+(opt-out request).
+
 ## Multi-profile support
 
 Hermes supports [multiple profiles](../reference/profile-commands.md) — separate `~/.hermes/` subdirectories that let you run independent agents (different SOUL, skills, memory, sessions, credentials) from a single installation. **Inside the official Docker image, the s6 supervision tree treats each profile as a first-class supervised service**, so the recommended deployment is **one container hosting all profiles**.
@@ -1023,6 +1098,39 @@ The `--restart unless-stopped` flag handles most transient failures. If the gate
 
 ```sh
 docker restart hermes
+```
+
+### Sandbox cannot access cache files ("No such file or directory" under `/root/.hermes/cache/...`)
+
+A containerized gateway hands the daemon bind-mount sources from its
+own filesystem view; if the translation is not applied, sandbox
+mounts point at empty host directories. Check the gateway's own
+mounts and the translation log:
+
+```sh
+docker inspect hermes --format '{{json .Mounts}}'
+docker logs hermes 2>&1 | grep -i "gateway view"
+```
+
+The first command must show `/opt/data` as a bind-mount destination;
+the second lists the translated mount sources. If the bind is there
+but Hermes cannot map it, work through "Auto host mapping not
+working" below.
+
+### Auto host mapping not working
+
+Translation needs three things inside the gateway container: a
+containerization marker (`ls /.dockerenv`), a resolvable container id
+(the default hostname is the short container id), and a working
+`docker`/`podman` CLI with access to the daemon socket — the same
+socket the Docker backend already requires. On failure Hermes logs a
+`docker_host_mapping:` WARNING and leaves mounts unmapped. Fix by
+declaring the mapping by hand:
+
+```yaml
+terminal:
+  docker_host_path_mapping:
+    "/opt/data": "/absolute/host/path/to/hermes/data"
 ```
 
 ### Checking container health

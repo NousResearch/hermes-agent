@@ -10,13 +10,13 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.i18n import t
+from tools.file_operations_common import bounded_unified_diff
 from agent.redact import redact_sensitive_text, sanitize_command_for_display
 from agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
@@ -716,10 +716,7 @@ def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
         if before == after:
             continue
         display_path = _display_diff_path(path)
-        diff = "".join(unified_diff(
-            (before or "").splitlines(keepends=True), (after or "").splitlines(keepends=True),
-            fromfile=f"a/{display_path}", tofile=f"b/{display_path}",
-        ))
+        diff = bounded_unified_diff(before or "", after or "", f"a/{display_path}", f"b/{display_path}")
         if diff:
             chunks.append(diff if diff.endswith("\n") else diff + "\n")
     return "".join(chunks) or None

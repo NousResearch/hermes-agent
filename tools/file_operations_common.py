@@ -279,6 +279,97 @@ def _has_bom(text: Optional[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Bounded unified diff
+# ---------------------------------------------------------------------------
+
+# Port of MiniMax-AI/minimax-code#284.
+# difflib's matcher costs roughly (changed lines) x (lines between the first and last
+# change). A patch that touches every other line of a 20k-line file measured 10 s of
+# CPU after the file was already written. This cap admits a full rewrite of any file up
+# to ~4k lines and ~1-2 s of diff work on larger ones; past it the edit still lands and
+# the diff becomes a one-line notice.
+_MAX_DIFF_WORK = 40_000_000
+
+
+def _lis(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Longest chain of ``(i, j)`` pairs (already in ``i`` order) with strictly increasing ``j``."""
+    from bisect import bisect_left
+    tails: list[int] = []
+    tail_at: list[int] = []
+    prev = [-1] * len(pairs)
+    for n, (_i, j) in enumerate(pairs):
+        k = bisect_left(tails, j)
+        tails[k:k + 1], tail_at[k:k + 1] = [j], [n]
+        prev[n] = tail_at[k - 1] if k else -1
+    chain, n = [], tail_at[-1] if tail_at else -1
+    while n != -1:
+        chain.append(pairs[n])
+        n = prev[n]
+    return chain[::-1]
+
+
+def _pairs(old: list[str], new: list[str], *, unique: bool) -> list[tuple[int, int]]:
+    """Candidate matches in ``old`` order: lines unique on both sides, or (``unique=False``) the
+    k-th copy of each line in *old* paired with its k-th copy in *new*."""
+    from collections import Counter, defaultdict
+    if unique:
+        old_count, new_count = Counter(old), Counter(new)
+        at = {line: j for j, line in enumerate(new) if new_count[line] == 1}
+        return [(i, at[line]) for i, line in enumerate(old) if old_count[line] == 1 and line in at]
+    slots: dict[str, list[int]] = defaultdict(list)
+    for j, line in enumerate(new):
+        slots[line].append(j)
+    seen: dict[str, int] = defaultdict(int)
+    out = []
+    for i, line in enumerate(old):
+        k = seen[line]
+        seen[line] = k + 1
+        if k < len(slots.get(line, ())):
+            out.append((i, slots[line][k]))
+    return out
+
+
+def _diff_work_estimate(old: list[str], new: list[str]) -> tuple[int, int]:
+    """``(changed lines, span lines)`` after trimming the common head/tail, in O(n log n).
+
+    Matches are a real common subsequence, so ``changed`` never undercounts and a reordering counts
+    as change (sorting a 100k-line file costs difflib ~55 s with no line added). Lines unique on both
+    sides anchor the alignment (patience diff); between anchors, repeated lines pair k-th copy to
+    k-th copy, so a small insert among blank lines keeps its preview."""
+    limit = min(len(old), len(new))
+    head = 0
+    while head < limit and old[head] == new[head]:
+        head += 1
+    tail = 0
+    while tail < limit - head and old[-1 - tail] == new[-1 - tail]:
+        tail += 1
+    old_mid, new_mid = old[head:len(old) - tail], new[head:len(new) - tail]
+    anchors = _lis(_pairs(old_mid, new_mid, unique=True))
+    matched, i0, j0 = len(anchors), 0, 0
+    for i1, j1 in [*anchors, (len(old_mid), len(new_mid))]:
+        matched += len(_lis(_pairs(old_mid[i0:i1], new_mid[j0:j1], unique=False)))
+        i0, j0 = i1 + 1, j1 + 1
+    return len(old_mid) + len(new_mid) - 2 * matched, max(len(old_mid), len(new_mid))
+
+
+def bounded_unified_diff(old_text: str, new_text: Optional[str], fromfile: str, tofile: str) -> str:
+    """``difflib.unified_diff`` text, or a one-line ``# diff omitted`` notice when computing it
+    would be slow. The caller has already written the file; only the preview is dropped."""
+    import difflib
+    old = old_text.splitlines(keepends=True)
+    new = [] if new_text is None else new_text.splitlines(keepends=True)
+    changed, span = _diff_work_estimate(old, new)
+    if changed * span > _MAX_DIFF_WORK:
+        if new_text is None:
+            shown = fromfile.removeprefix("a/")
+            return f"# diff omitted for {shown}: deleted ({len(old)} lines).\n"
+        shown = tofile.removeprefix("b/")
+        return (f"# diff omitted for {shown}: about {changed} changed lines across {span} lines is "
+                "too large to diff quickly. The edit was applied; use read_file to inspect it.\n")
+    return "".join(difflib.unified_diff(old, new, fromfile=fromfile, tofile=tofile))
+
+
+# ---------------------------------------------------------------------------
 # Pagination clamps
 # ---------------------------------------------------------------------------
 

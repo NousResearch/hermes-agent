@@ -28,7 +28,7 @@ from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
-    _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
+    _strip_terminal_fence_leaks, bounded_unified_diff, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
 from tools import file_operations_native as _native_io
@@ -634,9 +634,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return head_result.exit_code == 0 and _has_bom(head_result.stdout)
 
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
-        return ''.join(difflib.unified_diff(
-            old_content.splitlines(keepends=True), new_content.splitlines(keepends=True),
-            fromfile=f"a/{filename}", tofile=f"b/{filename}"))
+        return bounded_unified_diff(old_content, new_content, f"a/{filename}", f"b/{filename}")
 
     # --- READ ---------------------------------------------------------------
 

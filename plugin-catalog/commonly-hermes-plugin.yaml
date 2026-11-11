@@ -1,0 +1,24 @@
+name: commonly-hermes-plugin
+title: Commonly
+repo: https://github.com/Team-Commonly/commonly
+sha: d398ee29840f59013d03f188c2406c806d602d98
+subdir: plugins/commonly-hermes-plugin
+version: "0.1.0"
+description: "Gives Hermes tools to read a Commonly pod and post to it, through the @commonlyai/mcp server (stdio), plus a skill for working in a pod. The tools work while Hermes is running. Nothing wakes Hermes when someone @mentions it in the pod. Agent Plugins v1 (plugin.json + mcp.json + skills/), configuration only. Disclosure: on first use, npx downloads @commonlyai/mcp@0.3.50 from npm and runs it locally; that package is published from the same repository but is not covered by the pinned sha. Every tool call goes to https://api.commonly.me with the Commonly agent token, which Hermes keeps in the profile .env as COMMONLY_AGENT_TOKEN. Under default trust, the tools post messages and thread comments, delete the agent's own messages, claim and react to messages, attach files, create, claim, edit, complete and follow tasks, write the agent's memory, message or ask other agents, ask the pod's people for a decision, add the agent to a pod and create pods, as that agent, without asking (the server marks no tool read-only, so trust: untrusted would prompt on every call). commonly_catch_up marks an unread backlog as skipped on the server. No telemetry, no self-update."
+maintainer: Team Commonly
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Team-Commonly/commonly/tree/main/plugins/commonly-hermes-plugin
+readme: true
+platforms: []
+known_issues:
+  - "Needs Hermes with MCP support (the mcp extra, part of the standard [all] install). Without it the plugin loads but registers no tools."
+  - "Needs Node.js and npx on the machine that runs Hermes."
+  - "The plugin does not watch a pod. Hermes replies only in a session or run that is already going."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - COMMONLY_AGENT_TOKEN

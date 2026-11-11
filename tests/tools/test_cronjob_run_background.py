@@ -124,13 +124,18 @@ class TestBackgroundDispatch:
         assert "bg run" in (found.get("summary") or "")
         assert "LOCAL JOB PAYLOAD" in found["summary"]
 
-    @pytest.mark.parametrize("delivery_error, echoed", [(None, False), ("chat not found", True)])
-    def test_external_delivery_echoes_job_output_only_when_delivery_failed(self, delivery_error, echoed):
-        """A failed delivery reached nobody, so its output must stay in the completion the agent
-        relays; a delivered one is not copied into the invoking session."""
+    @pytest.mark.parametrize("delivery_error, reached_none, echoed", [
+        (None, None, False), ("chat not found", True, True),
+        ("telegram:-100999:7 failed; 1 attachment dropped", None, False)])
+    def test_external_delivery_echoes_job_output_only_when_no_target_got_it(
+            self, delivery_error, reached_none, echoed):
+        """A delivery that failed everywhere reached nobody, so its output stays in the completion
+        the agent relays; a delivered or partly delivered one is not copied into the invoking
+        session (it already reached a chat)."""
         from tools.cronjob_tools import _manual_run_completion
 
-        refreshed = {"last_status": "ok", "last_delivery_error": delivery_error}
+        refreshed = {"last_status": "ok", "last_delivery_error": delivery_error,
+                     "last_delivery_reached_none": reached_none}
         with patch("tools.cronjob_tools.get_job", return_value=refreshed), \
              patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
             out = _manual_run_completion(

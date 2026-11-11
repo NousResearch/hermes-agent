@@ -5,7 +5,7 @@ import { type ConversationMatch, searchConversation } from '@/api/conversation-s
 import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -53,8 +53,9 @@ export function ConversationSearch() {
   const jumping = useRef<AbortController | null>(null)
   const surface = () => trigger.current?.closest<HTMLElement>('[data-chat-surface]') ?? null
 
-  // The default pane layout hides the chat header band, so the trigger can be unlaid-out while
+  // The default pane layout hides the chat header band, so the button can be unlaid-out while
   // Cmd/Ctrl+F opens the search: anchor to the transcript's top edge then, not the window corner.
+  // This is the popover's only anchor (no PopoverTrigger, whose ref would replace it).
   const anchor = useMemo(
     () => ({
       current: {
@@ -140,23 +141,30 @@ export function ConversationSearch() {
     <Popover onOpenChange={open => search.reset(open)} open={state.open}>
       <PopoverAnchor virtualRef={anchor} />
       <Tip label={copy.open}>
-        <PopoverTrigger asChild>
-          <Button
-            aria-label={copy.open}
-            className="no-drag pointer-events-auto shrink-0"
-            data-conversation-search=""
-            disabled={!storedId || !searchAvailable}
-            ref={trigger}
-            size="icon-titlebar"
-            variant="ghost"
-          >
-            <Search />
-          </Button>
-        </PopoverTrigger>
+        <Button
+          aria-expanded={state.open}
+          aria-haspopup="dialog"
+          aria-label={copy.open}
+          className="no-drag pointer-events-auto shrink-0"
+          data-conversation-search=""
+          disabled={!storedId || !searchAvailable}
+          onClick={() => search.reset(!state.open)}
+          ref={trigger}
+          size="icon-titlebar"
+          variant="ghost"
+        >
+          <Search />
+        </Button>
       </Tip>
       <PopoverContent
         align="start"
         className="w-96 max-w-[calc(100vw-1rem)]"
+        // The button toggles on its own click; dismissing on its pointerdown would reopen it.
+        onInteractOutside={event => {
+          if (trigger.current?.contains(event.target as Node)) {
+            event.preventDefault()
+          }
+        }}
         onOpenAutoFocus={event => {
           event.preventDefault()
           input.current?.focus()

@@ -460,7 +460,8 @@ def test_live_content_search_skips_unreadable_dir(tmp_path):
     finally:
         os.chmod(locked, 0o755)
 
-@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs POSIX non-root chmod")
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads chmod 000 dirs")
 def test_pruned_grep_permission_only_empty_keeps_skip_warning(tmp_path):
     """find folds a permission failure into exit 1; that empty search is not an error."""
     root = tmp_path / ".hidden" / "repo"
@@ -500,7 +501,7 @@ def _pruned_grep_ops(tmp_path, find_output=None):
     return ops, root
 
 
-@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("diagnostic", [
     "find: '{root}/locked': Keine Berechtigung",
     "find: {root}/locked: Operation not permitted",
@@ -512,7 +513,7 @@ def test_pruned_grep_traversal_diagnostics_stay_non_fatal(tmp_path, diagnostic):
     assert result.error is None and result.total_count == 0, result
 
 
-@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+@pytest.mark.platforms("posix")
 def test_pruned_grep_invalid_regex_is_a_search_error(tmp_path):
     ops, root = _pruned_grep_ops(tmp_path)
     result = ops.search("foo(", path=str(root), target="content")
@@ -541,7 +542,7 @@ def _pruned_grep_ops_with_probe(tmp_path, probe):
     return ops, root, seen
 
 
-@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("probe", [
     ("timeout", 124, "Command timed out"),
     ("transport", 255, "ssh: connect to host: Connection refused"),
@@ -561,7 +562,7 @@ def test_pruned_grep_inconclusive_validation_keeps_empty_result(tmp_path, probe)
     assert seen["timeout"] is not None and seen["timeout"] <= 10
 
 
-@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+@pytest.mark.platforms("posix")
 def test_pruned_grep_validation_exit_2_is_a_search_error(tmp_path):
     from tools.file_operations_common import ExecuteResult
 

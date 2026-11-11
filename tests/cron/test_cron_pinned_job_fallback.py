@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import run_agent  # Initialize entry-point dependencies during collection.
 from cron import scheduler
 from cron.scheduler import _CronJobConfig, _resolve_job_runtime
 from hermes_cli.auth import AuthError
@@ -217,3 +218,15 @@ def test_pinned_job_failure_notice_does_not_promise_a_backup(monkeypatch):
     assert "pinned" in phrase and "--unpin" in phrase
     assert "succeeded" not in phrase
     assert scheduler._fallback_chain_phrase(_job()) == "No backup provider succeeded either."
+
+
+def test_pinned_job_declared_fallback_providers_is_used():
+    """LOCAL PATCH 2026-11-05: a pinned job's own fallback_providers is its chain."""
+    from cron.scheduler import _job_fallback_chain
+    cfg = {"fallback_providers": [{"provider": "cliproxy", "model": "gemini-latest"}]}
+    job = {"model": "opus-latest", "provider": "cliproxy",
+           "fallback_providers": [{"provider": "cliproxy", "model": "sol-latest"}]}
+    chain = _job_fallback_chain(job, cfg)
+    assert [e["model"] for e in chain] == ["sol-latest"]
+    job.pop("fallback_providers")
+    assert not _job_fallback_chain(job, cfg)

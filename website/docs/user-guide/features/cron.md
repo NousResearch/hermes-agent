@@ -1483,3 +1483,12 @@ Cron jobs run in a completely fresh agent session. The prompt must contain every
 ## Security
 
 Scheduled task prompts are scanned for prompt-injection and credential-exfiltration patterns at creation and update time. Prompts containing invisible Unicode tricks, SSH backdoor attempts, or obvious secret-exfiltration payloads are blocked.
+
+
+### Recovery and explicit fallback policy
+
+A pinned cron job may declare its own `fallback_providers` chain. A pin still suppresses the
+profile's global fallback chain unless that per-job chain is explicit. A final result containing
+a tool guardrail `block` or `halt` is recorded as a failed run rather than delivered as a normal
+successful report. Receipt reconciliation binds the firing profile's secret scope for delivery
+and completion bookkeeping, then restores the previous scope.

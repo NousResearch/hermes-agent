@@ -3,19 +3,7 @@ title: Innerscape
 repo: https://github.com/KyaniteLabs/Innerscape
 sha: 709dc6a5ad77f8dd99a4e58e43bf2e450143ce8d
 subdir: plugins/innerscape-hermes
-description: >-
-  Gentle check-ins, journaling and an Unstuck Coach with your own Innerscape server: save a
-  mood check-in in your words, save a journal entry or park an inbox item only after you say
-  yes to the exact text, and look back on today. When you're frozen or overloaded, the
-  bundled unstuck skill names what's in the way, gives one next move and holds the rest. The
-  skills never score, label or diagnose a mood. Disclosure: calls your Innerscape REST
-  API (default http://127.0.0.1:3001) with INNERSCAPE_TOKEN, which can read and write your
-  whole account; plain http only to this machine, no proxies or redirects. Tool results go to
-  your model provider and stay in session history; mood and journal text is sensitive, and
-  your provider sees it like any other chat. Consent is real but model-mediated: save tools
-  refuse unless the assistant has asked you and set user_confirmed; there is no separate
-  approval step (see README). Reads and saves are off on chat platforms
-  by default and saves are off in scheduled runs. No telemetry, no background jobs.
+description: "Gentle check-ins, journaling and an Unstuck Coach with your own Innerscape server: save a mood check-in in your words, save a journal entry or park an inbox item only after you say yes to the exact text, and look back on today. When you're frozen or overloaded, the bundled unstuck skill names what's in the way, gives one next move and holds the rest. The skills never score, label or diagnose a mood. Adds four tools, /innerscape, two skills, a Desktop page and a dashboard tab. Disclosure — calls your Innerscape REST API (default http://127.0.0.1:3001) with INNERSCAPE_TOKEN, read through Hermes secret scope, which can read and write your whole account; plain http only to this machine, no proxies or redirects; tool results go to your model provider and stay in session history, and mood and journal text is sensitive, so your provider sees it like any other chat; consent is model-mediated: save tools refuse unless the assistant has asked you and set user_confirmed, and Hermes has no separate approval step (see README); the Desktop page and dashboard tab read today and save a check-in or journal entry with that same token when you press Save, so anyone signed in to your Hermes dashboard can read and write your Innerscape account; reads and saves are off on chat platforms by default and saves are off in scheduled runs; no telemetry, no background jobs."
 maintainer: KyaniteLabs
 tier: community
 category: tools

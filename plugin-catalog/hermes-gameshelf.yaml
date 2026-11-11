@@ -1,0 +1,25 @@
+name: hermes-gameshelf
+repo: https://github.com/KeyArgo/hermes-game-center
+sha: 9359ba470168b527337a0677c1f911cc8c161129
+title: Game Center
+description: 'Real board and card games inside Hermes: chess, go, checkers, connect four, reversi, gomoku, hex, breakthrough, sea battle, blackjack and slots, each with its own rules engine and a referee that refuses an illegal move and records it. Play the built-in computer at four levels, a friend on the same screen, or your own Hermes model through the games_play tool. Disclosure: writes only its own plugin data folder; local play makes no network calls. Online play is off until the user turns it on; then it talks to https://games.hermesnet.xyz (run by the author, changeable via lobby_url) and sends the chosen display name, a recovery key at sign-in, and match moves; polling happens only while the page is open. No telemetry, no phone-home, no self-updater.'
+maintainer: KeyArgo
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://github.com/KeyArgo/hermes-game-center/blob/9359ba470168b527337a0677c1f911cc8c161129/README.md
+screenshots:
+  - https://raw.githubusercontent.com/KeyArgo/hermes-game-center/9359ba470168b527337a0677c1f911cc8c161129/screenshots/01-store.png
+  - https://raw.githubusercontent.com/KeyArgo/hermes-game-center/9359ba470168b527337a0677c1f911cc8c161129/screenshots/02-game-in-play.png
+  - https://raw.githubusercontent.com/KeyArgo/hermes-game-center/9359ba470168b527337a0677c1f911cc8c161129/screenshots/07-referee-refusal.png
+platforms: []
+capabilities:
+  provides_tools:
+    - games_play
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_api_request
+  provides_middleware: []
+  requires_env: []

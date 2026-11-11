@@ -1,0 +1,39 @@
+name: memrack
+repo: https://github.com/Kesuek/memrack
+sha: fb0fe1a2c57b51f88fe7e12891761f880608697f
+description: "memrack is one memory provider that hosts a rack of backends behind one search and one write tool, with agent-side routing (cards advertise best_for/limits per backend; no LLM judge at write or read — no auto mode): base-db is the stdlib SQLite floor (atomic facts per row, FTS5 bm25 rank, hash-dedupe idempotence, per-entry heat counters, pointer directory), wiki (read-only whole-page search via a stdlib mtime index), state-episodic (READ-ONLY over the canonical Hermes session log in state.db, default on — turns are never copied), and vec (opt-in autonomous document backend: its own chunk store, an ingest tool and CLI (hermes memrack vec add; md/txt/pdf via the optional pypdf dep), semantic knn recall with vec:<source>#chunk reading refs — no automatic ledger harvest; nothing is embedded that was not ingested). memrack_search fans out over every active backend (parallel, per-backend timeout, budget) merging with reciprocal rank fusion (RRF k=60), per-target collapse, deterministic tiebreak; every answer carries a lean rack_status slot (per-backend modes + participation) and card prose on membership delta. Catalog providers dock manifest-first: isolated probe, draft card with human review, mirrored tools under the memrack__<provider>__<tool> namespace (collision fail-closed), uninstall grace (park now, card cleanup after a retention window), and docks receive turns or transcripts only via recorded per-card gates (forward_turns / forward_transcript, default OFF). Tools: memrack_search, memrack_write, memrack_status, memrack_import, memrack_dock, memrack_card_review, memrack_vec_add, plus hermes memrack status|report|export|import|vec add. Config: desktop pane via a declared config_schema (membership toggles, force-backend, top_k, fanout timeout, prefetch budget, vec keys, uninstall retention) and config.yaml plugins.memrack — dual-store bridge. Disclosure — plugin state lives locally under the HERMES_HOME plugin-data/memrack/ directory (SQLite facts store, vec index store, route_log.jsonl); no content leaves the machine by default. Disclosure — the only optional network call is the local embedding request to the configured host (default http://127.0.0.1:11434) when the vec backend is enabled; queries and chunk text go there as plain text, while base-db/wiki/state-episodic fts never touch the network. Disclosure — the route log records routing decisions only (tool, kind, target reference, backend, session id, timestamp), never content or query text, and searches are not logged. Disclosure — state.db is opened strictly READ-ONLY (mode=ro); memrack never writes session data. Disclosure — activation is memory.provider: memrack; the basis case (fresh HERMES_HOME, only base-db, zero docking, zero network) is proven by the suite (386 tests green, degradation ladder: missing engines answer with honest mode errors, never silent empty results)."
+maintainer: Kesuek
+tier: community
+category: memory
+requires_hermes: ">=0.22.7"
+version: "0.11.1"
+docs_url: https://github.com/Kesuek/memrack#readme
+readme: true
+screenshots:
+- https://raw.githubusercontent.com/Kesuek/memrack/fb0fe1a2c57b51f88fe7e12891761f880608697f/docs/screenshots/settings-pane.png
+- https://raw.githubusercontent.com/Kesuek/memrack/fb0fe1a2c57b51f88fe7e12891761f880608697f/docs/screenshots/search-answer.png
+- https://raw.githubusercontent.com/Kesuek/memrack/fb0fe1a2c57b51f88fe7e12891761f880608697f/docs/screenshots/status-cards.png
+known_issues:
+- "The wiki page engine uses a deterministic AND-gate scorer rather than bm25 (facts and session history rank with bm25); hybrid retrieval is per-backend engines + RRF merge."
+- "vec is opt-in and needs sqlite-vec plus a reachable Ollama host; without them its card degrades with a visible env_gap note and the rack answers fts only."
+- "The vec corpus holds only what was ingested (no automatic ledger harvest); PDF ingestion is text layer only (no OCR)."
+- "Membership toggles act on the NEXT search of a running session (tool paths live; the injected context channel follows the session)."
+- "Auto-enable at activation defaults OFF — no storage backend gets enabled without an explicit toggle."
+- "memrack_import is a one-shot migration job per profile (idempotent via hash-dedupe), not a standing cron."
+capabilities:
+  provides_tools:
+  - memrack_search
+  - memrack_write
+  - memrack_status
+  - memrack_import
+  - memrack_dock
+  - memrack_card_review
+  - memrack_vec_add
+  provides_hooks:
+  - on_turn
+  - on_memory_write
+  - on_session_end
+  - prefetch
+  - system_prompt_block
+  provides_middleware: []
+  requires_env: []

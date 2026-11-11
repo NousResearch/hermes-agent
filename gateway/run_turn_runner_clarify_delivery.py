@@ -182,3 +182,30 @@ class _LateFailureWatch:
     def _release(self, notice: str = UNDELIVERED) -> None:
         self.undeliverable = notice
         self._clarify_mod.clear_session(self._session_key)
+
+
+def clarify_context_sink(runner) -> Optional[Callable[..., None]]:
+    """The ``clarify_context_callback`` for a turn with interim messages off (#102413): prose the model
+    wrote in the same message as a ``clarify`` call is what the user is asked to decide on, so it is
+    sent before the card. The agent calls this on its own thread before the clarify tool runs, and it
+    waits for the send, so the card can never land above its explanation."""
+    from gateway.bot_peer_notices import automatic_notices_allowed
+    from gateway.run_turn_progress import local_viewer_turn
+    if local_viewer_turn(runner):  # a local viewer renders the transcript itself; its adapter sends nothing
+        return None
+    ctx = runner._ctx
+
+    def send(text: str, *, already_streamed: bool = False) -> None:
+        adapter = ctx._status_adapter
+        if (already_streamed or adapter is None or not str(text or "").strip() or not ctx._run_still_current()
+                or not automatic_notices_allowed(ctx.source)):
+            return
+        fut = runner._schedule(adapter.send(ctx._status_chat_id, text, metadata=ctx._status_thread_metadata),
+                               "clarify context send failed to schedule")
+        if fut is None:
+            return
+        try:
+            fut.result(timeout=SEND_ACK_WINDOW)
+        except Exception:
+            logger.warning("Clarify context could not be sent before the prompt", exc_info=True)
+    return send

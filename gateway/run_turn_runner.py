@@ -562,6 +562,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
         agent.clarify_callback = self._clarify_callback_sync
+        from gateway.run_turn_runner_clarify_delivery import clarify_context_sink
+        agent.clarify_context_callback = None if want_interim_messages else clarify_context_sink(self)
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
@@ -574,6 +576,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Keep diagnostic observers installed; concrete sinks veto display.
             agent.stream_delta_callback = None
             agent.interim_assistant_callback = None
+            agent.clarify_context_callback = None
             agent.thinking_progress = False
         ctx.agent_holder[0] = agent  # interrupt support
         if self._approval_owner is not None:

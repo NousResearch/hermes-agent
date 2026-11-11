@@ -1,9 +1,9 @@
 name: nerdit
 title: Nerdit
 repo: https://github.com/nerdit-ai/nerdit-hermes
-sha: 1d47529f157453ef2d192510a91aeb84e2e1f82a
-version: "0.1.3"
-description: "Hermes puts what it builds online on its own machine and keeps it alive. nerdit_ship deploys a folder to the local Nerdit engine (open source, Docker), waits until it is healthy and returns its URL, with the engine's diagnosis on failure. A pre_llm_call hook tells the agent when one of its apps is failed, degraded or restarting, once per outage and with no model polling; /apps answers with the status of every app without a model call; the nerdit:watch automation blueprint checks the apps on a schedule, restarts what a restart fixes and reports. Two bundled skills (ship, rescue). Disclosure: requires the Nerdit engine and Docker on the same machine. Each call starts the engine's own `nerdit mcp` process over stdio (fixed argv, no shell; the outage check at most once a minute) and acts with the rights of the user's nerdit CLI token, an admin token unless the user scopes it; the plugin never reads or stores that token. The engine zips and builds the folder the agent names. nerdit_call reaches every engine tool by name; a pre_tool_call hook sends deleting an app or its data, public sharing, domain binding and in-container commands to the human approval gate. The plugin makes no network call and has no telemetry; sharing an app outside the machine goes through the optional Nerdit Cloud account."
+sha: 76b87bb1790d83ae1d8ec0a395628b77011d07ab
+version: "0.2.0"
+description: "Hermes puts what it builds online on its own machine and keeps it alive. nerdit_ship deploys a folder to the local Nerdit engine (open source, Docker), waits until it is healthy and returns its URL, with the engine's diagnosis on failure. nerdit_share gives an app a hosted https URL, private by default and public only after the user confirms. A pre_llm_call hook tells the agent when one of its apps is failed, degraded or restarting, once per outage and with no model polling; /apps answers with the status of every app without a model call; the nerdit:watch automation blueprint checks the apps on a schedule, restarts what a restart fixes and reports. Two bundled skills (ship, rescue). Disclosure: requires the Nerdit engine and Docker on the same machine. Each call starts the engine's own `nerdit mcp` process over stdio (fixed argv, no shell; the outage check at most once a minute) and acts with the rights of the user's nerdit CLI token, an admin token unless the user scopes it; the plugin never reads or stores that token. The engine zips and builds the folder the agent names. nerdit_call reaches every engine tool by name; a pre_tool_call hook sends deleting an app or its data, public sharing, domain binding and in-container commands to the human approval gate. The plugin makes no network call and has no telemetry; sharing an app outside the machine goes through the optional Nerdit Cloud account."
 maintainer: Nerdit
 tier: community
 category: tools
@@ -12,7 +12,7 @@ docs_url: https://docs.nerdit.ai
 readme: true
 platforms: [linux, macos]
 capabilities:
-  provides_tools: [nerdit_ship, nerdit_apps, nerdit_diagnose, nerdit_logs, nerdit_call]
+  provides_tools: [nerdit_ship, nerdit_apps, nerdit_diagnose, nerdit_logs, nerdit_share, nerdit_call]
   provides_hooks: [pre_llm_call, pre_tool_call]
   provides_middleware: []
   requires_env: []

@@ -1,0 +1,54 @@
+name: habits
+repo: https://github.com/emiwltz/hermes-habits
+sha: c2e32395e0e3461fe56c7d68b7bc993ee0954277
+title: Habits
+description: >-
+  Habits gives Hermes reflexes: the tool calls and small decisions it repeats, grouped into one file of steps that
+  runs with no model turn between the steps (the advanced llm step is the one exception); decisions go to a small typed model (Jev).
+  "Is Hermes OK?": 41 s when Hermes works it out, 2.7 s when the reflex answers with its six checks (medians of real chats,
+  10 November; the fast path needs your yes and a Jev key). A reflex has four kinds of step (do, check, ask, use) and
+  ends done, or handed back with what is left. The dream re-reads the history Hermes already keeps, with no model
+  call, and proposes reflexes for what comes back. A reflex acts on its own only after your yes, with two exceptions
+  named below. Try without a key: hermes habits run hermes-health.
+  Disclosure — hooks read each reply and each tool call. The dream reads Hermes's local history (read only, 60 days)
+  once a day at most (dream: manual stops it) and calls no model. Learning defaults to suggest: on a fresh install
+  nothing is run or practiced for you until you say try. A list of your reflexes (2,400 characters at most) is added to
+  each session, and Hermes may call any shipped example by name without a yes; it then runs for real (six only read;
+  tidy-downloads moves files in ~/Downloads and is not in that list). The shipped hermes-health sends one HEAD request
+  to github.com and reads the gateway file and disk of ~/.hermes; the other examples reach the web only when called
+  (api.github.com, hn.algolia.com, the pages you name). A reflex with your yes runs
+  its commands through Hermes's terminal tool and Hermes's own approval rules. The two exceptions to the yes: a
+  read-only message habit you asked for in so many words, and what you allow with learning: auto. Decision questions
+  go to TypeSafe Jev (api.typesafe.ai) only with your TYPESAFE_API_KEY, else to your Hermes model; once a message
+  habit exists, each message of 2,000 characters or less that is not a slash command is sent there to see whether it
+  starts one (one or two small questions). A scheduled habit writes a cron job and a script at once; hermes habits
+  cleanup removes them. Runs and traces are stored unencrypted in $HERMES_HOME/plugin-data/habits/. No telemetry.
+  Seven private imports, each with a fallback. Line by line: docs/SAFETY.md.
+maintainer: emiwltz
+tier: community
+category: automation
+version: "0.1.0"
+requires_hermes: ">=0.22.5"
+platforms: [linux, macos]
+docs_url: https://github.com/emiwltz/hermes-habits#readme
+readme: true
+image: https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/replay.png
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/shot-dream.png
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/shot-terminal.png
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/shot-habits.png
+known_issues:
+  - "Without a TypeSafe Jev key, steps that ask a question go to your Hermes model, slower, and those runs do not count toward your yes: a reflex with such a step stays learning."
+  - "Measured on one user's install, with one cheap model and one decision model (Jev); 14 of 20 request wordings never seen before were recognized, the others go back to Hermes. The headline figures are from the builds of 10 November; an earlier build of 11 November (aad995e) was tried in 229 simulated turns on throwaway Hermes profiles (docs/BENCHMARKS.md); the fixes made after it are covered by tests and by one short pass of 9 real turns on the last build."
+  - "The guard and the dream's exclusion of secrets are word-and-shape checks, not proofs; docs/SAFETY.md lists what they do not see."
+  - "With permissions: hermes, Hermes does not ask about every deletion: on Hermes 0.23 a plain rm of one file is not flagged. Set permissions: strict to make the plugin refuse deleting commands."
+  - "The dream proposes fixed actions only, and few real actions are local reads, so most practice counts that an action came back, not that a result matched."
+  - "What the dream gives on day one is a list of repeated gestures and proposals; the saving comes once reflexes are assembled or made by asking. No gain from a dream-born reflex has been measured yet."
+  - "The start on a loaded skill worked 2 of 2 on a real Hermes (11 November); a real MCP server: not tried."
+  - "A scheduled habit's cron job exists from the save, before any yes; run hermes habits cleanup before you uninstall."
+capabilities:
+  provides_tools: [habit_run, habit_save]
+  provides_hooks: [pre_llm_call, pre_tool_call, post_tool_call, post_llm_call, post_api_request, on_session_finalize, transform_tool_result]
+  provides_middleware: []
+  requires_env: []

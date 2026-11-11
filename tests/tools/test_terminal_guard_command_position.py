@@ -1,12 +1,11 @@
 """The long-lived-process guard must match a server BINARY in command position,
 never the same word used as an argument, a path component or a grep target.
 
-Regression: ``_LONG_LIVED_FOREGROUND_PATTERNS`` used unanchored patterns
-(``\\bvite(?:\\s|$)``, ``\\bnodemon\\b``, ``\\buvicorn\\b``, ``\\bgunicorn\\b``), so a
-read-only command that merely mentioned the name was refused as if it started a
-watcher: ``ls -d node_modules/vite``, ``pip show uvicorn``,
-``du -sh .../site-packages/gunicorn``. Both directions matter: over-matching
-blocks ordinary inspection, under-matching lets a real dev server hang the call.
+Regression for #42620, #108593, #137323: the guard matched server names anywhere in
+the command, so a read-only command or a package install that merely mentioned one
+was refused as if it started a watcher: ``ls -d node_modules/vite``,
+``pip show uvicorn``, ``npm install nodemon``. Both directions matter: over-matching
+blocks ordinary work, under-matching lets a real dev server hang the call.
 """
 
 import pytest
@@ -33,6 +32,24 @@ FALSE_POSITIVES = [
     r"type C:\app\.venv\Lib\site-packages\gunicorn\arbiter.py",
     r"dir C:\app\.venv\Lib\site-packages\uvicorn",
     r"cat C:\app\node_modules\nodemon\package.json",
+    # installing or querying a package of that name launches nothing
+    "npm install nodemon",
+    "npm update vite lodash axios",
+    "pnpm add vite",
+    "pip install uvicorn",
+    "uv add gunicorn",
+    "which uvicorn",
+    # bounded invocations of a server binary
+    "vite build",
+    "npx vite build",
+    "gunicorn --check-config app:app",
+    "docker compose up -d",
+    "docker compose up --detach web",
+    # quoted mentions and informational flags
+    "grep -rn 'vite' .",
+    "echo 'uvicorn gunicorn nodemon'",
+    "vite --version",
+    "uvicorn --help",
 ]
 
 TRUE_POSITIVES = [
@@ -69,7 +86,7 @@ TRUE_POSITIVES = [
     "yarn watch",
     "cd x && npm run start",
     "docker compose up",
-    "docker compose up -d",
+    "docker compose -f dev.yml up web",
     "next dev",
     "npx next dev",
     "nodemon server.js",
@@ -88,29 +105,34 @@ TRUE_POSITIVES = [
     r"C:\app\.venv\Scripts\uvicorn.exe app:app",
     r"C:\app\node_modules\.bin\vite.cmd --port 3000",
     r".\node_modules\.bin\nodemon.cmd server.js",
+    # an install earlier in the line does not excuse the launch after it
+    "npm install vite && vite",
+    "npm install vite; vite",
+    "pip install uvicorn && uvicorn app:app",
+    # behind env assignments, wrappers, runners, keywords and subshells
+    "PORT=3000 npm run dev",
+    "env PORT=3000 vite",
+    "timeout 60 uvicorn app:app",
+    "poetry run uvicorn app:app",
+    "uv run gunicorn app:app",
+    "npx --yes vite",
+    "npm --prefix web run dev",
+    "(cd web && npm run dev)",
+    "if true; then npm run dev; fi",
+    "doppler run -- npm run dev",
+    "ssh -p 2222 host uvicorn app:app",
+    "docker exec -it app uvicorn app:app",
 ]
 
 
 @pytest.mark.parametrize("command", FALSE_POSITIVES)
-def test_inspection_command_is_not_flagged(command):
+def test_command_that_only_names_a_server_runs(command):
     msg = guidance(command)
     assert msg is None, f"{command!r} was flagged as long-lived: {msg}"
 
 
 @pytest.mark.parametrize("command", TRUE_POSITIVES)
-def test_real_server_invocation_is_flagged(command):
+def test_command_that_starts_a_server_is_flagged(command):
     msg = guidance(command)
     assert msg is not None, f"{command!r} should have been flagged"
     assert "long-lived server/watch process" in msg
-
-
-def test_quoted_name_never_flagged():
-    # _strip_quotes blanks string bodies before the patterns run
-    assert guidance("grep -rn 'vite' .") is None
-    assert guidance("echo 'uvicorn gunicorn nodemon'") is None
-
-
-def test_help_and_version_still_exempt():
-    # informational invocations stay exempt even in command position
-    assert guidance("vite --version") is None
-    assert guidance("uvicorn --help") is None

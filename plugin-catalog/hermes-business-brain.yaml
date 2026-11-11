@@ -1,6 +1,6 @@
 name: hermes-business-brain
 repo: https://github.com/unsulabs/hermes-business-brain
-sha: 7807bb9825cdb830006062dcbd0ee4446e38cc54
+sha: 5a8c47e5cc97619f59b0edbc219b9ff4c37c073e
 description: >
   Offline, privacy-first business-brain engine for Hermes: 19 local tools
   (brain_doctor, brain_create_vault, brain_validate_vault, brain_status,

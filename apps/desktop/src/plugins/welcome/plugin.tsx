@@ -21,13 +21,9 @@ const plugin: HermesPlugin = {
         area: ROUTES_AREA,
         data: { path: '/' },
         render: () => <WelcomePage />
-      },
-      {
-        id: 'nav',
-        area: SIDEBAR_NAV_AREA,
-        order: 0,
-        data: { codicon: 'home', label: 'Accueil', path: '/' }
       }
+      // SIDEBAR_NAV entry removed — the welcome dashboard is the default home,
+      // not a separate sidebar destination.
     ])
   }
 }

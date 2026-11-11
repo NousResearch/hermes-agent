@@ -220,13 +220,9 @@ const plugin: HermesPlugin = {
         area: ROUTES_AREA,
         data: { path: '/setup' },
         render: () => <SetupWizard />,
-      },
-      {
-        id: 'nav',
-        area: SIDEBAR_NAV_AREA,
-        order: 1,
-        data: { codicon: 'rocket', label: 'Démarrage', path: '/setup' },
-      },
+      }
+      // SIDEBAR_NAV entry removed — the setup wizard will be reintegrated
+      // into the onboarding flow later. For now, it's accessible via /setup route.
     ])
   },
 }

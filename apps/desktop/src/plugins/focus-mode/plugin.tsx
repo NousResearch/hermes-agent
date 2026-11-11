@@ -4,11 +4,8 @@ import {
   KEYBINDS_AREA,
   PALETTE_AREA,
   ROUTES_AREA,
-  SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
 } from '@hermes/plugin-sdk'
-
-const FOCUS_KEY = 'unitalk-focus-mode'
 
 function toggleFocus() {
   if (window.location.pathname === '/focus') {
@@ -73,12 +70,7 @@ const plugin: HermesPlugin = {
           )
         },
       },
-      {
-        id: 'nav',
-        area: SIDEBAR_NAV_AREA,
-        order: 900,
-        data: { codicon: 'target', label: 'Bureau', path: '/focus' },
-      },
+      // SIDEBAR_NAV removed — Focus Mode accessible via Mod+Shift+F and command palette only
       {
         id: 'statusbar',
         area: STATUSBAR_AREAS.right,

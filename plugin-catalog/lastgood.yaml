@@ -1,9 +1,9 @@
 name: lastgood
 title: LastGood
 repo: https://github.com/Dr-Enuf/lastgood
-sha: 8bef6542107582ea1a77d4cfdc1975ee2d2e6c93
+sha: 5edd3288ff825605830e6cc44320eebabd6208c6
 subdir: plugin/lastgood
-version: "0.4.1"
+version: "0.4.2"
 requires_hermes: ">=0.22.7"
 description: >-
   LastGood records which of your preset checks passed on which tested
@@ -16,9 +16,14 @@ description: >-
   deltas, not the cause. A ledger lists recognised tool calls a file
   rollback will not undo, without storing their arguments. Disclosure:
   the optional url_loads check fetches the http(s) address you
-  configure. No shell commands, credentials, or background processes.
-  Refuses a home folder, drive or filesystem root, or system folder as
-  the project, and explains invalid setups with the accepted check types.
+  configure. Link-local and cloud-metadata addresses are refused,
+  including after redirects. Only you can add a page check, with
+  /lastgood setup or by editing lastgood-config.json; the
+  lastgood_setup tool cannot. Private ranges need the
+  allow_private_urls setting. No shell commands, credentials, or
+  background processes. Refuses a home folder, drive or filesystem
+  root, or system folder as the project, and explains invalid setups
+  with the accepted check types.
 maintainer: Kenneth Ausmus (Dr-Enuf)
 tier: community
 category: tools

@@ -28,7 +28,7 @@ import ssl
 import threading
 import weakref
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -69,26 +69,32 @@ def install_truststore() -> bool:
 _openssl_bundle_state: weakref.WeakKeyDictionary[ssl.SSLContext, tuple] = weakref.WeakKeyDictionary()
 
 
-def _openssl_trust_signature() -> tuple:
+def _stat_identity(path: Optional[str]) -> Optional[tuple]:
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev)
+
+
+def _openssl_trust_signature(fallback_candidates: Iterable[str] = ()) -> tuple:
     """Identity of the CA sources truststore's OpenSSL backend would load.
 
     ``cafile``/``capath`` come from ``ssl.get_default_verify_paths()`` (env
     vars or OpenSSL's compiled-in paths); the stat tuple notices a bundle
-    file being replaced behind our back.
+    file being replaced behind our back. When those defaults are unusable,
+    truststore loads the first existing distro candidate instead, so that
+    file is part of the signature too (an unused candidate changing only
+    costs one extra reload).
     """
     defaults = ssl.get_default_verify_paths()
-    parts: list[Any] = [defaults.cafile, defaults.capath]
-    for path in (defaults.cafile, defaults.capath):
-        if path:
-            try:
-                st = os.stat(path)
-            except OSError:
-                parts.append(None)
-            else:
-                parts.append((st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev))
-        else:
-            parts.append(None)
-    return tuple(parts)
+    fallback = next((path for path in fallback_candidates if os.path.isfile(path)), None)
+    return (
+        defaults.cafile, defaults.capath, fallback,
+        _stat_identity(defaults.cafile), _stat_identity(defaults.capath), _stat_identity(fallback),
+    )
 
 
 def _memoize_openssl_bundle_reload() -> None:
@@ -105,7 +111,7 @@ def _memoize_openssl_bundle_reload() -> None:
     are left alone, as is any truststore layout we don't recognize.
     """
     try:
-        from truststore import _api
+        from truststore import _api, _openssl
 
         original = _api._configure_context
         if getattr(original, "__module__", None) != "truststore._openssl":
@@ -113,7 +119,7 @@ def _memoize_openssl_bundle_reload() -> None:
 
         @contextlib.contextmanager
         def _configure_context_once(ctx: ssl.SSLContext) -> Iterator[None]:
-            signature = _openssl_trust_signature()
+            signature = _openssl_trust_signature(getattr(_openssl, "_CA_FILE_CANDIDATES", ()))
             # Unlocked on purpose: a racing first load merely repeats an
             # additive load; a lock here would serialize connection setup.
             if _openssl_bundle_state.get(ctx) == signature:

@@ -28,10 +28,15 @@ class PreagentSetupStopped(Exception):
     """/stop or /new ended the turn while it was still in setup; their own reply already told the user."""
 
 
+class PreagentSetupTimeout(Exception):
+    """Setup outlived ``HERMES_AGENT_TIMEOUT``. Not a ``TimeoutError``: setup's own timeouts (the
+    turn lease's ``TurnLeaseTimeoutError``) must still reach the caller that answers them."""
+
+
 @asynccontextmanager
 async def preagent_setup_guard(runner, session_key: str):
     """Bound setup by ``HERMES_AGENT_TIMEOUT`` (``agent.gateway_timeout``; ``<= 0`` = unbounded) and
-    publish a stop handle on the turn slot. Raises ``TimeoutError`` past the deadline and
+    publish a stop handle on the turn slot. Raises ``PreagentSetupTimeout`` past the deadline and
     ``PreagentSetupStopped`` after ``cancel_preagent_setup``."""
     from gateway.run import _dump_wedged_turn_stacks, _float_env
     delay = _float_env("HERMES_AGENT_TIMEOUT", 1800)
@@ -79,7 +84,7 @@ async def preagent_setup_guard(runner, session_key: str):
             if task is not None:
                 task.uncancel()
             if reason == _TIMEOUT:
-                raise TimeoutError from None
+                raise PreagentSetupTimeout from None
             raise PreagentSetupStopped from None
     finally:
         if handle is not None:
@@ -124,9 +129,9 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
                 "message": prepared.message_text[:500],
             }
             await runner.hooks.emit("agent:start", hook_ctx)
-    except (TimeoutError, PreagentSetupStopped) as ended:
+    except (PreagentSetupTimeout, PreagentSetupStopped) as ended:
         runner._clear_session_env([])  # prepare may have bound them before the hang
-        return None, (t("gateway.busy.setup_timeout") if isinstance(ended, TimeoutError) else None)
+        return None, (t("gateway.busy.setup_timeout") if isinstance(ended, PreagentSetupTimeout) else None)
     return (source, session_entry, session_key, prepared, env_tokens, hook_ctx), None
 
 

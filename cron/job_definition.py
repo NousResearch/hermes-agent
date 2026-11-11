@@ -6,6 +6,7 @@ into a live one (profile distributions) import this rather than duplicating the 
 """
 from typing import Any, Dict
 
+from cron import jobs_time
 from cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
 from cron.quota_hold import clear_state as _clear_quota_hold
 from hermes_time import now as _hermes_now
@@ -45,6 +46,8 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
                 updates["schedule_display"] = authored["schedule_display"]
             _apply_schedule_update(merged, updates, str(merged.get("id") or "imported job"))
         else:
+            # Paused imports skip _apply_schedule_update; cron-only grace must still be dropped.
+            jobs_time.drop_cron_only_knobs(merged, {})
             merged["next_run_at"] = None
     return merged
 

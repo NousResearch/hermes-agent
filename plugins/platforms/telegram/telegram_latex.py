@@ -46,10 +46,11 @@ _MACROS = {
 # A macro is a backslash word that no letter or hyphen extends, never an escaped backslash or a path
 # segment: not after a word, drive, ``/``, ``.``/``..``, ``~`` or ``%VAR%``, nor before a ``\\dir`` that is
 # no macro. A run of adjacent macros (``\\alpha\\beta``) is one match: the guard checks the run's start, so a
-# later macro's preceding letter (the ``a`` of ``\\alpha``) never blocks it.
+# later macro's preceding letter (the ``a`` of ``\\alpha``) never blocks it. The run is possessive: a path
+# the guard refuses (``\\alpha\\beta\\data``) is left whole, never shortened to its leading macros.
 _MACRO_NAMES = "|".join(sorted(_MACROS, key=len, reverse=True))
 _MACRO_RE = re.compile(
-    r"(?<![\w:/\\.~%])((?:\\(?:" + _MACRO_NAMES + r")(?![A-Za-z]))+)"
+    r"(?<![\w:/\\.~%])((?:\\(?:" + _MACRO_NAMES + r")(?![A-Za-z]))++)"
     r"(?![A-Za-z-]|\\(?!(?:" + _MACRO_NAMES + r")(?![A-Za-z]))\w)")
 _RUN_MACRO_RE = re.compile(r"\\([A-Za-z]+)")
 # Inside a confirmed ``$...$`` span a macro may follow a letter (``$x\leq y$``): no path guard there.

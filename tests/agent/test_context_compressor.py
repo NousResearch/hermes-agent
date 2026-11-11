@@ -18,6 +18,7 @@ from agent.context_compressor import (
     _summarize_tool_result,
     _sum_clarify,
     _is_summary_access_or_quota_error,
+    _SummaryFailure,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
@@ -1046,7 +1047,7 @@ class TestAuthFailureAborts:
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result == msgs
-        assert c._last_summary_auth_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_auth_failure"
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
 
@@ -1073,7 +1074,7 @@ class TestAuthFailureAborts:
 
         assert result == msgs
         assert c._last_summary_error == str(err)
-        assert c._last_summary_auth_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_auth_failure"
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
@@ -1097,7 +1098,7 @@ class TestAuthFailureAborts:
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result != msgs
-        assert c._last_summary_auth_failure is False
+        assert c._summary_failure is None
         assert c._last_compress_aborted is False
         assert c._last_summary_fallback_used is True
 
@@ -1133,13 +1134,13 @@ class TestAuthFailureAborts:
             c = ContextCompressor(model="test", quiet_mode=True)
         with patch("agent.context_compressor.call_llm", side_effect=self._auth_err(403)):
             c._generate_summary(self._msgs())
-        assert c._last_summary_auth_failure is True
+        assert c._summary_failure is _SummaryFailure.ACCESS
 
 
 
     def test_generate_summary_flags_network_failure(self):
         """A connection/network error on the summary call flags
-        _last_summary_network_failure (#29559)."""
+        _SummaryFailure.NETWORK (#29559)."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
         with patch(
@@ -1148,12 +1149,11 @@ class TestAuthFailureAborts:
         ):
             result = c._generate_summary(self._msgs())
         assert result is None
-        assert c._last_summary_network_failure is True
-        assert c._last_summary_auth_failure is False
+        assert c._summary_failure is _SummaryFailure.NETWORK
 
     def test_generate_summary_flags_empty_content_failure(self):
         """An empty-content response on the summary call flags
-        _last_summary_empty_content_failure (#94448)."""
+        _SummaryFailure.EMPTY_CONTENT (#94448)."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
         with patch(
@@ -1162,9 +1162,7 @@ class TestAuthFailureAborts:
         ):
             result = c._generate_summary(self._msgs())
         assert result is None
-        assert c._last_summary_empty_content_failure is True
-        assert c._last_summary_auth_failure is False
-        assert c._last_summary_network_failure is False
+        assert c._summary_failure is _SummaryFailure.EMPTY_CONTENT
 
     def test_empty_content_summary_aborts_compression_and_preserves_messages(self):
         """Empty-content response from degraded provider aborts compression and
@@ -1185,7 +1183,7 @@ class TestAuthFailureAborts:
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result == msgs
-        assert c._last_summary_empty_content_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_empty_content_failure"
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
@@ -1218,7 +1216,7 @@ class TestAuthFailureAborts:
             result = c.compress(msgs, current_tokens=999999, force=True)
         assert result == msgs
         assert c._last_compress_aborted is True
-        assert c._last_summary_empty_content_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_empty_content_failure"
 
     def test_auxiliary_invalid_response_aborts_compression(self):
         """Sibling shape (#94459, from #7264): malformed/missing
@@ -1243,7 +1241,7 @@ class TestAuthFailureAborts:
             result = c.compress(msgs, current_tokens=999999, force=True)
         assert result == msgs
         assert c._last_compress_aborted is True
-        assert c._last_summary_empty_content_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_empty_content_failure"
 
 
 class TestSummaryFallbackToMainModel:
@@ -1427,8 +1425,8 @@ class TestStreamingClosedFailure:
         closed = self._fail_on_main(Exception(message))
         generic = self._fail_on_main(Exception("something unexpected broke"))
 
-        assert closed._last_summary_network_failure is True
-        assert generic._last_summary_network_failure is False
+        assert closed._summary_failure is _SummaryFailure.NETWORK
+        assert generic._summary_failure is not _SummaryFailure.NETWORK
         # Short transient cooldown, strictly below the generic-failure cooldown.
         assert 1000.0 < closed._summary_failure_cooldown_until < generic._summary_failure_cooldown_until
 
@@ -1438,7 +1436,7 @@ class TestStreamingClosedFailure:
         guard = _CodexStreamGuard(None, 300.0)
         guard.saw_content.set()  # mid-stream: content arrived, then the stream went quiet
         c = self._fail_on_main(TimeoutError(guard.timeout_message()))
-        assert c._last_summary_network_failure is False
+        assert c._summary_failure is not _SummaryFailure.NETWORK
         assert c._consecutive_timeout_failures == 1
 
     @pytest.mark.parametrize(
@@ -1452,7 +1450,7 @@ class TestStreamingClosedFailure:
     def test_transport_errors_stay_terminal_network_failure(self, err):
         """Real transport errors stay terminal (#29559/#94448), even when their text
         happens to contain the stall marker: only a TimeoutError stall is reclassified."""
-        assert self._fail_on_main(err)._last_summary_network_failure is True
+        assert self._fail_on_main(err)._summary_failure is _SummaryFailure.NETWORK
 
 
 class TestAuxModelFallbackSurfacedToCallers:
@@ -2928,8 +2926,8 @@ class TestCooldownReentryAbort:
     """Regression: a second compress() call during the failure cooldown must
     still abort when the original failure was a network/auth error.
 
-    Before the fix, compress() unconditionally reset _last_summary_network_failure
-    and _last_summary_auth_failure at the top of every call.  When
+    Before the fix, compress() unconditionally reset the network and auth
+    summary failures at the top of every call.  When
     _generate_summary() returned None from the cooldown early-return (without
     re-setting the flags), the abort guard saw False and fell through to the
     destructive static-fallback path — reproducing the data-loss scenario from
@@ -2963,7 +2961,7 @@ class TestCooldownReentryAbort:
             first = c.compress(msgs, current_tokens=999999, force=True)
         assert first == msgs
         assert c._last_compress_aborted is True
-        assert c._last_summary_network_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_network_failure"
 
         second = c.compress(msgs, current_tokens=999999)
         assert second == msgs, (
@@ -2992,7 +2990,7 @@ class TestCooldownReentryAbort:
             first = c.compress(msgs, current_tokens=999999, force=True)
         assert first == msgs
         assert c._last_compress_aborted is True
-        assert c._last_summary_auth_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_auth_failure"
 
         second = c.compress(msgs, current_tokens=999999)
         assert second == msgs, (
@@ -3506,7 +3504,7 @@ class TestPreLlmFeasibilityCheck:
     LLM summarization call is skipped and the deterministic fallback is used
     instead. The skip must NOT increment _ineffective_compression_count (the
     strike counter that latches at >=2) and must NOT trip the abort branch
-    via stale _last_summary_auth_failure / _last_summary_network_failure flags.
+    via a stale auth or network summary failure.
     """
 
     def _make_messages(self, n_pairs=10, content="short reply"):
@@ -3542,9 +3540,9 @@ class TestPreLlmFeasibilityCheck:
 
     def test_skip_does_not_trip_abort_on_stale_auth_failure(self, compressor):
         """A feasibility skip must not trip the abort branch even if
-        _last_summary_auth_failure is stale True from a prior cycle."""
+        an auth summary failure is stale from a prior cycle."""
         compressor._ineffective_compression_count = 1
-        compressor._last_summary_auth_failure = True  # stale from prior failure
+        compressor._summary_failure = _SummaryFailure.ACCESS  # stale from prior failure
         msgs = self._make_messages()
 
         with patch.object(compressor, "_generate_summary") as mock_gen:

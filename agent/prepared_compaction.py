@@ -227,8 +227,8 @@ class PreparedCompaction:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._entry: Optional[PreparedSummary] = None
-        self._pending: Optional[_PendingPass] = None  # the one pass allowed to publish
+        # The running pass (the one allowed to publish), or the summary it published, or neither.
+        self._slot: _PendingPass | PreparedSummary | None = None
         self._retry_after = 0.0  # monotonic; set by a failed pass
         # Set by the first compaction that needed memory-provider context; such compactions summarise fresh.
         self._needs_provider_context = False
@@ -253,7 +253,9 @@ class PreparedCompaction:
         reason opt-in shared metrics count."""
         self._count_unspliced()
         with self._lock:
-            entry, pending, self._entry, self._pending = self._entry, self._pending, None, None
+            slot, self._slot = self._slot, None
+            entry = slot if isinstance(slot, PreparedSummary) else None
+            pending = slot if isinstance(slot, _PendingPass) else None
             if pending is not None:
                 pending.cancel(code)  # under the lock: the pass reads its cancel reason after it
             if entry is not None or pending is not None:
@@ -282,8 +284,11 @@ class PreparedCompaction:
         cleared and a running pass is cancelled: this compaction consumes or supersedes it."""
         self._count_unspliced()
         with self._lock:
-            entry, pending = self._entry, self._pending
-            self._entry = None
+            slot = self._slot
+            entry = slot if isinstance(slot, PreparedSummary) else None
+            pending = slot if isinstance(slot, _PendingPass) else None
+            if entry is not None:
+                self._slot = None
             boundaries = self._boundaries
         reason = None if eligible else _Miss(
             "provider_context" if self._needs_provider_context else "fresh_required", "fresh summary required",
@@ -307,10 +312,10 @@ class PreparedCompaction:
                     ) if pending is not None else _Miss("none", "no candidate")
         finally:
             with self._lock:
-                if self._pending is pending:
-                    self._pending = None
-                # A pass that published after the snapshot above planned on the pre-compaction transcript.
-                self._entry = None
+                # The running pass is consumed or superseded, and a summary it published after the snapshot
+                # above planned on the pre-compaction transcript: either way nothing of it may stay.
+                if self._slot is pending or isinstance(self._slot, PreparedSummary):
+                    self._slot = None
                 if pending is not None:
                     # Done already, or superseded: stop paying for it.
                     code = getattr(reason, "code", None)
@@ -364,7 +369,9 @@ class PreparedCompaction:
         finally:
             pending.on_progress = pending.on_reading = None
         with self._lock:  # a discard() between the pass publishing and this wake took the entry and cancelled
-            entry, self._entry = self._entry, None
+            entry = self._slot if isinstance(self._slot, PreparedSummary) else None
+            if entry is not None:
+                self._slot = None
             discarded = pending.cancelled.is_set()
         if discarded:
             return None, _Miss("discarded_while_waiting", "running pass discarded")
@@ -403,7 +410,7 @@ class PreparedCompaction:
             if self._blocked(agent, compressor, origin):
                 return None
             with self._lock:
-                if self._pending is not None or self._entry is not None:
+                if self._slot is not None:
                     return None  # one summary per compaction: later messages join the tail at the splice
             working, _, start, end = compressor._plan_compaction_window(messages)
             if start >= end:
@@ -425,10 +432,10 @@ class PreparedCompaction:
                     _record("skipped_busy", origin=origin)
                 return None
             with self._lock:
-                if self._pending is not None or self._entry is not None:
+                if self._slot is not None:
                     _slots.release()
                     return None
-                token = self._pending = _PendingPass(window)
+                token = self._slot = _PendingPass(window)
             from agent.memory_provider import spawn_context_thread
 
             # Profile and secret scope ride the contextvars into the pass.
@@ -441,8 +448,8 @@ class PreparedCompaction:
         except Exception:
             if token is not None:
                 with self._lock:
-                    if self._pending is token:
-                        self._pending = None
+                    if self._slot is token:
+                        self._slot = None
                 token.done.set()
                 _slots.release()
             logger.debug("prepared compaction: maybe_prepare failed", exc_info=True)
@@ -497,12 +504,10 @@ class PreparedCompaction:
             event, failure_class = "internal_error", "exception"
         finally:
             with self._lock:
-                if entry is not None and self._pending is token:
-                    event = "pass_completed"
-                if self._pending is token:
-                    self._pending = None
+                if self._slot is token:
+                    self._slot = entry
                     if entry is not None:
-                        self._entry = entry
+                        event = "pass_completed"
                     else:
                         self._retry_after = max(
                             worker._summary_failure_cooldown_until, time.monotonic() + _FAILED_PASS_BACKOFF_SECONDS,
@@ -517,10 +522,9 @@ class PreparedCompaction:
 
 def _pass_failure_class(worker: Any) -> str:
     """The class an inline attempt logs for this failed summary call: a terminal failure first."""
-    from agent.context_compressor import _TERMINAL_SUMMARY_FAILURES
-
-    terminal = next((cls for flag, cls, _ in _TERMINAL_SUMMARY_FAILURES if getattr(worker, flag, False)), None)
-    return terminal or (worker._active_compression_telemetry or {}).get("failure_class") or "summary_generation_failed"
+    if worker._summary_failure is not None:
+        return worker._summary_failure.failure_class
+    return (worker._active_compression_telemetry or {}).get("failure_class") or "summary_generation_failed"
 
 
 def release_for_agent(agent: Any) -> None:

@@ -11,6 +11,7 @@ import sqlite3
 import re
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable, Optional, Sequence
 
 from agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
@@ -754,45 +755,43 @@ def _classify_summary_failure(e: Exception, verdict: ClassifiedError) -> _Summar
     )
 
 
-# Summary failures that abort compress() regardless of abort_on_summary_failure, in precedence
-# order: (flag attribute, telemetry failure_class, user-facing warning with %d preserved messages).
-_TERMINAL_SUMMARY_FAILURES = (
-    (
-        "_last_summary_auth_failure",
+class _SummaryFailure(Enum):
+    """A summary failure that aborts compress() regardless of abort_on_summary_failure, members in precedence
+    order: (telemetry failure_class, user-facing warning with %d preserved messages)."""
+
+    ACCESS = (
         "summary_auth_failure",
         "Summary generation failed with a terminal access or quota error — aborting compression. %d "
         "message(s) preserved unchanged; the session was NOT rotated. Check the provider credential, "
         "permission, quota, or inference endpoint, then retry with /compress or start fresh with /new.",
-    ),
-    (
-        "_last_summary_network_failure",
+    )
+    NETWORK = (
         "summary_network_failure",
         "Summary generation failed with a network/connection error — aborting compression. %d message(s) "
         "preserved unchanged; the session was NOT rotated. This is transient: retry with /compress once "
         "connectivity recovers, or continue the conversation as-is.",
-    ),
-    (
-        "_last_summary_truncated_failure",
+    )
+    TRUNCATED = (
         "summary_truncated_failure",
         "Summary generation failed (output hit the token cap; summary is incomplete) — aborting compression. "
         "%d message(s) preserved unchanged; the session was NOT rotated. A truncated summary would silently "
         "lose context: retry with /compress, or raise the summarizer's output budget.",
-    ),
-    (
-        "_last_summary_empty_content_failure",
+    )
+    EMPTY_CONTENT = (
         "summary_empty_content_failure",
         "Summary generation failed (LLM returned empty content) — aborting compression. %d message(s) "
         "preserved unchanged; the session was NOT rotated. This indicates upstream provider degradation: "
         "retry with /compress once the provider recovers, or continue the conversation as-is.",
-    ),
-    (
-        "_last_summary_overload_failure",
+    )
+    OVERLOAD = (
         "summary_overload_failure",
         "Summary generation failed because the provider is overloaded — aborting compression. %d message(s) "
         "preserved unchanged; the session was NOT rotated. Retry with /compress once capacity recovers, "
         "or continue the conversation as-is.",
-    ),
-)
+    )
+
+    def __init__(self, failure_class: str, message: str) -> None:
+        self.failure_class, self.message = failure_class, message
 
 # Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer. Truncated summaries
 # (finish_reason=length) walk the same rungs on their own counter: the output cap is deterministic for an
@@ -2157,8 +2156,7 @@ class ContextCompressor(
         """Forget the rolling micro summary and its cursor/failure bookkeeping."""
         self._micro_compact_cursor = 0
         self._micro_compact_rolling_summary = ""
-        self._micro_compact_consecutive_failures = 0
-        self._micro_compact_last_failure_cursor = -1
+        self._micro_failure_streak: tuple[int, int] | None = None  # (exchange start, consecutive failures)
 
     def _emit_init_summary_once(self) -> None:
         """Emit the init log line once, on first context-length resolution (keeps __init__ non-blocking)."""
@@ -2440,10 +2438,11 @@ class ContextCompressor(
     def _persist_consecutive_overload_aborts(self) -> None:
         self._durable_write("set_compression_overload_streak", "compression overload streak", self._consecutive_overload_aborts)
 
-    def _clear_terminal_summary_failures(self) -> None:
-        """Clear every terminal summary-failure flag."""
-        for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-            setattr(self, flag, False)
+    def _note_summary_failure(self, failure: _SummaryFailure) -> None:
+        """Keep the highest-precedence terminal failure since the last clear; compress() reports that one."""
+        order = list(_SummaryFailure)
+        if self._summary_failure is None or order.index(failure) < order.index(self._summary_failure):
+            self._summary_failure = failure
 
     def _reset_consecutive_overload_aborts(self) -> None:
         """Zero the sustained-overload budget and ALWAYS write the row: the in-memory count is not
@@ -2888,8 +2887,8 @@ class ContextCompressor(
         # Per-session state (also reset by /new, /reset and session end).
         self._reset_session_compaction_state()
         # Terminal summary failures (access/quota, network, empty content, finish_reason=length): compress()
-        # must ABORT and preserve the session regardless of abort_on_summary_failure (see _TERMINAL_SUMMARY_FAILURES).
-        self._clear_terminal_summary_failures()
+        # must ABORT and preserve the session regardless of abort_on_summary_failure (see _SummaryFailure).
+        self._summary_failure: _SummaryFailure | None = None
 
     def update_from_response(self, usage: dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -3939,7 +3938,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self._clear_compression_failure_cooldown()
         self._summary_model_fallen_back = False
         self._last_summary_error = None
-        self._clear_terminal_summary_failures()
+        self._summary_failure = None
         # The provider answered a summary again: the sustained-overload budget restarts (#123167).
         self._reset_consecutive_overload_aborts()
 
@@ -4108,8 +4107,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:
-            # Field name kept for caller compatibility; now covers the whole access/quota class.
-            self._last_summary_auth_failure = True
+            self._note_summary_failure(_SummaryFailure.ACCESS)
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
             logger.error(
                 "Context compression failed: auxiliary LLM returned a non-JSON response. provider=%s "
@@ -4149,24 +4147,25 @@ Write only the summary body. Do not include any preamble or prefix."""
             # unavailable). Flag it so compress() ABORTS and preserves the session unchanged instead of
             # destroying the middle window for a placeholder marker — retrying once the provider recovers is
             # strictly better than dropping context (#29559, #25585, #94448).
-            self._last_summary_network_failure = True
+            self._note_summary_failure(_SummaryFailure.NETWORK)
         elif kind.truncated:
-            self._last_summary_truncated_failure = True
+            self._note_summary_failure(_SummaryFailure.TRUNCATED)
         elif kind.empty_content:
-            self._last_summary_empty_content_failure = True
+            self._note_summary_failure(_SummaryFailure.EMPTY_CONTENT)
         elif kind.overloaded and not access_error:
             # A 403/402 that also says "overloaded" is an auth/quota abort (#29559), not an
             # overload strike: counting it would let the next real 503 skip its grace (#115906).
             self._increment_consecutive_overload_aborts()
             # Sustained overload stops being terminal after N strikes (#123167; see the constant).
-            self._last_summary_overload_failure = (
-                self._consecutive_overload_aborts < _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
+            self._last_summary_overload_degraded = (
+                self._consecutive_overload_aborts >= _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
             )
-            self._last_summary_overload_degraded = not self._last_summary_overload_failure
             if self._last_summary_overload_degraded:
-                # The latest failure class decides: a stale network/empty/truncated/auth flag from
-                # an earlier failure (only a success clears those) must not keep aborting forever.
-                self._clear_terminal_summary_failures()
+                # The latest failure class decides: a stale network/empty/truncated/auth failure from
+                # an earlier call (only a success clears those) must not keep aborting forever.
+                self._summary_failure = None
+            else:
+                self._note_summary_failure(_SummaryFailure.OVERLOAD)
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,
@@ -5163,7 +5162,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compress_refused_would_grow = False
         self._last_summary_overload_degraded = False
         self._last_compression_made_progress = False
-        # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
+        # Do NOT reset _summary_failure: the cooldown early-return doesn't re-assert it, so a
         # reset would fall through to the destructive static fallback (#29559). Success clears them.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
         telemetry["chunk_count"] = 0
@@ -5212,16 +5211,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         Access/quota, network, truncated and empty-content failures ALWAYS abort (#29559); an overload
         aborts only until the sustained-overload escalation (#123167); otherwise
         ``abort_on_summary_failure`` decides between abort and the static fallback."""
-        terminal_failure = next(
-            ((failure_class, message) for flag, failure_class, message in _TERMINAL_SUMMARY_FAILURES if getattr(self, flag)),
-            None,
-        )
+        terminal_failure = self._summary_failure
         if terminal_failure is None and not self.abort_on_summary_failure:
             return False
         self._last_summary_dropped_count = 0  # nothing actually dropped
         self._last_summary_fallback_used = False
         self._last_compress_aborted = True
-        failure_class, message = terminal_failure or (
+        failure_class, message = (terminal_failure.failure_class, terminal_failure.message) if terminal_failure else (
             "summary_generation_aborted",
             "Summary generation failed — aborting compression (compression.abort_on_summary_failure=true). "
             "%d message(s) preserved unchanged. Conversation is frozen until the next /compress or /new.",

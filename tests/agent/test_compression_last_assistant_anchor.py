@@ -138,7 +138,7 @@ def _seed(tmp_path, tail_rows, fold, follower):
     engine.last_completion_tokens = 0
     engine._last_summary_error = None
     engine._last_compress_aborted = False
-    engine._last_summary_auth_failure = False
+    engine._summary_failure = None
     engine._last_aux_model_failure_model = None
     engine._last_aux_model_failure_error = None
     agent.context_compressor = engine

@@ -41,6 +41,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_state import SessionDB
+from agent.context_compressor import _SummaryFailure
 
 def _build_agent_with_db(
     db: SessionDB,
@@ -1611,8 +1612,7 @@ def test_late_hard_interrupt_restores_full_compressor_attempt_state_and_retry(
         "_last_summary_dropped_count": 3,
         "_last_summary_fallback_used": True,
         "_last_compress_aborted": False,
-        "_last_summary_auth_failure": True,
-        "_last_summary_network_failure": True,
+        "_summary_failure": _SummaryFailure.ACCESS,
         "_last_aux_model_failure_error": "old-aux-error",
         "_last_aux_model_failure_model": "old-aux-model",
         "_summary_model_fallen_back": True,

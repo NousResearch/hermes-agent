@@ -42,7 +42,7 @@ class _StubCompressor(ContextCompressor):
         if worker and self.read_seconds:
             from agent.local_prompt_progress import current_prompt_reading_hook
 
-            pending = self.prepared_compaction._pending
+            pending = self.prepared_compaction._slot
             wait_until(lambda: pending.on_reading is not None, what="compaction waiting on the pass")
             current_prompt_reading_hook()(self.read_seconds)  # a local server reading the prompt
             self.after_read()
@@ -102,7 +102,7 @@ def _prepare(cc, msgs, tokens: int = 19500):
     thread = pc.maybe_prepare(_agent(cc, tokens), msgs, origin="tool-batch")
     assert thread is not None, "expected a pass to start"
     thread.join(5.0)
-    entry = cc.prepared_compaction._entry
+    entry = cc.prepared_compaction._slot
     assert entry is not None
     return entry
 
@@ -229,7 +229,7 @@ def test_append_only_growth_splices_at_the_candidate_boundary_keeping_newer_mess
     for original, row in zip(kept, compressed[-len(kept):]):
         assert original["content"] in row["content"]
     assert cc._previous_summary == entry.body
-    assert cc.prepared_compaction._entry is None
+    assert not isinstance(cc.prepared_compaction._slot, pc.PreparedSummary)
 
 
 @pytest.mark.parametrize("pass_state", ["completed", "running"])
@@ -241,11 +241,12 @@ def test_growth_past_the_candidate_beyond_the_tail_budget_still_splices_keeping_
         cc.gate = threading.Event()
         running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
         assert running is not None
-        pending = cc.prepared_compaction._pending
+        pending = cc.prepared_compaction._slot
         threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None) and cc.gate.set()).start()
     else:
         _prepare(cc, msgs)
-    window = (cc.prepared_compaction._entry or cc.prepared_compaction._pending.window)
+    slot = cc.prepared_compaction._slot
+    window = slot if isinstance(slot, pc.PreparedSummary) else slot.window
     later = _grow(msgs, 24)
     _, _, start, end = cc._plan_compaction_window(later)
     assert start == window.compress_start and end > window.compress_end
@@ -262,7 +263,7 @@ def test_growth_past_the_candidate_beyond_the_tail_budget_still_splices_keeping_
     kept = later[window.compress_end:]
     for original, row in zip(kept, compressed[-len(kept):]):
         assert original["content"] in row["content"]
-    assert cc.prepared_compaction._entry is None
+    assert not isinstance(cc.prepared_compaction._slot, pc.PreparedSummary)
 
 
 @pytest.mark.parametrize("pass_state", ["completed", "running"])
@@ -274,11 +275,12 @@ def test_a_fresh_cut_before_the_candidate_boundary_still_splices_and_the_boundar
         cc.gate = threading.Event()
         running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
         assert running is not None
-        pending = cc.prepared_compaction._pending
+        pending = cc.prepared_compaction._slot
         threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None) and cc.gate.set()).start()
     else:
         _prepare(cc, msgs)
-    window = (cc.prepared_compaction._entry or cc.prepared_compaction._pending.window)
+    slot = cc.prepared_compaction._slot
+    window = slot if isinstance(slot, pc.PreparedSummary) else slot.window
     # The tail rows got cheaper since the pass planned (the no-LLM prune), so the fresh plan keeps more rows.
     later = [m if i < window.compress_end else {**m, "content": m["content"][:8]} for i, m in enumerate(_grow(msgs, 2))]
     _, _, start, end = cc._plan_compaction_window(later)
@@ -296,7 +298,7 @@ def test_a_fresh_cut_before_the_candidate_boundary_still_splices_and_the_boundar
     assert kept, "the pass planned its own tail"
     for original, row in zip(kept, compressed[-len(kept):]):
         assert original["content"] in row["content"]
-    assert cc.prepared_compaction._entry is None
+    assert not isinstance(cc.prepared_compaction._slot, pc.PreparedSummary)
 
 
 def test_in_place_text_rewrite_of_summarised_messages_keeps_the_candidate():
@@ -360,7 +362,7 @@ def test_fresh_summary_paths_ignore_and_drop_the_candidate(kwargs):
     _prepare(cc, msgs)
     cc.compress(msgs, current_tokens=cc.threshold_tokens + 1, **kwargs)
     assert [c["worker"] for c in cc.calls] == [True, False]
-    assert cc.prepared_compaction._entry is None
+    assert not isinstance(cc.prepared_compaction._slot, pc.PreparedSummary)
     # Provider context would be needed by every later compaction too: no more passes paid for and dropped.
     stopped = pc.maybe_prepare(_agent(cc), msgs, origin="test") is None
     assert stopped is ("memory_context" in kwargs)
@@ -425,7 +427,7 @@ def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
     running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     assert running is not None
     host_progress = []
-    pending = cc.prepared_compaction._pending
+    pending = cc.prepared_compaction._slot
     # Release the pass only once the compaction is waiting on it.
     threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None) and cc.gate.set()).start()
     with aux_progress_hook(lambda: host_progress.append(threading.current_thread().name)):
@@ -435,7 +437,7 @@ def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
     assert [c["worker"] for c in cc.calls] == [True], "the pass's summary was spliced, no inline call"
     assert "Summary v1" in _summary_row(compressed)["content"]
     assert host_progress == ["compaction-prepare"], "pass progress reached the waiting host"
-    assert cc.prepared_compaction._pending is None and cc.prepared_compaction._entry is None
+    assert cc.prepared_compaction._slot is None
 
 
 def test_wait_ends_at_the_host_deadline_then_summarises_inline_and_the_pass_cannot_publish():
@@ -453,7 +455,7 @@ def test_wait_ends_at_the_host_deadline_then_summarises_inline_and_the_pass_cann
 
     cc.gate.set()
     running.join(5.0)
-    assert cc.prepared_compaction._entry is None
+    assert not isinstance(cc.prepared_compaction._slot, pc.PreparedSummary)
 
 
 def test_prompt_reading_in_the_pass_extends_the_deadline_the_wait_honours():
@@ -491,7 +493,7 @@ def test_host_cancel_ends_the_wait_and_cancels_the_superseded_pass(monkeypatch):
     msgs = _messages(30)
     running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     assert running is not None
-    pending, host_cancel = cc.prepared_compaction._pending, threading.Event()
+    pending, host_cancel = cc.prepared_compaction._slot, threading.Event()
     threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None)
                      and host_cancel.set()).start()
     with aux_interrupt_protection(cancel_event=host_cancel), aux_progress_hook(lambda: None):
@@ -510,7 +512,7 @@ def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
     msgs = _messages(30)
     running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     assert running is not None
-    pending = cc.prepared_compaction._pending
+    pending = cc.prepared_compaction._slot
     threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None)
                      and cc.prepared_compaction.discard("session reset")).start()
     with aux_progress_hook(lambda: None):  # a host hook marks the moment the wait starts
@@ -518,7 +520,7 @@ def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
     assert [c["worker"] for c in cc.calls] == [False]
     cc.gate.set()
     running.join(5.0)
-    assert cc.prepared_compaction._entry is None
+    assert not isinstance(cc.prepared_compaction._slot, pc.PreparedSummary)
 
 
 @pytest.mark.parametrize("boundary", ["reset", "end", "rebind", "agent-released"])
@@ -537,7 +539,7 @@ def test_session_boundary_discards_candidate_and_running_pass(boundary):
     completed = _compressor()
     _prepare(completed, msgs)
     cross(completed, msgs)
-    assert completed.prepared_compaction._entry is None
+    assert not isinstance(completed.prepared_compaction._slot, pc.PreparedSummary)
 
     cc = _compressor()
     cc.gate = threading.Event()
@@ -546,7 +548,7 @@ def test_session_boundary_discards_candidate_and_running_pass(boundary):
     cross(cc, msgs)
     cc.gate.set()
     running.join(5.0)
-    assert cc.prepared_compaction._entry is None and cc.prepared_compaction._pending is None
+    assert cc.prepared_compaction._slot is None
 
 
 def test_same_session_rebind_keeps_the_candidate():
@@ -554,7 +556,7 @@ def test_same_session_rebind_keeps_the_candidate():
     msgs = _messages(30)
     entry = _prepare(cc, msgs)
     cc.bind_session_state(None, "S1")  # e.g. on_session_start after construction already bound S1
-    assert cc.prepared_compaction._entry is entry
+    assert cc.prepared_compaction._slot is entry
     cc.compress(_grow(msgs, 4), current_tokens=cc.threshold_tokens + 1)
     assert [c["worker"] for c in cc.calls] == [True]
 
@@ -569,7 +571,7 @@ def test_a_held_candidate_starts_no_further_pass_however_far_the_prompt_grows(mo
     plans, plan = [], cc._plan_compaction_window
     monkeypatch.setattr(cc, "_plan_compaction_window", lambda m: plans.append(1) or plan(m))
     assert pc.maybe_prepare(_agent(cc, cc.threshold_tokens - 1), _grow(msgs, 30, size=2600), origin="test") is None
-    assert plans == [] and len(cc.calls) == 1 and cc.prepared_compaction._entry is first
+    assert plans == [] and len(cc.calls) == 1 and cc.prepared_compaction._slot is first
 
 
 def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, monkeypatch):
@@ -589,7 +591,7 @@ def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, mon
     thread.join(5.0)
 
     assert call.call_count == 1
-    assert cc.prepared_compaction._entry is None
+    assert not isinstance(cc.prepared_compaction._slot, pc.PreparedSummary)
     assert cc._summary_failure_cooldown_until == 0.0 and cc._last_summary_error is None
     assert db.get_compression_failure_cooldown("S1") is None
     assert pc.maybe_prepare(_agent(cc), msgs, origin="test") is None, "backs off"
@@ -694,10 +696,10 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
 
     def run_tool(*_a, **_k):
         state = cc.prepared_compaction
-        pass_during_tool.append(state is not None and state._pending is not None)
+        pass_during_tool.append(state is not None and isinstance(state._slot, pc._PendingPass))
         tool_started.set()
         if state is not None:
-            wait_until(lambda: state._pending is None, what="the pass to finish")
+            wait_until(lambda: not isinstance(state._slot, pc._PendingPass), what="the pass to finish")
         return '{"ok": true}'
 
     agent.client.chat.completions.create.side_effect = [

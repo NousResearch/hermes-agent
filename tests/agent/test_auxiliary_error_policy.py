@@ -530,7 +530,8 @@ def test_tls_certificate_failure_keeps_compressions_session_preserving_abort():
     error = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
     with patch("agent.context_compressor.call_llm", side_effect=error):
         assert compressor.compress(msgs, current_tokens=999999, force=True) == msgs
-    assert compressor._last_summary_network_failure and compressor._last_compress_aborted
+    assert compressor._last_compression_telemetry["failure_class"] == "summary_network_failure"
+    assert compressor._last_compress_aborted
 
 
 def test_relay_connection_reset_502_keeps_compressions_session_preserving_abort():
@@ -542,7 +543,7 @@ def test_relay_connection_reset_502_keeps_compressions_session_preserving_abort(
     msgs = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(12)]
     with patch("agent.context_compressor.call_llm", side_effect=sdk(502, "upstream: connection reset by peer")):
         assert compressor.compress(msgs, current_tokens=999999, force=True) == msgs
-    assert compressor._last_summary_network_failure
+    assert compressor._last_compression_telemetry["failure_class"] == "summary_network_failure"
 
 
 def test_pinned_custom_provider_entitlement_benches_only_the_model():

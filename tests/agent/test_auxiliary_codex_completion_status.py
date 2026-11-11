@@ -65,7 +65,7 @@ def test_compressor_rejects_actual_adapter_partial_summary(monkeypatch):
     assert calls == [None]
     assert result == original and messages == original
     assert compressor._previous_summary is None
-    assert compressor._last_summary_truncated_failure is True
+    assert compressor._last_compression_telemetry["failure_class"] == "summary_truncated_failure"
     assert compressor._last_compress_aborted is True
 
 

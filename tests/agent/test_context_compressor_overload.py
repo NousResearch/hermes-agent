@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import ContextCompressor, _SummaryFailure
 
 
 class StubProviderError(Exception):
@@ -47,7 +47,7 @@ class TestSustainedOverloadEscalation:
         c = self._compressor(abort_on_summary_failure=False)
         # A stale terminal flag from one earlier network failure (only a success clears it) must
         # not pin the long-lived compressor in abort mode: the latest failure class decides.
-        c._last_summary_network_failure = True
+        c._summary_failure = _SummaryFailure.NETWORK
         msgs = self._msgs(12)
         err = StubProviderError("Error code: 403 - provider overloaded", status_code=403) if access_error else self._err()
         with patch("agent.context_compressor.call_llm", side_effect=err):

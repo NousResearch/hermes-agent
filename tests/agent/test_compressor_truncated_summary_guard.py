@@ -25,6 +25,7 @@ from agent.context_compressor import (
     ContextCompressor,
     _is_summary_refusal,
     _response_finish_reason,
+    _SummaryFailure,
 )
 
 
@@ -110,7 +111,7 @@ class TestGenerateSummaryTruncationGuard:
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result == msgs
-        assert c._last_summary_truncated_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_truncated_failure"
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
         # The partial text must never be stored for iterative updates.
@@ -136,7 +137,7 @@ class TestGenerateSummaryTruncationGuard:
         assert mock_call.call_count == 2
         assert result is not None
         assert "full summary via main model" in result
-        assert c._last_summary_truncated_failure is False
+        assert c._summary_failure is None
 
     def test_repeated_truncation_escalates_cooldown_across_turns(self):
         """#69637: a later turn (e.g. an async delegation completion arriving after the cooldown lapsed)
@@ -204,7 +205,7 @@ class TestGenerateSummaryTruncationGuard:
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result == msgs
-        assert c._last_summary_empty_content_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_empty_content_failure"
         assert c._last_compress_aborted is True
         assert c._previous_summary is None
 
@@ -258,7 +259,7 @@ class TestGenerateSummaryTruncationGuard:
             result = c.compress(msgs, current_tokens=999999, force=True)
 
         assert result == msgs
-        assert c._last_summary_empty_content_failure is True
+        assert c._last_compression_telemetry["failure_class"] == "summary_empty_content_failure"
         assert c._last_compress_aborted is True
         assert "refusal content" in (c._last_summary_error or "")
         assert c._previous_summary is None
@@ -276,7 +277,7 @@ class TestGenerateSummaryTruncationGuard:
     def test_successful_summary_clears_truncated_flag(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        c._last_summary_truncated_failure = True
+        c._summary_failure = _SummaryFailure.TRUNCATED
         c._summary_failure_cooldown_until = 0
         with patch(
             "agent.context_compressor.call_llm",
@@ -284,7 +285,7 @@ class TestGenerateSummaryTruncationGuard:
         ):
             result = c._generate_summary(_msgs(2))
         assert result is not None
-        assert c._last_summary_truncated_failure is False
+        assert c._summary_failure is None
 
 
 class TestMicroSummarizeTruncationGuard:

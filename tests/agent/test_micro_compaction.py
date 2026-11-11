@@ -306,9 +306,12 @@ class TestMicroCompaction:
         messages = _conversation()
 
         result = cc._micro_compact(list(messages))
+        cursor_after_first_failure = cc._micro_compact_cursor
+        cc._micro_compact(list(messages))
 
         assert result == messages
-        assert cc._micro_compact_consecutive_failures == 1
+        # Failures below the cap keep retrying the same exchange instead of skipping it.
+        assert cc._micro_compact_cursor == cursor_after_first_failure
 
     def test_poison_exchange_is_skipped_after_repeated_failures(self):
         """A repeatedly unsummarizable exchange must not stall every turn."""
@@ -316,13 +319,14 @@ class TestMicroCompaction:
         cc._micro_summarize_one = lambda _text: None
         messages = _conversation()
 
-        for _ in range(_MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES):
+        cc._micro_compact(list(messages))
+        stuck_at = cc._micro_compact_cursor
+        for _ in range(_MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES - 1):
             cc._micro_compact(list(messages))
 
-        # The cursor has moved past the stuck exchange and the strike count
-        # is reset, so the next turn attempts new material.
-        assert cc._micro_compact_cursor > 0
-        assert cc._micro_compact_consecutive_failures == 0
+        # The cursor has moved past the stuck exchange, so the next turn
+        # attempts new material.
+        assert cc._micro_compact_cursor > stuck_at
 
     def test_repeated_compaction_shrinks_context_and_keeps_one_marker(self):
         """The whole point: successive turns must reduce the transcript.

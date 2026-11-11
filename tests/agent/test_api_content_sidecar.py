@@ -1028,7 +1028,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         compressor.compression_count = 1
         compressor._last_summary_error = None
         compressor._last_compress_aborted = False
-        compressor._last_summary_auth_failure = False
+        compressor._summary_failure = None
         compressor._last_aux_model_failure_model = None
         compressor._last_aux_model_failure_error = None
         agent.context_compressor = compressor

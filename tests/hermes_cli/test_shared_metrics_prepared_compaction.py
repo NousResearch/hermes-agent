@@ -189,7 +189,7 @@ def test_waste_modes_say_why(monkeypatch, marks):
     # A compaction that took the summary and then aborted before splicing it: counted at the next touch.
     aborted = _compressor()
     _run_pass(aborted, msgs, "tool-batch")
-    held = aborted.prepared_compaction._entry
+    held = aborted.prepared_compaction._slot
     taken = aborted.prepared_compaction.take(msgs, held.session_id, held.compress_start, eligible=True)
     assert taken is not None
     before = len(marks)

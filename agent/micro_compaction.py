@@ -198,10 +198,6 @@ class MicroCompactionMixin:
         )
         return True
 
-    def _reset_micro_failure_tracking(self) -> None:
-        self._micro_compact_consecutive_failures = 0
-        self._micro_compact_last_failure_cursor = -1
-
     def _micro_compact(
         self, messages: list[dict[str, Any]], *, turn_session_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
@@ -266,7 +262,7 @@ class MicroCompactionMixin:
                 _telemetry("stale_generation", messages, tokens_after=_tokens_before)
                 return messages
             if defragged:
-                self._reset_micro_failure_tracking()
+                self._micro_failure_streak = None
             outcome = "defrag" if defragged else "defrag_failed"
             _telemetry(outcome, messages, tokens_after=estimate_messages_tokens_rough(messages))
             return messages
@@ -284,7 +280,7 @@ class MicroCompactionMixin:
 
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
-        self._reset_micro_failure_tracking()
+        self._micro_failure_streak = None
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
@@ -302,18 +298,17 @@ class MicroCompactionMixin:
     def _record_micro_failure(self, exchange_start: int, exchange_end: int) -> str:
         """Count a summarize failure at this cursor; skip the exchange after too many in a row."""
         # Track consecutive failures at the same cursor to avoid busy-looping every turn.
-        same_cursor = exchange_start == self._micro_compact_last_failure_cursor
-        self._micro_compact_consecutive_failures = self._micro_compact_consecutive_failures + 1 if same_cursor else 1
-        self._micro_compact_last_failure_cursor = exchange_start
-        if self._micro_compact_consecutive_failures < _cc()._MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES:
+        streak = self._micro_failure_streak
+        failures = streak[1] + 1 if streak is not None and streak[0] == exchange_start else 1
+        self._micro_failure_streak = (exchange_start, failures)
+        if failures < _cc()._MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES:
             return "summarize_failed"
         logger.info(
-            "Micro-compaction: skipping exchange at cursor %d after %d consecutive failures",
-            exchange_start, self._micro_compact_consecutive_failures,
+            "Micro-compaction: skipping exchange at cursor %d after %d consecutive failures", exchange_start, failures,
         )
         # Skip the stuck exchange; it stays in the transcript for batch compression/defrag.
         self._micro_compact_cursor = exchange_end
-        self._reset_micro_failure_tracking()
+        self._micro_failure_streak = None
         return "exchange_skipped"
 
     def _next_exchange(self, messages: list[dict[str, Any]]) -> Optional[tuple[int, int]]:

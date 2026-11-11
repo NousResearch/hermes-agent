@@ -28,7 +28,7 @@ def _agent_with_history(tmp_path, monkeypatch, in_place=False):
     compressor.compression_count = 1
     compressor.last_prompt_tokens = compressor.last_completion_tokens = 0
     compressor._last_summary_error = None
-    compressor._last_compress_aborted = compressor._last_summary_auth_failure = False
+    compressor._last_compress_aborted, compressor._summary_failure = False, None
     compressor._last_aux_model_failure_model = compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
     agent.compression_in_place = in_place

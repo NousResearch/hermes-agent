@@ -12,7 +12,7 @@ description: >-
 maintainer: tradersurfer93
 tier: community
 category: tools
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 version: "0.3.0"
 capabilities:
   provides_tools:

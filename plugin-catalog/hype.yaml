@@ -3,20 +3,20 @@
 name: hype
 title: Hype
 repo: https://github.com/asdugit/hermes-hype
-sha: "bc6869b65a480555e70e53464184efb5103033b1"
+sha: "1c7e823c5cbd7a3bfc829affe7ecdb9d5799cd0e"
 version: "1.0.0"
 description: "An engine inside a plugin: /hype reads the session itself (no prompting) and turns what it built into a launch trailer (music only by default, narration opt-in); the product is the hero and the session's real diffs, terminal output, tests and stats are the proof, verbatim. Presets: 7 styles (launch, cinematic, pixel, terminal, blueprint, comic, ink), trailer, lore and speedrun films, 30-90 s, 16:9 and 9:16, each customizable by key=value knobs (colours, font, music, energy, voice, words, logo, language) or plain words after the style (one validated change set over the preset film, cached per job); a preset plus a restructuring ask goes to the Director. Free roam: a free-text direction without a preset runs the Director engine (treatment, film script, generated scene code that is linted and dry-run, a vision critic scoring keyframes against a rubric, revisions, final cut); smaller models take a compose path over proven blueprints with schema repair and measured checks (in our trials about one point below a frontier model on the critic's 10-point scale, at a fraction of the cost). Surfaces: /hype, tools hype_render and hype_status, hermes hype CLI, a Desktop studio (pane, page, palette, status chip, tool-media card) backed by dashboard routes. Renders locally with headless Chromium and ffmpeg; original procedural music and SFX; opt-in: Blender 4.2+ for 3D shots (\"blender\" / \"use blender\"); only when the user answers yes (hermes hype install-blender, the doctor's y/N question at a terminal, or the Desktop Install button) it downloads Blender 5.2.4 LTS from download.blender.org, verifies the pinned SHA-256 and installs it per-user without admin rights (never asked in CI, cron, gateway or chat). Disclosure — reads the filmed session from state.db read-only (prompts, tool calls, terminal output, diffs, images; copies images into its job folder); opens HTML files and localhost/127.0.0.1 URLs the session produced in its own headless Chromium to screenshot the product (never starts servers, no public URLs) and reads media/3D files the session wrote; reads the tts and plugins.entries.hype sections of config.yaml read-only; sends a redacted session digest (secrets, emails, home paths; best effort, image pixels are not redacted) to the user's model via the plugin LLM API (auxiliary task hype), and Directed films make many such calls including keyframe contact-sheet images (15-30 min, a few US$ on a frontier model); only when the user asks for narration (films are music only by default) sends narration text to the user's Hermes TTS provider (Edge by default = Microsoft online); runs Chromium, ffmpeg and, only when asked, the user's own Blender as subprocesses with fixed arguments in background threads, and serves the job folder to its Chromium from a 127.0.0.1 server on a random port (render pages have no network); writes under plugin-data/hype and cache/generated/videos; dev harnesses in the package can call `hermes chat` but no plugin surface runs them; no telemetry, no self-updates, no other downloads, no credentials, no required env vars."
 maintainer: asdugit
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-docs_url: "https://github.com/asdugit/hermes-hype/blob/bc6869b65a480555e70e53464184efb5103033b1/README.md"
-image: "https://raw.githubusercontent.com/asdugit/hermes-hype/bc6869b65a480555e70e53464184efb5103033b1/docs/media/banner.jpg"
+docs_url: "https://github.com/asdugit/hermes-hype/blob/1c7e823c5cbd7a3bfc829affe7ecdb9d5799cd0e/README.md"
+image: "https://raw.githubusercontent.com/asdugit/hermes-hype/1c7e823c5cbd7a3bfc829affe7ecdb9d5799cd0e/docs/media/banner.jpg"
 screenshots:
-  - "https://raw.githubusercontent.com/asdugit/hermes-hype/bc6869b65a480555e70e53464184efb5103033b1/docs/media/hero_styles.webp"
-  - "https://raw.githubusercontent.com/asdugit/hermes-hype/bc6869b65a480555e70e53464184efb5103033b1/docs/screenshots/studio-make.png"
-  - "https://raw.githubusercontent.com/asdugit/hermes-hype/bc6869b65a480555e70e53464184efb5103033b1/docs/screenshots/studio-director.png"
-  - "https://raw.githubusercontent.com/asdugit/hermes-hype/bc6869b65a480555e70e53464184efb5103033b1/docs/screenshots/pane-live.png"
+  - "https://raw.githubusercontent.com/asdugit/hermes-hype/1c7e823c5cbd7a3bfc829affe7ecdb9d5799cd0e/docs/media/hero_styles.webp"
+  - "https://raw.githubusercontent.com/asdugit/hermes-hype/1c7e823c5cbd7a3bfc829affe7ecdb9d5799cd0e/docs/screenshots/studio-make.png"
+  - "https://raw.githubusercontent.com/asdugit/hermes-hype/1c7e823c5cbd7a3bfc829affe7ecdb9d5799cd0e/docs/screenshots/studio-director.png"
+  - "https://raw.githubusercontent.com/asdugit/hermes-hype/1c7e823c5cbd7a3bfc829affe7ecdb9d5799cd0e/docs/screenshots/pane-live.png"
 readme: true
 platforms: [windows, macos, linux]
 known_issues:

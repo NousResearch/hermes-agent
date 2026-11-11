@@ -1,0 +1,47 @@
+name: charrette
+title: Charrette
+repo: https://github.com/GuideboardLabs/charrette
+sha: "6a7163cd02442ae286b373a0ed6562bbb0ad54cb"
+description: >-
+  A whiteboard beside the chat where the board is the message and the chat is its caption.
+  You draw with a pen, a shape tool or a typed prompt; the agent reads the board the way it reads
+  a document, answers on the same surface, and can point at one particular stroke to say what it
+  means. It adds shapes, arrows, tables and charts, writes a label beside the thing it describes,
+  puts a picture on the page, asks you a question with up to three options anchored to the object
+  it is unsure about, and exports any region as an image to build an artifact from. Every object
+  records who made it and which layer it sits on, so a drawing keeps its provenance and can be
+  replayed: press replay and the board rebuilds itself stroke by stroke, camera following the pen,
+  at 0.5x to 5x. Nothing here is a screenshot of a chat. The board is a document the agent and the
+  human both write on, and the same document renders headlessly to a PNG for a report or a page.
+  Disclosure - runs a local web server, bound to 127.0.0.1:8196 by default, and prints a per-session
+  token in the URL; setting CHARRETTE_BIND and CHARRETTE_PUBLIC_BASE serves it past loopback, where
+  anyone holding that token controls the board. board_image sends the prompt or URL to the configured
+  image provider. Boards and their chat logs are JSON on disk under the plugin data directory.
+maintainer: GuideboardLabs
+tier: community
+category: desktop
+requires_hermes: ">=0.22"
+docs_url: https://github.com/GuideboardLabs/charrette#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/GuideboardLabs/charrette/6a7163cd02442ae286b373a0ed6562bbb0ad54cb/docs/media/banner.png
+platforms: []
+capabilities:
+  provides_tools:
+    - board_read
+    - board_draw
+    - board_edit
+    - board_point
+    - board_look
+    - board_ask
+    - board_image
+    - board_stroke
+    - board_capture
+    - board_assets
+    - board_scene
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CHARRETTE_PORT
+    - CHARRETTE_BIND
+    - CHARRETTE_PUBLIC_BASE
+    - CHARRETTE_WEB_TOKEN

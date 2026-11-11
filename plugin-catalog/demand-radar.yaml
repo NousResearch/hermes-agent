@@ -15,7 +15,7 @@ description: >-
 maintainer: LeonardIrimia
 tier: community
 category: tools
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/LeonardIrimia/hermes-demand-radar#readme
 version: "1.0.0"
 platforms: []

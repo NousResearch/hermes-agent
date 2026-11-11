@@ -1,20 +1,20 @@
 name: abeyance
 repo: https://github.com/0xkinno/abeyance
 subdir: abeyance
-sha: "ef7c6c1a35d7339c9f02b6a1512c9e187b7c3f8e"
+sha: "4e8ddabfa8e2a000418df97886ed58d1f9257a0b"
 title: Abeyance
-description: "Your Hermes cron jobs wait for you instead of guessing. When a scheduled run reaches a step that publishes, pushes, merges, deploys, pays, sends a message, deletes in the cloud, writes a database or destroys local work, Abeyance stops that step before it runs (pre_tool_call), keeps the work already done, freezes the run and replaces its delivered output with a card for the owner. Replying `resume CODE` checks the repo and touched files are unchanged since the card (git HEAD, branch, upstream, uncommitted changes, file hashes) and refuses with the exact change if not (pre_llm_call block, no model call); otherwise the agent's first action must be the exact parked call, which goes to Hermes's own approval gate. Single use, owner-only (stable platform ids), expires after 18 h by default, exactly-once. Subagents of a cron run are bound so a held step cannot hide there. Also /abeyance, hermes abeyance (list, show, deny, test, demo), a bundled skill, a Nightly release blueprint and a Desktop half (status chip, Waiting for you page, Resume and Drop). Disclosure: runs read-only local git (rev-parse, status) in the job's working folder to snapshot it; hashes up to 20 files the held step names plus package manifests; stores parks (the held command, its arguments, a git snapshot, step summaries with up to 300-character output excerpts) and events in <HERMES_HOME>/plugin-data/abeyance/ (SQLite); never approves a step itself, never auto-approves, never changes cron_mode; no network calls, no credentials, no telemetry, no Python dependencies."
+description: "Your Hermes cron jobs wait for you instead of guessing. When a scheduled run reaches a step that publishes, pushes, merges, deploys, pays, sends a message, deletes in the cloud, writes a database or destroys local work, Abeyance stops that step before it runs (pre_tool_call), keeps the work already done, freezes the run and replaces its delivered output with a card for the owner. Replying `resume CODE` checks the repo and touched files are unchanged since the card (git HEAD, branch, upstream, uncommitted changes, file hashes) and refuses with the exact change if not (pre_llm_call block, no model call); otherwise the agent's first action must be the exact parked call, which goes to Hermes's own approval gate. Single use, owner-only (stable platform ids), expires after 18 h by default, exactly-once. Subagents of a cron run are bound so a held step cannot hide there. Also /abeyance, hermes abeyance (list, show, deny, test, demo), a bundled skill, a Nightly release blueprint and a Desktop half (status chip, Waiting for you page, Resume and Drop). Disclosure: runs read-only local git (rev-parse, status) in the job's working folder to snapshot it, with a minimal environment (no provider keys, no user or system git config), core.fsmonitor and hooks off, no stdin, and status skipped when the repo defines filter drivers; hashes up to 20 files the held step names plus package manifests; stores parks (the held command and its arguments verbatim and not redacted, a git snapshot, step summaries with up to 300-character output excerpts) and events in <HERMES_HOME>/plugin-data/abeyance/ (SQLite); never approves a step itself, never auto-approves, never changes cron_mode; no network calls, no credentials, no telemetry, no Python dependencies."
 maintainer: 0xkinno
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/0xkinno/abeyance#readme
-version: "0.1.1"
-image: https://raw.githubusercontent.com/0xkinno/abeyance/ef7c6c1a35d7339c9f02b6a1512c9e187b7c3f8e/assets/banner.png
+version: "0.1.2"
+image: https://raw.githubusercontent.com/0xkinno/abeyance/4e8ddabfa8e2a000418df97886ed58d1f9257a0b/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/0xkinno/abeyance/ef7c6c1a35d7339c9f02b6a1512c9e187b7c3f8e/assets/screenshots/telegram-card.png
-  - https://raw.githubusercontent.com/0xkinno/abeyance/ef7c6c1a35d7339c9f02b6a1512c9e187b7c3f8e/assets/screenshots/approval-after-resume.png
-  - https://raw.githubusercontent.com/0xkinno/abeyance/ef7c6c1a35d7339c9f02b6a1512c9e187b7c3f8e/assets/screenshots/demo-cli.png
+  - https://raw.githubusercontent.com/0xkinno/abeyance/4e8ddabfa8e2a000418df97886ed58d1f9257a0b/assets/screenshots/telegram-card.png
+  - https://raw.githubusercontent.com/0xkinno/abeyance/4e8ddabfa8e2a000418df97886ed58d1f9257a0b/assets/screenshots/approval-after-resume.png
+  - https://raw.githubusercontent.com/0xkinno/abeyance/4e8ddabfa8e2a000418df97886ed58d1f9257a0b/assets/screenshots/demo-cli.png
 platforms: [linux]
 capabilities:
   provides_tools: []

@@ -1,6 +1,6 @@
 name: demand-radar
 repo: https://github.com/LeonardIrimia/hermes-demand-radar
-sha: b1bdc1d9c2100c07d4941102c4c6eaaedc6a32c0
+sha: 73f2b05c91d97217f1bfd42f38fb60538bd8e50d
 description: >-
   Prove someone wants it before you build it. Searches Stack Exchange, Hacker News and GitHub
   issues for people asking for an idea, keeps only on-topic requests (a noise gate, not a

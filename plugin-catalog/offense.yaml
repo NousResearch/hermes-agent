@@ -1,7 +1,7 @@
 name: offense
 repo: https://github.com/offense-research/offense-hermes-plugin
-sha: 0ec5ee48170986db7c70061b1127448d642e2bfc
-version: "0.2.0"
+sha: 3a426e6be1f27a551c7a6f7a8f6a9dccce57d423
+version: "0.2.1"
 description: >-
   Spin up isolated Offense security sandboxes and summon swarms of independent
   investigators against a verified staging target: register and verify control
@@ -20,7 +20,7 @@ maintainer: offense-research
 tier: community
 category: tools
 requires_hermes: ">=0.19.0"
-docs_url: https://github.com/offense-research/offense-hermes-plugin/blob/0ec5ee48170986db7c70061b1127448d642e2bfc/README.md
+docs_url: https://github.com/offense-research/offense-hermes-plugin/blob/3a426e6be1f27a551c7a6f7a8f6a9dccce57d423/README.md
 readme: true
 capabilities:
   provides_tools:

@@ -301,6 +301,7 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway.py",  # fleet restart / verify
     "hermes_cli/gateway_windows",  # Windows pause / resume
     "hermes_cli/gateway_launchd.py",
+    "hermes_cli/gateway_launchd_runtime.py",  # the macOS pause replay starts a launchd job
     "hermes_cli/gateway_migrate",
     "hermes_cli/gateway_supervised_restart.py",
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it

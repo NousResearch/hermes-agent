@@ -1,0 +1,11 @@
+name: transducer
+repo: https://github.com/arjunbagga-xyz/hermes-transducer
+sha: 3dfbf9690e7d5b500ee3f5d6076d065fcf22164a
+title: Transducer
+description: Near-ultrasonic FMCW sonar, mechanical FFT vibrometer, and true thermodynamic
+  random number generator using audio hardware.
+maintainer: arjunbagga-xyz
+tier: community
+category: tools
+version: 0.1.0
+docs_url: https://github.com/arjunbagga-xyz/hermes-transducer#readme

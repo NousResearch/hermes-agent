@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -863,11 +864,13 @@ def _inline_nonstream_hard_timeout(stale_timeout: float):
         return stale_timeout
 
 
+_InlinePhase = Enum("_InlinePhase", "RUNNING STALE CANCELLED DONE")
+
+
 class _InlineRequest:
-    """Lifecycle state for one inline non-streaming request (#75301). Every transition
-    happens under ``lock``: ``done`` stops a late timer bumping the stale streak after
-    unwind; ``cancelled`` lets an interrupt own the outcome so a racing timer can't
-    misclassify the kill as staleness; ``stale`` is the one-shot transition."""
+    """Lifecycle of one inline non-streaming request (#75301), every transition under ``lock``: DONE stops a
+    late timer bumping the stale streak after unwind; CANCELLED lets an interrupt own the outcome so a racing
+    timer can't misclassify the kill as staleness; STALE is the one-shot transition."""
 
     def __init__(self, agent, api_kwargs: dict, stale_timeout: float, call_start: float):
         self.agent = agent
@@ -875,9 +878,7 @@ class _InlineRequest:
         self.stale_timeout = stale_timeout
         self.call_start = call_start
         self.client = None
-        self.done = False
-        self.stale = False
-        self.cancelled = False
+        self.phase = _InlinePhase.RUNNING
         self.lock = threading.Lock()
         self.abort_hook = self.abort  # single bound object: identity-checked on cleanup
         self._hb_stop = threading.Event()
@@ -929,21 +930,20 @@ class _InlineRequest:
         (same contract as _RequestClientRegistry): once released the finally may
         cache the client and the NEXT call check it out."""
         with self.lock:
-            if self.done:
+            if self.phase is _InlinePhase.DONE:
                 return False
             if reason == "stale_call_kill":
-                if self.cancelled:
+                if self.phase is _InlinePhase.CANCELLED:
                     return False
-                newly_stale = not self.stale
+                newly_stale = self.phase is _InlinePhase.RUNNING
                 if newly_stale:
-                    self.stale = True
-                    # Bump BEFORE releasing: a fast retry's reset must not be
-                    # overtaken by this older timer restoring the streak.
+                    self.phase = _InlinePhase.STALE
+                    # Bump BEFORE releasing: a fast retry's reset must not be overtaken by this older timer.
                     _bump_stale_streak(self.agent)
             else:
-                # Interrupt wins the lock -> owns the outcome; a later timer
-                # must not count it as staleness.
-                self.cancelled = True
+                # Interrupt wins the lock -> owns the outcome; a later timer must not count it as staleness.
+                if self.phase is _InlinePhase.RUNNING:
+                    self.phase = _InlinePhase.CANCELLED
                 newly_stale = False
             if self.client is not None:
                 self._abort_client(self.client, reason, f"Inline request abort failed ({reason})")
@@ -955,7 +955,7 @@ class _InlineRequest:
         client = self.agent._create_request_openai_client(reason=reason, api_kwargs=self.api_kwargs)
         with self.lock:
             self.client = client
-            stale_before_dispatch = self.stale
+            stale_before_dispatch = self.phase is _InlinePhase.STALE
             if stale_before_dispatch:
                 # Timer fired during client construction: the abort found no
                 # socket, so dispatching now would open one AFTER the only
@@ -970,7 +970,7 @@ class _InlineRequest:
 
     def mark_done(self) -> None:
         with self.lock:
-            self.done = True
+            self.phase = _InlinePhase.DONE
 
     def pop_client(self):
         with self.lock:
@@ -1010,7 +1010,7 @@ def direct_api_call(agent, api_kwargs: dict):
         if getattr(agent, "_interrupt_requested", False):
             raise InterruptedError("Agent interrupted during API call") from None
         with request.lock:
-            was_stale = request.stale
+            was_stale = request.phase is _InlinePhase.STALE
         if was_stale:
             # Our own abort caused the transport error: raise a retryable
             # TimeoutError, never InterruptedError ("the user wants to stop").

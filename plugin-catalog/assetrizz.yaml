@@ -1,16 +1,18 @@
 name: assetrizz
 title: Assetrizz
 repo: https://github.com/mojomast/assetrizz-hermes
-sha: "023e61cb604343a9e74836ad471ae25439dda745"
+sha: "9afadf0159d70e0d63b073644db7ff860f0da1c9"
 subdir: ""
 description: >-
   Skill id assetrizz:assetrizz-composer. Search the assetrizz 2D game-asset
   catalog (FTS over slugs, tags, descriptions, styles, and categories) and
   compose scenes from those assets. Tools: assetrizz_search and assetrizz_scene.
-  This plugin repo is about 5.1 MB including a 4.7 MB SHA-256-pinned catalog,
-  so search works after install. The 14,641 PNGs (about 1.65 GB, 23 style
-  packs) live in https://github.com/mojomast/assetrizz and are not copied
-  into the plugins folder. Asset mode is one of on_demand (default: fetch a
+  This plugin repo is about 16 MB including a 15 MB SHA-256-pinned, scannable
+  JSONL catalog (db/assets.jsonl). On first search the plugin builds a lean
+  SQLite + FTS5 index in the plugin data directory. The 14,641 PNGs (about
+  1.65 GB, 23 style packs) live in https://github.com/mojomast/assetrizz and
+  are not copied into the plugins folder. Asset mode is one of on_demand
+  (default: fetch a
   single PNG from GitHub raw when you place, render, or preview it), local
   (you download the full library or chosen style packs once into a directory
   you pick), or offline (local files only, no network). Bulk library
@@ -33,8 +35,8 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/mojomast/assetrizz-hermes#readme
-version: "0.1.0"
-image: https://raw.githubusercontent.com/mojomast/assetrizz-hermes/023e61cb604343a9e74836ad471ae25439dda745/docs/banner.jpg
+version: "0.1.1"
+image: https://raw.githubusercontent.com/mojomast/assetrizz-hermes/9afadf0159d70e0d63b073644db7ff860f0da1c9/docs/banner.jpg
 readme: true
 platforms: []
 known_issues:

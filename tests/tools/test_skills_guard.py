@@ -437,6 +437,23 @@ class TestScanFile:
         bom.write_bytes(b"\xef\xbb\xbfimport os\n\xff\n")
         assert [fi.line for fi in scan_file(bom, "bom.py") if fi.pattern_id == "invalid_utf8"] == [2]
 
+    def test_decoded_view_keeps_the_most_severe_finding(self, tmp_path):
+        """The NUL-stripped view restores ``cp``, lifting ssh_backdoor to critical; the raw view's
+        weaker hit on the same line must not shadow it and leave the verdict at caution."""
+        f = tmp_path / "i.sh"
+        f.write_bytes(b'BLOCKED_FILES=$(c\x00p /tmp/key "$DEST/authorized_keys")\n')
+        hits = [fi for fi in scan_file(f, "i.sh", skill=True) if fi.pattern_id == "ssh_backdoor"]
+        assert [(fi.severity, fi.line) for fi in hits] == [("critical", 1)]
+
+    def test_byte_findings_count_lone_cr_as_a_line_break(self, tmp_path):
+        """invalid_utf8 / nul_byte must point at the same line numbering the pattern pass uses."""
+        bad = tmp_path / "bad.sh"
+        bad.write_bytes(b"# helper\r\xff\r")
+        assert [fi.line for fi in scan_file(bad, "bad.sh") if fi.pattern_id == "invalid_utf8"] == [2]
+        nul = tmp_path / "nul.sh"
+        nul.write_bytes(b"# helper\r\nx\x00y\r")
+        assert [fi.line for fi in scan_file(nul, "nul.sh") if fi.pattern_id == "nul_byte"] == [2]
+
     @pytest.mark.skipif(sys.version_info < (3, 12), reason="f-strings tokenize as one STRING before 3.12")
     def test_multiline_fstring_prose_is_exempt_but_its_expressions_are_not(self, tmp_path):
         f = tmp_path / "help.py"

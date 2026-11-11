@@ -722,6 +722,12 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
 # Only python_os_environ was tuned for docstring prose; every other pattern must still fire inside a
 # triple-quoted string, since wrapping a payload in one is an evasion, not a false positive.
 _DOCSTRING_EXEMPT_PATTERN_IDS = frozenset({"python_os_environ"})
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _line_at(prefix: str) -> int:
+    """1-indexed line a finding at the end of *prefix* sits on, breaking on CRLF, LF and lone CR as _scan_text does."""
+    return prefix.replace('\r\n', '\n').replace('\r', '\n').count('\n') + 1
 
 
 def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], list[Finding]]:
@@ -734,7 +740,7 @@ def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], l
         # Malformed input raises suspicion instead of silencing the scan: decode with replacement so every
         # pattern pass still runs, and flag the file (one bad byte used to exempt it entirely).
         texts = [raw.decode('utf-8-sig', errors='replace')]
-        bad_line = exc.object[:exc.start].count(b'\n') + 1  # offsets index the BOM-stripped bytes
+        bad_line = _line_at(exc.object[:exc.start].decode('latin-1'))  # offsets index the BOM-stripped bytes
         findings = [Finding("invalid_utf8", "high", "injection", rel_path, bad_line, "non-UTF-8 bytes",
                             "invalid UTF-8 decoded with replacement (possible encoding-obfuscated payload)")]
     if suffix == ".py":
@@ -753,9 +759,8 @@ def _decoded_views(raw: bytes, rel_path: str, suffix: str) -> tuple[list[str], l
                                         "(possible encoding-obfuscated payload)"))
     if '\x00' in texts[0]:
         texts.append(texts[0].replace('\x00', ''))
-        findings.append(Finding("nul_byte", "high", "obfuscation", rel_path, texts[0][:texts[0].index('\x00')]
-                                .count('\n') + 1, "NUL byte", "NUL byte in a text file (possible "
-                                "pattern-splitting obfuscation)"))
+        findings.append(Finding("nul_byte", "high", "obfuscation", rel_path, _line_at(texts[0][:texts[0].index('\x00')]),
+                                "NUL byte", "NUL byte in a text file (possible pattern-splitting obfuscation)"))
     return texts, findings
 
 
@@ -840,14 +845,20 @@ def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> li
         return []
     suffix = file_path.suffix.lower()
     texts, findings = _decoded_views(raw, rel_path, suffix)
-    primary = _scan_text(texts[0], rel_path, suffix, skill)
-    seen = {(f.pattern_id, f.line) for f in primary}
-    findings += primary  # the extra views below only add hits the primary decode missed
+    merged = _scan_text(texts[0], rel_path, suffix, skill)
+    at: dict = {}
+    for n, f in enumerate(merged):
+        at.setdefault((f.pattern_id, f.line), n)
+    # The extra views add hits the primary decode missed, and upgrade one another view scored higher:
+    # NUL-stripping can restore the token that lifts a finding to critical.
     for f in (f for text in texts[1:] for f in _scan_text(text, rel_path, suffix, skill)):
-        if (f.pattern_id, f.line) not in seen:
-            seen.add((f.pattern_id, f.line))
-            findings.append(f)
-    return findings
+        key = (f.pattern_id, f.line)
+        if key not in at:
+            at[key] = len(merged)
+            merged.append(f)
+        elif _SEVERITY_ORDER.get(f.severity, 4) < _SEVERITY_ORDER.get(merged[at[key]].severity, 4):
+            merged[at[key]] = f
+    return findings + merged
 
 
 # Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:
@@ -961,8 +972,7 @@ def format_scan_report(result: ScanResult) -> str:
     """Compact multi-line report for CLI/chat display; findings sorted critical → low."""
     lines = [f"Scan: {result.skill_name} ({result.source}/{result.trust_level})  Verdict: {result.verdict.upper()}"]
     if result.findings:
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        for f in sorted(result.findings, key=lambda f: order.get(f.severity, 4)):
+        for f in sorted(result.findings, key=lambda f: _SEVERITY_ORDER.get(f.severity, 4)):
             lines.append(f"  {f.severity.upper().ljust(8)} {f.category.ljust(14)} "
                          f"{f'{f.file}:{f.line}'.ljust(30)} \"{f.match[:60]}\"")
         lines.append("")

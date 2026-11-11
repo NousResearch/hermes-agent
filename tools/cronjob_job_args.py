@@ -437,7 +437,8 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
         return (
             f"Script file not found: {resolved_script}. "
             f"Create it in {scripts_dir}/ first.")
-    return None
+    from cron.scheduler_script import unsupported_script_extension_error
+    return unsupported_script_extension_error(resolved_script)
 
 
 def _apply_continuity(

@@ -5,6 +5,8 @@ behavior — key names, order and omission rules are pinned by tests and read by
 the model.
 """
 
+import difflib
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
@@ -311,3 +313,40 @@ def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
                                 limit: Any = DEFAULT_SEARCH_LIMIT) -> tuple[int, int]:
     """Return safe search pagination bounds for shell head/tail pipelines."""
     return max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET)), max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
+
+
+MISSING_DIR_MARK = "__HERMES_MISSING_DIR__"
+
+
+def similar_names(names: list, filename: str, dir_path: str) -> list:
+    """Up to 5 entries of ``names`` (one directory's listing) that look like ``filename``, best first."""
+    basename_no_ext = os.path.splitext(filename)[0].lower()
+    ext = os.path.splitext(filename)[1].lower()
+    lower_name = filename.lower()
+    scored: list = []  # (score, filepath) — higher is better
+    for f in names:
+        if not f:
+            continue
+        lf = f.lower()
+        score = 0
+        if lf == lower_name:
+            score = 100
+        elif os.path.splitext(f)[0].lower() == basename_no_ext:  # config.yml vs config.yaml
+            score = 90
+        elif lf.startswith(lower_name) or lower_name.startswith(lf):
+            score = 70
+        elif lower_name in lf:
+            score = 60
+        elif lf in lower_name and len(lf) > 2:
+            score = 40
+        elif ext and os.path.splitext(f)[1].lower() == ext:
+            common = set(lower_name) & set(lf)
+            if len(common) >= max(len(lower_name), len(lf)) * 0.4:
+                score = 30
+        # Near-miss spelling (AGENT.md -> AGENTS.md) the substring checks miss.
+        if score == 0 and difflib.SequenceMatcher(None, lower_name, lf).ratio() >= 0.8:
+            score = 50
+        if score > 0:
+            scored.append((score, os.path.join(dir_path, f)))
+    scored.sort(key=lambda x: -x[0])
+    return [fp for _, fp in scored[:5]]

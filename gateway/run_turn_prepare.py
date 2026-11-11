@@ -163,8 +163,8 @@ def _session_override_snapshot(override: dict) -> dict:
 def _resolve_channel_runtime(runner, source, model, runtime_kwargs) -> tuple[str, dict]:
     from gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
 
-    cfg = getattr(runner, "config", None)
-    if cfg and source is not None:
+    cfg = runner._serving_channel_config(source) if source is not None else None
+    if cfg:
         ch = _get_channel_override(
             cfg, source.platform, str(source.chat_id) if source.chat_id else "",
             thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,

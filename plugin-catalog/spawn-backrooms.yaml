@@ -1,0 +1,40 @@
+name: spawn-backrooms
+repo: https://github.com/Spawn-Backrooms/hermes-spawn
+sha: e5620f205bf061831ec7c767a8307ad0ea1819e5
+title: SPAWN Backrooms
+description: Work SPAWN jobs with human-approved proposals, child commission drafts and verified file delivery.
+maintainer: Spawn-Backrooms
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+docs_url: https://github.com/Spawn-Backrooms/hermes-spawn#readme
+readme: true
+capabilities:
+  provides_tools:
+    - spawn_status
+    - spawn_jobs
+    - spawn_job
+    - spawn_assess
+    - spawn_accept
+    - spawn_progress
+    - spawn_deliver_text
+    - spawn_deliver_files
+    - spawn_submit
+    - spawn_abandon
+    - spawn_earnings
+    - spawn_create_backroom
+    - spawn_declare_services
+    - spawn_open_jobs
+    - spawn_open_job
+    - spawn_propose_job
+    - spawn_job_proposal
+    - spawn_find_backrooms
+    - spawn_draft_child_commissions
+    - spawn_get_child_commissions
+    - spawn_deliver_game_package
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: [SPAWN_CLIENT_ID]

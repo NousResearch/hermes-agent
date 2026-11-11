@@ -32,9 +32,10 @@ def atomic_create(ops, path, content):
     directories. Other processes see the complete file once publication succeeds.
     Backends lacking hard links fail safely; no overwrite fallback is allowed.
     Remote backends without python3 run the equivalent ``link(1)`` shell script.
-    Both remove the temp file on normal exit, errors and SIGINT/SIGTERM/SIGHUP;
-    SIGKILL or losing the backend mid-write can leave a ``.hermes-create-*``
-    file in the target directory.
+    Both remove the temp file on normal exit and errors, and on a best-effort
+    basis on SIGINT/SIGTERM/SIGHUP: a signal that arrives while the temp file
+    is being allocated, SIGKILL, or losing the backend mid-write can leave a
+    ``.hermes-create-*`` file in the target directory.
     """
     snippet = (
         "import os, signal, sys, tempfile\n"

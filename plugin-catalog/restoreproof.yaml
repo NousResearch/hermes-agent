@@ -1,0 +1,33 @@
+name: restoreproof
+repo: https://github.com/Surajkumar5050/restoreproof
+sha: 02615fb696db406e288eafcda2b922ac5731da92
+title: RestoreProof
+description: "Recovery drills for real application stacks: restores a declared database backup (PostgreSQL, MySQL, MariaDB, MongoDB or SQLite) and uploads archive into an isolated Docker network, boots the app, and proves whether customers' journeys come back (every database file reference, a real user flow, recovery time and RPO), then cleans up and writes a hashed evidence report. Deterministic engine; the model never decides a verdict. Disclosure — runs the local docker CLI (argument lists, minimal environment) to create and remove containers, networks and volumes labelled restoreproof.run, each drill gated by Hermes approval bound to the contract's sha256 and the backup folder; reads the contract and backup folder you point it at (discover also reads the project folder and may write a new restoreproof.draft.yaml inside the session's working folder, never overwriting); writes evidence under its plugin data directory; only the user-typed /drill demo builds a demo app image and pulls database and probe images from Docker Hub; no network calls of its own and no telemetry."
+maintainer: Surajkumar5050
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Surajkumar5050/restoreproof#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/story.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/live-drill.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/get-started.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/report.jpg
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/screens/desktop-card.png
+  - https://raw.githubusercontent.com/Surajkumar5050/restoreproof/02615fb696db406e288eafcda2b922ac5731da92/assets/pipeline.png
+readme: true
+capabilities:
+  provides_tools:
+    - restoreproof_discover
+    - restoreproof_plan
+    - restoreproof_run_drill
+    - restoreproof_report
+    - restoreproof_compare
+    - restoreproof_history
+    - restoreproof_cleanup
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

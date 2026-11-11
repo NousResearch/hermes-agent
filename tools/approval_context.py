@@ -159,6 +159,19 @@ def _session_env(name: str) -> str:
         return os.getenv(name, "") or ""
 
 
+def prompt_authority(requester_id: str | None = None, requester_name: str | None = None,
+                     chat_type: str | None = None) -> dict:
+    """Who may answer a chat prompt raised now (``gateway.approval_actor.may_answer``): its requester,
+    ``approvals.approvers`` read here in the caller's profile scope (click callbacks run off-turn), and
+    the chat type picking the admin scope. Omitted fields are the current turn's ACTOR (who asked):
+    empty once another sender's input joined the turn, which leaves only approvers and admins."""
+    approvers = _get_approval_config().get("approvers")
+    return {"requester_id": str(_session_env("HERMES_SESSION_ACTOR_ID") if requester_id is None else requester_id),
+            "requester_name": str(_session_env("HERMES_SESSION_ACTOR_NAME") if requester_name is None else requester_name),
+            "chat_type": str(_session_env("HERMES_SESSION_CHAT_TYPE") if chat_type is None else chat_type),
+            "approvers": ["*"] if approvers is None else approvers}
+
+
 def _get_session_platform() -> str:
     """Return the current gateway platform from contextvars/env fallback."""
     return _session_env("HERMES_SESSION_PLATFORM")

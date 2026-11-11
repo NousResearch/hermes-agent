@@ -880,8 +880,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
         return session_key
 
+    async def _refused_tap(self, to: str, requester: Optional[str]) -> bool:
+        """Answer a tap ``gateway.approval_actor`` refused (left pending for its requester)."""
+        if requester:
+            from gateway.approval_actor import refusal_text
+            await self._reply_best_effort(to, refusal_text(requester), "[whatsapp_cloud] prompt refusal reply failed")
+        return bool(requester)
+
     async def _handle_clarify_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, clarify_id, choice = parts
+        from gateway.approval_actor import clarify_refusal
+        if await self._refused_tap(to, clarify_refusal(clarify_id, to, extra=self.config.extra)):
+            return True
         session_key = self._pop_tap_state(
             self._clarify_state, clarify_id,
             "[whatsapp_cloud] clarify tap with no matching state (clarify_id=%s) — likely stale; falling back to text",
@@ -924,11 +934,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
-        from gateway.approval_actor import approval_refusal, refusal_text
-        if requester := approval_refusal(self._exec_approval_state.get(approval_id) or "", to, extra=self.config.extra,
-                                         request_id=self._approval_request_ids().get(approval_id)):
-            await self._reply_best_effort(to, refusal_text(requester), "[whatsapp_cloud] approval refusal reply failed")
-            return True  # left pending for the requester
+        from gateway.approval_actor import approval_refusal
+        if await self._refused_tap(to, approval_refusal(self._exec_approval_state.get(approval_id) or "", to, extra=self.config.extra,
+                                                        request_id=self._approval_request_ids().get(approval_id), choice=choice)):
+            return True
         session_key = self._pop_tap_state(
             self._exec_approval_state, approval_id,
             "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
@@ -954,6 +963,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_slash_confirm_tap(self, to: str, inner: dict[str, Any], parts: list) -> bool:
         _, choice, confirm_id = parts
+        from gateway.approval_actor import slash_confirm_refusal
+        if await self._refused_tap(to, slash_confirm_refusal(self._slash_confirm_state.get(confirm_id) or "", confirm_id, to,
+                                                             extra=self.config.extra)):
+            return True
         session_key = self._pop_tap_state(
             self._slash_confirm_state, confirm_id,
             "[whatsapp_cloud] slash_confirm tap with no matching state (confirm_id=%s) — likely stale",

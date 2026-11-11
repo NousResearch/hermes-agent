@@ -1,0 +1,22 @@
+name: policy-backtester
+title: Policy Backtester
+repo: https://github.com/noviceadam666/policy-backtester
+sha: 2fdaade2a2e34a01b611fd074d8deb8d9853c7be
+version: "0.5.2"
+description: "A test harness for Hermes guardrails: what a rule would break, and what it would miss, on your agents' real work. hermes backtest try replays the current profile's past tool calls through a policy, names the completed cron or Kanban jobs it would have broken and the sessions it would have caught, checks it against known calls it should stop, then starts it in shadow, which logs and changes nothing; log says when every scheduled job has run untouched, and enforce blocks or hands the call to Hermes's approval gate. Enforce refuses a policy that hasn't run in shadow, would break a job, or hasn't seen every scheduled job run. Built-in guard rules keep an agent from switching its own guard off. run, diff, suggest (exemptions pinned to each broken job's exact command and folder, never applied) and check (one call, or a cases file for CI) are the tools under it. Disclosure — reads the state.db, cron/jobs.json, cron/executions.db and Kanban board databases of the profiles a command covers, read-only (SQLite mode=ro); writes its own index (<root>/backtest/index.db, 0600) and, in profiles where you promote a policy, the policy copy, promotions.jsonl, decisions.jsonl and three plugin settings; the index and log keep tool names, arguments (file bodies replaced by a length, commands unredacted) and result status, never result bodies; in shadow or enforce mode its pre_tool_call hook checks every tool call, and enforce blocks calls or sends them to Hermes's approval prompt. No network calls, no shell commands, no telemetry."
+maintainer: noviceadam666
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/noviceadam666/policy-backtester#readme
+known_issues:
+  - "Enforce is a policy gate, not a security boundary: rules see what a command says, not what it does, and code an agent writes and runs can get past them."
+  - "Enforcement runs per profile: install it and promote a policy in each profile you guard."
+  - "A backtest can't vouch for a scheduled job it never saw run; it names those jobs, and enforce waits for one completed run of each."
+  - "The install scan reports caution: the shipped policies, tests and README quote the commands the plugin exists to catch."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

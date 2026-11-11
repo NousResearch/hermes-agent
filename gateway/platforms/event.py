@@ -152,6 +152,19 @@ class MessageEvent:
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
 
+    def absorb_turn_input(self, other: "MessageEvent") -> None:
+        """One turn now carries *other*'s input too. A turn merged from two senders has no single
+        actor: ``user_id`` "" exports none, so a narrowed approval binds to approvers and admins only
+        instead of to the first sender while it carries the second sender's text."""
+        self.absorb_reply_expected(other)
+        if self.sender_id() != other.sender_id():
+            self.user_id = self.user_name = ""
+
+    def sender_id(self) -> Optional[str]:
+        """Who sent this input: ``user_id``, else the source's (a shared observed-group source has
+        no user, so its author rides only on the event)."""
+        return self.user_id if self.user_id is not None else getattr(self.source, "user_id", None)
+
     def extend_media(self, other: "MessageEvent") -> None:
         """Append *other*'s attachments (urls, types and original names) to this event's. Names are
         padded with ``""`` on either side so each stays on its own attachment; events without names

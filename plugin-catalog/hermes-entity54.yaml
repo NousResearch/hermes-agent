@@ -1,7 +1,7 @@
 name: hermes-entity54
 title: HERMES ENTITY54
 repo: https://github.com/AGENTROPOLIS-CITY-OF-AGENTS/AGENTROPOLIS-HERMES-ENTITY-54
-sha: aa0360cceb96b5dc0ee66abf14c7e3e4b2a542d1
+sha: 5124070da90005f3230b8f18410678d8f3eebe9a
 subdir: ""
 description: "Role-based authorization for Hermes Agent: OWNER, ADMIN, USER, GUEST roles, default-deny, per-tool and per-bot scoping, tamper-evident receipts, governed Linear issue creation, and versioned policy sync. Disclosure — the plugin is a local MCP server (Node.js, stdio) that reads its operator keys only from the Hermes profile environment (ENTITY54_POLICY_KEY, ENTITY54_PSEUDONYM_KEY, ENTITY54_PRINCIPAL_ID, ENTITY54_BOT_ID); keys are never in the repo and never leave the profile. It writes receipts and sanitized events to the profile data directory only. Linear issue creation calls the Linear API only after authorization, and only with approved arguments; denied requests never reach Linear. A mock Linear transport exists for demos and tests and is labelled mock in every receipt. No telemetry. No self-updating code."
 maintainer: AGENTROPOLIS

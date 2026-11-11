@@ -4620,8 +4620,14 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 channel_thread_followup=is_thread_reply and not is_dm,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
         # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        # mention like any channel. Opt-in ``thread_reply_reactions``: a thread
+        # reply that got this far is one the bot is following (it passed the
+        # channel gate), so it gets the same in-progress/done reactions — the
+        # only sign a human gets that an unmentioned follow-up was picked up.
+        if (
+            is_one_to_one_dm or is_mentioned
+            or (is_thread_reply and self._slack_thread_reply_reactions())
+        ) and self._reactions_enabled():
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.
@@ -6351,6 +6357,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     _slack_thread_require_mention = _extra_or_env_flag_getter(
         "thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION")
     _slack_disable_dms = _extra_or_env_flag_getter("disable_dms", "SLACK_DISABLE_DMS", strip=True)
+    # thread_reply_reactions: also react (eyes → check) to unmentioned thread replies the bot follows.
+    _slack_thread_reply_reactions = _extra_or_env_flag_getter(
+        "thread_reply_reactions", "SLACK_THREAD_REPLY_REACTIONS")
 
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """True when the first token is a user mention (``<@U123>``/``<@U123|name>``)
@@ -6864,6 +6873,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
     ("thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE", "lower"),
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
+    ("thread_reply_reactions", "SLACK_THREAD_REPLY_REACTIONS", "lower"),
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
     ("reaction_triggers", "SLACK_REACTION_TRIGGERS", "csv"), ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "str"),

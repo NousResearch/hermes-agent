@@ -432,7 +432,9 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
         # The shell could not run the engine at all (126 not executable, 127 not found).
         return SearchResult(error=f"Search failed: {result.stdout.strip() or 'Search error'}",
                             total_count=0)
-    if (result.exit_code == 2 or (result.exit_code == 1 and diagnostics.strip())) and not payload.strip():
+    # find's exit 1 is an error only when grep complained; permission skips alone stay empty.
+    folded = result.exit_code == 1 and diagnostics.strip() and not _is_permission_only_error(diagnostics.strip())
+    if (result.exit_code == 2 or folded) and not payload.strip():
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         if _is_permission_only_error(error_msg):
             # Pure unreadable-path failure: rg read nothing but the invocation was

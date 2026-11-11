@@ -459,3 +459,21 @@ def test_live_content_search_skips_unreadable_dir(tmp_path):
         assert str(locked) in (result.warning or "")
     finally:
         os.chmod(locked, 0o755)
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs POSIX non-root chmod")
+def test_pruned_grep_permission_only_empty_keeps_skip_warning(tmp_path):
+    """find folds a permission failure into exit 1; that empty search is not an error."""
+    root = tmp_path / ".hidden" / "repo"
+    (root / "locked").mkdir(parents=True)
+    (root / "a.py").write_text("nothing here\n")
+    (root / "locked").chmod(0)
+    try:
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        ops._has_command = lambda name, _has=ops._has_command: name != "rg" and _has(name)
+        result = ops.search("needle", path=str(root), target="content")
+    finally:
+        (root / "locked").chmod(0o755)
+    assert result.error is None and result.total_count == 0
+    assert result.warning == (
+        f"Skipped 1 unreadable path(s) with restricted permissions: {root}/locked. Results may be "
+        "incomplete; fix permissions or run as a user that can read them to include them.")

@@ -51,6 +51,7 @@ def models_dev_registry(monkeypatch):
     from agent import models_dev
 
     monkeypatch.setattr(models_dev, "_models_dev_cache", _MODELS_DEV_REGISTRY)
+    monkeypatch.setattr(models_dev, "_models_dev_cache_scope", None)  # each test runs under its own HERMES_HOME
     monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", lambda *_a, **_k: {})
 
 

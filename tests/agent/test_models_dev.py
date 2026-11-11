@@ -1,6 +1,7 @@
 """Tests for agent.models_dev — models.dev registry integration."""
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch, MagicMock
 
@@ -143,6 +144,8 @@ class TestFetchModelsDev:
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
         md._models_dev_refresh_in_flight = False
+        md._models_dev_cache_scope = None
+        md._models_dev_stash = OrderedDict()
         yield
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
@@ -180,6 +183,244 @@ class TestFetchModelsDev:
         mock_get.assert_not_called()
         mock_refresh.assert_called_once()
         assert "anthropic" in result
+
+    @patch("agent.models_dev.requests.get")
+    def test_in_memory_cache_is_scoped_to_cache_path(self, mock_get, tmp_path):
+        """Changing HERMES_HOME/cache path must not reuse another profile's cache."""
+        import agent.models_dev as md
+
+        old_path = tmp_path / "old" / "models_dev_cache.json"
+        new_path = tmp_path / "new" / "models_dev_cache.json"
+        fresh_registry = {"openai": {"id": "openai", "models": {}}}
+
+        md._models_dev_cache = SAMPLE_REGISTRY
+        md._models_dev_cache_time = time.time()
+        md._models_dev_cache_scope = (old_path, SAMPLE_REGISTRY)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = fresh_registry
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        with patch.object(md, "_get_cache_path", return_value=new_path), \
+             patch.object(md, "_disk_cache_age_seconds", return_value=None), \
+             patch.object(md, "_save_disk_cache"):
+            result = fetch_models_dev()
+
+        mock_get.assert_called_once()
+        assert result == fresh_registry
+        assert md._models_dev_cache_scope[0] == new_path
+
+    def test_switching_home_serves_each_homes_disk_cache(self, tmp_path, monkeypatch):
+        """Two HERMES_HOMEs in one process each get their own registry, never the other's."""
+        import json as _json
+
+        import agent.models_dev as md
+
+        homes = {}
+        for name in ("a", "b"):
+            home = tmp_path / name
+            home.mkdir()
+            registry = {f"provider-{name}": {"id": f"provider-{name}", "models": {}}}
+            (home / "models_dev_cache.json").write_text(_json.dumps(registry))
+            homes[name] = (home, registry)
+
+        real_load = md._load_disk_cache
+        loads = []
+        monkeypatch.setattr(md, "_load_disk_cache", lambda: loads.append(1) or real_load())
+        for name in ("a", "b", "a", "b"):
+            home, registry = homes[name]
+            monkeypatch.setattr(md, "_get_cache_path", lambda home=home: home / "models_dev_cache.json")
+            assert fetch_models_dev(allow_network=False) == registry
+        # Switching back restores the stashed registry instead of re-parsing the disk cache.
+        assert len(loads) == 2
+
+    def test_home_stash_is_bounded(self, tmp_path, monkeypatch):
+        import agent.models_dev as md
+
+        for i in range(md._MODELS_DEV_STASH_MAX + 3):
+            registry = {f"provider-{i}": {"id": f"provider-{i}", "models": {}}}
+            path = tmp_path / str(i) / "models_dev_cache.json"
+            monkeypatch.setattr(md, "_get_cache_path", lambda path=path: path)
+            monkeypatch.setattr(md, "_load_disk_cache", lambda registry=registry: registry)
+            assert fetch_models_dev(allow_network=False) == registry
+        assert len(md._models_dev_stash) == md._MODELS_DEV_STASH_MAX
+
+    def test_background_refresh_for_one_home_is_never_served_to_another(self, tmp_path):
+        """A stale-cache refresh started under home A that completes after the switch to B stays A's."""
+        import json as _json
+        import os
+
+        import agent.models_dev as md
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        stale_a = {"provider-a": {"id": "provider-a", "models": {}}}
+        disk_b = {"provider-b": {"id": "provider-b", "models": {}}}
+        refreshed_a = {"provider-a2": {"id": "provider-a2", "models": {}}}
+        home_a, home_b = tmp_path / "a", tmp_path / "b"
+        for home, registry in ((home_a, stale_a), (home_b, disk_b)):
+            home.mkdir()
+            (home / "models_dev_cache.json").write_text(_json.dumps(registry))
+        old = time.time() - md._MODELS_DEV_CACHE_TTL - 60
+        os.utime(home_a / "models_dev_cache.json", (old, old))
+
+        release, fetched_for = threading.Event(), []
+
+        def network(*, conditional=False):
+            fetched_for.append(md._get_cache_path())
+            assert release.wait(10)
+            return refreshed_a, ""
+
+        def under(home, fn):
+            token = set_hermes_home_override(home)
+            try:
+                return fn()
+            finally:
+                reset_hermes_home_override(token)
+
+        def finish_refresh():
+            release.set()
+            for worker in threading.enumerate():
+                if worker.name == "models-dev-refresh":
+                    worker.join(timeout=5)
+            assert not md._models_dev_refresh_in_flight
+
+        with patch.object(md, "_fetch_models_dev_from_network", side_effect=network):
+            try:
+                assert under(home_a, fetch_models_dev) == stale_a  # stale disk: served now, refresh started
+                assert under(home_b, lambda: fetch_models_dev(allow_network=False)) == disk_b
+            finally:
+                finish_refresh()
+            for _ in range(3):
+                assert under(home_b, lambda: fetch_models_dev(allow_network=False)) == disk_b
+            assert under(home_a, lambda: fetch_models_dev(allow_network=False)) == refreshed_a
+
+        assert fetched_for == [home_a / "models_dev_cache.json"]
+        assert _json.loads((home_a / "models_dev_cache.json").read_text()) == refreshed_a
+        assert _json.loads((home_b / "models_dev_cache.json").read_text()) == disk_b
+
+    def test_registry_installed_without_scope_is_kept(self, tmp_path):
+        """A registry installed directly (no known source path) is adopted, not discarded."""
+        import agent.models_dev as md
+
+        md._models_dev_cache_scope = (tmp_path / "old" / "models_dev_cache.json", {"stale": {}})
+        md._models_dev_cache = SAMPLE_REGISTRY
+        md._models_dev_cache_time = time.time()
+
+        with patch.object(md, "_get_cache_path", return_value=tmp_path / "new" / "models_dev_cache.json"):
+            assert fetch_models_dev(allow_network=False) is SAMPLE_REGISTRY
+
+    # Interleaving regressions: another home's lookup runs to completion at a chosen point inside an
+    # A lookup. The swap runs in a real thread; it is joined at once when the scope lock is free, or
+    # after the A lookup returns when A holds the lock (it cannot run before the lock is released).
+    @staticmethod
+    def _homes(tmp_path, names):
+        import json as _json
+
+        out = {}
+        for name in names:
+            home = tmp_path / name
+            home.mkdir()
+            registry = {f"provider-{name}": {"id": f"provider-{name}", "models": {}}}
+            (home / "models_dev_cache.json").write_text(_json.dumps(registry))
+            out[name] = (home, registry)
+        return out
+
+    @staticmethod
+    def _swap_to(home, pending):
+        """Run an offline lookup under *home* in another thread (the swap of the active slot)."""
+        import agent.models_dev as md
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        def run():
+            token = set_hermes_home_override(home)
+            try:
+                md.fetch_models_dev(allow_network=False)
+            finally:
+                reset_hermes_home_override(token)
+
+        held_by_us = md._models_dev_scope_lock.locked()  # no other thread is running at this point
+        worker = threading.Thread(target=run)
+        worker.start()
+        if held_by_us:
+            pending.append(worker)  # blocked behind our lock: it runs once the lock is released
+        else:
+            worker.join()
+
+    def test_lookup_returns_own_registry_while_other_homes_swap_in(self, tmp_path, monkeypatch):
+        """A lookup for A; B activates before A's offline cache read, C before the final check."""
+        import agent.models_dev as md
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        homes = self._homes(tmp_path, "abc")
+        path_a = homes["a"][0] / "models_dev_cache.json"
+        pending, fired = [], set()
+        for name in ("b", "c"):  # B and C have been looked up before, so their registries are held
+            token = set_hermes_home_override(homes[name][0])
+            try:
+                md.fetch_models_dev(allow_network=False)
+            finally:
+                reset_hermes_home_override(token)
+
+        real_activate, real_inner = md._activate_cache_path, md._fetch_models_dev_for_current_path
+
+        def activate(path):
+            real_activate(path)
+            if path == path_a and "b" not in fired:
+                fired.add("b")
+                self._swap_to(homes["b"][0], pending)
+
+        def inner(path, *args, **kwargs):
+            result = real_inner(path, *args, **kwargs)
+            if path == path_a and "c" not in fired:
+                fired.add("c")
+                self._swap_to(homes["c"][0], pending)
+            return result
+
+        monkeypatch.setattr(md, "_activate_cache_path", activate)
+        monkeypatch.setattr(md, "_fetch_models_dev_for_current_path", inner)
+        token = set_hermes_home_override(homes["a"][0])
+        try:
+            result = md.fetch_models_dev(allow_network=False)
+        finally:
+            reset_hermes_home_override(token)
+            for worker in pending:
+                worker.join()
+        assert fired == {"b", "c"}
+        assert result == homes["a"][1]
+
+    def test_held_registry_check_and_read_are_one_step(self, tmp_path, monkeypatch):
+        """A swap between _held_registry's ownership check and its read must not hand back B's registry."""
+        import agent.models_dev as md
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        homes = self._homes(tmp_path, "ab")
+        path_a = homes["a"][0] / "models_dev_cache.json"
+        token = set_hermes_home_override(homes["a"][0])
+        try:
+            assert md.fetch_models_dev(allow_network=False) == homes["a"][1]
+        finally:
+            reset_hermes_home_override(token)
+
+        pending, fired = [], []
+        real_owns = md._owns_active_slot
+
+        def owns(path):
+            owned = real_owns(path)
+            if path == path_a and not fired:
+                fired.append(1)
+                self._swap_to(homes["b"][0], pending)
+            return owned
+
+        monkeypatch.setattr(md, "_owns_active_slot", owns)
+        try:
+            result = md._held_registry(path_a)
+        finally:
+            for worker in pending:
+                worker.join()
+        assert fired
+        assert result == homes["a"][1]
 
 
 
@@ -342,6 +583,8 @@ class TestETagConditionalGet:
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
         md._models_dev_refresh_in_flight = False
+        md._models_dev_cache_scope = None
+        md._models_dev_stash = OrderedDict()
         yield
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
@@ -591,6 +834,8 @@ class TestMirrorUrlOverride:
         md._models_dev_cache_time = 0
         md._models_dev_retry_after = 0
         md._models_dev_refresh_in_flight = False
+        md._models_dev_cache_scope = None
+        md._models_dev_stash = OrderedDict()
         yield
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0

@@ -1,0 +1,17 @@
+name: aws-manager
+title: AWS Manager
+description: Review, apply and verify EC2, Lambda and S3 actions in Hermes Desktop.
+repo: https://github.com/ParichayMago/hermes-aws-manager
+sha: 15f86da5cba690b6a077abc08b88e4e6c0ef9d2f
+maintainer: ParichayMago
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.5.0"
+screenshots:
+  - https://raw.githubusercontent.com/ParichayMago/hermes-aws-manager/15f86da5cba690b6a077abc08b88e4e6c0ef9d2f/docs/dashboard.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

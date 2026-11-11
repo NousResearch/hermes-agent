@@ -1,0 +1,32 @@
+name: bnb-airdrop-autopilot
+repo: https://github.com/sawi57003-ops/bnb-airdrop-autopilot
+sha: dbb3b2c36d994c9d1bd93b8cd3e3e308fd90b9e4
+description: >-
+  A complete system for BSC airdrops & free mints: scan for newly listed BSC
+  tokens (Dexscreener, no login), safety-audit a contract (owner, proxy,
+  approval selectors in bytecode, Sourcify verification, DEX liquidity, risk
+  rating), preview a claim via the baw CLI (never auto-executes; the user must
+  say GAS on a shown preview), and report BSC gas with a cheapest-claim
+  recommendation. Four tools: bnb.scan_airdrops, bnb.check_contract,
+  bnb.prepare_claim, bnb.gas_report. Read-only except the preview, which only
+  simulates. Disclosure — network calls go to public BSC/Ethereum/Base/Arbitrum
+  RPCs, the Dexscreener public API and Sourcify; no API keys, no credentials.
+  The safety check is an automated on-chain read, not a full audit; it cannot
+  detect honeypots or hidden taxes. It is not financial advice. Never approve
+  a contract you do not trust.
+maintainer: sawi57003-ops
+tier: community
+category: tools
+docs_url: https://github.com/sawi57003-ops/bnb-airdrop-autopilot#readme
+version: "1.0.0"
+requires_hermes: ">=0.21.3"
+platforms: []
+capabilities:
+  provides_tools:
+    - bnb.scan_airdrops
+    - bnb.check_contract
+    - bnb.prepare_claim
+    - bnb.gas_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

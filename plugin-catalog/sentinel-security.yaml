@@ -1,0 +1,16 @@
+name: sentinel-security
+title: Sentinel Security
+description: "Scans scripts before the agent runs them and blocks, asks for approval, or allows them; also hashes files. Disclosure: reads script files referenced in tool calls; appends a local audit log (sentinel-audit.jsonl); sends only a file's SHA-256 (never its contents) to virustotal.com, and only if a VT_API_KEY is configured."
+repo: https://github.com/<cogkreates>/Sentinel-Security
+sha: 44ad6f0361bd44062c168fc53bb953b76529ccb6
+version: "1.1.0"
+requires_hermes: ">=0.23.0"
+tier: community
+category: tools
+maintainer: <cogkreates>
+capabilities:
+  tools:
+    - analyze_file
+    - scan_script
+  hooks:
+    - pre_tool_call

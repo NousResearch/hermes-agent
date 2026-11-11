@@ -86,6 +86,47 @@ def test_no_tools_offered_never_fires():
     assert find_leaked_tool_call(None, TOOLS) is None
 
 
+# Hosted Nemotron 3.5 Bolt eval archive: the reasoning starts mid-call, so only the TAIL survives.
+FRAGMENT_TAILS = [
+    "The debug script ran but produced no output. Let me check what happened.\n</parameter>",
+    "The lake build works, which means mathlib is available. Let me find where the mathlib source "
+    "actually is.\n</parameter>\n</function>\n</tool_call>\n",
+    "print(res)\ncat(\"out_q sum:\", sum(res$out_q), \"\\n\")\n'\n</parameter>\n</function>\n</tool_call>\n",
+    "    def __repr__(self) -> str:\n        return f\"Graph(...)\"\n\n\nclass DiGraph:\n"
+    "</parameter>\n</function>\n</tool_call>\n",
+]
+
+
+@pytest.mark.parametrize("text", FRAGMENT_TAILS)
+def test_trailing_call_closers_without_an_opener_are_a_fragment(text):
+    leak = find_leaked_tool_call(text, TOOLS)
+    assert leak is not None
+    assert (leak.name, leak.fmt, leak.complete) == ("", "xml_fragment", False)
+    assert leak.snippet.endswith(text.rstrip()[-20:])
+    assert "cut-off" in leak.label
+
+
+@pytest.mark.parametrize("text", [
+    # Closers mid-text, followed by prose.
+    "Ran it.\n</parameter>\n</function>\nThe output shows three failing tests; fix them next.",
+    "</tool_call> is the closing tag Hermes expects; anything after it is ignored.",
+    # Closers inside code.
+    "The template ends like this:\n```xml\n</parameter>\n</function>\n</tool_call>\n```",
+    "Unclosed fence at the end:\n```\n</parameter>\n</function>",
+    "Close the block with `</tool_call>`",
+    # An opener is present (unknown tool): not a fragment, and not a named leak either.
+    "<function=launch_rockets><parameter=n>3</parameter></function>",
+])
+def test_closers_that_are_not_a_trailing_fragment_are_ignored(text):
+    assert find_leaked_tool_call(text, TOOLS) is None
+
+
+def test_full_named_call_keeps_its_name_over_the_fragment_case():
+    text = "<function=read_file>\n<parameter=path>\n/a.py\n</parameter>\n</function>\n</tool_call>\n"
+    leak = find_leaked_tool_call(text, TOOLS)
+    assert (leak.name, leak.fmt) == ("read_file", "xml_function")
+
+
 def test_earliest_call_wins_across_formats():
     text = ('to=functions.read_file {"path": "/x"}\n'
             '<tool_call>{"name": "terminal", "arguments": {}}</tool_call>')
@@ -192,6 +233,25 @@ def test_call_markup_in_content_gets_the_nudge(loop_agent):
     assert result["api_calls"] == 2
     nudge = _sent(loop_agent, 1)[-1]["content"]
     assert "read_file" in nudge and "incomplete" in nudge
+
+
+@pytest.mark.parametrize("same_tail_in_content", [False, True])
+def test_fragment_only_reasoning_stop_is_not_promoted_and_gets_the_nudge(loop_agent, same_tail_in_content):
+    from tests.agent.test_run_agent import _mock_response
+
+    tail = FRAGMENT_TAILS[0]
+    result, statuses = _run(loop_agent, [
+        _mock_response(content=tail if same_tail_in_content else "", finish_reason="stop",
+                       reasoning_content=tail),
+        _mock_response(content="The script printed nothing because main() is never called.",
+                       finish_reason="stop"),
+    ])
+
+    assert result["api_calls"] == 2
+    assert result["final_response"] == "The script printed nothing because main() is never called."
+    nudge = _sent(loop_agent, 1)[-1]["content"]
+    assert "cut off" in nudge and "NOT executed" in nudge and "``" not in nudge
+    assert any("cut-off tool call" in s for s in statuses)
 
 
 def test_budget_exhaustion_falls_through_with_a_warning(loop_agent, caplog):

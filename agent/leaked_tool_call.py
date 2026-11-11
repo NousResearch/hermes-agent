@@ -30,19 +30,29 @@ _GEMMA_QUOTED_RE = re.compile(r'<\|"\|>.*?<\|"\|>', re.DOTALL)
 _HARMONY_RE = re.compile(r"(?:^|(?<=[\s>|]))to=functions\.(" + _NAME + r")")
 _HARMONY_ARGS_RE = re.compile(r"[^\n{]{0,80}?(?:<\|message\|>)?\s*(?=\{)")
 _BARE_JSON_RE = re.compile(r'\{\s*"name"\s*:\s*"(' + _NAME + r')"\s*,\s*"(?:arguments|parameters)"\s*:')
+# The TAIL of an XML call ending the reply when the reasoning starts mid-call (seen on hosted
+# Nemotron 3.5): closers only, at the very end, with no opener anywhere in the text.
+_XML_FRAGMENT_TAIL_RE = re.compile(r"(?:\s*</(?:parameter|function|tool_call)>)+\s*\Z")
+_XML_OPENER_RE = re.compile(r"<function=|<tool_call>")
 
 _DECODER = json.JSONDecoder()
 
 
 @dataclass(frozen=True)
 class LeakedToolCall:
-    """``fmt``: ``hermes_json`` | ``xml_function`` | ``gemma`` | ``harmony`` | ``bare_json``.
-    ``complete`` is True only when the markup is closed and its arguments parse."""
+    """``fmt``: ``hermes_json`` | ``xml_function`` | ``gemma`` | ``harmony`` | ``bare_json`` |
+    ``xml_fragment``. ``complete`` is True only when the markup is closed and its arguments
+    parse. ``name`` is ``""`` for ``xml_fragment``: only the call's closing tags survived."""
 
     name: str
     fmt: str
     snippet: str
     complete: bool
+
+    @property
+    def label(self) -> str:
+        """Human wording for logs, status lines and the nudge."""
+        return f"`{self.name}` tool call" if self.name else "cut-off tool call"
 
 
 def _blank(match: re.Match) -> str:
@@ -128,6 +138,14 @@ _SCANNERS: tuple[Callable[[str], Iterator[tuple[int, str, str, bool]]], ...] = (
 )
 
 
+def _xml_fragment(text: str, masked: str) -> Optional[LeakedToolCall]:
+    # No known tool name is required here: closers at the very end of a reply are unambiguous.
+    tail = _XML_FRAGMENT_TAIL_RE.search(masked)
+    if tail is None or _XML_OPENER_RE.search(masked):
+        return None
+    return LeakedToolCall(name="", fmt="xml_fragment", snippet=text.rstrip()[-_SNIPPET_CHARS:], complete=False)
+
+
 def _known(name: str, tool_names: Collection[str]) -> Optional[str]:
     if name in tool_names:
         return name
@@ -139,11 +157,11 @@ def find_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Optional[Le
     """The earliest tool call in ``text`` written as markup naming one of ``tool_names``, or None."""
     if not isinstance(text, str) or not text or not tool_names:
         return None
-    if not any(name in text for name in tool_names):
-        return None  # cheap exit: every match must name an offered tool
     masked = _mask_code(text)
+    # Every named match must name an offered tool: skip the scanners when none appears.
+    named = any(name in text for name in tool_names)
     best: Optional[tuple[int, str, str, bool]] = None
-    for scan in _SCANNERS:
+    for scan in _SCANNERS if named else ():
         for start, raw_name, fmt, complete in scan(masked):
             name = _known(raw_name, tool_names)
             if name:  # matches arrive in order: this is the scanner's earliest
@@ -151,17 +169,21 @@ def find_leaked_tool_call(text: Any, tool_names: Collection[str]) -> Optional[Le
                     best = (start, name, fmt, complete)
                 break
     if best is None:
-        return None
+        return _xml_fragment(text, masked)
     start, name, fmt, complete = best
     return LeakedToolCall(name=name, fmt=fmt, snippet=text[start:start + _SNIPPET_CHARS], complete=complete)
 
 
 def leaked_tool_call_nudge(call: LeakedToolCall, where: str) -> str:
     """Corrective user turn: the call was NOT executed; emit it structurally or answer."""
-    partial = "" if call.complete else " (the call text was also incomplete)"
+    if not call.name:
+        what = (f"ended with the closing tags of a tool call written as text in your {where}; "
+                "the call was cut off")
+    else:
+        partial = "" if call.complete else " (the call text was also incomplete)"
+        what = f"contained a {call.label} written as text in your {where}{partial}"
     return (
-        f"[System: Your previous reply contained a `{call.name}` tool call written as text in your "
-        f"{where}{partial}. It was NOT executed: tools only run when you emit a structured tool "
-        "call. If you still need this action, issue it now as a proper tool call, not as text. "
-        "If no action is needed, give your final answer instead.]"
+        f"[System: Your previous reply {what}. It was NOT executed: tools only run when you emit "
+        "a structured tool call. If you still need this action, issue it now as a proper tool "
+        "call, not as text. If no action is needed, give your final answer instead.]"
     )

@@ -166,24 +166,24 @@ def _reprompt_leaked_tool_call(agent: Any, assistant_message: Any, finish_reason
     retries = getattr(agent, "_leaked_toolcall_retries", 0)
     if retries >= _LEAKED_TOOLCALL_MAX_RETRIES:
         logger.warning(
-            "Tool call %r left as text in the %s again after %d re-prompts — NOT executed; ending "
+            "Model left a %s as text in the %s again after %d re-prompts — NOT executed; ending "
             "the turn on the normal path (format=%s complete=%s model=%s provider=%s): %r",
-            leak.name, where, retries, leak.fmt, leak.complete, agent.model, agent.provider,
+            leak.label, where, retries, leak.fmt, leak.complete, agent.model, agent.provider,
             leak.snippet,
         )
         agent._emit_diagnostic_status(
-            f"⚠ Model wrote a `{leak.name}` tool call as text instead of calling it — not executed"
+            f"⚠ Model wrote a {leak.label} as text instead of calling it — not executed"
         )
         return False
     agent._leaked_toolcall_retries = retries + 1
     logger.warning(
-        "Tool call %r written as text in the %s with no structured tool_calls (format=%s "
+        "Model wrote a %s as text in the %s with no structured tool_calls (format=%s "
         "complete=%s finish_reason=%s) — re-prompting (%d/%d, model=%s provider=%s): %r",
-        leak.name, where, leak.fmt, leak.complete, finish_reason, agent._leaked_toolcall_retries,
+        leak.label, where, leak.fmt, leak.complete, finish_reason, agent._leaked_toolcall_retries,
         _LEAKED_TOOLCALL_MAX_RETRIES, agent.model, agent.provider, leak.snippet,
     )
     agent._emit_diagnostic_status(
-        f"↻ Model wrote a `{leak.name}` tool call as text — re-prompting "
+        f"↻ Model wrote a {leak.label} as text — re-prompting "
         f"({agent._leaked_toolcall_retries}/{_LEAKED_TOOLCALL_MAX_RETRIES})"
     )
     _append_nudge_pair(agent, messages, agent._build_assistant_message(assistant_message, finish_reason),

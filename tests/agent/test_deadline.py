@@ -803,3 +803,37 @@ def test_async_mark_happens_before_on_abandon_cleanup():
     result = asyncio.run(drive())
     assert result.timed_out
     assert seen_at_cleanup == [1]  # mark already applied when cleanup started
+
+
+# ---------------------------------------------------------------------------
+# loop-blocked diagnostics: the loop thread must be named explicitly
+# ---------------------------------------------------------------------------
+# ``faulthandler.dump_traceback(all_threads=True)`` caps its output at 100 threads, newest first,
+# so the loop thread — created before every worker — is absent from the dump exactly when a busy
+# gateway needs it. The module therefore emits that thread's stack itself, first.
+
+
+def test_blocked_loop_dump_names_the_loop_thread_past_the_faulthandler_cap(capfd):
+    from agent import deadline as deadline_mod
+
+    release = threading.Event()
+    fillers = [threading.Thread(target=release.wait, args=(30.0,), daemon=True) for _ in range(160)]
+    for thread in fillers:
+        thread.start()
+    try:
+        assert threading.active_count() > 100
+
+        async def dump_from_the_loop() -> None:
+            deadline_mod._dump_blocked_loop_diagnostics(
+                "probe", 1.0, loop_thread_ident=threading.get_ident())
+
+        asyncio.run(dump_from_the_loop())
+
+        err = capfd.readouterr().err
+        assert "=== LOOP THREAD ===" in err
+        # First: ahead of the truncated all-threads dump, and identifying the loop's own frames.
+        loop_block = err.split("=== LOOP THREAD ===", 1)[1].split("Thread 0x", 1)[0]
+        assert "run_forever" in loop_block
+        assert "dump_from_the_loop" in loop_block
+    finally:
+        release.set()

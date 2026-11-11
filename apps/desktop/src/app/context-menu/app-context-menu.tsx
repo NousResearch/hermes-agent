@@ -224,6 +224,68 @@ function hasCuttableSelection(formField: HTMLInputElement | HTMLTextAreaElement 
   return formField ? (formField.selectionStart ?? 0) !== (formField.selectionEnd ?? 0) : selectionText.length > 0
 }
 
+function copyDomImage(imageUrl: string) {
+  if (window.hermesDesktop?.contextMenuCopyImage) {
+    void window.hermesDesktop.contextMenuCopyImage()
+  } else if (imageUrl) {
+    void copyImageFromUrl(imageUrl)
+  }
+}
+
+function domImageSection(target: ContextMenuDomTarget, copy: Translations['contextMenu'], openInApp: boolean): ReactNode[] {
+  const imageIsWeb = isWebUrl(target.imageUrl)
+
+  return [
+    imageIsWeb && openInApp ? (
+      <Item
+        icon="globe"
+        key="image-open-app"
+        label={copy.link.openInApp}
+        onSelect={() =>
+          openPreview({
+            kind: 'url',
+            label: hostPathLabel(target.imageUrl),
+            source: target.imageUrl,
+            url: target.imageUrl
+          })
+        }
+      />
+    ) : null,
+    imageIsWeb ? (
+      <Item
+        icon="link-external"
+        key="image-open-external"
+        label={copy.link.openExternal}
+        onSelect={() => openExternalLink(target.imageUrl)}
+      />
+    ) : null,
+    window.hermesDesktop?.contextMenuCopyImage || target.imageUrl ? (
+      <Item
+        icon="file-media"
+        key="image-copy"
+        label={copy.image.copyImage}
+        onSelect={() => copyDomImage(target.imageUrl)}
+      />
+    ) : null,
+    target.imageUrl ? (
+      <Item
+        icon="copy"
+        key="image-copy-address"
+        label={copy.image.copyImageAddress}
+        onSelect={() => void writeClipboardText(target.imageUrl)}
+      />
+    ) : null,
+    target.imageUrl ? (
+      <Item
+        icon="save"
+        key="image-save"
+        label={copy.image.saveImageAs}
+        onSelect={() => void window.hermesDesktop?.saveImageFromUrl?.(target.imageUrl)}
+      />
+    ) : null
+  ].filter(Boolean)
+}
+
 function domSections(
   open: Extract<OpenContextMenu, { kind: 'dom' }>,
   t: Translations,
@@ -234,7 +296,6 @@ function domSections(
   const sections: ReactNode[][] = []
   const linkUrl = target.linkUrl ? normalizeExternalUrl(target.linkUrl) : ''
   const linkIsWeb = isWebUrl(linkUrl)
-  const imageIsWeb = isWebUrl(target.imageUrl)
   const openInApp = !hudForcesNativeLinks()
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
 
@@ -326,63 +387,7 @@ function domSections(
   }
 
   if (target.onImage) {
-    sections.push(
-      [
-        imageIsWeb && openInApp ? (
-          <Item
-            icon="globe"
-            key="image-open-app"
-            label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview({
-                kind: 'url',
-                label: hostPathLabel(target.imageUrl),
-                source: target.imageUrl,
-                url: target.imageUrl
-              })
-            }
-          />
-        ) : null,
-        imageIsWeb ? (
-          <Item
-            icon="link-external"
-            key="image-open-external"
-            label={copy.link.openExternal}
-            onSelect={() => openExternalLink(target.imageUrl)}
-          />
-        ) : null,
-        window.hermesDesktop?.contextMenuCopyImage || target.imageUrl ? (
-          <Item
-            icon="file-media"
-            key="image-copy"
-            label={copy.image.copyImage}
-            onSelect={() => {
-              if (window.hermesDesktop?.contextMenuCopyImage) {
-                void window.hermesDesktop.contextMenuCopyImage()
-              } else if (target.imageUrl) {
-                void copyImageFromUrl(target.imageUrl)
-              }
-            }}
-          />
-        ) : null,
-        target.imageUrl ? (
-          <Item
-            icon="copy"
-            key="image-copy-address"
-            label={copy.image.copyImageAddress}
-            onSelect={() => void writeClipboardText(target.imageUrl)}
-          />
-        ) : null,
-        target.imageUrl ? (
-          <Item
-            icon="save"
-            key="image-save"
-            label={copy.image.saveImageAs}
-            onSelect={() => void window.hermesDesktop?.saveImageFromUrl?.(target.imageUrl)}
-          />
-        ) : null
-      ].filter(Boolean)
-    )
+    sections.push(domImageSection(target, copy, openInApp))
   }
 
   if (target.editable) {

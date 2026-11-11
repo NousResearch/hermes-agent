@@ -307,4 +307,44 @@ class TestCardContract:
         body = await _click(adapter, {"user_id": "u-alice", "user_name": "alice", "post_id": "post777",
                                       "context": once})
         assert entry.result == "once" and "Approved by alice" in body["update"]["message"]
+        assert "post777" not in adapter._approval_cards  # settled → no longer tracked
         await adapter.disconnect()
+
+
+class TestApprovalCardLifecycle:
+    """Review on #124063: a pressed card was retained forever, and with ``approvals.timeout: 0`` no
+    card was ever reclaimed (the only pop lived in the expiry path)."""
+
+    @pytest.mark.asyncio
+    async def test_pressed_card_is_dropped_not_retained(self, monkeypatch):
+        adapter = _make_adapter(_ACTIONS_CFG)
+
+        async def fake_api_post(path, payload):
+            return {"id": "post777"}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        await adapter.send_exec_approval(chat_id="c", command="x", session_key=_SK)
+        assert len(adapter._approval_cards) == 1
+        adapter._mark_approval_card_resolved("post777")
+        assert adapter._approval_cards == {}
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_cards_stay_bounded_when_approvals_never_expire(self, monkeypatch):
+        import gateway.platforms.base_exec_approval as bea
+        import plugins.platforms.mattermost.adapter as mm
+
+        monkeypatch.setattr(bea, "approval_timeout_seconds", lambda: 0)  # timeout 0 → no expiry task
+        monkeypatch.setattr(mm, "_APPROVAL_CARDS_MAX", 3)
+        adapter = _make_adapter(_ACTIONS_CFG)
+        ids = iter(range(10))
+
+        async def fake_api_post(path, payload):
+            return {"id": f"post{next(ids)}"}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        for _ in range(10):
+            await adapter.send_exec_approval(chat_id="c", command="x", session_key=_SK)
+        assert list(adapter._approval_cards) == ["post7", "post8", "post9"]  # newest kept
+        await adapter.disconnect()  # resolving pops during disconnect: must not raise
+        assert adapter._approval_cards == {}

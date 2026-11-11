@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import bounded_put, cancel_task
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
@@ -44,6 +44,10 @@ _Metadata = Optional[dict[str, Any]]
 
 # Server default is 16383, but 4000 is the practical limit for readable messages.
 MAX_POST_LENGTH = 4000
+
+# Hard cap on tracked approval cards. A settled card is dropped at once; the cap is the backstop
+# for cards that never settle through this adapter (e.g. ``approvals.timeout: 0`` → no expiry).
+_APPROVAL_CARDS_MAX = 256
 
 # Channel type codes returned by the Mattermost API ("P" private → treat as group).
 _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
@@ -180,7 +184,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "resolved": False,
             "escalate_task": None, "expire_task": None,
         }
-        self._approval_cards[post_id] = card
+        bounded_put(self._approval_cards, post_id, card, _APPROVAL_CARDS_MAX)
         if escalate_after > 0:
             card["escalate_task"] = asyncio.create_task(self._escalate_approval(card, escalate_after))
         if timeout_s > 0:
@@ -253,7 +257,8 @@ class MattermostAdapter(BasePlatformAdapter):
         return aiohttp.web.json_response(body)
 
     def _mark_approval_card_resolved(self, post_id: str) -> None:
-        card = self._approval_cards.get(post_id)
+        # Settled: stop tracking it (its timers hold their own reference to ``card``).
+        card = self._approval_cards.pop(post_id, None)
         if not card:
             return
         card["resolved"] = True
@@ -472,7 +477,7 @@ class MattermostAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._closing = True
         await cancel_task(self._ws_task)
-        for card in self._approval_cards.values():  # cancel escalation/expiry timers
+        for card in list(self._approval_cards.values()):  # snapshot: resolving pops the entry
             self._mark_approval_card_resolved(card.get("post_id") or "")
         if self._approval_runner is not None:
             await self._approval_runner.cleanup()

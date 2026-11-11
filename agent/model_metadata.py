@@ -22,6 +22,7 @@ from agent.model_metadata_cache import _write_context_cache, locked_context_cach
 from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
+from agent.model_metadata_server_type import SERVER_TYPE_DISK_TTL_SECONDS, revalidated_disk_server_type, server_type_probe_legs
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -195,14 +196,15 @@ def _local_probe_disk_cache_path() -> Path:
     return _cache_file("local_endpoint_probes.json")
 
 
-def _local_probe_disk_get(kind: str, key: str) -> Optional[Any]:
+def _local_probe_disk_get(kind: str, key: str, ttl: float = _LOCAL_PROBE_DISK_TTL_SECONDS) -> Optional[Any]:
     """Return a fresh cached value for ``kind:key``, else None."""
-    return _ttl_memo_get(_local_probe_disk_cache_path(), f"{kind}:{key}", _LOCAL_PROBE_DISK_TTL_SECONDS, ts_key="ts", value_key="value")
+    return _ttl_memo_get(_local_probe_disk_cache_path(), f"{kind}:{key}", ttl, ts_key="ts", value_key="value")
 
 
 def _local_probe_disk_put(kind: str, key: str, value: Any) -> None:
-    """Persist a successful probe result. Best-effort; prunes stale entries."""
-    _ttl_memo_put(_local_probe_disk_cache_path(), f"{kind}:{key}", value, _LOCAL_PROBE_DISK_TTL_SECONDS, ts_key="ts", value_key="value", what="local probe disk cache")
+    """Persist a successful probe result. Best-effort; prunes only entries past the file's LONGEST TTL
+    (a 300 s kind's write must not drop day-long server_type verdicts; reads apply each kind's own)."""
+    _ttl_memo_put(_local_probe_disk_cache_path(), f"{kind}:{key}", value, SERVER_TYPE_DISK_TTL_SECONDS, ts_key="ts", value_key="value", what="local probe disk cache")
 
 
 def _get_model_metadata_cache_path() -> Path:
@@ -740,18 +742,12 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     # hour-long verdict cache, which would pin "undetected" after it comes back.
     if _endpoint_blackholed(server_url):
         return None
-    disk_hit = _local_probe_disk_get("server_type", server_url)
-    if isinstance(disk_hit, str):
+    # A day-long disk verdict, revalidated by its one certifying leg; None means run the waterfall.
+    disk_hit = revalidated_disk_server_type(server_url, lmstudio_url, base_url, api_key)
+    if disk_hit is not None:
         _endpoint_probe_path_cache[server_url] = (disk_hit, time.monotonic())
         return disk_hit
-    # Most specific first: (name, paths tried until one answers 200, body check). LM Studio answers /api/tags
-    # with {"error": ...} and 200, so Ollama's body must carry "models"; older llama.cpp builds have no /v1 prefix.
-    waterfall = (
-        ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: True),
-        ("ollama", (f"{server_url}/api/tags",), lambda r: "models" in r.json()),
-        ("llamacpp", (f"{server_url}/v1/props", f"{server_url}/props"), lambda r: "default_generation_settings" in r.text),
-        ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),
-    )
+    waterfall = server_type_probe_legs(server_url, lmstudio_url)
     result: Optional[str] = None
     try:
         with httpx.Client(timeout=2.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:

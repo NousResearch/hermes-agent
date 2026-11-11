@@ -189,10 +189,10 @@ export function Intro({ personality, seed }: IntroProps) {
           className="m-0 text-center leading-relaxed tracking-tight"
           style={{
             color: '#1C1A17',
-            fontSize: 'clamp(1.05rem, 1.8vw, 1.25rem)',
-            fontWeight: 650,
+            fontSize: 'clamp(1.5rem, 2.2vw, 2rem)',
+            fontWeight: 600,
             letterSpacing: '-0.035em',
-            lineHeight: 1.5
+            lineHeight: 1.2
           }}
         >
           {body}

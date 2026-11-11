@@ -54,6 +54,16 @@ def test_env_key_used_on_its_paired_openai_base_url(monkeypatch):
     assert _key_for("https://other.corp.test/v1") == "no-key-required"
 
 
+@pytest.mark.parametrize("paired_url", [
+    "https://api.kimi.com/coding",          # aux rewrites to /coding/v1
+    "https://api.minimax.io/anthropic",     # aux rewrites to /v1
+])
+def test_env_key_pairing_survives_aux_url_rewrite(monkeypatch, paired_url):
+    """The pairing is the user's requested URL; aux's internal path rewrite must not break it."""
+    monkeypatch.setenv("OPENAI_BASE_URL", paired_url)
+    assert _key_for(paired_url) == ENV_KEY
+
+
 def test_same_origin_main_key_wins_over_env_key():
     from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT, set_runtime_main
     token = set_runtime_main("custom", "m", base_url="https://api.fireworks.ai/inference/v1",

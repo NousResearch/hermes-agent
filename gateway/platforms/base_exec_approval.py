@@ -1,7 +1,7 @@
 """Shared wording for the exec-approval prompt every messaging surface renders.
 
 The button card (``BasePlatformAdapter._format_exec_approval``) and the plain-text
-``/approve`` fallback (``gateway.run._format_exec_approval_fallback``) must tell the user
+``/approve`` fallback (``gateway.run_turn_runner_approval_text._format_exec_approval_fallback``) must tell the user
 the same three things: what Hermes wants to run, why it was flagged, and that silence means
 the command does NOT run once ``approvals.timeout`` elapses. Keeping the text here means one
 edit changes every platform; adapters only wrap these strings in their own markup.
@@ -23,6 +23,7 @@ from agent.i18n import t
 # Bare strings; adapters add their own bold/HTML around them.
 EA_HEADER_TEXT = "Hermes wants to run a command that needs your OK"
 EA_REASON_LABEL_TEXT = "Why it was flagged"
+EA_EXPLAIN_LABEL_TEXT = "What it does"
 
 # Timeout notice posted when nobody answered the prompt (``{window}`` = "5 minutes").
 APPROVAL_TIMED_OUT_NOTICE = (
@@ -38,6 +39,12 @@ def ea_header_text() -> str:
 def ea_reason_label_text() -> str:
     """Localized ``EA_REASON_LABEL_TEXT``."""
     return t("gateway.exec_approval.reason_label")
+
+
+def ea_explain_label_text() -> str:
+    """Localized ``EA_EXPLAIN_LABEL_TEXT`` — heads the plain-English "what it does" line
+    (``tools/approval_explain``) on every card- and text-rendered approval prompt."""
+    return t("gateway.exec_approval.explain_label")
 
 
 def ea_smart_deny_line_text() -> str:
@@ -110,11 +117,25 @@ def fit_fenced(command: str, fit) -> tuple[str, str]:
 
 # Shortest preview a hard-capped card keeps beside the cut notice; a longer reason is shortened to leave it.
 _EA_MIN_PREVIEW = 120
+# Longest plain-English explanation a card carries. It is display sugar, so it gives way first: a
+# rambling model must never push the command's preview down on a hard-capped surface.
+_EA_EXPLAIN_BUDGET = 280
+
+
+def _ea_explain_segment(adapter: Any, explanation: str) -> str:
+    """The ``What it does: …`` line as the card renders it, or "" when there is nothing to say."""
+    text = str(explanation or "").strip()
+    if not text:
+        return ""
+    return "\n" + adapter._ea_escape(f"{ea_explain_label_text()}: {adapter._ea_fit(text, _EA_EXPLAIN_BUDGET)}")
 
 
 def exec_approval_cmd_budget(adapter: Any, description: str, smart_denied: bool) -> int:
     """Preview units left once everything else on the card is counted against ``adapter._EA_CARD_CAP``
-    (``message_len_fn`` units, after ``_ea_escape``); uncapped adapters use the fixed ``_EA_CMD_BUDGET``."""
+    (``message_len_fn`` units, after ``_ea_escape``); uncapped adapters use the fixed ``_EA_CMD_BUDGET``.
+
+    The explanation line is not counted here (adapters override this method with this exact arity);
+    ``render_exec_approval`` subtracts its cost from the budget it passes on."""
     if not adapter._EA_CARD_CAP:
         return adapter._EA_CMD_BUDGET
     fixed = adapter.message_len_fn(
@@ -125,7 +146,7 @@ def exec_approval_cmd_budget(adapter: Any, description: str, smart_denied: bool)
 
 
 def render_exec_approval(adapter: Any, command: str, description: str, smart_denied: bool,
-                         full_command_shown: bool) -> tuple[str, bool]:
+                         full_command_shown: bool, *, explanation: str = "") -> tuple[str, bool]:
     """``(card text, truncated)`` for ``adapter``'s markup. A preview that cannot hold the whole command
     says so in the card: where the full command was sent just before it (``full_command_shown``), or
     that only Deny is offered because it could not be (#62359)."""
@@ -133,13 +154,18 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
         description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)
     key = "truncated_full_above" if full_command_shown else "truncated_deny_only"
     cut_notice = "\n\n" + adapter._ea_escape(t(f"gateway.exec_approval.{key}", total=len(command)))
+    explain_segment = _ea_explain_segment(adapter, explanation)
+    # The explanation is display sugar: it gives way to the command preview, and the command preview
+    # gives way to the reason — a card the user cannot read is worse than one with no explainer.
+    explain_cost = adapter.message_len_fn(explain_segment) if explain_segment else 0
     capped = bool(adapter._EA_CARD_CAP)
     if capped:  # the reason gives way first: the deadline line and the cut notice always stay on the card
-        room = adapter._exec_approval_cmd_budget("", smart_denied) - adapter.message_len_fn(cut_notice)
+        room = (adapter._exec_approval_cmd_budget("", smart_denied)
+                - adapter.message_len_fn(cut_notice) - explain_cost)
         description = adapter._ea_fit(str(description or ""), max(0, room - _EA_MIN_PREVIEW - len("...")))
     # A ``` inside the shown preview would close a markdown fence early; a longer fence holds it, and its
     # extra backticks come out of the preview budget.
-    base = adapter._exec_approval_cmd_budget(description, smart_denied)
+    base = adapter._exec_approval_cmd_budget(description, smart_denied) - explain_cost
 
     def fit(fence: str) -> str:
         budget = base - 2 * (len(fence) - 3)
@@ -156,9 +182,44 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     code_open, code_close = (part.replace("```", fence, 1) for part in (adapter._EA_CODE_OPEN, adapter._EA_CODE_CLOSE))
     text = (f"{adapter._EA_HEADER}"
             f"{code_open}{adapter._ea_escape(preview)}{code_close}"
-            f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}{notice}"
+            f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}"
+            f"{explain_segment}{notice}"
             f"{adapter._ea_deadline_line()}")
     return (text + adapter._EA_SMART_DENY_LINE if smart_denied else text), truncated
+
+
+async def send_exec_approval(
+    adapter: Any, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
+    smart_denied: bool = False, request_id: Optional[str] = None, explanation: Optional[str] = None,
+) -> Any:
+    """Build and deliver one interactive exec-approval prompt for ``adapter`` (its
+    ``BasePlatformAdapter.send_exec_approval`` delegates here).
+
+    A press resolves via ``tools.approval.resolve_gateway_approval``. Text and choice set are shared;
+    adapters render them natively in ``_send_exec_approval_prompt``. A preview that cannot hold the
+    whole command is preceded by the full command; when that cannot be sent, the card offers Deny
+    only — nobody approves a command they could not read. ``explanation`` is the plain-English
+    "what it does" line (``tools/approval_explain``); it rides the card text and the prompt object
+    so an adapter rendering its own card can show it too."""
+    from gateway.platforms.base import ExecApprovalPrompt  # facade imports this module at import time
+
+    description = ea_default_reason_text() if description is None else description
+    command = str(command or "")
+    explanation = str(explanation or "")
+    actions = adapter._exec_approval_actions(
+        allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
+    text, truncated = render_exec_approval(adapter, command, description, smart_denied, True,
+                                           explanation=explanation)
+    # The request was created Deny-only; Approve goes live once the card or the full command shows it whole.
+    if not await card_shows_whole_command(adapter, chat_id, session_key, request_id, command, metadata, truncated):
+        text = render_exec_approval(adapter, command, description, smart_denied, False,
+                                    explanation=explanation)[0]
+        actions = [row for row in actions if row[1] == "deny"]
+    return await adapter._send_exec_approval_prompt(ExecApprovalPrompt(
+        chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
+        smart_denied=smart_denied, request_id=request_id, text=text, actions=actions,
+        explanation=explanation))
 
 
 async def card_shows_whole_command(adapter: Any, chat_id: str, session_key: str, request_id: Optional[str],

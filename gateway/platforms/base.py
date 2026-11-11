@@ -441,7 +441,7 @@ from gateway.platforms.base_delivery_ledger import (
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
-    card_shows_whole_command, render_exec_approval)
+    card_shows_whole_command, render_exec_approval, send_exec_approval as present_exec_approval)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -1583,6 +1583,9 @@ class ExecApprovalPrompt:
     command: str
     description: str
     smart_denied: bool
+    #: One plain-English line saying what the command does (``tools/approval_explain``); "" when the
+    #: explainer is off or had nothing to say. Adapters rendering their own card can show it.
+    explanation: str = ""
     metadata: Optional[dict[str, Any]] = None
     request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
 
@@ -2774,24 +2777,15 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False, request_id: Optional[str] = None,
+        smart_denied: bool = False, request_id: Optional[str] = None, explanation: Optional[str] = None,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
-        Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``.
-        A preview that cannot hold the whole command is preceded by the full command; when that cannot
-        be sent, the card offers Deny only — nobody approves a command they could not read."""
-        description = ea_default_reason_text() if description is None else description
-        command = str(command or "")
-        actions = self._exec_approval_actions(
-            allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
-        text, truncated = render_exec_approval(self, command, description, smart_denied, True)
-        # The request was created Deny-only; Approve goes live once the card or the full command shows it whole.
-        if not await card_shows_whole_command(self, chat_id, session_key, request_id, command, metadata, truncated):
-            text = render_exec_approval(self, command, description, smart_denied, False)[0]
-            actions = [row for row in actions if row[1] == "deny"]
-        return await self._send_exec_approval_prompt(ExecApprovalPrompt(
-            chat_id=chat_id, session_key=session_key, metadata=metadata, command=command, description=description,
-            smart_denied=smart_denied, request_id=request_id, text=text, actions=actions))
+        Rendered in ``gateway.platforms.base_exec_approval`` (text, preview budget, Deny-only rule);
+        an adapter supplies only its transport in ``_send_exec_approval_prompt``."""
+        return await present_exec_approval(
+            self, chat_id, command, session_key, description=description, metadata=metadata,
+            allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied,
+            request_id=request_id, explanation=explanation)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Render ``prompt`` with the platform's native buttons; the default has none."""

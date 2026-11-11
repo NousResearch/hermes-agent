@@ -151,6 +151,13 @@ VALID_HOOKS: set[str] = {
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
     # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
     "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # approval_explanation: the plain-English "what does this do" line shown on an approval prompt
+    # (tools/approval_explain). Kwargs: command (already redacted), description, pattern_key, session_key.
+    # Return one short sentence as a string (first non-empty wins); None/"" to decline and let the next
+    # producer answer. Fires only when a human is actually about to be asked, never on the
+    # unattended/auto-approved paths, and its result is display-only — it cannot allow, deny, or change
+    # the scopes offered.
+    "approval_explanation",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

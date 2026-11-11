@@ -865,6 +865,7 @@ export interface SessionResumeResult {
     choices?: string[]
     command?: string
     description?: string
+    explanation?: string
     request_id?: string
     smart_denied?: boolean
   }

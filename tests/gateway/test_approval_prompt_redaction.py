@@ -100,7 +100,7 @@ class TestApprovalCommandWiring:
 
 class TestApprovalTextFallbackContract:
     def test_smart_deny_only_advertises_one_operation(self):
-        from gateway.run import _format_exec_approval_fallback
+        from gateway.run_turn_runner_approval_text import _format_exec_approval_fallback
 
         text = _format_exec_approval_fallback(
             "rm -rf /", "dangerous deletion", "/",
@@ -112,7 +112,7 @@ class TestApprovalTextFallbackContract:
 
     def test_text_fallback_says_silence_means_no(self, monkeypatch):
         """Surfaces without buttons get the same deadline line as the button card."""
-        from gateway.run import _format_exec_approval_fallback
+        from gateway.run_turn_runner_approval_text import _format_exec_approval_fallback
 
         monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
         text = _format_exec_approval_fallback("rm -rf /", "recursive delete", "/")

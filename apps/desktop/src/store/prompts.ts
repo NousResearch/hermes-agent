@@ -87,6 +87,9 @@ export interface ApprovalRequest extends KeyedPrompt {
   choices?: string[]
   command: string
   description: string
+  /** One plain-English line saying what the command does, when the backend supplies one
+   *  (`approvals.explain`). Display-only: absent means there is nothing to add. */
+  explanation?: string
   requestId?: string
   serverRequestId?: string
   smartDenied?: boolean
@@ -101,6 +104,7 @@ interface PendingApprovalPayload {
   choices?: unknown
   command?: unknown
   description?: unknown
+  explanation?: unknown
   request_id?: unknown
   smart_denied?: boolean
 }
@@ -329,6 +333,7 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
           : undefined,
         command: typeof pending.command === 'string' ? pending.command : '',
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+        explanation: typeof pending.explanation === 'string' ? pending.explanation : undefined,
         requestId: pending.request_id,
         sessionId,
         smartDenied: pending.smart_denied === true

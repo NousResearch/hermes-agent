@@ -180,11 +180,16 @@ class TestSmartModeFiresHooks:
 
         assert result["approved"] is approved
         assert result[f"smart_{'approved' if approved else 'denied'}"] is True
-        assert [name for name, _ in captured] == [
+        # The smart verdict fires its own redacted pair; the prompt path adds the plain-English
+        # explanation (`approval_explanation`) right after — a smart DENY still asks the owner.
+        smart_hooks = [(name, kwargs) for name, kwargs in captured if name != "approval_explanation"]
+        assert [name for name, _ in smart_hooks] == [
             "pre_approval_request",
             "post_approval_response",
         ]
-        pre, post = (kwargs for _, kwargs in captured)
+        assert all(kwargs["command"] and secret not in kwargs["command"]
+                   for name, kwargs in captured if name == "approval_explanation")
+        pre, post = (kwargs for _, kwargs in smart_hooks)
         assert pre["surface"] == post["surface"] == "smart"
         assert post["choice"] == choice
         assert post["decided_by"] == "aux_llm"

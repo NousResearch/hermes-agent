@@ -487,6 +487,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). A command the classic CLI, TUI or Desktop sends to the gateway through `slash.exec` or `command.dispatch` fires it once, in the gateway, with `surface` and `platform` both `"cli"` as before (Ink and Desktop fired it through the CLI slash worker) and `session_key` the session id. A recognized command the classic CLI runs itself is reported to the gateway (`command.observe`) once it has run, and so are these TUI commands: `/help`, `/history`, `/clear`, `/new`, `/tools` (not `enable`/`disable`), `/usage` and `/reasoning` (a level once the gateway accepts it). The gateway fires it there after replying, so neither client loads plugin code; a command either client refuses fires nothing. This is a deliberate change from the classic CLI before the unified gateway, which fired it for every recognized command just before dispatch: now a command fires it only if it runs, so one that is refused or that the client has no handler for (`/handoff` in a gateway session, `/start`) fires nothing. A TUI change the gateway applies, such as `/reasoning high`, fires it once the gateway accepts the change, so after the change has taken effect. A gateway older than the client fires no hook for those commands (the classic CLI prints a one-time notice). Known gap: Desktop's own pickers, actions and dedicated RPCs (commands it answers without `slash.exec`) fire nothing yet, and neither do the other commands the TUI answers itself or through a dedicated gateway call, such as `/title`, `/undo`, `/retry`, `/model`, `/compress`, `/branch`, `/save`, `/copy`, `/queue`, `/steer`, `/bg`, `/btw`, `/skin`, `/yolo`, `/busy`, `/fast`, `/verbose`, `/rollback`, `/reload-mcp`, `/quit` and `/reasoning --global`. During a local session's turn every command that still runs fires it except `/stop`, `/approve` and `/deny`; a command that is refused (rejected while busy, or named as unavailable on the gateway) fires nothing. Each callback is timeout-bounded (`plugins.hook_callback_timeout`); each delivery waits on a thread of its own, never a worker shared with other sessions or the event loop's executor. One session's commands reach it in order, and a callback still running for that session (hung) is skipped for its later commands instead of running out of order, without holding up other sessions. Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
+| `approval_explanation` | Transform (additive) | Just before a human is prompted, to supply the plain-English "what it does" line; first non-empty string wins, `None`/`""` declines. | `command` (redacted), `description`, `pattern_key`, `session_key` | The command is already redacted; the return value is rendered on the approval card. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
 | `on_human_input_request` | Observer | The agent is about to block on a person — sudo password prompt, `clarify` question, or dangerous-command approval — on CLI, Ink TUI/Desktop, ACP and gateway platforms; return ignored. | `kind` (`"sudo"` \| `"clarify"` \| `"approval"`), `request_id`, `session_id`, `session_key`, `platform`, `prompt` | `prompt` is always force-redacted; the typed password or answer is never passed. |
@@ -1534,6 +1535,49 @@ def notify_approval(command, description, session_key, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_approval_request", notify_approval)
+```
+
+---
+
+### `approval_explanation`
+
+Fires when a human is about to be asked to approve something (a flagged command, an `execute_code` script, a protected agent-instruction write) and the prompt needs a plain-English line saying what the command is about to do. It is the extension point behind `approvals.explain`: a plugin can replace the built-in sentence with its own — a translation, a house-style phrasing, a lookup against an internal runbook, or a call to a model of its choosing.
+
+It runs only on the paths that actually prompt a human. Auto-approved commands (`approvals.mode: smart` APPROVE), cron, single-query and unattended-platform decisions never call it, so it costs nothing when nobody is being asked. The command it receives is redacted first; if that redaction fails, the hook is skipped rather than handed raw text.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    command: str,
+    description: str,
+    pattern_key: str,
+    session_key: str,
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `command` | `str` | The display command, already redacted (same text the prompt shows) |
+| `description` | `str` | The detector's reason label, e.g. `"recursive delete"` |
+| `pattern_key` | `str` | Primary pattern key that triggered the approval |
+| `session_key` | `str` | Session identifier |
+
+**Return value:** one short sentence as a `str` — the first non-empty string wins across registered callbacks. Return `None` or `""` to let the next producer answer (the auxiliary model under `approvals.explain: aux`, then the built-in families). Anything returned is display-only: it cannot allow, deny, or change the scopes offered, and the approval gate proceeds exactly as it would have.
+
+**Use cases:** internal-context explanations ("this touches the payroll share"), localisation, house style, or replacing the built-in families with a model you already trust.
+
+```python
+RUNBOOK = {
+    "recursive delete": "Deletes a build folder the deploy pipeline regenerates.",
+}
+
+def explain(command, description, **kwargs):
+    return RUNBOOK.get(description)
+
+def register(ctx):
+    ctx.register_hook("approval_explanation", explain)
 ```
 
 ---

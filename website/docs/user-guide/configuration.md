@@ -3138,6 +3138,33 @@ approvals:
 
 Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](./security.md#user-defined-deny-rules-approvalsdeny) for details.
 
+### Plain-English explanations
+
+An approval prompt shows the raw command and the detector's terse pattern label ("recursive delete"). `approvals.explain` adds one line saying what the command is actually about to do, for whoever has to answer:
+
+```yaml
+approvals:
+  explain: static     # off | static (default) | aux
+  explain_timeout: 5  # aux only: seconds the model may take
+```
+
+| Value | Where the line comes from |
+|-------|---------------------------|
+| `static` (default) | A built-in explanation per dangerous-command family — no model, no network, instant. |
+| `aux` | The `auxiliary.approval` model describes the (redacted) command with thinking off; if it fails, times out, or says nothing, the built-in line is used instead. |
+| `off` | No explanation. |
+
+The line is display-only: it never changes detection, the scopes offered, or the decision, and it is only produced when a human is actually about to be prompted (never for auto-approved or unattended commands). Plugins can supply or override it with the `approval_explanation` hook.
+
+```yaml
+# Make it free-form instead of the built-in families:
+approvals:
+  explain: aux
+auxiliary:
+  approval:
+    model: deepseek/deepseek-v4.1-flash   # any fast/cheap model; thinking is disabled unless you set it
+```
+
 ### Custom smart-approval policy
 
 `approvals.smart_policy` lets you append your own rules to the smart-approval reviewer's instructions. When set, the text is added to the guardian LLM's system prompt (the trusted channel — never alongside the untrusted command text), so you can tighten or relax its judgment for your environment without editing code:

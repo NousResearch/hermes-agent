@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  DANGEROUS COMMAND: {description}"
+  explanation_line: "What it does: {text}"
   choose_long: "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny"
   choose_short: "      [o]nce  |  [s]ession  |  [d]eny"
   prompt_long: "      Choice [o/s/a/D]: "
@@ -619,6 +620,7 @@ gateway:
   exec_approval:
     header: "Hermes wants to run a command that needs your OK"
     reason_label: "Why it was flagged"
+    explain_label: "What it does"
     default_reason: "dangerous command"
     smart_deny_line: "Smart DENY: owner override applies to this one operation only."
     smart_deny_heading: "⚠️ **Smart DENY — owner override for one operation:**"

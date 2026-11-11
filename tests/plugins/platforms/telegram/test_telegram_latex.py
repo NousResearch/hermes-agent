@@ -38,6 +38,10 @@ def _shown(formatted: str) -> str:
         # A digit on the next line or after a space is prose, never an amount: the math still maps.
         ("1. Show $x \\to y$\n2. Then $a \\le b$\n3. Done", "1. Show x → y\n2. Then a ≤ b\n3. Done"),
         ("$\\alpha$ 3 times", "α 3 times"),
+        # Adjacent macros all map, not only the first of the run.
+        ("\\alpha\\beta and \\alpha\\rightarrow\\beta", "αβ and α→β"),
+        # A link target with parentheses and a query keeps its macro; the prose after it still maps.
+        ("[plot](https://example.com/f(x)?q=\\alpha) A \\to B", "[plot](https://example.com/f(x)?q=\\alpha) A → B"),
     ],
 )
 def test_format_message_renders_latex_macros_as_unicode(markdown, visible):
@@ -70,7 +74,8 @@ async def test_rich_send_maps_bare_macros_and_keeps_math_for_the_client():
 
 @pytest.mark.parametrize(
     "markdown",
-    ["Run .\\to\\file.ps1", "%APPDATA%\\top\\cfg", "[docs](https://e.com/?q=\\to)", "see https://e.com/a?x=\\in&y"],
+    ["Run .\\to\\file.ps1", "%APPDATA%\\top\\cfg", "[docs](https://e.com/?q=\\to)", "see https://e.com/a?x=\\in&y",
+     "[plot](https://example.com/f(x)?q=\\alpha)"],
 )
 def test_rich_latex_keeps_paths_and_link_targets(markdown):
     from plugins.platforms.telegram.telegram_markdown import normalize_rich_latex

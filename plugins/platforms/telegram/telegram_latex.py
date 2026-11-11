@@ -45,17 +45,23 @@ _MACROS = {
 }
 # A macro is a backslash word that no letter or hyphen extends, never an escaped backslash or a path
 # segment: not after a word, drive, ``/``, ``.``/``..``, ``~`` or ``%VAR%``, nor before a ``\\dir`` that is
-# no macro (``\\alpha\\beta`` still maps).
+# no macro. A run of adjacent macros (``\\alpha\\beta``) is one match: the guard checks the run's start, so a
+# later macro's preceding letter (the ``a`` of ``\\alpha``) never blocks it.
 _MACRO_NAMES = "|".join(sorted(_MACROS, key=len, reverse=True))
 _MACRO_RE = re.compile(
-    r"(?<![\w:/\\.~%])\\(" + _MACRO_NAMES + r")(?![A-Za-z-]|\\(?!(?:" + _MACRO_NAMES + r")(?![A-Za-z]))\w)")
+    r"(?<![\w:/\\.~%])((?:\\(?:" + _MACRO_NAMES + r")(?![A-Za-z]))+)"
+    r"(?![A-Za-z-]|\\(?!(?:" + _MACRO_NAMES + r")(?![A-Za-z]))\w)")
+_RUN_MACRO_RE = re.compile(r"\\([A-Za-z]+)")
 # Inside a confirmed ``$...$`` span a macro may follow a letter (``$x\leq y$``): no path guard there.
 _MATH_MACRO_RE = re.compile(r"(?<!\\)\\(" + _MACRO_NAMES + r")(?![A-Za-z])")
 _INLINE_MATH_RE = re.compile(r"(?<![\\$\w])\$([^$\n]{1,120}?)\$(?![\w$])")
 # Two amounts on one line (``$5 \to $ 10``) are currency, not math: an amount after each ``$``.
 _AMOUNT_AFTER_RE = re.compile(r"[ \t]?\d")
-# Link targets and bare URLs are addresses, never prose: ``?q=\to`` must reach the server verbatim.
-_URL_RE = re.compile(r"\]\([^)\n]*\)|(?:https?|ftp)://[^\s<>]+|www\.[^\s<>]+", re.IGNORECASE)
+# Link targets and bare URLs are addresses, never prose: ``?q=\to`` must reach the server verbatim. A
+# target may hold one level of parentheses (``f(x)?q=\alpha``), as ``telegram_markdown._MD_LINK_RE`` allows.
+_URL_RE = re.compile(
+    r"\]\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|\]\([^)\n]*\)|(?:https?|ftp)://[^\s<>]+|www\.[^\s<>]+",
+    re.IGNORECASE)
 
 
 def _outside_urls(text: str, transform) -> str:
@@ -69,7 +75,7 @@ def _outside_urls(text: str, transform) -> str:
 
 
 def _map_prose_macros(text: str) -> str:
-    return _MACRO_RE.sub(lambda m: _MACROS[m.group(1)], text)
+    return _MACRO_RE.sub(lambda m: _RUN_MACRO_RE.sub(lambda mm: _MACROS[mm.group(1)], m.group(1)), text)
 
 
 def _replace_macros(text: str) -> str:

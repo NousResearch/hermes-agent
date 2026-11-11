@@ -2,7 +2,7 @@ name: ghostrun
 repo: https://github.com/kdcyberdude/ghostrun
 sha: 74b312e62d1965c80c663216f004415f3940a752
 title: GhostRun
-description: "Recreate NES games as browser games you can play and change. GhostRun helps an agent learn the game, rebuild its levels and mechanics, check the result, and create a 3D version. Disclosure — `ghostrun_engine_setup` clones https://github.com/hbofz/NeSLE.git at pinned commit 0b04d8b9 and compiles it locally with nvcc/c++; runs git, nvcc, c++, nvidia-smi and the configured Python; starts long-running background processes only on explicit tool calls (GPU training, oracle service, watcher thread that can wake the agent to edit that game's reward reader and restart its training, max 3 fixes per game); reads the ROM path you give it and the configured builder folder; a pre_tool_call hook blocks builder sessions from reaching the reference game. No credentials, no telemetry, no bundled binaries."
+description: "Recreate NES games as editable browser games. Train an AI player, rebuild levels and gameplay in Three.js, and add optional 3D visuals. Disclosure — Downloads and compiles pinned NeSLE source; runs local build and training commands; reads your ROM and project folders; starts training, a reference service and a watcher that can prompt reward edits and training restarts (up to 3 fixes per game). No credentials or telemetry."
 maintainer: kdcyberdude
 tier: community
 category: tools

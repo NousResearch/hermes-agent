@@ -202,3 +202,19 @@ def test_processes_inside_the_backend_still_receive_the_published_values(sandbox
     for key, value in LAUNCHER_VALUES.items():
         assert f"export {key}=" in args[-1] and value in args[-1], key
     assert set(child_env) == {"PATH"}
+
+
+def test_cached_driver_identity_follows_a_sandbox_hosted_screen(sandbox_screen, backend, monkeypatch):
+    """The computer_use cache compares this identity to notice a screen that came up or went away."""
+    from tools.computer_use import cua_backend
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert cua_backend.desktop_identity() == ":20"
+    backend["env_file"] = b""  # the screen is down: nothing published
+    assert cua_backend.desktop_identity() == ":0"
+    assert cua_backend.backend_display_stale(":20", cua_backend.desktop_identity())
+
+
+def test_cached_driver_identity_follows_a_gateway_hosted_screen(gateway_screen, monkeypatch):
+    from tools.computer_use import cua_backend
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert cua_backend.desktop_identity() == ":23"

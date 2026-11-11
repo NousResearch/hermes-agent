@@ -198,3 +198,26 @@ async def test_footer_never_rides_an_animation(tmp_path, monkeypatch):
 
     assert adapter.batches[-1][-1] == ("https://example.com/cat.gif", "cat")
     assert FOOTER in [*landed, *adapter.sent]
+
+
+@pytest.mark.asyncio
+async def test_no_separate_footer_when_the_captioned_photo_is_queued_for_a_reupload(tmp_path, monkeypatch):
+    """Flood control defers the photo to a later re-upload that keeps its caption (and the footer):
+    a separate footer message now would show the footer twice."""
+    photo = _photo(tmp_path, monkeypatch)
+    adapter = _Adapter()
+
+    async def deferred(chat_id, images, metadata=None, human_delay=0.0):
+        adapter.batches.append(list(images))
+        url = images[-1][0]
+        return SendResult(success=False, error="flood_control:30",
+                          raw_response={"failed": [(url, "flood_control:30")], "deferred": [url]})
+
+    adapter.send_multiple_images = deferred
+    extracted = await adapter._extract_response_content(
+        FooteredReply(f"MEDIA:{photo}", FOOTER), _event(), "k", is_ephemeral_response=False)
+    await adapter._deliver_attachments(_event(), extracted, {}, anything_sent=False, record_delivery=lambda _r: None)
+    await _streamed_turn(adapter, f"Here it is\nMEDIA:{photo}", FOOTER)
+
+    assert [batch[-1][1] for batch in adapter.batches] == [FOOTER, FOOTER]
+    assert FOOTER not in adapter.sent

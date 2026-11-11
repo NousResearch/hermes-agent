@@ -1,6 +1,6 @@
 name: plugin-scout
 repo: https://github.com/bscharenberg/plugin-scout
-sha: 7677c544b46787c3b68944f130ad9527b8c5f0cb
+sha: 92290ebc89d81a05b6202d9d0f763ff1fac2b8e2
 version: "0.1.0"
 title: Plugin Scout
 description: "A scout goes ahead, reports what's useful, and warns about trouble. Plugin Scout finds the plugins that fit how you use Hermes (each pick with its evidence), and checks: it tells you what a plugin does with your data before you install it, warns when a plugin's fine print does not fit your settings, catches plugins that clash and explains what to do. Quiet weekly note, plain-English requests, and a dashboard tab. Recommends only; never installs or enables anything. Disclosure: one network call, a GET of the public catalog index from hermes-agent.nousresearch.com (redirects to nousresearch.github.io/hermes-agent; any other address or redirect is refused), cached 6 hours. Reads, read-only, the last 30 days of session history (up to 200 sessions) to count tools used and topic keywords locally, plus Hermes memory files and the user's own (non-bundled) skill list for the same local topic matching, plus config.yaml (enabled plugins, memory provider, and settings named in plugins' known issues), other plugins' plugin.yaml and plugins/.install-metadata.json. Writes only its own plugin-data folder and plugin state. The dashboard tab adds routes under /api/plugins/plugin-scout on Hermes's own local dashboard, behind its sign-in; the only changes they make are your onboarding choices and skipped picks. Optional ai modes send topic counts and public catalog descriptions to the user's configured model; message text is never sent. No shell commands, credentials or background processes."
@@ -11,9 +11,9 @@ requires_hermes: ">=0.23.0"
 platforms: []
 docs_url: "https://github.com/bscharenberg/plugin-scout#readme"
 screenshots:
-  - https://raw.githubusercontent.com/bscharenberg/plugin-scout/7677c544b46787c3b68944f130ad9527b8c5f0cb/docs/screenshots/overview.png
-  - https://raw.githubusercontent.com/bscharenberg/plugin-scout/7677c544b46787c3b68944f130ad9527b8c5f0cb/docs/screenshots/pick-card.png
-  - https://raw.githubusercontent.com/bscharenberg/plugin-scout/7677c544b46787c3b68944f130ad9527b8c5f0cb/docs/screenshots/clash.png
+  - https://raw.githubusercontent.com/bscharenberg/plugin-scout/92290ebc89d81a05b6202d9d0f763ff1fac2b8e2/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/bscharenberg/plugin-scout/92290ebc89d81a05b6202d9d0f763ff1fac2b8e2/docs/screenshots/pick-card.png
+  - https://raw.githubusercontent.com/bscharenberg/plugin-scout/92290ebc89d81a05b6202d9d0f763ff1fac2b8e2/docs/screenshots/clash.png
 capabilities:
   provides_tools:
     - scout_conflicts

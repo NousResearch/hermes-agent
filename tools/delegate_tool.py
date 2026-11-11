@@ -182,7 +182,7 @@ def _child_compression_cap_tokens(raw) -> int | None:
 
 
 def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
-    """Optional absolute cap on the child's compaction trigger, ``delegation.compression_threshold_tokens``
+    """Pin the child's brief through compaction, then the optional absolute cap on its compaction trigger, ``delegation.compression_threshold_tokens``
     (lower of it and any global ``compression.threshold_tokens``). Off by default: a 1M-window child
     compacts where its parent does. The compressor applies the cap on first window resolution, which
     happens after construction, so setting it here is exactly equivalent to config."""
@@ -191,6 +191,7 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     cc = getattr(child, "context_compressor", None)
     if not isinstance(cc, ContextCompressor):
         return
+    cc.pin_task_turn = True  # the brief (goal, context, output contract) is the first user turn
     cap = _child_compression_cap_tokens((delegation_cfg or {}).get("compression_threshold_tokens"))
     if cap is None:
         return

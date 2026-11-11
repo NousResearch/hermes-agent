@@ -728,7 +728,8 @@ class ResponsesApiTransport(ProviderTransport):
 
         params: instructions: str — system prompt (extracted from messages[0] if not given)
         reasoning_config: dict | None — {effort, enabled} session_id: str | None — transcript/session id;
-        drives the Codex ``session_id`` header, and is the cache-scope fallback when no ``cache_scope_id``
+        drives the Codex ``session_id`` header (a delegated child sends its siblings' shared scope there
+        instead, see ``prompt_cache_scope.sibling_cache_scope``), and is the cache-scope fallback when no ``cache_scope_id``
         is given cache_scope_id: str | None — rotation-stable logical scope id (compression-lineage root;
         see agent/prompt_cache_scope.py). Preferred over session_id when deriving the prompt_cache_key
         content hash and the xAI x-grok-conv-id header; the Codex x-client-request-id header mirrors the

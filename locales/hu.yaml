@@ -170,7 +170,7 @@ gateway:
     full_logs_hint: "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
     share_hint: "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
     report_label: "Jelentés"
-    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug` parancsot az összefoglaló jelentés feltöltéséhez."
+    local_refused: "A `/debug local` azon a gépen tartja a jelentést, amelyen a Hermes fut, ezért csevegésből nem érhető el. Küldd el a `/debug upload` parancsot az összefoglaló jelentés feltöltéséhez."
   deny:
     stale: "❌ Parancs elutasítva (a jóváhagyás elavult)."
     no_pending: "Nincs elutasítható függőben lévő parancs."

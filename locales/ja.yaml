@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
-    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug` を送信してください。"
+    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug upload` を送信してください。"
   deny:
     stale: "❌ コマンドを拒否しました (承認は期限切れでした)。"
     no_pending: "拒否待ちのコマンドはありません。"

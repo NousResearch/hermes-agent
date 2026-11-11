@@ -2481,6 +2481,9 @@ export const en: Translations = {
       backupDesc: 'Zip config, memories, skills, and sessions',
       debugShare: 'Debug share',
       debugShareDesc: 'Upload a redacted report + logs, get shareable links (auto-deletes in 6h)',
+      debugShareConfirm: 'Upload debug report to a public paste?',
+      debugShareConfirmDesc:
+        'Uploads system info + full logs to a public paste service. Secrets are redacted, but your recent messages, tool output, file paths and names stay in the logs and are readable by anyone with the link. Pastes auto-delete after 6 hours.',
       debugShareRunning: 'Uploading debug report...',
       debugShareLinks: 'Share links',
       debugShareFailed: 'Debug share failed',

@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
     share_hint: "Condividi questi link con il team Hermes per ricevere supporto."
     report_label: "Report"
-    local_refused: "`/debug local` mantiene il report sulla macchina che esegue Hermes, quindi non è disponibile da una chat. Invia `/debug` per caricare il report riepilogativo."
+    local_refused: "`/debug local` mantiene il report sulla macchina che esegue Hermes, quindi non è disponibile da una chat. Invia `/debug upload` per caricare il report riepilogativo."
   deny:
     stale: "❌ Comando negato (l'approvazione era obsoleta)."
     no_pending: "Nessun comando in attesa da negare."

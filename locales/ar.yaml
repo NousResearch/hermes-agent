@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
-    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug` لرفع التقرير الموجز."
+    local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug upload` لرفع التقرير الموجز."
   deny:
     stale: "❌ رُفض الأمر (الموافقة كانت قديمة)."
     no_pending: "لا يوجد أمر معلّق لرفضه."

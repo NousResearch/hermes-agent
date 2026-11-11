@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
-    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug`를 보내세요."
+    local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
   deny:
     stale: "❌ 명령이 거부되었습니다 (승인이 만료됨)."
     no_pending: "거부 대기 중인 명령이 없습니다."

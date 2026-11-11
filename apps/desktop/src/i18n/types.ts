@@ -2248,6 +2248,8 @@ export interface Translations extends NoticeTranslations {
       backupDesc: string
       debugShare: string
       debugShareDesc: string
+      debugShareConfirm: string
+      debugShareConfirmDesc: string
       debugShareRunning: string
       debugShareLinks: string
       debugShareFailed: string

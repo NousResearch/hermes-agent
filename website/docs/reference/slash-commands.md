@@ -144,7 +144,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/paste` | Attach a clipboard image |
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
-| `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
+| `/debug [upload\|nous upload\|local]` | Debug report. Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads to a public paste and returns shareable links, `/debug nous upload` uploads to Nous-internal storage, `/debug local` prints the report without uploading. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/profile` | Show active profile name and home directory |
 
@@ -309,7 +309,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/deny` | Reject a pending dangerous command. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
-| `/debug` | Upload debug report (system info + logs) and get shareable links. |
+| `/debug [upload]` | Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads the summary report (system info + log tails) and returns a shareable link. |
 | `/help` | Show messaging help. |
 | `/<skill-name>` | Invoke any installed skill by name. |
 

@@ -1090,17 +1090,33 @@ class TestDebugSlashCommand:
             self._handler()(cmd_original)
         return captured
 
-    def test_bare_debug_defaults_to_paste(self):
-        c = self._captured("/debug")
+    @pytest.mark.parametrize("cmd", ["/debug", "/debug nous", "/debug NOUS please"])
+    def test_without_upload_word_prints_notice_and_uploads_nothing(self, cmd, capsys):
+        """The privacy notice must precede any upload: no ``upload`` word, no network (#94876)."""
+        with patch("hermes_cli.debug.upload_to_pastebin") as paste, \
+             patch("hermes_cli.diagnostics_upload.share_to_nous") as nous, \
+             patch("hermes_cli.debug.collect_share_bundle") as collect:
+            self._handler()(cmd)
+        paste.assert_not_called()
+        nous.assert_not_called()
+        collect.assert_not_called()
+        out = capsys.readouterr().out
+        assert "⚠️" in out and "upload" in out
+
+    def test_debug_upload_is_the_consent(self):
+        c = self._captured("/debug upload")
         assert c["nous"] is False and c["local"] is False
-        # The slash command IS the consent action → skip the [y/N] prompt
+        # The explicit `upload` word IS the consent → skip the [y/N] prompt
         # (input() would hang inside prompt_toolkit's event loop).
         assert c["yes"] is True
 
-
     def test_word_parsing_is_case_insensitive(self):
-        c = self._captured("/debug NOUS")
-        assert c["nous"] is True
+        c = self._captured("/debug NOUS Upload")
+        assert c["nous"] is True and c["yes"] is True
+
+    def test_local_needs_no_upload_word(self):
+        c = self._captured("/debug local")
+        assert c["local"] is True and c["nous"] is False
 
 
 

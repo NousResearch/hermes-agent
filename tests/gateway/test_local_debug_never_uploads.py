@@ -3,7 +3,8 @@
 The messaging ``/debug`` handler ignored its argument and always uploaded the summary to a public
 paste. A local session's ``/debug local`` asks for the report on this machine: the gateway returns
 the redacted report for the client to show and makes no network call. From a messaging chat
-``/debug local`` is refused and uploads nothing; bare ``/debug`` keeps the upload.
+``/debug local`` is refused and uploads nothing. A bare ``/debug`` is only the privacy notice;
+``/debug upload`` is the explicit consent that uploads the summary (#94876).
 """
 import socket
 from unittest.mock import patch
@@ -60,21 +61,39 @@ async def test_local_session_debug_local_returns_the_report_without_uploading(te
 
 
 @pytest.mark.asyncio
-async def test_messaging_debug_still_uploads_the_summary():
+@pytest.mark.parametrize('platform', [Platform.TELEGRAM, Platform.LOCAL])
+@pytest.mark.parametrize('text', ['/debug', '/debug nous', '/debug please'])
+async def test_debug_without_upload_word_shows_notice_and_uploads_nothing(platform, text):
+    """The privacy notice comes before any upload: without ``upload`` nothing leaves the machine."""
+    guard = _NoNetwork()
+    with patch('hermes_cli.debug.upload_to_pastebin', guard), \
+            patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \
+            patch('hermes_cli.debug._schedule_auto_delete', guard), \
+            patch('hermes_cli.debug._best_effort_sweep_expired_pastes', guard), \
+            patch('hermes_cli.debug.collect_debug_report', guard), \
+            patch.object(socket.socket, 'connect', guard):
+        out = await _runner()._handle_debug_command(_event(platform, text))
+    assert guard.calls == []
+    assert 'Privacy notice' in out and '/debug upload' in out
+    assert 'http' not in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_messaging_debug_upload_uploads_the_summary():
     uploaded = []
     with patch('hermes_cli.debug.upload_to_pastebin', lambda report: uploaded.append(report) or 'https://paste.rs/x'), \
             patch('hermes_cli.debug._schedule_auto_delete', lambda urls: None), \
             patch('hermes_cli.debug._best_effort_sweep_expired_pastes', lambda: None), \
             patch('hermes_cli.debug._capture_dump', lambda: 'dump'), \
             patch('hermes_cli.debug.collect_debug_report', lambda **kw: 'SUMMARY'):
-        out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug'))
+        out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug UPLOAD'))
     assert uploaded == ['SUMMARY']
     assert 'https://paste.rs/x' in out
 
 
 @pytest.mark.asyncio
 async def test_messaging_debug_local_is_refused_without_uploading():
-    """``/debug local`` from a chat is a named refusal pointing at bare ``/debug``; nothing is uploaded."""
+    """``/debug local`` from a chat is a named refusal pointing at ``/debug upload``; nothing is uploaded."""
     guard = _NoNetwork()
     with patch('hermes_cli.debug.upload_to_pastebin', guard), \
             patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \

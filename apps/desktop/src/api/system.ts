@@ -306,7 +306,8 @@ export function runDebugShare(): Promise<DebugShareResponse> {
     ...profileScoped(),
     path: '/api/ops/debug-share',
     method: 'POST',
-    body: {},
+    // Only called after the user confirmed the upload; the backend refuses a missing consent.
+    body: { consent: true },
     // Synchronous upload of report + logs to the paste service.
     timeoutMs: 120_000
   })

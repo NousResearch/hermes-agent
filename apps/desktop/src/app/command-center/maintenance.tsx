@@ -141,6 +141,18 @@ export function MaintenancePanel() {
   )
 
   const shareDebug = useCallback(async () => {
+    // The backend refuses an unconfirmed upload; ask before anything leaves the machine.
+    if (
+      !(await confirm({
+        confirmLabel: mm.debugShare,
+        description: mm.debugShareConfirmDesc,
+        destructive: true,
+        title: mm.debugShareConfirm
+      }))
+    ) {
+      return
+    }
+
     setSharing(true)
     setShare(null)
     setError('')

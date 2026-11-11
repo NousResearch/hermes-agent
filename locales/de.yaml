@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Für vollständige Log-Uploads verwenden Sie `hermes debug share` aus der CLI."
     share_hint: "Teilen Sie diese Links mit dem Hermes-Team, um Unterstützung zu erhalten."
     report_label: "Bericht"
-    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug`, um den Kurzbericht hochzuladen."
+    local_refused: "`/debug local` behält den Bericht auf dem Rechner, auf dem Hermes läuft, und ist daher im Chat nicht verfügbar. Senden Sie `/debug upload`, um den Kurzbericht hochzuladen."
   deny:
     stale: "❌ Befehl abgelehnt (Genehmigung war veraltet)."
     no_pending: "Kein ausstehender Befehl zum Ablehnen."

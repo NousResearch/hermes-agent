@@ -2,8 +2,9 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
-import { getActionStatus } from '@/hermes'
+import { getActionStatus, runDebugShare } from '@/hermes'
 import { $desktopActionTasks } from '@/store/activity'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 
 import { MaintenancePanel } from './maintenance'
 
@@ -32,6 +33,7 @@ vi.mock('@/hermes', async importOriginal => ({
   })),
   getCuratorStatus: vi.fn(() => new Promise(() => {})),
   getMemoryStatus: vi.fn(() => new Promise(() => {})),
+  runDebugShare: vi.fn(async () => ({ auto_delete_seconds: 21600, failures: [], ok: true, redacted: true, urls: {} })),
   runDoctor: vi.fn(() => spawn('doctor')),
   runSecurityAudit: vi.fn(() => spawn('security-audit'))
 }))
@@ -45,6 +47,7 @@ beforeEach(() => {
   nextRunStaysRunning = false
   $desktopActionTasks.set({})
   vi.mocked(getActionStatus).mockClear()
+  vi.mocked(runDebugShare).mockClear()
 })
 
 afterEach(cleanup)
@@ -80,5 +83,28 @@ describe('MaintenancePanel action tail', () => {
     await screen.findByText('security-audit run 1 output')
     expect(vi.mocked(getActionStatus)).toHaveBeenLastCalledWith('security-audit', 200)
     expect(button('Security audit').disabled).toBe(true)
+  })
+})
+
+describe('MaintenancePanel debug share', () => {
+  // The backend refuses an unconfirmed upload (#94876); the panel must ask first.
+  it('uploads nothing when the confirmation is cancelled', async () => {
+    render(<MaintenancePanel />)
+
+    await act(async () => void fireEvent.click(button('Debug share')))
+    expect($confirmRequest.get()?.destructive).toBe(true)
+    await act(async () => settleConfirm(false))
+
+    expect(vi.mocked(runDebugShare)).not.toHaveBeenCalled()
+  })
+
+  it('uploads only after the user confirms', async () => {
+    render(<MaintenancePanel />)
+
+    await act(async () => void fireEvent.click(button('Debug share')))
+    expect(vi.mocked(runDebugShare)).not.toHaveBeenCalled()
+    await act(async () => settleConfirm(true))
+
+    expect(vi.mocked(runDebugShare)).toHaveBeenCalledTimes(1)
   })
 })

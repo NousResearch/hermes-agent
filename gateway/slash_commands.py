@@ -1294,22 +1294,28 @@ class GatewaySlashCommandsMixin(
         return await self._run_in_executor_with_context(_run)
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
-        protect privacy; ``hermes debug share`` from the CLI does full uploads."""
-        from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
-                                      _capture_dump, _is_dpaste_url, _schedule_auto_delete,
+        """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the summary (system
+        info + log tails), never full logs; ``hermes debug share`` from the CLI does full uploads."""
+        from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _GATEWAY_UPLOAD_HINT,
+                                      _best_effort_sweep_expired_pastes, _capture_dump,
+                                      _is_dpaste_url, _schedule_auto_delete,
                                       collect_debug_report, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
 
-        wants_local = "local" in {w.lower() for w in (event.get_command_args() or "").split()}
+        words = {w.lower() for w in (event.get_command_args() or "").split()}
+        wants_local = "local" in words
+        if not wants_local and "upload" not in words:
+            # Notice first, upload only on the explicit `/debug upload` (#94876): a bare /debug is
+            # not consent to publish this session's logs.
+            return f"{_GATEWAY_PRIVACY_NOTICE}\n\n{_GATEWAY_UPLOAD_HINT}"
         if wants_local and getattr(event.source, "platform", None) != Platform.LOCAL:
             # From a chat the report can't stay on the machine; `/debug local` must never fall
-            # through to the public paste. Bare `/debug` is the upload form.
+            # through to the public paste. `/debug upload` is the upload form.
             return t("gateway.debug.local_refused")
         if wants_local:
             # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
             # return the redacted report for the client to show, with no network call at all (not
-            # even the expired-paste sweep). Uploading stays on the explicit `/debug` form (T7).
+            # even the expired-paste sweep). Uploading stays on the explicit `/debug upload` form (T7).
             from hermes_cli.debug import collect_share_bundle
 
             def _collect_local():

@@ -193,7 +193,7 @@ gateway:
     full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
-    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug` pour téléverser le rapport de synthèse."
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."

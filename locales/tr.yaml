@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
-    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug` gönderin."
+    local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug upload` gönderin."
   deny:
     stale: "❌ Komut reddedildi (onay geçersizdi)."
     no_pending: "Reddedilecek bekleyen komut yok."

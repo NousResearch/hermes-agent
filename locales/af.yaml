@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
     share_hint: "Deel hierdie skakels met die Hermes-span vir ondersteuning."
     report_label: "Verslag"
-    local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug` om die opsommingsverslag op te laai."
+    local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug upload` om die opsommingsverslag op te laai."
   deny:
     stale: "❌ Opdrag geweier (goedkeuring was verouderd)."
     no_pending: "Geen hangende opdrag om te weier nie."

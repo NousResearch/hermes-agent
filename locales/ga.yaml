@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
-    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug` chun an achoimre a uaslódáil."
+    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug upload` chun an achoimre a uaslódáil."
   deny:
     stale: "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
     no_pending: "Níl aon ordú ag fanacht le diúltú."

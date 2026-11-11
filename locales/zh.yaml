@@ -167,7 +167,7 @@ gateway:
     full_logs_hint: "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
     share_hint: "请将这些链接分享给 Hermes 团队以获得支持。"
     report_label: "报告"
-    local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug` 可上传摘要报告。"
+    local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug upload` 可上传摘要报告。"
   deny:
     stale: "❌ 命令已拒绝（批准已过期）。"
     no_pending: "没有待拒绝的命令。"

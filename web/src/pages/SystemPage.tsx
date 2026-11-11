@@ -215,6 +215,55 @@ const MEMORY_STATUS_TONE: Record<
   missing: "destructive",
 };
 
+/** "Generate share link" + the consent dialog: the backend refuses an unconfirmed upload, so
+ *  nothing leaves the machine until the user confirms what the public paste contains. */
+function DebugShareButton({
+  sharing,
+  redact,
+  onConfirm,
+}: {
+  sharing: boolean;
+  redact: boolean;
+  onConfirm: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button
+        size="sm"
+        disabled={sharing}
+        prefix={
+          sharing ? (
+            <Spinner className="h-3.5 w-3.5" />
+          ) : (
+            <Share2 className="h-3.5 w-3.5" />
+          )
+        }
+        onClick={() => setOpen(true)}
+      >
+        {sharing ? "Uploading…" : "Generate share link"}
+      </Button>
+      <ConfirmDialog
+        open={open}
+        title="Upload debug report to a public paste?"
+        description={`Uploads system info + full logs to a public paste service.${
+          redact
+            ? " Secrets are redacted, but your"
+            : " Redaction is OFF: secrets and your"
+        } recent messages, tool output, file paths and names stay in the logs and are readable by anyone with the link. Pastes auto-delete after 6 hours.`}
+        destructive
+        confirmLabel="Upload"
+        cancelLabel="Cancel"
+        onCancel={() => setOpen(false)}
+        onConfirm={() => {
+          setOpen(false);
+          onConfirm();
+        }}
+      />
+    </>
+  );
+}
+
 export default function SystemPage() {
   const { toast, showToast } = useToast();
 
@@ -1417,20 +1466,11 @@ export default function SystemPage() {
                   </span>
                 </div>
               </div>
-              <Button
-                size="sm"
-                disabled={sharing}
-                prefix={
-                  sharing ? (
-                    <Spinner className="h-3.5 w-3.5" />
-                  ) : (
-                    <Share2 className="h-3.5 w-3.5" />
-                  )
-                }
-                onClick={() => void runDebugShare()}
-              >
-                {sharing ? "Uploading…" : "Generate share link"}
-              </Button>
+              <DebugShareButton
+                sharing={sharing}
+                redact={shareRedact}
+                onConfirm={() => void runDebugShare()}
+              />
             </div>
 
             <div className="flex items-center gap-2.5">

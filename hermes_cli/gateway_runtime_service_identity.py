@@ -234,7 +234,9 @@ def _quoted_problem(raw: bytes) -> str:
     if bad:
         if bad[1].isdigit():
             return "carries an incomplete octal escape"
-        return f"carries the escape \\{bad[1].decode('ascii', 'replace')}, which systemd does not write"
+        # The byte itself is never named: it is a piece of the value, and the
+        # refusal must not carry the value out.
+        return "carries an escape systemd does not write"
     if _POSIX_QUOTED.match(raw):
         return "closes its ANSI-C quote before the end of the value"
     return "opens an ANSI-C quote it never closes"

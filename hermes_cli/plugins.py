@@ -1904,6 +1904,41 @@ def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
 
 
+def _dispatch_context_repo(task_id: str) -> Optional[str]:
+    """Resolve the dispatch-context repo from the SERVER-SIDE Kanban card (BYP-1).
+
+    ``ownership_gate.pre_tool_call`` needs ``default_repo`` to claim a bare
+    ``GH-n`` / ``#n`` dispatch scope on the card's OWN repo; without it the hook
+    can only fall back to ``DEFAULT_REPO_*`` and mis-claims a cross-repo
+    dispatch. The card body's ``source_repo`` is parsed with the SAME field
+    extraction :func:`cross_session_ownership.canonical_key_from_kanban` uses.
+
+    Best-effort and read-only: any failure (no ``task_id``, no DB file, no card,
+    no ``source_repo``) returns ``None`` so the hook keeps its previous fallback.
+    """
+    if not task_id:
+        return None
+    try:
+        import sqlite3
+        from hermes_cli import kanban_db as kb
+        from cross_session_ownership import _body_fields, normalize_repo
+        db_path = kb.kanban_db_path()
+        if not db_path.is_file():
+            return None
+        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=1.0)
+        try:
+            conn.row_factory = sqlite3.Row
+            task = kb.get_task(conn, task_id)
+        finally:
+            conn.close()
+        if task is None:
+            return None
+        fields = _body_fields({"body": getattr(task, "body", "")})
+        return normalize_repo(fields.get("source_repo", "")) or None
+    except Exception:
+        return None
+
+
 def _get_pre_tool_call_directive_details(
     tool_name: str, args: Optional[dict[str, Any]], task_id: str = "", session_id: str = "",
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
@@ -1919,11 +1954,13 @@ def _get_pre_tool_call_directive_details(
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
+    default_repo = _dispatch_context_repo(task_id)
     from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
     hook_results = invoke_lifecycle_hook(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
         task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
+        default_repo=default_repo,
     )
     modified_args: Optional[dict[str, Any]] = None
     first_approve: Optional[tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)

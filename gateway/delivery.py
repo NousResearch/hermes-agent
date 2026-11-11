@@ -100,10 +100,14 @@ def _looks_like_int(value: Optional[str]) -> bool:
         return False
 
 
+def _result_field(result: Any, name: str, default: Any = None) -> Any:
+    """``name`` off a SendResult object or a plain result dict (adapters return either)."""
+    return result.get(name, default) if isinstance(result, dict) else getattr(result, name, default)
+
+
 def _send_result_error(result: Any) -> Optional[str]:
     """Error string of a failed SendResult object / plain result dict ("" if none), or None on success."""
-    get = result.get if isinstance(result, dict) else (lambda name, default=None: getattr(result, name, default))
-    return None if get("success", True) is not False else str(get("error") or "")
+    return None if _result_field(result, "success", True) is not False else str(_result_field(result, "error") or "")
 
 
 class DeliverySendError(RuntimeError):
@@ -358,5 +362,5 @@ class DeliveryRouter:
                 raise PartialDeliveryError(error, result)
             raise DeliverySendError(
                 error or f"{target.platform.value} delivery failed",
-                retryable=bool(getattr(result, "retryable", False)))
+                retryable=_result_field(result, "retryable") is True)
         return result

@@ -1,4 +1,6 @@
 [data-page-surface] .management-panel.agent-management {
+  --ui-bg-card: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --ui-stroke-tertiary: color-mix(in srgb, var(--ui-base) 5%, transparent);
   width: 100%;
   max-width: 1140px;
   margin-inline: auto;
@@ -9,13 +11,22 @@
 [data-page-surface] .management-panel.agent-management:has(.agent-management-nav) {
   position: relative;
   max-width: none;
-  padding-left: calc(var(--page-nav-width) + 2.5rem);
-  padding-right: 2.5rem;
+  padding-inline-start: calc(var(--page-nav-width) + 2.5rem);
+  padding-inline-end: 2.5rem;
+}
+
+[data-page-surface] .management-panel.agent-management:has(.agent-settings-editor) {
+  padding-inline: 20px;
+}
+
+[data-page-surface] .management-panel.agent-management:has(.agent-management-nav):has(.agent-settings-editor) {
+  padding-inline-start: calc(var(--page-nav-width) + 20px);
 }
 
 .agent-management-nav {
   position: absolute;
-  inset: 0 auto 0 0;
+  inset-block: 0;
+  inset-inline-start: 0;
   display: flex;
   width: var(--page-nav-width);
   flex-direction: column;
@@ -28,7 +39,9 @@
   min-height: 2.5rem;
 }
 
-.agent-management-nav .page-nav-title { margin-bottom: 0; }
+.agent-management-nav .page-nav-title {
+  margin-bottom: 0;
+}
 
 .agent-management-nav-row {
   display: flex;
@@ -38,17 +51,19 @@
   gap: 0.625rem;
   padding: 0.5rem 0.625rem;
   border: 1px solid transparent;
-  border-radius: 0.25rem;
+  border-radius: 3px;
   text-align: left;
   font-size: 0.8125rem;
   color: var(--ui-text-secondary);
 }
 
-.agent-management-nav-row:hover { background: var(--chrome-action-hover); }
+.agent-management-nav-row:hover {
+  background: var(--chrome-action-hover);
+}
 .agent-management-nav-row[aria-current] {
   border-color: transparent;
-  background: var(--portal-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
+  background: var(--portal-neutral-selection-background);
+  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
   color: var(--ui-text-primary);
 }
 
@@ -57,7 +72,6 @@
     display: none;
   }
 }
-
 
 .agent-management-header {
   display: flex;
@@ -98,8 +112,12 @@
   font-size: 12px;
 }
 
-.agent-management-meta > span:not(.truncate) { flex-shrink: 0; }
-.agent-management-meta > .truncate { min-width: 0; }
+.agent-management-meta > span:not(.truncate) {
+  flex-shrink: 0;
+}
+.agent-management-meta > .truncate {
+  min-width: 0;
+}
 
 .agent-management-actions {
   display: flex;
@@ -268,7 +286,12 @@
     padding: 16px 24px 24px;
   }
 
-  .agent-management-nav { display: none; }
+  .agent-management-nav {
+    display: none;
+  }
+  [data-page-surface] .management-panel.agent-management:has(.agent-management-nav):has(.agent-settings-editor) {
+    padding-inline: 20px;
+  }
 
   .agent-management-header {
     flex-wrap: wrap;

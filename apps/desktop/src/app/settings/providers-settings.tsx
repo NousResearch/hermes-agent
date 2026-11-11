@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { disconnectOAuthProvider, listOAuthProviders, type ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -35,7 +35,7 @@ import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
-import { SettingsProfileScope } from './profile-scope'
+import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
@@ -167,7 +167,7 @@ function OAuthPicker({
   onWantApiKey: () => void
   onWantLocalModels: () => void
   providers: OAuthProvider[]
-  profile?: string
+  profile?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.settings.providers
@@ -393,6 +393,7 @@ export function ProvidersSettings({
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const scopeProfile = useStore($settingsRequestProfile)
+  const requestScope = useSettingsOwner() ?? scopeProfile
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
@@ -432,9 +433,9 @@ export function ProvidersSettings({
 
   const refreshOAuthProviders = useCallback(async () => {
     // OAuth providers are best-effort — a failure here just hides the panel.
-    const { providers } = await listOAuthProviders(scopeProfile)
+    const { providers } = await listOAuthProviders(requestScope)
     setOauthProviders(providers)
-  }, [scopeProfile])
+  }, [requestScope])
 
   useEffect(() => {
     let cancelled = false
@@ -445,7 +446,7 @@ export function ProvidersSettings({
       }
 
       try {
-        const { providers } = await listOAuthProviders(scopeProfile)
+        const { providers } = await listOAuthProviders(requestScope)
 
         if (!cancelled) {
           setOauthProviders(providers)
@@ -456,7 +457,7 @@ export function ProvidersSettings({
     })()
 
     return () => void (cancelled = true)
-  }, [onboardingActive, scopeProfile])
+  }, [onboardingActive, requestScope])
 
   // External (CLI-managed) providers can't be cleared via the API by design —
   // Hermes never deletes creds another tool owns behind a silent API call.
@@ -507,7 +508,7 @@ export function ProvidersSettings({
     setDisconnecting(provider.id)
 
     try {
-      const result = await disconnectOAuthProvider(provider.id, scopeProfile)
+      const result = await disconnectOAuthProvider(provider.id, requestScope)
 
       if (!result?.ok) {
         notifyError(new Error('No stored credentials were removed'), t.settings.providers.failedRemove(name))
@@ -554,7 +555,7 @@ export function ProvidersSettings({
     return (
       <SettingsContent>
         <SettingsProfileScope className="mb-5" />
-        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, scopeProfile)} />
+        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, requestScope)} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField
@@ -611,7 +612,7 @@ export function ProvidersSettings({
         onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
         onWantApiKey={() => onViewChange('keys')}
         onWantLocalModels={() => onViewChange('local')}
-        profile={scopeProfile}
+        profile={requestScope}
         providers={oauthProviders}
       />
     </SettingsContent>

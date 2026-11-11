@@ -164,10 +164,9 @@ export function PortalGatewayMenuPanel({
           <Tip label={copy.reconnectGateway}>
             <Button
               aria-label={copy.reconnectGateway}
-              className="size-7 text-muted-foreground hover:text-foreground"
               disabled={reconnecting}
               onClick={reconnect}
-              size="icon-xs"
+              size="icon-compact"
               variant="outline"
             >
               <RefreshCw className={cn(reconnecting && 'animate-spin')} />
@@ -176,27 +175,18 @@ export function PortalGatewayMenuPanel({
           {advanced && (
             <>
               <Tip label={copy.openSystem}>
-                <Button
-                  aria-label={copy.openSystem}
-                  className="text-muted-foreground hover:text-foreground"
-                  onClick={openSystem}
-                  size="icon-xs"
-                  variant="ghost"
-                >
+                <Button aria-label={copy.openSystem} onClick={openSystem} size="icon-compact" variant="ghost">
                   <LayoutDashboard />
                 </Button>
               </Tip>
-              {/* Restart is the heavy, disruptive action: keep it visually distinct
-              (power icon, destructive hover) and separated from the benign
-              reconnect/system buttons so it can't be hit by mistake. */}
+              {/* Keep the disruptive restart visibly distinct from connection recovery. */}
               <span aria-hidden className="mx-1 h-4 w-px bg-border/70" />
               <Tip label={t.commandCenter.restartGateway}>
                 <Button
                   aria-label={t.commandCenter.restartGateway}
-                  className="text-muted-foreground hover:text-destructive"
                   onClick={restart}
-                  size="icon-xs"
-                  variant="ghost"
+                  size="icon-compact"
+                  variant="destructiveOutline"
                 >
                   <Power />
                 </Button>

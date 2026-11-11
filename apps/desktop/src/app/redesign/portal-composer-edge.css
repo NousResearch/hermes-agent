@@ -25,7 +25,7 @@
 }
 
 [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
-  --composer-width: 30rem;
+  --composer-width: 40rem;
 }
 
 [data-redesigned-composer] [data-slot='composer-surface'] {

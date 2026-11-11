@@ -10,6 +10,7 @@ import { notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 import { ListRow, Pill } from '../primitives'
+import { useSettingsOwner } from '../profile-scope'
 
 import { FieldControl, FieldTitle } from './field-control'
 import { ProviderConfigModal } from './provider-config-modal'
@@ -21,7 +22,8 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
   )
 }
 
-export function ProviderConfigPanel({ profile, provider }: { profile?: string; provider: string }) {
+export function ProviderConfigPanel({ profile: requestedProfile, provider }: { profile?: string; provider: string }) {
+  const profile = useSettingsOwner() ?? requestedProfile
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})

@@ -254,9 +254,15 @@
   background: transparent;
 }
 
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(1) { right: 0.625rem; }
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(2) { right: 2.125rem; }
-.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(3) { right: 3.625rem; }
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(1) {
+  right: 0.625rem;
+}
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(2) {
+  right: 2.125rem;
+}
+.portal-sidebar [data-slot='agent-heading'] > button:nth-last-child(3) {
+  right: 3.625rem;
+}
 
 .portal-sidebar [data-slot='agent-heading']:is(:hover, :focus-within) > button,
 .portal-sidebar [data-slot='agent-heading'] > button[aria-expanded='false'] {
@@ -268,8 +274,12 @@
 }
 
 @media (hover: none) {
-  .portal-sidebar [data-slot='agent-heading'] > button { opacity: 1; }
-  .portal-sidebar [data-slot='agent-heading'] > .portal-agent-chat { padding-right: 4.5rem; }
+  .portal-sidebar [data-slot='agent-heading'] > button {
+    opacity: 1;
+  }
+  .portal-sidebar [data-slot='agent-heading'] > .portal-agent-chat {
+    padding-right: 4.5rem;
+  }
 }
 
 .portal-sidebar [data-slot='gateway-group'] + [data-slot='gateway-group'] {
@@ -306,7 +316,25 @@
 }
 
 .portal-agent-sessions [data-session-key] > button:not(:first-child) {
-  right: 0.625rem;
+  right: 0.125rem;
+  width: 1.5rem;
+}
+
+.portal-agent-sessions
+  [data-session-key]:has([aria-haspopup='menu']):is(:hover, :focus-within, :has([data-state='open']))
+  [data-slot='session-status'] {
+  opacity: 0;
+}
+
+.portal-agent-sessions [data-session-key] > button[data-state='open'],
+.portal-agent-sessions [data-slot='session-meta'] > span {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .portal-agent-sessions [data-session-key]:has([aria-haspopup='menu']) [data-slot='session-status'] {
+    opacity: 0;
+  }
 }
 
 .portal-agent-sessions [data-slot='session-status'] {

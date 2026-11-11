@@ -8,36 +8,61 @@ import { AgentDirectory } from './directory'
 
 vi.mock('../chat/sidebar/use-fleet-roster', () => ({ useFleetRoster: () => {} }))
 vi.mock('../chat/sidebar/use-simplified-agents', () => ({
-  useSimplifiedAgents: () => ({ agents: [
-    { id: 'a', label: 'Research', profile: 'research', connectionId: 'alpha', gateway: 'Laptop' },
-    { id: 'b', label: 'Research', profile: 'research', connectionId: 'beta', gateway: 'Studio' }
-  ] })
+  useSimplifiedAgents: () => ({
+    agents: [
+      { id: 'a', label: 'Research', profile: 'research', connectionId: 'alpha', gateway: 'Laptop' },
+      { id: 'b', label: 'Research', profile: 'research', connectionId: 'beta', gateway: 'Studio' }
+    ]
+  })
 }))
 afterEach(cleanup)
 
 function Route() {
   const location = useLocation()
 
-  return <output aria-label="route">{location.pathname}{location.search}</output>
+  return (
+    <output aria-label="route">
+      {location.pathname}
+      {location.search}
+    </output>
+  )
 }
 
 it('opens the selected gateway/profile identity even when agent names match', () => {
-  render(<MemoryRouter><AgentDirectory onClose={vi.fn()} /><Route /></MemoryRouter>)
+  render(
+    <MemoryRouter>
+      <AgentDirectory onClose={vi.fn()} />
+      <Route />
+    </MemoryRouter>
+  )
   fireEvent.click(screen.getByRole('button', { name: `${en.simplifiedAgents.settings}: Research · Studio` }))
   expect(screen.getByLabelText('route').textContent).toBe('/settings?agentProfile=research&connection=beta')
 })
 
-it('filters by gateway and retains the profile management destination', () => {
-  render(<MemoryRouter><AgentDirectory onClose={vi.fn()} /><Route /></MemoryRouter>)
+it('opens creation directly without losing the gateway filter', () => {
+  render(
+    <MemoryRouter>
+      <AgentDirectory onClose={vi.fn()} />
+      <Route />
+    </MemoryRouter>
+  )
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Laptop' } })
   expect(screen.queryByRole('button', { name: `${en.simplifiedAgents.settings}: Research · Studio` })).toBeNull()
   expect(screen.getByRole('button', { name: `${en.simplifiedAgents.settings}: Research · Laptop` })).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: en.profiles.manageProfiles }))
-  expect(screen.getByLabelText('route').textContent).toBe('/profiles?manage=true')
+  fireEvent.click(screen.getByRole('button', { name: en.profiles.newProfile }))
+  expect(screen.getByRole('dialog', { name: en.profiles.newProfile })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: en.common.cancel }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('textbox').getAttribute('value')).toBe('Laptop')
+  expect(screen.getByLabelText('route').textContent).toBe('/')
 })
 
 it('explains an empty search without asking users to select a missing profile', () => {
-  render(<MemoryRouter><AgentDirectory onClose={vi.fn()} /></MemoryRouter>)
+  render(
+    <MemoryRouter>
+      <AgentDirectory onClose={vi.fn()} />
+    </MemoryRouter>
+  )
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'missing gateway' } })
   expect(screen.queryByRole('button', { name: `${en.simplifiedAgents.settings}: Research · Laptop` })).toBeNull()
   expect(screen.queryByRole('button', { name: `${en.simplifiedAgents.settings}: Research · Studio` })).toBeNull()

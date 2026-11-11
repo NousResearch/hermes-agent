@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { createContext, useContext, useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,10 @@ import {
   setSettingsScope
 } from '@/store/settings-scope'
 import type { ProfileInfo } from '@/types/hermes'
+
+/** An embedded agent editor cannot retarget its controls through the global scope chip. */
+export const SettingsOwnerContext = createContext<{ connectionId?: string; profile: string } | undefined>(undefined)
+export const useSettingsOwner = () => useContext(SettingsOwnerContext)
 
 // Settings-chip label: the Bot Mode title the Bots roster shows when set
 // (ui_meta['hermes-bots'].title), else the app-wide profileLabel
@@ -48,6 +52,7 @@ export function ScopeChip({ active, label, onSelect }: { active: boolean; label:
  *  fewer than two profiles, so single-profile users never see it and every
  *  request keeps its unscoped default shape. */
 export function SettingsProfileScope({ className }: { className?: string }) {
+  const owner = useSettingsOwner()
   const { t } = useI18n()
   const scope = t.settings.profileScope
   const override = useStore($settingsScopeOverride)
@@ -63,10 +68,12 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   // Refresh lazily so a profile created elsewhere shows up; the cached list
   // paints immediately. Best-effort — a failure keeps the cached roster.
   useEffect(() => {
-    void refreshProfiles().catch(() => undefined)
-  }, [])
+    if (!owner) {
+      void refreshProfiles().catch(() => undefined)
+    }
+  }, [owner])
 
-  if (profiles.length < 2) {
+  if (owner || profiles.length < 2) {
     return null
   }
 

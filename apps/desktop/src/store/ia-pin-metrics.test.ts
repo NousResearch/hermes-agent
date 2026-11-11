@@ -4,7 +4,12 @@ import { $apiRequestScope } from '@/api/client'
 import type { SidebarSessionsResponse } from '@/api/sessions'
 import { makeSessionInfo } from '@/test/session-info'
 
-import { DESKTOP_METRICS_STATE_KEY, resetDesktopMetricsForTests, setDesktopMetricsGate } from './desktop-metrics'
+import {
+  bindDesktopMetrics,
+  DESKTOP_METRICS_STATE_KEY,
+  resetDesktopMetricsForTests,
+  setDesktopMetricsGate
+} from './desktop-metrics'
 import { captureIaPinCounts } from './ia-pin-metrics'
 import { $agentSidebarChoice } from './simplified-agent-mode'
 
@@ -30,6 +35,7 @@ beforeEach(() => {
   resetDesktopMetricsForTests()
   $agentSidebarChoice.set(true)
   $apiRequestScope.set({ connectionId: 'alpha', profile: 'default' })
+  bindDesktopMetrics(null, 'alpha|default')
   setDesktopMetricsGate('on')
 })
 afterEach(() => {
@@ -85,6 +91,8 @@ it('does not collect before consent, after revocation, across a gateway switch, 
   pending(page())
   const oldOwner = captureIaPinCounts('all')
   $apiRequestScope.set({ connectionId: 'beta', profile: 'default' })
+  bindDesktopMetrics(null, 'beta|default')
+  setDesktopMetricsGate('on')
   oldOwner(page())
   $agentSidebarChoice.set(false)
   captureIaPinCounts('all')(page())

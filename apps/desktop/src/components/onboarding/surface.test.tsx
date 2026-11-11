@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { OverlayView } from '@/app/overlays/overlay-view'
 import type * as HermesApi from '@/hermes'
+import { en } from '@/i18n/en'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
@@ -37,10 +38,15 @@ const idle: DesktopOnboardingState = {
   localEndpoint: false,
   freeTierReady: false
 }
+
 const pendingGateway = (() => new Promise(() => {})) as OnboardingContext['requestGateway']
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  // Radix restores focus on the next task, before the jsdom realm is disposed.
+  const { promise, resolve } = Promise.withResolvers<void>()
+  setTimeout(resolve, 0)
+  await promise
   $desktopOnboarding.set(idle)
   $agentSidebarChoice.set(null)
   localStorage.clear()
@@ -61,16 +67,20 @@ it('bounds manual V2 setup, preserves key drafts on outside clicks, and returns 
   const opener = screen.getByRole('button', { name: 'Configure provider' })
   opener.focus()
   fireEvent.click(opener)
-  expect(screen.getByRole('dialog', { name: "Let's get you setup with Hermes Agent" })).toBeTruthy()
+  expect(screen.getByRole('dialog', { name: en.onboarding.headerTitle })).toBeTruthy()
   const key = screen.getByPlaceholderText('Paste API key')
   fireEvent.change(key, { target: { value: 'unsaved-test-draft' } })
-  await new Promise(resolve => setTimeout(resolve, 0))
-  fireEvent.pointerDown(document.querySelector('[data-slot="dialog-overlay"]')!, { button: 0 })
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>()
+    setTimeout(resolve, 0)
+    await promise
+  })
+  fireEvent.pointerDown(globalThis.document.querySelector('[data-slot="dialog-overlay"]')!, { button: 0 })
   expect((key as HTMLInputElement).value).toBe('unsaved-test-draft')
   expect(screen.getByRole('dialog')).toBeTruthy()
   fireEvent.keyDown(key, { key: 'Escape' })
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-  await waitFor(() => expect(document.activeElement).toBe(opener))
+  await waitFor(() => expect(globalThis.document.activeElement).toBe(opener))
   expect(closePage).not.toHaveBeenCalled()
   expect($desktopOnboarding.get().configured).toBe(true)
 })
@@ -104,8 +114,8 @@ it('lets the nested model picker own Escape without closing provider setup', asy
   const picker = await screen.findByRole('dialog', { name: 'Switch model' })
   fireEvent.keyDown(within(picker).getByPlaceholderText('Filter providers and models...'), { key: 'Escape' })
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Switch model' })).toBeNull())
-  const setup = screen.getByRole('dialog', { name: "Let's get you setup with Hermes Agent" })
-  await waitFor(() => expect(document.activeElement).toBe(change))
+  const setup = screen.getByRole('dialog', { name: en.onboarding.headerTitle })
+  await waitFor(() => expect(globalThis.document.activeElement).toBe(change))
   expect($desktopOnboarding.get().flow.status).toBe('confirming_model')
   fireEvent.click(within(setup).getByRole('button', { name: 'Close' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())

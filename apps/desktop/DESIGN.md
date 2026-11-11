@@ -15,7 +15,7 @@ This doc contains two kinds of content, maintained differently:
 - **Principles** (flatness, intent, feedback, motion, cancellation) are durable.
   They hold as components come and go.
 - **Named contracts** (tokens, `Button` variants, primitive names) are the
-  design system's current API. They are maintained *with* the code: if you
+  design system's current API. They are maintained _with_ the code: if you
   change a primitive, token, or variant, update its entry here **in the same
   change** — a stale name in this file is a bug, exactly like a stale type.
 
@@ -108,9 +108,12 @@ user-controlled panes, themes, and the classic layout remain functional.
 Appearance starts with working Light/Dark/System previews, text size,
 language, and tips controls. Advanced retains the full settings and theme
 gallery, including deep links. Agent management uses owner-scoped Overview,
-History, and Settings tabs, real configuration/session data, and the existing
-editors. Additional desktop settings remain accessible rather than being
-removed to mimic an incomplete design frame.
+History, and Settings tabs. Settings has its own grouped, agent-only navigation:
+184px navigation, 32px gap, and a 584px body at full width. Model selection,
+fallbacks, and collapsed Advanced controls share one page; provider setup stays
+available inside the model picker. Reuse the existing editors and save paths.
+Global desktop settings remain available outside the agent editor. New agent
+opens creation directly on the captured gateway rather than another management page.
 
 User-facing identity copy uses **Agent / Agents**; scheduled automation uses
 **Schedule / Schedules**. Shared screens use these names in both layouts. Gateway
@@ -131,6 +134,14 @@ mutations; avoid source scans or snapshots that freeze incidental sentences.
 Owner actions preserve the roster's backend `targetProfile`, including aliases
 before Bot Mode has mounted. History uses bounded 25-row requests with offsets,
 deduplicates pinned backfills, and keeps earlier pages reachable past 500 sessions.
+Source/archive filters are server-side; explicit text search and cleanup walk
+remaining bounded pages. Read-only previews expose Open chat, Archive, and Delete.
+Cleanup previews its candidates before confirmation and rechecks owner, running
+state, and eligibility before each fenced deletion. Protected/running sessions
+are skipped; failed writes are never counted as deleted. Selection and confirmation
+belong to one gateway/profile and are discarded when that owner changes.
+History dialogs use a dimmed, unblurred backdrop, 24px content padding, display
+headings, and semantic destructive colors for confirmed deletion.
 Session lists capture their serving connection before awaiting the response;
 cached rows never inherit a newly selected foreground gateway. Selection follows
 the focused conversation's owner. Explicit owners survive tab and window opens.
@@ -143,15 +154,18 @@ ordering and close-to-next selection live in `src/store/session-tile-order.ts`.
 Agent-profile settings use `agentProfile` in the URL; the plugin settings
 contract keeps `agent` for the plugin key. Settings pin the complete gateway and
 profile on entry, including links that omit an explicit connection.
+Config, credentials, messaging, memory, and plugin operations retain this owner
+through asynchronous work. Same-name agents on another gateway keep their own
+configuration, plugin cache, conversations, and open tiles.
 Page toolbars occupy the native titlebar band with an opaque surface so open
 chat/tool tabs cannot bleed through; controls remain outside the drag region.
 
 Redesigned surfaces use neutral foreground-derived fills and strokes, not
-accent-tinted greys. Finished Figma settings/agent frames use 3% cards, 10%
-card borders, 4% control rails, and 14% control borders. Selection uses a
-0.5px blue inset stroke with 25% blue fill in dark mode; light mode uses 10%
-fill and stronger secondary copy for readability. Agent-management tiles
-use the translucent treatment; conversation-sidebar tiles remain solid.
+accent-tinted greys. Global settings cards use 5% fill and 5% borders with 8px
+corners; agent settings cards use 2% fill, 5% borders, and 4px corners. Agent
+and settings-navigation selection uses neutral 5% fill and a 0.5px neutral
+5% inset stroke with 3px corners. Brand-blue selection remains on the global
+rail. Agent-management tiles stay translucent; conversation-sidebar tiles stay solid.
 The global rail tracks the owning agent even inside its settings editor.
 Shared rail/sidebar geometry lives at the document root while the redesign is
 enabled. Sibling route overlays reserve the rail with logical inline offsets
@@ -162,6 +176,9 @@ and the capability catalog; unchecked tracks are neutral 10% fills.
 The designer-requested quieter gateway group deliberately reduces the
 older sidebar reference's 5% body plus 7% header to 3% plus 4%, preserving
 the brighter header, primary selected-agent name, and 20% session guide.
+Session rows retain their full-width hover fill. The trailing status dot yields
+its exact position to the action ellipsis on hover, keyboard focus, or an open
+menu; the timestamp does not disappear or move. Touch exposes the action directly.
 The Hermes Portal theme uses neutral dark greys; custom theme choices and
 classic semantic styling remain available.
 
@@ -188,10 +205,12 @@ Usage collection belongs to a consenting connection/profile, not merely the
 foreground UI. Changing scope revokes the old metrics binding immediately;
 events during rebinding are discarded, never replayed under later consent.
 
-The redesigned composer follows the 480 × 148 reference with model/effort above
-the input and attachment, microphone, and labeled Send controls below.
-Gateway menus distinguish connection from inference readiness. Simple mode
-keeps reconnect and lazy recent activity; Advanced adds system/restart/logs.
+The redesigned composer is 480 × 148 on an empty landing and 640 × 148 in a
+populated native conversation, with model/effort above the input and attachment,
+microphone, and labeled Send controls below. Browser touch targets keep their
+larger accessibility sizing. Gateway menus distinguish connection from inference
+readiness. Simple mode keeps reconnect and lazy recent activity; Advanced adds
+system/restart/logs, with 28px icon controls and destructive restart styling at rest.
 
 ## Surfaces & elevation
 
@@ -263,16 +282,16 @@ renderer and Electron's first window paint.
 
 ## Stroke & color tokens
 
-| Token | Use |
-| --- | --- |
-| `--ui-stroke-primary…quaternary` | hairlines, in descending strength |
-| `--ui-stroke-tertiary` | the default in-panel divider / list hairline — and every bordered surface in the transcript |
-| `--stroke-nous` | the overlay hairline (pairs with `shadow-nous`) |
-| `--ui-text-primary / -secondary / -tertiary` | text hierarchy |
-| `--ui-bg-quaternary` | soft control fill (secondary button) |
-| `--ui-widget-surface-background` | fill for inline chat widgets (`WIDGET_SHELL_CLASS`) |
-| `--chrome-action-hover` | hover fill for quiet controls |
-| `--theme-primary`, `--ui-accent` | brand/accent |
+| Token                                        | Use                                                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `--ui-stroke-primary…quaternary`             | hairlines, in descending strength                                                           |
+| `--ui-stroke-tertiary`                       | the default in-panel divider / list hairline — and every bordered surface in the transcript |
+| `--stroke-nous`                              | the overlay hairline (pairs with `shadow-nous`)                                             |
+| `--ui-text-primary / -secondary / -tertiary` | text hierarchy                                                                              |
+| `--ui-bg-quaternary`                         | soft control fill (secondary button)                                                        |
+| `--ui-widget-surface-background`             | fill for inline chat widgets (`WIDGET_SHELL_CLASS`)                                         |
+| `--chrome-action-hover`                      | hover fill for quiet controls                                                               |
+| `--theme-primary`, `--ui-accent`             | brand/accent                                                                                |
 
 Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The two tiles in
 `BrandMark` (white in light mode, `#0d1117` in dark) are the sanctioned literals
@@ -341,6 +360,7 @@ context-dependent (e.g. "Show" / "Hide"). Never hardcode combos; always use
 `useKeybindHint` or `TipKeybindLabel`.
 
 Notes:
+
 - Text buttons are square (no radius) and sized by padding + line-height (no
   fixed heights). Only icon buttons carry the shared 4px radius.
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
@@ -502,7 +522,7 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 - **Inline widgets** — a tool result that renders as a panel the user reads or
   acts on (clarify, artifact card) wears `WIDGET_SHELL_CLASS`
   (`src/components/chat/widget-shell.ts`): shared radius, the
-  `--ui-widget-surface-background` fill, no border. Its actions sit *outside*
+  `--ui-widget-surface-background` fill, no border. Its actions sit _outside_
   the panel, below it. Don't give one widget its own radius or fill.
 - Bordered surfaces in the transcript (tables, fences, callouts, attachments)
   use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
@@ -575,7 +595,7 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   (toasts, tooltips, command surfaces) and `--z-over-modal-content`,
   `--z-switcher-backdrop` / `--z-switcher`, then the boot chain
   `--z-connecting` → `--z-onboarding` → `--z-setup` → `--z-crash`. Plain
-  `z-10`/`z-20` are still right for stacking *within* one component.
+  `z-10`/`z-20` are still right for stacking _within_ one component.
 
 ## Iconography & brand
 
@@ -593,9 +613,9 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   mode, white girl on the `#0d1117` dark tile in dark mode (keyed off
   `renderedMode` so bright surfaces in dark skins stay on the light mark).
   The marks are generated by `scripts/generate_icons.py` from the girl SVGs
-  + squircle backgrounds (`assets/nous-girl-*.svg` × `assets/backgrounds/`).
-  It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
-  for hero/brand moments; don't reintroduce decorative star/sparkle icons.
+  - squircle backgrounds (`assets/nous-girl-*.svg` × `assets/backgrounds/`).
+    It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
+    for hero/brand moments; don't reintroduce decorative star/sparkle icons.
 
 ## Motion
 
@@ -607,11 +627,11 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   `prefers-reduced-motion` for anything beyond a fade.
 - Hover paints instantly; only the return eases. Put the transition on the
   resting state and drop it while hovered (`transition-colors duration-100
-  hover:transition-none`, or the CSS equivalent on `:hover`). A group that
+hover:transition-none`, or the CSS equivalent on `:hover`). A group that
   dims siblings goes instant too. Exceptions are named, e.g. the catalog
   card's arc border fades in and out.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
-  then settle the surface — the outer container's fade is *delayed* so it
+  then settle the surface — the outer container's fade is _delayed_ so it
   doesn't swallow the inner animation. Don't let a global fade race the detail.
 - Motion follows state; it never delays state. Selection, drag targets, cancel,
   and pressed feedback paint in the current frame.

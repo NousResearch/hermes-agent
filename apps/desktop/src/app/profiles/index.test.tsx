@@ -44,6 +44,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('@/store/gateway', () => ({
+  activeGatewayConnectionId: () => 'local',
   retireLocalProfileGateways: vi.fn()
 }))
 

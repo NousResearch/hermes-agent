@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
+import type { ProfileScope } from '@/hermes'
 import {
   approvePairing,
   getMessagingPlatforms,
@@ -44,7 +45,7 @@ import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { credentialPreview } from '../settings/helpers'
 import { ListRow } from '../settings/primitives'
-import { SettingsProfileScope } from '../settings/profile-scope'
+import { SettingsProfileScope, useSettingsOwner } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
@@ -153,7 +154,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const m = t.messaging
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
   // the active profile; the API helpers treat null as "target primary").
-  const scopeProfile = useStore($settingsRequestProfile)
+  const requestedProfile = useStore($settingsRequestProfile)
+  const pinnedOwner = useSettingsOwner()
+  const scopeProfile = pinnedOwner ?? requestedProfile
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
@@ -553,7 +556,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }
 
   return (
-    <PageSearchShell pageTitle={t.sidebar.nav.messaging}
+    <PageSearchShell
+      pageTitle={pinnedOwner ? undefined : t.sidebar.nav.messaging}
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
@@ -741,7 +745,7 @@ function PlatformDetail({
   pending: PairingUser[]
   platform: MessagingPlatformInfo
   saving: string | null
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope | undefined
 }) {
   const { t } = useI18n()
   const m = t.messaging
@@ -886,7 +890,7 @@ function DirectSetupSections({
   onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
   platform: MessagingPlatformInfo
   saving: string | null
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope | undefined
 }) {
   const { t } = useI18n()
   const m = t.messaging

@@ -29,7 +29,7 @@ import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
-import { SettingsProfileScope } from './profile-scope'
+import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
@@ -167,8 +167,11 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // The mount site keys the panel by this same owner, so a profile switch / connection swap
   // remounts it: dialogs close and drafts (including a typed master password) are gone by
   // construction rather than by cleanup code.
-  const scopeProfile = useStore($settingsScopeProfile)
-  const connectionId = useStore($activeConnectionId)
+  const settingsProfile = useStore($settingsScopeProfile)
+  const activeConnection = useStore($activeConnectionId)
+  const pinnedOwner = useSettingsOwner()
+  const scopeProfile = pinnedOwner?.profile ?? settingsProfile
+  const connectionId = pinnedOwner ? (pinnedOwner.connectionId ?? null) : activeConnection
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
   const requestGateway = useCallback(
@@ -214,7 +217,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const invalidateVault = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY })
     void queryClient.invalidateQueries({ queryKey: VAULT_SOURCES_QUERY_KEY })
-  }, [queryClient])
+  }, [queryClient, VAULT_QUERY_KEY, VAULT_SOURCES_QUERY_KEY])
 
   const setSourceEnabled = useMutation({
     mutationFn: ({ name, enabled }: { name: VaultSourceName; enabled: boolean }) =>
@@ -314,7 +317,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
     setSearchParams(next, { replace: true })
   }, [openAdd, searchParams, setSearchParams])
 
-  const invalidate = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }), [queryClient])
+  const invalidate = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }),
+    [queryClient, VAULT_QUERY_KEY]
+  )
 
   const addMutation = useMutation({
     mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {

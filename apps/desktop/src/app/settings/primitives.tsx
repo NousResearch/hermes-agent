@@ -176,7 +176,13 @@ export function ListRow({
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className={cn('@container', className)} data-tour={dataTour} id={id}>
+    <div
+      className={cn('@container', className)}
+      data-slot="settings-row"
+      data-tour={dataTour}
+      data-wide={wide || undefined}
+      id={id}
+    >
       <div className={cn('grid gap-3 py-3', !wide && [LIST_ROW_COLUMNS, '@2xl:items-center'])}>
         <div className="min-w-0">
           <div className="flex items-center justify-between gap-3 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">

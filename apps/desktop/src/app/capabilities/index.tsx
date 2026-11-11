@@ -46,6 +46,8 @@ interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
    *  state lives in local React state instead of the route's `?tab=` param,
    *  so an embedding dialog never fights the page router. */
   embedded?: boolean
+  /** Agent settings owns the navigation when a single capability is embedded. */
+  fixedMode?: CapabilityMode
   /** Pin the WHOLE view to one profile: the scope selector is hidden and
    *  every tab reads/writes THAT profile. This is the plugin door — Bot Mode
    *  renders the real Capabilities surface pinned to a bot. */
@@ -67,6 +69,7 @@ export function CapabilitiesView({
   embedded = false,
   fixedConnection,
   fixedProfile,
+  fixedMode,
   setStatusbarItemGroup: _setStatusbarItemGroup,
   ...props
 }: CapabilitiesViewProps) {
@@ -79,7 +82,8 @@ export function CapabilitiesView({
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
   const localTab = useState<CapabilityMode>('skills')
-  const [mode, setMode] = embedded ? localTab : routeTab
+  const [selectedMode, setMode] = embedded ? localTab : routeTab
+  const mode = fixedMode ?? selectedMode
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
 
   const [query, setQuery] = useState('')
@@ -211,12 +215,16 @@ export function CapabilitiesView({
       pageTitle={embedded || agentRedesign ? undefined : t.sidebar.nav.capabilities}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
-      tabs={[
-        { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
-        { id: 'plugins', label: t.skills.tabPlugins },
-        { id: 'connectors', label: t.connectorsPage.title },
-        { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
-      ]}
+      tabs={
+        fixedMode
+          ? []
+          : [
+              { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
+              { id: 'plugins', label: t.skills.tabPlugins },
+              { id: 'connectors', label: t.connectorsPage.title },
+              { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
+            ]
+      }
       tabsAlign="start"
     >
       <div className="flex h-full flex-col">

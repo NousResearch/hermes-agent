@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
@@ -25,10 +24,13 @@ import {
   $agentPluginBusy,
   $agentPlugins,
   $agentPluginsError,
+  $agentPluginsOwnerKey,
+  $agentPluginsProfile,
   $agentPluginsStatus,
   type AgentPluginRow,
   type AgentPluginServerState,
   type GatewayRequest,
+  isCurrentAgentPluginRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
@@ -42,6 +44,8 @@ import { $connection, $gatewayState } from '@/store/session'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { Pill } from '../../settings/primitives'
+import { useSettingsOwner } from '../../settings/profile-scope'
+import { useSettingsGatewayRequest } from '../../settings/settings-owner-request'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
@@ -97,6 +101,16 @@ async function revealPluginsDir() {
 /** Copy any changed unified desktop halves into the app root FIRST, then
  *  rescan the root — a concurrent scan would read the pre-copy state. */
 async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
+  if (!isCurrentAgentPluginRequest(requestGateway)) {
+    return
+  }
+
+  if (requestGateway.ownerKey) {
+    await loadAgentPlugins(requestGateway, scope)
+
+    return
+  }
+
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
   await loadAgentPlugins(requestGateway, scope)
@@ -269,6 +283,7 @@ interface PackageSettingsButtonProps {
 /** One settings entry covers both halves and hands the selected profile to Settings. */
 function PackageSettingsButton({ pkg, scope }: PackageSettingsButtonProps) {
   const { t } = useI18n()
+  const owner = useSettingsOwner()
   const p = t.skills.plugins
   const desktop = pkg.desktop
   const agent = pkg.agent
@@ -276,7 +291,10 @@ function PackageSettingsButton({ pkg, scope }: PackageSettingsButtonProps) {
   // automatic page there, a desktop half may register its own. The gear is
   // the shortcut to that page (#46600, #87934).
   const settingsPages = useContributions(SETTINGS_PLUGINS_AREA)
-  const desktopSettings = Boolean(desktop && settingsPages.some(page => page.source === `plugin:${desktop.id}`))
+
+  const desktopSettings =
+    !owner && Boolean(desktop && settingsPages.some(page => page.source === `plugin:${desktop.id}`))
+
   const agentSettings = Boolean(agent?.key) && Boolean(agent?.settings_schema?.length)
   const hasSettings = desktopSettings || agentSettings
 
@@ -287,7 +305,18 @@ function PackageSettingsButton({ pkg, scope }: PackageSettingsButtonProps) {
     // without the hand-off the page would open (and save) that one instead.
     const route = desktopSettings ? { plugin: desktop!.id } : { agent: agent!.key! }
 
-    window.location.hash = `#${pluginSettingsRouteHref(route, scope)}`
+    if (owner) {
+      const params = new URLSearchParams({ panel: 'settings', tab: 'plugins', agentProfile: owner.profile })
+      params.set('agent', agent!.key!)
+
+      if (owner.connectionId) {
+        params.set('connection', owner.connectionId)
+      }
+
+      window.location.hash = `#/settings?${params}`
+    } else {
+      window.location.hash = `#${pluginSettingsRouteHref(route, scope)}`
+    }
   }
 
   return (
@@ -331,6 +360,7 @@ function PackageRow({
 }) {
   const { t } = useI18n()
   const redesigned = useStore($simplifiedAgentMode)
+  const owner = useSettingsOwner()
   const [desktopBusy, setDesktopBusy] = useState(false)
   const p = t.skills.plugins
   const d = t.settings.plugins
@@ -460,27 +490,29 @@ function PackageRow({
           profile is selected; Agent follows the selector. A half the package
           lacks shows a dash; a half it has but which is missing on this side
           shows the install affordance. */}
-        <HalfCell label={p.halfDesktop}>
-          {desktop ? (
-            <Switch
-              aria-label={`${p.halfDesktop}: ${pkg.name}`}
-              checked={desktopOn}
-              disabled={desktopBusy}
-              onCheckedChange={on => {
-                triggerHaptic('selection')
-                void toggleDesktop(desktop.id, on)
-              }}
-            />
-          ) : pkg.desktopMissing ? (
-            <Tip label={remoteBackend ? p.desktopHalfRemoteTip : p.desktopHalfPendingTip}>
-              <span className="text-[0.65rem] text-(--ui-text-tertiary)">
-                {remoteBackend ? p.desktopHalfRemote : p.desktopHalfPending}
-              </span>
-            </Tip>
-          ) : (
-            <Dash />
-          )}
-        </HalfCell>
+        {!owner && (
+          <HalfCell label={p.halfDesktop}>
+            {desktop ? (
+              <Switch
+                aria-label={`${p.halfDesktop}: ${pkg.name}`}
+                checked={desktopOn}
+                disabled={desktopBusy}
+                onCheckedChange={on => {
+                  triggerHaptic('selection')
+                  void toggleDesktop(desktop.id, on)
+                }}
+              />
+            ) : pkg.desktopMissing ? (
+              <Tip label={remoteBackend ? p.desktopHalfRemoteTip : p.desktopHalfPendingTip}>
+                <span className="text-[0.65rem] text-(--ui-text-tertiary)">
+                  {remoteBackend ? p.desktopHalfRemote : p.desktopHalfPending}
+                </span>
+              </Tip>
+            ) : (
+              <Dash />
+            )}
+          </HalfCell>
+        )}
 
         <HalfCell label={p.halfAgentIn(scopeLabel)} labelContent={scopeSelector}>
           {agent ? (
@@ -559,20 +591,32 @@ function PackageRow({
 export function PluginActions({ profile }: { profile: ProfileScope }) {
   const { t } = useI18n()
   const d = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
+  const requestGateway = useSettingsGatewayRequest()
   const scope = profileParam(profile)
 
   return (
     <>
       <PluginUpdateAllActions scope={scope} />
-      <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
+      <Button
+        onClick={() =>
+          openPluginInstallRequest({
+            profile: scope,
+            repo: '',
+            ...(requestGateway.ownerKey ? { legacyHint: 'agent' as const } : {})
+          })
+        }
+        size="xs"
+        variant="textStrong"
+      >
         {d.installModal.installFromGit}
       </Button>
-      <Tip label={d.openFolder}>
-        <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost">
-          <FolderOpen />
-        </Button>
-      </Tip>
+      {!requestGateway.ownerKey && (
+        <Tip label={d.openFolder}>
+          <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost">
+            <FolderOpen />
+          </Button>
+        </Tip>
+      )}
       <Tip label={d.rescan}>
         <Button
           aria-label={d.rescan}
@@ -610,12 +654,17 @@ export const PluginsTab = memo(function PluginsTab({
   agentControls?: boolean
 }) {
   const { t } = useI18n()
+  const owner = useSettingsOwner()
   const redesigned = useStore($simplifiedAgentMode)
   const p = t.skills.plugins
-  const { requestGateway } = useGatewayRequest()
+  const requestGateway = useSettingsGatewayRequest()
 
   const desktopRecords = useStore($pluginRecords)
-  const agentRows = useStore($agentPlugins)
+  const loadedRows = useStore($agentPlugins)
+  const loadedOwnerKey = useStore($agentPluginsOwnerKey)
+  const loadedProfile = useStore($agentPluginsProfile)
+  const ownsList = loadedOwnerKey === requestGateway.ownerKey && loadedProfile === profileParam(profile)
+  const agentRows = useMemo(() => (ownsList ? loadedRows : []), [loadedRows, ownsList])
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const gatewayState = useStore($gatewayState)
@@ -631,8 +680,8 @@ export const PluginsTab = memo(function PluginsTab({
   }, [requestGateway, scope, gatewayState])
 
   const packages = useMemo(
-    () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
-    [agentRows, desktopRecords]
+    () => mergePluginPackages(owner ? [] : Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
+    [agentRows, desktopRecords, owner]
   )
 
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
@@ -720,7 +769,10 @@ export const PluginsTab = memo(function PluginsTab({
           return
         }
 
-        if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
+        if (
+          (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) &&
+          isCurrentAgentPluginRequest(requestGateway)
+        ) {
           notify({ kind: 'success', message: p.uninstalled(row.name) })
 
           // Prunes the app-level desktop half whose source package just went
@@ -815,7 +867,7 @@ export const PluginsTab = memo(function PluginsTab({
     <CatalogBrowser
       headerActions={<PluginActions profile={profile} />}
       installedEntries={installedEntries}
-      installedPending={status !== 'ready'}
+      installedPending={status !== 'ready' || !ownsList}
       isInstalled={isInstalled}
       kind="plugins"
       matchInstalled={matchInstalled}

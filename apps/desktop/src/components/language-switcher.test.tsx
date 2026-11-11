@@ -10,8 +10,12 @@ import { LanguageSwitcher } from './language-switcher'
 stubResizeObserver()
 stubMenuDomApis()
 describe('LanguageSwitcher', () => {
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
+    // Radix restores focus on the next task, before the jsdom realm is disposed.
+    const { promise, resolve } = Promise.withResolvers<void>()
+    setTimeout(resolve, 0)
+    await promise
     vi.restoreAllMocks()
   })
 

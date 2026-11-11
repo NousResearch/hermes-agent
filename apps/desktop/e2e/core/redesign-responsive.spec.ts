@@ -23,9 +23,18 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     page.setDefaultTimeout(12_000)
     await page.goto(webappLaunchLink(sandbox))
     await expect(composer(page)).toBeVisible({ timeout: 120_000 })
-    const go = async (route: string) => page.evaluate(route => { location.hash = route }, route)
 
-    for (const viewport of [{ width: 320, height: 740 }, { width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 844, height: 390 }]) {
+    const go = async (route: string) =>
+      page.evaluate(route => {
+        location.hash = route
+      }, route)
+
+    for (const viewport of [
+      { width: 320, height: 740 },
+      { width: 390, height: 844 },
+      { width: 768, height: 1024 },
+      { width: 844, height: 390 }
+    ]) {
       await page.setViewportSize(viewport)
       await go('/')
       await expect(composer(page)).toBeVisible()
@@ -37,7 +46,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
       await expect(composer(page)).toBeVisible()
       const sidebar = page.locator('.portal-sidebar')
 
-      if (!await sidebar.isVisible()) {
+      if (!(await sidebar.isVisible())) {
         await page.getByRole('button', { name: 'Show sidebar', exact: true }).tap()
       }
 
@@ -45,7 +54,10 @@ test('redesigned web app stays usable on touch screens and restores the classic 
       const bounds = await sidebar.boundingBox()
       expect(bounds!.x).toBeGreaterThanOrEqual(0)
       expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width)
-      await page.getByLabel('Window controls', { exact: true }).getByRole('button', { name: 'Hide sidebar', exact: true }).tap()
+      await page
+        .getByLabel('Window controls', { exact: true })
+        .getByRole('button', { name: 'Hide sidebar', exact: true })
+        .tap()
       await expect(sidebar).not.toBeVisible()
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
       await go('/settings?tab=config:appearance&page=window-layout')
@@ -75,7 +87,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.setViewportSize({ width: 1280, height: 860 })
     await exerciseManagementEntries(page, true)
 
-    if (!await page.locator('.portal-sidebar').isVisible()) {
+    if (!(await page.locator('.portal-sidebar').isVisible())) {
       await page.getByRole('button', { name: 'Show sidebar', exact: true }).tap()
     }
 
@@ -85,7 +97,10 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await go('/')
     await expect(page.getByRole('button', { name: 'Terminal', exact: true })).not.toBeVisible()
     await go('/settings?tab=config:appearance&page=window-layout')
-    await page.locator('[id="setting-field-appearance.interface-mode"]').getByRole('button', { name: 'Advanced', exact: true }).tap()
+    await page
+      .locator('[id="setting-field-appearance.interface-mode"]')
+      .getByRole('button', { name: 'Advanced', exact: true })
+      .tap()
     await go('/settings?tab=config:safety&page=approvals')
     await expect(page.getByRole('radio', { name: /^Smart/ })).toBeVisible()
     const settings = page.locator('[data-page-surface]')
@@ -93,11 +108,16 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     const settingsNav = settings.locator('[data-tour="overlay-nav"]')
     // Settings is a sibling of the shell: it must still clear the rail and
     // share the redesigned sidebar's width rather than inherit classic sizes.
-    await expect.poll(async () => {
-      const railBounds = (await rail.boundingBox())!
+    await expect
+      .poll(
+        async () => {
+          const railBounds = (await rail.boundingBox())!
 
-      return (await settings.boundingBox())!.x - (railBounds.x + railBounds.width)
-    }, { timeout: 5000 }).toBeCloseTo(0)
+          return (await settings.boundingBox())!.x - (railBounds.x + railBounds.width)
+        },
+        { timeout: 5000 }
+      )
+      .toBeCloseTo(0)
     await expect.poll(async () => (await settingsNav.boundingBox())!.width, { timeout: 5000 }).toBe(sidebarWidth)
     await page.locator('[data-slot="portal-safety-settings"] summary').tap()
     await expect(page.locator('[data-slot="portal-safety-settings"] details')).toHaveAttribute('open', '')
@@ -112,12 +132,14 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await page.getByRole('combobox').fill('العربية')
     await page.getByRole('combobox').press('Enter')
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl')
-    await expect.poll(async () => {
-      const railBounds = (await rail.boundingBox())!
-      const settingsBounds = (await settings.boundingBox())!
+    await expect
+      .poll(async () => {
+        const railBounds = (await rail.boundingBox())!
+        const settingsBounds = (await settings.boundingBox())!
 
-      return railBounds.x - (settingsBounds.x + settingsBounds.width)
-    }).toBeCloseTo(0)
+        return railBounds.x - (settingsBounds.x + settingsBounds.width)
+      })
+      .toBeCloseTo(0)
     await rail.getByRole('button', { name: 'المحادثات', exact: true }).tap()
     await expect(composer(page)).toBeVisible()
     await go('/settings?tab=config:appearance')
@@ -127,7 +149,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await expect(page.locator('html')).toHaveAttribute('dir', 'ltr')
     await go('/')
 
-    if (!await page.locator('.portal-sidebar').isVisible()) {
+    if (!(await page.locator('.portal-sidebar').isVisible())) {
       await page.getByRole('button', { name: 'Show sidebar', exact: true }).tap()
     }
 
@@ -145,12 +167,20 @@ test('redesigned web app stays usable on touch screens and restores the classic 
 
     for (const name of ['Files', 'Review', 'Preview']) {
       await tools.getByRole('button', { name, exact: true }).tap()
-      await expect(tools.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 })
-      await expect(tools.getByRole('button', { name: 'Terminal', exact: true })).toHaveAttribute('aria-pressed', 'false', { timeout: 10_000 })
+      await expect(tools.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'true', {
+        timeout: 10_000
+      })
+      await expect(tools.getByRole('button', { name: 'Terminal', exact: true })).toHaveAttribute(
+        'aria-pressed',
+        'false',
+        { timeout: 10_000 }
+      )
       await expect(terminalPanel).toHaveAttribute('aria-hidden', 'true')
       await tools.getByRole('button', { name: 'Terminal', exact: true }).tap()
       await expect(terminal).toBeVisible()
-      await expect(tools.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'false', { timeout: 10_000 })
+      await expect(tools.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'false', {
+        timeout: 10_000
+      })
       await expect.poll(async () => (await terminalPanel.boundingBox())?.height ?? 0).toBeGreaterThan(600)
       await expect.poll(async () => (await terminalPanel.boundingBox())?.width ?? 0).toBeGreaterThan(300)
     }
@@ -185,7 +215,9 @@ async function exerciseManagementEntries(page: Page, redesigned: boolean) {
   if (redesigned) {
     await rail.getByRole('button', { name: 'Schedules', exact: true }).click()
   } else {
-    await page.evaluate(() => { location.hash = '/cron' })
+    await page.evaluate(() => {
+      location.hash = '/cron'
+    })
   }
 
   await expect(page).toHaveURL(/#\/cron/)
@@ -198,13 +230,16 @@ async function exerciseManagementEntries(page: Page, redesigned: boolean) {
   await schedule.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(schedule).not.toBeVisible()
 
-  if (redesigned) {await expect(newSchedule).toBeFocused()}
+  if (redesigned) {
+    await expect(newSchedule).toBeFocused()
+  }
 
   if (redesigned) {
     await rail.getByRole('button', { name: 'Agents', exact: true }).click()
-    await page.getByRole('button', { name: 'Manage agents…', exact: true }).click()
   } else {
-    await page.evaluate(() => { location.hash = '/profiles?manage=true' })
+    await page.evaluate(() => {
+      location.hash = '/profiles?manage=true'
+    })
   }
 
   await page.getByRole('heading', { name: 'Agents', exact: true }).first().waitFor({ state: 'visible' })
@@ -216,7 +251,12 @@ async function exerciseManagementEntries(page: Page, redesigned: boolean) {
   await agent.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(agent).not.toBeVisible()
 
-  if (redesigned) {await expect(newAgent).toBeFocused()}
-  await page.evaluate(() => { location.hash = '/' })
+  if (redesigned) {
+    await expect(newAgent).toBeFocused()
+  }
+
+  await page.evaluate(() => {
+    location.hash = '/'
+  })
   await expect(composer(page)).toBeVisible()
 }

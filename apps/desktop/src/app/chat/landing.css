@@ -4,6 +4,10 @@
   container: chat-landing / size;
 }
 
+[data-chat-landing='true'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+  --composer-width: 30rem;
+}
+
 .chat-landing-art {
   position: absolute;
   inset: 0;
@@ -27,7 +31,6 @@
     top: 50%;
     bottom: auto;
     translate: -50% -50%;
-    width: min(36rem, calc(100% - 2rem));
     padding-bottom: 0;
   }
 }

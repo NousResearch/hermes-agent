@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent, ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
@@ -62,7 +62,7 @@ import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { OnboardingSettings } from './onboarding-settings'
 import { PortalSafetySettings } from './portal-safety-fields'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
-import { SettingsProfileScope } from './profile-scope'
+import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
@@ -71,6 +71,7 @@ import { useSettingDeepLink } from './use-setting-deep-link'
 export function ConfigSettings({
   activeSectionId,
   subpage,
+  agentModel,
   onConfigSaved,
   onMainModelChanged,
   importInputRef
@@ -79,12 +80,16 @@ export function ConfigSettings({
   // inner page per scope so every draft/seed/autosave ref resets wholesale
   // when the target profile changes — the same guarantee useOnProfileSwitch
   // provides for app-wide switches, without hand-clearing each piece.
-  const scopeProfile = useStore($settingsRequestProfile)
-  const connectionId = useStore($activeConnectionId)
+  const selectedProfile = useStore($settingsRequestProfile)
+  const activeConnection = useStore($activeConnectionId)
+  const owner = useSettingsOwner()
+  const scopeProfile = owner?.profile ?? selectedProfile
+  const connectionId = owner ? owner.connectionId : activeConnection
 
   return (
     <ConfigSettingsInner
       activeSectionId={activeSectionId}
+      agentModel={agentModel}
       importInputRef={importInputRef}
       key={JSON.stringify([connectionId, scopeProfile ?? '__active__'])}
       onConfigSaved={onConfigSaved}
@@ -98,6 +103,7 @@ export function ConfigSettings({
 interface ConfigSettingsProps {
   activeSectionId: string
   /** Undefined preserves the full section for existing embedded consumers. */
+  agentModel?: boolean
   subpage?: string
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
@@ -107,12 +113,15 @@ interface ConfigSettingsProps {
 function ConfigSettingsInner({
   activeSectionId,
   subpage,
+  agentModel,
   onConfigSaved,
   onMainModelChanged,
   importInputRef,
   scopeProfile
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
+  const owner = useSettingsOwner()
+  const requestScope = owner ?? scopeProfile
   const c = t.settings.config
   const keepAwakeMode = useStore($keepAwakeMode)
 
@@ -134,11 +143,11 @@ function ConfigSettingsInner({
     isError: configLoadFailed,
     refetch: refetchConfig,
     writeScope
-  } = useHermesConfigRecord(scopeProfile)
+  } = useHermesConfigRecord(requestScope)
 
   // Writes land on the same cache key the query above reads (base key when
   // following the active profile, suffixed when a scope override is set).
-  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
+  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(requestScope), [requestScope])
 
   const {
     data: schemaResponse,
@@ -147,9 +156,12 @@ function ConfigSettingsInner({
   } = useQuery({
     // Base key when following the active profile (matches every pre-existing
     // consumer); suffixed only for an explicit scope override.
-    queryKey:
-      scopeProfile == null ? ['hermes-config-schema'] : ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
-    queryFn: () => getHermesConfigSchema(scopeProfile),
+    queryKey: owner
+      ? ['hermes-config-schema', owner.connectionId ?? '', owner.profile]
+      : scopeProfile == null
+        ? ['hermes-config-schema']
+        : ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
+    queryFn: () => getHermesConfigSchema(requestScope),
     staleTime: 5 * 60 * 1000
   })
 
@@ -159,6 +171,14 @@ function ConfigSettingsInner({
   const saveVersionRef = useRef(0)
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
+  const mounted = useRef(true)
+  useLayoutEffect(() => {
+    mounted.current = true
+
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   // Seed the local draft once, the first time the shared record lands.
   // Background refetches thereafter must not clobber in-progress edits.
@@ -188,6 +208,10 @@ function ConfigSettingsInner({
   // B. Drop the seed + draft (re-seeds from B's refetch) and zero saveVersion so
   // the pending debounced autosave is cancelled by its effect cleanup.
   useOnProfileSwitch(() => {
+    if (owner) {
+      return
+    }
+
     configSeeded.current = false
     configBaselineRef.current = null
     savedDiscoverySignatureRef.current = undefined
@@ -200,7 +224,7 @@ function ConfigSettingsInner({
   useEffect(() => {
     let cancelled = false
 
-    getElevenLabsVoices(scopeProfile)
+    getElevenLabsVoices(requestScope)
       .then(result => {
         if (cancelled || !result.available) {
           return
@@ -218,7 +242,7 @@ function ConfigSettingsInner({
 
     return () => void (cancelled = true)
     // scopeProfile is constant per mount (the inner component is keyed on it).
-  }, [scopeProfile])
+  }, [requestScope])
 
   // eslint-disable-next-line no-restricted-syntax -- autosave bookkeeping refs, not an atom mirror
   useEffect(() => {
@@ -235,9 +259,13 @@ function ConfigSettingsInner({
       // baseline advance — each save's diff is computed once its predecessor
       // has fully resolved.
       saveQueueRef.current = saveQueueRef.current.then(async () => {
+        if (!mounted.current) {
+          return
+        }
+
         try {
           const patch = diffConfig(configBaselineRef.current ?? {}, snapshot)
-          const result = await saveHermesConfig(patch, writeScope ?? scopeProfile)
+          const result = await saveHermesConfig(patch, owner ?? writeScope ?? scopeProfile)
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
@@ -261,7 +289,7 @@ function ConfigSettingsInner({
             refreshMemoryStatus()
           }
 
-          if (saveVersionRef.current === v) {
+          if (mounted.current && saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace
             // policy; skip it when this page is editing another profile.
             if (scopeProfile == null) {
@@ -276,7 +304,7 @@ function ConfigSettingsInner({
             onConfigSaved?.()
           }
         } catch (err) {
-          if (saveVersionRef.current === v) {
+          if (mounted.current && saveVersionRef.current === v) {
             notifyError(err, c.autosaveFailed)
           }
         }
@@ -285,7 +313,7 @@ function ConfigSettingsInner({
 
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
-  }, [config, onConfigSaved, saveVersion, writeScope, scopeProfile])
+  }, [config, onConfigSaved, saveVersion, writeScope, scopeProfile, owner])
 
   const applyConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -321,15 +349,15 @@ function ConfigSettingsInner({
   }, [schema, config])
 
   const fields = (sectionFields.get(activeSectionId) ?? []).filter(
-    ([key]) => subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
+    ([key]) => agentModel || subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
   )
 
-  const includesSubpage = (...pages: string[]) => subpage === undefined || pages.includes(subpage)
+  const includesSubpage = (...pages: string[]) => agentModel || subpage === undefined || pages.includes(subpage)
   const showModelSettings = activeSectionId === 'model' && includesSubpage('main', 'auxiliary', 'moa')
-  const showDesktopSettings = activeSectionId === 'advanced' && includesSubpage('desktop')
-  const showAttachments = activeSectionId === 'chat' && includesSubpage('attachments')
+  const showDesktopSettings = !owner && activeSectionId === 'advanced' && includesSubpage('desktop')
+  const showAttachments = !owner && activeSectionId === 'chat' && includesSubpage('attachments')
   const portalSafety = usePortalRedesign() && activeSectionId === 'safety'
-  const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
+  const showSharedMetrics = !owner && activeSectionId === 'safety' && subpage === 'privacy'
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -404,10 +432,33 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
-          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
+          <ModelSettings
+            advancedChildren={agentModel ? children : undefined}
+            advancedOpen={agentModel && Boolean(subpage && !['main', 'fallbacks'].includes(subpage))}
+            agentLayout={agentModel}
+            mainFooter={
+              agentModel && config
+                ? fields
+                    .filter(([key]) => key === 'fallback_providers')
+                    .map(([key, field]) => (
+                      <div id={`setting-field-${key}`} key={key}>
+                        <ConfigField
+                          onChange={value => updateConfig(setConfigField(config, key, value))}
+                          schema={field}
+                          schemaKey={key}
+                          value={configFieldValue(config, key)}
+                        />
+                      </div>
+                    ))
+                : undefined
+            }
+            onMainModelChanged={onMainModelChanged}
+            scopeProfile={scopeProfile}
+            subpage={agentModel ? undefined : subpage}
+          />
         </div>
       )}
-      {children}
+      {!agentModel && children}
       <input
         accept=".json,application/json"
         className="hidden"
@@ -460,11 +511,16 @@ function ConfigSettingsInner({
 
   const visibleFields = (
     activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
-  ).filter(([key]) => key !== DELEGATION_ROUTE_COMPANION_KEY)
+  ).filter(([key]) => key !== DELEGATION_ROUTE_COMPANION_KEY && (!agentModel || key !== 'fallback_providers'))
 
   if (portalSafety) {
     return renderPage(
-      <PortalSafetySettings config={config} fields={sectionFields.get('safety')} onChange={updateConfig} subpage={subpage} />
+      <PortalSafetySettings
+        config={config}
+        fields={sectionFields.get('safety')}
+        onChange={updateConfig}
+        subpage={subpage}
+      />
     )
   }
 
@@ -535,7 +591,7 @@ function ConfigSettingsInner({
       <DelegationRoutingSlot
         readScope={scopeProfile}
         sectionId={activeSectionId}
-        subpage={subpage}
+        subpage={agentModel ? undefined : subpage}
         writeScope={writeScope}
       />
       {activeSectionId === 'voice' ? (
@@ -549,7 +605,11 @@ function ConfigSettingsInner({
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               {key === 'delegation.model' ? (
                 <SubagentModelGate scope={writeScope ?? scopeProfile}>
-                  <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+                  <DelegationRouteRow
+                    config={config}
+                    onConfigChange={updateConfig}
+                    scope={writeScope ?? scopeProfile}
+                  />
                 </SubagentModelGate>
               ) : (
                 <ConfigField

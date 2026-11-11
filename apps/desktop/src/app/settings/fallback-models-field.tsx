@@ -12,6 +12,7 @@ import { $customModels, withCustomModels } from '@/store/custom-models'
 
 import { CONTROL_TEXT } from './constants'
 import { ModelSelect } from './model-select'
+import { useSettingsOwner } from './profile-scope'
 
 // An entry is `{provider, model}` plus whatever routing the user hand-wrote
 // (`base_url`, `api_key`, `key_env`, `api_mode`, ...). The editor only edits
@@ -78,10 +79,11 @@ export function FallbackModelsField({
 }) {
   const { t } = useI18n()
   const m = t.settings.model
+  const owner = useSettingsOwner()
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', 'global'],
-    queryFn: () => getGlobalModelOptions()
+    queryKey: owner ? ['model-options', 'global', owner.connectionId, owner.profile] : ['model-options', 'global'],
+    queryFn: () => getGlobalModelOptions(undefined, owner)
   })
 
   const customModels = useStore($customModels)

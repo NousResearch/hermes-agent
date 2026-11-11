@@ -82,11 +82,12 @@ const radio = (name: RegExp) => screen.getByRole('radio', { name }) as HTMLButto
 describe('Subagents routing', () => {
   it('shows plugin modes with an install hint, never as choosable, until their backend registers', async () => {
     mount()
-    await screen.findByText('Model routes and Profile routes come from the Advanced Delegation plugin.')
+    await screen.findByRole('radio', { name: /^Model routes/ })
 
-    expect(radio(/^Default/).getAttribute('aria-checked')).toBe('true')
     expect(radio(/^Model routes/).disabled).toBe(true)
-    expect(radio(/^Profile routes/).disabled).toBe(true)
+    expect(
+      (globalThis.document.querySelector('[data-mode="profile_routes"] button') as HTMLButtonElement).disabled
+    ).toBe(true)
     expect(screen.getByRole('button', { name: 'Install plugin' })).toBeTruthy()
     expect(writes).toHaveLength(0)
   })

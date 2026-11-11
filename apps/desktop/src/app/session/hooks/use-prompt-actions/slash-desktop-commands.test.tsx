@@ -373,8 +373,8 @@ describe('/history', () => {
     expect(callsOf(requestGateway, 'session.resume')).toEqual([{ session_id: RUNTIME_SESSION_ID }])
     expect(callsOf(requestGateway, 'slash.exec')).toEqual([])
     const text = renderedText(handle)
-    expect(text).toContain('You: first question')
-    expect(text).toContain('Hermes: first answer')
+    expect(text).toContain(`${copy.historyYou}: first question`)
+    expect(text).toContain(`${copy.historyHermes}: first answer`)
     expect(text).not.toContain('tool noise')
   })
 
@@ -387,10 +387,10 @@ describe('/history', () => {
       { role: 'assistant', content: 'VISIBLE ANSWER', row_id: 5 }
     ] as never)
 
-    expect(history).toContain('You: ARCHIVED QUESTION')
-    expect(history).toContain('Hermes: ARCHIVED ANSWER')
-    expect(history).toContain('You: /skill question')
-    expect(history).toContain('Hermes: VISIBLE ANSWER')
+    expect(history).toContain(`${copy.historyYou}: ARCHIVED QUESTION`)
+    expect(history).toContain(`${copy.historyHermes}: ARCHIVED ANSWER`)
+    expect(history).toContain(`${copy.historyYou}: /skill question`)
+    expect(history).toContain(`${copy.historyHermes}: VISIBLE ANSWER`)
     expect(history).not.toContain('MODEL ONLY')
   })
 })

@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { RowButton } from '@/components/ui/row-button'
@@ -14,7 +13,9 @@ import { $profileColors } from '@/store/profile'
 import { useFleetRoster } from '../chat/sidebar/use-fleet-roster'
 import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
-import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
+import { SETTINGS_ROUTE } from '../routes'
+
+import { NewAgentButton } from './new-agent-button'
 
 interface AgentNavigationProps {
   profile: string
@@ -29,25 +30,29 @@ export function AgentNavigation({ profile, connectionId }: AgentNavigationProps)
   useFleetRoster(true)
   const { agents } = useSimplifiedAgents([])
 
-  if (agents.length < 2) {return null}
+  if (agents.length < 2) {
+    return null
+  }
 
   return (
     <aside aria-label={t.simplifiedAgents.agents} className="agent-management-nav">
       <h2 className="page-nav-title">{t.simplifiedAgents.agents}</h2>
-      <Button onClick={() => navigate(`${PROFILES_ROUTE}?manage=true`)} variant="secondary">
-        <Codicon name="add" />
-        {t.profiles.manageProfiles}
-      </Button>
+      <NewAgentButton owner={{ connectionId, profile }} />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {agents.map(agent => (
           <RowButton
-            aria-current={agent.profile === profile && (agent.connectionId ?? 'local') === connectionId ? 'page' : undefined}
+            aria-current={
+              agent.profile === profile && (agent.connectionId ?? 'local') === connectionId ? 'page' : undefined
+            }
             className="agent-management-nav-row"
             key={agent.id}
             onClick={() => {
               const params = new URLSearchParams({ agentProfile: agent.profile })
 
-              if (agent.connectionId) {params.set('connection', agent.connectionId)}
+              if (agent.connectionId) {
+                params.set('connection', agent.connectionId)
+              }
+
               navigate(`${SETTINGS_ROUTE}?${params}`)
             }}
           >
@@ -72,14 +77,7 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
 
   return (
     <Panel onClose={onClose}>
-      <PanelHeader
-        actions={
-          <Button onClick={() => navigate(`${PROFILES_ROUTE}?manage=true`)} variant="secondary">
-            {t.profiles.manageProfiles}
-          </Button>
-        }
-        title={t.profiles.title}
-      />
+      <PanelHeader actions={<NewAgentButton />} title={t.profiles.title} />
       <SearchField
         aria-label={t.profiles.title}
         containerClassName="mb-6 max-w-md"
@@ -100,7 +98,10 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
                 onClick={() => {
                   const params = new URLSearchParams({ agentProfile: agent.profile })
 
-                  if (agent.connectionId) {params.set('connection', agent.connectionId)}
+                  if (agent.connectionId) {
+                    params.set('connection', agent.connectionId)
+                  }
+
                   navigate(`${SETTINGS_ROUTE}?${params}`)
                 }}
               >

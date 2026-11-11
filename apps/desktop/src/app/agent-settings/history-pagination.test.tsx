@@ -1,84 +1,196 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type * as ReactQuery from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $settingsScopeOverride } from '@/store/settings-scope'
 import { makeSessionInfo } from '@/test/session-info'
 
-import type * as AgentData from './data'
+import { AgentHistory } from './history'
+import type * as HistoryData from './history-data'
+import { deleteHistorySelection, previewHistoryCleanup } from './history-data'
+import { HistoryCleanupDialog } from './history-dialogs'
 
-import { AgentSettingsView } from './index'
+const { requests } = vi.hoisted(() => ({ requests: [] as { offset: number; filters: HistoryData.HistoryFilters }[] }))
+vi.mock('../open-session', () => ({ openSession: vi.fn() }))
+vi.mock('./history-data', async importOriginal => ({
+  ...(await importOriginal<typeof HistoryData>()),
+  getHistoryRunning: async () => new Set<string>(),
+  previewHistoryCleanup: vi.fn(),
+  deleteHistorySelection: vi.fn(),
+  getHistoryPage: async (_owner: unknown, filters: HistoryData.HistoryFilters, offset = 0) => {
+    requests.push({ filters, offset })
 
-const { requests } = vi.hoisted(() => ({ requests: [] as { limit: number; offset: number }[] }))
-
-vi.mock('@tanstack/react-query', async importOriginal => {
-  const original = await importOriginal<typeof ReactQuery>()
-
-  return {
-    ...original,
-    useQuery: (options: ReactQuery.UseQueryOptions) => options.queryKey.includes('recent') ? original.useQuery(options) : {}
-  }
-})
-vi.mock('../hooks/use-config-record', () => ({ useHermesConfigRecord: () => ({}) }))
-vi.mock('../capabilities/skills/skills-data', () => ({ useSkillsQuery: () => ({}) }))
-vi.mock('../capabilities/toolsets/toolsets-data', () => ({ useToolsetsQuery: () => ({}) }))
-vi.mock('../capabilities', () => ({ CapabilitiesView: () => null }))
-vi.mock('../messaging', () => ({ MessagingView: () => null }))
-vi.mock('../settings', () => ({ SettingsView: () => null }))
-vi.mock('./directory', () => ({ AgentNavigation: () => null }))
-vi.mock('./data', async importOriginal => ({
-  ...await importOriginal<typeof AgentData>(),
-  getAgentRecentSessions: async (_owner: unknown, limit = 5, offset = 0) => {
-    requests.push({ limit, offset })
-
-    if (limit > 500) {throw new Error('HTTP 422: limit must be at most 500')}
-
-    const sessions = Array.from({ length: Math.min(limit, 501 - offset) }, (_, index) => makeSessionInfo({
-      id: `history-${offset + index}`, title: `History entry ${offset + index}`, profile: 'research'
-    }))
-
-    // The real endpoint backfills later pinned sessions outside each requested window.
-    if (offset + limit <= 499) {
-      sessions.push(makeSessionInfo({ id: 'history-499', title: 'History entry 499', profile: 'research', pinned: true }))
+    if (filters.archived === 'only') {
+      return {
+        limit: 25,
+        offset,
+        total: 1,
+        sessions: [
+          makeSessionInfo({ id: 'archived', title: 'Archived conversation', archived: true, source: 'desktop' }),
+          makeSessionInfo({ id: 'pin', title: 'Live pinned backfill', pinned: true, source: 'desktop' }),
+          makeSessionInfo({ id: 'canonical', title: 'Bot Chat', hidden: true, archived: true })
+        ]
+      }
     }
 
-    return { limit, offset, total: 501, sessions }
+    if (filters.source.length) {
+      return {
+        limit: 25,
+        offset,
+        total: 1,
+        sessions: [
+          makeSessionInfo({ id: 'schedule', title: 'Scheduled run', source: 'cron' }),
+          makeSessionInfo({ id: 'discord', title: 'Discord thread', source: 'discord' }),
+          makeSessionInfo({ id: 'pin', title: 'Live pinned backfill', pinned: true, source: 'desktop' })
+        ]
+      }
+    }
+
+    const sessions = Array.from({ length: Math.min(25, 501 - offset) }, (_, index) =>
+      makeSessionInfo({
+        id: `history-${offset + index}`,
+        title: `History entry ${offset + index}`,
+        profile: 'research',
+        source: 'desktop'
+      })
+    )
+
+    if (offset + 25 <= 499) {
+      sessions.push(
+        makeSessionInfo({
+          id: 'history-499',
+          title: 'History entry 499',
+          profile: 'research',
+          pinned: true,
+          source: 'desktop'
+        })
+      )
+    }
+
+    return { limit: 25, offset, total: 501, sessions }
   }
 }))
 
+const clients: QueryClient[] = []
 afterEach(() => {
   cleanup()
+  clients.splice(0).forEach(client => client.clear())
   $apiRequestScope.set({ profile: null, connectionId: null })
   $activeGatewayProfile.set('default')
-  $settingsScopeOverride.set(null)
   requests.length = 0
+  vi.mocked(previewHistoryCleanup).mockReset()
+  vi.mocked(deleteHistorySelection).mockReset()
 })
 
-it('keeps earlier history reachable while loading beyond the server’s 500-session request bound', async () => {
+function renderHistory() {
   $activeGatewayProfile.set('research')
   $apiRequestScope.set({ profile: 'research', connectionId: 'alpha' })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  clients.push(client)
+
+  return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/settings?agentProfile=research&connection=alpha&panel=history']}>
-        <AgentSettingsView onClose={() => {}} owner={{ connectionId: 'alpha', profile: 'research' }} />
+      <MemoryRouter>
+        <AgentHistory onClose={() => {}} owner={{ connectionId: 'alpha', profile: 'research' }} />
       </MemoryRouter>
     </QueryClientProvider>
   )
+}
+
+it('keeps earlier history reachable beyond 500 rows and deduplicates pinned backfills', async () => {
+  renderHistory()
   await screen.findByText('History entry 24')
+  expect(screen.queryByText('All sessions loaded')).toBeNull()
+  const loadMore = screen.getByRole('button', { name: 'Load more' })
 
   for (let offset = 25; offset <= 500; offset += 25) {
-    fireEvent.click(screen.getByText('Load more'))
-    await waitFor(() => expect(screen.getByText(`History entry ${offset === 500 ? 500 : offset + 23}`)).toBeTruthy())
+    fireEvent.click(loadMore)
+    await screen.findByText(`History entry ${offset === 500 ? 500 : offset + 23}`)
   }
 
   expect(screen.getByText('History entry 0')).toBeTruthy()
   expect(screen.getAllByText('History entry 499')).toHaveLength(1)
-  expect(screen.queryByText('Load more')).toBeNull()
-  expect(requests.every(request => request.limit <= 500)).toBe(true)
-  client.clear()
+  expect(loadMore.isConnected).toBe(false)
+  expect(requests.map(request => request.offset)).toEqual(Array.from({ length: 21 }, (_, index) => index * 25))
 }, 30_000)
+
+it('searches the remaining pages instead of calling a loaded-subset miss empty history', async () => {
+  renderHistory()
+  await screen.findByText('History entry 24')
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search titles, previews, or IDs' }), {
+    target: { value: 'History entry 500' }
+  })
+  await screen.findByText('History entry 500', {}, { timeout: 15_000 })
+  expect(screen.queryByText('History entry 24')).toBeNull()
+  expect(screen.getByText('All sessions loaded')).toBeTruthy()
+}, 20_000)
+
+it('applies source unions and archive boundaries to backfilled pins without exposing canonical chats', async () => {
+  renderHistory()
+  await screen.findByText('History entry 24')
+  fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Schedule' }))
+  await screen.findByText('Scheduled run')
+  expect(screen.queryByText('Discord thread')).toBeNull()
+  expect(screen.queryByText('Live pinned backfill')).toBeNull()
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Discord' }))
+  await screen.findByText('Discord thread')
+  fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+  fireEvent.click(screen.getByRole('radio', { name: 'Only' }))
+  await screen.findByText('Archived conversation')
+  expect(screen.queryByText('Live pinned backfill')).toBeNull()
+  expect(screen.queryByText('Bot Chat')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Select visible sessions' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  const confirmation = await screen.findByRole('dialog')
+  expect(within(confirmation).getByText('Archived conversation')).toBeTruthy()
+  expect(within(confirmation).queryByText('Live pinned backfill')).toBeNull()
+  fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+})
+
+it('requires a fresh cleanup preview after criteria changes and reports running skips after confirmation', async () => {
+  const candidate = makeSessionInfo({ id: 'old', title: 'Old conversation' })
+  const live = makeSessionInfo({ id: 'running', title: 'Running conversation' })
+  vi.mocked(previewHistoryCleanup).mockImplementation(async (_owner, criteria) => ({
+    candidates: [candidate],
+    running: [live],
+    criteria,
+    now: Date.now() / 1000
+  }))
+  vi.mocked(deleteHistorySelection).mockResolvedValue({ deleted: [], running: ['old'], changed: [], errors: [] })
+  const onDeleted = vi.fn()
+  const onClose = vi.fn()
+  render(
+    <HistoryCleanupDialog
+      current={() => true}
+      onClose={onClose}
+      onDeleted={onDeleted}
+      owner={{ connectionId: 'alpha', profile: 'research' }}
+    />
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Preview cleanup' }))
+  await screen.findByText('Old conversation')
+  expect(screen.getByText('Running conversation')).toBeTruthy()
+  expect(deleteHistorySelection).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Empty' }))
+  expect(screen.queryByText('Old conversation')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Delete 1' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Preview cleanup' }))
+  await screen.findByText('Old conversation')
+  fireEvent.click(screen.getByRole('button', { name: 'Delete 1' }))
+  await waitFor(() =>
+    expect(onDeleted).toHaveBeenCalledWith({ deleted: [], running: ['running', 'old'], changed: [], errors: [] })
+  )
+  expect(deleteHistorySelection).toHaveBeenCalledWith(
+    { connectionId: 'alpha', profile: 'research' },
+    [candidate],
+    expect.any(Function),
+    expect.any(String),
+    expect.objectContaining({ criteria: expect.objectContaining({ messages: 'empty' }) })
+  )
+  expect(onClose).toHaveBeenCalledOnce()
+})

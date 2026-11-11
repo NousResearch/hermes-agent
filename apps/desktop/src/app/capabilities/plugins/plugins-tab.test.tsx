@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
-import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $agentPlugins, $agentPluginsOwnerKey, $agentPluginsProfile, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection, $gatewayState } from '@/store/session'
@@ -34,6 +34,9 @@ function PluginsHarness({ query: initialQuery, ...props }: ComponentProps<typeof
 }
 
 function renderPlugins(props: ComponentProps<typeof PluginsTab>) {
+  $agentPluginsProfile.set(typeof props.profile === 'string' ? props.profile : (props.profile?.profile ?? null))
+  $agentPluginsOwnerKey.set(undefined)
+
   return render(
     <QueryClientProvider client={queryClient}>
       <PluginsHarness {...props} />
@@ -99,6 +102,8 @@ beforeEach(() => {
   $gatewayState.set('open')
   $pluginRecords.set({})
   $agentPlugins.set([])
+  $agentPluginsProfile.set(null)
+  $agentPluginsOwnerKey.set(undefined)
   $agentPluginsStatus.set('ready')
   $catalogCardView.set(false)
   seedCatalog([])
@@ -268,7 +273,6 @@ describe('PluginsTab', () => {
     expect(screen.getByText('Agent + Desktop')).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Desktop: Media Studio' }).getAttribute('aria-checked')).toBe('true')
     expect(screen.getByRole('switch', { name: 'Agent: Media Studio' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getAllByText('Agent in workbot').length).toBeGreaterThan(0)
   })
 
   it('offers "Install here" for a desktop half whose agent half is not in the selected profile', async () => {

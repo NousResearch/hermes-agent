@@ -97,7 +97,11 @@ export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+export type GatewayRequest = {
+  <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T>
+  /** Explicit embedded owner; unpinned classic callers retain the ambient cache. */
+  ownerKey?: string
+}
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
@@ -107,6 +111,7 @@ export const $agentPluginsError = atom<string | null>(null)
  *  settings must check it: the list is shared, and a scope switch keeps the
  *  previous profile's rows on screen until the new list lands. */
 export const $agentPluginsProfile = atom<null | string | undefined>(undefined)
+export const $agentPluginsOwnerKey = atom<string | undefined>(undefined)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
@@ -133,6 +138,9 @@ export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
 
 let inflight: Promise<void> | null = null
 let inflightProfile: string | null = null
+let inflightOwnerKey: string | undefined
+/** A completed background action must not replace a newer owner's inventory. */
+export const isCurrentAgentPluginRequest = (request: GatewayRequest) => request.ownerKey === inflightOwnerKey
 // Bumped per load so a slow response from a previous profile scope can't
 // overwrite the newer scope's list (async results can land out of order).
 let loadGeneration = 0
@@ -150,13 +158,18 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
 export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
   const scope = profile ?? null
 
-  if (inflight && inflightProfile === scope) {
+  if (inflight && inflightProfile === scope && inflightOwnerKey === request.ownerKey) {
     return inflight
   }
 
   const generation = ++loadGeneration
 
+  if ($agentPluginsOwnerKey.get() !== request.ownerKey || $agentPluginsProfile.get() !== scope) {
+    $agentPluginBusy.set(null)
+  }
+
   inflightProfile = scope
+  inflightOwnerKey = request.ownerKey
   inflight = (async () => {
     if ($agentPluginsStatus.get() !== 'ready') {
       $agentPluginsStatus.set('loading')
@@ -174,6 +187,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
 
       $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
       $agentPluginsProfile.set(scope)
+      $agentPluginsOwnerKey.set(request.ownerKey)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
@@ -209,6 +223,7 @@ export async function toggleAgentPlugin(
   profile?: string | null
 ): Promise<boolean> {
   $agentPluginBusy.set(key)
+  const generation = loadGeneration
 
   try {
     const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
@@ -225,6 +240,10 @@ export async function toggleAgentPlugin(
 
     if (!result?.ok) {
       throw new Error(failMessage)
+    }
+
+    if (generation !== loadGeneration || $agentPluginsOwnerKey.get() !== request.ownerKey) {
+      return true
     }
 
     const refreshed = result.plugin
@@ -244,7 +263,9 @@ export async function toggleAgentPlugin(
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if (isCurrentAgentPluginRequest(request) && $agentPluginBusy.get() === key) {
+      $agentPluginBusy.set(null)
+    }
   }
 }
 
@@ -614,6 +635,7 @@ export async function updateAgentPlugin(
   options: AgentPluginUpdateOptions = {}
 ): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
+  const generation = loadGeneration
 
   const params: PluginsManageParams = { action: 'update', name }
 
@@ -649,7 +671,9 @@ export async function updateAgentPlugin(
       throw new Error(failMessage)
     }
 
-    await loadAgentPlugins(request, profile)
+    if (generation === loadGeneration && $agentPluginsOwnerKey.get() === request.ownerKey) {
+      await loadAgentPlugins(request, profile)
+    }
 
     return { kind: result.unchanged ? 'unchanged' : 'applied' }
   } catch (e) {
@@ -657,7 +681,9 @@ export async function updateAgentPlugin(
 
     return { kind: 'failed' }
   } finally {
-    $agentPluginBusy.set(null)
+    if (isCurrentAgentPluginRequest(request) && $agentPluginBusy.get() === name) {
+      $agentPluginBusy.set(null)
+    }
   }
 }
 
@@ -672,6 +698,7 @@ export async function removeAgentPlugin(
   profile?: string | null
 ): Promise<boolean> {
   $agentPluginBusy.set(name)
+  const generation = loadGeneration
 
   try {
     const result = await request<{ ok?: boolean }>('plugins.manage', withProfile({ action: 'remove', name }, profile))
@@ -680,7 +707,13 @@ export async function removeAgentPlugin(
       throw new Error(failMessage)
     }
 
-    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    if (
+      generation === loadGeneration &&
+      $agentPluginsOwnerKey.get() === request.ownerKey &&
+      $agentPluginsProfile.get() === (profile ?? null)
+    ) {
+      $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    }
 
     return true
   } catch (e) {
@@ -688,7 +721,9 @@ export async function removeAgentPlugin(
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if (isCurrentAgentPluginRequest(request) && $agentPluginBusy.get() === name) {
+      $agentPluginBusy.set(null)
+    }
   }
 }
 
@@ -716,6 +751,7 @@ export async function saveAgentPluginSettings(
   opts: SaveAgentPluginSettingsOptions
 ): Promise<boolean> {
   $agentPluginBusy.set(opts.key)
+  const generation = loadGeneration
 
   try {
     for (const [env, value] of Object.entries(opts.secrets)) {
@@ -743,7 +779,10 @@ export async function saveAgentPluginSettings(
     // The shared list may belong to another profile by now (a scope switch
     // mid-save): only a list loaded for the profile this save targeted takes
     // its refreshed row, and a refetch would hijack the other profile's view.
-    const ownsList = $agentPluginsProfile.get() === (opts.profile ?? null)
+    const ownsList =
+      generation === loadGeneration &&
+      $agentPluginsOwnerKey.get() === request.ownerKey &&
+      $agentPluginsProfile.get() === (opts.profile ?? null)
 
     if (ownsList && result?.plugin) {
       const refreshed = result.plugin
@@ -759,6 +798,8 @@ export async function saveAgentPluginSettings(
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if (isCurrentAgentPluginRequest(request) && $agentPluginBusy.get() === opts.key) {
+      $agentPluginBusy.set(null)
+    }
   }
 }

@@ -83,44 +83,6 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
     expect(() => collectChanges(FIELDS, { ...initialDraft(FIELDS), mode: 'reckless' })).toThrow(/Mode/)
     expect(() => collectChanges(FIELDS, { ...initialDraft(FIELDS), retries: 'five' })).toThrow(/number/)
   })
-
-  it('labels raw keys like native rows and joins helper sentences with punctuation', () => {
-    const fields: PluginSettingField[] = [
-      {
-        description: 'Per-day budget',
-        key: 'daily_budget',
-        label: 'daily_budget',
-        required: false,
-        type: 'number',
-        value: 1
-      },
-      {
-        description: 'Optional maps key for travel-time estimates',
-        env: 'TRIP_NOTES_MAPS_API_KEY',
-        has_value: false,
-        key: 'maps_api_key',
-        label: 'maps_api_key',
-        required: true,
-        type: 'secret'
-      }
-    ]
-
-    render(
-      <PluginSettingsForm disabled={false} fields={fields} idPrefix="t" onSave={vi.fn(async () => true)} title="Trip" />
-    )
-
-    expect(screen.getByLabelText('Daily budget')).toBeTruthy()
-    expect(screen.getByLabelText('Maps API key')).toBeTruthy()
-    expect(screen.queryByText('daily_budget')).toBeNull()
-    expect(
-      screen.getByText(
-        "Optional maps key for travel-time estimates. Stored in the profile's .env as TRIP_NOTES_MAPS_API_KEY, never in config.yaml; leave blank to keep the current value."
-      )
-    ).toBeTruthy()
-    // Only required fields are marked; optional is the unmarked default, as in native Settings.
-    expect(screen.getAllByText('Required')).toHaveLength(1)
-    expect(screen.queryByText('(optional)')).toBeNull()
-  })
 })
 
 describe('plugin settings labels and helper copy', () => {

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
-import { browserDefaultProjectDirKey } from '@/lib/browser-settings'
+import { browserDefaultProjectDirKey, browserFolderBasePath } from '@/lib/browser-settings'
 import { browserStartupProfileKey } from '@/lib/browser-startup-profile'
 
 import { CreateProfileDialog } from './create-profile-dialog'
@@ -59,6 +59,55 @@ it('does not let a new browser profile inherit the prefs a deleted one left unde
     expect(localStorage.getItem(folderKey)).toBeNull()
     expect(localStorage.getItem(startupKey)).toBeNull()
     expect(localStorage.getItem(browserDefaultProjectDirKey('/hermes', 'alpha'))).toBe('/srv/alpha')
+  } finally {
+    localStorage.clear()
+    delete window.document.documentElement.dataset.hermesDesktopHost
+    delete win.__HERMES_BASE_PATH__
+  }
+})
+
+it('keeps duplicate creation and its older-backend persona write on the captured gateway', async () => {
+  const win = window as Window & { __HERMES_BASE_PATH__?: string }
+  const owner = { connectionId: 'gateway-a', profile: 'research' }
+  const nextOwner = { connectionId: 'gateway-b', profile: 'research' }
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  win.__HERMES_BASE_PATH__ = '/hermes'
+  const oldKey = browserDefaultProjectDirKey(browserFolderBasePath(owner.connectionId), 'duplicate')
+  const otherKey = browserDefaultProjectDirKey(browserFolderBasePath(nextOwner.connectionId), 'duplicate')
+  localStorage.setItem(oldKey, '/deleted')
+  localStorage.setItem(otherKey, '/keep')
+  let finishCreate!: (value: { soul_set: boolean }) => void
+  api.createProfile.mockImplementationOnce(
+    () =>
+      new Promise(resolve => {
+        finishCreate = resolve
+      })
+  )
+  const created = vi.fn()
+
+  try {
+    const { rerender } = render(
+      <CreateProfileDialog initialCloneFrom="research" onClose={vi.fn()} onCreated={created} open scope={owner} />
+    )
+
+    fireEvent.change(screen.getByRole('textbox', { name: en.profiles.nameLabel }), { target: { value: 'duplicate' } })
+    fireEvent.change(screen.getByRole('textbox', { name: /SOUL.md/ }), { target: { value: 'Research persona' } })
+    fireEvent.click(screen.getByRole('button', { name: en.profiles.createAction }))
+    rerender(
+      <CreateProfileDialog initialCloneFrom="research" onClose={vi.fn()} onCreated={created} open scope={nextOwner} />
+    )
+    await act(async () => finishCreate({ soul_set: false }))
+    await waitFor(() => expect(created).toHaveBeenCalledWith('duplicate'))
+    expect(api.createProfile).toHaveBeenCalledWith(
+      { name: 'duplicate', clone_from: 'research', soul: 'Research persona' },
+      owner
+    )
+    expect(api.updateProfileSoul).toHaveBeenCalledWith('duplicate', 'Research persona', {
+      connectionId: owner.connectionId,
+      profile: 'duplicate'
+    })
+    expect(localStorage.getItem(oldKey)).toBeNull()
+    expect(localStorage.getItem(otherKey)).toBe('/keep')
   } finally {
     localStorage.clear()
     delete window.document.documentElement.dataset.hermesDesktopHost

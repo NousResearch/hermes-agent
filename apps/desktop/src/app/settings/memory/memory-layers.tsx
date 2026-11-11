@@ -10,6 +10,7 @@ import type { MemoryProviderStatus, MemoryStatusResponse } from '@/types/hermes'
 
 import { isExternalMemoryProvider } from '../helpers'
 import { ListRow, Pill } from '../primitives'
+import { useSettingsOwner } from '../profile-scope'
 
 const STATUS_TONE: Record<MemoryProviderStatus, 'destructive' | 'success' | 'warn'> = {
   missing: 'destructive',
@@ -178,7 +179,8 @@ export function MemoryLayersSlot({ sectionId, subpage, ...panel }: MemoryLayersS
 /** `provider` is the page's live `memory.provider` draft; the active provider
  *  and readiness come from GET /api/memory, refetched whenever
  *  `$memoryStatusRevision` moves (config autosave, provider setup, OAuth). */
-export function MemoryLayersPanel({ builtin, profile, provider }: MemoryLayersPanelProps) {
+export function MemoryLayersPanel({ builtin, profile: requestedProfile, provider }: MemoryLayersPanelProps) {
+  const profile = useSettingsOwner() ?? requestedProfile
   const revision = useStore($memoryStatusRevision)
   const [status, setStatus] = useState<MemoryStatusResponse | null>(null)
   const [failed, setFailed] = useState(false)

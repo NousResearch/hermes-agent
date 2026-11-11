@@ -1,5 +1,4 @@
-/* Finished Figma surfaces use neutral 3–8% fills, not accent-tinted greys.
-   Keep the chosen theme's foreground/background and reserve its accent for selection. */
+/* Figma uses distinct neutral agent/global surfaces; keep theme-aware foregrounds. */
 :root:has([data-portal-redesign='true']) {
   --theme-fill-primary-accent-mix: 0%;
   --theme-fill-secondary-accent-mix: 0%;
@@ -10,10 +9,10 @@
   --theme-row-active-accent-mix: 0%;
   --theme-control-hover-accent-mix: 0%;
   --theme-control-active-accent-mix: 0%;
-  --ui-bg-card: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  --ui-bg-card: color-mix(in srgb, var(--ui-base) 5%, transparent);
   --ui-stroke-primary: color-mix(in srgb, var(--ui-base) 28%, transparent);
   --ui-stroke-secondary: color-mix(in srgb, var(--ui-base) 14%, transparent);
-  --ui-stroke-tertiary: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  --ui-stroke-tertiary: color-mix(in srgb, var(--ui-base) 5%, transparent);
   --ui-stroke-quaternary: color-mix(in srgb, var(--ui-base) 5%, transparent);
   --ui-text-primary: var(--ui-base);
   --ui-text-secondary: color-mix(in srgb, var(--ui-base) 70%, transparent);
@@ -22,6 +21,8 @@
   --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 50%, transparent);
   --sidebar-edge-border: var(--ui-stroke-quaternary);
   --portal-selection-background: color-mix(in srgb, var(--portal-brand-blue) 10%, transparent);
+  --portal-neutral-selection-background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-neutral-selection-stroke: color-mix(in srgb, var(--ui-base) 5%, transparent);
 }
 
 :root.dark:has([data-portal-redesign='true']) {

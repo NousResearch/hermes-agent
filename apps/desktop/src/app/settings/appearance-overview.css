@@ -43,7 +43,7 @@
   gap: 8px;
   padding: 12px;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
+  border-radius: 8px;
   background: var(--ui-bg-card);
   cursor: pointer;
 }
@@ -95,7 +95,7 @@
 .appearance-reading-rows,
 .appearance-advanced {
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
+  border-radius: 8px;
   background: var(--ui-bg-card);
 }
 

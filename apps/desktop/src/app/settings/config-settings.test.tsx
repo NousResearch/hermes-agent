@@ -12,6 +12,7 @@ import { $settingsRequestProfile } from '@/store/settings-scope'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
+import { SettingsOwnerContext } from './profile-scope'
 
 // The vi.mock factory below replaces the computed (read-only) atom with a
 // writable one; narrow the import back so tests can drive it.
@@ -97,7 +98,11 @@ function renderConfigSettings(activeSectionId = 'safety') {
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} subpage={activeSectionId === 'safety' ? 'checkpoints' : undefined} />
+        <ConfigSettings
+          activeSectionId={activeSectionId}
+          importInputRef={importInputRef}
+          subpage={activeSectionId === 'safety' ? 'checkpoints' : undefined}
+        />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -207,4 +212,70 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
       vi.useRealTimers()
     }
   })
+})
+
+it('keeps a pending agent edit pinned when the global settings scope changes', async () => {
+  const owner = { connectionId: 'agent-gateway', profile: 'research' }
+  getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+
+  try {
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SettingsOwnerContext.Provider value={owner}>
+            <ConfigSettings
+              activeSectionId="safety"
+              importInputRef={createRef<HTMLInputElement>()}
+              subpage="checkpoints"
+            />
+          </SettingsOwnerContext.Provider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+    fireEvent.click(await screen.findByRole('switch'))
+    scopeProfileMock.set('other-agent')
+    await vi.advanceTimersByTimeAsync(700)
+    await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+    expect(getHermesConfigRecord).toHaveBeenCalledWith(owner)
+    expect(saveHermesConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, owner)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('does not publish a completed save after its owner editor unmounts', async () => {
+  const owner = { connectionId: 'agent-gateway', profile: 'research' }
+  const saved = vi.fn()
+  const pending = Promise.withResolvers<{ ok: boolean }>()
+  getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+  saveHermesConfig.mockReturnValueOnce(pending.promise)
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+
+  try {
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SettingsOwnerContext.Provider value={owner}>
+            <ConfigSettings
+              activeSectionId="safety"
+              importInputRef={createRef<HTMLInputElement>()}
+              onConfigSaved={saved}
+              subpage="checkpoints"
+            />
+          </SettingsOwnerContext.Provider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    fireEvent.click(await screen.findByRole('switch'))
+    await vi.advanceTimersByTimeAsync(700)
+    expect(saveHermesConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, owner)
+    view.unmount()
+    pending.resolve({ ok: true })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(saved).not.toHaveBeenCalled()
+  } finally {
+    vi.useRealTimers()
+  }
 })

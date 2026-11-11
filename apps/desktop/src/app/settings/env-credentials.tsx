@@ -10,6 +10,7 @@ import type { EnvVarInfo } from '@/types/hermes'
 
 import { asText, includesQuery, redactedValue, withoutKey } from './helpers'
 import { Pill } from './primitives'
+import { useSettingsOwner } from './profile-scope'
 import type { EnvRowProps } from './types'
 
 // Shared filter used by every credential surface (Providers + Keys pages):
@@ -47,7 +48,8 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 // scope); undefined keeps the app-wide active profile. Request-shaped on
 // purpose: the API helpers treat an explicit `null` as "target the
 // primary/default backend", which is never what a settings page means.
-export function useEnvCredentials(profile?: string): UseEnvCredentials {
+export function useEnvCredentials(requestedProfile?: string): UseEnvCredentials {
+  const profile = useSettingsOwner() ?? requestedProfile
   const { t } = useI18n()
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets

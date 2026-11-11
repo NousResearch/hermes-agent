@@ -27,6 +27,14 @@ def _shown(formatted: str) -> str:
         ("Run `a \\rightarrow b` then\n```tex\n\\to\n```", "Run `a \\rightarrow b` then\n```tex\n\\to\n```"),
         ("C:\\in\\data, \\\\rightarrow, \\textbf{x}", "C:\\in\\data, \\\\rightarrow, \\textbf{x}"),
         ("Prices $395k vs $483k", "Prices $395k vs $483k"),
+        # Relative Windows paths, env-var paths, hyphenated words, link targets and bare URLs stay as written.
+        ("Run .\\to\\file.ps1 then ..\\top\\x", "Run .\\to\\file.ps1 then ..\\top\\x"),
+        ("%APPDATA%\\top\\cfg and ~\\to\\x", "%APPDATA%\\top\\cfg and ~\\to\\x"),
+        ("edit \\in-place", "edit \\in-place"),
+        ("[docs](https://e.com/?q=\\to) A \\to B", "[docs](https://e.com/?q=\\to) A → B"),
+        ("see https://e.com/a?x=\\in&y", "see https://e.com/a?x=\\in&y"),
+        # A currency pair keeps both dollar signs even with a space before the amount.
+        ("$5 \\to $ 10", "$5 → $ 10"),
     ],
 )
 def test_format_message_renders_latex_macros_as_unicode(markdown, visible):
@@ -55,3 +63,13 @@ async def test_rich_send_maps_bare_macros_and_keeps_math_for_the_client():
     assert "A → B" in markdown and "\\rightarrow" not in markdown
     assert "$x \\leq y$" in markdown and "`\\to`" in markdown and "$$\\alpha + \\beta$$" in markdown
     assert long_formula in markdown
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    ["Run .\\to\\file.ps1", "%APPDATA%\\top\\cfg", "[docs](https://e.com/?q=\\to)", "see https://e.com/a?x=\\in&y"],
+)
+def test_rich_latex_keeps_paths_and_link_targets(markdown):
+    from plugins.platforms.telegram.telegram_markdown import normalize_rich_latex
+
+    assert normalize_rich_latex(markdown) == markdown

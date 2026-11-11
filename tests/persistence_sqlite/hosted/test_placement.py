@@ -67,6 +67,21 @@ def test_profiles_of_one_install_share_one_shared_file_and_keep_their_own_state_
     assert _room_ids(scopes["a"].profile_dir / "state.db") == []
 
 
+@pytest.mark.parametrize("placement", ["profile", "shared"])
+def test_a_room_repository_kept_past_the_backends_close_refuses_and_opens_no_file(backend, scopes, root, placement):
+    rooms = backend.open(scopes["a"]).hosted_rooms
+    backend.close()
+    with pytest.raises(RuntimeError, match="used after close"):
+        rooms.create_room(placement=placement, room_id="late", name="Late", members=MEMBERS, authority_gateway_id="gw",
+                          now=NOW)
+    with pytest.raises(RuntimeError, match="used after close"):
+        rooms.list_rooms(placement=placement)
+    with pytest.raises(RuntimeError, match="used after close"):
+        rooms.probe_hosted_room(placement=placement, room_id="late")
+    assert not (root / "shared-state.db").exists()
+    assert not (scopes["a"].profile_dir / "state.db").exists()
+
+
 def _pre_isolation_store(store) -> None:
     """The root profile's ``state.db`` holding rooms from before the shared file existed, written through the room verbs
     of the root profile's ``store``."""

@@ -196,10 +196,13 @@ class SQLiteBackend:
         path = self._stores.get(scope.hermes_home_key)
         if path is None:
             raise ValueError(f"this SQLite backend holds no store for {scope.profile_dir}")
+        self._require_open()
+        return SQLiteStore(self, scope, path)
+
+    def _require_open(self) -> None:
         with self._lock:
             if self._closed:
                 raise RuntimeError("SQLite backend used after close")
-        return SQLiteStore(self, scope, path)
 
     def _usable(self, holder: Optional[StoreHolder]) -> bool:
         # A registry sweep (profile delete) clears the ownership flag of the holders it closes.
@@ -312,3 +315,7 @@ class SQLiteStore:
     def ready(self) -> None:
         """Open the store now, so an unopenable store raises its typed error here instead of on the first verb."""
         self.holder()
+
+    def require_open(self) -> None:
+        """Raise ``RuntimeError`` once the backend has closed, as a verb through ``holder`` does; touches no file."""
+        self._backend._require_open()

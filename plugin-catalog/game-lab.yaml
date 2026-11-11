@@ -1,40 +1,48 @@
 name: game-lab
-title: "Game Lab"
+title: Game Lab
 repo: https://github.com/flabanabba8/game-lab
-sha: 8f012a0e1624dfc215c185b0213629db1855862a
-version: "0.2.0"
-description: "Work on games with Hermes: mod a game on a safe copy, translate its text without breaking it, check character sprite sheets, and playtest it by pressing and holding keys and reporting honestly. Bundles four parts (ModLab, Game Localization Studio, Playtest Pilot, Sprites). Disclosure: Works on a copy of a game folder you own and drives Universal Modder and Reverse Engineer Anything (ModLab); reads RPG Maker data files you select and keeps translation drafts in plugin storage; presses and holds keys and clicks in the one window you select through Hermes computer use and xdotool on X11, each hold behind the plugin's own approval rule, and grabs that window with ffmpeg. Sprites reads the PNG you name (private folders and symlinks refused) and writes preview GIFs to plugin storage; ModLab reads PNGs inside a mod ZIP in memory to report their grid. No network calls of its own, no credentials, no bundled game files."
+sha: 889b60d8e4f7c4701e0cf7fdcb6ed297d2982ce2
+version: 0.2.1
+description: Game Lab combines ModLab, Game Localization Studio, Sprites and experimental
+  Playtest Pilot. ModLab works on a private game copy and invokes separately installed
+  tools; localization drafts and exports RPG Maker text; Sprites inspects and previews
+  character sheets. Playtest Pilot uses approved X11 input, captures screen pixels
+  within the selected window, stores private evidence frames and returns reduced previews
+  and optional local OCR hints. The plugin makes no network calls of its own.
 maintainer: flabanabba8
 tier: community
 category: tools
-requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/game-lab/blob/8f012a0e1624dfc215c185b0213629db1855862a/README.md
-image: https://raw.githubusercontent.com/flabanabba8/game-lab/8f012a0e1624dfc215c185b0213629db1855862a/assets/thumbnail.jpg
-platforms: [linux]
+requires_hermes: '>=0.22.0'
+docs_url: https://github.com/flabanabba8/game-lab/blob/889b60d8e4f7c4701e0cf7fdcb6ed297d2982ce2/README.md
+image: https://raw.githubusercontent.com/flabanabba8/game-lab/889b60d8e4f7c4701e0cf7fdcb6ed297d2982ce2/assets/thumbnail.jpg
+platforms:
+- linux
 capabilities:
   provides_tools:
-    - modlab_resources
-    - modlab_toolkit
-    - modlab_rea_native
-    - modlab_create
-    - modlab_inspect
-    - modlab_apply
-    - modlab_rollback
-    - modlab_select_preserved
-    - localize_inspect
-    - localize_get
-    - localize_translate
-    - localize_validate
-    - localize_export
-    - localize_list_drafts
-    - playtest_start
-    - playtest_action
-    - playtest_replay
-    - playtest_observe
-    - playtest_report
-    - sprite_inspect_mv
-    - sprite_preview_mv
+  - modlab_resources
+  - modlab_toolkit
+  - modlab_rea_native
+  - modlab_create
+  - modlab_inspect
+  - modlab_apply
+  - modlab_rollback
+  - modlab_select_preserved
+  - localize_inspect
+  - localize_get
+  - localize_translate
+  - localize_validate
+  - localize_export
+  - localize_list_drafts
+  - playtest_start
+  - playtest_action
+  - playtest_check
+  - playtest_read_value
+  - playtest_replay
+  - playtest_observe
+  - playtest_report
+  - sprite_inspect_mv
+  - sprite_preview_mv
   provides_hooks:
-    - pre_tool_call
+  - pre_tool_call
   provides_middleware: []
   requires_env: []

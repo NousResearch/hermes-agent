@@ -269,41 +269,41 @@ class RecordingContext:
                 return None
 
             return _noop
+        if name == "state":
+            return _ProbeState()
         if name in context_properties:
             return _InertService()
         raise AttributeError(name)
 
 
+class _ProbeState:
+    # Same shape as PluginState (real Path values, get() returns the default) over an empty store
+    # in the probe's scratch HERMES_HOME, which the parent deletes after the run.
+    def __init__(self):
+        import os
+        from pathlib import Path
+        self.data_dir = Path(os.environ["HERMES_HOME"]) / "plugin-data" / "probe"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.data_dir / "state.json"
+        self.quota_bytes = 1024 * 1024
+        self._data = {}
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def set(self, key, value):
+        self._data[key] = value
+
+
 class _InertService:
-    # Every attribute is another inert value: callable (returns None) and usable as a path
-    # (``Path(ctx.state.data_dir)``), so a plugin that reads a service attribute in register()
-    # gets the same shape it gets from the real service.
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return _InertService()
 
-    def __call__(self, *args, **kwargs):
-        return None
+        def _noop(*args, **kwargs):
+            return None
 
-    def __fspath__(self):
-        return _inert_dir()
-
-    def __str__(self):
-        return _inert_dir()
-
-
-_INERT_DIR = []
-
-
-def _inert_dir():
-    # Under the probe's own scratch HERMES_HOME, which the parent deletes after the run.
-    if not _INERT_DIR:
-        import os
-        path = os.path.join(os.environ["HERMES_HOME"], "plugin-data", "probe")
-        os.makedirs(path, exist_ok=True)
-        _INERT_DIR.append(path)
-    return _INERT_DIR[0]
+        return _noop
 
 
 def emit(payload):

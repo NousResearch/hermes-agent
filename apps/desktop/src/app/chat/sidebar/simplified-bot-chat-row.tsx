@@ -4,9 +4,8 @@ import type { ReactNode } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { RowButton } from '@/components/ui/row-button'
-import { Tip } from '@/components/ui/tooltip'
+import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import { resolveProfileColor } from '@/lib/profile-color'
-import { cn } from '@/lib/utils'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { CANONICAL_CHAT_TITLE } from '@/plugins/hermes-bots/canonical-chat'
 import { $lastRoster, botRosterKey } from '@/plugins/hermes-bots/data'
@@ -58,14 +57,11 @@ export function SimplifiedBotChatRow({ agent, appearance = 'card', summary, onOp
       (opened?.key === key && (opened.openedSessionId === focused || opened.openedRegistryId === focused)))
 
   return (
-    <Tip label={`${agent.label} · ${agent.gateway}`}>
+    <Tip label={appearance === 'hidden' ? `${agent.label} · ${agent.gateway}` : undefined}>
       <RowButton
         aria-busy={loading || undefined}
         aria-current={selected ? 'page' : undefined}
-        className={cn(
-          'portal-agent-chat flex min-w-0 flex-1 items-center text-left focus-visible:outline-2 focus-visible:outline-ring',
-          selected && 'bg-(--chrome-action-hover)'
-        )}
+        className="portal-agent-chat flex min-w-0 flex-1 items-center text-left focus-visible:outline-2 focus-visible:outline-ring"
         data-appearance={appearance}
         disabled={loading}
         onClick={() => {
@@ -84,14 +80,12 @@ export function SimplifiedBotChatRow({ agent, appearance = 'card', summary, onOp
               <Codicon className="animate-spin" name="loading" />
             </span>
           ) : (
-            <FigmaAgentIcon
-              className="portal-agent-avatar"
-              color={resolveProfileColor(agent.profile, colors)}
-              variant="outline"
-            />
+            <FigmaAgentIcon className="portal-agent-avatar" color={resolveProfileColor(agent.profile, colors)} />
           ))}
         <span className="min-w-0 flex-1">
-          <span className="block truncate">{agent.label}</span>
+          <OverflowTip label={appearance === 'hidden' ? undefined : agent.label}>
+            <span className="block truncate">{agent.label}</span>
+          </OverflowTip>
           {(summary || (appearance === 'card' && description)) && (
             <span className="portal-agent-subtitle block truncate">{summary || description}</span>
           )}

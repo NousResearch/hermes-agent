@@ -81,23 +81,27 @@ Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
 
-Each expanded machine groups its heading, agents, and sessions in one rounded
-6px container. Keep the body subtle (3% neutral fill) and the selected machine
-heading brighter (4% neutral fill); the heading's lower corners join the body
-and round again when collapsed. Do not replace this boundary with a vertical
-connection-colored guide. The crowded-agent cards remain inside that container:
-54px rows, 32px rounded antenna-outline avatars, a subtle agent-color fill, and
-a persistent vertical action ellipsis. The selected owner gets a 15% brand-blue
-fill. Names, descriptions, and connection status use actual owner metadata;
+The boxed conversation sidebar follows Figma Desktop 10 (`147:7470`, machine
+box `143:6270`), not the alternate crowded-agent card mockup. Each expanded
+machine has a 6px container, 5% neutral body fill, and a brighter 7% selected
+heading; the heading's lower corners join the body and round when collapsed.
+Agent rows are transparent, 45px tall, with 10px horizontal padding, 7px between
+groups, and 20px colored robot tiles using the exported Figma artwork. Do not
+replace them with blue selection cards or large antenna-outline avatars.
+Selected/hovered names brighten without painting an agent-row background.
+Names, descriptions, colors, and connection status use actual owner metadata;
 never invent team names, sharing counts, or connection state.
 
 The agent name/avatar opens that owner's canonical chat without a redundant
 child row. Its menu offers **New chat with this agent**, **Open agent**, and
 **Hide from chat list**. Collapse remains a separate keyboard/touch control.
-Nested sessions have a 1px, 20% neutral indentation guide centered beneath the
-agent avatar, spanning the first through last session row. Session titles align
-with the agent name; hover/click targets still span the full agent-card width,
-including the guide gutter. Empty and collapsed agents have no dangling guide.
+Nested 31px session rows have a 1px, 20% neutral indentation guide centered
+beneath the avatar, 20px from the machine's edge. Titles align with agent names
+at 38px. Empty and collapsed agents have no dangling guide. Figma's static box
+does not specify hover variants: preserve full-machine-width session hover/click
+targets, including the guide gutter, with a single neutral highlight. Reveal
+actions for hover, visible keyboard focus, or an open menu, not lingering mouse
+focus; touch controls remain visible. Only truncated titles need a tooltip.
 Screen is a tool rather than a conversation: use **Open Screen** in the command
 palette for the focused owner; classic/Bot Mode entry points remain available.
 

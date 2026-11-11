@@ -8,7 +8,7 @@ import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timesta
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { OverflowTip, Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -122,9 +122,11 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
           <span className="grid size-4 shrink-0 place-items-center" data-slot="session-status">
             <SessionStatusDot session={row} storedSessionId={row.id} />
           </span>
-          <span className="min-w-0 flex-1 truncate" data-slot="session-title" title={title}>
-            {title}
-          </span>
+          <OverflowTip label={title}>
+            <span className="min-w-0 flex-1 truncate" data-slot="session-title">
+              {title}
+            </span>
+          </OverflowTip>
           <span
             className={cn(
               'shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)',

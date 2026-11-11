@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { CSSProperties, ReactNode, RefObject } from 'react'
+import type { ReactNode, RefObject } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -7,11 +7,10 @@ import { FadeScroll } from '@/components/ui/fade-scroll'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { resolveProfileColor } from '@/lib/profile-color'
 import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
 import { recordIaAction } from '@/store/ia-metrics'
-import { $activeGatewayProfile, $profileColors } from '@/store/profile'
+import { $activeGatewayProfile } from '@/store/profile'
 import { knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
@@ -48,7 +47,6 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
 
 function AgentCard({ agent, selected, open, hidden, onToggle, onOpenAgent, pending, children }: AgentCardProps) {
   const { t } = useI18n()
-  const colors = useStore($profileColors)
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
 
   return (
@@ -57,7 +55,6 @@ function AgentCard({ agent, selected, open, hidden, onToggle, onOpenAgent, pendi
       aria-label={`${agent.label} · ${agent.gateway}`}
       data-slot="agent-group"
       role="group"
-      style={{ '--agent-color': resolveProfileColor(agent.profile, colors) } as CSSProperties}
     >
       <div data-active-agent={selected ? '' : undefined} data-slot="agent-heading">
         <SimplifiedBotChatRow agent={agent} />

@@ -1,0 +1,36 @@
+name: shaderbruecke
+title: Shaderbrücke
+repo: https://github.com/studioluftbruecke/hermes-shaderbruecke
+sha: d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a
+description: >-
+  Make GLSL shaders with your Hermes agent, see them render, tune them by hand, and take them into
+  the tool you ship in, with a frame-by-frame proof on every export. Disclosure: each render starts
+  a headless Chromium child on the Hermes host with the network blocked; no network calls, no
+  telemetry, no credentials.
+maintainer: studioluftbruecke
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://shaderbruecke.luftbruecke.studio
+version: "0.2.2"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-shaderbruecke/d3b4bf892a34bc0f49d03ee349ec61472cfb3e5a/docs/screenshot-5.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Renders need a Chromium on the Hermes host (the Hermes container image ships one); without it every render answers no_browser."
+  - "With Hermes on a server, install the plugin on the Desktop computer too, on the same version: Desktop loads the card from its own computer."
+capabilities:
+  provides_tools:
+    - shader_render
+    - shader_library
+    - shader_export
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

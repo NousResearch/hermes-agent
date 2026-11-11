@@ -1,9 +1,9 @@
 name: hermes-ride
 repo: https://github.com/martyllmaccs-hash/Hermes-Ride-hackathon
-sha: 034fd1255bc245183cfe049eb64ff80aacc4a024
+sha: 37c4c678193019e3e8b5de0d49d198039c539257
 version: "0.2.0"
 title: "Hermes-Ride"
-description: "Hands-free voice chat with your Hermes agent from a phone on a motorcycle mount: say the wake word, talk through the helmet headset, and the agent answers with live ride context (speed, lean, braking and acceleration). Disclosure — while the wake gate is open the phone sends microphone audio to ElevenLabs Scribe (or, with stt_engine whistle, to your own Hermes host) and reply text goes to ElevenLabs TTS unless Hermes's own TTS speaks it; position and motion summaries go to your model provider in each turn's context line and are logged at 1 Hz under plugin-data/hermes-ride; it serves an HTTP + WebSocket page on RIDE_HOST:RIDE_PORT (default 127.0.0.1:8790) behind RIDE_ACCESS_KEY; with stt_engine whistle it runs one long-lived local helper process; tools/fetch_assets.sh (run by the user) downloads the wake-word engine and model pinned by sha256."
+description: "Hands-free voice chat with your Hermes agent from a phone on a motorcycle mount: say the wake word, talk through the helmet headset, and the agent answers with live ride context (speed, lean, braking and acceleration). Disclosure — while the wake gate is open the phone sends microphone audio to ElevenLabs Scribe (or, with stt_engine whistle, to your own Hermes host) and reply text goes to ElevenLabs TTS unless Hermes's own TTS speaks it; position and motion summaries go to your model provider in each turn's context line and are logged at 1 Hz under plugin-data/hermes-ride; it serves an HTTP + WebSocket page on RIDE_HOST:RIDE_PORT (default 127.0.0.1:8790) behind RIDE_ACCESS_KEY; with stt_engine whistle it runs one long-lived local helper process; tools/fetch_assets.sh (run by the user) builds the wake-word engine locally from checksum-pinned official sherpa-onnx source using Emscripten 4.0.23 and downloads the checksum-pinned model from the official upstream release."
 maintainer: martyllmaccs-hash
 tier: community
 category: voice

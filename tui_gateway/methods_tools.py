@@ -520,16 +520,8 @@ def _run_plugin_command(handler, arg: str, session=None, sid: str = "") -> str:
 
 
 def _dispatch_plugin_in_profile_scope(name: str, arg: str, session, sid: str = "") -> str | None:
-    """Resolve and run a plugin slash command under the session's profile runtime scope.
-
-    The command table follows ``get_hermes_home()`` and handlers read credentials through the
-    secret scope, so a bare lookup consults the launch profile's registry and the handler runs
-    unscoped: on a multiplexed host a plugin enabled only in the launch profile fires in another
-    profile's chat and every credential read fails closed (``UnscopedSecretError``, #133244) —
-    even in the launch profile's own Desktop chat. Lookup AND run sit inside the scope, as the
-    messaging gateway's routed ingress scope does for its plugin commands; the launch profile binds
-    its own scope through here once multiplexing is active. Returns ``None`` when the command is not
-    registered under that scope (caller falls through)."""
+    """Look up AND run plugin command *name* under the session's profile runtime scope (registry and
+    secrets), as messaging ingress does; None when that profile has no such command (#133244)."""
     with _session_profile_runtime_scope(session or {}):
         handler = _plugin_command_handler(name)
         if handler is None:
@@ -1082,8 +1074,6 @@ def _(rid, params: dict) -> dict:
             return dispatched
     if base:
         try:
-            # Scoped like command.dispatch's plugin stage: the lookup must see the session's
-            # profile registry, and the handler must run with that profile's secrets (#133244).
             plugin_output = _dispatch_plugin_in_profile_scope(base, arg, session, params.get("session_id", ""))
             if plugin_output is not None:
                 return _ok(rid, {"output": plugin_output or "(no output)"})

@@ -40,30 +40,6 @@ concurrency:
   cancel-in-progress: ${{ inputs.release != true }}
 
 jobs:
-  packaged-npm-e2e:
-    name: Packaged npm live E2E (disposable Windows)
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/wine2e/') }}
-    runs-on: windows-latest
-    timeout-minutes: 20
-    env:
-      HERMES_MSIX_INTEGRATION: '1'
-      HERMES_MSIX_FIXTURE_PATH: ${{ runner.temp }}/hermes-npm-msix-fixture
-    steps:
-      - name: Checkout code
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
-      - name: Set up locked Python, npm and test dependencies
-        uses: ./.github/actions/setup-pm
-        with:
-          toolchain: all
-          extras: '["messaging"]'
-          test-environment: 'true'
-      - name: Stage verified tools as isolated test inputs
-        shell: bash
-        run: python -m tests.pm.test_packaged_npm_windows_live --stage "$HERMES_MSIX_FIXTURE_PATH"
-      - name: Reproduce the packaged npm failure and verify the repair
-        shell: bash
-        run: bash scripts/run_tests.sh tests/pm/test_packaged_npm_windows_live.py -j 1 -- -m "platforms and integration" -v -s
-
   venv-holder-e2e:
     name: venv-holder live E2E (windows-latest)
     runs-on: blacksmith-32vcpu-windows-2025

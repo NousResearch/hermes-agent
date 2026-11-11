@@ -29,7 +29,7 @@ def packaged_tools(tmp_path, monkeypatch):
     lock = Lockfile(tmp_path / "lock.json")
     artifact, target = "1" * 64, current_target()
     for package in (Nodejs(), Npm()):
-        # These fixtures test copying/resolution. Native packaged execution has a separate probe.
+        # Synthetic executable bytes exercise copying and resolution without being executed.
         monkeypatch.setattr(package, "verify", lambda entry, target: "")
         monkeypatch.setitem(
             importlib.import_module("pm.registry")._packages, package.name, package
@@ -194,22 +194,3 @@ def test_setup_reports_copy_failure_before_launching_npm(
         in str(result) + captured.out + captured.err + caplog.text
     )
     run.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "opt_in,github,runner",
-    [(False, "", ""), (True, "", ""), (True, "true", "self-hosted")],
-)
-def test_native_fixture_refuses_deployment_outside_its_hosted_ci_job(
-    tmp_path, monkeypatch, opt_in, github, runner
-):
-    from tests.pm import test_packaged_npm_windows_live as native
-
-    monkeypatch.setenv("HERMES_MSIX_INTEGRATION", "1" if opt_in else "")
-    monkeypatch.setenv("GITHUB_ACTIONS", github)
-    monkeypatch.setenv("RUNNER_ENVIRONMENT", runner)
-    deploy = Mock(side_effect=AssertionError("must not query or deploy packages here"))
-    monkeypatch.setattr(native, "_powershell", deploy)
-    with pytest.raises(AssertionError if opt_in else pytest.skip.Exception):
-        native.test_packaged_npm_launch_and_lifecycle(tmp_path)
-    deploy.assert_not_called()

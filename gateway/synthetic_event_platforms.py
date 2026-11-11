@@ -127,5 +127,8 @@ async def unroutable_completion_exhausted(runner: Any, evt: dict[str, Any]) -> b
     logger.warning(
         "Async completion for the unregistered platform %r was undeliverable in %d attempts; "
         "dropping the queued event", name, attempts)
-    _drop_durable_completion(evt)
+    # Delivery attempts happen after the group scope exited; settle the row under
+    # the session's profile, never under the gateway's launch/default profile.
+    async with runner._completion_event_scope(evt):
+        await asyncio.to_thread(_drop_durable_completion, evt)
     return True

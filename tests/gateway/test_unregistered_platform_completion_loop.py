@@ -210,3 +210,42 @@ def test_the_unregistered_platform_warning_is_logged_once(caplog):
     mentions = [rec for rec in caplog.records if "customprobe-chat" in rec.getMessage()]
     assert len(mentions) == 1, f"the per-attempt warning repeated: {[r.getMessage() for r in mentions]}"
     assert "unregistered" in mentions[0].getMessage()
+
+
+def test_unregistered_secondary_completion_settles_its_own_ledger(
+    tmp_path, monkeypatch, isolated_registry,
+):
+    """An invalid plugin platform must not strand a secondary profile's pending ledger row."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    secondary_home = tmp_path / "profiles" / "research"
+    secondary_home.mkdir(parents=True)
+    event = _unregistered_event("deleg_secondary_unregistered")
+    event["session_key"] = "agent:research:customprobe-chat:dm:12345"
+
+    # Dispatch/completion were persisted in the named profile, not in the host's state.db.
+    token = set_hermes_home_override(str(secondary_home))
+    try:
+        delegation = _persist_pending_completion(event)
+        assert delegation.get_durable_delegation(event["delegation_id"])["delivery_state"] == "pending"
+    finally:
+        reset_hermes_home_override(token)
+
+    runner = _runner()
+
+    def _profile_home(source):
+        assert source.profile == "research"
+        return secondary_home
+
+    monkeypatch.setattr(runner, "_resolve_profile_home_for_source", _profile_home)
+    for attempt in range(UNREGISTERED_PLATFORM_ATTEMPTS):
+        assert asyncio.run(unroutable_completion_exhausted(runner, event)) is (
+            attempt == UNREGISTERED_PLATFORM_ATTEMPTS - 1
+        )
+
+    assert delegation.get_durable_delegation(event["delegation_id"]) is None
+    token = set_hermes_home_override(str(secondary_home))
+    try:
+        assert delegation.get_durable_delegation(event["delegation_id"])["delivery_state"] == "dropped"
+    finally:
+        reset_hermes_home_override(token)

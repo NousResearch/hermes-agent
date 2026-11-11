@@ -1265,6 +1265,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _async_profile_runtime_scope
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
+        if source is None:
+            # An unregistered plugin has no SessionSource, but its session-key namespace
+            # still identifies which profile owns the durable completion ledger.
+            from gateway.run import _parse_session_key
+            profile = (_parse_session_key(str(evt.get("session_key") or "")) or {}).get("profile")
+            if profile:
+                source = SessionSource(platform=Platform.API_SERVER, chat_id="", profile=profile)
         if source is None or not getattr(source, "profile", None):
             raw_sid = _raw_process_event_session_id(evt)
             if raw_sid and getattr(getattr(self, "config", None), "multiplex_profiles", False):

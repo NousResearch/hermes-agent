@@ -7,7 +7,7 @@
   "rpc": {
    "authority": 108,
    "keep-host-wide": 1,
-   "undecided": 182
+   "undecided": 183
   },
   "websocket": {
    "undecided": 10
@@ -617,6 +617,7 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_dislike", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_feature_use", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_friction", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_long_frames", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.desktop_onboarding", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.set", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "shared_metrics.slash_command", "kind": "rpc", "ref": "D3"},

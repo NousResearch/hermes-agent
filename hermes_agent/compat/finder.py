@@ -99,7 +99,9 @@ class Finder(importlib.abc.MetaPathFinder):
                               f"has a module {displaced}", name=fullname)
         try:
             spec = importlib.util.find_spec(new)
-        except ModuleNotFoundError:
+        except ModuleNotFoundError as error:
+            if not f"{new}.".startswith(f"{error.name}."):
+                raise  # the current package exists and failed to import: that is the error to report
             spec = None
         if spec is None:
             # A process that outlived a return to the old layout (a repaired or rolled-back update)

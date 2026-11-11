@@ -139,6 +139,23 @@ def test_a_module_back_at_its_old_path_loads_from_there(tmp_path, monkeypatch):
             del sys.modules[name]
 
 
+def test_a_current_package_that_fails_to_import_keeps_its_own_error(tree, monkeypatch):
+    """Only a missing current module falls back to its old path: the current package's own import error
+    reaches the importer, and an old copy left at the old path is not loaded in its place."""
+    (tree.parent / "__init__.py").write_text("import compat_probe\n", encoding="utf-8")
+    old = tree.parents[2] / "compat_probe_old"
+    old.mkdir()
+    (old / "__init__.py").write_text("", encoding="utf-8")
+    (old / "main.py").write_text("STALE = True\n", encoding="utf-8")
+    moves = {"compat_probe_old.main": "compat_probe_tree.cli.main"}
+    monkeypatch.setattr(sys, "meta_path", [Finder(moves), *sys.meta_path])
+
+    with pytest.raises(ModuleNotFoundError) as raised:
+        importlib.import_module("compat_probe_old.main")
+
+    assert raised.value.name == "compat_probe"
+
+
 @pytest.mark.parametrize("conflict", [
     {"compat_probe_old.a": "compat_probe_tree.cli.b", "compat_probe_old.b": "compat_probe_tree.cli.a"},
     {"compat_probe_old.a": "compat_probe_tree.cli.a.impl"},

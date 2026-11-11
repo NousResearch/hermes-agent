@@ -155,8 +155,8 @@ def _same_handle(a: Any, b: Any) -> bool:
 _RelayPluginConfigurationState = Enum(
     "_RelayPluginConfigurationState", "UNINITIALIZED DISABLED ACTIVE FOREIGN FAILED"
 )
-# A RelayRuntime refuses new work once it leaves OPEN; only SHUTDOWN_FAILED accepts another shutdown().
-_RuntimePhase = Enum("_RuntimePhase", "OPEN CLOSING CLOSED SHUTDOWN_FAILED")
+# A RelayRuntime refuses new work once it leaves OPEN; a shutdown that fails returns it to OPEN.
+_RuntimePhase = Enum("_RuntimePhase", "OPEN CLOSING CLOSED")
 
 
 class _RelayPluginConfigurationLoadError(RuntimeError):
@@ -813,29 +813,23 @@ class RelayRuntime:
         )
         try:
             thread.start()
-        except Exception:
+        except RuntimeError:
             with self._sessions_lock:
-                self._phase = _RuntimePhase.SHUTDOWN_FAILED
+                self._phase = _RuntimePhase.OPEN
             logger.warning("Hermes Relay deferred shutdown could not start", exc_info=True)
 
     def _finish_shutdown(self) -> None:
-        try:
-            with self._sessions_lock:
-                session_ids = list(self._sessions)
-            for session_id in session_ids:
-                _warn_on_error("runtime operation", self._close_session, {"session_id": session_id})
-            if self._plugin_configuration_registered:
-                if self._plugins_active():
-                    self.release_managed_execution(RELAY_PLUGINS_EXECUTION_CONSUMER)
-                _PLUGIN_CONFIGURATION.release(self)
-                self._plugin_configuration_registered = False
-                with contextlib.suppress(Exception):
-                    atexit.unregister(self.shutdown)
-        except Exception:
-            with self._sessions_lock:
-                self._phase = _RuntimePhase.SHUTDOWN_FAILED
-            logger.warning("Hermes Relay shutdown failed", exc_info=True)
-            return
+        # Session closes are fail-open and plugin cleanup logs and keeps its own retry: nothing here raises.
+        with self._sessions_lock:
+            session_ids = list(self._sessions)
+        for session_id in session_ids:
+            _warn_on_error("runtime operation", self._close_session, {"session_id": session_id})
+        if self._plugin_configuration_registered:
+            if self._plugins_active():
+                self.release_managed_execution(RELAY_PLUGINS_EXECUTION_CONSUMER)
+            _PLUGIN_CONFIGURATION.release(self)
+            self._plugin_configuration_registered = False
+            atexit.unregister(self.shutdown)
         with self._sessions_lock:
             self._phase = _RuntimePhase.CLOSED
             self._shutdown_complete.set()

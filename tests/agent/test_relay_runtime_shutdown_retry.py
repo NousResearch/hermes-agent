@@ -28,7 +28,7 @@ def _refuse_thread_start(self):
     raise RuntimeError("can't start new thread")
 
 
-def test_shutdown_whose_deferred_close_could_not_start_completes_on_the_next_request(monkeypatch):
+def test_shutdown_whose_deferred_close_could_not_start_leaves_the_runtime_open(monkeypatch, caplog):
     relay = _FakeRelay()
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     assert host.ensure_session({"session_id": "session"}) is not None
@@ -38,8 +38,12 @@ def test_shutdown_whose_deferred_close_could_not_start_completes_on_the_next_req
         patch.setattr(threading.Thread, "start", _refuse_thread_start)
         host.shutdown()
     lease.release()
+    failures = [record for record in caplog.records if "shutdown could not start" in record.getMessage()]
+    assert len(failures) == 1 and failures[0].exc_info is not None
     assert ("plugin.activation.close",) not in relay.events
-    assert host.get_session("session") is None
+    # The runtime keeps serving: the open session survives and a new one starts.
+    assert host.get_session("session") is not None
+    assert host.ensure_session({"session_id": "next"}) is not None
 
     host.shutdown()
     assert ("plugin.activation.close",) in relay.events

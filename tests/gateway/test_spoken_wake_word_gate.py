@@ -519,3 +519,43 @@ async def test_a_busy_session_sends_only_the_admitted_envelopes_audio_to_stt(tmp
     assert event.message_type == MessageType.VOICE and len(event.media_urls) == 2
     stt_paths = GatewayInboundTranscriptionMixin._pending_event_audio_paths(None, event)
     assert len(stt_paths) == 1 and stt_paths[0].endswith(".ogg")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/new hermes", "/undo hermes", "/status hermes"])
+async def test_a_session_command_keeps_its_place_behind_an_earlier_voice_note(tmp_path, monkeypatch, command):
+    """Only the running-agent escape hatches skip the per-chat order: a ``/new``, ``/undo`` or
+    ``/status`` sent after a voice note still at gate STT runs after that note, as on Telegram."""
+    import asyncio
+    import base64
+    import json
+    import threading
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    seen = []
+    adapter.handle_message = AsyncMock(side_effect=lambda e: seen.append(e.message_id))
+    release = threading.Event()
+
+    def slow(path, _model=None, _source=None):
+        release.wait(10)
+        return {"success": True, "transcript": "hermes, what is on today", "provider": "fake"}
+
+    def line(mid, content):
+        return json.dumps({"messageId": mid, "space": {"id": "group-guid", "type": "group", "phone": None},
+                           "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
+    voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+        await asyncio.wait_for(adapter._on_inbound_line(line("v1", voice)), 2)
+        await asyncio.wait_for(adapter._on_inbound_line(line("c1", {"type": "text", "text": command})), 2)
+        await asyncio.wait_for(adapter._on_inbound_line(line("t1", {"type": "text", "text": "hermes later"})), 2)
+        assert seen == []  # an inline dispatch would have landed during _on_inbound_line
+        release.set()
+        for _ in range(200):
+            if len(seen) == 3:
+                break
+            await asyncio.sleep(0.02)
+    assert seen == ["v1", "c1", "t1"]

@@ -661,7 +661,7 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any]
 
 def _pre_tool_block(agent, ref: _ToolCallRef):
     """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
-    hook-modified args applied. Hook failures never block."""
+    hook-modified args applied. A failure to dispatch the hooks blocks the call."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
@@ -673,7 +673,9 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
         )
         return block_msg, (ref.args if modified_args is None else modified_args)
     except Exception:
-        return None, ref.args
+        # Fail closed: without the hooks' verdict the call must not proceed.
+        logger.warning("pre_tool_call hook dispatch failed; blocking %s", ref.name, exc_info=True)
+        return "Pre-tool hook dispatch failed; tool execution blocked", ref.args
 
 
 def _dispatch_authorized_once(

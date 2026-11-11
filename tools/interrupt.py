@@ -7,6 +7,7 @@ import contextvars
 import logging
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from utils import env_var_enabled
 
@@ -19,12 +20,23 @@ if _DEBUG_INTERRUPT:
     # force ours back to INFO so the trace is visible in agent.log.
     logger.setLevel(logging.INFO)
 
-# Interrupted thread idents + optional user-safe cause (never the user's message text).
-_interrupted_threads: set[int] = set()
-_interrupt_reasons: dict[int, str] = {}
-# Threads asked to YIELD: hand a long-running foreground command to the background
-# instead of killing it, so a mid-turn user message is not parked behind it.
-_yield_threads: set[int] = set()
+
+@dataclass(frozen=True, slots=True)
+class Interrupt:
+    """Stop the thread's tool; ``reason`` is a user-safe cause (never the user's message text)."""
+
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Yield:
+    """Hand the thread's long-running foreground command to the background instead of killing
+    it, so a mid-turn user message is not parked behind it. An interrupt supersedes it."""
+
+
+_YIELD = Yield()
+# Thread ident -> its pending signal; a thread with no entry runs undisturbed.
+_signals: dict[int, Interrupt | Yield] = {}
 _lock = threading.Lock()
 # Tool-worker tid a deadline worker acts for. ``run_bounded_sync`` runs its worker under
 # ``contextvars.copy_context()``, so a guard chain moved onto that worker still honours
@@ -39,14 +51,11 @@ def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | N
     an optional user-safe cause. Clearing also drops a pending yield request."""
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
-        (_interrupted_threads.add if active else _interrupted_threads.discard)(tid)
-        if active and reason:
-            _interrupt_reasons[tid] = reason
+        if active:
+            _signals[tid] = Interrupt(reason or None)
         else:
-            _interrupt_reasons.pop(tid, None)
-        if not active:
-            _yield_threads.discard(tid)
-        _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
+            _signals.pop(tid, None)
+        _snapshot = {t for t, s in _signals.items() if isinstance(s, Interrupt)} if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
             "[interrupt-debug] set_interrupt(active=%s, target_tid=%s) "
@@ -68,7 +77,7 @@ def is_thread_interrupted(thread_id: int | None) -> bool:
     if thread_id is None:
         return False
     with _lock:
-        return thread_id in _interrupted_threads
+        return isinstance(_signals.get(thread_id), Interrupt)
 
 
 def request_yield(thread_id: int) -> None:
@@ -77,7 +86,7 @@ def request_yield(thread_id: int) -> None:
     message (``redirect()`` during tool execution) is delivered instead of parked behind it.
     The command itself is never killed; that is what ``set_interrupt`` is for."""
     with _lock:
-        _yield_threads.add(thread_id)
+        _signals.setdefault(thread_id, _YIELD)
 
 
 def consume_yield(thread_id: int | None) -> bool:
@@ -85,8 +94,8 @@ def consume_yield(thread_id: int | None) -> bool:
     if thread_id is None:
         return False
     with _lock:
-        if thread_id in _yield_threads:
-            _yield_threads.discard(thread_id)
+        if isinstance(_signals.get(thread_id), Yield):
+            del _signals[thread_id]
             return True
         return False
 
@@ -100,7 +109,7 @@ def run_if_not_interrupted(callback: Callable[[], None]) -> bool:
     """
     tid = threading.current_thread().ident
     with _lock:
-        if tid in _interrupted_threads:
+        if isinstance(_signals.get(tid), Interrupt):
             return False
         callback()
         return True
@@ -109,7 +118,8 @@ def run_if_not_interrupted(callback: Callable[[], None]) -> bool:
 def get_interrupt_reason() -> str | None:
     """User-safe interrupt cause for the current thread, if known."""
     with _lock:
-        return _interrupt_reasons.get(threading.current_thread().ident)
+        signal = _signals.get(threading.current_thread().ident)
+    return signal.reason if isinstance(signal, Interrupt) else None
 
 
 def clear_current_thread_interrupt() -> None:

@@ -27,7 +27,7 @@ from tools import terminal_tool as tt
 from tools.interrupt import (
     set_interrupt,
     is_interrupted,
-    _interrupted_threads,
+    _signals,
     _lock,
 )
 
@@ -39,10 +39,10 @@ def _isolate(tmp_path, monkeypatch):
     # Clean interrupt slate before and after every test so a stale tid left in
     # the module-global set can't leak across tests in the same worker.
     with _lock:
-        _interrupted_threads.clear()
+        _signals.clear()
     yield
     with _lock:
-        _interrupted_threads.clear()
+        _signals.clear()
 
 
 def _wait_for_sentinel(sentinel, timeout=10.0):

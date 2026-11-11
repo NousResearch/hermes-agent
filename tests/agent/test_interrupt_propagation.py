@@ -235,10 +235,9 @@ class TestPerThreadInterruptIsolation(unittest.TestCase):
         set_interrupt(False, tid_a)
 
         # Simulate checking from thread B's perspective
-        from tools.interrupt import _interrupted_threads, _lock
-        with _lock:
-            assert tid_a not in _interrupted_threads
-            assert tid_b in _interrupted_threads
+        from tools.interrupt import is_thread_interrupted
+        assert not is_thread_interrupted(tid_a)
+        assert is_thread_interrupted(tid_b)
 
         # Cleanup
         set_interrupt(False, tid_b)

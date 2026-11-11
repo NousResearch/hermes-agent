@@ -884,8 +884,8 @@ def test_supersede_hard_interrupt_targets_review_fork_only():
         prepare_background_review_run,
     )
     from tools.interrupt import (
-        _interrupt_reasons,
-        _interrupted_threads,
+        Interrupt,
+        _signals,
         is_thread_interrupted,
         set_interrupt,
     )
@@ -932,8 +932,8 @@ def test_supersede_hard_interrupt_targets_review_fork_only():
         assert fork._hard_interrupt_requested.is_set()
         assert is_thread_interrupted(fork._execution_thread_id)
         assert (
-            _interrupt_reasons.get(fork._execution_thread_id)
-            == "background review superseded"
+            _signals.get(fork._execution_thread_id)
+            == Interrupt("background review superseded")
         )
 
         # The foreground turn is untouched: no instance flags, no thread bit.
@@ -942,8 +942,7 @@ def test_supersede_hard_interrupt_targets_review_fork_only():
         assert not parent._hard_interrupt_requested.is_set()
         assert parent._interrupt_thread_signal_pending is False
         assert not is_thread_interrupted(foreground_thread.ident)
-        assert foreground_thread.ident not in _interrupted_threads
-        assert foreground_thread.ident not in _interrupt_reasons
+        assert foreground_thread.ident not in _signals
     finally:
         set_interrupt(False, fork._execution_thread_id)
         set_interrupt(False, foreground_thread.ident)

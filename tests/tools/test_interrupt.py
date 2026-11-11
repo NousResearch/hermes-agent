@@ -28,10 +28,10 @@ class TestInterruptModule:
 
     def test_is_thread_interrupted_checks_target_tid_not_caller(self):
         from tools.interrupt import (
-            set_interrupt, is_interrupted, is_thread_interrupted, _interrupted_threads, _lock,
+            set_interrupt, is_interrupted, is_thread_interrupted, _signals, _lock,
         )
         with _lock:
-            _interrupted_threads.clear()
+            _signals.clear()
         other_tid = threading.get_ident() + 1
         set_interrupt(True, thread_id=other_tid)
         assert not is_interrupted()
@@ -44,11 +44,11 @@ class TestInterruptModule:
     def test_clear_current_thread_interrupt_leaves_other_threads(self):
         """clear_current_thread_interrupt only touches the calling thread."""
         from tools.interrupt import (
-            set_interrupt, is_interrupted, clear_current_thread_interrupt,
-            _interrupted_threads, _lock,
+            set_interrupt, is_interrupted, is_thread_interrupted, clear_current_thread_interrupt,
+            _signals, _lock,
         )
         with _lock:
-            _interrupted_threads.clear()
+            _signals.clear()
         other_tid = threading.get_ident() + 1  # an ident that isn't us
         set_interrupt(True, thread_id=other_tid)
         set_interrupt(True)  # current thread
@@ -57,9 +57,8 @@ class TestInterruptModule:
         clear_current_thread_interrupt()
 
         assert not is_interrupted()  # ours cleared
-        with _lock:
-            assert other_tid in _interrupted_threads  # other thread untouched
-            _interrupted_threads.discard(other_tid)
+        assert is_thread_interrupted(other_tid)  # other thread untouched
+        set_interrupt(False, thread_id=other_tid)
 
     def test_run_if_not_interrupted_skips_callback_when_already_interrupted(self):
         from tools.interrupt import run_if_not_interrupted, set_interrupt
@@ -109,10 +108,7 @@ class TestInterruptModule:
 
         interrupt.set_interrupt(False)
         with original_lock:
-            baseline = (
-                set(interrupt._interrupted_threads),
-                dict(interrupt._interrupt_reasons),
-            )
+            baseline = dict(interrupt._signals)
         monkeypatch.setattr(interrupt, "_lock", ObservedLock())
 
         def publish_interrupt():
@@ -152,13 +148,9 @@ class TestInterruptModule:
         assert callback_observations == [False]
         assert interrupt_published.is_set()
         with original_lock:
-            final_state = (
-                set(interrupt._interrupted_threads),
-                dict(interrupt._interrupt_reasons),
-            )
+            final_state = dict(interrupt._signals)
         assert final_state == baseline
-        assert all(setter_tid not in final_state[0] for setter_tid in setter_tids)
-        assert all(setter_tid not in final_state[1] for setter_tid in setter_tids)
+        assert all(setter_tid not in final_state for setter_tid in setter_tids)
 
 
 # ---------------------------------------------------------------------------
@@ -276,23 +268,23 @@ class TestSIGKILLEscalation:
 # ---------------------------------------------------------------------------
 
 class TestRunToolCleanupOnBaseException:
-    """Verify that _run_tool cleans up _interrupted_threads even when
+    """Verify that _run_tool cleans up the interrupt signal table even when
     _invoke_tool raises a BaseException (e.g. CancelledError).
 
     Regression test for #35309: without the finally block, a BaseException
     bypasses ``except Exception``, leaking the worker tid into
-    _interrupted_threads.  ThreadPoolExecutor recycles tids, so the next
+    the interrupt signal table.  ThreadPoolExecutor recycles tids, so the next
     tool scheduled on the same thread is instantly "interrupted".
     """
 
     def test_cleanup_on_base_exception(self):
         from unittest.mock import MagicMock
         import types
-        from tools.interrupt import set_interrupt, _interrupted_threads, _lock
+        from tools.interrupt import set_interrupt, _signals, _lock
 
         # Clear global state
         with _lock:
-            _interrupted_threads.clear()
+            _signals.clear()
 
         # Build a minimal mock agent with the attributes _run_tool needs
         agent = MagicMock()
@@ -332,7 +324,7 @@ class TestRunToolCleanupOnBaseException:
             pass  # ThreadPoolExecutor may re-raise
 
         # After the worker finishes (even with BaseException), the worker
-        # tid should have been removed from _interrupted_threads and
+        # tid should have been removed from the interrupt signal table and
         # _tool_worker_threads.
         assert len(agent._tool_worker_threads) == 0, (
             f"_tool_worker_threads not cleaned up: {agent._tool_worker_threads}"
@@ -344,5 +336,5 @@ class TestRunToolCleanupOnBaseException:
         # the start and never set any interrupt ourselves, so a leak from
         # _run_tool is the only way an entry could land here.
         with _lock:
-            leaked = set(_interrupted_threads)
-        assert leaked == set(), f"leaked tids in _interrupted_threads: {leaked}"
+            leaked = set(_signals)
+        assert leaked == set(), f"leaked tids in the interrupt signal table: {leaked}"

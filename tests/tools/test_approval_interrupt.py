@@ -39,7 +39,7 @@ class TestApprovalInterrupt:
         # the OS, so a bit set on a now-dead thread in a prior test can leak
         # onto a fresh worker that happens to reuse the ident.
         with _interrupt_mod._lock:
-            _interrupt_mod._interrupted_threads.clear()
+            _interrupt_mod._signals.clear()
         set_interrupt(False)
         self._saved_env = {
             k: os.environ.get(k)
@@ -55,7 +55,7 @@ class TestApprovalInterrupt:
         from tools import interrupt as _interrupt_mod
 
         with _interrupt_mod._lock:
-            _interrupt_mod._interrupted_threads.clear()
+            _interrupt_mod._signals.clear()
         set_interrupt(False)
         for k, v in self._saved_env.items():
             if v is None:

@@ -1,0 +1,28 @@
+name: soloknuckle
+title: Soloknuckle
+repo: https://github.com/z99wE/soloknucklefXrhermes
+sha: "3768c5bf008a05826f1e078d366cc41684077008"
+version: "5.2.0"
+description: >-
+  Deterministic local guardrails for Hermes and dev workflows. Three invocable
+  tools—git-diff secret scanning, a destructive-command firewall, and a project
+  health score—plus native Hermes surfaces: additive credential-redaction
+  patterns, a soloknuckle:hygiene skill, hermes hygiene CLI, /hygiene, and a
+  weekly hygiene-report blueprint. One rule set, same verdicts across
+  CLI/hooks/MCP/Hermes. No hooks, no middleware, no prompt rewriting, no
+  telemetry.
+maintainer: Soloknuckle Contributors
+tier: community
+category: tools
+docs_url: https://github.com/z99wE/soloknucklefXrhermes/blob/main/HERMES-INTEGRATION.md
+requires_hermes: ">=0.22.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - soloknuckle.secrets
+    - soloknuckle.intercept
+    - soloknuckle.health
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,6 +1,6 @@
 name: hermes-reliability
 repo: https://github.com/MadBonzz/hermes-reliability
-sha: dd2fd0580b0c25292edf97460ffe851e7838a101
+sha: 215d08d68243f67862d8215df73cfd39e569151c
 title: Reliability Lab
 description: >-
   Architecture-aware reliability testing for agent repositories: discover real usage datasets, generate
@@ -17,14 +17,14 @@ requires_hermes: ">=0.21.5"
 version: "0.2.0"
 docs_url: https://github.com/MadBonzz/hermes-reliability#readme
 screenshots:
-  - https://raw.githubusercontent.com/MadBonzz/hermes-reliability/dd2fd0580b0c25292edf97460ffe851e7838a101/docs/screenshots/regression-dashboard.png
+  - https://raw.githubusercontent.com/MadBonzz/hermes-reliability/215d08d68243f67862d8215df73cfd39e569151c/docs/screenshots/regression-dashboard.png
 platforms:
   - linux
 known_issues:
   - The Hermes target adapter uses version-sensitive runtime interfaces in separate evaluation
     workers; compatibility warnings and tested revisions are documented.
-  - End-to-end workflows are verified with deterministic models; live Command A target smoke passed,
-    but autonomous live scenario generation has not yet completed.
+  - End-to-end workflows are verified with deterministic models. Live Command A target smoke and
+    Muse scenario generation/preflight passed; a complete autonomous live campaign remains unverified.
 capabilities:
   provides_tools:
     - reliability_start

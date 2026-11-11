@@ -279,3 +279,75 @@ def test_a_four_backtick_fence_holding_a_triple_backtick_example_stays_one_fence
     for part in parts:
         lines = part.splitlines()
         assert len(part) <= 600 and lines[0] == "````markdown" and lines[-1] == "````"
+
+
+class _BadRequest(Exception):
+    pass
+
+
+def _refuse_rich_part(adapter, refused_index):
+    """Rich sends succeed except the ``refused_index``-th sendRichMessage, refused for good."""
+    seen = {"rich": 0}
+
+    async def do_api_request(method, api_kwargs=None):
+        if method == "sendRichMessage":
+            seen["rich"] += 1
+            if seen["rich"] == refused_index:
+                raise _BadRequest("Bad Request: can't parse rich message")
+            return SimpleNamespace(message_id=500 + seen["rich"])
+        return True
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=do_api_request)
+    legacy_ids = iter(range(900, 999))
+    adapter._bot.send_message = AsyncMock(side_effect=lambda **kw: SimpleNamespace(message_id=next(legacy_ids)))
+
+
+def _legacy_texts(adapter):
+    return "".join(call.kwargs["text"] for call in adapter._bot.send_message.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_later_part_refused_for_good_sends_the_rest_as_markdown_once(monkeypatch):
+    """Part 2 permanently refused: the tail reaches the chat as MarkdownV2 after part 1, and part 1
+    is never sent again (redelivery would otherwise re-show it and hit the same refusal)."""
+    adapter = _make_adapter()
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    _refuse_rich_part(adapter, 2)
+    content = _details_content()
+
+    result = await adapter._send_with_retry("12345", content)
+
+    rich = _rich_calls(adapter)
+    assert result.success is True
+    assert len(rich) == 2 and _rich_markdown(rich[0]).startswith("# Incident report")
+    assert result.raw_response["message_ids"][0] == "501"
+    shown = _legacy_texts(adapter).replace("\\", "")
+    assert "row 7-519: the build stayed green on main" in shown
+    assert "Incident report" not in shown  # the delivered head is not repeated
+
+
+@pytest.mark.asyncio
+async def test_a_refused_continuation_of_a_rich_final_edit_sends_the_rest_as_markdown():
+    adapter = _make_adapter()
+    _refuse_rich_part(adapter, 1)
+
+    result = await adapter.edit_message("12345", "100", _details_content(), finalize=True)
+
+    calls = adapter._bot.do_api_request.await_args_list
+    assert result.success is True and calls[0].args[0] == "editMessageText"
+    assert "row 7-519: the build stayed green on main" in _legacy_texts(adapter).replace("\\", "")
+    assert result.message_id == result.continuation_message_ids[-1]
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+def test_a_details_block_larger_than_the_cap_is_closed_and_reopened():
+    body = "\n".join(f"- row {index}: fine" for index in range(120))
+    content = f"<details><summary>Build log</summary>\n\n{body}\n\n</details>"
+
+    parts = split_rich_parts(content, 600)
+
+    assert len(parts) >= 2
+    for part in parts:
+        assert len(part) <= 600
+        assert part.startswith("<details><summary>Build log</summary>")
+        assert part.count("<details") == part.count("</details>") == 1

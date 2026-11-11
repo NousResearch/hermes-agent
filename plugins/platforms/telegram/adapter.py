@@ -206,7 +206,7 @@ from plugins.platforms.telegram.telegram_network import (
     proxy_target_hosts, telegram_verify)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
-from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind
+from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
@@ -1367,7 +1367,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         caller must NOT legacy-resend); retry semantics mirror legacy send()."""
         safe_error = _redact_telegram_error_text(exc)
         logger.warning("[%s] %s transient failure (no legacy resend): %s", self.name, what, safe_error)
-        return _maybe_delivered_result(exc, safe_error, retry_after=retry_after)
+        result = _maybe_delivered_result(exc, safe_error, retry_after=retry_after)
+        if send_error_kind(exc) in (UNSENT, FLOOD):
+            # Never left (connect/pool failure) or a flood refusal: the standalone sender may report
+            # it as nothing sent, so cron can queue a replay.
+            result.raw_response = {**(result.raw_response or {}), "never_sent": True}
+        return result
 
     def _send_retry_is_final(self, result: SendResult) -> bool:
         """A send that may already be in the chat is never retried or re-sent as plain text."""

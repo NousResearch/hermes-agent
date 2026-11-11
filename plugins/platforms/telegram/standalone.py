@@ -381,10 +381,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             rich = await send_rich_standalone(bot, {**(extra or {}), "disable_link_previews": disable_link_previews},
                                               chat_id, message, thread_id=thread_id, notify=notify)
             if rich is not None:
-                # A rich failure is never marked ``retryable`` (nothing sent): the adapter's result
-                # does not say whether the request left, and a lost answer may be in the chat.
-                return (_success(chat_id, message_id=rich.message_id) if rich.success
-                        else _error(f"Telegram send failed: {rich.error}"))
+                if rich.success:
+                    return _success(chat_id, message_id=rich.message_id)
+                # ``retryable`` (nothing sent) only on the adapter's ``never_sent`` proof: a lost
+                # answer or a server error may already be in the chat.
+                never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
+                return {**_error(f"Telegram send failed: {rich.error}"), **({"retryable": True} if never_sent else {})}
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files)

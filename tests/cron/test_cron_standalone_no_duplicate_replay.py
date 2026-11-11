@@ -179,3 +179,86 @@ def test_chunked_send_drops_nothing_sent_once_a_chunk_landed():
 
     assert run("one") == {"error": "connect refused", "retryable": True}
     assert run("two") == {"error": "connect refused"}
+
+
+def test_retryable_live_failure_after_a_post_is_not_queued(monkeypatch, loop):
+    """QQBot's live ``_send_chunk`` marks ANY non-permanent error retryable, a reset after the message
+    POST included: "can try again" is not "nothing sent". Even when standalone then provably sends
+    nothing (its token request fails), the live copy may be on screen, so no replay."""
+    async def token_refused(self, url, *a, **kw):
+        return httpx.Response(503, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", token_refused)
+    t = _target(loop, platform=Platform("qqbot"), name="qqbot", extra={"app_id": "1"}, token="s")
+
+    class ResetAfterPost:
+        adapter = type("Adapter", (), {"_owner_profile": "primary"})()
+        is_relay = False
+
+        async def send(self, platform, chat_id, content, metadata=None):
+            return SendResult(success=False, error="Server disconnected without sending a response.", retryable=True)
+
+    t.transport = ResetAfterPost()
+    assert _queued_rows(t, "the report") == []
+
+
+def test_discord_refused_standalone_post_is_queued(monkeypatch, loop):
+    """Discord's live lane rejects ``send_path_degraded``; its standalone POST gets a 429. Discord
+    refused the request, so nothing is on screen and the report waits for the reconnect (as on main)."""
+    pytest.importorskip("aiohttp")
+    import aiohttp
+
+    class Resp:
+        status = 429
+        content = None
+        charset = "utf-8"
+
+        async def text(self):
+            return '{"message": "You are being rate limited."}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Session:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):
+            return Resp()
+
+    monkeypatch.setattr(aiohttp, "ClientSession", Session)
+    t = _target(loop, platform=Platform.DISCORD, name="discord", token="tok")
+
+    class Degraded:
+        adapter = type("Adapter", (), {"_owner_profile": "primary"})()
+        is_relay = False
+
+        async def send(self, platform, chat_id, content, metadata=None):
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+
+    t.transport = Degraded()
+    t.thread_id = "555"  # a thread target: no forum probe
+    assert [r["content"] for r in _queued_rows(t, "the report")] == ["the report"]
+
+
+def test_rich_send_that_never_left_is_queued(monkeypatch, loop):
+    """sendRichMessage fails to connect: the request never left, so the rich path reports it as
+    nothing sent and the report is queued once."""
+    pytest.importorskip("telegram")
+
+    class Bot:
+        async def do_api_request(self, method, api_kwargs=None, **kw):
+            raise _connect_error()
+
+    _telegram_bot(monkeypatch, Bot())
+    rows = _queued_rows(_target(loop, extra={"rich_messages": True}), "| a | b |\n|---|---|\n| 1 | 2 |")
+    assert len(rows) == 1

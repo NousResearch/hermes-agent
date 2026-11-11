@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("cron.scheduler")
 
+# Live-lane rejections an adapter returns BEFORE sending anything (no client while it rebuilds): the
+# only ones whose ``retryable`` proves the chat has nothing yet. ``SendResult.retryable`` alone means
+# "can try again" and is also set after a failed POST that may have landed (QQBot ``_send_chunk``,
+# Teams, Slack), so it never licenses a full replay by itself.
+_PRE_SEND_LIVE_REJECTIONS = frozenset({"Not connected"})
+
 
 def _standalone_send(
     t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str]]:
@@ -108,16 +114,18 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
     """Hand a payload the live lane rejected retryably and the standalone lane then definitively
     failed (or provably could not attempt) to the delivery ledger, as a failed row owned by the
     adapter that rejected it: the post-reconnect sweep / retry timer redelivers it (#125363).
-    Retryable = the reconnect-only ``send_path_degraded`` string, or any rejection the adapter
-    itself marked retryable (``SendResult.retryable`` carried on ``DeliverySendError``) — e.g.
-    Telegram's "Not connected" while the bot client rebuilds. Only reached when the standalone
+    Retryable = the reconnect-only ``send_path_degraded`` string, or a pre-send rejection
+    (``_PRE_SEND_LIVE_REJECTIONS``) the adapter itself marked retryable (``SendResult.retryable``
+    carried on ``DeliverySendError``) — e.g. Telegram's "Not connected" while the bot client
+    rebuilds; the same wording with ``retryable=False`` is a permanent fatal. Only reached when the standalone
     lane proved nothing was sent (a sender dict's explicit ``retryable``, or a failure before the
     sender ran); a timeout, a lost answer or a partial send is NOT queued, so a replay cannot
     duplicate. The ledger carries text only; dropped attachments are reported."""
     try:
         from gateway.delivery_ledger import (
             compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed, record_obligation)
-        retryable_live_rejection = is_reconnect_only(t.live_error) or t.live_retryable is True
+        retryable_live_rejection = is_reconnect_only(t.live_error) or (
+            t.live_retryable is True and t.live_error in _PRE_SEND_LIVE_REJECTIONS)
         if not retryable_live_rejection or not ledger_enabled():
             return
         session_key = f"cron:{t.platform_name}:{t.chat_id}" + (f":{t.thread_id}" if t.thread_id else "")

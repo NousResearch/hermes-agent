@@ -559,3 +559,30 @@ async def test_a_session_command_keeps_its_place_behind_an_earlier_voice_note(tm
                 break
             await asyncio.sleep(0.02)
     assert seen == ["v1", "c1", "t1"]
+
+
+@pytest.mark.asyncio
+async def test_a_photon_caf_sent_as_octet_stream_is_transcribed_as_the_voice_it_counts_as(tmp_path, monkeypatch):
+    """A ``.caf`` attachment with a generic ``application/octet-stream`` MIME counts as voice, so it
+    reaches gate STT (and the turn's) like any other voice note instead of being dropped unheard."""
+    import base64
+    from gateway.run_inbound import GatewayInboundMixin
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    adapter.handle_message = AsyncMock()
+    transcribe, calls = _stt("hermes, what is on today")
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._dispatch_inbound({
+            "messageId": "caf2", "space": {"id": "group-guid", "type": "group", "phone": None},
+            "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z",
+            "content": {"type": "attachment", "name": "Audio Message.caf", "mimeType": "application/octet-stream",
+                        "data": base64.b64encode(b"caff" + b"\x00" * 60).decode()}})
+
+    assert len(calls) == 1 and adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    _images, stt_paths, _audio_files, _videos = GatewayInboundMixin._classify_inbound_media(event, False)
+    assert stt_paths == event.media_urls and len(stt_paths) == 1

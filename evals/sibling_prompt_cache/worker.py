@@ -69,8 +69,8 @@ CHILDREN = [
     ("C", "The parent is auditing numbers. End your final reply with the exact word AUDIT-OK.", "gamma", "5586", "AUDIT-OK"),
 ]
 def _ends_with(final, marker):
-    """The context asks for the reply to END with the marker; trailing punctuation or markdown is tolerated."""
-    return str(final or "").rstrip().rstrip(".*`_\"'").endswith(marker)
+    """The context asks for the reply to END with the marker: nothing but whitespace may follow it."""
+    return str(final or "").rstrip().endswith(marker)
 
 
 GOAL = "Use the terminal to list this directory, then read {}.txt and reply with the number in it."

@@ -50,10 +50,11 @@ def stt_enabled_for_turn(runner) -> bool:
     return getattr(getattr(runner, "config", None), "stt_enabled", True)
 
 
-# Transcripts the adapters' spoken-wake-word gate already paid for, by profile and clip content: native
-# admission re-captures the clip under a new path and keeps no adapter attributes, so the turn finds it
-# by bytes. Profiles never share an entry (their STT provider and language can differ for one clip).
-_GATE_TRANSCRIPTS: OrderedDict[tuple[str, bytes], tuple[Optional[str], str]] = OrderedDict()
+# Transcript TEXT the adapters' spoken-wake-word gate already paid for, by profile and clip content:
+# native admission re-captures the clip under a new path and keeps no adapter attributes, so the turn
+# finds it by bytes and builds its note from its own path. Profiles never share an entry (their STT
+# provider and language can differ for the same forwarded clip).
+_GATE_TRANSCRIPTS: OrderedDict[tuple[str, bytes], str] = OrderedDict()
 _GATE_TRANSCRIPTS_MAX = 32
 _GATE_TRANSCRIPTS_LOCK = threading.Lock()
 
@@ -72,20 +73,29 @@ def _gate_key(path: str) -> Optional[tuple[str, bytes]]:
     return None if digest is None else (hermes_home_key(), digest)
 
 
-def remember_gate_transcript(path: str, result: tuple[Optional[str], str]) -> None:
+def remember_gate_transcript(path: str, transcript: str) -> None:
     if (key := _gate_key(path)) is None:
         return
     with _GATE_TRANSCRIPTS_LOCK:
-        _GATE_TRANSCRIPTS[key] = result
+        _GATE_TRANSCRIPTS[key] = transcript
         while len(_GATE_TRANSCRIPTS) > _GATE_TRANSCRIPTS_MAX:
             _GATE_TRANSCRIPTS.popitem(last=False)
 
 
-def _take_gate_transcript(path: str) -> Optional[tuple[Optional[str], str]]:
+def _take_gate_transcript(path: str) -> Optional[str]:
     if not _GATE_TRANSCRIPTS or (key := _gate_key(path)) is None:
         return None
     with _GATE_TRANSCRIPTS_LOCK:
         return _GATE_TRANSCRIPTS.pop(key, None)
+
+
+def transcript_note(transcript: str, path: str) -> str:
+    """The turn's note for a transcribed clip at *path* (the clip the turn holds, never the gate's).
+    A plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction and
+    made the LLM comment on voice mode instead. The path follows on its own line, as every failure
+    branch keeps it: ``content`` is the only record of where the audio lives, in
+    ``_build_media_placeholder``'s marker grammar so a consumer parsing media markers finds it."""
+    return f'"{transcript}"\n[User sent audio: {GatewayInboundTranscriptionMixin._agent_audio_path(path)}]'
 
 
 class GatewayInboundTranscriptionMixin:
@@ -123,10 +133,10 @@ class GatewayInboundTranscriptionMixin:
             try:
                 if clip_memo is not None and path in clip_memo:
                     transcript, note = clip_memo[path]
-                elif gate := await asyncio.to_thread(_take_gate_transcript, path):
-                    transcript, note = gate
+                elif transcript := await asyncio.to_thread(_take_gate_transcript, path):
+                    note = transcript_note(transcript, path)
                     if clip_memo is not None:
-                        clip_memo[path] = gate
+                        clip_memo[path] = (transcript, note)
                 else:
                     logger.debug("Transcribing user voice: %s", path)
                     transcript, note = await self._transcribe_one_clip(
@@ -271,9 +281,4 @@ async def transcribe_one_clip(path: str, transcribe_audio=None, transcribe_audio
             "words. Do not guess at the content; ask the user "
             "to resend or type it out.]"
         )
-    # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-    # and made the LLM comment on voice mode instead. The path follows on its own line, as every
-    # failure branch keeps it: ``content`` is the only record of where the audio lives, in
-    # ``_build_media_placeholder``'s marker grammar so a consumer parsing media markers finds it.
-    agent_path = GatewayInboundTranscriptionMixin._agent_audio_path(path)
-    return transcript, f'"{transcript}"\n[User sent audio: {agent_path}]'
+    return transcript, transcript_note(transcript, path)

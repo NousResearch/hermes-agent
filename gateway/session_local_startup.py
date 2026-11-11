@@ -50,7 +50,7 @@ def _adapter(authority):
     """Inspect without creating a secondary adapter map during suspended preparation."""
     registry = getattr(authority.runner, 'session_authorities', None)
     name = registry.profile_name(authority) if registry is not None else None
-    adapters = (authority.runner.adapters if name is None else
+    adapters = (getattr(authority.runner, 'adapters', {}) if name is None else
                 getattr(authority.runner, '_profile_adapters', {}).get(name, {}))
     return adapters.get(Platform.LOCAL)
 

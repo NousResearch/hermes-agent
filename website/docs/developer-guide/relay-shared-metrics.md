@@ -536,6 +536,10 @@ session/bot/profile names, paths and setting values never leave.
 | `hermes.desktop.dislike` | signal (`quick_close`, `cancelled`, `setting_off_default`, `rage_click`, `undo`, `feature_disabled`), target, setting, direction | Signals that a feature is unwanted: a pane closed within 5s of opening, a dialog/flow backed out of, a setting moved to or away from its default (the key only; the backend compares the saved value to the default itself), three clicks on one control within a second, an undo, a shipped feature switched off. Capped per signal per day. |
 | `hermes.desktop.onboarding` | step (first-run steps: provider picker, sign-in, API key, local endpoint, model pick, choose later, free-tier screen, guided setup cards, consent, first message), event (`reached`/`completed`/`abandoned`) | Where first run stops. Each step event once per profile (latched in a small per-profile file); `abandoned` is a step still open when the app next starts. First run happens before the consent question, so until it is answered the app holds the step events in memory only (never on disk, never sent) and records them if the user opts in during that app session; a "no" or quitting first discards them. Switching collection off in the Desktop deletes those latches with the app's own copy. |
 
+Desktop visible-time spans are split at UTC midnight before a day is rolled or sent.
+The clock restarts on opt-in and profile changes; hidden and suspended time is excluded.
+Withdrawing consent purges pending histograms and prevents their send after an in-flight daily report.
+
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the
 local database, so each fires once per install however many processes reach it.

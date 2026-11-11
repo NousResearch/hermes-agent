@@ -514,6 +514,7 @@ gateway:
     not_git_repo: "✗ Ní stór git é seo — ní féidir nuashonrú."
     hermes_cmd_not_found: "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
     start_failed: "✗ Theip ar nuashonrú a thosú: {error}"
+    already_running: "⏳ Tá nuashonrú ar siúl cheana; ní fhreagraíonn ach an té a thosaigh é a cheisteanna. Fan go gcríochnóidh sé, ansin bain triail as /update arís."
     starting: "☤ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
     reply_failed: "✗ Theip ar fhreagra a sheoladh chuig an bpróiseas nuashonraithe: {error}"
     reply_sent: "✓ Seoladh `{label}` chuig an bpróiseas nuashonraithe."

@@ -91,6 +91,8 @@ with a name allows that one name only.
 | `gateway.approval_actor` | `refusal_text` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.approval_actor` | `slash_confirm_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.approval_actor` | `clarify_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `picker_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.approval_actor` | `update_prompt_refusal` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `get_pending` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `resolve_gateway_clarify` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.clarify_gateway` | `mark_awaiting_text` | adding-platform-adapters.md § Public helpers for platform plugins |
@@ -107,6 +109,8 @@ with a name allows that one name only.
 | `hermes_cli.setup` | `prompt_choice` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.setup` | `prompt_yes_no` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.cli_output` | whole module | adding-platform-adapters.md § Public helpers for platform plugins |
+| `gateway.platforms.session_model` | `SessionModelPickerProvider` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
+| `gateway.platforms.session_model` | `SessionModelSettings` | adding-platform-adapters.md § Conversation model settings and picker providers (BasePlatformAdapter) |
 | `tools.skills_tool` | `find_all_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `sort_skills` | plugins/index.md § Read the skill catalog |
 | `tools.skills_tool` | `skill_search_dirs` | plugins/index.md § Read the skill catalog |

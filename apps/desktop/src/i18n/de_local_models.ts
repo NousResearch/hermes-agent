@@ -57,6 +57,8 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: 'Engine-Update verfügbar',
   updateDetail: (next, current) =>
     `Eine neuere llama.cpp-Version (${next}) ist bereit zur Installation – Sie verwenden ${current}. Während des Downloads laufen die Modelle weiter.`,
+  updateSameBuildDetail: tag =>
+    `Hermes liefert llama.cpp ${tag} jetzt mit Dateien aus, die es zum Ausführen braucht. Beim Aktualisieren wird die Engine erneut heruntergeladen; während des Downloads laufen die Modelle weiter.`,
   updateAction: 'Engine aktualisieren',
   updating: 'Engine wird aktualisiert…',
   upToDateTitle: 'Engine aktuell',

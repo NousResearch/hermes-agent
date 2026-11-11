@@ -1378,10 +1378,15 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     st.target_provider = match_slugs[0]
     st.new_model = cfg_matches[st.target_provider]
     logger.debug("Configured-provider detection routed '%s' to %s", st.new_model, st.target_provider)
-    # providers.<slug> endpoints resolve in the credential block via resolve_user_provider(),
-    # which is gated on explicit_provider; custom:* slugs resolve at runtime directly.
+    # A built-in-named entry with its own base_url is the user's endpoint (custom:<key>, #151775);
+    # a tuning-only one (no base_url) keeps the built-in. One predicate decides both.
     if isinstance(st.user_providers, dict) and st.target_provider in st.user_providers:
-        st.explicit_provider = st.target_provider
+        from hermes_cli.runtime_provider_custom import persisted_provider_id
+        persisted = persisted_provider_id(st.target_provider, st.user_providers)
+        if persisted != st.target_provider:
+            st.target_provider = persisted
+        else:
+            st.explicit_provider = st.target_provider
     return True
 
 
@@ -1745,6 +1750,8 @@ def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Opti
 
 def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     """COMMON PATH part 3: final api_mode / base_url shaping, metadata, warnings."""
+    from hermes_cli.runtime_provider_custom import persisted_provider_id
+    st.target_provider = persisted_provider_id(st.target_provider, st.user_providers)
     derived = model_derived_api_mode(st.target_provider, st.new_model, st.api_key)
     if derived is not None:
         st.api_mode = derived

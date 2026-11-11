@@ -121,3 +121,29 @@ def test_secret_source_never_forwards_config_declared_provider_keys(monkeypatch)
 
     assert not set(declared) & set(result)
     assert result["ALPACA_API_KEY"] == "MARKER-third-party"
+
+
+def test_secret_source_never_forwards_config_env_ref_credentials(monkeypatch):
+    """A credential field written as a whole-value ``${VAR}`` / ``${env:VAR}`` ref
+    (``delegation.api_key: ${DELEGATION_KEY}``) makes VAR a Hermes credential, so its vault copy
+    is withheld even though the merged config already holds the expanded value. An
+    ``mcp_servers.*.env`` ref is the server's declared env and is still forwarded."""
+    from hermes_cli import env_loader
+    from tools.mcp_tool_config import _build_safe_env
+
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        "delegation:\n  base_url: http://127.0.0.1:9/v1\n  api_key: ${DELEGATION_KEY}\n"
+        "auxiliary:\n  vision:\n    base_url: http://127.0.0.1:9/v1\n    api_key: '${env:LAB_VISION}'\n"
+        "custom_providers:\n  - name: lab\n    base_url: http://127.0.0.1:9/v1\n    api_key: ${LAB_LLM}\n"
+        "mcp_servers:\n  other:\n    command: x\n    env:\n      SERVER_TOKEN: ${SERVER_TOKEN}\n",
+        encoding="utf-8")
+    referenced = ["DELEGATION_KEY", "LAB_VISION", "LAB_LLM"]
+    for name in [*referenced, "SERVER_TOKEN"]:
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "command")
+    fake_env = {"PATH": "/usr/bin", "SERVER_TOKEN": "MARKER-server",
+                **{name: f"MARKER-{name}" for name in referenced}, "HERMES_HOME": os.environ["HERMES_HOME"]}
+    with patch.dict("os.environ", fake_env, clear=True):
+        result = _build_safe_env(None)
+
+    assert not set(referenced) & set(result)
+    assert result["SERVER_TOKEN"] == "MARKER-server"

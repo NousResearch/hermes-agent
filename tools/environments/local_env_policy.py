@@ -348,6 +348,39 @@ def _config_declared_key_envs(node: Any) -> set:
     return names.union(*(_config_declared_key_envs(value) for value in node.values()))
 
 
+# A field holding a credential value: ``api_key``, ``*_api_key``, ``token``, ``*_token``,
+# ``secret``, ``*_secret``, ``password``, ``*_password``.
+_CONFIG_CREDENTIAL_FIELD_RE = re.compile(r"(?:^|_)(?:api_key|token|secret|password)$", re.IGNORECASE)
+
+
+def _config_credential_env_refs(node: Any) -> set:
+    """Every env name a credential field (:data:`_CONFIG_CREDENTIAL_FIELD_RE`) anywhere in the RAW
+    *node* takes whole-value as ``${VAR}`` / ``${env:VAR}`` (``delegation.api_key: ${DELEGATION_KEY}``).
+    Must be the unexpanded config: the merged one already holds the value, not the name. The
+    top-level ``mcp_servers`` block is skipped: its ``env:`` refs are what a server is meant to get."""
+    from hermes_cli.config import _ENV_REF_RE, _env_ref_var_name
+
+    def walk(item: Any) -> set:
+        if isinstance(item, list):
+            return set().union(*(walk(v) for v in item))
+        if not isinstance(item, dict):
+            return set()
+        names = set()
+        for key, value in item.items():
+            if isinstance(value, str) and _CONFIG_CREDENTIAL_FIELD_RE.search(str(key)):
+                ref = _ENV_REF_RE.fullmatch(value.strip())
+                name = _env_ref_var_name(ref.group(1)) if ref else None
+                if name:
+                    names.add(name)
+            else:
+                names |= walk(value)
+        return names
+
+    if not isinstance(node, dict):
+        return set()
+    return walk({k: v for k, v in node.items() if k != "mcp_servers"})
+
+
 def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     """The subset of *names* the ACTIVE profile itself consumes as a credential, for env that is
     forwarded implicitly (no skill, operator or server declared the name). Derived from the
@@ -355,13 +388,14 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     adapter connects with (``profile_channels.credential_env_keys``); the numbered siblings
     ``<KEY>_2``.. and the persisted ``env:VAR`` rows the credential pool rotates through
     (``credential_pool._env_key_var_candidates``); the names the profile's config.yaml points a
-    provider key at (``key_env`` / ``api_key_env``, :func:`_config_declared_key_envs`); and a
+    provider key at (``key_env`` / ``api_key_env``, :func:`_config_declared_key_envs`) or that a
+    credential field takes as a whole-value ``${VAR}`` (:func:`_config_credential_env_refs`); and a
     ``<NAME>_<PROFILE>`` source name that hydration also applies as ``<NAME>``
     (``secret_sources.registry._profile_alias_target``). Resolved per call: pool rows, config,
     plugin adapters and the profile differ per served profile."""
     from agent.secret_sources.registry import _active_profile_name, _profile_alias_target
     from hermes_cli.auth import read_credential_pool
-    from hermes_cli.config import load_config_readonly
+    from hermes_cli.config import load_config_readonly, read_raw_config_readonly
     from hermes_cli.profile_channels import credential_env_keys
     from hermes_constants import get_hermes_home
 
@@ -371,7 +405,8 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
         str(entry.get("source"))[len("env:"):].strip()
         for entries in read_credential_pool().values() if isinstance(entries, list)
         for entry in entries if isinstance(entry, dict) and str(entry.get("source")).startswith("env:")}
-    declared = pool_rows | _config_declared_key_envs(load_config_readonly())
+    declared = (pool_rows | _config_declared_key_envs(load_config_readonly())
+                | _config_credential_env_refs(read_raw_config_readonly()))
     profile = _active_profile_name(get_hermes_home())
 
     def consumed(name: str) -> bool:

@@ -1,0 +1,17 @@
+name: riskpulse
+repo: https://github.com/Oko300/RiskPulse
+sha: "fd812147886fcfac5d7e024410a7dfcef255ed16"
+description: "Live SEC EDGAR risk analysis for US public companies. Analyze Form 8-K material events and Form 4 insider activity with risk scoring and plain-language narratives."
+maintainer: Oko300
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.21.0"
+capabilities:
+  provides_tools:
+    - analyze_8k_risk
+    - analyze_insider_activity
+  provides_hooks: []
+  providers_middleware: []
+requires_env:
+  - SEC_EDGAR_USER_AGENT

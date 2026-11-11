@@ -531,6 +531,21 @@ _SALVAGE_SUMMARY_MAX_CHARS = 8_000
 _SALVAGE_KEEP_RECENT_TOOLS = 2
 
 
+_REASONING_FIELD_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")
+
+
+def _drop_stale_reasoning_fields(msg: dict[str, Any]) -> None:
+    """Drop reasoning sidecars from a row whose text/role the compaction just rewrote.
+
+    The reasoning was minted for the pre-merge text, so it is stale even where a provider
+    tolerates the replay. Strict OpenAI-compatible backends (llama.cpp: ``'reasoning_content'
+    is only valid as a string on assistant messages``, code ``invalid_messages``) reject a
+    user-role row carrying these keys outright, and the rejection replays with the history,
+    wedging every later turn of the session. Mirrors the merged row's api_content invalidation."""
+    for key in _REASONING_FIELD_KEYS:
+        msg.pop(key, None)
+
+
 def _looks_like_compaction_summary(msg: dict[str, Any], content: str) -> bool:
     # Only cap standalone handoffs; merged carriers contain live user text. Content heuristics never
     # authorize mutating a live turn: require the private compressor marker. Tool messages are
@@ -4884,6 +4899,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 _last_template_visible_role(compressed[: compressed.index(carrier)]) != "user"
             ):
                 carrier["role"] = "user"
+                # A user-role row must not carry the assistant reasoning sidecars: strict
+                # OpenAI-compatible backends 400 them (llama.cpp invalid_messages) and the
+                # rejection replays with the history, wedging the session.
+                _drop_stale_reasoning_fields(carrier)
                 last_visible_role = _last_template_visible_role(compressed)
 
         if last_visible_role == "user":
@@ -5342,6 +5361,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         msg[COMPRESSED_SUMMARY_METADATA_KEY], msg[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] = True, bool(self._summary_has_user_turn)
         # Rewritten content: drop the stale api_content sidecar so replay can't resend pre-merge bytes.
         drop_stale_api_content(msg)
+        # Rewritten content also invalidates the reasoning sidecars the carrier row carried:
+        # strict backends reject a user-role row with reasoning_content (llama.cpp invalid_messages),
+        # and the rejection replays with the history on every later turn.
+        _drop_stale_reasoning_fields(msg)
 
     def _finalize_compressed(
         self, compressed: list[dict[str, Any]], messages: list[dict[str, Any]], n_messages: int,

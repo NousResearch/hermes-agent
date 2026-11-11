@@ -44,6 +44,8 @@ _STRIP_MSG_KEYS = (
     MESSAGE_UID, DATA_USE,
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
+# Assistant-turn reasoning replay keys. Valid only on assistant rows; see ``_sanitize_message``.
+_REASONING_REPLAY_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 
 
@@ -475,6 +477,13 @@ def _sanitize_message(
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
     if msg.get("role") == "assistant":
         strip_keys += [k for k in strip_reasoning if k in msg]
+    else:
+        # Reasoning replay is an assistant-turn concept. A user/tool row carrying it (a
+        # compaction merge or role flip can leave it behind) is rejected by strict
+        # OpenAI-compatible backends — llama.cpp: "'reasoning_content' is only valid as a
+        # string on assistant messages", code ``invalid_messages`` — and the 400 replays
+        # with the history on every later turn, wedging the session.
+        strip_keys += [k for k in _REASONING_REPLAY_KEYS if k in msg]
     kept_details = None
     if "reasoning_details" not in strip_keys and isinstance(msg.get("reasoning_details"), list):
         details = msg["reasoning_details"]

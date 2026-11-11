@@ -1,12 +1,12 @@
 name: pilot
 repo: https://github.com/LangerSword/hermes-pilot
-sha: db6da4952cdfb56a2b839856e3efc259885d9f18
+sha: cf0975255d3c5439ecc2a52c899a00fe58047917
 title: Pilot
-description: "Give Hermes a real interactive terminal. Pilot runs commands inside a private tmux server, so the agent can drive programs that need a TTY — ssh logins, vim/nano, htop/btop, fzf, less, package installers, ncurses menus and REPLs — by typing literal text and named keys and reading the pane back as plain text, with sessions that persist across tool calls. A human can attach to the same pane at any time and take over. Disclosure — starts a private tmux server (tmux -L hermes-pilot) as the local user and runs model-requested commands inside it; the captured terminal text, including anything a remote program prints, enters the model's context; no network calls of its own, no credentials stored, and it never touches the user's own tmux sessions."
+description: "Give Hermes a real interactive terminal. Pilot runs commands inside a private tmux server, so the agent can drive programs that need a TTY: ssh logins, vim/nano, htop/btop, fzf, less, package installers, ncurses menus and REPLs. It types literal text and named keys, reads the pane back as plain text, and keeps sessions alive across tool calls; a human can attach to the same pane and take over. The suite exposes 24 tools for session control, scripted expect flows, scrollback search, snapshots/diffs, logging, signals, resize, health and base64 file transfer. Disclosure: starts a private tmux server (tmux -L hermes-pilot) as the local user and runs model-requested commands inside it; captured terminal text, including remote program output, enters the model's context; no network calls of its own, no credentials stored, and it never touches the user's own tmux sessions."
 maintainer: LangerSword
 tier: community
 category: tools
-version: "0.1.0"
+version: "0.3.0"
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/LangerSword/hermes-pilot
 platforms:
@@ -15,6 +15,29 @@ platforms:
 capabilities:
   provides_tools:
     - pilot
+    - pilot_open
+    - pilot_screen
+    - pilot_type
+    - pilot_wait
+    - pilot_list
+    - pilot_status
+    - pilot_attach
+    - pilot_close
+    - pilot_killall
+    - pilot_run
+    - pilot_expect
+    - pilot_search
+    - pilot_diff
+    - pilot_log
+    - pilot_signal
+    - pilot_resize
+    - pilot_rename
+    - pilot_health
+    - pilot_upload
+    - pilot_download
+    - pilot_send
+    - pilot_snapshot
+    - pilot_cleanup
   provides_hooks: []
   provides_middleware: []
   requires_env: []

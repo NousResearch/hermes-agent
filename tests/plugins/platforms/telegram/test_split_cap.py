@@ -218,6 +218,33 @@ async def test_a_capped_streamed_final_is_not_sent_again_by_the_gateway():
 
 
 @pytest.mark.asyncio
+async def test_a_capped_streamed_final_cut_inside_a_code_block_is_not_sent_again():
+    """The cancel path's payload is recorded with its open fence closed for display; the final keeps
+    the code going past that point, so the comparison must use the raw prefix."""
+    import asyncio
+    import contextlib
+
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from tests.waiting import async_wait_until
+
+    sent: list = []
+    adapter = _adapter(sent)
+    final = "<<head>>\n```text\n" + _huge_content() + "\n```\ndone"
+    consumer = GatewayStreamConsumer(adapter, "4242", config=StreamConsumerConfig(
+        cursor=" ▉", edit_interval=30.0, buffer_threshold=10**9))
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(final[:200])
+    await async_wait_until(lambda: sent, what="the first preview")
+    consumer._accumulated = consumer._stream_ledger = final[:100_000]  # cut inside the code block
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert "Response truncated" in sent[-1][0]
+    assert consumer.delivered_final_matches(final) is True
+
+
+@pytest.mark.asyncio
 async def test_the_notice_counts_only_the_reply_characters_it_dropped():
     sent: list = []
     adapter = _adapter(sent)

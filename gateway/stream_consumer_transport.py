@@ -561,7 +561,7 @@ class StreamTransportMixin:
         # for the dropped tail, so the full final can never match what landed.
         self._last_edit_capped = bool(finalize and isinstance(raw_response, dict) and raw_response.get("split_capped"))
         if self._last_edit_capped and is_turn_final:
-            self._split_capped = True
+            self._split_capped = self._capped_source(self._accumulated)  # raw: ``text`` has closed fences
         # Oversized edit split across continuations: message_id is now the LAST
         # continuation, which holds only the final chunk — retarget edits and reset
         # skip-if-same.  getattr keeps SimpleNamespace test mocks working.

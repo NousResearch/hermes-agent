@@ -1,8 +1,8 @@
 name: nousviz
 title: "NousViz — Agentic Analytics"
 repo: https://github.com/nousviz/nousviz-agentic-analytics
-sha: b25b5a0b1ee8af0b2015e8453b6b0030b1d811c8
-version: "0.12.0"
+sha: 28b12dffaf55e06f42499048316c4fcdffed3b2e
+version: "0.13.0"
 description: "Turn Hermes into a data analyst over your self-hosted NousViz — discover data with a live catalog, query it in natural language (read-only SQL across Postgres/ClickHouse/MySQL), and build dashboards, alerts and annotations by conversation."
 maintainer: nousviz
 tier: community

@@ -51,6 +51,8 @@ _HOME_READS: dict[tuple[str, str], str] = {
     ("persistence/sqlite/_state/repair.py", "profile_cli_selector"):
         "the exhausted-repair error's -p guidance names the process's active profile",
     ("persistence/sqlite/_state/repair.py", "get_hermes_home"): "the writability preflight checks the process home",
+    ("persistence/sqlite/_backend.py", "get_hermes_home"):
+        "a store's open binds its own profile folder as the home only when it differs from the current one",
 }
 
 

@@ -50,6 +50,20 @@ def test_a_session_that_starts_with_history_still_marks_the_end_of_the_system_pr
     assert _marked(_plan(history)) == [(0, 0), (0, 2), (2, 0), (3, 0)]
 
 
+def test_a_blank_session_rest_never_becomes_its_own_part():
+    """A whitespace-only text block is rejected by Anthropic (400): fall back to the two-part split."""
+    planned = apply_anthropic_cache_control(
+        [{"role": "system", "content": SYSTEM.replace(SESSION, STATIC + "  ")}, {"role": "user", "content": "goal"}],
+        static_system_prefix=STATIC, session_system_prompt=STATIC + "  ")
+    assert len(planned[0]["content"]) == 2 and all(p["text"].strip() for p in planned[0]["content"])
+
+
+def test_strip_keeps_a_three_part_system_message_the_planner_did_not_split():
+    """A context engine may send its own three plain parts; only the planner's split (part 0 marked) is joined."""
+    own = [{"type": "text", "text": t} for t in ("alpha\n", "beta\n", "gamma")]
+    assert strip_anthropic_cache_control([{"role": "system", "content": list(own)}])[0]["content"] == own
+
+
 def test_three_part_failover_rewrite_keeps_the_unchanged_parts():
     from agent.conversation_loop import _rewrite_system_content_blocks
 

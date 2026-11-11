@@ -9,12 +9,12 @@ import hermes_yaml as yaml
 import pytest
 
 
-def _write_profile(home, *, host, model, key, secret, effort, soul=None):
+def _write_profile(home, *, host, model, key, secret, effort, soul=None, disabled_toolsets=None):
     # A hosted (non-loopback) endpoint: the key must come from the profile's own secrets.
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(yaml.safe_dump({
         "model": {"provider": "custom", "base_url": f"https://{host}/v1", "default": model, "key_env": "PROFILE_KEY"},
-        "agent": {"reasoning_effort": effort},
+        "agent": {"reasoning_effort": effort, "disabled_toolsets": disabled_toolsets or []},
     }), encoding="utf-8")
     (home / ".env").write_text(f"PROFILE_KEY={key}\nPROBE_SECRET={secret}\n", encoding="utf-8")
     if soul:
@@ -121,6 +121,45 @@ def test_child_is_built_and_converses_inside_the_target_profile_scope(two_profil
     assert seen["ran"]["home"] == str(coder) and seen["ran"]["secret"] == "coder-secret"
     assert seen["ran"]["model"] == "coder-model" and "coder profile" in (seen["ran"]["soul"] or "")
     assert _snapshot() == {"home": str(launch), "secret": "launch-secret", "model": "launch-model"}
+
+
+def test_profile_child_applies_target_disabled_toolsets_without_expanding_parent_access(two_profiles, monkeypatch):
+    """A profile route may further restrict the coordinator's surface, but cannot broaden it."""
+    from tools.delegate_tool import _build_child_agent, _route_overrides
+    from tools.delegate_tool_routes import _route_to_task_route
+    from toolsets import resolve_toolset
+
+    _, coder = two_profiles
+    target_disabled = ["terminal", "file", "code_execution", "browser", "computer_use"]
+    _set_config(coder, agent={"disabled_toolsets": target_disabled})
+    parent = _parent()
+    parent.enabled_toolsets = list(target_disabled)
+    parent.disabled_toolsets = ["web"]
+    captured = {}
+
+    class Child:
+        session_id = "child-1"
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_db = kwargs.get("session_db")
+            from model_tools import _select_tool_names
+            self.valid_tool_names = _select_tool_names(
+                kwargs["enabled_toolsets"], kwargs["disabled_toolsets"], quiet_mode=True,
+            )
+
+    route = _route_to_task_route({"profile": "coder"}, parent, {})
+    import sys
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "run_agent", SimpleNamespace(AIAgent=Child))
+    child = _build_child_agent(task_index=0, goal="review", context=None, toolsets=None,
+                               model=route.creds["model"], max_iterations=5, task_count=1,
+                               parent_agent=parent, **_route_overrides(route))
+
+    assert captured["enabled_toolsets"] == target_disabled
+    assert set(target_disabled + ["web", "memory", "clarify"]).issubset(captured["disabled_toolsets"])
+    target_tool_names = set().union(*(set(resolve_toolset(name)) for name in target_disabled))
+    assert not (target_tool_names & child.valid_tool_names)
 
 
 def test_secret_missing_from_target_profile_never_falls_back_to_the_launch_env(two_profiles):

@@ -519,13 +519,16 @@ def _run_plugin_command(handler, arg: str, session=None, sid: str = "") -> str:
         _clear_session_context(tokens)
 
 
-def _dispatch_plugin_in_profile_scope(name: str, arg: str, session, sid: str = "") -> str | None:
-    """Look up AND run plugin command *name* under the session's profile runtime scope (registry and
-    secrets), as messaging ingress does; None when that profile has no such command (#133244)."""
-    with _session_profile_runtime_scope(session or {}):
+def _dispatch_plugin_in_profile_scope(name: str, arg: str, session, sid: str = "", profile: str | None = None) -> str | None:
+    """Run plugin command *name* of the chat's profile (sessionless: the named *profile*) with that
+    profile's secrets; None when it has none (#133244). The lookup is home-only and the secret scope is
+    bound only for a real handler, so a failing secret source breaks only plugin commands."""
+    with _session_home_scope(session, profile=profile):
         handler = _plugin_command_handler(name)
-        if handler is None:
-            return None
+    if handler is None:
+        return None
+    scope = session or {"profile_home": (str(_profile_home(profile) or "") or None) if profile else None}
+    with _session_profile_runtime_scope(scope):
         return _run_plugin_command(handler, arg, session, sid)
 
 
@@ -601,7 +604,8 @@ def _is_registry_command(base: str) -> bool:
 
 def _dispatch_plugin(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
-        if (output := _dispatch_plugin_in_profile_scope(name, arg, session, params.get("session_id", ""))) is not None:
+        if (output := _dispatch_plugin_in_profile_scope(
+                name, arg, session, params.get("session_id", ""), _str_arg(params, "profile") or None)) is not None:
             return _ok(rid, {"type": "plugin", "output": output})
     return None
 
@@ -1025,7 +1029,7 @@ def _(rid, params: dict) -> dict:
     # must resolve against the SAME profile or a secondary-only skill is routed here and then
     # not found (#110695).
     stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
-    with _session_home_scope(session):
+    with _session_home_scope(session, profile=_str_arg(params, "profile") or None):
         for stage in filter(None, stages):
             res = stage(rid, params, session, name, arg)
             if res is not None:

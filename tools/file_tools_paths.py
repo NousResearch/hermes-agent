@@ -143,9 +143,15 @@ def _sentinel_free_abs_cwd(raw: str | None, task_id: str = "default") -> str | N
 
 def _configured_terminal_cwd(task_id: str = "default") -> str | None:
     """Return ``$TERMINAL_CWD`` only when it names a real (absolute, non-sentinel) anchor.
-    Scope-aware: under gateway multiplexing the routed profile's cwd lives in the per-turn scope."""
+    Scope-aware: under gateway multiplexing the routed profile's cwd lives in the per-turn scope.
+    A hosted scope gets the terminal config's sanitized cwd (``_container_default_cwd``), the directory its terminal
+    commands start in, never the raw value the config may have discarded."""
     # See #68559.
     from agent.runtime_cwd import scope_terminal_cwd
+    from tools.environments.sandbox_scope import hosted_scope
+
+    if hosted_scope() is not None:
+        return _container_default_cwd(task_id)
 
     return _sentinel_free_abs_cwd(scope_terminal_cwd() or None, task_id)
 

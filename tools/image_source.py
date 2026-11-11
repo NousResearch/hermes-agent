@@ -81,15 +81,10 @@ async def resolve_image_source(
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
     host_target = _permitted_host_read_target(p, ctx)
-    # Exact miss on the host: retry once against a sibling that differs only by
-    # Unicode whitespace (macOS' U+202F screenshot names). Local backend only —
-    # under a sandbox the miss must still fall through to the in-container read
-    # so the confinement boundary in this module's docstring holds.
-    if (
-        (host_target is None or not host_target.is_file())
-        and _is_local_terminal_backend()
-    ):
-        alt = _fuzzy_whitespace_match(p)
+    # Local backend only: under a sandbox a miss must still reach the in-container read, so the
+    # confinement boundary in this module's docstring holds.
+    if host_target is not None and not host_target.is_file() and _is_local_terminal_backend():
+        alt = _on_disk_spelling(p)
         if alt is not None:
             host_target = _permitted_host_read_target(alt, ctx)
     if host_target is not None and host_target.is_file():
@@ -186,38 +181,36 @@ async def _download_to_bytes(url: str) -> bytes:
         tmp.unlink(missing_ok=True)
 
 
-def _flatten_unicode_spaces(name: str) -> str:
-    """NFC-normalize and fold every Unicode space separator to U+0020."""
-    import unicodedata
+def _on_disk_spelling(p: Path) -> Optional[Path]:
+    """The one file beside ``p`` whose name differs from it only invisibly (NFC/NFD, a Unicode
+    space such as the U+202F macOS puts before AM/PM in screenshot names, a curly apostrophe).
 
-    return "".join(
-        " " if unicodedata.category(ch) == "Zs" else ch
-        for ch in unicodedata.normalize("NFC", name)
-    )
-
-
-def _fuzzy_whitespace_match(p: Path) -> Optional[Path]:
-    """Find a sibling file whose name differs from ``p`` only by Unicode whitespace.
-
-    macOS names screenshots with U+202F (NARROW NO-BREAK SPACE) before AM/PM.
-    A model that lists the directory and then echoes the name back almost always
-    emits a plain U+0020 instead, so the exact path misses a file the agent can
-    plainly see. Confined to ``p``'s own directory and to a unique match, so this
-    can never redirect a read to an unrelated file; the caller still applies the
-    media-cache confinement and credential-read guard to whatever comes back.
+    A model retyping a name it was shown emits the plain spelling and can never see why it misses.
+    ``None`` when there is no such file or several (guessing between twins would read the wrong
+    one). The caller still applies its confinement and credential-read guard to the result.
     """
+    from tools.file_operations_common import filename_match_key
+    target = filename_match_key(p.name)
     try:
-        parent = p.parent
-        if not parent.is_dir():
-            return None
-        target = _flatten_unicode_spaces(p.name)
-        matches = [
-            c for c in parent.iterdir()
-            if c.is_file() and _flatten_unicode_spaces(c.name) == target
-        ]
+        matches = [c for c in p.parent.iterdir()
+                   if c.name != p.name and filename_match_key(c.name) == target and c.is_file()]
     except OSError:
         return None
     return matches[0] if len(matches) == 1 else None
+
+
+def local_source_spelling(src):
+    """``src``, or the on-disk spelling of a local path that misses only by an invisible character
+    (:func:`_on_disk_spelling`). URLs, ``data:`` and non-strings pass through. For callers that
+    open model-supplied paths themselves on the local backend (video, image/video generation)."""
+    if not isinstance(src, str) or not src.strip() or _SCHEME_RE.match(src.strip()) \
+            or src.strip().startswith("data:"):
+        return src
+    p = Path(os.path.expanduser(src.strip()))
+    if p.exists():
+        return src
+    alt = _on_disk_spelling(p)
+    return str(alt) if alt is not None else src
 
 
 def _is_local_terminal_backend() -> bool:

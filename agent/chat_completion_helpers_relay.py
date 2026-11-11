@@ -14,7 +14,7 @@ from typing import Any
 
 from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
 from agent.message_content import flatten_message_text
-from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from agent.reasoning_summaries import ReasoningDeltaAccumulator, separate_glued_reasoning_blocks
 
 
 def _tool_call_delta_view(tc_delta: Any) -> Any:
@@ -33,7 +33,7 @@ class RelayChatAccumulator:
 
     def __init__(self) -> None:
         self._content: list[str] = []
-        self._reasoning: list[str] = []
+        self._reasoning = ReasoningDeltaAccumulator()
         self._refusal: list[str] = []  # OpenAI ``delta.refusal`` — a refusal is content, not an empty stream
         self._reasoning_details: list[Any] = []  # opaque provider records (signed blocks); order preserved verbatim
         self._tool_calls = _ToolCallAccumulator()
@@ -62,8 +62,7 @@ class RelayChatAccumulator:
         self._reasoning_details.extend(delta.get("reasoning_details") or [])
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if reasoning:
-            self._reasoning.append(separate_glued_reasoning_blocks(
-                self._reasoning[-1] if self._reasoning else "", reasoning))
+            self._reasoning.feed(reasoning)
         refusal = delta.get("refusal")
         if isinstance(refusal, str) and refusal:
             self._refusal.append(refusal)
@@ -73,7 +72,7 @@ class RelayChatAccumulator:
     def finalize(self) -> dict[str, Any]:
         acc = self._tool_calls.materialize()
         message = {"role": self._role, "content": "".join(self._content) or None,
-            "reasoning_content": "".join(self._reasoning) or None,
+            "reasoning_content": "".join(self._reasoning.parts) or None,
             "refusal": "".join(self._refusal) or None,
             "reasoning_details": self._reasoning_details or None,
             "tool_calls": [acc[i] for i in sorted(acc)] or None}

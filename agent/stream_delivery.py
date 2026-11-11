@@ -379,6 +379,10 @@ class StreamDeliveryMixin:
             # content deltas.
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
+        # Only a real reasoning sink owns the post-response suppression latch.
+        # Set before calling it: a consumer can accept text and then raise.
+        if text and self.reasoning_callback is not None:
+            self._reasoning_streamed_this_response = True
         self._call_quietly(self.reasoning_callback, text)
         # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and
         # serialized every streaming thread in the process behind a config cache hit.

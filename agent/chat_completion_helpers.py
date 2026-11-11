@@ -48,8 +48,8 @@ from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
-from agent.reasoning_summaries import (
-    append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
+from agent.chat_completion_helpers_reasoning import stream_reasoning_delta
+from agent.reasoning_summaries import ReasoningDeltaAccumulator, assistant_reasoning_text
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -1263,6 +1263,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     per-request client (interrupts close only that one); a stale-call detector
     kills the connection and raises so the main retry loop can back off / rotate
     credentials / fall back."""
+    agent._reasoning_streamed_this_response = False
     # Nested-pool contexts (cron, delegated children) wedge on a worker thread
     # (#62151): run inline. See should_use_direct_api_call.
     if should_use_direct_api_call(agent):
@@ -1536,23 +1537,7 @@ def _dump_if_model(value):
 
 
 def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
-    """Structured reasoning, else inline ``<think>`` blocks embedded in content."""
-    reasoning_text = agent._extract_reasoning(assistant_message)
-    if not reasoning_text:
-        content = flatten_message_text(getattr(assistant_message, "content", None))
-        think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
-        if think_blocks:
-            reasoning_text = "\n\n".join(b.strip() for b in think_blocks if b.strip()) or None
-    if reasoning_text and agent.verbose_logging:
-        logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
-    # When streaming is active the reasoning was already displayed during the
-    # stream (structured deltas or <think> tag extraction); fire only for
-    # non-streaming modes (gateway, batch, quiet). Anything not shown during
-    # streaming is caught by the CLI post-response fallback.
-    if reasoning_text and agent.reasoning_callback and not agent.stream_delta_callback and not agent._stream_callback:
-        with contextlib.suppress(Exception):
-            agent.reasoning_callback(reasoning_text)
-    return _sanitize_surrogates(reasoning_text) if reasoning_text else reasoning_text
+    return assistant_reasoning_text(agent, assistant_message)
 
 
 def _assistant_content_for_storage(agent, assistant_message):
@@ -3004,7 +2989,8 @@ class _StreamingCall(StreamingWaitMonitor):
         import httpx as _httpx
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
-        reasoning_parts: list = []
+        reasoning = ReasoningDeltaAccumulator()
+        reasoning_parts = reasoning.parts
         # Live-display accumulator for detail-derived reasoning text: de-gluing must
         # compare against what the display actually received, not ``reasoning_parts``
         # (a provider that mirrors the same text in both fields would otherwise read
@@ -3098,48 +3084,12 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
-            # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
-            if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
-                reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
-            # A profile-declared text carrier doubles as the readable reasoning.
-            reasoning_text = carriers.feed(delta, reasoning_text)
-            if reasoning_text:
-                # Summary-part models omit the separator between markdown blocks; re-insert it.
-                reasoning_text = separate_glued_reasoning_blocks(
-                    reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
-                reasoning_parts.append(reasoning_text)
-            # Structured reasoning_details deltas carry the provider's replay data; the
-            # non-streaming path already keeps them, so dropping them here lost
-            # reasoning continuity on nearly every turn. Pydantic parks unknown fields
-            # in ``model_extra``.
-            rd_delta = getattr(delta, "reasoning_details", None)
-            if rd_delta is None and isinstance(getattr(delta, "model_extra", None), dict):
-                rd_delta = delta.model_extra.get("reasoning_details")
-            detail_text_parts = []
-            for rd in rd_delta if isinstance(rd_delta, (list, tuple)) else ():
-                detail_text_parts.append(streamed_reasoning_detail_text(rd))
-                append_streamed_reasoning_detail(reasoning_details, rd)
-            # Details may carry the full text while ordinary reasoning is only
-            # a sparse fragment or a mirror. Deliver one representation per
-            # chunk, without rewriting either persisted/replayed field.
-            # Summary-part boundaries need the same repair the plain path applies:
-            # de-glue against the detail display's own accumulator (not
-            # ``reasoning_parts`` — with mirrored fields that would insert a
-            # spurious break on the first chunk), so the live box and the
-            # persisted ``reasoning_content`` agree.
-            detail_text = "".join(detail_text_parts)
-            if detail_text:
-                detail_text = separate_glued_reasoning_blocks(
-                    detail_display_parts[-1] if detail_display_parts else "", detail_text)
-                detail_display_parts.append(detail_text)
-            display_reasoning = detail_text or reasoning_text
-            if display_reasoning:
-                self._emit_reasoning(display_reasoning)
-                if reasoning_watch.feed(reasoning_text) or detail_watch.feed(detail_text):
-                    runaway = "reasoning"
-                    break
+            if stream_reasoning_delta(
+                self, delta, reasoning, detail_display_parts, reasoning_details,
+                reasoning_watch, detail_watch, carriers,
+            ):
+                runaway = "reasoning"
+                break
             # Not routed to the live display: the transport promotes a sole-payload
             # refusal to content + ``content_filter`` and the loop surfaces it terminally.
             delta_refusal = getattr(delta, "refusal", None)
@@ -3962,6 +3912,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     text token (tool-call turns suppress them) and returns a SimpleNamespace in
     the non-streaming response shape. codex_responses delegates to the already-
     streaming codex runner; cron turns and delegated children run inline."""
+    agent._reasoning_streamed_this_response = False
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
     if agent.api_mode == "codex_responses":

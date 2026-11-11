@@ -1,0 +1,24 @@
+name: saywhat
+title: saywhat
+repo: https://github.com/muhammadaus/saywhat
+sha: cb50347988ec9bdfaf6a5fbaedc49aac14b6b87e
+description: "Voice input that asks instead of guessing: a local faster-whisper STT provider (stt.provider saywhat) that scores every word's confidence, has the agent confirm uncertain dictation through clarify (whole-sentence choices first, then word by word) before acting, learns a personal dictionary from those answers so habitual mishearings are fixed automatically, and coaches pronunciation with a practice loop (word-level verdicts and tips, a spoken model, score history). Disclosure — audio is transcribed locally; faster-whisper downloads the chosen Whisper model from Hugging Face on first use. On dictated turns with uncertain words, a confidence report and candidate sentences are added to the user message sent to your LLM provider. Practice sends the practice sentence to your configured Hermes TTS provider (possibly a cloud service) and, in an interactive terminal only, plays it with afplay/ffplay/paplay/aplay as a short detached process. Stores the dictionary, the latest transcript with word timings (never audio) and practice scores in plugin-data. Reads only local audio files passed to saywhat_practice. No credentials, telemetry or other network calls."
+maintainer: muhammadaus
+tier: community
+category: voice
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/muhammadaus/saywhat#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/muhammadaus/saywhat/cb50347988ec9bdfaf6a5fbaedc49aac14b6b87e/assets/card.png
+platforms: [macos, linux]
+capabilities:
+  provides_tools:
+    - saywhat_practice
+    - saywhat_progress
+    - saywhat_dictionary
+  provides_hooks:
+    - pre_transcription
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

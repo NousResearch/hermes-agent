@@ -1,0 +1,36 @@
+# Independent implementation; does not replace the existing provider-usage entry.
+name: jg-provider-usage
+repo: https://github.com/jerrygooch/hermes-provider-usage
+sha: "036a6741c7b14e0db5a4f194d2e104f5df85efd0"
+version: "0.10.0"
+maintainer: jerrygooch
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+description: >-
+  Provider usage in a Desktop status-bar chip, popover and full page: subscription
+  windows, API balances, reset times and profile-scoped account state. Includes
+  data-only JSON connectors with explicit destination approval, setup cards for
+  Claude, Gemini and Z.ai, a running-agents footer with honest unknowns, and an
+  active-account Codex banked-reset preview/confirmation. Stock Hermes 0.23.1
+  needs no core patch; xAI subscription credits and exact worker-account usage
+  need optional host metadata and otherwise remain unavailable. Usage reads use
+  Hermes account helpers or scoped API-key access and provider HTTPS endpoints;
+  subscription tokens stay with Hermes. Custom definitions are HTTPS GET only,
+  approved-host restricted, with no redirects or executable code. Confirming a
+  Codex reset spends one banked reset; refresh and preview do not. No purchase,
+  automatic redemption, telemetry or self-update. Screenshots and demo use real
+  plugin components with clearly labeled synthetic data, not live accounts.
+docs_url: https://github.com/jerrygooch/hermes-provider-usage#readme
+image: https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/infographic.png
+screenshots:
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/02-popover-current.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/04-overview-multi-provider.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/06-popular-connections.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/08-catalog-trust.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/12-reset-confirm.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

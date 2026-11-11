@@ -4,34 +4,7 @@ repo: https://github.com/tnvolman/ghost-run
 sha: 26902e4e816c5be2997efede96f9c669cbf2ae0e
 version: "0.2.0"
 requires_hermes: ">=0.21.7"
-description: >-
-  Dry-run mode for Hermes Agent. With /ghost on, file writes, patches, deletes and
-  terminal commands are redirected into a throwaway copy of the working folder, and
-  network-touching tools and commands are blocked. Review the diff in the system
-  browser (hermes ghost ui; the Desktop pane only opens that page), then optionally
-  run one configured Verify command in the ghost (Pass/Fail banner; Apply stays human),
-  then apply selected paths or discard. Commands: /ghost on|off|status|verify;
-  hermes ghost diff|apply|discard|ui|verify.
-  Disclosure — copies the working folder into a temp sandbox (reflink, then copy;
-  never a hard link) and runs the agent's terminal commands inside it; writes session
-  state under the Hermes home from hermes_constants.get_hermes_home() (then HERMES_HOME,
-  then ~/.hermes), in ghost-run/; "apply" writes the chosen changes back to the real
-  folder only after a person presses Apply or runs /ghost apply; hermes ghost ui binds 127.0.0.1 only, checks
-  Host is 127.0.0.1:<port> or localhost:<port>, and requires a per-session token in the
-  URL fragment (#token=) plus the X-Ghost-Run-Token header. A query-string token is
-  ignored and does not authenticate. The page sends no CORS headers. The Desktop pane does not fetch that
-  server. The review page never auto-ticks HIGH-risk files. Apply with any HIGH path
-  shows a confirm that names those files; Cancel writes nothing. Filenames, reasons,
-  and diff lines are set via DOM text properties, not HTML insertion. POST /api/apply
-  requires a non-empty list of paths that are all in the current diff; a missing,
-  empty, or not-in-diff list (including a mix of valid and invalid paths) returns 400
-  and writes nothing. /ghost apply and hermes ghost apply with no paths still apply
-  every current change, and can copy a named path that is in the ghost tree even if
-  it is not in the diff. Opt-in outbound only: with GHOST_RUN_AI=1, advisory notes use ctx.llm.complete
-  when Hermes provides it (the plugin never sees the key). If that call is unbound,
-  OPENROUTER_API_KEY is read only via agent.secret_scope.get_secret. If that module is
-  missing, notes stay off. The main model key is never sent. Off by default; nothing is
-  uploaded otherwise. No credentials stored by the plugin; no telemetry.
+description: "Dry-run mode for Hermes Agent. With /ghost on, file writes, patches, deletes and terminal commands are redirected into a throwaway copy of the working folder, and network-touching tools and commands are blocked. Review the diff in the system browser (hermes ghost ui; the Desktop pane only opens that page), then optionally run one configured Verify command in the ghost (Pass/Fail banner; Apply stays human), then apply selected paths or discard. Commands: /ghost on|off|status|verify; hermes ghost diff|apply|discard|ui|verify. Disclosure — copies the working folder into a temp sandbox (reflink, then copy; never a hard link) and runs the agent's terminal commands on the host with the working directory set to that copy; only literal absolute paths under the real folder are rewritten, so a command naming ~, $HOME or another absolute path still acts on the real disk, and MCP or other plugin tools are not redirected; Ghost Mode is process-wide, so in a gateway it covers every chat in that process; writes session state under the Hermes home from hermes_constants.get_hermes_home() (then HERMES_HOME, then ~/.hermes), in ghost-run/; \"apply\" writes the chosen changes back to the real folder only after a person presses Apply or runs /ghost apply, and that copy does not pass through Hermes' file-write denylist; /ghost apply and hermes ghost apply with no paths apply every current change and can copy a named path that is in the ghost tree even if it is not in the diff; the review page never auto-ticks HIGH-risk files and asks to confirm any it names; hermes ghost ui binds 127.0.0.1 only, checks Host, requires a per-session token sent in the X-Ghost-Run-Token header (query-string tokens are ignored), sends no CORS headers, and POST /api/apply accepts only a non-empty list of paths that are all in the current diff; Verify runs one command taken from GHOST_RUN_TEST or the project's .ghost-run-test on the host inside the ghost copy, only after you approve that project and exact command, with provider keys stripped from its environment; opt-in outbound only: with GHOST_RUN_AI=1, pending diffs go to your Hermes provider through ctx.llm.complete, or, if that is unavailable, to openrouter.ai using OPENROUTER_API_KEY read only via agent.secret_scope.get_secret; off by default, no credentials stored by the plugin, no telemetry."
 maintainer: tnvolman
 tier: community
 category: tools

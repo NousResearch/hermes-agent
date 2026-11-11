@@ -51,7 +51,7 @@ Decide which gaps you actually need — do NOT OCR or render everything. ...]
 
 The warning lists the exact page ranges and the recovery paths:
 
-1. **A few pages — render + vision.** Convert the pages to images and read them with the vision tool:
+1. **A few pages — vision.** `vision_analyze` reads a PDF page directly: pass the PDF path (page 1) or `document.pdf#page=92` for a specific page. It renders that page with poppler's `pdftoppm`. To batch several pages, convert them to images first:
    ```bash
    pdftoppm -jpeg -r 150 -f 92 -l 94 document.pdf $TMPDIR/page
    ```

@@ -21,16 +21,11 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.browser_runtime import chromium_executable
-from hermes_constants import get_hermes_home
 
 from plugins.google_meet import process_manager as pm
 from plugins.google_meet.meet_bot import _is_safe_meet_url
 from plugins.google_meet.node.cli import node_command, register_cli as _register_node_cli
 from plugins.google_meet.tools import resolve_node
-
-
-def _auth_state_path() -> Path:
-    return Path(get_hermes_home()) / "workspace" / "meetings" / "auth.json"
 
 
 # ``hermes meet <sub>`` in help order.
@@ -112,7 +107,7 @@ def _cmd_setup() -> int:
         except Exception as e:
             chromium_msg = f"probe failed: {e}"
     print(f"  chromium       : {chromium_msg}")
-    auth_path = _auth_state_path()
+    auth_path = pm.auth_state_path()
     print("  google auth    : " + (f"ok ({auth_path})" if auth_path.is_file() else "not saved — run: hermes meet auth"))
     print()
     all_ok = system_ok and pw_ok and chromium_ok
@@ -199,7 +194,7 @@ def _cmd_auth() -> int:
     except ImportError:
         print("playwright is not installed. Run: hermes meet install")
         return 1
-    path = _auth_state_path()
+    path = pm.auth_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     print("opening Chromium — sign in to Google, then return here and press Enter.\n"
           f"saving storage state to: {path}")
@@ -252,9 +247,7 @@ def _cmd_join(url: str, *, guest_name: str, duration: Optional[str], headed: boo
     if node:
         return _remote(node, "start_bot", lambda c: c.start_bot(
             url=url, guest_name=guest_name, duration=duration, headed=headed, mode=mode))
-    auth = _auth_state_path()
-    return _print_result(pm.start(url=url, headed=headed, guest_name=guest_name, duration=duration,
-                                  auth_state=str(auth) if auth.is_file() else None, mode=mode))
+    return _print_result(pm.start(url=url, headed=headed, guest_name=guest_name, duration=duration, mode=mode))
 
 
 def _cmd_say(text: str, node: Optional[str] = None) -> int:

@@ -33,6 +33,11 @@ def _active_file() -> Path:
     return _root() / ".active.json"
 
 
+def auth_state_path() -> Path:
+    """Where ``hermes meet auth`` saves the Google sign-in (Playwright storage state)."""
+    return _root() / "auth.json"
+
+
 def _read_active() -> Optional[dict[str, Any]]:
     p = _active_file()
     if not p.is_file():
@@ -79,6 +84,8 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     for name in ("transcript.txt", "status.json"):
         with contextlib.suppress(OSError):
             (out / name).unlink()
+    if auth_state is None and auth_state_path().is_file():
+        auth_state = str(auth_state_path())
     env = {**os.environ, "HERMES_MEET_URL": url, "HERMES_MEET_OUT_DIR": str(out),
            "HERMES_MEET_GUEST_NAME": guest_name}
     for value, var in (

@@ -548,6 +548,7 @@ class GatewayConfigLoadersMixin:
         secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
         from gateway.run import _load_gateway_config
         from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        from tools.process_registry_notifications import NOTIFICATION_MODES
         mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
             raw = cfg_get(_load_gateway_config(), "display", "background_process_notifications")
@@ -556,7 +557,7 @@ class GatewayConfigLoadersMixin:
             elif raw not in {None, ""}:
                 mode = str(raw)
         mode = (mode or "concise").strip().lower()
-        if mode not in {"concise", "all", "result", "error", "off"}:
+        if mode not in NOTIFICATION_MODES:
             logger.warning("Unknown background_process_notifications '%s', defaulting to 'concise'", mode)
             return "concise"
         return mode

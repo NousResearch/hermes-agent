@@ -10,6 +10,41 @@ from contextlib import suppress
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
+#: Documented ``display.background_process_notifications`` values, in the order the docs list them.
+NOTIFICATION_MODES = ("concise", "all", "result", "error", "off")
+
+
+def normalize_notification_mode(mode: object) -> str:
+    """Canonical ``display.background_process_notifications`` value (unknown/empty → ``concise``).
+
+    One vocabulary for every reader, so a new mode cannot be honoured on one surface and silently
+    ignored on another (#153198).
+    """
+    value = str(mode or "").strip().lower()
+    return value if value in NOTIFICATION_MODES else "concise"
+
+
+def notification_mode_surfaces(mode: object, evt: dict) -> bool:
+    """Whether ``evt`` should start an agent turn under ``display.background_process_notifications``.
+
+    The CLI drain and the gateway watcher answer from this one table instead of each re-deriving it:
+    ``off`` surfaces nothing but a delegation result, ``error`` only a non-clean exit, and the
+    outcome-only modes (``result``/``error``/``off``) drop the running progress a heartbeat carries.
+    Watch events are user-configured triggers rather than process progress, so every mode but ``off``
+    keeps them. ``concise`` and ``result`` deliver the same notice here: the CLI drain has no interim
+    receipt to distinguish them.
+    """
+    if str(evt.get("type") or "") == "async_delegation":
+        return True  # a subagent's result, not a process notice the mode mutes
+    normalized = normalize_notification_mode(mode)
+    if normalized == "off":
+        return False
+    if str(evt.get("type") or "completion") == "heartbeat":
+        return normalized not in {"result", "error"}
+    if normalized == "error":
+        return evt.get("exit_code") not in (0, None)
+    return True
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessNotificationBatch:

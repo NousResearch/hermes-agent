@@ -95,8 +95,12 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
                 stack.callback(reset_multiplex_context, set_multiplex_context(True))
             discover_plugins()
             hydrate_profile_secret_sources(profile_home)
-    except ConfigBackendUnavailable:
-        raise _GateAuthError("assignee profile configuration/secret sources unavailable") from None
+    except ConfigBackendUnavailable as exc:
+        detail = "assignee profile configuration/secret sources unavailable"
+        if exc.protected_env_names:
+            detail += (f"; a secret source supplies protected environment names: {', '.join(exc.protected_env_names)}. "
+                       "Remove those mappings from the secret source configuration.")
+        raise _GateAuthError(detail) from None
     if routed:
         # gh's config dir decides which login `gh api` uses, yet it is a path, not a
         # credential, so no scrub list sees it; the target's own value is overlaid from its .env.

@@ -304,10 +304,28 @@ def test_config_backend_refusal_is_a_redacted_auth_receipt(cold_secret_profiles,
     receipt = collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7", assignee="worker")
     assert (target / "fetched").exists()
     assert receipt["classification"] == "auth" and not receipt["ok"]
+    assert "FIXTURE_PLANE_TOKEN" in receipt["detail"]
+    assert "Remove those mappings" in receipt["detail"]
     assert "must-not-publish" not in json.dumps(receipt)
     assert "FIXTURE_PLANE_TOKEN" not in os.environ
     assert os.environ["GH_TOKEN"] == "launch-token"
     assert (get_hermes_home_override(), current_secret_scope(), is_multiplex_active()) == original
+
+
+def test_unstructured_config_backend_error_stays_redacted(cold_secret_profiles, monkeypatch):
+    from hermes_cli import config_backend, env_loader
+    from hermes_cli.kanban_pr_acceptance import collect_acceptance
+
+    def refuse(home):
+        raise config_backend.ConfigBackendUnavailable(
+            "backend failed at https://internal-host.invalid with bearer must-not-publish")
+
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", refuse)
+    receipt = collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7", assignee="worker")
+    assert receipt["classification"] == "auth" and not receipt["ok"]
+    assert "configuration/secret sources unavailable" in receipt["detail"]
+    assert "must-not-publish" not in json.dumps(receipt)
+    assert "internal-host.invalid" not in json.dumps(receipt)
 
 
 @pytest.mark.platforms("posix")

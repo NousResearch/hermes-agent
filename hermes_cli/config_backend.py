@@ -147,6 +147,9 @@ class ConfigBackendUnavailable(SystemExit):
     fail open with ``except Exception`` → defaults, and serving defaults instead of the selected
     backend's config is exactly the silent failure this must not become."""
 
+    # Names only: consumers may explain a refused source mapping without copying error text.
+    protected_env_names: tuple[str, ...] = ()
+
 
 class ConfigWriteError(RuntimeError):
     """A config write the backend refused or could not complete; nothing was changed. ``code`` is

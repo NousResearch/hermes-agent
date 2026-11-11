@@ -227,7 +227,7 @@ _VUE_REINSTALL = (
 )
 _VUE_TUNNEL_MSG = (
     "vue-language-server: the installed @vue/language-server is 3.x, which only works behind a client-hosted "
-    f"tsserver tunnel Hermes does not run — no diagnostics will arrive. Reinstall the self-hosting 2.x line: {_VUE_REINSTALL}"
+    f"tsserver tunnel Unitalk does not run — no diagnostics will arrive. Reinstall the self-hosting 2.x line: {_VUE_REINSTALL}"
 )
 _VUE_TSDK_MSG = (
     "vue-language-server: no JavaScript TypeScript SDK (typescript/lib/typescript.js) next to the server or under "

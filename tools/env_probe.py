@@ -11,23 +11,21 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from concurrent.futures import Future
 from typing import Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
-# Concurrency model: exactly ONE background worker runs the probe; ``_PROBE_DONE``
-# signals completion. Callers block at most ``_PROBE_WAIT_TIMEOUT`` s then fail open
+# Concurrency model: exactly ONE background worker runs the probe and resolves ``_PROBE``
+# with the line. Callers block at most ``_PROBE_WAIT_TIMEOUT`` s then fail open
 # with "" — a stuck probe (e.g. a Windows pipe wedged by an orphaned pip descendant)
 # can degrade only the probe line, never system-prompt construction.
 # Module-level cache. The probe result is deterministic for the lifetime of the process — Python install
 # state doesn't change mid-session in any way that would matter for the system prompt. See #67964.
 _CACHE_LOCK = threading.Lock()
-_CACHED_LINE: Optional[str] = None  # None = not probed yet; "" = probed, nothing to say.
-_PROBE_DONE = threading.Event()
-_PROBE_THREAD: Optional[threading.Thread] = None
-_PROBE_GEN = 0  # bumped on reset so a stale worker can't publish into the fresh generation
+_PROBE: Optional[Future[str]] = None  # None = not started; result "" = probed, nothing to say.
 _PROBE_WAIT_TIMEOUT = 10.0  # healthy runtime ~0.5s
 _WAIT_ALREADY_TIMED_OUT = False  # after one full wait, later callers only peek
 
@@ -187,11 +185,13 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     backend = _resolve_terminal_backend()
     if backend in _REMOTE_BACKENDS or _plugin_backend_is_remote(backend):
         return ""
-    if _PROBE_DONE.is_set():
-        return _CACHED_LINE or ""
-    _ensure_probe_started()
+    probe = _ensure_probe_started()
+    if probe.done():
+        return probe.result()
     wait_timeout = 0.05 if _WAIT_ALREADY_TIMED_OUT else _PROBE_WAIT_TIMEOUT
-    if not _PROBE_DONE.wait(timeout=wait_timeout):
+    try:
+        return probe.result(timeout=wait_timeout)
+    except TimeoutError:
         # Probe stuck or pathologically slow: the line is a nice-to-have,
         # blocking prompt construction is an outage. Fail open.
         if not _WAIT_ALREADY_TIMED_OUT:
@@ -200,33 +200,28 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
                 "env_probe did not finish within %.0fs; building the system "
                 "prompt without the Python toolchain line", _PROBE_WAIT_TIMEOUT)
         return ""
-    return _CACHED_LINE or ""
 
 
-def _probe_worker(gen: int) -> None:
-    """Body of the single probe thread — computes and publishes the line."""
-    global _CACHED_LINE
+def _probe_worker(probe: Future[str]) -> None:
+    """Body of the single probe thread — computes the line and resolves *probe* with it. A run
+    superseded by a test reset resolves only its own, no longer published, future."""
     try:
         line = _build_probe_line()
     except Exception as exc:  # never let probe failure propagate
         logger.debug("env_probe failed: %s", exc)
         line = ""
-    with _CACHE_LOCK:
-        if gen != _PROBE_GEN:
-            return  # superseded by a reset (tests) — discard stale result
-        _CACHED_LINE = line
-        _PROBE_DONE.set()
+    probe.set_result(line)
 
 
-def _ensure_probe_started() -> None:
-    """Start the probe worker if it isn't running and hasn't finished."""
-    global _PROBE_THREAD
+def _ensure_probe_started() -> Future[str]:
+    """The probe run, started on first use."""
+    global _PROBE
     with _CACHE_LOCK:
-        if _PROBE_DONE.is_set() or (_PROBE_THREAD is not None and _PROBE_THREAD.is_alive()):
-            return
-        _PROBE_THREAD = threading.Thread(
-            target=_probe_worker, args=(_PROBE_GEN,), name="env-probe", daemon=True)
-        _PROBE_THREAD.start()
+        if _PROBE is None:
+            probe: Future[str] = Future()
+            threading.Thread(target=_probe_worker, args=(probe,), name="env-probe", daemon=True).start()
+            _PROBE = probe
+        return _PROBE
 
 
 def warm_environment_probe_async() -> None:
@@ -238,10 +233,7 @@ def warm_environment_probe_async() -> None:
 
 def _reset_cache_for_tests() -> None:
     """Test helper — clear the cache between probe scenarios."""
-    global _CACHED_LINE, _PROBE_THREAD, _PROBE_GEN, _WAIT_ALREADY_TIMED_OUT
+    global _PROBE, _WAIT_ALREADY_TIMED_OUT
     with _CACHE_LOCK:
-        _CACHED_LINE = None
-        _PROBE_DONE.clear()
-        _PROBE_THREAD = None
-        _PROBE_GEN += 1
+        _PROBE = None
         _WAIT_ALREADY_TIMED_OUT = False

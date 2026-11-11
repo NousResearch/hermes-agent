@@ -4,6 +4,7 @@ import sys
 
 import pytest
 
+from tests.waiting import wait_until
 from tools import env_probe
 
 
@@ -178,10 +179,10 @@ class TestStuckProbeNeverBlocksCallers:
 
         # Worker un-wedges (the operator killed the orphan).
         release.set()
-        assert env_probe._PROBE_DONE.wait(timeout=10)
 
         # Later callers see the published line.
-        assert env_probe.get_environment_probe_line() == "Python toolchain: recovered."
+        wait_until(lambda: env_probe.get_environment_probe_line() == "Python toolchain: recovered.",
+                   what="the late probe line")
 
     def test_repeat_callers_do_not_pay_full_wait_after_first_timeout(self, monkeypatch):
         """After one caller burns the full wait, subsequent callers only

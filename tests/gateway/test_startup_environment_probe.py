@@ -33,7 +33,7 @@ def test_warmup_leaves_probe_cached_for_first_prompt(tmp_path, monkeypatch):
 
     _warm(tmp_path, monkeypatch, {}, "local")
 
-    assert env_probe._PROBE_DONE.is_set()
+    assert env_probe._PROBE is not None and env_probe._PROBE.done()
     assert env_probe.get_environment_probe_line() == "Python toolchain: fixture."
     assert calls == [1]  # single worker; the first turn reuses the cache
 
@@ -56,5 +56,4 @@ def test_warmup_skips_probe_when_disabled_or_remote(tmp_path, monkeypatch, agent
 
     _warm(tmp_path, monkeypatch, agent_section, backend)
 
-    assert not env_probe._PROBE_DONE.is_set()
-    assert env_probe._PROBE_THREAD is None
+    assert env_probe._PROBE is None

@@ -1148,13 +1148,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_cli.pets import _set_active
         concept = _command_arg(cmd)
         if not concept:
-            # prompt_toolkit owns stdin on this daemon thread — raw input() never renders and eats
-            # keystrokes; prefer the thread-aware helper (None when prompting isn't safe).
-            # Bare /hatch is dispatched from the process_loop daemon thread while prompt_toolkit owns stdin
-            # — a raw input() here types into a prompt that never renders and swallows the next keystrokes
-            # (same class as #23185; found in the Aug 2026 full-surface CLI QA sweep: bare /hatch left the
-            # session eating input until Ctrl+C). Route through the thread-aware prompt helper, which uses
-            # run_in_terminal on the main thread and cancels cleanly (None) when prompting isn't safe.
+            # Bare /hatch runs on the process_loop thread while prompt_toolkit owns stdin: a raw input()
+            # never renders and swallows the next keystrokes (#23185). The helper reads the answer from
+            # the composer while the app runs.
             prompt_helper = getattr(self, "_prompt_text_input", None)
             try:
                 concept = ((prompt_helper or input)(_t("hatch.describe_prompt")) or "").strip()

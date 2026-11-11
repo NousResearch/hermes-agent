@@ -184,7 +184,7 @@ class TestConfirmDestructiveSlash:
         """The bare /new confirm drives the modal (not stdin) and returns the
         chosen outcome — bug #33961 froze this path on native Windows."""
         cli = self._make_interactive_cli()
-        with patch("cli.load_cli_config", return_value={"approvals": {"destructive_slash_confirm": True}}):
+        with patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"destructive_slash_confirm": True}}):
             outcome = _run_on_daemon(
                 lambda: cli._confirm_destructive_slash(
                     "new",

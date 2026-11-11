@@ -59,7 +59,7 @@ def test_reset_now_invokes_new_session_without_modal():
     self_, calls = _make_cli_stub()
 
     with patch(
-        "cli.load_cli_config",
+        "hermes_cli.config.load_config_readonly",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
         self_.process_command("/reset now")
@@ -74,7 +74,7 @@ def test_new_yes_with_title_preserves_title():
     self_, calls = _make_cli_stub()
 
     with patch(
-        "cli.load_cli_config",
+        "hermes_cli.config.load_config_readonly",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
         self_.process_command("/new --yes My Session")
@@ -126,7 +126,7 @@ def test_new_without_skip_token_still_consults_modal():
     self_.process_command = HermesCLI.process_command.__get__(self_, type(self_))
 
     with patch(
-        "cli.load_cli_config",
+        "hermes_cli.config.load_config_readonly",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
         self_.process_command("/new My Session")

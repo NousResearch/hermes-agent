@@ -112,7 +112,7 @@ class CLITuiMixin:
         detail = state.get("detail") or ""
         choices = state.get("choices") or []
         selected = state.get("selected", 0)
-        footer = t("cli.tui.confirm_footer")
+        footer = t("cli.tui.confirm_footer" if choices else "cli.tui.placeholder_answer")
         choice_labels = [
             f"{'❯' if idx == selected else ' '} [{idx + 1}] {label} — {desc}"
             for idx, (_value, label, desc) in enumerate(choices)]
@@ -742,6 +742,8 @@ class CLITuiMixin:
                 if state_attr == "_sudo_state" and ((self._sudo_state.get("vault_save") or {}).get("step") == "identifier"
                                                     or self._sudo_state.get("vault_code")):
                     hint_key = "cli.tui.hint_vault_username"
+                if state_attr == "_slash_confirm_state" and not self._slash_confirm_state.get("choices"):
+                    hint_key = "cli.tui.hint_clarify_freetext"
                 hint = "  " + t(hint_key)
                 remaining = max(0, int(getattr(self, deadline_attr) - time.monotonic()))
                 return [('class:hint', hint), ('class:clarify-countdown', f'  ({remaining}s)')]
@@ -781,7 +783,7 @@ class CLITuiMixin:
         if self._approval_state:
             return ""
         if self._slash_confirm_state:
-            return t("cli.tui.placeholder_choice")
+            return t("cli.tui.placeholder_choice" if self._slash_confirm_state.get("choices") else "cli.tui.placeholder_answer")
         if self._clarify_freetext:
             return t("cli.tui.placeholder_answer")
         if self._clarify_state:
@@ -930,7 +932,7 @@ class CLITuiMixin:
         if self._tui_cancel_voice_recording(event):
             return
         if self._tui_cancel_foreground_ui(event, closers=(
-            ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
+            ("_slash_confirm_state", self._cancel_slash_confirm),
             ("_model_picker_state", self._close_model_picker), ("_command_palette_state", self._close_command_palette),
             ("_gateway_command_wait", lambda: self._gateway_command_wait.set()))):
             return
@@ -954,7 +956,7 @@ class CLITuiMixin:
         if self._tui_cancel_voice_recording(event):
             return
         if self._tui_cancel_foreground_ui(event, closers=(
-            ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
+            ("_slash_confirm_state", self._cancel_slash_confirm),
             ("_model_picker_state", self._close_model_picker))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
@@ -1089,7 +1091,7 @@ class CLITuiMixin:
             self._sudo_state = None
             event.app.invalidate()
         elif self._slash_confirm_state:
-            self._submit_slash_confirm_response("cancel")
+            self._cancel_slash_confirm()
             event.app.current_buffer.reset()
             event.app.invalidate()
 
@@ -1563,7 +1565,7 @@ class CLITuiMixin:
             event.app.invalidate()
             return True
         if self._slash_confirm_state:
-            # Typed choice wins over the highlighted one.
+            # Typed choice wins over the highlighted one; a free-text prompt (no choices) takes the text.
             text = buf.text.strip()
             choices = self._slash_confirm_state.get("choices") or []
             choice = self._normalize_slash_confirm_choice(text, choices) if text else None
@@ -1571,7 +1573,7 @@ class CLITuiMixin:
                 selected = self._slash_confirm_state.get("selected", 0)
                 if 0 <= selected < len(choices):
                     choice = choices[selected][0]
-            self._submit_slash_confirm_response(choice or "cancel")
+            self._submit_slash_confirm_response((choice or "cancel") if choices else text)
             buf.reset()
             event.app.invalidate()
             return True
@@ -1988,7 +1990,8 @@ class CLITuiMixin:
             kb.add(str(_num), filter=_clarify_nav)(self._tui_make_clarify_number_handler(_idx))
 
         _approval = Condition(lambda: bool(self._approval_state))
-        _slash_confirm = Condition(lambda: bool(self._slash_confirm_state))
+        # A free-text prompt (no choices) leaves digits and arrows to the composer.
+        _slash_confirm = Condition(lambda: bool(self._slash_confirm_state and self._slash_confirm_state.get("choices")))
         _picker = Condition(lambda: bool(self._model_picker_state))
         kb.add('up', filter=_approval)(self._tui_approval_up)
         kb.add('down', filter=_approval)(self._tui_approval_down)

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import queue
-import sys
 import threading
 import time as _time
 import webbrowser
@@ -41,16 +40,11 @@ def _approval_outcome_label(result) -> str:
 
 
 def _approval_gate_on(key: str) -> bool:
-    """Read ``approvals.<key>`` (default on); any load failure keeps the prompt enabled."""
-    from cli import load_cli_config
-    try:
-        cfg = load_cli_config()
-        approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
-        if isinstance(approvals, dict):
-            return bool(approvals.get(key, True))
-    except Exception:
-        pass
-    return True
+    """Read ``approvals.<key>`` (default on). Not ``load_cli_config``: that startup loader re-exports
+    TERMINAL_CWD as the process cwd, which moves a ``hermes -w`` session out of its worktree."""
+    from hermes_cli.config import load_config_readonly
+    approvals = load_config_readonly().get("approvals")
+    return bool(approvals.get(key, True)) if isinstance(approvals, dict) else True
 
 
 def _gated_confirm(self, command, key, *, title, detail, choices, unchanged, always_msg, once_verb=None,
@@ -225,56 +219,18 @@ class CLIModalMixin:
             logger.debug("undo: prefill buffer failed: %s", e)
 
     def _prompt_text_input(self, prompt_text: str) -> str | None:
-        """Prompt for free-text input safely inside or outside prompt_toolkit.
+        """One line of free text; None when cancelled or empty.
 
-        ``run_in_terminal`` only works on the main-thread loop; on the ``process_loop`` daemon
-        thread a bare ``input()`` would block forever on loop-owned stdin, so with an app running
-        off-main we cancel cleanly (None) — mirroring ``_stdin_fallback`` in the modal prompt.
-
-        Mirrors the thread-aware guard in ``_run_curses_picker``: ``run_in_terminal`` returns a coroutine
-        that must be awaited by the prompt_toolkit event loop, which only exists on the main thread. Slash
-        commands are dispatched from the ``process_loop`` daemon thread (see issue #23185), so calling
-        ``run_in_terminal`` from there orphans the coroutine — ``_ask`` never runs, and user keystrokes leak
-        into the composer instead. Fall back to a direct ``input()`` when we're off the main thread.
+        While the app runs, stdin belongs to prompt_toolkit (a raw ``input()`` on the process_loop
+        thread blocks forever, #23185), so the answer is typed into the composer through the
+        slash-confirm panel in free-text mode. Without an app, a plain ``input()``.
         """
-        result = [None]
-
-        def _ask():
-            try:
-                result[0] = input(prompt_text).strip() or None
-            except (KeyboardInterrupt, EOFError):
-                pass
-
-        in_main_thread = threading.current_thread() is threading.main_thread()
-        # Slash-worker guard (#23185 / billing auto-reload hang): when a prompt_toolkit app is running but
-        # we're on a non-main thread (the process_loop / TUI slash-worker daemon thread), stdin is owned by
-        # the event loop / JSON-RPC pipe. A bare input() there blocks forever until the worker's 45s timeout
-        # fires. We cannot safely prompt off the main thread, so cancel cleanly (None) instead of hanging —
-        # mirrors the _stdin_fallback discipline in _prompt_text_input_modal.
-        if self._app and not in_main_thread:
-            self._invalidate()
+        if self._app:
+            return self._prompt_text_input_modal(title=prompt_text.strip(), detail="", choices=[]) or None
+        try:
+            return input(prompt_text).strip() or None
+        except (KeyboardInterrupt, EOFError):
             return None
-
-        if self._app and in_main_thread:
-            from prompt_toolkit.application import run_in_terminal
-            was_visible = self._status_bar_visible
-            self._status_bar_visible = False
-            self._app.invalidate()
-            try:
-                run_in_terminal(_ask)
-            except Exception:
-                # WSL / Warp / some emulators silently drop the scheduled coroutine — fall back to
-                # a direct input() so keystrokes don't leak into the agent buffer.
-                try:
-                    _ask()
-                except Exception:
-                    pass
-            finally:
-                self._status_bar_visible = was_visible
-                self._app.invalidate()
-        else:
-            _ask()
-        return result[0]
 
     def _poll_modal_queue(self, response_queue, deadline_attr, *, refresh=1.0, paint=None):
         """Block until a value lands on ``response_queue`` or ``self.<deadline_attr>`` passes
@@ -304,8 +260,9 @@ class CLIModalMixin:
         """Slash-command confirmation through the prompt_toolkit composer (raw input() fought
         prompt_toolkit's stdin ownership: prompt above the TUI, Enter read as EOF). All platforms
         drive the modal via ``self._app.loop`` + ``call_soon_threadsafe``; raw ``input()`` is kept
-        only for the safe cases (no app, no loop, scheduling failure) — on Windows a non-main-thread
-        input() deadlocks against prompt_toolkit, so that case cancels instead.
+        only for the no-app case. With an app, a modal that cannot be scheduled (no loop, scheduling
+        failure) cancels: an off-main input() there blocks forever (#23185, on Windows #33961).
+        Empty ``choices`` is a free-text prompt: the composer text is the answer, None on cancel.
 
         **Platform note (Windows — issue #33961):** Earlier code bypassed the modal on ``sys.platform ==
         "win32"`` and fell back to a raw ``input()`` prompt. When the confirm was triggered from the
@@ -313,8 +270,6 @@ class CLIModalMixin:
         deadlocked against prompt_toolkit's stdin ownership — the user saw a frozen cursor and Ctrl-C was
         swallowed (bare ``/reset`` froze; ``/reset now`` worked only because it skips the prompt entirely).
         """
-        if not choices:
-            return None
         if not getattr(self, "_app", None):
             return self._prompt_text_input(t("cli.modal.choice_prompt"))
 
@@ -324,17 +279,11 @@ class CLIModalMixin:
             app_loop = None
         in_main_thread = threading.current_thread() is threading.main_thread()
 
-        def _stdin_fallback() -> str | None:
-            # On native Windows a raw input() from a non-main thread deadlocks against prompt_toolkit's
-            # stdin ownership (#33961). With an app running we cannot safely prompt off the main thread, so
-            # cancel cleanly (None) rather than hang the terminal.
-            if sys.platform == "win32" and not in_main_thread:
-                self._invalidate()
-                return None
-            return self._prompt_text_input(t("cli.modal.choice_prompt"))
+        def _unscheduled() -> None:
+            self._invalidate()
 
         if not in_main_thread and app_loop is None:
-            return _stdin_fallback()
+            return _unscheduled()
 
         response_queue = queue.Queue()
 
@@ -374,7 +323,7 @@ class CLIModalMixin:
             return ready.wait(timeout=5)
 
         if not _run_on_app_loop(_setup_modal):
-            return _stdin_fallback()
+            return _unscheduled()
         try:
             result = self._poll_modal_queue(
                 response_queue, "_slash_confirm_deadline", refresh=5.0, paint=self._invalidate)
@@ -394,6 +343,11 @@ class CLIModalMixin:
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._invalidate()
+
+    def _cancel_slash_confirm(self) -> None:
+        """Esc / Ctrl+C / Ctrl+Q: a choice panel answers "cancel"; a free-text prompt gets no answer."""
+        state = self._slash_confirm_state
+        self._submit_slash_confirm_response("cancel" if state and state.get("choices") else None)
 
     def _normalize_slash_confirm_choice(
         self, raw: str | None, choices: list[tuple[str, str, str]]) -> str | None:

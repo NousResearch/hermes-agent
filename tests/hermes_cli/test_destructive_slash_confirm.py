@@ -39,7 +39,7 @@ def test_gate_on_choice_once_returns_once():
     self_ = _make_self(prompt_response="1")
 
     with patch(
-        "cli.load_cli_config",
+        "hermes_cli.config.load_config_readonly",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
         result = _bound(HermesCLI._confirm_destructive_slash, self_)(
@@ -68,7 +68,7 @@ def test_gate_on_choice_always_persists_and_returns_always():
         return True
 
     with patch(
-        "cli.load_cli_config",
+        "hermes_cli.config.load_config_readonly",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ), patch("cli.save_config_value", _fake_save):
         result = _bound(HermesCLI._confirm_destructive_slash, self_)(
@@ -136,7 +136,7 @@ def test_confirm_destructive_slash_now_skips_modal():
     self_._split_destructive_skip = HermesCLI._split_destructive_skip  # classmethod
 
     with patch(
-        "cli.load_cli_config",
+        "hermes_cli.config.load_config_readonly",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
         result = _bound(HermesCLI._confirm_destructive_slash, self_)(
@@ -156,7 +156,7 @@ def test_confirm_destructive_slash_no_skip_token_still_prompts():
     self_._split_destructive_skip = HermesCLI._split_destructive_skip
 
     with patch(
-        "cli.load_cli_config",
+        "hermes_cli.config.load_config_readonly",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
         result = _bound(HermesCLI._confirm_destructive_slash, self_)(

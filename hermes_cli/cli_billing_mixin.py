@@ -833,7 +833,7 @@ class CLIBillingMixin:
         from decimal import Decimal
         if choice == "custom":
             entered = self._prompt_text_input(f"  {t('cli.billing.amount_prompt')} ")
-            if entered is None:  # cancelled (e.g. slash-worker can't prompt off-thread)
+            if entered is None:  # cancelled (Esc) or nothing entered
                 print(f"  {t('cli.billing.cancelled_no_funds')}")
                 return
             v = validate_charge_amount(entered or "", min_usd=state.min_usd, max_usd=state.max_usd)
@@ -1048,7 +1048,7 @@ class CLIBillingMixin:
             cur = format_money(current) if currently_on else None
             prompt = f"  {t('cli.billing.amount_prompt_labeled', label=label)}" + (f" [{cur}]: " if cur else ": ")
             raw = self._prompt_text_input(prompt)
-            if raw is None:  # cancelled (e.g. slash-worker can't prompt off-thread)
+            if raw is None:  # cancelled (Esc) or nothing entered
                 print(f"  {t('cli.billing.cancelled_yellow')}")
                 return _CANCELLED
             if not (raw or "").strip() and currently_on:

@@ -728,3 +728,70 @@ assert handshake(port_b), "the CA appended to the fallback bundle was not loaded
             env=env, capture_output=True, text=True, timeout=60, check=False,
         )
         assert child.returncode == 0, child.stdout + child.stderr
+
+
+@pytest.mark.platforms("linux")
+def test_memoized_context_reloads_same_size_bundle_with_preserved_mtime(tmp_path):
+    """#139765: an in-place CA replacement can preserve size and mtime.
+
+    An installer restoring timestamps may write a new trusted root without
+    changing the four stat fields in the memo. A pooled context must still
+    trust that root on its next connection, as truststore's original
+    per-connection configure path did.
+    """
+    import subprocess
+    import sys
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with _private_https_server(tmp_path / "a") as (server_a, ca_a), \
+            _private_https_server(tmp_path / "b") as (server_b, ca_b):
+        first_ca, second_ca = ca_a.read_bytes(), ca_b.read_bytes()
+        bundle_size = max(len(first_ca), len(second_ca))
+        bundle = tmp_path / "ca-bundle.pem"
+        bundle.write_bytes(first_ca.ljust(bundle_size, bytes([10])))
+        script = """
+import os, socket, ssl, sys
+from pathlib import Path
+from agent.ssl_verify import install_truststore
+
+port_a, port_b = int(sys.argv[1]), int(sys.argv[2])
+bundle, next_ca = Path(sys.argv[3]), Path(sys.argv[4])
+bundle_size = int(sys.argv[5])
+assert install_truststore() is True
+assert ssl.get_default_verify_paths().cafile == str(bundle)
+ctx = ssl.create_default_context()
+
+def handshake(port):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with ctx.wrap_socket(raw, server_hostname="127.0.0.1"):
+            pass
+
+handshake(port_a)
+try:
+    handshake(port_b)
+except ssl.SSLCertVerificationError:
+    pass
+else:
+    raise AssertionError("the new CA was trusted before the bundle changed")
+
+before = bundle.stat()
+with bundle.open("r+b") as file:
+    file.write(next_ca.read_bytes().ljust(bundle_size, bytes([10])))
+    file.truncate()
+os.utime(bundle, ns=(before.st_atime_ns, before.st_mtime_ns))
+after = bundle.stat()
+assert (before.st_mtime_ns, before.st_size, before.st_ino, before.st_dev) == (
+    after.st_mtime_ns, after.st_size, after.st_ino, after.st_dev
+)
+assert before.st_ctime_ns != after.st_ctime_ns, "in-place rewrite did not advance ctime"
+handshake(port_b)  # the same pooled context must load the newly trusted CA
+"""
+        env = _child_env(tmp_path)
+        env["SSL_CERT_FILE"] = str(bundle)
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(server_a.server_port), str(server_b.server_port),
+             str(bundle), str(ca_b), str(bundle_size)],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr

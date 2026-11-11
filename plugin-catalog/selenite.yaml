@@ -1,0 +1,42 @@
+# Pinned to the reviewed plugin commit. Re-pin (sha, docs_url, image, screenshots) only to a later reviewed commit.
+# screenshots stay out until real captures exist at a pinned commit.
+name: selenite
+title: Selenite
+repo: https://github.com/KyaniteLabs/selenite
+sha: 6bc413e9cd4497f966eec905a1f61106cd0708a4
+description: >-
+  Takes friction off the person, treated as accessibility: one test, "does this
+  step, wait or check earn its cost to you?", applied to steps handed to a person,
+  agents parking Kanban work on each other for reasons that aren't real, and
+  checks that can't change the decision. Calm mode switches the agent to no
+  questions and one-line replies when your messages show overload. A read-only
+  cleanse ranks what to clear across skills, plugins, hooks, approvals, runbooks
+  and boards. Walls always stand: credentials, spend, publishing, destructive
+  steps, legal, named freezes. Disclosure: no network and no credentials. Hooks
+  add a context note in Calm mode, and in fake_gate_mode "nudge" (default) or
+  "ask" they add a note to, or hand back once with a question, a kanban_block
+  that reads as agent bureaucracy; they never approve, unblock, close or edit a
+  card, and any error fails open. Writes a metadata-only ledger (no block reasons
+  or prompt text, 0600, rotates at 4 MB), per-card question counts and a
+  counts-only snapshot under plugin-data/antibeaurocracy/, and reports under
+  ~/.local/state/selenite. Reads kanban.db read-only. The CLI's opt-in --judge
+  runs a command you name; the plugin never does.
+maintainer: KyaniteLabs
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.5.0"
+docs_url: https://github.com/KyaniteLabs/selenite/blob/6bc413e9cd4497f966eec905a1f61106cd0708a4/README.md
+readme: true
+image: https://raw.githubusercontent.com/KyaniteLabs/selenite/6bc413e9cd4497f966eec905a1f61106cd0708a4/docs/banner.png
+platforms: [linux]  # add macos once the Mac capture runs it
+known_issues:
+  - "Loads on the next gateway restart. Disable a standalone antibeaurocracy plugin first, or the fake-gate hooks run twice."
+  - "The fake-gate classifier is deterministic and phrase-based; text it has no evidence for is recorded, never nudged or asked."
+  - "Pedantry is a skill only; it is not counted in the cleanse ranking yet."
+  - "Tested on Linux; macOS and Windows unverified."
+capabilities:
+  provides_tools: [selenite_ledger, bureaucracy_classify, bureaucracy_audit]
+  provides_hooks: [pre_llm_call, post_approval_response, kanban_task_blocked, kanban_task_completed, on_kanban_task_updated, pre_tool_call, transform_tool_result, on_kanban_dispatch_tick]
+  provides_middleware: []
+  requires_env: []

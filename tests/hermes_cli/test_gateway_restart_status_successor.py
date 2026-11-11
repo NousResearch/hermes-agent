@@ -402,3 +402,69 @@ def test_a_separate_dashboard_never_touches_the_record_at_startup(client, home, 
     after = _record(home).read_bytes(), _record(home).stat()
     assert after[0] == before[0]
     assert (after[1].st_ino, after[1].st_mtime_ns) == (before[1].st_ino, before[1].st_mtime_ns)
+
+
+# A gateway a service manager starts while the restart child still waits for it: start through the
+# gateway's startup step, read the status, signal the test, wait until the child is gone, read again.
+_SUPERVISED_REPLACEMENT = r"""
+import json, os, socket, sys
+home, out, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+os.environ["HERMES_HOME"] = home
+from gateway.run_bootstrap import _start_gateway_claim_pid_file
+from gateway.status import release_gateway_runtime_lock
+if not _start_gateway_claim_pid_file():
+    sys.exit(5)
+try:
+    from starlette.testclient import TestClient
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    answers = [client.get("/api/actions/gateway-restart/status?lines=1").json()]
+    with socket.create_connection(("127.0.0.1", port), timeout=60) as gate:
+        gate.settimeout(60)
+        gate.sendall(json.dumps(answers[0]).encode() + b"\n")
+        gate.recv(1)
+    answers.append(client.get("/api/actions/gateway-restart/status?lines=1").json())
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump({"pid": os.getpid(), "answers": answers}, handle)
+finally:
+    release_gateway_runtime_lock()
+"""
+
+
+def test_a_replacement_answering_while_the_restart_child_waits_reports_it_running_then_finished(
+        client, home, old_gateway, restart_child, tmp_path):
+    """Service manager: the restart child (the CLI verb) stays alive until it sees the replacement
+    come up, so the replacement answers polls first. It reports the original pid still running
+    (the client keeps polling), then finished with exit 0 once the child is gone."""
+    child_gate = Handover()
+    restart_child["argv"] = ["-c", f"import socket; s = socket.create_connection(('127.0.0.1', {child_gate.port}),"
+                                   " timeout=60); s.settimeout(60); s.recv(1)"]
+    pid = _restart(client)
+    old_gateway()
+
+    gate = socket.create_server(("127.0.0.1", 0))
+    gate.settimeout(_CHILD_TIMEOUT)
+    out = tmp_path / "replacement.json"
+    replacement = subprocess.Popen(
+        [sys.executable, "-c", _SUPERVISED_REPLACEMENT, str(home), str(out), str(gate.getsockname()[1])],
+        env={**os.environ, "HERMES_HOME": str(home)}, cwd=str(Path(__file__).resolve().parents[2]))
+    try:
+        connection, _ = gate.accept()
+        with connection, connection.makefile("rb") as reader:
+            connection.settimeout(_CHILD_TIMEOUT)
+            while_child_waits = json.loads(reader.readline())
+            child_gate.go()
+            assert _wait_for_child() == 0
+            connection.sendall(b"g")
+        assert replacement.wait(timeout=_CHILD_TIMEOUT) == 0
+    finally:
+        gate.close()
+        if replacement.poll() is None:
+            replacement.kill()
+            replacement.wait(timeout=10)
+
+    seen = json.loads(out.read_text(encoding="utf-8"))
+    assert seen["pid"] != pid
+    assert _answer(while_child_waits) == {"pid": pid, "running": True, "exit_code": None}
+    assert _answer(seen["answers"][1]) == {"pid": pid, "running": False, "exit_code": 0}

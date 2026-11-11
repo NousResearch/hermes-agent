@@ -680,15 +680,19 @@ def bind_restart_record() -> None:
 
 
 def restart_successor_result() -> Optional[dict[str, Any]]:
-    """``{"pid": <action pid>, "exit_code": 0}`` when THIS process is the gateway that replaced the
-    one that spawned the recorded ``gateway-restart``, else None (the caller answers as before).
+    """The recorded ``gateway-restart`` as THIS process reports it when it is the gateway that
+    replaced the one that spawned it, else None (the caller answers as before):
+    ``{"pid": <action pid>, "exit_code": 0}``, or ``{"pid": <action pid>, "exit_code": None,
+    "running": True}`` while the action child, a different process, is still the same live process
+    (a service manager's restart verb waits for the replacement to come up before it exits).
 
     Proof, all required: the record was written by a process holding this home's gateway runtime
     lock (``_write_restart_record``); this process holds that lock now and claimed the record at its
     own startup (``bind_restart_record``: the first gateway after the spawner claims or deletes it);
-    ``_may_succeed`` still holds (not the spawner, no non-zero exit settled, inside the window, the
-    action child itself or started no earlier than it); and this process IS the action child or the
-    child is gone. A read never claims. A separate dashboard holds no gateway lock and never
+    and ``_may_succeed`` still holds (not the spawner, no non-zero exit settled, inside the window,
+    the action child itself or started no earlier than it). A read never claims. A child that is
+    gone is reported finished: this process cannot see its exit code, and a service manager's stop
+    may kill it with the old gateway's cgroup. A separate dashboard holds no gateway lock and never
     qualifies; it keeps its in-memory answer.
     """
     record = _read_restart_record()
@@ -696,8 +700,10 @@ def restart_successor_result() -> Optional[dict[str, Any]]:
     if record is None or me is None or record.get("successor") != me or not _is_home_gateway():
         return None
     action = record["action"]
-    if not _may_succeed(record, me) or (me != action and _process_identity(action[0]) == action):
+    if not _may_succeed(record, me):
         return None
+    if me != action and _process_identity(action[0]) == action:
+        return {"pid": action[0], "exit_code": None, "running": True}
     return {"pid": action[0], "exit_code": 0}
 
 

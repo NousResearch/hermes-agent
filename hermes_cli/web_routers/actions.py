@@ -429,7 +429,9 @@ async def get_action_status(name: str, lines: int = 200):
             # predecessor's registries.
             from hermes_cli.web_server_gateway import restart_successor_result
             result = restart_successor_result()
-        running = False
+        # Only a successor's answer carries ``running`` (a replacement that came up while the
+        # service manager's restart verb still waits); every recorded result is finished.
+        running = bool(result and result.get("running"))
         pid = result.get("pid") if result else None
         exit_code = _completed_exit_code(result, durable_update_action_id, action_receipt_summary)
     else:

@@ -378,3 +378,65 @@ class TestManualMappingConfig:
         monkeypatch.setattr(dhm, "is_running_in_docker", lambda: True)
         monkeypatch.setattr(dhm, "build_auto_host_mapping", lambda: {"/opt/data": "/host/data"})
         assert dhm.resolve_host_mapping() == {"/opt/data": "/host/data"}
+
+
+class TestResolveFallback:
+    """Scenario 3: containerized gateway, Docker socket/CLI unusable → graceful
+    fallback to today's behavior, WARNING logged exactly once per process."""
+
+    def test_warns_once_and_returns_empty(self, monkeypatch, caplog):
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: True)
+        monkeypatch.setattr(dhm, "build_auto_host_mapping", list)
+        assert dhm.resolve_host_mapping() == {}
+        dhm.resolve_host_mapping()
+        dhm.resolve_host_mapping()
+        assert sum("no host mapping could be built" in r.message for r in caplog.records) == 1
+
+    def test_reset_arms_the_warning_again(self, monkeypatch, caplog):
+        monkeypatch.setattr(dhm, "is_running_in_docker", lambda: True)
+        monkeypatch.setattr(dhm, "build_auto_host_mapping", list)
+        dhm.resolve_host_mapping()
+        dhm.reset_host_mapping_caches()
+        dhm.resolve_host_mapping()
+        assert sum("no host mapping could be built" in r.message for r in caplog.records) == 2
+
+
+class TestRealWorldEndToEnd:
+    """Scenario 7: gateway HERMES_HOME=/opt/data bind-mounted from the host's
+    /home/user/hermes/data — the cache/web mount must leave the mount builder
+    with the HOST source. Full chain, no getter stubs: real get_cache_directory_mounts
+    + real validation + faked detection inputs only."""
+
+    def test_cache_web_mount_uses_host_path(self, tmp_path, monkeypatch):
+        # Gateway-internal HERMES_HOME and its host counterpart, as separate trees.
+        gateway_home = tmp_path / "opt" / "data"
+        host_home = tmp_path / "home" / "user" / "hermes" / "data"
+        gateway_home.mkdir(parents=True)
+        host_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(gateway_home))
+        (tmp_path / "hostname").write_text("abcd1234ef56\n")
+        monkeypatch.setattr(dhm, "_DOCKERENV_PATHS", (str(tmp_path / "dockerenv"),))
+        (tmp_path / "dockerenv").touch()
+        monkeypatch.setattr(dhm, "_ETC_HOSTNAME_PATH", str(tmp_path / "hostname"))
+        monkeypatch.setattr(dhm, "_PROC_1_CGROUP_PATH", str(tmp_path / "cgroup1"))
+        monkeypatch.setattr(dhm, "_SELF_CGROUP_PATH", str(tmp_path / "cgroupself"))
+        monkeypatch.setattr(dhm, "_SELF_MOUNTINFO_PATH", str(tmp_path / "mountinfo"))
+        monkeypatch.setattr(dhm, "_find_docker_cli", lambda: "/usr/bin/docker")
+        mounts_payload = json.dumps([
+            {"Type": "bind", "Source": str(host_home), "Destination": str(gateway_home), "RW": True},
+            {"Type": "volume", "Source": "/var/lib/docker/volumes/x/_data", "Destination": "/persist", "RW": True},
+            {"Type": "tmpfs", "Source": "", "Destination": "/tmp", "RW": True},
+        ])
+        _stub_subprocess(monkeypatch, lambda argv: _FakeProcResult(0, mounts_payload)
+                         if len(argv) > 1 and argv[1] == "inspect" else None)
+
+        import tools.environments.docker as docker_env
+        args = docker_env._readonly_skill_mount_args()
+        volumes = TestMountBuilderIntegration._volumes(args)
+
+        cache_web = next(v for v in volumes if v.endswith(":/root/.hermes/cache/web:ro"))
+        assert cache_web.startswith(f"{host_home}/cache/web:")
+        assert str(gateway_home) not in cache_web  # gateway view never reaches the daemon
+        # Every emitted source is host-side; nothing else leaked the gateway tree.
+        assert all(not v.startswith(str(gateway_home)) for v in volumes)

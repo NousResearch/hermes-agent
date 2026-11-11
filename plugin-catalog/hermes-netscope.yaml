@@ -1,0 +1,25 @@
+name: hermes-netscope
+title: "netScope: Offline Network Capture Analyzer"
+repo: https://github.com/Mxhi-04/Hermes-netscope
+sha: bd720baeb4c5fde2b39f6d869e7fa4d284442d3d
+description: "Offline pcap/pcapng network capture analyzer with interactive HTML reports, protocol graphs, traffic replay at 1×/4×/16×, and deterministic anomaly heuristics (traffic bursts, scan patterns, DNS anomalies, cleartext ports). Stdlib-only, no network requests, no telemetry."
+maintainer: Mxhi-04
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+image: https://raw.githubusercontent.com/Mxhi-04/Hermes-netscope/bd720baeb4c5fde2b39f6d869e7fa4d284442d3d/assets/readme-hero.png
+docs_url: https://github.com/Mxhi-04/Hermes-netscope#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/Mxhi-04/Hermes-netscope/bd720baeb4c5fde2b39f6d869e7fa4d284442d3d/assets/report-overview.png
+  - https://raw.githubusercontent.com/Mxhi-04/Hermes-netscope/bd720baeb4c5fde2b39f6d869e7fa4d284442d3d/assets/report-dns.png
+  - https://raw.githubusercontent.com/Mxhi-04/Hermes-netscope/bd720baeb4c5fde2b39f6d869e7fa4d284442d3d/assets/report-host.png
+platforms: []
+capabilities:
+  provides_tools:
+    - netscope_analyze
+    - netscope_query
+    - netscope_visualize
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

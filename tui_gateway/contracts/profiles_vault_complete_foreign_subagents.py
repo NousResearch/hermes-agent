@@ -231,22 +231,23 @@ class ProfilesCreateResult(Result):
 
 
 class ProfileCreateReceipt(Result):
-    """``hermes_cli.profile_provision_gateway.receipt``: read where the profile was made."""
+    """``hermes_cli.profile_provision.CreateReceipt``, read where the profile was made. A gateway always
+    sends every field; a client treats a receipt missing one as an unknown outcome."""
 
     path: str
-    display_path: str = ""
-    launch_label: str = ""
-    source_label: str = ""
-    skills_seeded: dict[str, JsonValue] | None = None
-    alias_path: str | None = None
-    alias_collision: str | None = None
+    display_path: str
+    launch_label: str
+    source_label: str
+    skills_seeded: dict[str, JsonValue] | None
+    alias_path: str | None
+    alias_collision: str | None
     mirrored: ProfileMirrored
-    warnings: list[str] = []
-    cloned_plugins: list[str] = []
-    memory_provider: str | None = None
-    channels_left_behind: list[str] = []
-    shared_channels: list[str] = []
-    served_now: bool | None = None
+    warnings: list[str]
+    cloned_plugins: list[str]
+    memory_provider: str | None
+    channels_left_behind: list[str]
+    shared_channels: list[str]
+    served_now: bool | None
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,

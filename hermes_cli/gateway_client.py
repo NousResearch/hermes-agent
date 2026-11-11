@@ -66,6 +66,12 @@ class GatewayRPCError(GatewayClientError):
         self.code = code
         self.data = data or {}
 
+    @property
+    def unknown_method(self) -> bool:
+        """The owner has no such method (it predates this client): ``-32601``, or only the reason
+        name from an owner that sends no code."""
+        return self.code == -32601 or str(self) == "unknown_method"
+
 
 def _bounded_reason(value):
     return value if isinstance(value, str) and value.replace("_", "").isalnum() and len(value) <= 80 else None

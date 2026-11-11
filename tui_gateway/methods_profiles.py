@@ -308,12 +308,12 @@ def _(rid, params: dict) -> dict:
 
     On ``/api/ws`` it runs in the connection's profile (``ws_legacy_fallback.dispatch_legacy`` binds the
     ticket's), so ``--clone`` and the copied keys/model come from the profile the terminal is on. A
-    refused create answers 4062 with ``data.type`` / ``data.message`` so a client re-raises it."""
+    refused create answers 4062 with ``data.type`` / ``data.message_parts`` so a client re-raises it."""
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")
-    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
-    from hermes_cli.profile_provision_gateway import error_data, receipt
+    from hermes_cli.profile_provision import CreateReceipt, ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision_gateway import refusal
     clone_from = str(params.get("clone_from") or "").strip() or None
     clone_all = is_truthy_value(params.get("clone_all", False))
     clone_config = is_truthy_value(params.get("clone_config", False)) or (bool(clone_from) and not clone_all)
@@ -332,16 +332,15 @@ def _(rid, params: dict) -> dict:
         model=model, provider=provider)
     try:
         result = provision_profile(request)
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
-        data = error_data(e)
-        return _err(rid, 4062, data["message"], data=data)
     except Exception as e:
-        data = error_data(e)
-        return _err(rid, 5062, data["message"], data=data)
+        # The full text (redacted) for Desktop's dialog; ``data`` carries it in the parts a client keeps.
+        message, data = refusal(e)
+        code = 4062 if isinstance(e, (ValueError, FileExistsError, FileNotFoundError)) else 5062
+        return _err(rid, code, message, data=data)
     out = {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
            "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings}
     if is_truthy_value(params.get("report", False)):
-        out["receipt"] = receipt(request, result)
+        out["receipt"] = CreateReceipt.of(request, result).to_wire()
     return _ok(rid, out)
 
 

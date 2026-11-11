@@ -20,18 +20,32 @@ import logging
 import os
 import shutil
 import threading
-from dataclasses import dataclass, field
+import weakref
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# One core create at a time in this process. ``create_profile`` stages in
-# ``profiles/.<name>.staging-<pid>``, so two in-process creates of one name (two terminals creating
-# through one gateway) shared and removed each other's staging dir: the loser failed with a raw
-# OSError instead of "already exists". Other processes have their own pid. Seeding and the alias
-# run after the lock is released.
-_CREATE_LOCK = threading.Lock()
+# ``create_profile`` stages in ``profiles/.<name>.staging-<pid>``, so two in-process creates of one
+# name (two terminals creating through one gateway) shared and removed each other's staging dir: the
+# loser failed with a raw OSError instead of "already exists". One lock per canonical name (other
+# processes have their own pid); weak values, so a name's lock lives only while a create holds it.
+_CREATE_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+_CREATE_LOCKS_GUARD = threading.Lock()
+
+
+def _create_lock(name: str) -> threading.Lock:
+    from hermes_cli.profiles import normalize_profile_name
+    try:
+        key = normalize_profile_name(name)
+    except ValueError:
+        key = ""  # create_profile refuses it before staging anything
+    with _CREATE_LOCKS_GUARD:
+        lock = _CREATE_LOCKS.get(key)
+        if lock is None:
+            lock = _CREATE_LOCKS[key] = threading.Lock()
+        return lock
 
 
 @dataclass(frozen=True)
@@ -79,6 +93,85 @@ class ProvisionResult:
     mcp_written: int = 0
     skills_disabled: int = 0
     warnings: list[str] = field(default_factory=list)
+    skills_problems: list[str] = field(default_factory=list)  # why seeding failed (printed unless quiet)
+
+
+@dataclass(frozen=True)
+class CreateReceipt:
+    """What ``hermes profile create`` prints about a new profile, read on the machine (and in the
+    profile scope) that made it: :meth:`of` builds it after a create here, and a gateway that made it
+    sends the same fields (``profiles.create`` with ``report``; the contract's ``ProfileCreateReceipt``
+    lists them too, ``tests/hermes_cli/test_profile_provision_gateway.py`` keeps the two equal)."""
+
+    path: str
+    display_path: str
+    launch_label: str
+    source_label: str
+    skills_seeded: Optional[dict]
+    alias_path: Optional[str]
+    alias_collision: Optional[str]
+    mirrored: dict
+    warnings: list
+    cloned_plugins: list
+    memory_provider: Optional[str]
+    channels_left_behind: list
+    shared_channels: list
+    served_now: Optional[bool]  # None: no live multiplexer recorded what it serves
+
+    @classmethod
+    def of(cls, request: ProfileCreateRequest, result: ProvisionResult) -> CreateReceipt:
+        """Every read is best-effort: the profile exists whatever a read says, so this never raises."""
+        from hermes_cli import profiles
+        from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+        from hermes_constants import display_hermes_home
+        path = result.path
+        launch = _try("launch label", profiles.get_active_profile_name, "default")
+        source = request.clone_from or launch
+        plugins, memory, left_behind, shared = [], None, [], []
+        if not request.fresh:
+            if not request.clone_all:
+                from hermes_cli.profile_memory_config import cloned_memory_provider
+                plugins = _try("cloned plugins", lambda: profiles.cloned_plugin_names(path), [])
+                memory = _try("cloned memory provider", lambda: cloned_memory_provider(path), None)
+            source_dir = _try("source profile", lambda: profiles.get_profile_dir(source), None)
+            if source_dir is not None and source_dir.is_dir():
+                from hermes_cli.profile_channels import channel_platforms_configured, shared_channel_credentials
+                if request.clone_channels:
+                    shared = _try("shared channels", lambda: shared_channel_credentials(path, source_dir), [])
+                else:
+                    left_behind = _try("channels left behind", lambda: channel_platforms_configured(source_dir), [])
+        served = _try("served profiles", recorded_served_profiles, None)
+        served_now = None if served is None else _try("served profiles", lambda: profiles.normalize_profile_name(
+            request.name) in {profiles.normalize_profile_name(p) for p in served}, None)
+        # A quiet create (the gateway's) printed no seeding failure: the terminal that asked shows it.
+        warnings = [*result.warnings, *(line.strip().removeprefix("⚠ ") for line in result.skills_problems
+                                        if request.quiet and line.strip())]
+        return cls(
+            path=str(path), display_path=display_hermes_home(path), launch_label=launch, source_label=source,
+            skills_seeded=result.skills_seeded, alias_path=str(result.alias_path) if result.alias_path else None,
+            alias_collision=result.alias_collision, mirrored=dict(result.mirrored), warnings=warnings,
+            cloned_plugins=list(plugins), memory_provider=memory, channels_left_behind=list(left_behind),
+            shared_channels=list(shared), served_now=served_now)
+
+    def to_wire(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_wire(cls, data: Any) -> Optional[CreateReceipt]:
+        """The receipt a gateway sent, or None when it is not a complete one (a gateway that predates
+        a field must not have the rest printed from guesses). Fields this version doesn't know are dropped."""
+        if not isinstance(data, dict) or not isinstance(data.get("path"), str) or not data["path"]:
+            return None
+        if any(name not in data for name in RECEIPT_FIELDS):
+            return None
+        if not (isinstance(data["mirrored"], dict) and all(
+                isinstance(data[k], list) for k in ("warnings", "cloned_plugins", "channels_left_behind",
+                                                     "shared_channels"))):
+            return None
+        return cls(**{name: data[name] for name in RECEIPT_FIELDS})
+
+
+RECEIPT_FIELDS = tuple(f.name for f in fields(CreateReceipt))
 
 
 def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
@@ -89,7 +182,7 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     """
     from hermes_cli import profiles
 
-    with _CREATE_LOCK:
+    with _create_lock(request.name):
         path = profiles.create_profile(
             name=request.name, clone_from=request.clone_from, clone_all=request.clone_all,
             clone_config=request.clone_config, no_skills=request.no_skills,
@@ -107,9 +200,11 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
             return default
 
     if request.fresh:
-        result.skills_seeded = step("bundled skills", lambda: profiles.seed_profile_skills(path, quiet=request.quiet))
+        result.skills_seeded = step("bundled skills", lambda: profiles.seed_profile_skills(
+            path, quiet=request.quiet, problems=result.skills_problems))
     if request.alias:
-        step("alias wrapper", lambda: write_alias(request.name, result))
+        result.alias_path, result.alias_collision = step(
+            "alias wrapper", lambda: write_alias(request.name), default=(None, None))
     if request.mirror_credentials:
         from hermes_cli.auth import _global_auth_file_path
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
@@ -137,13 +232,14 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     return result
 
 
-def write_alias(name: str, result: ProvisionResult) -> None:
+def write_alias(name: str) -> tuple[Optional[Path], Optional[str]]:
+    """``(wrapper path, collision)`` for the ``~/.local/bin/<name>`` wrapper: written on this machine,
+    with this process's PATH and ``hermes``. Exactly one is set unless the write itself failed."""
     from hermes_cli.profiles import check_alias_collision, create_wrapper_script
     collision = check_alias_collision(name)
     if collision:
-        result.alias_collision = collision
-        return
-    result.alias_path = create_wrapper_script(name)
+        return None, collision
+    return create_wrapper_script(name), None
 
 
 def _pin_model(path: Path, request: ProfileCreateRequest, result: ProvisionResult) -> bool:

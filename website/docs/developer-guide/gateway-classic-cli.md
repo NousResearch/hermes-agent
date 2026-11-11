@@ -17,8 +17,9 @@ owner for the terminal's profile (discovery only, never started for this) or the
 runs `profiles.create` in the connection's profile and returns the receipt the CLI prints
 (`report`). With no owner, or a local one that predates those fields (`-32601` / `4000`), the CLI
 creates in-process; a URL's gateway is never replaced by a local create. A refused create keeps its
-type (`error.data.type`); a socket lost after the request was sent is reported as unknown, never
-retried.
+type (`error.data.type`); a socket lost after the request was sent, or a reply without a complete
+receipt, is reported as unknown, never retried. The `~/.local/bin` wrapper is written by the CLI
+after a create on this machine (a local owner, or a loopback URL), never by the gateway.
 
 The client prints the persisted `Session:` ID to stderr. Resume with
 `hermes --cli chat --resume ID`. Input is admitted with a fresh `input_id`; events

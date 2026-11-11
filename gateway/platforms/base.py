@@ -3890,32 +3890,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
-        """/stop, /new, /reset: reply, then cancel + drain only if the runner's stop/reset handler (past admission
-        and slash access) set ``event._interrupt_accepted``, else restore guard and held text; no auth check: cancel."""
-        logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
-        current_guard = self._active_sessions.get(session_key)
-        command_guard = asyncio.Event()
-        self._active_sessions[session_key] = command_guard
-        if (held := self._text_debounce_store().pop(session_key, None)) is not None:
-            held.cancel_timer()
-        cancelled = False
-        try:
-            await self._dispatch_inline_reply(event, log_cmd=cmd)
-            if self._authorization_check is None or getattr(event, "_interrupt_accepted", False) is True:
-                await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
-                cancelled = True
-        finally:
-            if not cancelled:
-                if self._active_sessions.get(session_key) is command_guard:
-                    if session_key in self._session_tasks and current_guard is not None:
-                        self._active_sessions[session_key] = current_guard
-                    else:
-                        self._release_session_guard(session_key, guard=command_guard)
-                if held is not None:
-                    self._text_debounce_store()[session_key] = held
-                    await self._flush_text_debounce_now(session_key)
-        if cancelled:
-            await self._drain_pending_after_session_command(session_key, command_guard)
+        """/stop, /new, /reset on a busy session: cancel only on the runner's verdict (#136759)."""
+        from gateway.platforms.base_session_command import dispatch_active_session_command
+        await dispatch_active_session_command(self, event, session_key, cmd)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background

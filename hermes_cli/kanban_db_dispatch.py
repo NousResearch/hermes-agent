@@ -26,6 +26,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli import kanban_db_transport as kbt
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -252,27 +253,6 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
     return ("nonzero_exit", code)
-
-
-_EXIT_TRAILER_RE = re.compile(
-    r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
-)
-
-
-def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
-    """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
-
-    The durable twin of ``_recent_worker_exits``: written by the worker itself
-    (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
-    return int(matches[-1]) if matches else None
 
 
 def reap_worker_zombies() -> list[int]:
@@ -976,7 +956,7 @@ _PROTOCOL_VIOLATION_ERROR = (
     # paperwork was skipped, so a retry usually completes; the corrective sentence below is surfaced to the
     # retry worker via the prior-attempt error in ``build_worker_context`` (guidance approach from #61817).
     # Keep this short: ``_record_task_failure`` caps the stored error at 500 chars and the worker's own
-    # last output (``_worker_final_output``, up to 400 chars) is appended after it — a longer preamble
+    # last output (``kanban_db_transport.worker_final_output``, up to 400 chars) is appended — a longer preamble
     # truncates away the worker's explanation, which is the part the board and the retry worker need.
     "worker exited cleanly (rc=0) without kanban_complete, kanban_block "
     "or kanban_request_review — protocol violation. "
@@ -987,80 +967,10 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
-# Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
-_LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
-
-
-def _exit_summary_marker() -> str:
-    """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
-    from agent.i18n import t
-    return t("cli.session.exit_resume_hint")
-
-
-def _log_noise_prefixes() -> tuple[str, ...]:
-    from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
-
-
-def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
-    """Best-effort read of a dead worker's last printed text, for the board diagnostic.
-
-    A ``chat -q`` worker's stdout/stderr are redirected to its per-task log
-    (``_default_spawn``), so when it exits without a terminal board call the
-    reason is usually sitting there: the model's own explanation of why it could
-    not comply (#88603), or the rendered provider error (#46593). The reap used to
-    discard it in favour of a canned message on every retry. Trims the CLI exit
-    summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
-    on a missing/empty log.
-
-    ``board`` must come from the dispatching tick: ambient current-board resolution
-    is wrong for every board but the one the dispatcher thread happens to call
-    "current", so the log would silently not be found.
-    """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return ""
-    if not raw:
-        return ""
-    raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_exit_summary_marker())
-    if cut != -1:
-        raw = raw[:cut]
-    lines = []
-    for ln in raw.splitlines():
-        ln = _LOG_CHROME.sub("", ln).strip()
-        if ln and not ln.startswith(_log_noise_prefixes()):
-            lines.append(ln)
-    return " ".join(lines)[-400:]
-
-
-@dataclass
-class _DeadWorker:
-    """How ``detect_crashed_workers`` should book one dead worker."""
-
-    kind: str
-    code: Optional[int]
-    error_text: str
-    event_kind: str
-    event_payload: dict
-    protocol_violation: bool = False
-    rate_limited: bool = False
-    terminal_provider: bool = False
-    """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
-    credential/model — trips the breaker on this first occurrence."""
-
-    @property
-    def run_outcome(self) -> str:
-        # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
-
-
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], exit_code=None, *, task_id: Optional[str] = None,
     board: Optional[str] = None,
-) -> _DeadWorker:
+) -> kbt.DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
     A clean exit or a crash carries the worker's own last output (``worker_output``
@@ -1069,7 +979,7 @@ def _classify_dead_worker(
     """
     dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board)
     if task_id and not dead.rate_limited:
-        worker_output = _worker_final_output(task_id, board=board)
+        worker_output = kbt.worker_final_output(task_id, board=board)
         if worker_output:
             dead.error_text += f"{WORKER_OUTPUT_SEP}{worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
@@ -1083,7 +993,7 @@ def _classify_dead_worker_exit(
     *,
     task_id: Optional[str] = None,
     board: Optional[str] = None,
-) -> _DeadWorker:
+) -> kbt.DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in.
 
     ``exit_code`` is the authority's exact-run result for a managed worker (a child of the
@@ -1097,14 +1007,14 @@ def _classify_dead_worker_exit(
     if exit_code is not None:
         kind, code = _exit_code_kind(int(exit_code))
     elif kind == "unknown" and task_id:
-        logged = _worker_log_exit_code(task_id, board=board)
+        logged = kbt.worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
         # worker via ``build_worker_context``.
-        return _DeadWorker(
+        return kbt.DeadWorker(
             kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
             # ``protocol_violation`` is the durable marker for
             # _protocol_violation_streak: _end_run copies this payload into the
@@ -1115,7 +1025,7 @@ def _classify_dead_worker_exit(
     if kind == "rate_limited":
         # Quota wall — NOT a task failure. Release to the source phase and do
         # NOT count a failure so a long quota window can't trip the breaker.
-        return _DeadWorker(
+        return kbt.DeadWorker(
             kind, code,
             f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
             "rate_limited",
@@ -1126,7 +1036,7 @@ def _classify_dead_worker_exit(
         # The worker classified its own provider failure as unhealable (credential
         # revoked, model gone): every further spawn would hit the same wall, so
         # ``_account_crashes`` trips the breaker now instead of after ``failure_limit``.
-        return _DeadWorker(
+        return kbt.DeadWorker(
             kind, code,
             f"pid {pid} exited on a terminal provider error (exit {code}): the provider rejected "
             "this profile's credential or model — fix the configuration, then unblock.",
@@ -1144,26 +1054,12 @@ def _classify_dead_worker_exit(
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code
-    return _DeadWorker(kind, code, error_text, "crashed", event_payload)
+    return kbt.DeadWorker(kind, code, error_text, "crashed", event_payload)
 
 
-@dataclass
-class _CrashSweep:
-    """Everything ``detect_crashed_workers`` collects inside its reclaim txn."""
-
-    crashed: list[str] = field(default_factory=list)
-    rate_limited: list[str] = field(default_factory=list)
-    # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
-    # ``_record_task_failure`` (needs its own write_txn).
-    crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
-    # Worker-exit observer payloads, fired only after every reclaim/accounting
-    # txn has committed.
-    exited_hook_payloads: list[dict] = field(default_factory=list)
-
-
-def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
+def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> kbt.CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
-    sweep = _CrashSweep()
+    sweep = kbt.CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "

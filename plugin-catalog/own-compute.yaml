@@ -1,7 +1,7 @@
 name: own-compute
 title: Own Compute
 repo: https://github.com/Siioh/hermes-own-compute
-sha: "ec3c1660f10523189a5ddcf762cb319bbff407cc"
+sha: "97522db41e7f6352089bd350df45bc64267a71e6"
 version: "0.1.0"
 tier: community
 category: tools
@@ -41,10 +41,10 @@ known_issues:
   - "Slurm only (no PBS or LSF). Cloud agents are off on Slurm hosts. The Hermes gateway has to run on the computer that shows the Compute page. An EC2 host starts a machine in your own AWS account that AWS bills while it runs; EC2 was tested on us-east-1 and t3.micro only."
 
 screenshots:
-  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/ec3c1660f10523189a5ddcf762cb319bbff407cc/docs/images/cloud-agent-run.png
-  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/ec3c1660f10523189a5ddcf762cb319bbff407cc/docs/images/chat-approval.png
-  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/ec3c1660f10523189a5ddcf762cb319bbff407cc/docs/images/overview.png
-  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/ec3c1660f10523189a5ddcf762cb319bbff407cc/docs/images/jobs.png
-  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/ec3c1660f10523189a5ddcf762cb319bbff407cc/docs/images/screen.png
-  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/ec3c1660f10523189a5ddcf762cb319bbff407cc/docs/images/add-host-types.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/97522db41e7f6352089bd350df45bc64267a71e6/docs/images/cloud-agent-run.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/97522db41e7f6352089bd350df45bc64267a71e6/docs/images/chat-approval.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/97522db41e7f6352089bd350df45bc64267a71e6/docs/images/overview.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/97522db41e7f6352089bd350df45bc64267a71e6/docs/images/jobs.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/97522db41e7f6352089bd350df45bc64267a71e6/docs/images/screen.png
+  - https://raw.githubusercontent.com/Siioh/hermes-own-compute/97522db41e7f6352089bd350df45bc64267a71e6/docs/images/add-host-types.png
 

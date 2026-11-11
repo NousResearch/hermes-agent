@@ -38,7 +38,7 @@ def _load(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):  # missing, unreadable (permissions, a directory) or corrupt
         return {}
     return data if isinstance(data, dict) else {}
 

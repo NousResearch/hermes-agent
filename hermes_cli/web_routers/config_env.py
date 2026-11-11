@@ -575,7 +575,6 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
 
 
 def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
-    from hermes_cli.model_assignment import apply_main_model_assignment, drop_model_key
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -721,6 +720,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     cfg["providers"] = providers
 
     if body.make_default:
+        from hermes_cli.model_assignment import apply_main_model_assignment, drop_model_key
         result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
         cfg["model"] = apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):

@@ -163,15 +163,19 @@ def caption_with_footer(adapter: Any, images: list, footer: str) -> tuple[list, 
 
 
 def caption_landed(result: Any, images: list) -> bool:
-    """The photo whose caption carries the footer was delivered: ``success`` means at least one
-    photo landed, so that photo listed in ``raw_response["failed"]`` (``(path_or_url, error)``)
-    took the footer with it. False when no caption carries it."""
+    """The photo whose caption carries the footer was delivered, or is queued for a re-upload that
+    carries it (``raw_response["deferred"]``: flood control; a separate footer would repeat it).
+    ``success`` means at least one photo landed, so that photo listed in ``raw_response["failed"]``
+    (``(path_or_url, error)``) took the footer with it. False when no caption carries it."""
     url = next((u for u, alt in images if getattr(alt, "runtime_footer", "")), None)
-    if url is None or not getattr(result, "success", False):
-        return False
     raw = getattr(result, "raw_response", None)
+    raw = raw if isinstance(raw, dict) else {}
+    if url is None or url in (raw.get("deferred") or ()):
+        return url is not None
+    if not getattr(result, "success", False):
+        return False
     from urllib.parse import unquote
-    lost = {str(item[0]) for item in (raw.get("failed") if isinstance(raw, dict) else None) or () if item}
+    lost = {str(item[0]) for item in raw.get("failed") or () if item}
     return url not in lost and unquote(url.removeprefix("file://")) not in lost
 
 

@@ -55,7 +55,7 @@ def _process_event(authority, ref, target, name='proc_busy'):
 @pytest.mark.asyncio
 async def test_busy_session_keeps_the_completion_durably_until_its_turn(tmp_path, monkeypatch):
     """No ``session_busy`` refusal (so no delivery-failure budget): the completion is committed behind
-    the running input and becomes a note when it reaches the head, with notifications off too."""
+    the running input and runs when it reaches the head, as the turn a process exit resumes."""
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         target = _target(runner, authority, ref)
@@ -69,10 +69,9 @@ async def test_busy_session_keeps_the_completion_durably_until_its_turn(tmp_path
 
         seen = _turns(runner, authority, target)
         await authority._drain(ref)
-        assert seen == [('FIRST', 0)], 'the human input runs first and sees no note yet'
-        notes = _notes(authority, target)
-        assert len(notes) == 1 and all(f'RESULT_{name}' in str(notes[0]['content'])
-                                       for name in (_PROCESS[1], evt['session_id']))
+        assert seen[0][0] == 'FIRST', 'the human input runs first'
+        assert len(seen) == 2 and all(f'RESULT_{name}' in seen[1][0] for name in (_PROCESS[1], evt['session_id']))
+        assert _notes(authority, target) == []
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['cancelled', 'completed']
     finally:
         authority.db.close()
@@ -177,11 +176,12 @@ def _delegation_note(authority, target, name):
 @pytest.mark.asyncio
 async def test_lost_ack_restart_and_regrouped_batch_note_each_result_once(tmp_path, monkeypatch):
     """A is noted but its producer claim is never acknowledged; after a real owner restart A is offered
-    again grouped with a fresh B. A resolves to its committed admission, B is noted, each once."""
+    again grouped with a fresh B. A resolves to its committed admission, B is noted, each once. Manual
+    cron runs, so both stay notes with no viewer (a finished delegation resumes its parent instead)."""
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     route = authority.sessions[ref.session_id].route
     target = _target(runner, authority, ref)
-    first = dict(pending(route, 'deleg_alpha'), parent_session_id=target)
+    first = dict(pending(route, 'deleg_alpha'), parent_session_id=target, role='cron_run')
     lost = []
     monkeypatch.setattr(type(runner), '_settle_durable_claim', staticmethod(lambda *args: lost.append(args)))
     assert await runner._deliver_async_delegation_group([first]) is True
@@ -196,7 +196,7 @@ async def test_lost_ack_restart_and_regrouped_batch_note_each_result_once(tmp_pa
     from gateway.session_authority import SessionAuthority
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     try:
-        second = dict(pending(route, 'deleg_bravo'), parent_session_id=target)
+        second = dict(pending(route, 'deleg_bravo'), parent_session_id=target, role='cron_run')
         assert await runner._deliver_async_delegation_group([dict(first), second]) is True
         await authority._drain(ref)
         assert len(_delegation_note(authority, target, 'deleg_alpha')) == 1

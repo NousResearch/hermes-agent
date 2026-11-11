@@ -178,6 +178,19 @@ def delegation_wakes_parent(evt: dict) -> bool:
         for r in results)
 
 
+def completion_resumes_parent(evt: dict) -> bool:
+    """True for a result the parent asked to hear about and carries on from: an async delegation's
+    final result (not the early per-task notice, not a manual cron run's finished text) or a background
+    process's exit. Its unviewed local parent runs it as a turn, as a watched one does, so the work goes
+    on while no client is connected (a laptop asleep, a closed tab). ``delegation_wakes_parent`` is the
+    failed subset, whose wakes are bounded (gateway/session_completion_notes.py)."""
+    if evt.get("type") == "async_delegation":
+        if evt.get("task_failure_notice"):
+            return False
+        return bool(evt.get("_sibling_resumes")) or evt.get("role") != "cron_run"
+    return evt.get("type") == "completion"
+
+
 _CONTENT_POLICY_RECOVERY = (
     "This model's provider refused the task (content_policy_blocked). The refusal is deterministic for "
     "that model, so do not re-dispatch it unchanged: re-dispatch it with delegate_task on a different "

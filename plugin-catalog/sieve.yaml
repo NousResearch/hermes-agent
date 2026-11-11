@@ -1,6 +1,6 @@
 name: sieve
 repo: https://github.com/VGFreakXBL/hermes-sieve
-sha: e38381b9b6901e2b3a738a501239fdef206979be
+sha: 5da94237700515df123773dc542eb5cd7e394525
 subdir: ""
 title: SIEVE
 description: 'User-owned notification boundary for Hermes Agent. Event classes route through tiers T0 to T5 under quiet hours. Routine alerts hold for a digest. Urgent ones escalate, and the message names both the requested tier and the arm that actually ran.'
@@ -12,7 +12,7 @@ docs_url: https://github.com/VGFreakXBL/hermes-sieve
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/VGFreakXBL/hermes-sieve/e38381b9b6901e2b3a738a501239fdef206979be/docs/screenshots/sieve-matrix-pane.png
+  - https://raw.githubusercontent.com/VGFreakXBL/hermes-sieve/5da94237700515df123773dc542eb5cd7e394525/docs/screenshots/sieve-matrix-pane.png
 known_issues:
   - 'Context slots such as meeting or sleeping are set with /sieve context. This build does not read location or calendar.'
   - 'T4 is a 60-second timer. T5 is an alarm one minute out. They share one tone. T5 is top priority, not a siren.'

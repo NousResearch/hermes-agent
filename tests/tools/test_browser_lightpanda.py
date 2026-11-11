@@ -278,7 +278,7 @@ class TestLightpandaSessionLifecycle:
         }
         cleaned = []
 
-        def fake_cleanup(key):
+        def fake_cleanup(key, **_kw):
             cleaned.append(key)
             bs._active_sessions.pop(key, None)
 

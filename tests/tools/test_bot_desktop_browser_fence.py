@@ -52,7 +52,7 @@ def test_browser_exec_is_fenced_while_human_controls_shared_browser(monkeypatch)
     result = json.loads(raw)
     assert dispatched == [], "human holds the lease, yet browser_exec was dispatched"
     assert "WHAT-THE-HUMAN-TYPED" not in raw
-    assert result.get("code") == "human_has_control"
+    assert set(result) == {"success", "error", "code"} and result["code"] == "human_has_control"
 
 
 def test_browser_exec_result_crossing_a_takeover_is_discarded(monkeypatch):
@@ -66,7 +66,7 @@ def test_browser_exec_result_crossing_a_takeover_is_discarded(monkeypatch):
     assert isinstance(raw, str)
     result = json.loads(raw)
     assert "WHAT-THE-HUMAN-TYPED" not in raw
-    assert result.get("code") == "human_has_control"
+    assert set(result) == {"success", "error", "code"} and result["code"] == "human_has_control"
 
 
 def test_run_fenced_refuses_a_local_session_while_human_controls_shared_browser():

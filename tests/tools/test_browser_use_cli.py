@@ -514,11 +514,11 @@ class TestBackendCdpResolution:
         assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/legacy"
 
 
-class TestOwnTabPreamble:
-    """Named sessions on SHARED browsers (a /browser connect CDP override) get the own-tab preamble
-    prepended; private per-name browsers (packaged Chromium, provider) and unnamed sessions do not."""
+class TestModelCodeReachesTheCliUnchanged:
+    """The model's code reaches the CLI on stdin exactly as written on every route; the private-browser
+    sentinel never reaches the subprocess."""
 
-    def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False, shared_cdp=""):
+    def _run(self, tmp_path, monkeypatch, *, session="", provider=False, shared_cdp=""):
 
         monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: shared_cdp)
         if provider:
@@ -534,29 +534,16 @@ class TestOwnTabPreamble:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         return json.loads(bu_cli.browser_exec("print('payload')", session=session))
 
-    def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
-        result = self._run(tmp_path, monkeypatch, session="r7k2", shared_cdp="http://127.0.0.1:9222")
+    @pytest.mark.parametrize("session, provider, shared_cdp", [
+        ("r7k2", False, "http://127.0.0.1:9222"),  # named session on a shared browser
+        ("r7k2", False, ""),  # named session on its own packaged Chromium
+        ("", False, ""),  # unnamed session
+        ("r7k2", True, ""),  # named session on a private provider browser
+    ])
+    def test_model_code_is_sent_exactly_as_written(self, tmp_path, monkeypatch, session, provider, shared_cdp):
+        result = self._run(tmp_path, monkeypatch, session=session, provider=provider, shared_cdp=shared_cdp)
         assert result["success"] is True
-        assert "_hermes_ensure_own_tab" in result["output"]
-        # model code still present, after the preamble
-        assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
-
-    def test_named_packaged_chromium_skips_preamble(self, tmp_path, monkeypatch):
-        """Each named session launches its own packaged Chromium — nothing to share a tab with."""
-        result = self._run(tmp_path, monkeypatch, session="r7k2")
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
-
-    def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
-        result = self._run(tmp_path, monkeypatch, session="")
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
-
-    def test_named_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
-        """Per-name provider browsers are private — preamble would leak a tab."""
-        result = self._run(tmp_path, monkeypatch, session="r7k2", provider=True)
-        assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
+        assert result["output"] == "print('payload')"
 
     def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
 
@@ -570,13 +557,6 @@ class TestOwnTabPreamble:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert "sentinel:unset" in result["output"]
-
-    def test_preamble_is_valid_python(self):
-        import ast
-
-        ast.parse(bu_cli._OWN_TAB_PREAMBLE)
-        # and composes with model code
-        ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
 
 
 class TestProviderPickerIntegration:
@@ -905,11 +885,9 @@ class TestLightpandaBackendResolution:
         assert seen == ["t1"]  # provider path, same cache key
 
 
-class TestLightpandaPreamble:
-    def test_lightpanda_session_skips_own_tab_preamble(self, tmp_path, monkeypatch):
-        """A Lightpanda process is private to its session: no sibling daemon
-        to collide with, and Target.createTarget would fail anyway
-        (lightpanda-io/browser#1962)."""
+class TestLightpandaExec:
+    def test_lightpanda_session_gets_the_models_code_unchanged(self, tmp_path, monkeypatch):
+        """A Lightpanda process is private to its session: the code goes through unchanged."""
 
         monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: None)
@@ -921,8 +899,7 @@ class TestLightpandaPreamble:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print('payload')", session="r7k2"))
         assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
-        assert "print('payload')" in result["output"]
+        assert result["output"] == "print('payload')"
 
 
 class TestLightpandaHeader:

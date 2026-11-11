@@ -145,10 +145,10 @@ class TestCleanupHybridSessions:
         """Given a bare task_id with both sessions alive, both get cleaned."""
         reaped = []
 
-        def _fake_cleanup_one(key):
+        def _fake_cleanup_one(key, **_kw):
             reaped.append(key)
 
-        monkeypatch.setattr(lifecycle, "cleanup_single_session", _fake_cleanup_one)
+        monkeypatch.setattr(lifecycle, "_release_session", _fake_cleanup_one)
         monkeypatch.setattr(
             bs,
             "_active_sessions",
@@ -167,10 +167,10 @@ class TestCleanupHybridSessions:
         """Calling cleanup with a ``::local`` key reaps only the sidecar."""
         reaped = []
 
-        def _fake_cleanup_one(key):
+        def _fake_cleanup_one(key, **_kw):
             reaped.append(key)
 
-        monkeypatch.setattr(lifecycle, "cleanup_single_session", _fake_cleanup_one)
+        monkeypatch.setattr(lifecycle, "_release_session", _fake_cleanup_one)
         monkeypatch.setattr(
             bs,
             "_active_sessions",

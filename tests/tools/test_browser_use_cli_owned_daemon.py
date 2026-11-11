@@ -122,7 +122,7 @@ def test_stopping_the_daemons_releases_their_groups(monkeypatch, registered):
     monkeypatch.setattr(browser_use_cli, "_driven_daemons", {daemon: "home"})
     monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
     monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
-    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group", lambda *a: None)
+    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group", lambda cmd, *a: subprocess.CompletedProcess(cmd, 0))
 
     browser_use_cli.stop_harness_daemons()
 

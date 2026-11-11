@@ -170,6 +170,21 @@ def _browser_disconnect(rid) -> dict:
     return _ok(rid, {"connected": False})
 
 
+def _cleanup_browsers_before_exit() -> None:
+    """Browser teardown at the standalone stdio entry's exit (dev harnesses) and the standalone dashboard, before
+    interpreter shutdown, as the gateway and classic CLI do:
+    from ``atexit`` asyncio cannot resolve a hostname CDP endpoint any more, so the agent's tabs there would
+    stay open. Later exit passes find no records left and dial nothing. A process that never loaded
+    ``tools.browser_session`` has no browser to clean up and skips the imports."""
+    import sys
+    from contextlib import suppress
+    if "tools.browser_session" not in sys.modules:
+        return
+    with suppress(Exception):
+        from tools.browser_session_lifecycle import cleanup_all_browsers
+        cleanup_all_browsers()
+
+
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

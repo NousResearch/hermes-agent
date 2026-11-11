@@ -3,6 +3,7 @@ interpolation, hidden-whitespace and suspicious-entry filtering, the filtered
 subprocess env, command resolution, the cached-npx binary shortcut and the shared stderr log."""
 
 import codecs
+import glob
 import hashlib
 import json
 import logging
@@ -171,31 +172,26 @@ _latest_misses_warned: set[str] = set()
 
 
 def _version_sort_key(path: str) -> tuple:
-    """``sort -V``-style key: digit runs compare numerically, text runs lexically, so
-    ``15.13.0 < 15.15.2 < 15.100.0`` and ``v2 < v10`` order correctly for version-keyed
-    install directories. Non-digit runs are tagged (1, str) and digit runs (0, int) so
-    mixed parts never compare int-to-str."""
-    return tuple((0, int(part)) if part.isdigit() else (1, part)
-                 for part in re.split(r"(\d+)", path))
+    """Version key: the digit runs of *path* compared numerically, so version-keyed
+    install directories order with ``sort -V`` semantics (``15.13.0 < 15.15.2 < 15.100.0``,
+    ``v2 < v10``). Paths whose digit runs are identical (or absent — non-versioned names)
+    share a key; those are decided by mtime instead, per the #153351 spec."""
+    return tuple(int(part) for part in re.findall(r"\d+", path))
 
 
 def _resolve_latest_pattern(pattern: str) -> Optional[str]:
-    """Newest existing path matching *pattern*, or None. Version-numeric order wins; mtime
-    breaks ties (paths equal under the version key) and covers non-versioned caches."""
-    import glob as _glob
+    """Newest existing path matching *pattern*, or None (#153351 semantics): the highest
+    version wins when the candidates' digit runs differ (``sort -V`` order, mtime as the
+    tie-break within one version); otherwise — non-versioned cache names — the newest
+    mtime wins outright."""
     expanded = os.path.expanduser(pattern.strip())
-    matches = [m for m in _glob.glob(expanded) if os.path.exists(m)]
+    matches = [(m, os.stat(m).st_mtime) for m in glob.glob(expanded) if os.path.exists(m)]
     if not matches:
         return None
-    if len(matches) == 1:
-        return matches[0]
-    newest_mtime = max(matches, key=lambda m: os.stat(m).st_mtime)
-    by_version = max(matches, key=lambda m: (_version_sort_key(m), os.stat(m).st_mtime))
-    # A version key that actually distinguishes the paths beats raw mtime: an installer
-    # touching an old directory must not outrank a genuinely higher version number.
-    if len({(_version_sort_key(m)) for m in matches}) > 1:
-        return by_version
-    return newest_mtime
+    # Digit runs decide first, so an installer touching an OLD directory cannot outrank a
+    # genuinely higher version; mtime only ranks within one version and decides outright
+    # when the candidate names carry no distinguishing digits at all.
+    return max(matches, key=lambda m: (_version_sort_key(m[0]), m[1]))[0]
 
 
 

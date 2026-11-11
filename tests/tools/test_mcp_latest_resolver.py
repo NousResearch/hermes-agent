@@ -47,16 +47,28 @@ class TestNewestMatchWins:
         assert _resolve_latest_pattern(pattern) == str(cache / "2.10.0" / "scripts" / "mcp-server.cjs")
 
     def test_mtime_fallback_for_non_versioned_paths(self, tmp_path):
-        cache = _plugin_cache(tmp_path, "snapshot-a", "snapshot-b")
-        newer = cache / "snapshot-b" / "scripts" / "mcp-server.cjs"
+        """No digits anywhere in the candidate names -> newest mtime wins outright,
+        even when the lexically-greater name is the OLDER one (the reviewer's
+        counterexample: 'zzz-old' must NOT beat 'aaa-new' just by sorting later)."""
+        cache = _plugin_cache(tmp_path, "aaa-new", "zzz-old")
+        newer = cache / "aaa-new" / "scripts" / "mcp-server.cjs"
         os.utime(newer, (time.time(), time.time() + 500))
         pattern = str(cache / "*" / "scripts" / "mcp-server.cjs")
         assert _resolve_latest_pattern(pattern) == str(newer)
 
-    def test_version_sort_key_matches_sort_v(self):
-        assert _version_sort_key("a/15.15.2/x") > _version_sort_key("a/15.13.0/x")
-        assert _version_sort_key("a/2.10.0/x") > _version_sort_key("a/2.9.9/x")
+    def test_versioned_beats_non_versioned_regardless_of_mtime(self, tmp_path):
+        """Digit runs decide first: a version-bearing directory outranks a lexically
+        later, non-versioned one even when the latter is newer."""
+        cache = _plugin_cache(tmp_path, "15.13.0", "release")
+        os.utime(cache / "release", (time.time(), time.time() + 10_000))
+        pattern = str(cache / "*" / "scripts" / "mcp-server.cjs")
+        assert _resolve_latest_pattern(pattern) == str(cache / "15.13.0" / "scripts" / "mcp-server.cjs")
+
+    def test_version_sort_key_is_digit_runs(self):
+        assert _version_sort_key("a/15.15.2/x") == (15, 15, 2)
         assert _version_sort_key("a/v10/x") > _version_sort_key("a/v2/x")
+        assert _version_sort_key("a/2.10.0/x") > _version_sort_key("a/2.9.9/x")
+        assert _version_sort_key("a/snapshot-b/x") == ()  # no digits: mtime territory
 
 
 class TestRenderTimeResolution:
@@ -101,7 +113,7 @@ class TestNoMatchFailsLoudly:
 
         missing = str(tmp_path / "never" / "*" / "server.cjs")
         template = f"${{latest:{missing}}}"
-        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool_config"):
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
             _interpolate_env_vars(template)
             _interpolate_env_vars(template)  # config loads repeat per discovery pass
         warnings = [r for r in caplog.records if "matched no existing path" in r.message]

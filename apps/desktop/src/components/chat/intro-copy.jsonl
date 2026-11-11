@@ -68,8 +68,8 @@
 {"personality":"hype","headline":"New session, infinite W's","body":"Bring the gnarliest bug you've got. I'll read, patch, test, commit like my life depends on it. LET'S GO."}
 {"personality":"hype","headline":"ABSOLUTELY DIALED IN","body":"Describe the task. I'll blitz through files, crush failing tests, and leave a commit that SLAPS. Go go go."}
 {"personality":"hype","headline":"Ready. So ready. Too ready.","body":"Tiny typo or huge refactor - doesn't matter. I'm shipping clean code today. Name the task and let's WORK."}
-{"personality":"none","headline":"Hermes Agent is ready.","body":"Ask a question, paste an error, or point me at a repo. I can read code, run tools, and help you ship."}
-{"personality":"none","headline":"What are we building today?","body":"Describe the task in your own words. I'll pick the right tools, explain my plan, and check in before risky steps."}
-{"personality":"none","headline":"Start anywhere.","body":"Drop a file path, a traceback, or a rough idea. I'll investigate, suggest next steps, and keep things reversible."}
-{"personality":"none","headline":"Your workspace, one prompt away.","body":"Search the repo, edit files, run tests, open PRs. Tell me the goal and I'll handle the mechanical parts."}
-{"personality":"none","headline":"Ready when you are.","body":"Type a task, question, or snippet. I remember the session, cite my sources, and stop to ask when I'm unsure."}
+{"personality":"none","headline":"Unitalk est prêt.","body":"Confiez une mission à votre Collaborateur IA, posez une question ou partagez un document. Je m'adapte aux méthodes de votre entreprise."}
+{"personality":"none","headline":"Sur quoi travaillons-nous ?","body":"Décrivez la tâche avec vos propres mots. Je choisis les bons outils, j'explique mon plan et je vérifie avant les étapes risquées."}
+{"personality":"none","headline":"Commencez où vous voulez.","body":"Déposez un chemin de fichier, une trace d'erreur ou une idée approximative. J'enquête, je suggère les prochaines étapes et je garde tout réversible."}
+{"personality":"none","headline":"Votre espace de travail, à une invite près.","body":"Explorez le dépôt, modifiez des fichiers, lancez des tests, ouvrez des PR. Dites-moi l'objectif et je m'occupe des détails techniques."}
+{"personality":"none","headline":"Prêt quand vous l'êtes.","body":"Tapez une tâche, une question ou un extrait. Je me souviens de la session, je cite mes sources et je demande confirmation quand je ne suis pas sûr."}

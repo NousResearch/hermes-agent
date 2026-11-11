@@ -3,8 +3,8 @@ import { useState } from 'react'
 import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
+import iconUrl from '../../assets/icon.png'
 import introCopyJsonl from './intro-copy.jsonl?raw'
-import { Wordmark } from './wordmark'
 
 type IntroCopy = {
   headline: string
@@ -146,8 +146,6 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
   return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
 }
 
-const WORDMARK = 'UNITALK'
-
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
 
@@ -172,13 +170,33 @@ export function Intro({ personality, seed }: IntroProps) {
 
   return (
     <div
-      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-0.5 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
+      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-6 py-10 text-center sm:px-10 lg:px-14"
       data-slot="aui_intro"
+      style={{
+        background: '#F3EFE6',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif'
+      }}
     >
-      <div className="w-full min-w-0">
-        <Wordmark className="mb-1" text={WORDMARK} />
+      <div className="w-full min-w-0 max-w-[42rem]">
+        <img
+          alt="Unitalk"
+          className="mx-auto mb-5"
+          src={iconUrl}
+          style={{ width: 72, height: 72, objectFit: 'contain' }}
+        />
 
-        <p className="m-0 text-center leading-normal tracking-tight">{body}</p>
+        <p
+          className="m-0 text-center leading-relaxed tracking-tight"
+          style={{
+            color: '#1C1A17',
+            fontSize: 'clamp(1.05rem, 1.8vw, 1.25rem)',
+            fontWeight: 650,
+            letterSpacing: '-0.035em',
+            lineHeight: 1.5
+          }}
+        >
+          {body}
+        </p>
       </div>
     </div>
   )

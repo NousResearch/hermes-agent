@@ -867,7 +867,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
-            return pending_setup_busy_notice(self, _quick_key)
+            return pending_setup_busy_notice(self, _quick_key, source)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
@@ -1355,6 +1355,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # A failed admit stays the authority's answer (refusal notice or turn error), never a
         # pending legacy turn: that would run unadmitted, outside the FIFO's order.
         note_busy_admitting(event)
+        notice = pending_setup_busy_notice(self, _quick_key, source) if busy else None
+        if notice is not None:  # sent now: the admission below waits until this follow-up has run
+            await self._send_busy_ack_reply(event, self._delivery_adapter_for(source), notice)
         return True, await admit_message(authority, event)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:

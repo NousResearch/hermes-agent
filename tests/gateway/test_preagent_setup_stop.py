@@ -6,6 +6,7 @@ Real ``GatewayRunner`` + real ``BasePlatformAdapter`` subclass; only the setup s
 replaced, since any unbounded await there is the bug's trigger.
 """
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,7 +38,7 @@ class _Adapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "private"}
 
 
-def _wedged_turn(monkeypatch, timeout: str):
+def _wedged_turn(monkeypatch, timeout: str, step: str = "_hmwa_resolve_session"):
     monkeypatch.setenv("HERMES_AGENT_TIMEOUT", timeout)
     adapter = _Adapter()
     runner = GatewayRunner(config=GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="x")}))
@@ -51,7 +52,18 @@ def _wedged_turn(monkeypatch, timeout: str):
         entered.set()
         await asyncio.Event().wait()  # an await nothing ever completes
 
-    runner._hmwa_resolve_session = _hang
+    if step == "_hmwa_resolve_session":
+        runner._hmwa_resolve_session = _hang
+    else:  # setup runs up to a step just before the agent; only that step hangs
+        async def _resolved(event, source):
+            return source, SimpleNamespace(session_id="s1", session_key=key), key
+
+        async def _prepared(*_args, **_kwargs):
+            return runner._PreparedTurn(
+                history=[], context_prompt="", message_text="hello", persist_user_message=None,
+                persist_user_timestamp=None, persist_user_display_kind=None), []
+        runner._hmwa_resolve_session, runner._hmwa_prepare_turn = _resolved, _prepared
+        setattr(runner, step, _hang)
     state = runner._session_state(key)
     state.turn.agent = _AGENT_PENDING_SENTINEL  # the claim _handle_message makes before setup
     generation = runner._begin_session_run_generation(key)
@@ -60,8 +72,9 @@ def _wedged_turn(monkeypatch, timeout: str):
 
 
 @pytest.mark.asyncio
-async def test_stop_ends_a_turn_wedged_in_setup(monkeypatch):
-    runner, source, key, task, entered = _wedged_turn(monkeypatch, "600")  # deadline far away
+@pytest.mark.parametrize("step", ["_hmwa_resolve_session", "_persist_prompt_pins"])
+async def test_stop_ends_a_turn_wedged_in_setup(monkeypatch, step):
+    runner, source, key, task, entered = _wedged_turn(monkeypatch, "600", step)  # deadline far away
     await asyncio.wait_for(entered.wait(), 5)
 
     await runner._interrupt_and_clear_session(key, source, interrupt_reason="stop", invalidation_reason="stop_command")

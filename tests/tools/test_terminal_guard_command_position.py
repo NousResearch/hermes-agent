@@ -143,6 +143,7 @@ TRUE_POSITIVES = [
     "find . -name '*.py' -exec gunicorn app:app +",
     "tail -fn 100 logs/uvicorn.log",
     "tail --follow=name uvicorn.log",
+    "tail --fol uvicorn.log",
     "git bisect run npm run dev",
     "fd -e ts -x nodemon",
     "command uvicorn app:app",

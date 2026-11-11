@@ -192,3 +192,28 @@ class TestNetworkPathUserinfo:
                                       "//user:${SMB_PASSWORD}@host/share", "//user:%SMB_PASSWORD%@host/share"])
     def test_comments_relative_urls_and_placeholders_unchanged(self, text):
         _assert_unchanged(text)
+
+
+class TestGoogleOAuthCredentials:
+    """#64351: a pasted ``client_secret.json`` / OAuth access token logged as a chat preview leaked."""
+
+    SECRET = "GOCSPX-" + "k1fQ7zP2mX9vLk4nRt8wYb1cDf6"
+    ACCESS = "ya29." + "a0AfH6SMBq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"
+    SA_ACCESS = "ya29.c." + "c0ASRK0GaPq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"  # service account / GCE metadata
+    STS_ACCESS = "ya29.d." + "c0AZ4bNpq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0"  # workload identity federation (STS)
+
+    @pytest.mark.parametrize("template", [
+        "msg='client_secret\":\"{}\",\"redirect_uris\":[\"http://localhost\"]}}}}'",  # cut mid-JSON
+        "here is my secret {} thanks", "[\"{}\"]", "Authorization: {}",
+    ])
+    def test_masked_without_a_secret_key_name(self, template):
+        for secret in (self.SECRET, self.ACCESS, self.SA_ACCESS, self.STS_ACCESS):
+            _assert_masked(template.format(secret), secret)
+
+    def test_client_secret_fragment_cut_by_the_preview_is_masked(self):
+        fragment = self.SECRET[:17]  # 80-char preview can end mid-body
+        _assert_masked("msg='client_secret\":\"" + fragment, fragment)
+
+    @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
+    def test_short_or_embedded_lookalikes_kept(self, text):
+        _assert_unchanged(text)

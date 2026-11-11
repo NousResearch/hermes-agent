@@ -81,11 +81,6 @@ see the underlying tool, not the bridge. A deferred tool the model calls by
 its real name is rewritten into a `tool_call` first, so it runs through the
 same checks instead of failing as an unknown tool.
 
-A direct call to a deferred tool by its bare name is still rejected, but the
-error explains how to describe and invoke it through the bridge instead of
-saying the tool does not exist. Disabled tools are not advertised as
-available. The system prompt and the direct tool array are unchanged.
-
 ## When does it activate?
 
 Tool Search uses **tiered disclosure**: the presence of *any* deferred

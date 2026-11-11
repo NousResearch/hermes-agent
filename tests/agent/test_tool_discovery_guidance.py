@@ -1,4 +1,4 @@
-"""Deferred tools stay reachable after a direct call, without changing the prompt or schemas."""
+"""Successful terminal background starts and the system prompt stay identical to main in every Tool Search mode."""
 
 import copy
 import json
@@ -6,7 +6,7 @@ import json
 import pytest
 from openai.types.chat import ChatCompletion
 
-from agent.coding_context import _NO_TODO_SENTENCE, _TODO_SENTENCE
+from agent.coding_context import _TODO_SENTENCE
 
 
 def _agent(tmp_path, monkeypatch, config="", disabled=None):
@@ -53,43 +53,6 @@ def _run(agent, monkeypatch, responses):
     monkeypatch.setattr(agent, "_interruptible_streaming_api_call", reply)
     result = agent.run_conversation("Track the work and check background commands.")
     return result, requests
-
-
-@pytest.mark.parametrize("mixed", [False, True])
-def test_deferred_call_recovers_through_bridge_without_changing_prompt(tmp_path, monkeypatch, mixed):
-    agent = _agent(tmp_path, monkeypatch)
-    todos = [{"id": "verify", "content": "Verify the change", "status": "in_progress"}]
-    direct = [("direct", "todo_list", {"todos": todos})]
-    if mixed:
-        direct.append(("search", "tool_search", {"queries": ["track task progress"]}))
-    result, requests = _run(agent, monkeypatch, [
-        _response(*direct),
-        _response(("describe", "tool_describe", {"names": ["todo_list"]})),
-        _response(("invoke", "tool_call", {"calls": [{"name": "todo_list", "arguments": {"todos": todos}}]})),
-        _response(),
-    ])
-    assert result["completed"]
-    messages = result["messages"]
-    error = next(m["content"] for m in messages if m.get("tool_call_id") == "direct")
-    assert "does not exist" not in error
-    assert "tool_describe" in error and "tool_call" in error
-    assert agent._todo_store.read() == todos
-    assert {"todo_list", "process_manage"}.isdisjoint(agent.valid_tool_names)
-    assert "tool_search" in agent.valid_tool_names
-    prompt = agent._cached_system_prompt
-    # Recovery lives in the tool result only: no discovery block, no rewritten todo sentence.
-    assert "# Tool discovery" not in prompt
-    assert "tool_describe(names=" not in prompt
-    assert _NO_TODO_SENTENCE in prompt and _TODO_SENTENCE not in prompt
-    # Every request keeps the same system prompt and schema; recovery is a tool result.
-    assert len(requests) > 1
-    for request in requests[1:]:
-        assert request["tools"] == requests[0]["tools"]
-        assert [m for m in request["messages"] if m["role"] == "system"] == [
-            m for m in requests[0]["messages"] if m["role"] == "system"
-        ]
-    call_ids = [tc["id"] for m in messages for tc in m.get("tool_calls", [])]
-    assert sorted(call_ids) == sorted(m["tool_call_id"] for m in messages if m["role"] == "tool")
 
 
 # main's note text, verbatim: successful background starts must stay byte-identical in every mode.
@@ -147,7 +110,6 @@ def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode, c
         assert "todo_list" not in prompt
         error = next(m["content"] for m in result["messages"] if m.get("tool_call_id") == "missing")
         assert "does not exist" in error
-        assert 'tool_describe(names=["todo_list"])' not in error
     else:
         # Same todo sentence main picks from the direct tool list (deferred = not direct).
         assert (_TODO_SENTENCE in prompt) == (mode == "eager")

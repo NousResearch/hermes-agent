@@ -15,6 +15,7 @@ async def test_exhausted_request_is_not_rerun_behind_rehomed_follow_ups(native_f
     native = native_fifo
     runner, authority, adapter = native.runner, native.authority, native.adapter
     admitted = [await _admit(native, text) for text in ("A", "B")]
+    authority.native_waiters.add(admitted[0][1].admission_id)  # an adapter task awaits A's reply
     executed, queued_after_reset = [], []
 
     async def turn(event, source, session_key, run_generation):
@@ -48,6 +49,7 @@ async def test_compacted_tool_evidence_blocks_exhaustion_replay(native_fifo, mon
     native = native_fifo
     runner, authority, adapter = native.runner, native.authority, native.adapter
     _event, admission = await _admit(native, "book the appointment")
+    authority.native_waiters.add(admission.admission_id)  # an adapter task awaits the reply
     queued_after_reset = []
 
     async def turn(event, source, session_key, run_generation):
@@ -80,6 +82,7 @@ async def test_compacted_assistant_tool_call_blocks_exhaustion_replay(native_fif
     native = native_fifo
     runner, authority, adapter = native.runner, native.authority, native.adapter
     _event, admission = await _admit(native, "book the appointment")
+    authority.native_waiters.add(admission.admission_id)  # an adapter task awaits the reply
     queued_after_reset = []
 
     async def turn(event, source, session_key, run_generation):
@@ -101,3 +104,30 @@ async def test_compacted_assistant_tool_call_blocks_exhaustion_replay(native_fif
     monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
     await authority._drain(admission.ref)
     assert queued_after_reset == [None], "a finished calendar action must not be replayed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live_waiter", [True, False], ids=["adapter-task-awaits", "relay-or-recovered"])
+async def test_exhausted_request_is_parked_only_where_an_adapter_task_drains_it(native_fifo, monkeypatch, live_waiter):
+    """The retry goes in the adapter's pending slot, which only the adapter task awaiting the native
+    waiter drains after the turn. A relay or restart-recovered row has no such task: a retry parked
+    there would sit until some unrelated later turn, so it keeps the resend notice instead."""
+    native = native_fifo
+    runner, authority, adapter = native.runner, native.authority, native.adapter
+    _event, admission = await _admit(native, "plan my week")
+    if live_waiter:
+        authority.native_waiters.add(admission.admission_id)
+    queued_after_reset = []
+
+    async def turn(event, source, session_key, run_generation):
+        entry = runner.session_store.lookup_by_session_key(session_key)
+        result = {"failed": True, "compression_exhausted": True, "messages": []}
+        execution_result.get()["result"] = result
+        await runner._hmwa_compression_exhaustion_reset(result, "copy", entry, session_key, source, event=event)
+        queued_after_reset.append(adapter._pending_messages.get(session_key))
+        return "copy"
+
+    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
+    await authority._drain(admission.ref)
+    parked = queued_after_reset[0]
+    assert (parked is not None and parked.text == "plan my week") is live_waiter, parked

@@ -30,6 +30,7 @@ host ``_IS_WINDOWS`` is already False, so no patching is needed at all.
 """
 
 import os
+import time
 from unittest.mock import patch
 
 import pytest
@@ -343,3 +344,76 @@ def test_git_bash_dirs_stay_first_when_hermes_tools_move_behind_the_users(monkey
     monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [bash_dir])
     path = os.pathsep.join([bash_dir, node_dir, system32])
     assert local_mod._user_tools_first(path).split(os.pathsep) == [bash_dir, system32, node_dir]
+
+
+# ---------------------------------------------------------------------------
+# _run_bash script transport — #152919
+#
+# MSYS rewrites the argv it is handed before bash ever reads it, halving every
+# backslash: an inline ``-c`` command carrying ``\\2026`` reached bash as
+# ``\2026`` and printf emitted byte 0x82 — wrong output, exit code 0. The command
+# has to travel as a file, and the exit/stderr/stdin contract must not change
+# with it.
+# ---------------------------------------------------------------------------
+
+class TestRunBashScriptTransport:
+    @pytest.mark.platforms("windows")
+    def test_double_backslashes_reach_bash_unchanged(self, tmp_path):
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        result = env.execute(r"""printf '%s' 'A\\B\\C\\2026'""")
+        assert result["returncode"] == 0
+        assert result["output"] == "A\\\\B\\\\C\\\\2026"
+
+    @pytest.mark.platforms("windows")
+    def test_exit_code_and_stderr_survive_the_file_hop(self, tmp_path):
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        result = env.execute("printf 'boom' >&2; exit 7")
+        assert result["returncode"] == 7
+        assert "boom" in result["output"]
+
+    @pytest.mark.platforms("windows")
+    def test_stdin_data_still_reaches_the_command(self, tmp_path):
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        result = env.execute("cat", stdin_data="payload\n")
+        assert result["output"].strip() == "payload"
+
+    @pytest.mark.platforms("windows")
+    def test_script_file_is_removed_after_the_command_exits(self, tmp_path):
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        env.execute(r"""printf '%s' "$0" > script_path.txt""")
+        script_path = (tmp_path / "script_path.txt").read_text(encoding="utf-8").strip()
+        assert script_path.endswith(".sh"), script_path
+        deadline = time.monotonic() + 5
+        while os.path.exists(script_path) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not os.path.exists(script_path), script_path
+
+    @pytest.mark.platforms("windows")
+    def test_bash_receives_a_script_path_not_an_inline_c(self, tmp_path, monkeypatch):
+        seen = []
+        real_popen = local_mod.subprocess.Popen
+
+        def spy(args, *rest, **kwargs):
+            seen.append(list(args))
+            return real_popen(args, *rest, **kwargs)
+
+        monkeypatch.setattr(local_mod.subprocess, "Popen", spy)
+        LocalEnvironment(cwd=str(tmp_path), timeout=10).execute("true")
+        assert seen, "no command was spawned"
+        assert "-c" not in seen[-1]
+        assert seen[-1][-1].endswith(".sh")
+
+    @pytest.mark.platforms("linux")
+    def test_posix_keeps_the_inline_c_form(self, tmp_path, monkeypatch):
+        seen = []
+        real_popen = local_mod.subprocess.Popen
+
+        def spy(args, *rest, **kwargs):
+            seen.append(list(args))
+            return real_popen(args, *rest, **kwargs)
+
+        monkeypatch.setattr(local_mod.subprocess, "Popen", spy)
+        LocalEnvironment(cwd=str(tmp_path), timeout=10).execute("true")
+        assert seen, "no command was spawned"
+        assert "-c" in seen[-1]
+        assert not seen[-1][-1].endswith(".sh")

@@ -1047,6 +1047,24 @@ def _kill_process_windows(proc) -> None:
         proc.wait(timeout=2.0)
 
 
+def _discard_when_exited(proc: subprocess.Popen, script_path: str) -> None:
+    """Remove ``script_path`` once ``proc`` is gone.
+
+    Windows refuses to unlink a file another process still holds open, and bash
+    reads its script lazily, so the delete has to follow the exit instead of the
+    spawn. ``poll()`` — not ``wait()`` — because the caller owns the real wait.
+    """
+    def _reap() -> None:
+        while proc.poll() is None:
+            time.sleep(0.05)
+        with contextlib.suppress(OSError):
+            os.unlink(script_path)
+
+    from agent.memory_provider import spawn_context_thread
+
+    spawn_context_thread(_reap, name="hermes-run-script-reaper").start()
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host: every execute() spawns a fresh bash;
     the session snapshot preserves exported env vars across calls (unless
@@ -1156,17 +1174,33 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        # Windows: the MSYS runtime re-parses the argv it is handed and halves every
+        # backslash, so an inline ``-c`` script reaches bash already mangled — an
+        # argument like ``\\2026`` arrives as ``\2026`` and printf emits byte 0x82
+        # (#152919). A script file never crosses that boundary, and stdin stays free
+        # for ``stdin_data``; POSIX keeps the inline form untouched.
+        script_path = self._write_run_script(cmd_string) if _IS_WINDOWS else None
+        args = ([bash, *(["-l"] if login else []), script_path] if script_path is not None
+                else [bash, *(["-l"] if login else []), "-c", cmd_string])
         self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
         # its group to the owner-death supervisor and _wait_for_process releases it.
-        proc = subprocess.Popen(
-            args, text=True, env=run_env, encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            # detached-spawn: ok — owned via own_process_groups right below
-            start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        try:
+            proc = subprocess.Popen(
+                args, text=True, env=run_env, encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                # detached-spawn: ok — owned via own_process_groups right below
+                start_new_session=True, cwd=self.cwd,
+                **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        except BaseException:
+            # A spawn that never started must not leave its script behind.
+            if script_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(script_path)
+            raise
+        if script_path is not None:
+            _discard_when_exited(proc, script_path)
         if not _IS_WINDOWS:
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
@@ -1183,6 +1217,29 @@ class LocalEnvironment(BaseEnvironment):
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
+
+    def _write_run_script(self, cmd_string: str) -> str:
+        """Write ``cmd_string`` to a UTF-8/LF script file and return its bash-safe path.
+
+        Only used on Windows, where the MSYS runtime re-parses the argv handed to
+        ``bash.exe`` and halves every backslash inside it (#152919). A file bypasses
+        that layer entirely: bash reads exactly the bytes we wrote.
+        """
+        script_dir = Path(self.get_temp_dir())
+        script_dir.mkdir(parents=True, exist_ok=True)
+        fd, path = tempfile.mkstemp(prefix="cmd-", suffix=".sh", dir=str(script_dir))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(cmd_string)
+                if not cmd_string.endswith("\n"):
+                    handle.write("\n")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            raise
+        # Git Bash reads both forms, but forward slashes survive any later MSYS
+        # path translation without escaping.
+        return path.replace("\\", "/")
 
     def _wait_for_process(self, proc, *args, **kwargs) -> dict:
         """Base wait, then hand the command's group back from the owner-death supervisor: once the

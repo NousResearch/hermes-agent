@@ -44,7 +44,7 @@ def test_fallback_switch_benches_primary_until_valid_future_provider_reset(reset
     with (
         patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
         patch("agent.fallback_cooldown.time.time", return_value=1_700_000_000),
-        patch("agent.fallback_cooldown.time.monotonic", return_value=500),
+        patch("hermes_time.deadline_clock", return_value=500),
     ):
         assert agent._try_activate_fallback(reason=FailoverReason.rate_limit, reset_at=reset_at) is True
 

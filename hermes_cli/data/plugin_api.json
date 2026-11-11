@@ -50,6 +50,7 @@
         "hermes_constants",
         "hermes_platform",
         "hermes_state",
+        "hermes_time:deadline_clock",
         "plugins.plugin_storage",
         "plugins.plugin_utils",
         "pm",

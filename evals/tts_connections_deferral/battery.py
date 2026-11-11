@@ -14,6 +14,7 @@ stays in the relay. ``--dry`` runs the no-model proof cell for each arm.
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,7 +43,9 @@ def _sandbox_cmd(cell_dir, worker_args):
     hosts.write_text(f"127.0.0.1 localhost {INFER_HOST}\n", encoding="utf-8")
     cmd = ["bwrap", "--die-with-parent", "--unshare-net", "--unshare-pid", "--unshare-ipc", "--clearenv",
            "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
-    for masked in ("/home", "/tmp", "/run", "/mnt", "/media", "/srv", "/var/tmp"):
+    # The real Hermes home is hidden wherever it lives (HERMES_HOME may sit outside /home).
+    real_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve()
+    for masked in ("/home", "/tmp", "/run", "/mnt", "/media", "/srv", "/var/tmp", str(real_home)):
         cmd += ["--tmpfs", masked]
     cmd += ["--ro-bind", str(base_py), str(base_py), "--ro-bind", str(venv), str(venv), "--ro-bind", tree, "/home/tree",
             "--bind", str(cell_dir), "/home/cell", "--ro-bind", str(hosts), "/etc/hosts",
@@ -50,11 +53,11 @@ def _sandbox_cmd(cell_dir, worker_args):
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/cell", "LANG": "C.UTF-8", "TMPDIR": "/tmp",
            "PYTHONDONTWRITEBYTECODE": "1", "TCD_TREE": "/home/tree", "TCD_CELL_ROOT": "/home/cell",
            "TCD_INFERENCE_URL": f"http://{INFER_HOST}:8080/v1", "TCD_INFERENCE_KEY": "held-by-the-relay",
-           "TCD_REAL_HERMES_HOME": str(Path.home() / ".hermes")}
+           "TCD_REAL_HERMES_HOME": str(real_home)}
     for k, v in env.items():
         cmd += ["--setenv", k, v]
     script = ("socat TCP-LISTEN:8080,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/relay.sock & sleep 0.3; "
-              f'exec {py} /home/tree/evals/tts_connections_deferral/worker.py "$@"')
+              f'exec {shlex.quote(str(py))} /home/tree/evals/tts_connections_deferral/worker.py "$@"')
     return cmd + ["/bin/sh", "-c", script, "sh", *worker_args, "/home/cell/out.json"]
 
 

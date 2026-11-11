@@ -1,6 +1,6 @@
 name: habits
 repo: https://github.com/emiwltz/hermes-habits
-sha: c2e32395e0e3461fe56c7d68b7bc993ee0954277
+sha: 3fe9af287c871abf15a76974deb7bd2aaff31785
 title: Habits
 description: >-
   Habits gives Hermes reflexes: the tool calls and small decisions it repeats, grouped into one file of steps that
@@ -23,7 +23,7 @@ description: >-
   habit exists, each message of 2,000 characters or less that is not a slash command is sent there to see whether it
   starts one (one or two small questions). A scheduled habit writes a cron job and a script at once; hermes habits
   cleanup removes them. Runs and traces are stored unencrypted in $HERMES_HOME/plugin-data/habits/. No telemetry.
-  Seven private imports, each with a fallback. Line by line: docs/SAFETY.md.
+  Six private imports, each with a fallback. Line by line: docs/SAFETY.md.
 maintainer: emiwltz
 tier: community
 category: automation
@@ -32,12 +32,12 @@ requires_hermes: ">=0.22.5"
 platforms: [linux, macos]
 docs_url: https://github.com/emiwltz/hermes-habits#readme
 readme: true
-image: https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/banner.png
+image: https://raw.githubusercontent.com/emiwltz/hermes-habits/3fe9af287c871abf15a76974deb7bd2aaff31785/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/replay.png
-  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/shot-dream.png
-  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/shot-terminal.png
-  - https://raw.githubusercontent.com/emiwltz/hermes-habits/c2e32395e0e3461fe56c7d68b7bc993ee0954277/docs/shot-habits.png
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/3fe9af287c871abf15a76974deb7bd2aaff31785/docs/replay.png
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/3fe9af287c871abf15a76974deb7bd2aaff31785/docs/shot-dream.png
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/3fe9af287c871abf15a76974deb7bd2aaff31785/docs/shot-terminal.png
+  - https://raw.githubusercontent.com/emiwltz/hermes-habits/3fe9af287c871abf15a76974deb7bd2aaff31785/docs/shot-habits.png
 known_issues:
   - "Without a TypeSafe Jev key, steps that ask a question go to your Hermes model, slower, and those runs do not count toward your yes: a reflex with such a step stays learning."
   - "Measured on one user's install, with one cheap model and one decision model (Jev); 14 of 20 request wordings never seen before were recognized, the others go back to Hermes. The headline figures are from the builds of 10 November; an earlier build of 11 November (aad995e) was tried in 229 simulated turns on throwaway Hermes profiles (docs/BENCHMARKS.md); the fixes made after it are covered by tests and by one short pass of 9 real turns on the last build."

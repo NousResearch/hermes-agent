@@ -26,6 +26,7 @@ from hermes_state_common import (
     FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
+    fts_trigram_session_sql,
 )
 from hermes_state_fts import (_drop_orphan_fts_shadow_tables, base_index_recognised, base_source_view_is_stale,
                               drop_retired_cjk_index, fts_layout_current)
@@ -851,7 +852,8 @@ class SessionSchemaMixin:
             f"AND {_sql_json_extract('model_config', '$._reset_from')} IS NOT NULL"
         )
         try:
-            if cursor.execute(f"SELECT 1 FROM sessions WHERE {polluted} LIMIT 1").fetchone() is None:
+            ids = [row[0] for row in cursor.execute(f"SELECT id FROM sessions WHERE {polluted}").fetchall()]
+            if not ids:
                 return
             healed = cursor.execute(
                 f"UPDATE sessions SET model_config = json_remove(model_config, '$._delegate_from') WHERE {polluted}"
@@ -859,7 +861,29 @@ class SessionSchemaMixin:
         except sqlite3.OperationalError as exc:
             logger.debug("reset-row delegate-marker heal skipped: %s", exc)
             return
+        self._index_healed_rows_for_trigram(cursor, ids)
         logger.warning("Healed %d chat session(s) hidden by a stray _delegate_from marker (#109073)", healed)
+
+    def _index_healed_rows_for_trigram(self, cursor: sqlite3.Cursor, session_ids: list[str]) -> None:
+        """The marker kept these sessions' messages out of the external-content trigram index (the triggers
+        skipped them on write), so a heal that admits them must index them too, or substring search misses
+        them and a later edit sends the index a delete for a row it never held. Same window rule as the
+        triggers: ids a pending deferred rebuild will still backfill are left to it. A legacy inline layout
+        indexed every row already; a missing table or tokenizer has nothing to keep consistent."""
+        if self._db_has_legacy_inline_fts(cursor) or not self._fts_table_probe(cursor, "messages_fts_trigram"):
+            return
+        marks = ", ".join("?" for _ in session_ids)
+        cursor.execute(
+            "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
+            "SELECT m.id, m.content, m.tool_name FROM messages m JOIN sessions s ON s.id = m.session_id "
+            f"WHERE m.session_id IN ({marks}) AND m.role <> 'tool' AND {fts_trigram_session_sql('s')} "
+            "AND (m.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+            "WHERE key = 'fts_rebuild_high_water'), -1) "
+            "OR m.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+            "WHERE key = 'fts_rebuild_progress'), -1)) "
+            "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
+            session_ids,
+        )
 
     def _heal_session_model_usage_pk(self, cursor: sqlite3.Cursor) -> None:
         """Rebuild ``session_model_usage`` when its PRIMARY KEY lacks ``task``: installs already at

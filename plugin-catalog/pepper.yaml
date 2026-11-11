@@ -1,19 +1,19 @@
 name: pepper
 title: Pepper for Hermes
 repo: https://github.com/Akshay-Scalelabs/pepper-hermes-plugin
-sha: 6aa5b0b035e8761cc0414bf8e89d931dd6c8cb8d
+sha: c1f61cdf362c00cd3dc6eee416c5feecfa433b74
 description: >-
   Say “parlay this” to find a ParlayTix ticket or preview two outcome rights
-  for one you own. Pepper remembers your draft, checks the terms, and opens
-  wallet review for the side you want to list.
+  for one you own. Resume the same split across chats, review a listing for
+  the other side in your wallet, or set a budget watch and ask for updates.
 maintainer: Akshay-Scalelabs
 tier: community
 category: tools
-version: "0.4.0"
+version: "0.5.1"
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/Akshay-Scalelabs/pepper-hermes-plugin/blob/6aa5b0b035e8761cc0414bf8e89d931dd6c8cb8d/README.md
+docs_url: https://github.com/Akshay-Scalelabs/pepper-hermes-plugin/blob/c1f61cdf362c00cd3dc6eee416c5feecfa433b74/README.md
 screenshots:
-  - https://raw.githubusercontent.com/Akshay-Scalelabs/pepper-hermes-plugin/6aa5b0b035e8761cc0414bf8e89d931dd6c8cb8d/docs/ticket-review.png
+  - https://raw.githubusercontent.com/Akshay-Scalelabs/pepper-hermes-plugin/c1f61cdf362c00cd3dc6eee416c5feecfa433b74/docs/ticket-review.png
 known_issues:
   - Live splitting requires ParlayTix admission for the specific account and verified ticket.
 capabilities:
@@ -33,6 +33,10 @@ capabilities:
     - pepper_parlay_status
     - pepper_offer
     - pepper_parlay_forget
+    - pepper_watches
+    - pepper_watch
+    - pepper_watch_control
+    - pepper_watch_respond
   provides_hooks: []
   provides_middleware: []
   requires_env: []

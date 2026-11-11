@@ -1,28 +1,29 @@
 # Hermes plugin catalog entry for Sluice.
 #
-# The catalog key is `sluice-search`, not `sluice`: an unrelated plugin already owns
-# `plugin-catalog/sluice.yaml` upstream (orjinameh/airlock, a terminal backend that stages
-# workspace edits). `load_catalog()` globs *.yaml sorted by filename and
-# `get_catalog_entry(name)` returns the first match, so a `sluice.yaml` here would either
-# collide or silently shadow theirs. The plugin itself is still named `sluice` in
-# plugin.yaml, and `_catalog_installed_dir` maps the catalog key to the install dir through
-# .install-metadata.json, so it installs and enables as `sluice`.
+# The plugin name is `sluice-search` everywhere: the catalog key, the manifest
+# `name`, the install directory under `~/.hermes/plugins/`, the CLI command and
+# the provider id. `sluice` is already taken upstream by an unrelated plugin
+# (orjinameh/airlock, a terminal backend that stages workspace edits), and
+# Hermes names the install folder and the settings key from the manifest name,
+# so keeping the manifest at `sluice` would have put both plugins in
+# `plugins/sluice` and made `hermes sluice` ambiguous. The display title stays
+# `Sluice`; only identifiers changed.
 #
 # Consequence for the docs: the install command is `hermes plugins install sluice-search`.
 #
 # Manifest-only fields (kind, license, provides_web_providers, python_dependencies)
 # are not part of the catalog contract. They live in plugin.yaml at the pinned sha
 # and are restated in SUBMISSION.md §2: kind backend, license MIT, provides
-# web provider "sluice", python deps httpx>=0.27,<1; trafilatura>=1.8,<3;
+# web provider "sluice-search", python deps httpx>=0.27,<1; trafilatura>=1.8,<3;
 # playwright>=1.45,<2; ddgs>=9,<10.
 #
 # Pin re-check: re-verify this sha against the tip of main at submit time. The tree
-# verified here: pytest 555 passed / 10 skipped, `hermes plugins validate` 16 checks
+# verified here: pytest 559 passed / 10 skipped, `hermes plugins validate` 16 checks
 # with no warnings, `hermes plugins doctor --ci` exit 0.
 name: sluice-search
 title: Sluice
 repo: https://github.com/abhigyan-chatterjee/sluice
-sha: b40e6b97601b715175fb656513ce84195bc4de8b
+sha: 9a948e93e4881e87cc7228d57ffd550fd590a502
 description: Tiered free-first web search and extraction router and backend manager for Hermes
 maintainer: Abhigyan Chatterjee
 version: "1.0.0"

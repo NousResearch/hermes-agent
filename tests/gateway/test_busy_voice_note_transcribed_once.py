@@ -172,3 +172,30 @@ async def test_a_clip_listed_twice_in_one_message_echoes_once(tmp_path, monkeypa
         assert [m for m in sent if '"twice"' in m] == ['🎙️ "twice"']
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_busy_echo_is_sent_by_the_turn(tmp_path, monkeypatch):
+    """Flood control refusing the busy path's echo must not mark the clip shown: the FIFO turn echoes it."""
+    monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
+                        lambda path, model=None, source=None: {'success': True, 'transcript': 'hi', 'provider': 'f'})
+    runner, authority, source, _agent, _sent = await _busy_rig(tmp_path, monkeypatch)
+    shown, refuse = [], [True]
+
+    async def send(chat_id, content, **_):
+        if refuse[0] and '"hi"' in content:
+            return SendResult(success=False, error='Flood control exceeded')
+        shown.append(content)
+        return SendResult(success=True, message_id='s')
+
+    monkeypatch.setattr(runner.adapters[Platform.WHATSAPP], 'send', send)
+    clip = tmp_path / 'note.ogg'
+    clip.write_bytes(b'OggS refused echo')
+    try:
+        restored = await _admit_busy_voice(runner, authority, source, clip)
+        refuse[0] = False
+        await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
+
+        assert [m for m in shown if '"hi"' in m] == ['🎙️ "hi"']
+    finally:
+        authority.db.close()

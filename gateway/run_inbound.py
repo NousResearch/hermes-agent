@@ -1592,14 +1592,23 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
-    ) -> None:
-        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
+    ) -> int:
+        """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)
+        → how many sends the platform accepted."""
         from gateway.bot_peer_notices import automatic_notices_allowed
+        accepted = 0
         for tx in transcripts if automatic_notices_allowed(source) else ():
             try:
-                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
+                result = await adapter.send(
+                    source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+                continue
+            if getattr(result, "success", False):
+                accepted += 1
+            else:
+                logger.debug("%s echo refused: %s", log_context, getattr(result, "error", None))
+        return accepted
 
     @staticmethod
     def _inbound_attachment_display_name(path: str, original_name: str = "") -> tuple[str, str]:

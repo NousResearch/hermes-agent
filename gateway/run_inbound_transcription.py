@@ -270,10 +270,15 @@ class GatewayInboundTranscriptionMixin:
         if not transcripts or not self._should_echo_stt_transcripts() or adapter is None:
             return
         already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
-        await self._echo_stt_transcripts(
-            adapter, source, transcripts[already_echoed:], metadata=metadata, log_context=log_context,
+        tail = transcripts[already_echoed:]
+        event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))  # claimed before the await
+        accepted = await self._echo_stt_transcripts(
+            adapter, source, tail, metadata=metadata, log_context=log_context,
         )
+        if accepted < len(tail):
+            # A refused echo (flood control, dead transport) was never shown: count only what landed,
+            # so the turn native admission restores still echoes the clip.
+            event._gateway_pending_stt_echoed = already_echoed + accepted
 
     async def _transcribe_and_echo_pending_voice(
         self, event, adapter, source, text: str, *, log_context: str, metadata=_UNSET

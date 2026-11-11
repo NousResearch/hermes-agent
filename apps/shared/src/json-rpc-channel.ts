@@ -18,7 +18,7 @@ export interface JsonRpcFrame {
 }
 
 /**
- * Params of a server→client request (`tui_gateway/server_requests.py`): the
+ * Params of a server->client request (`tui_gateway/server_requests.py`): the
  * backend asking the renderer a question. `session_id` names the session
  * blocked on the answer; the rest is method-specific.
  */
@@ -26,7 +26,7 @@ export interface ServerRequestParams extends Record<string, unknown> {
   session_id?: string
 }
 
-/** One inbound server→client request, as handed to a `ServerRequestHandler`. */
+/** One inbound server->client request, as handed to a `ServerRequestHandler`. */
 export interface ServerRequest<M extends string = string, P extends ServerRequestParams = ServerRequestParams> {
   id: string
   method: M
@@ -43,7 +43,7 @@ export interface ServerRequest<M extends string = string, P extends ServerReques
   /**
    * "No window here shows this session" for a window-owned bridge. Sent only
    * to a backend that counts it as one client declining rather than as the
-   * answer (`client.capabilities` → `declines_not_shown`); an older backend
+   * answer (`client.capabilities` -> `declines_not_shown`); an older backend
    * settles on the first error, so there this stays silent for the owner.
    */
   decline?: (message: string) => void
@@ -55,7 +55,7 @@ export interface ServerRequest<M extends string = string, P extends ServerReques
   replayed?: boolean
 }
 
-/** Handles one inbound server→client request; return `false` to decline (next handler tries). */
+/** Handles one inbound server->client request; return `false` to decline (next handler tries). */
 export type ServerRequestHandler = (request: ServerRequest) => boolean | void
 
 const isServerRequestFrame = (frame: JsonRpcFrame): frame is JsonRpcFrame & { id: string; method: string } =>
@@ -81,7 +81,7 @@ export function jsonRpcErrorReason(error: unknown): unknown {
 
 /** Refusals `session.steer` / `session.redirect` answer before the text reaches any agent
  *  (gateway/session_busy_controls.py::correct): the turn the client believed busy is gone or cannot
- *  take a correction, so the words are safe to admit as the next prompt — never retried as a control. */
+ *  take a correction, so the words are safe to admit as the next prompt -> never retried as a control. */
 const UNDELIVERED_CORRECTION_REASONS = new Set(['execution_not_ready', 'stale_generation', 'unsupported_control'])
 
 export function isUndeliveredCorrectionRefusal(error: unknown): boolean {
@@ -90,17 +90,17 @@ export function isUndeliveredCorrectionRefusal(error: unknown): boolean {
   return typeof reason === 'string' && UNDELIVERED_CORRECTION_REASONS.has(reason)
 }
 
-/** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
+/** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, ...)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
 
-/** JSON-RPC "internal error" — used when a server→client request handler throws. */
+/** JSON-RPC "internal error" -> used when a server->client request handler throws. */
 export const JSON_RPC_INTERNAL_ERROR = -32603
 
 /** A window-owned request's session is not shown by any window of this client (tui_gateway/server_requests.py::NOT_SHOWN_CODE). */
 export const JSON_RPC_SESSION_NOT_SHOWN = 4404
 
 /** Map a raw `error` member of a response frame to the typed error every surface inspects. */
-export function jsonRpcErrorFromFrame(raw: unknown, fallbackMessage = 'Hermes RPC failed'): JsonRpcGatewayError {
+export function jsonRpcErrorFromFrame(raw: unknown, fallbackMessage = 'Unitalk RPC failed'): JsonRpcGatewayError {
   const err = (raw && typeof raw === 'object' ? raw : {}) as JsonRpcErrorPayload
 
   return new JsonRpcGatewayError(typeof err.message === 'string' && err.message ? err.message : fallbackMessage, {
@@ -127,13 +127,13 @@ export interface JsonRpcRequestChannelOptions {
   /** Decoded `event` notification. */
   onEvent?: (event: GatewayEvent) => void
   /**
-   * Inbound server→client request nobody handled: the owner logs it. The
+   * Inbound server->client request nobody handled: the owner logs it. The
    * channel has already answered `-32601` so the backend does not wait out
    * its deadline against a client with no handler.
    */
   onUnhandledRequest?: (request: { id: string; method: string; params: ServerRequestParams }) => void
   /**
-   * A server→client request handler threw: the owner logs it. The channel has
+   * A server->client request handler threw: the owner logs it. The channel has
    * already answered `-32603` so the backend does not wait out its deadline
    * against a crashed client (clarify blocks 3600s).
    */
@@ -144,7 +144,7 @@ export interface JsonRpcRequestChannelOptions {
   requestTimeoutMs?: number
   /**
    * What resets the heartbeat deadline. `'response'` (default): only a
-   * `gateway.ping` pong or a response to one of our requests — a backend
+   * `gateway.ping` pong or a response to one of our requests -> a backend
    * whose request loop is wedged but still streams deltas is dead for the
    * caller and must be dropped (the Ink TUI's original contract).
    * `'any-inbound'`: every frame, notifications included (the desktop/web
@@ -206,7 +206,7 @@ const unrefTimer = (timer: unknown) => {
 
 /**
  * The transport-agnostic half of a JSON-RPC gateway connection: request ids,
- * the pending map with per-call timeouts and AbortSignal, response → typed
+ * the pending map with per-call timeouts and AbortSignal, response -> typed
  * error mapping, event-notification decoding, and the `gateway.ping`
  * heartbeat. Owners (`JsonRpcGatewayClient` over WebSocket, the Ink TUI over
  * stdio / an attached socket) supply a `JsonRpcTransport` per connection
@@ -334,7 +334,7 @@ export class JsonRpcRequestChannel {
             detachAbort()
             // Include the configured timeout so a caller (or a user looking
             // at an error toast) can tell whether the default window fired
-            // or a per-call override — e.g. /compress opts into 120s.
+            // or a per-call override -> e.g. /compress opts into 120s.
             const seconds = Math.round(timeoutMs / 1000)
             reject(new Error(`request timed out after ${seconds}s: ${method}`))
           }
@@ -370,8 +370,8 @@ export class JsonRpcRequestChannel {
   }
 
   /**
-   * Register a handler for server→client requests (clarify, approval, sudo,
-   * …). Handlers are tried in registration order until one accepts (returns
+   * Register a handler for server->client requests (clarify, approval, sudo,
+   * ...). Handlers are tried in registration order until one accepts (returns
    * anything but `false`); an unhandled request is answered `-32601` so the
    * backend never waits out its deadline against a client that cannot answer.
    */
@@ -490,7 +490,7 @@ export class JsonRpcRequestChannel {
     }
 
     // Reconnect contract: `session.resume` / `session.activate` /
-    // `session.events.since` answer with `open_requests` — the server→
+    // `session.events.since` answer with `open_requests` -> the server->
     // client requests still waiting on this session. They cannot ride
     // the event replay ring (they are not events), so they are re-
     // delivered here, before the caller sees the result, over the very
@@ -502,9 +502,9 @@ export class JsonRpcRequestChannel {
   /**
    * Route one inbound frame: a response settles its pending call, an error
    * frame with no request id reaches `onUncorrelatedError`, an `event`
-   * notification reaches `onEvent`, a server→client request reaches the
+   * notification reaches `onEvent`, a server->client request reaches the
    * `onRequest` handlers. Returns the decoded frame so the owner can act
-   * on it too (mirror it, record seq, …) or `null` when the text was not
+   * on it too (mirror it, record seq, ...) or `null` when the text was not
    * JSON or not a JSON object (`null`, a scalar).
    */
   handleFrame(text: string): JsonRpcFrame | null {
@@ -556,9 +556,9 @@ export class JsonRpcRequestChannel {
 
   /**
    * Tell the backend, once per connection generation, that this client answers
-   * server→client requests (a handler result or `-32601`). Without it a
+   * server->client requests (a handler result or `-32601`). Without it a
    * backend treats a WebSocket client as a build that predates server requests
-   * and fails every clarify/approval/… for it immediately instead of stalling
+   * and fails every clarify/approval/... for it immediately instead of stalling
    * the agent for the full deadline. An older backend answers `-32601` here;
    * that is ignored.
    */
@@ -577,7 +577,7 @@ export class JsonRpcRequestChannel {
 
   /**
    * Begin the `gateway.ping` keepalive on the bound transport. Only call when
-   * `gateway.ready.heartbeat` advertised support — an older backend would
+   * `gateway.ready.heartbeat` advertised support -> an older backend would
    * answer with -32601 and never count as alive. What counts as liveness is
    * `heartbeatLiveness`; a full deadline without it drops the transport.
    */

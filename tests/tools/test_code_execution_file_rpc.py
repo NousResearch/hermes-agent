@@ -56,7 +56,7 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
     monkeypatch.setattr("model_tools.handle_function_call", dispatch)
 
     class Shell:
-        def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+        def execute(self, command, cwd=None, timeout=None, stdin_data=None, internal=False):
             result = subprocess.run([shell, "-c", command], cwd=cwd, timeout=timeout,
                                     env=dict(os.environ), input=stdin_data or "", capture_output=True, text=True, check=False)
             assert result.returncode == 0, result.stderr

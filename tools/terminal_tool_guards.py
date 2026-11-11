@@ -243,7 +243,7 @@ def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes
     # byte over budget is enough for lifecycle_guard to fail closed. The
     # `< path` redirect keeps leading-dash paths out of argv.
     try:
-        result = env.execute(f"head -c {max_bytes + 1} < {shlex.quote(script_path)}")
+        result = env.execute(f"head -c {max_bytes + 1} < {shlex.quote(script_path)}", internal=True)
         if result.get("returncode", -1) == 0:
             output = result.get("output", "")
             return None if output and "\x00" in output else output

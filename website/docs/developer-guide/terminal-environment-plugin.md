@@ -127,7 +127,13 @@ hermes config set terminal.backend acmebox
 `create_environment()` returns an object satisfying the same duck-typed
 interface as `tools.environments.base.BaseEnvironment`:
 
-- `execute(command, timeout=None, ...)` → `{"output": str, "returncode": int}`
+- `execute(command, timeout=None, ..., internal=False)` → `{"output": str, "returncode": int}`.
+  Hermes passes `internal=True` for its own probes (background-process polls,
+  remote `execute_code` kernel polls, file-tool commands). An internal call
+  must leave the session state a user's commands build up untouched: no
+  write to the shell snapshot of exports, no change to `self.cwd`. The
+  keyword is always passed by name, so an `execute(..., **kwargs)` signature
+  accepts it.
 - `cleanup()` — release resources; called on session teardown / idle reaping
 - Optional: persistence hooks mirroring the built-in cloud backends
 

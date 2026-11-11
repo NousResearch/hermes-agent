@@ -367,7 +367,7 @@ class BaseEnvironment(ABC):
         # ``readlink -f`` output before any bytes move.
         result = self.execute(
             f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
-            timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
+            timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False, internal=True)
         output = result.get("output") or ""
         first, last = output.find(marker), output.rfind(marker)
         if int(result.get("returncode") or 0) != 0 or first == -1 or last <= first:
@@ -382,7 +382,8 @@ class BaseEnvironment(ABC):
 
     def fetch_realpath(self, remote_path: str) -> str | None:
         """``readlink -f`` inside the backend, or None when it cannot be resolved."""
-        result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null", rewrite_compound_background=False)
+        result = self.execute(
+            f"readlink -f {shlex.quote(remote_path)} 2>/dev/null", rewrite_compound_background=False, internal=True)
         if int(result.get("returncode") or 0) != 0:
             return None
         return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
@@ -478,13 +479,14 @@ class BaseEnvironment(ABC):
         rewrite native/mixed Windows paths to ``/c/...``; remote backends are POSIX."""
         return shlex.quote(path)
 
-    def _wrap_command(self, command: str, cwd: str) -> str:
-        """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers."""
+    def _wrap_command(self, command: str, cwd: str, *, publish: bool = True) -> str:
+        """Full bash script: source snapshot, cd, run, re-dump env (unless ``publish`` is
+        False), emit CWD markers."""
         return _wrap_command_script(
             command,
             passthrough_names=self._snapshot_excluded_passthrough_names(),
             snapshot_ready=self._shell_mode is ShellMode.SNAPSHOT,
-            persist_env=self._persist_env,
+            persist_env=self._persist_env and publish,
             pipe_marker=self._pipe_marker,
             **self._snapshot_script_kwargs(cwd))
 
@@ -631,16 +633,17 @@ class BaseEnvironment(ABC):
         self._kill_process(proc)
 
     # --- CWD extraction ---
-    def _update_cwd(self, result: dict):
-        """Extract CWD from command output. Override for local file-based read."""
-        self._extract_cwd_from_output(result)
+    def _update_cwd(self, result: dict, *, publish: bool = True):
+        """Extract CWD from command output."""
+        self._extract_cwd_from_output(result, publish=publish)
 
-    def _extract_cwd_from_output(self, result: dict):
+    def _extract_cwd_from_output(self, result: dict, *, publish: bool = True):
         """Parse the ``__HERMES_CWD_{session}__`` marker from ``result["output"]``, update
-        ``self.cwd`` and strip the marker line. ``result["cwd_observed"]``/``["cwd"]`` are set
-        only when THIS command emitted a marker: a killed/timed-out command emits none and
-        ``self.cwd`` keeps the previous value. The environment is shared across sessions, so
-        concurrent callers must read ``result["cwd"]`` rather than ``self.cwd``."""
+        ``self.cwd`` (unless ``publish`` is False) and strip the marker line.
+        ``result["cwd_observed"]``/``["cwd"]`` are set only when THIS command emitted a marker:
+        a killed/timed-out command emits none and ``self.cwd`` keeps the previous value. The
+        environment is shared across sessions, so concurrent callers must read
+        ``result["cwd"]`` rather than ``self.cwd``."""
         pipe_split = _split_cwd_marker(result.get("output", ""), self._pipe_marker) if self._pipe_marker else None
         if pipe_split is not None:
             statuses, cleaned = pipe_split
@@ -654,7 +657,8 @@ class BaseEnvironment(ABC):
             return
         cwd_path, cleaned = split
         if cwd_path:
-            self.cwd = cwd_path
+            if publish:
+                self.cwd = cwd_path
             result["cwd_observed"] = True
             result["cwd"] = cwd_path
         result["output"] = cleaned
@@ -683,13 +687,19 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        internal: bool = False) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
         patch engine, RPC reads, log reads) MUST leave it False or data is corrupted. The wait is
         bounded by ``agent.deadline.run_bounded_sync`` so a wedged poll loop cannot hang past
         ``timeout`` and silently disable every asyncio timer in the process.
+
+        ``internal=True`` marks a Hermes probe (poller, kernel poll, file operation): it still
+        sources the session snapshot, but neither re-dumps it nor moves ``self.cwd``, so a
+        probe that overlaps a user command cannot undo that command's ``export`` or ``cd``.
+        ``result["cwd"]`` still reports where the probe ran.
 
         ``bounded_capture=True`` caps stdout/stderr retention at ``tool_output.max_bytes`` WHILE the stream
         is drained (head/tail window) instead of holding the full output in memory (#64435).
@@ -712,7 +722,7 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+        wrapped = self._wrap_command(exec_command, effective_cwd, publish=not internal)
 
         # Login shell if the snapshot failed (so the user's profile still
         # loads), unless login itself is broken — then non-login is the only path.
@@ -784,7 +794,7 @@ class BaseEnvironment(ABC):
             result["hermes_timed_out"] = True
         else:
             result = bounded.value
-        self._update_cwd(result)
+        self._update_cwd(result, publish=not internal)
         if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False
             result["environment_recreated"] = True

@@ -41,7 +41,7 @@ class ScriptedEnv:
     def get_temp_dir(self):
         return "/tmp"
 
-    def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+    def execute(self, command, cwd=None, timeout=None, stdin_data=None, internal=False):
         self.commands.append(command)
         self.stdin_payloads.append(stdin_data)
         for needle, handler in self.handlers:

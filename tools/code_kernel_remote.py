@@ -12,7 +12,8 @@ never a hung poll (every wait is bounded by the cell timeout).
 
 Same invariants as local: owner = approval session key with the ``::child::``
 qualifier (one resolver in tools.code_kernel), same generated tool stubs, same
-output post-processing in the caller. ``reset=true`` kills and respawns. Spawn
+output post-processing in the caller. ``reset=true`` respawns; the old kernel
+dies when the last cell still running on it settles. Spawn
 failure fails OPEN to the per-call path with a note.
 """
 from __future__ import annotations
@@ -100,7 +101,7 @@ if __name__ == "__main__":
 
 def _sh(env, cmd: str, timeout: int = 15) -> str:
     """Run *cmd* on the remote from ``/`` and return its output text."""
-    result = env.execute(cmd, cwd="/", timeout=timeout)
+    result = env.execute(cmd, cwd="/", timeout=timeout, internal=True)
     return (result.get("output", "") if isinstance(result, dict) else "") or ""
 
 
@@ -176,6 +177,24 @@ def shutdown_remote_kernels_for_owner(owner: str) -> None:
 def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
     """Dispose every remote kernel whose owner satisfies the predicate (a finished child's kernels)."""
     _REGISTRY.shutdown(owner_matches=owner_matches)
+
+
+def _unregister(key: tuple, kernel: RemoteKernel) -> None:
+    """Drop *kernel*'s registry entry (never a replacement registered since); the last
+    attached cell out tears it down (``_detach``)."""
+    with _REGISTRY.lock:
+        if _REMOTE_KERNELS.get(key) is kernel:
+            del _REMOTE_KERNELS[key]
+
+
+def _detach(key: tuple, kernel: RemoteKernel) -> None:
+    """Release one cell's hold; the last cell out of an unregistered kernel kills it."""
+    with _REGISTRY.lock:
+        kernel.attached -= 1
+        kernel.last_used = time.monotonic()
+        orphaned = kernel.attached == 0 and _REMOTE_KERNELS.get(key) is not kernel
+    if orphaned:
+        kernel.kill()
 
 
 def _reap_unlocked(idle_timeout: int) -> list[RemoteKernel]:
@@ -271,22 +290,30 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                            sandbox_tools: frozenset, *, reset: bool,
                            idle_exit: int) -> tuple[Optional[RemoteKernel], bool, bool, bool]:
     """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, state_lost); reaps
-    idle-expired entries on the way in."""
+    idle-expired entries on the way in. A returned kernel is already attached for the caller's
+    cell (released with ``_detach``). ``reset`` unregisters the old kernel; a cell still running
+    on it keeps it until that cell leaves."""
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
     state_lost = state_reset = False
     with _REGISTRY.lock:
         expired = _reap_unlocked(idle_exit)
         kernel = _REMOTE_KERNELS.get(key)
+        if kernel is not None and reset:
+            del _REMOTE_KERNELS[key]
+            if kernel.attached == 0:
+                expired.append(kernel)
+            kernel, state_reset = None, True
+        if kernel is not None:
+            kernel.attached += 1
+            kernel.last_used = time.monotonic()
     for doomed in expired:
         doomed.kill()
-    if kernel is not None and reset:
-        _REGISTRY.discard(key, kernel)
-        kernel, state_reset = None, True
     if kernel is not None and not kernel.is_alive():
         # Transport drop, container restart, self-reaped on idle, OOM — all
         # the same answer: report the loss, respawn fresh (kill is then only
         # best-effort dir cleanup; the process is already gone).
-        _REGISTRY.discard(key, kernel)
+        _unregister(key, kernel)
+        _detach(key, kernel)
         kernel, state_lost = None, True
     reused = kernel is not None
     if kernel is None:
@@ -294,6 +321,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         if kernel is not None:
             from agent.delegation_context import is_delegated_child_context
             kernel.pinned = is_delegated_child_context()
+            kernel.attached = 1
             with _REGISTRY.lock:
                 _REMOTE_KERNELS[key] = kernel
     return kernel, reused, state_reset, state_lost
@@ -347,9 +375,7 @@ def execute_in_remote_kernel(
     if kernel is None:
         return None  # fail open to per-call
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
-    kernel.last_used = time.monotonic()
     with _REGISTRY.lock:
-        kernel.attached += 1
         evicted = _evict_over_cap_unlocked(keep=key)
     for doomed in evicted:
         doomed.kill()
@@ -358,9 +384,7 @@ def execute_in_remote_kernel(
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
                                   reused=reused, state_reset=state_reset, state_lost=state_lost)
     finally:
-        with _REGISTRY.lock:
-            kernel.attached -= 1
-            kernel.last_used = time.monotonic()
+        _detach(key, kernel)
 
 
 def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task_env_id: str,
@@ -390,10 +414,10 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     except Exception:
         # The atomic ship is the only remote call here that can raise (the poll
         # and result cleanup are best-effort), so the request never reached the runner and the
-        # caller's per-call fallback runs the code exactly once. Kill the
+        # caller's per-call fallback runs the code exactly once. Retire the
         # kernel as the timeout path does: leaving it registered would let the
         # next call reuse a kernel whose state silently missed this cell.
-        _REGISTRY.discard(key, kernel)
+        _unregister(key, kernel)
         raise
     finally:
         stop_event.set()
@@ -406,7 +430,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     }
     if cell_status in ("timeout", "protocol-error", "no-result"):
         # No safe way to interrupt one cell in place (same contract as local): kill, report, respawn.
-        _REGISTRY.discard(key, kernel)
+        _unregister(key, kernel)
         if cell_status == "timeout":
             result["status"] = "timeout"
         kernel_info.update(ended=True, state_lost=True, note=(
@@ -415,7 +439,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
             else "Remote kernel protocol failure; kernel killed, state lost."))
         return result
     if cell_status == "exit":
-        _REGISTRY.discard(key, kernel)
+        _unregister(key, kernel)
         kernel_info["ended"] = True
     kernel.execution_count = kernel_info["execution_count"] = int(cell_payload.get("execution_count", 0) or 0)
     if cell_status in ("ok", "exit"):

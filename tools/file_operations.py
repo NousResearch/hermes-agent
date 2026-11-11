@@ -236,7 +236,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
-        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        result = self.env.execute(command, cwd=effective_cwd, internal=True, **kwargs)
         exit_code = result.get("returncode", 0)
         output = result.get("output", "")
         # The command wrapper's own ``builtin cd -- <cwd> || exit 126`` failed: the

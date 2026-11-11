@@ -47,7 +47,7 @@ def _execute_checked(env, cmd: str, what: str, *, timeout: int, **kwargs) -> dic
     Used where a silent failure would ship secrets or code into a missing,
     half-written, or still-permissive remote path. The error carries the
     command output only, never the payload."""
-    result = env.execute(cmd, cwd="/", timeout=timeout, **kwargs)
+    result = env.execute(cmd, cwd="/", timeout=timeout, internal=True, **kwargs)
     if result.get("returncode", 1) != 0:
         raise RuntimeError(f"{what} failed: {result.get('output')!r}")
     return result
@@ -73,7 +73,7 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     if check:
         return _execute_checked(env, cmd, f"remote file ship for {remote_path!r}",
                                 timeout=timeout, stdin_data=encoded)
-    return env.execute(cmd, cwd="/", timeout=timeout, stdin_data=encoded)
+    return env.execute(cmd, cwd="/", timeout=timeout, stdin_data=encoded, internal=True)
 
 
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
@@ -207,7 +207,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
     quoted_rpc_dir = shlex.quote(rpc_dir)
     while not stop_event.is_set():
         try:
-            ls_result = env.execute(f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true", cwd="/", timeout=10)
+            ls_result = env.execute(f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true", cwd="/", timeout=10, internal=True)
             output = ls_result.get("output", "").strip()
             if not output:
                 stop_event.wait(poll_interval)
@@ -219,16 +219,16 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                     break
                 call_start = time.monotonic()
                 quoted_req_file = shlex.quote(req_file)
-                read_result = env.execute(f"cat {quoted_req_file}", cwd="/", timeout=10)
+                read_result = env.execute(f"cat {quoted_req_file}", cwd="/", timeout=10, internal=True)
                 try:
                     request = json.loads(read_result.get("output", ""))
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5, internal=True)
                     continue
                 if not _rpc_token_ok(request, rpc_token):
                     logger.debug("Unauthorized RPC request in %s", req_file)
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5, internal=True)
                     continue
                 seq = request.get("seq", 0)
                 if not isinstance(seq, int):
@@ -236,7 +236,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                     # polls; formatting it after dispatch would raise, leave the
                     # request in place, and replay the tool call every cycle.
                     logger.debug("RPC request with malformed seq in %s", req_file)
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5, internal=True)
                     continue
                 tool_result = _handle_rpc_request(
                     request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
@@ -247,7 +247,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                 # on a shared-host backend.
                 _remote_write(env, f"{rpc_dir}/res_{seq:06d}", tool_result,
                               atomic=True, timeout=60)
-                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5, internal=True)
         except Exception as e:
             if not stop_event.is_set():
                 logger.debug("RPC poll error: %s", e, exc_info=True)

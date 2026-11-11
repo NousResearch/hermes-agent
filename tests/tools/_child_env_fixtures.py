@@ -103,7 +103,7 @@ class RunToCompletionEnv:
     def get_temp_dir(self):
         return str(self.root)
 
-    def execute(self, command, cwd=None, timeout=30, stdin_data=None):
+    def execute(self, command, cwd=None, timeout=30, stdin_data=None, internal=False):
         result = subprocess.run([self.bash, "-c", command], cwd=cwd or self.root,
                                 env=self.env, input=stdin_data or "", timeout=timeout,
                                 capture_output=True, text=True, encoding="utf-8", check=False)

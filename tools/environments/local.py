@@ -1219,22 +1219,22 @@ class LocalEnvironment(BaseEnvironment):
         with contextlib.suppress(OSError):
             proc.kill()
 
-    def _extract_cwd_from_output(self, result: dict):
+    def _extract_cwd_from_output(self, result: dict, *, publish: bool = True):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —
         normalize to native and require the dir to exist, else ``_run_bash`` would
-        warn every command. A stale path rolls back to the previous cwd, which this
+        warn every command. A stale path keeps the previous cwd, which this
         command did not observe, so ``cwd_observed`` is dropped."""
-        prev_cwd = self.cwd
-        super()._extract_cwd_from_output(result)
-        if self.cwd != prev_cwd:
-            normalized = _msys_to_windows_path(self.cwd)
-            if normalized and os.path.isdir(normalized):
+        super()._extract_cwd_from_output(result, publish=False)
+        if result.get("cwd", self.cwd) == self.cwd:
+            return
+        normalized = _msys_to_windows_path(result["cwd"])
+        if normalized and os.path.isdir(normalized):
+            result["cwd"] = normalized
+            if publish:
                 self.cwd = normalized
-                result["cwd"] = normalized
-            else:
-                self.cwd = prev_cwd
-                result.pop("cwd_observed", None)
-                result.pop("cwd", None)
+        else:
+            result.pop("cwd_observed", None)
+            result.pop("cwd", None)
 
     def cleanup(self):
         """Clean up temp files, including orphaned atomic-write snapshots

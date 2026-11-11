@@ -241,7 +241,7 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     except Exception as exc:
         logger.debug("Spillover sync failed: %s", exc)
     try:
-        if env.execute(f"test -r {shlex.quote(visible)}", timeout=15).get("returncode", 1) == 0:
+        if env.execute(f"test -r {shlex.quote(visible)}", timeout=15, internal=True).get("returncode", 1) == 0:
             return visible
     except Exception as exc:
         logger.debug("Spillover readability probe failed: %s", exc)
@@ -362,12 +362,12 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     from tools.code_execution_rpc import _private_dirs_cmd
     cmd = (f"{_private_dirs_cmd(storage_dir)} "
            f"&& cat > {shlex.quote(remote_path)}")
-    if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
+    if env.execute(cmd, timeout=30, stdin_data=content, internal=True).get("returncode", 1) != 0:
         return False
 
     expected = len(content.encode("utf-8", errors="replace"))
     try:
-        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
+        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15, internal=True)
     except Exception as exc:
         logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
         return True
@@ -382,7 +382,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
                    remote_path, persisted_size, expected)
     try:
-        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
+        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15, internal=True)
     except Exception:
         pass
     return False

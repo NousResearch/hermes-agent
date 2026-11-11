@@ -625,7 +625,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             env, sandbox_dir, "sandbox.env", "exec python3 script.py",
             rpc_dir=f"{sandbox_dir}/rpc", rpc_token=rpc_token)
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
-        script_result = env.execute(launch_cmd, timeout=timeout)
+        script_result = env.execute(launch_cmd, timeout=timeout, internal=True)
         stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)
         # Backend exit codes: 124 = timeout wrapper, 130 = SIGINT.
@@ -637,7 +637,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         if rpc_thread is not None:
             rpc_thread.join(timeout=5)
         try:
-            env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15)
+            env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15, internal=True)
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
@@ -671,7 +671,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
     with _call_in_flight(_resolve_container_task_id(effective_task_id)):
         exec_start = time.monotonic()
         try:
-            py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
+            py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15, internal=True)
             if "OK" not in py_check.get("output", ""):
                 return _error_result(f"Python 3 is not available in the {env_type} terminal "
                                      "environment. Install Python to use execute_code with remote backends.")

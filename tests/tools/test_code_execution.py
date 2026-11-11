@@ -129,7 +129,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def get_temp_dir(self):
                 return "/data/data/com.termux/files/usr/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, internal=False):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n", "returncode": 0}
@@ -179,7 +179,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def get_temp_dir(self):
                 return "/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, internal=False):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n", "returncode": 0}
@@ -231,7 +231,7 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
             def get_temp_dir(self):
                 return "/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, internal=False):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n", "returncode": 0}
@@ -835,7 +835,7 @@ class TestHeadTailTruncation(unittest.TestCase):
             def get_temp_dir(self):
                 return "/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, internal=False):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n", "returncode": 0}

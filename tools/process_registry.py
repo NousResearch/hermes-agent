@@ -1190,7 +1190,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
-        result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
+        result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False,
+                             internal=True)
         output = result.get("output", "").strip()
         session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
         # No PID from the wrapper (no bash in the image, sandbox gone, broken redirect): the
@@ -1329,7 +1330,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             try:
                 # Read only the bytes written since the last poll.
                 raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
-                                  timeout=10).get("output", "")
+                                  timeout=10, internal=True).get("output", "")
                 header, _, delta = raw.partition("\n")
                 try:
                     size_str, offset_str = header.split()
@@ -1362,11 +1363,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._emit_output(session, delta)
 
                 check = env.execute(
-                    f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
+                    f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5, internal=True)
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
                     # Exited -- read the exit code captured by the wrapper shell.
-                    exit_str = env.execute(f"cat {q(exit_path)} 2>/dev/null", timeout=5).get("output", "").strip()
+                    exit_str = env.execute(
+                        f"cat {q(exit_path)} 2>/dev/null", timeout=5, internal=True).get("output", "").strip()
                     try:
                         exit_code = int(exit_str.splitlines()[-1].strip())
                     except (ValueError, IndexError):
@@ -2147,7 +2149,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5, internal=True)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

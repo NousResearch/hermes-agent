@@ -9,7 +9,8 @@ that finds no record (the first after a restart) seeds it back from there.
 Local backend only: a host path can be checked before it is trusted. A remote or container
 directory cannot be vouched for from here, and every session-env command starts with
 ``cd -- <cwd> || exit 126``, so a stale one would break the chat's commands instead of falling back.
-A ``/new`` starts a fresh entry, so a new conversation after a restart starts in ``terminal.cwd``.
+A ``/new`` starts a fresh entry, and the new conversation starts in ``terminal.cwd`` (the old record
+is dropped at its first turn, never saved onto it).
 """
 from __future__ import annotations
 
@@ -28,39 +29,56 @@ def _local_backend(policy) -> bool:
     if policy is not None:
         backend = json.loads(policy.terminal_json).get("TERMINAL_ENV")
     else:
-        from tools.terminal_tool import _get_env_config
-        backend = _get_env_config().get("env_type")
+        # Only the scope-aware backend name: the full tool config also parses timeouts, ports and
+        # Docker JSON, and a typo there must not fail a turn that never runs a command.
+        from tools.terminal_tool import _ensure_terminal_env_bridged
+        from tools.terminal_tool_config import _tenv
+        _ensure_terminal_env_bridged()
+        backend = _tenv("TERMINAL_ENV", "local")
     return str(backend or "local").strip().lower() == "local"
 
 
-def _entry_metadata(runner, session_key):
-    """The chat's routing-entry metadata, or None when this runner keeps no entry for it (a one-shot
-    or API runner without a routing store; the turn runner reads ``_entries`` the same way)."""
+def _routing_entry(runner, session_key):
+    """The chat's routing entry, or None when this runner keeps none for it (a one-shot or API
+    runner without a routing store; the turn runner reads ``_entries`` the same way)."""
     entry = getattr(getattr(runner, "session_store", None), "_entries", {}).get(session_key)
-    metadata = getattr(entry, "metadata", None)
-    return metadata if isinstance(metadata, dict) else None
+    return entry if isinstance(getattr(entry, "metadata", None), dict) else None
 
 
-def restore_turn_cwd(runner, session_key: str | None, policy) -> None:
-    """Seed the chat's cwd record from its routing entry when this process has none yet."""
-    if not session_key or not _local_backend(policy):
-        return
-    from tools.terminal_tool import get_session_cwd, record_session_cwd
-    if get_session_cwd(session_key) is not None:
-        return
-    saved = (_entry_metadata(runner, session_key) or {}).get(_METADATA_KEY)
-    if isinstance(saved, str) and os.path.isabs(saved) and os.path.isdir(saved):
-        record_session_cwd(session_key, saved)
+# Which conversation (routing entry, by its creation stamp) each chat's in-process cwd record
+# belongs to. ``/new`` publishes a fresh entry: the record left by the old conversation is dropped at
+# that conversation's next turn, inside the turn's own profile scope that qualifies the record's key.
+_record_owner: dict[str, object] = {}
 
 
-def persist_turn_cwd(runner, session_key: str | None, policy) -> None:
-    """Write the chat's recorded cwd onto its routing entry when it changed (no write otherwise)."""
-    if not session_key or not _local_backend(policy):
+def restore_turn_cwd(runner, session_key: str | None, policy) -> object | None:
+    """Seed the chat's cwd record from its routing entry when this process has none yet, after
+    dropping one an earlier conversation on this chat left. Returns the conversation token
+    :func:`persist_turn_cwd` saves against."""
+    entry = _routing_entry(runner, session_key) if session_key else None
+    if entry is None or not _local_backend(policy):
+        return None
+    from tools.terminal_tool import _qualify_task_key, clear_session_cwd, get_session_cwd, record_session_cwd
+    owner, token = _qualify_task_key(session_key), entry.created_at
+    if _record_owner.get(owner, token) != token:
+        clear_session_cwd(session_key)
+    _record_owner[owner] = token
+    if get_session_cwd(session_key) is None:
+        saved = entry.metadata.get(_METADATA_KEY)
+        if isinstance(saved, str) and os.path.isabs(saved) and os.path.isdir(saved):
+            record_session_cwd(session_key, saved)
+    return token
+
+
+def persist_turn_cwd(runner, session_key: str | None, token: object | None) -> None:
+    """Write the chat's recorded cwd onto its routing entry when it changed. Only onto the entry the
+    turn started on: a ``/new`` during the turn published a fresh one, which starts in ``terminal.cwd``."""
+    entry = _routing_entry(runner, session_key) if token is not None else None
+    if entry is None or entry.created_at != token:
         return
     from tools.terminal_tool import get_session_cwd
     cwd = get_session_cwd(session_key)
-    metadata = _entry_metadata(runner, session_key) if cwd else None
-    if metadata is None or metadata.get(_METADATA_KEY) == cwd:
+    if not cwd or entry.metadata.get(_METADATA_KEY) == cwd:
         return
     try:
         runner.session_store.set_session_metadata(session_key, _METADATA_KEY, cwd)

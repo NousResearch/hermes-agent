@@ -50,16 +50,18 @@ _TOKEN_CONTENTION_EPISODE_SECS = 1800.0
 _RECONNECT_SUSPEND_GAP_SECS = 60.0
 
 
-def discount_suspended_wait(entries, slept: float, planned: float) -> None:
+def discount_suspended_wait(entries, waited_from: float, planned: float) -> None:
     """Move each reconnect entry's ``queued_at`` forward by a wait's suspend overrun, so NEEDS_ATTENTION and its
-    backdated ``retrying_since`` count only time the host was awake. Only idle waits are measured: time spent in
-    connect attempts is the gateway failing and stays counted."""
-    overrun = slept - planned
+    backdated ``retrying_since`` count only time the host was awake. Only entries already queued when the wait
+    began (``waited_from``) slept through it; one queued after resume keeps its own clock. Only idle waits are
+    measured: time spent in connect attempts is the gateway failing and stays counted."""
+    overrun = time.monotonic() - waited_from - planned
     if overrun <= _RECONNECT_SUSPEND_GAP_SECS:
         return
     for info in entries:
-        if info.get("queued_at") is not None:
-            info["queued_at"] += overrun
+        queued_at = info.get("queued_at")
+        if queued_at is not None and queued_at <= waited_from:
+            info["queued_at"] = queued_at + overrun
 
 
 def is_token_contention(error_code: Optional[str]) -> bool:
@@ -396,7 +398,7 @@ class GatewaySecondaryReconnectMixin:
                 )
                 slept_from = time.monotonic()
                 await asyncio.sleep(backoff)
-                discount_suspended_wait((queue_info,), time.monotonic() - slept_from, backoff)
+                discount_suspended_wait((queue_info,), slept_from, backoff)
         finally:
             # Release our slot unless a newer task already owns it.
             pending = self._profile_failed_platforms

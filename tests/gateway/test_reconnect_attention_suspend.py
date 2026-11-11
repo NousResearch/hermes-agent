@@ -139,3 +139,80 @@ def test_no_escalation_before_the_first_failed_attempt(monkeypatch):
     info["attempts"] = 1
     assert runner._flag_reconnect_needs_attention(Platform.TELEGRAM, info, 99999.0) is True
     assert [w for w in writes if w.get("needs_attention")]
+
+
+def _watch(monkeypatch, runner, clock, *, stop_when):
+    """Drive the real watcher on ``clock``; every connect fails, ``stop_when()`` ends the run."""
+    failing = StubAdapter(fatal_error="network down")
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failing)
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(n):
+        clock.sleep(n)
+        if stop_when() or clock.sleeps > 400:
+            runner._running = False
+        await real_sleep(0)
+    return failing, patch("asyncio.sleep", side_effect=fake_sleep)
+
+
+@pytest.mark.asyncio
+async def test_entry_queued_after_resume_keeps_its_own_clock(monkeypatch):
+    """A platform that fails after the host wakes was not asleep: the suspend overrun of the idle
+    it was queued in must not push its ``queued_at`` into the future (that delays a real outage's
+    NEEDS_ATTENTION by the length of the suspend)."""
+    _set_threshold(monkeypatch, 7200)
+    runner = _make_runner()
+    monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda p, **kw: None)
+    clock = _Clock(suspend_at=12)  # inside the watcher's first post-pass idle
+    _install_clock(monkeypatch, clock)
+    cfg = PlatformConfig(enabled=True, token="t")
+    runner._failed_platforms[Platform.TELEGRAM] = runner._reconnect_queue_entry(
+        Platform.TELEGRAM, StubAdapter(), cfg, attempts=0, delay=30)
+    seen = []
+    real_discount = run_adapters.discount_suspended_wait
+
+    def discount(entries, waited_from, planned):
+        real_discount(entries, waited_from, planned)
+        fresh = runner._failed_platforms.get(Platform.DISCORD)
+        if fresh is not None:
+            seen.append((fresh["queued_at"], clock()))
+    monkeypatch.setattr(run_adapters, "discount_suspended_wait", discount)
+
+    def stop_when():
+        if clock.sleeps == clock.suspend_at:  # the host just woke; another platform fails now
+            runner._failed_platforms[Platform.DISCORD] = runner._reconnect_queue_entry(
+                Platform.DISCORD, StubAdapter(), cfg, attempts=0, delay=30)
+        return bool(seen)
+    _failing, sleeping = _watch(monkeypatch, runner, clock, stop_when=stop_when)
+    with sleeping:
+        await asyncio.wait_for(runner._platform_reconnect_watcher(), timeout=10)
+
+    queued_at, now = seen[0]
+    assert queued_at <= now, f"fresh entry moved {queued_at - now:.0f}s into the future"
+
+
+@pytest.mark.asyncio
+async def test_suspend_during_the_initial_delay_does_not_escalate_a_startup_entry(monkeypatch):
+    """An entry startup queued (already one failed attempt) must not reach NEEDS_ATTENTION on the
+    watcher's first pass because the host slept through the 10 s startup delay."""
+    _set_threshold(monkeypatch, 7200)
+    runner = _make_runner()
+    writes = []
+    monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda p, **kw: writes.append(kw))
+    clock = _Clock(suspend_at=1)  # the initial asyncio.sleep(10)
+    _install_clock(monkeypatch, clock)
+    runner._failed_platforms[Platform.TELEGRAM] = runner._reconnect_queue_entry(
+        Platform.TELEGRAM, StubAdapter(), PlatformConfig(enabled=True, token="t"), attempts=1, delay=30)
+    attempts = []
+    failing, sleeping = _watch(monkeypatch, runner, clock, stop_when=lambda: bool(attempts))
+    real_connect = failing.connect
+
+    async def connect(*, is_reconnect=False):
+        attempts.append(any(w.get("needs_attention") for w in writes))
+        return await real_connect(is_reconnect=is_reconnect)
+    failing.connect = connect
+    with sleeping:
+        await asyncio.wait_for(runner._platform_reconnect_watcher(), timeout=10)
+
+    assert attempts and attempts[0] is False, "flagged NEEDS_ATTENTION before the first retry"
+    assert not [w for w in writes if w.get("needs_attention")], writes

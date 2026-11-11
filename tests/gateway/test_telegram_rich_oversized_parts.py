@@ -351,3 +351,55 @@ def test_a_details_block_larger_than_the_cap_is_closed_and_reopened():
         assert len(part) <= 600
         assert part.startswith("<details><summary>Build log</summary>")
         assert part.count("<details") == part.count("</details>") == 1
+
+
+class NetworkError(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_reply_whose_first_preview_failed_shows_rich_part_one_once():
+    """The first preview send fails, the split-first send delivers rich part 1 and part 2 fails
+    transiently: only the unseen tail goes out again, so every row reaches the chat exactly once."""
+    import asyncio
+    import re
+    from collections import Counter
+
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from tests.waiting import async_wait_until
+
+    adapter = _make_adapter()
+    seen, screen, ids = {"rich": 0, "legacy": 0}, {}, iter(range(100, 999))
+
+    async def do_api_request(method, api_kwargs=None, **_kw):
+        if method == "sendRichMessage":
+            seen["rich"] += 1
+            if seen["rich"] == 2:
+                raise NetworkError("Connection reset by peer")
+            screen[mid := next(ids)] = api_kwargs["rich_message"]["markdown"]
+            return SimpleNamespace(message_id=mid)
+        return True
+
+    async def send_message(text="", **_kw):
+        seen["legacy"] += 1
+        if seen["legacy"] == 1:
+            raise NetworkError("Connection reset by peer")
+        screen[mid := next(ids)] = text
+        return SimpleNamespace(message_id=mid)
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=do_api_request)
+    adapter._bot.send_message = AsyncMock(side_effect=send_message)
+    content = _details_content(blocks=12, body_lines=120)
+    consumer = GatewayStreamConsumer(adapter, "4242", StreamConsumerConfig(
+        edit_interval=0.01, buffer_threshold=50, cursor=" ▉"))
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(content[:1000])
+    await async_wait_until(lambda: seen["legacy"] >= 1, timeout=5, what="first preview send attempted")
+    consumer.on_delta(content[1000:])
+    consumer.finish(content)
+    await asyncio.wait_for(task, 20)
+
+    rows = Counter(re.findall(r"row \d+-\d+:", "\n".join(screen.values()).replace("\\", "")))
+    wanted = re.findall(r"row \d+-\d+:", content)
+    assert seen["rich"] >= 2, "rich part 2 was never attempted"
+    assert [row for row in wanted if rows[row] != 1] == []

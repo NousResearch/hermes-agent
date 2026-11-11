@@ -436,6 +436,9 @@ class GatewayTurnPersistenceMixin:
                 or agent_result.get("already_sent") or agent_result.get("response_previewed")
                 or self._pending_event_audio_paths(event)):
             return
+        from gateway.session_ingress import executing_admission
+        if executing_admission.get() and not getattr(event, "_adapter_drains_after", False):
+            return  # an authority-run row no adapter task awaits: a parked retry would never run
         from gateway.media_repair import _current_turn_messages
         messages = agent_result.get("messages") or []
         offset = agent_result.get("history_offset", 0) or 0

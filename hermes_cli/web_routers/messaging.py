@@ -424,13 +424,13 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     npm = find_node_executable("npm")
 
     try:
-        env = with_hermes_node_path()
         if npm is None:
-            env = pm.ensure("npm", explicit=True).env
+            pm.ensure("npm", explicit=True)
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "npm binary is missing after preparation")
             npm = str(installed.binary)
+        env = with_hermes_node_path(for_subprocess=True, explicit=True)
         # npm output is UTF-8; encoding= guards the Windows ANSI-code-page
         # default against undefined bytes crashing the reader thread.
         result = subprocess.run(

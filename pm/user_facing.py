@@ -109,6 +109,37 @@ def copies(dirs: list[str]) -> list[str]:
     return list(dict.fromkeys(c for d in dirs for c in swap.get(os.path.normcase(d), [d])))
 
 
+def node_env(base_env: dict[str, str] | None = None, *,
+             for_subprocess: bool = False, explicit: bool = False) -> dict[str, str]:
+    """PM's paired npm/Node environment, optionally runnable through cmd.exe in a Windows package.
+
+    Unlike terminal PATH fallback, dependency setup must surface a refused or failed copy.
+    npm's batch file is readable inside the package, but the Node it starts must live outside it.
+    """
+    from pm.install import env_for
+    from pm.package import InstallError
+
+    env = env_for("npm", base_env=base_env)
+    if not for_subprocess or not applies():
+        return env
+    swap: dict[str, list[str]] = {}
+    for name in ("node", "npm"):
+        packaged_dirs = _sealed_dirs(name)
+        if not packaged_dirs:
+            continue  # The caller provisions missing tools before preparing this environment.
+        location = writable_copy(name, explicit=explicit,
+                                 why="a writable npm/Node toolchain is required for Windows subprocesses")
+        if location is None:
+            raise InstallError(name, "installed tool is unavailable outside the Windows package")
+        copied_dirs = _dirs(*location, name)
+        swap.update((os.path.normcase(directory), copied_dirs) for directory in packaged_dirs)
+    env["PATH"] = os.pathsep.join(dict.fromkeys(
+        copied for directory in env.get("PATH", "").split(os.pathsep)
+        for copied in swap.get(os.path.normcase(directory), [directory]) if copied
+    ))
+    return env
+
+
 def _python_stub_dir(directory: str) -> bool:
     """True for the Windows app-alias dir when its ``python.exe`` is only the Store stub.
 

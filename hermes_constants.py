@@ -613,11 +613,11 @@ def find_node_executable(command: str) -> str | None:
     return None
 
 
-def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Compose installed PM npm and its Node dependency without provisioning."""
-    from pm import env_for
+def with_hermes_node_path(env: dict[str, str] | None = None, *, for_subprocess: bool = False, explicit: bool = False) -> dict[str, str]:
+    """Compose PM's npm/Node environment; subprocess setup may need verified writable copies."""
+    from pm.user_facing import node_env
 
-    return env_for("npm", base_env=env)
+    return node_env(env, for_subprocess=for_subprocess, explicit=explicit)
 
 
 def _legacy_path_has_content(path: Path) -> bool:

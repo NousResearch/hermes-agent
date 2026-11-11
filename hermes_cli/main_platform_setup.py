@@ -127,13 +127,13 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
 
     npm = find_node_executable("npm")
     try:
-        env = with_hermes_node_path()
         if npm is None:
-            env = pm.ensure("npm", explicit=True).env
+            pm.ensure("npm", explicit=True)
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "npm binary is missing after preparation")
             npm = str(installed.binary)
+        env = with_hermes_node_path(for_subprocess=True, explicit=True)
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,

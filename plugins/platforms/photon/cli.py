@@ -359,13 +359,13 @@ def _install_sidecar() -> int:
 
     try:
         npm = find_node_executable("npm")
-        env = with_hermes_node_path()
         if npm is None:
-            env = pm.ensure("npm", explicit=True).env
+            pm.ensure("npm", explicit=True)
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "ensured but no selected binary was recorded")
             npm = str(installed.binary)
+        env = with_hermes_node_path(for_subprocess=True, explicit=True)
     except pm.InstallError as exc:
         print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1

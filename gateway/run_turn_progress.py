@@ -258,14 +258,15 @@ class GatewayTurnProgressMixin:
         ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
-            # Dedup on RAW identity, never the (diff-aware) rendered msg (PR #24304): use the raw
-            # command / preview / args so distinct commands sharing a truncated render don't collapse.
-            if isinstance(args, dict) and tool_name == "terminal" and args.get("command"):
-                raw_body = args["command"]
+            # Dedup on RAW tool identity, never the (diff-aware) rendered msg (PR #24304). Derive
+            # the identity from the canonical FULL args when present (terminal command + options,
+            # web_search query, ...), so distinct arguments never collapse to a (×N) repeat even
+            # when a supplied preview string is identical. Preview is a fallback only when no args
+            # are present; truncate_middle stays presentation-only (see _progress_build_message).
+            if isinstance(args, dict) and args:
+                raw_body = json.dumps(args, sort_keys=True, default=str)
             elif preview:
                 raw_body = preview
-            elif args:
-                raw_body = json.dumps(args, sort_keys=True, default=str)
             else:
                 raw_body = ""
             self._progress_emit(msg, f"{tool_name}\x00{raw_body}")

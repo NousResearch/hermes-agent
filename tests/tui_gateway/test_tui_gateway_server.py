@@ -11631,26 +11631,25 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         def start(self):
             self._target()
 
-    fake_ctx = types.ModuleType("agent.context_references")
-    fake_ctx.preprocess_context_references = (
-        lambda message, **kwargs: types.SimpleNamespace(
-            blocked=False,
-            message="expanded prompt",
-            warnings=[],
-            references=[],
-            injected_tokens=0,
-        )
+    from agent import context_references, model_metadata
+
+    expanded = types.SimpleNamespace(
+        blocked=False,
+        message="expanded prompt",
+        warnings=[],
+        references=[],
+        injected_tokens=0,
     )
-    fake_meta = types.ModuleType("agent.model_metadata")
-    fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
+    monkeypatch.setattr(
+        context_references, "preprocess_context_references", lambda message, **kw: expanded
+    )
+    monkeypatch.setattr(model_metadata, "get_model_context_length", lambda *a, **kw: 100000)
 
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
-    monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
 
     server.handle_request(
         {

@@ -378,7 +378,7 @@ def test_server_request_waits_for_a_ws_client_that_advertised(server):
     thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", {}, timeout=5)),
                               daemon=True)
     thread.start()
-    req = _wait_open(server_requests)
+    req = _wait_open(server_requests, windows=(peer,))
     assert peer.frames[-1]["id"] == req.id
     assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
     thread.join(timeout=5)

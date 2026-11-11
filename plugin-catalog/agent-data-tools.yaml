@@ -1,0 +1,28 @@
+name: agent-data-tools
+title: Agent Data Tools
+repo: https://github.com/Nutshell2000/agent-data-tools
+sha: cbe8db23f1eb5dfb908d4fa567530f5b46cefbb9
+subdir: integrations/hermes
+version: "1.0.0"
+description: |
+  Over 600 hosted data and AI tools through three MCP tools (find_tool, tool_details, call_tool), so the agent's context holds three definitions: web search and news, the text of a web page or PDF, screenshots, weather, FX, stock and token prices, wallet and chain reads, sanctions and company checks, DNS lookups, LLM chat, speech to text, converters and calculators. 25 free calls with no key or sign-up, and one bundled skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only.
+
+  Disclosures
+  - Hosted-only connector with no local code: every tool call, with its arguments (the words given to find_tool; search words, URLs, addresses or text given to call_tool), goes to agent-data-tools.revmesh2074.workers.dev, which fetches named pages from the public web and sends each request to the public data source or model behind the tool that was called.
+  - As installed it cannot spend money: no key is declared or stored, and after the free calls a tool answers with a payment request and stops.
+  - A user who buys a prepaid key (from $1) adds their own same-name config.yaml entry with the key as a bearer header; each successful call_tool call then spends that key's credits at the called tool's price (1 to 100 credits, most often 10; 1 credit = $0.001). The package declares that range and a spend limit of 1,000 credits per chat; find_tool and tool_details are free.
+  - The server is marked untrusted. All three tools are annotated read-only: this server cannot reach the service's tools that write.
+  - The service keeps call counts per tool and day, a one-way hash of the caller's IP address for the free-call allowance, and its host's ordinary request logs. No telemetry, no background process, no self-update.
+  - The tool set is served by the remote server at runtime and is not covered by the pinned sha.
+maintainer: Nutshell2000
+tier: community
+category: tools
+docs_url: https://github.com/Nutshell2000/agent-data-tools/tree/main/integrations/hermes#readme
+requires_hermes: ">=0.22.3"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

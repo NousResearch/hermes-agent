@@ -79,3 +79,37 @@ async def test_reset_while_final_send_fails_does_not_retry_the_dead_turn():
 
     assert attempts == ["answer that must not be re-sent after stop"]
     assert consumer.final_response_sent is False
+
+
+@pytest.mark.asyncio
+async def test_reset_while_the_final_edit_is_refused_sends_no_fallback_after_new():
+    """A preview is on screen; /new lands while the final edit is in flight and that edit is refused.
+    The fallback that would send the unseen tail as a new message must not run for the dead turn."""
+    current = {"ok": True}
+    sends: list[str] = []
+
+    async def send(*, chat_id, content, reply_to=None, metadata=None):
+        sends.append(content)
+        return SimpleNamespace(success=True, message_id=f"m{len(sends)}")
+
+    async def edit_message(*, chat_id, message_id, content, finalize=False, metadata=None):
+        if finalize:
+            current["ok"] = False  # /new bumped the generation while the final edit was in flight
+            return SimpleNamespace(success=False, message_id=None, error="Bad Request: message can't be edited")
+        return SimpleNamespace(success=True, message_id=message_id)
+
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.send = AsyncMock(side_effect=send)
+    adapter.edit_message = AsyncMock(side_effect=edit_message)
+    consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig(
+        edit_interval=0.01, buffer_threshold=1, cursor=CURSOR), run_still_current=lambda: current["ok"])
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta("the dead turn's")
+    await async_wait_until(lambda: sends, what="first preview sent")
+    consumer.on_delta(" whole answer")
+    consumer.finish()
+    await asyncio.wait_for(task, 5)
+
+    assert sends == ["the dead turn's" + CURSOR], sends
+    assert consumer.final_response_sent is False

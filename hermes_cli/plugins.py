@@ -1222,7 +1222,9 @@ def _resolve_block_from_details(
         # Fail-closed: if the gate itself errors, block rather than silently execute an action a
         # plugin flagged for approval.
         return f"BLOCKED: plugin approval gate failed for {tool_name}"
-    if not result.get("approved"):
+    if not isinstance(result, dict):
+        return f"BLOCKED: plugin approval gate failed for {tool_name}"
+    if result.get("approved") is not True:
         return str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
     return None
 

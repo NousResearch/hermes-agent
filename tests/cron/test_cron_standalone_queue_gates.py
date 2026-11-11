@@ -217,7 +217,7 @@ def test_queueing_without_a_runner_handle_still_queues(monkeypatch, gateway_loop
     """No gateway_runner backref must not break queueing: the row still lands in the ledger and
     the next boot's sweep remains the backstop."""
     t = _target(gateway_loop)  # adapter carries no gateway_runner attribute
-    standalone_calls, errors = _run_lanes(
+    _standalone_calls, errors = _run_lanes(
         t, gateway_loop, monkeypatch, standalone_outcome=(None, "definitive failure", False))
     assert any("queued text" in e for e in errors)
     claimed = dl.sweep_failed_for_runtime("telegram", now=time.time() + 120, profile="primary")

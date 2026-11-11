@@ -1,0 +1,159 @@
+"""A native Telegram media upload repeats only a failure Telegram provably never posted (#62079).
+
+PTB wraps every httpx transport error as ``NetworkError(...) from <httpx error>``; Telegram's own
+5xx JSON answer is an unchained ``NetworkError('Bad Gateway')``. A connect failure and that 5xx
+answer are repeated as the same request; an error after the upload left (read reset, timeout) may
+already be in the chat, so it is never resent in any shape and never reported as a hard failure.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import httpx
+import pytest
+
+from gateway.config import PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from plugins.platforms.telegram.adapter import TelegramAdapter
+
+
+def _network_error(cause=None, text=None):
+    from telegram.error import NetworkError
+    err = NetworkError(text or f"httpx.{type(cause).__name__}: {cause}")
+    err.__cause__ = cause
+    return err
+
+
+def _connect_error():
+    return _network_error(httpx.ConnectError("All connection attempts failed"))
+
+
+def _bad_gateway():
+    return _network_error(text="Bad Gateway")
+
+
+def _read_error():
+    return _network_error(httpx.ReadError("Server disconnected without sending a response."))
+
+
+@pytest.fixture
+def adapter(monkeypatch):
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="123456:test-token", extra={}))
+    adapter._bot = MagicMock()
+    adapter._compress_image_to_jpeg = lambda _path: None
+    for name in ("send_document", "send_image_file", "send_video"):
+        monkeypatch.setattr(BasePlatformAdapter, name, AsyncMock(
+            return_value=SendResult(success=False, error="notice")))
+    return adapter
+
+
+def _uploads(adapter, method, outcomes):
+    """Bot method that fails with ``outcomes`` in order, then posts; records the bytes each try read."""
+    reads = []
+
+    async def upload(**kwargs):
+        reads.append(kwargs[method.removeprefix("send_")].read())
+        outcome = outcomes[len(reads) - 1] if len(reads) <= len(outcomes) else None
+        if outcome is not None:
+            raise outcome
+        return SimpleNamespace(message_id=77)
+
+    setattr(adapter._bot, method, upload)
+    return reads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [_connect_error, _bad_gateway], ids=["connect-error", "telegram-502"])
+async def test_unsent_upload_is_repeated_and_delivered(adapter, tmp_path, first):
+    path = tmp_path / "package.zip"
+    path.write_bytes(b"zip-bytes")
+    reads = _uploads(adapter, "send_document", [first()])
+
+    result = await adapter.send_document("123", str(path))
+
+    assert result.success is True and result.message_id == "77"
+    assert reads == [b"zip-bytes", b"zip-bytes"]  # the same upload again, rewound
+    BasePlatformAdapter.send_document.assert_not_awaited()  # no "Couldn't deliver" notice
+
+
+@pytest.mark.asyncio
+async def test_unsent_retries_are_bounded(adapter, tmp_path):
+    path = tmp_path / "package.zip"
+    path.write_bytes(b"zip-bytes")
+    reads = _uploads(adapter, "send_document", [_connect_error() for _ in range(5)])
+
+    result = await adapter.send_document("123", str(path))
+
+    assert len(reads) == 3
+    assert result.success is False
+    BasePlatformAdapter.send_document.assert_awaited_once()  # the notice, once the budget is spent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,call", [
+    ("send_document", lambda a, p: a.send_document("123", p)),
+    ("send_photo", lambda a, p: a.send_image_file("123", p)),
+    ("send_video", lambda a, p: a.send_video("123", p)),
+], ids=["document", "photo", "video"])
+async def test_upload_lost_after_the_request_left_is_never_resent(adapter, tmp_path, method, call):
+    path = tmp_path / ("clip.mp4" if method == "send_video" else "chart.png")
+    path.write_bytes(b"media-bytes")
+    reads = _uploads(adapter, method, [_read_error()])
+    adapter._bot.send_document = adapter._bot.send_document if method == "send_document" else AsyncMock()
+
+    result = await call(adapter, str(path))
+
+    assert len(reads) == 1
+    assert result.success is True and result.raw_response.get("ambiguous") is True  # unknown, not failed
+    if method != "send_document":
+        adapter._bot.send_document.assert_not_awaited()  # no re-upload as a document
+    for name in ("send_document", "send_image_file", "send_video"):
+        getattr(BasePlatformAdapter, name).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_local_error_before_the_request_is_still_a_failure(adapter, tmp_path, monkeypatch):
+    """An OSError raised before any request (the file vanished between check and open) never left:
+    it is a plain failure with its notice, not a maybe-delivered upload."""
+    path = tmp_path / "package.zip"
+    path.write_bytes(b"zip-bytes")
+    adapter._bot.send_document = AsyncMock()
+    monkeypatch.setattr("builtins.open", MagicMock(side_effect=PermissionError("denied")))
+
+    result = await adapter.send_document("123", str(path))
+
+    assert result.success is False
+    adapter._bot.send_document.assert_not_awaited()
+    BasePlatformAdapter.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_standalone_sender_repeats_unsent_and_never_resends_a_lost_upload(tmp_path, monkeypatch):
+    """The out-of-process sender (send_message tool, cron) follows the same policy."""
+    from plugins.platforms.telegram import standalone
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    path = tmp_path / "package.zip"
+    path.write_bytes(b"zip-bytes")
+    bot = SimpleNamespace()
+    reads = []
+
+    def upload_with(outcomes):
+        reads.clear()
+
+        async def upload(**kwargs):
+            reads.append(kwargs["document"].read())
+            if len(reads) <= len(outcomes):
+                raise outcomes[len(reads) - 1]
+            return SimpleNamespace(message_id=5)
+        bot.send_document = upload
+
+    kw = dict(caption=None, parse_mode=None, has_html=False, thread_kwargs={}, force_document=False)
+    upload_with([_connect_error()])
+    msg = await standalone._telegram_send_one_media(bot, 123, str(path), False, **kw)
+    assert msg.message_id == 5 and reads == [b"zip-bytes", b"zip-bytes"]
+
+    upload_with([_read_error()])
+    with pytest.raises(Exception):
+        await standalone._telegram_send_one_media(bot, 123, str(path), False, **kw)
+    assert len(reads) == 1

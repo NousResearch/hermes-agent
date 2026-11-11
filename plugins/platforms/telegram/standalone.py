@@ -240,10 +240,14 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
     # The adapter's media budgets (#133164): the Bot's 20s read timeout cuts off Telegram's
     # post-upload processing, so a delivered file came back "Timed out" and got resent.
     media_kwargs.update(scaled_budgets([media_path, thumb_path], 0.0)[0])
+    from plugins.platforms.telegram.telegram_media_retry import send_media_retrying
     try:
         with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            def upload():  # a failure Telegram provably never posted repeats, as in the adapter (#62079)
+                return send_media_retrying(lambda: _telegram_send_media(
+                    bot, chat_id, f, ext, is_voice, force_document, **media_kwargs), lambda: f.seek(0), "media upload")
             try:
-                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
+                return await upload()
             except Exception as media_err:
                 if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
                     logger.warning("Thread %s not found for media send, retrying without message_thread_id",
@@ -257,7 +261,7 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 else:
                     raise
                 f.seek(0)
-                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
+                return await upload()
     finally:
         if thumb_path:
             with contextlib.suppress(OSError):
@@ -413,10 +417,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
-                maybe = " (Telegram may still deliver it; do not resend)" if may_have_delivered(e) else ""
-                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}{maybe}"))
+                from plugins.platforms.telegram.telegram_media_retry import request_may_have_delivered
+                maybe = request_may_have_delivered(e)
+                warnings.append(_sanitize_error_text(
+                    f"Failed to send media {media_path}: {e}" + (" (Telegram may still deliver it; do not resend)" if maybe else "")))
                 logger.error(warnings[-1])
+                if maybe:  # delivery unknown, never a hard failure a caller would answer with a resend
+                    last_msg = last_msg or SimpleNamespace(message_id=None)
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success(chat_id, warnings, **({"message_id": str(last_msg.message_id)}

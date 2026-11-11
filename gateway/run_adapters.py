@@ -882,10 +882,27 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
         self.adapters[platform] = adapter
         if platform == Platform.API_SERVER:
-            from gateway.session_api_turn import recover_api_turns
-            recover_api_turns(adapter)
+            self._recover_api_turns(adapter)
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
+
+    def _recover_api_turns(self, adapter) -> None:
+        """Recover queued API turns without holding the event loop.
+
+        The pass sweeps retained API images, and that sweep is an unindexable ``instr()`` scan of
+        every ``messages`` row — minutes on a large store. Run inline here it blocked the loop for
+        the whole publish, so the gateway answered nothing and the liveness watchdog exited 75;
+        the supervisor restarted it into the same scan and it never reached a serving state.
+        Off the loop the sweep is a background task. With no running loop (CLI, tests) the pass
+        stays inline and synchronous, finished before this returns."""
+        from gateway.session_api_turn import recover_api_turns, recover_api_turns_off_loop
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            recover_api_turns(adapter)
+            return
+        task = self._retain_background_task(asyncio.create_task(recover_api_turns_off_loop(adapter)))
+        task.add_done_callback(self._late_failure_callback("API turn recovery failed"))
 
     def _schedule_planned_restart_replay(self) -> None:
         """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery

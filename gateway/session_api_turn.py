@@ -277,22 +277,65 @@ def owns_api_run(adapter, run_id, owner_scope):
     return _valid_owner_scope(stored) and hmac.compare_digest(stored, owner_scope)
 
 
-def recover_api_turns(adapter):
+def recover_api_turns(adapter, *, sweep_media=True):
     """Recover committed work only after the real API adapter is published. A parked profile's
-    retained (retiring) authority is not served: its store is never read here."""
+    retained (retiring) authority is not served: its store is never read here.
+
+    Synchronous, sweep included: a caller OFF the event loop (CLI, a profile served later) gets
+    the whole pass done before this returns. A caller on the loop uses
+    :func:`recover_api_turns_off_loop`, which runs the sweep in a worker thread and calls this
+    with ``sweep_media=False`` for the rest."""
     from gateway.session_authorities import owner_scope, serving_authorities
     for authority in serving_authorities(adapter.gateway_runner):
         # Startup is unscoped (the launch profile's home): each profile's media root, config and
         # API bindings must pair with its own state.db, never the launch profile's.
         with owner_scope(authority):
-            recover_authority_api_turns(adapter, authority)
+            recover_authority_api_turns(adapter, authority, sweep_media=sweep_media)
 
 
-def recover_authority_api_turns(adapter, authority):
+def _sweep_retained_api_images(authority):
+    """One profile's retained-image sweep, scope and all — the body a worker thread runs.
+
+    It enters ``owner_scope`` itself rather than inheriting it, so the caller never has to hold a
+    scope across an ``await`` (which would leak it into every other task on the loop)."""
+    from gateway.session_authorities import owner_scope
+    from gateway.session_ingress_media import collect_unheld_api_images
+    with owner_scope(authority):
+        collect_unheld_api_images(authority.db)
+
+
+async def recover_api_turns_off_loop(adapter):
+    """:func:`recover_api_turns` for a caller already on the event loop.
+
+    ``collect_unheld_api_images`` asks, for every candidate image, whether any transcript row
+    mentions it: an ``instr()`` pass over every ``messages`` row that no index can serve. On a
+    large store that is minutes, and this recovery runs while the API adapter is published — so
+    inline on the loop it stalled every gateway reply at startup until the liveness watchdog
+    ruled the loop hung and exited 75, a supervisor restart loop that never reached serving.
+
+    The sweep goes to a worker thread, off the loop like every other media release (see
+    ``api_server._handle_session_delete``); deferring it is safe because it already re-checks
+    rows written after its read snapshot under the write lock, so running beside live traffic is
+    its design, not a new race. A failed sweep leaves the files for the next one and never stops
+    recovery. The admission pass stays ON the loop: it schedules sessions.
+    """
+    import logging
+    from gateway.session_authorities import serving_authorities
+    for authority in serving_authorities(adapter.gateway_runner):
+        try:
+            await asyncio.to_thread(_sweep_retained_api_images, authority)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                'Retained API image sweep failed; files stay for the next sweep')
+    recover_api_turns(adapter, sweep_media=False)
+
+
+def recover_authority_api_turns(adapter, authority, *, sweep_media=True):
     from hermes_state_runtime import list_session_admissions
     from gateway.session_ingress_media import collect_unheld_api_images
     import logging
-    collect_unheld_api_images(authority.db)
+    if sweep_media:
+        collect_unheld_api_images(authority.db)
     from gateway.session_api_media import compact_settled_api_payloads
     compact_settled_api_payloads(authority.db)
     with authority.db._read_ctx() as conn:

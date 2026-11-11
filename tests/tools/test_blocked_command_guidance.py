@@ -204,3 +204,31 @@ class TestRepeatedBackgroundRejection:
         assert [self._escalated(r) for r in results] == [False, False, True]
         assert 'terminal(command="<cmd>", background=true, notify_on_complete=true)' in results[2]["error"]
         assert "Resend exactly this" not in results[2]["error"]
+
+    def test_auto_background_is_not_counted(self, run):
+        from tools import terminal_tool_guards as guards
+
+        for _ in range(3):
+            assert run("python3 server.py &", task_id="t")["session_id"] == "proc_fake"
+        assert guards._fg_bg_owner("t") not in guards._FG_BG_REJECTIONS
+        assert not self._escalated(run(self.AMP, task_id="t"))
+
+    def test_unbound_turn_keeps_plain_guidance(self, run):
+        from tools import terminal_tool_guards as guards
+        from tools.approval_context import set_current_observability_context
+
+        set_current_observability_context(turn_id="")  # restored by the session_key fixture
+        results = [run(self.AMP, task_id="t") for _ in range(4)]
+        assert not any(self._escalated(r) for r in results)
+        assert {r["error"] for r in results} == {_foreground_background_guidance(self.AMP)}
+        assert guards._fg_bg_owner("t") not in guards._FG_BG_REJECTIONS
+
+    def test_owner_table_is_bounded(self, monkeypatch):
+        from tools import terminal_tool_guards as guards
+
+        monkeypatch.setattr(guards, "_FG_BG_REJECTIONS", {})
+        monkeypatch.setattr(guards, "_FG_BG_MAX_OWNERS", 3)
+        monkeypatch.setattr(guards, "_fg_bg_owner", lambda task_id: task_id)
+        for i in range(10):
+            guards._foreground_background_guidance(self.AMP, task_id=f"task-{i}")
+        assert list(guards._FG_BG_REJECTIONS) == ["task-7", "task-8", "task-9"]

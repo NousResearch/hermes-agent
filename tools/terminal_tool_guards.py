@@ -159,6 +159,7 @@ _FG_BG_REJECTION_LOCK = threading.Lock()
 _FG_BG_REJECTIONS: dict[str, tuple[str, int]] = {}  # owner -> (turn id, rejections)
 _FG_BG_ESCALATE_AFTER = 3
 _CORRECTED_CALL_MAX_CHARS = 200
+_FG_BG_MAX_OWNERS = 256
 _LEADING_DETACH_WRAPPER_RE = re.compile(r"^(?:nohup|setsid)\s+(?=[^\s-])")
 
 
@@ -222,11 +223,18 @@ def _foreground_background_guidance(command: str, task_id: str = "") -> str | No
         return msg
     from tools.approval_context import get_current_turn_id
 
-    owner, turn = _fg_bg_owner(task_id), get_current_turn_id()
+    turn = get_current_turn_id()
+    if not turn:  # no agent turn bound (e.g. execute_code RPC): plain guidance, nothing stored
+        return msg
+    owner = _fg_bg_owner(task_id)
     with _FG_BG_REJECTION_LOCK:
-        last_turn, count = _FG_BG_REJECTIONS.get(owner, (turn, 0))
+        last_turn, count = _FG_BG_REJECTIONS.pop(owner, (turn, 0))
         count = (count if last_turn == turn else 0) + 1
         _FG_BG_REJECTIONS[owner] = (turn, count)
+        # Bare task-id owners (no session key) are never cleared by clear_session: keep the
+        # most recently rejected owners only.
+        while len(_FG_BG_REJECTIONS) > _FG_BG_MAX_OWNERS:
+            del _FG_BG_REJECTIONS[next(iter(_FG_BG_REJECTIONS))]
     if count < _FG_BG_ESCALATE_AFTER:
         return msg
     return _escalated_guidance(command, msg, count)

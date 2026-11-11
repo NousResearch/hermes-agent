@@ -1,0 +1,33 @@
+# Draft catalog entry — submit only after ROCK's final GO.
+name: ideacut
+repo: "https://github.com/ranggaoscar/ideacut"
+sha: "ac10a0d8cd98debc762fd5fe1c9878dbe44f801f"
+version: "1.1.0"
+title: "IDEA CUT"
+description: >-
+  Turns a chat brief into an editable, art-directed video: six agent tools capture a
+  public page, write typed scenes, revise them and export H.264 MP4 locally with
+  Chromium and FFmpeg. Capture goes through a loopback validating proxy that refuses
+  private/loopback/metadata targets. Optional narration is sent to the user's
+  configured TTS provider; the live preview is silent.
+maintainer: "ROCK"
+tier: community
+category: desktop
+platforms: [windows, macos, linux]
+requires_hermes: ">=0.23.0"
+capabilities:
+  provides_tools:
+    - ideacut_create
+    - ideacut_edit
+    - ideacut_get
+    - ideacut_capture
+    - ideacut_preview
+    - ideacut_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Narration uses an internal Hermes TTS import (catalog rule 9 warning); a public seam is not available yet."
+  - "Scenes use still images; there is no video-clip import or screen recorder."
+  - "The preview is silent; music and voice exist only in the exported file."
+docs_url: "https://github.com/ranggaoscar/ideacut#readme"

@@ -672,3 +672,59 @@ assert handshake(port_b), "the appended CA was not loaded"
             env=env, capture_output=True, text=True, timeout=60, check=False,
         )
         assert child.returncode == 0, child.stdout + child.stderr
+
+
+@pytest.mark.platforms("linux")  # the OpenSSL backend's distro-candidate fallback
+def test_memoized_context_picks_up_a_changed_distro_fallback_bundle(tmp_path):
+    """With no usable OpenSSL default (``SSL_CERT_FILE`` missing, ``SSL_CERT_DIR`` empty) truststore
+    loads the first existing distro candidate bundle. A CA appended to that bundle must be trusted
+    on the same context: the memo has to notice the fallback file changing, not only the defaults."""
+    import importlib.util
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("truststore") is None:
+        pytest.skip("truststore not installed (3.11-3.13 bridge installs)")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "empty_dir").mkdir()
+    with _private_https_server(tmp_path / "a") as (server_a, ca_a), \
+            _private_https_server(tmp_path / "b") as (server_b, ca_b):
+        bundle = tmp_path / "distro.pem"
+        bundle.write_bytes(ca_a.read_bytes())
+        script = """
+import socket, ssl, sys
+port_a, port_b, bundle, ca_b = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4]
+import truststore._openssl
+truststore._openssl._CA_FILE_CANDIDATES[:] = [bundle]  # stand-in for /etc/ssl/certs/...
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+defaults = ssl.get_default_verify_paths()
+assert defaults.cafile is None, defaults  # the fallback path is the one in force
+ctx = ssl.create_default_context()
+
+def handshake(port):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with ctx.wrap_socket(raw, server_hostname="127.0.0.1"):
+            return True
+
+assert handshake(port_a) and handshake(port_a)
+try:
+    handshake(port_b)
+except ssl.SSLCertVerificationError:
+    pass
+else:
+    raise AssertionError("a CA outside the fallback bundle was trusted")
+with open(bundle, "ab") as fh, open(ca_b, "rb") as extra:
+    fh.write(extra.read())
+assert handshake(port_b), "the CA appended to the fallback bundle was not loaded"
+"""
+        env = _child_env(tmp_path)
+        env["SSL_CERT_FILE"] = str(tmp_path / "missing.pem")
+        env["SSL_CERT_DIR"] = str(tmp_path / "empty_dir")
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(server_a.server_port), str(server_b.server_port),
+             str(bundle), str(ca_b)],
+            env=env, capture_output=True, text=True, timeout=60, check=False,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr

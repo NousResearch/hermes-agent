@@ -1,0 +1,24 @@
+name: printsi
+title: printsi
+repo: https://github.com/magnusahmad/printsi-agent-plugins
+sha: 4a9ab0e7ea03d05a705eaa386c1214c44e738708
+subdir: printsi
+description: "Check a print-ready PDF for free (bleed, trim size, safe areas, image resolution, fonts, colour, with previews and a fix for each issue), then have it professionally printed and delivered: the agent gets a quote and a payment link, a person pays on Stripe, and the order is tracked. Flyers today, delivered in the contiguous US. Portable Agent Plugins v1 package (mcp.json + one skill), no Python or executables; the stdio MCP server is the printsi CLI run through npx at an exact version (printsi@0.2.1), so Node.js 18+ is required. Disclosure — calls the printsi API (printsi-api-live.magnus-ahmad.workers.dev); uploads the PDF being checked or printed and sends the delivery name, address, phone and email to printsi and its print supplier; orders cost real money, but the plugin cannot pay: order_purchase returns a link and a person pays on Stripe, with the card held until the printer accepts; the server is marked untrusted, so Hermes asks before every tool that uploads or changes something; on first use it creates a printsi guest key and keeps it, with order tokens, in the plugin's own data folder in the Hermes profile; npx downloads the pinned CLI from npm, and the skill's optional helper scripts run Chrome and Ghostscript locally and fetch segno from PyPI through uvx; no telemetry (PRINTSI_TELEMETRY=0), no update checks, no self-updating code."
+maintainer: magnusahmad
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/magnusahmad/printsi-agent-plugins/tree/main/printsi#readme
+version: "0.2.1"
+image: https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/4a9ab0e7ea03d05a705eaa386c1214c44e738708/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/4a9ab0e7ea03d05a705eaa386c1214c44e738708/docs/screenshot-1-fail.png
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/4a9ab0e7ea03d05a705eaa386c1214c44e738708/docs/screenshot-2-quote.png
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/4a9ab0e7ea03d05a705eaa386c1214c44e738708/docs/screenshot-3-approve-pay.png
+  - https://raw.githubusercontent.com/magnusahmad/printsi-agent-plugins/4a9ab0e7ea03d05a705eaa386c1214c44e738708/docs/screenshot-4-delivered.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

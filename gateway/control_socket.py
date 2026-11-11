@@ -150,7 +150,8 @@ def _detect_supervisor() -> str:
         return "launchd"
     if env.get("HERMES_DESKTOP_MANAGED"):
         return "desktop"
-    return "external" if "--external-supervisor" in sys.argv else "manual"
+    # The s6 run script (S6ServiceManager._render_run_script) relaunches the gateway after any exit but 0/78.
+    return "external" if env.get("HERMES_S6_SUPERVISED_CHILD") or "--external-supervisor" in sys.argv else "manual"
 
 
 def _structured_login_subject(value: str) -> bool:

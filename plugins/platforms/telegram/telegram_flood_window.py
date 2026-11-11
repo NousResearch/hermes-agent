@@ -91,9 +91,9 @@ async def delete_message(adapter: Any, chat_id: str, message_id: str) -> bool:
 
 async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]]) -> SendResult:
     """``TelegramAdapter.send_draft`` body: rich draft, else MarkdownV2 then plain ``sendMessageDraft``."""
+    from telegram.constants import ParseMode  # not the adapter's: a lazy PTB install rebinds only the gateway's copy
     from plugins.platforms.telegram.adapter import (
-        _TEXT_SEND_DEADLINE, ParseMode, _await_with_thread_deadline, _redact_telegram_error_text, normalize_telegram_chat_id,
-        utf16_len)
+        _TEXT_SEND_DEADLINE, _await_with_thread_deadline, _redact_telegram_error_text, normalize_telegram_chat_id, utf16_len)
     if not adapter._bot:
         return SendResult(success=False, error="not_connected")
     # A frame inside the chat's flood window is skipped (#107612): the next frame or the final send supersedes it.

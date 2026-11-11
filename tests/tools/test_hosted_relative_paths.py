@@ -103,3 +103,71 @@ def test_local_relative_path_still_anchors_on_the_process_cwd(monkeypatch, host_
     assert written.get("resolved_path") == expected, written
     with open(expected, encoding="utf-8") as fh:
         assert fh.read() == "x\n"
+
+
+@pytest.fixture
+def unknown_sandbox_cwd(monkeypatch):
+    """Shape A: the backend's default cwd is ``~`` and the sandbox declares no usable home (its environment reports a
+    relative cwd), so no in-sandbox directory is known to anchor a relative path on."""
+    monkeypatch.setattr(c.RecordingSandboxProvider, "default_cwd", property(lambda self: "~"), raising=False)
+    monkeypatch.setattr(c.RecordingSandboxProvider, "create_environment",
+                        lambda self, **kw: c.RecordingSandboxEnvironment(self, kw["sandbox"], "relative-cwd"))
+
+
+_RELATIVE_CALLS = [
+    ("write_file", {"path": "rel.txt", "content": "x\n"}, "'rel.txt'"),
+    ("read_file", {"path": "rel.txt"}, "'rel.txt'"),
+    ("patch", {"path": "rel.txt", "old_string": "x", "new_string": "y"}, "'rel.txt'"),
+    ("search_files", {"pattern": "x", "path": "."}, "'.'"),
+]
+
+
+def test_hosted_relative_path_with_no_known_sandbox_cwd_is_sent_as_written(provider, host_paths, unknown_sandbox_cwd):
+    """With no known sandbox directory a relative path is the sandbox's to anchor: every file tool sends it as written,
+    never joined to this host's process cwd or HOME, refuses nothing, and looks nothing up on this host."""
+    from pathlib import Path
+
+    host_home, host_cwd = host_paths
+    results, sent, looked_up = [], [], []
+    with c._watch_host(Path(host_cwd)), c._watch_host(Path(host_home)) as touched, c._bind(A):
+        # The write guards check this host's fixed approval / deny list on every write, whatever the path: what a
+        # hosted write and patch of an ABSOLUTE sandbox path touch here is exactly that list.
+        c.call_tool("write_file", {"path": "/workspace/abs.txt", "content": "x\n"}, task_id="t")
+        c.call_tool("patch", {"path": "/workspace/abs.txt", "old_string": "x", "new_string": "y"}, task_id="t")
+        fixed = set(touched)
+        for name, args, _ in _RELATIVE_CALLS:
+            seen, opened = len(provider.calls), len(touched)
+            results.append(c.call_tool(name, args, task_id="t"))
+            sent.append("\n".join(f"{call.command}\n{call.stdin}" for call in provider.calls[seen:]))
+            looked_up.append(list(touched[opened:]))
+    assert not any(host_cwd in t or "abs.txt" in t for t in fixed), fixed
+    for (name, _, as_written), result, commands, host_touches in zip(_RELATIVE_CALLS, results, sent, looked_up):
+        tolerated = fixed if name in ("write_file", "patch") else set()
+        assert not [t for t in host_touches if t not in tolerated], (name, host_touches)
+        assert as_written in commands, (name, commands)
+        returned = json.dumps(result)
+        assert "Pass an absolute path" not in returned, (name, result)
+        for host_path in (host_home, host_cwd):
+            assert host_path not in commands and host_path not in returned, (name, host_path, commands, result)
+
+
+def test_hosted_relative_write_then_read_address_the_same_sandbox_file(provider, host_paths, unknown_sandbox_cwd):
+    with c._bind(A):
+        seen = len(provider.calls)
+        written = c.call_tool("write_file", {"path": "rel.txt", "content": "x\n"}, task_id="t")
+        wrote = [call.command for call in provider.calls[seen:]]
+        seen = len(provider.calls)
+        read = c.call_tool("read_file", {"path": "rel.txt"}, task_id="t")
+        reads = [call.command for call in provider.calls[seen:]]
+    assert "error" not in written and "error" not in read, (written, read)
+    assert any("t='rel.txt'" in command for command in wrote), wrote
+    assert reads and all("'rel.txt'" in command for command in reads), reads
+
+
+def test_hosted_absolute_path_with_no_known_sandbox_cwd_still_works(provider, host_paths, unknown_sandbox_cwd):
+    with c._bind(A):
+        written = c.call_tool("write_file", {"path": "/workspace/abs.txt", "content": "x\n"}, task_id="t")
+        read = c.call_tool("read_file", {"path": "/workspace/abs.txt"}, task_id="t")
+    assert written.get("resolved_path") == "/workspace/abs.txt" and "error" not in read, (written, read)
+    assert "'/workspace/abs.txt'" in _sent(provider)
+    assert not any(host_path in _sent(provider) for host_path in host_paths)

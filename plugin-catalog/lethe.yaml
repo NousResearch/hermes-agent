@@ -1,18 +1,23 @@
 name: lethe
 title: Lethe
 repo: https://github.com/itsflownium/hermes-lethe
-sha: fc86c50198bc2450bc38458055448b489e2d12ea
-description: "Take one chat off the record with /lethe: nothing reaches memory, your profile or skills, the transcript is deleted, and a river shows every write it kept out."
+sha: 4fa0e3181904d9e47eb61d06acb76989342018d2
+description: |-
+  Take one chat off the record with /lethe: nothing reaches memory, your profile or skills, the transcript is deleted, and a river shows every write it kept out.
+
+  Use an external memory provider? Copy this into a Hermes chat and replace <PROVIDER> with yours:
+
+  Extend my local Lethe plugin (~/.hermes/plugins/lethe) so off-the-record chats also skip my <PROVIDER> memory provider's per-turn sync, session-end extraction and save tools when store.is_on(session_id) is true. Show me the diff, add a test, then run hermes gateway restart.
 maintainer: itsflownium
 tier: community
 category: memory
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/itsflownium/hermes-lethe#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/itsflownium/hermes-lethe/fc86c50198bc2450bc38458055448b489e2d12ea/assets/social-preview.png
+image: https://raw.githubusercontent.com/itsflownium/hermes-lethe/4fa0e3181904d9e47eb61d06acb76989342018d2/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/fc86c50198bc2450bc38458055448b489e2d12ea/assets/review/panel-light.png
-  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/fc86c50198bc2450bc38458055448b489e2d12ea/assets/review/panel-dark.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/4fa0e3181904d9e47eb61d06acb76989342018d2/assets/review/panel-light.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/4fa0e3181904d9e47eb61d06acb76989342018d2/assets/review/panel-dark.png
 readme: true
 platforms: [linux, macos]
 known_issues:

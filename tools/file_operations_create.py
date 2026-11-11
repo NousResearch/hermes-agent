@@ -10,8 +10,11 @@ _SHELL_CREATE = (
     'd="$(dirname -- "$t")"; mkdir -p -- "$d" || exit 1; '
     'command -v link >/dev/null 2>&1 || { cat >/dev/null; '
     'echo "create_only needs python3 or link(1) on the terminal backend"; exit 1; }; '
+    # dash/ash skip the EXIT trap on a fatal signal, so trap the catchable ones
+    # too (before mktemp) and leave through the EXIT cleanup with a nonzero code.
+    "tmp=; trap '[ -z \"$tmp\" ] || rm -f \"$tmp\"' EXIT; "
+    "trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; "
     'tmp="$(mktemp "$d/.hermes-create-XXXXXX")" || exit 1; '
-    "trap 'rm -f \"$tmp\"' EXIT; "
     'cat > "$tmp" || exit 1; chmod "=rw" "$tmp" 2>/dev/null; '
     'link "$tmp" "$t" 2>/dev/null && exit 0; '
     'if [ -e "$t" ] || [ -L "$t" ]; then echo already_exists; exit 17; fi; '
@@ -26,9 +29,15 @@ def atomic_create(ops, path, content):
     directories. Other processes see the complete file once publication succeeds.
     Backends lacking hard links fail safely; no overwrite fallback is allowed.
     Remote backends without python3 run the equivalent ``link(1)`` shell script.
+    Both remove the temp file on normal exit, errors and SIGINT/SIGTERM/SIGHUP;
+    SIGKILL or losing the backend mid-write can leave a ``.hermes-create-*``
+    file in the target directory.
     """
     snippet = (
-        "import os, sys, tempfile\n"
+        "import os, signal, sys, tempfile\n"
+        "for signum in (getattr(signal, 'SIGTERM', None), getattr(signal, 'SIGHUP', None)):\n"
+        "    if signum:  # exit through the finally below, which removes the temp file\n"
+        "        signal.signal(signum, lambda n, f: sys.exit(128 + n))\n"
         f"path = {json.dumps(path)}\n"
         "parent = os.path.dirname(path) or '.'\n"
         "os.makedirs(parent, exist_ok=True)\n"

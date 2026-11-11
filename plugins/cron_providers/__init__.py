@@ -30,20 +30,6 @@ def _is_cron_provider_dir(path: Path) -> bool:
         return False
 
 
-def _user_provider_dirs() -> list[Path]:
-    """User-installed ``$HERMES_HOME/plugins/<name>/`` dirs that look like cron providers."""
-    user_dir = _loader.user_plugins_dir()
-    return [c for c in _loader.iter_plugin_dirs(user_dir) if _is_cron_provider_dir(c)] if user_dir else []
-
-
-def _iter_provider_dirs() -> list[tuple[str, Path]]:
-    """``(name, path)`` for bundled then user providers; bundled wins on collisions."""
-    dirs = [(child.name, child) for child in _loader.iter_plugin_dirs(_CRON_PLUGINS_DIR)]
-    seen = {name for name, _ in dirs}
-    dirs.extend((child.name, child) for child in _user_provider_dirs() if child.name not in seen)
-    return dirs
-
-
 def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider name to its directory (bundled first, then user-installed)."""
     bundled = _CRON_PLUGINS_DIR / name
@@ -52,13 +38,6 @@ def find_provider_dir(name: str) -> Optional[Path]:
     user_dir = _loader.user_plugins_dir()
     user = user_dir / name if user_dir else None
     return user if user and user.is_dir() and _is_cron_provider_dir(user) else None
-
-
-def discover_cron_schedulers() -> list[tuple[str, str, bool]]:
-    """Return ``[(name, description, is_available), ...]`` for all discovered providers."""
-    return [(name, _loader.read_plugin_description(child),
-             _loader.probe_availability(lambda c=child: _load_provider_from_dir(c)))
-            for name, child in _iter_provider_dirs()]
 
 
 def load_cron_scheduler(name: str) -> Optional[CronScheduler]:

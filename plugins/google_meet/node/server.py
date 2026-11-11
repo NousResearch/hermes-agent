@@ -21,7 +21,7 @@ from plugins.google_meet._jsonfile import read_json, say_queue_lock
 from utils import atomic_json_write
 from plugins.google_meet.node import protocol as _proto
 
-_START_BOT_KEYS = ("url", "guest_name", "duration", "headed", "auth_state", "session_id", "out_dir")
+_START_BOT_KEYS = ("url", "guest_name", "duration", "headed", "mode", "auth_state", "session_id", "out_dir")
 
 
 class _RpcError(Exception):

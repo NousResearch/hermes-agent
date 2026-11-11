@@ -63,9 +63,7 @@ def _install_fake_websockets(monkeypatch, fake_ws):
     def _connect(url, **kwargs):
         captured["url"] = url
         captured["kwargs"] = kwargs
-        captured["headers"] = (
-            kwargs.get("additional_headers") or kwargs.get("extra_headers")
-        )
+        captured["headers"] = kwargs.get("additional_headers")
         return fake_ws
 
     mod_sync_client.connect = _connect

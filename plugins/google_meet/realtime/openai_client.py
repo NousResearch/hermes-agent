@@ -53,14 +53,10 @@ class RealtimeSession:
             from websockets.sync.client import connect  # type: ignore
         except ImportError as exc:  # pragma: no cover - exercised via test
             raise RuntimeError("websockets package is required for OpenAI Realtime; "
-                               "install with: pip install websockets") from exc
+                               "install with: hermes meet install --realtime") from exc
         url = f"{REALTIME_URL}?model={self.model}"
         headers = [("Authorization", f"Bearer {self.api_key}"), ("OpenAI-Beta", "realtime=v1")]
-        # Newer websockets takes additional_headers=, older extra_headers=.
-        try:
-            self._ws = connect(url, additional_headers=headers)
-        except TypeError:
-            self._ws = connect(url, extra_headers=headers)
+        self._ws = connect(url, additional_headers=headers)
         self._send_json({"type": "session.update", "session": {
             "voice": self.voice, "instructions": self.instructions, "modalities": ["audio", "text"],
             "output_audio_format": "pcm16", "input_audio_format": "pcm16"}})

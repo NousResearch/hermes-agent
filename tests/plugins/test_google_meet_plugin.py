@@ -7,7 +7,7 @@ Covers the safety-gated pieces that don't require Playwright:
   * Status / transcript writes round-trip through the file-backed state
   * Tool handlers return well-formed JSON under all branches
   * Process manager refuses unsafe URLs and clears stale state cleanly
-  * ``_on_session_end`` hook is defensive (no-ops when no bot active)
+  * ``_on_session_finalize`` hook is defensive (no-ops when no bot active)
 
 Does NOT spawn a real Chromium — we mock ``subprocess.Popen`` where needed.
 """
@@ -181,15 +181,31 @@ def test_meet_join_handler_missing_url_returns_error():
 
 
 # ---------------------------------------------------------------------------
-# _on_session_end — defensive cleanup
+# _on_session_finalize — defensive cleanup
 # ---------------------------------------------------------------------------
 
-def test_on_session_end_noop_when_nothing_active():
-    from plugins.google_meet import _on_session_end
+def test_on_session_finalize_noop_when_nothing_active():
+    from plugins.google_meet import _on_session_finalize
     # Should not raise and should not call stop().
     with patch("plugins.google_meet.pm.stop") as stop_mock:
-        _on_session_end()
+        _on_session_finalize()
     stop_mock.assert_not_called()
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_bot_survives_turn_end_and_stops_at_session_close(_isolate_home):
+    import yaml
+
+    from hermes_cli import lifecycle
+
+    (_isolate_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["google_meet"]}}))
+    with patch("plugins.google_meet.process_manager.status", return_value={"ok": True, "alive": True}), \
+            patch("plugins.google_meet.process_manager.stop") as stop_mock:
+        lifecycle.invoke_hook("on_session_end", session_id="s", completed=True, interrupted=False,
+                              model="m", platform="cli")
+        stop_mock.assert_not_called()
+        lifecycle.finalize_session(session_id="s", platform="cli", reason="exit")
+    stop_mock.assert_called_once_with(reason="session ended")
 
 
 # ---------------------------------------------------------------------------

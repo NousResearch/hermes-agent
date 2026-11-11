@@ -134,10 +134,6 @@ class _KeylessFirecrawlClient:
         return self._post("/v2/scrape", payload)
 
 
-def _get_firecrawl_gateway_url() -> str:
-    return _gateway.build_vendor_gateway_url("firecrawl")
-
-
 def _is_tool_gateway_ready() -> bool:
     """True when gateway URL + Nous Subscriber token are available."""
     return _gateway.resolve_managed_tool_gateway("firecrawl", token_reader=_gateway.peek_nous_access_token) is not None
@@ -165,10 +161,6 @@ def is_managed_route(capability: Optional[str] = None) -> bool:
     if selected is not None or _is_explicit_firecrawl_selection():
         return selected == NOUS_MANAGED_PROVIDER
     return _get_direct_firecrawl_config() is None and _is_tool_gateway_ready()
-
-
-def _firecrawl_backend_help_suffix() -> str:
-    return ", or use the Nous Tool Gateway via your subscription (FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN)" if _backend_helpers.managed_nous_tools_enabled() else ""
 
 
 def _get_firecrawl_client(capability: Optional[str] = None) -> Any:

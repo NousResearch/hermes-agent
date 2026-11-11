@@ -84,6 +84,19 @@ def test_server_ensure_token_generates_and_persists(tmp_path):
     assert "generated_at" in data
 
 
+def test_server_start_bot_forwards_realtime_mode():
+    from plugins.google_meet.node.server import _RPC
+
+    class _RecordingPM:
+        def start(self, **kwargs):
+            self.kwargs = kwargs
+            return {"ok": True}
+
+    pm = _RecordingPM()
+    _RPC["start_bot"]({"url": "https://meet.google.com/abc-defg-hij", "mode": "realtime"}, pm)
+    assert pm.kwargs["mode"] == "realtime"
+
+
 def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
 

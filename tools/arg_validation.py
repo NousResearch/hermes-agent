@@ -99,9 +99,11 @@ def flag_unknown_args(result: Any, name: str, unknown: list[str], valid: str) ->
     warning = (f"{', '.join(unknown)}: not a parameter of {name} and was probably ignored. "
                f"Valid parameters: {valid}.")
     previous = payload.get("_warning")
-    if isinstance(previous, str) and warning in previous:
-        return result  # an inline executor that dispatches through the registry is checked twice
-    payload["_warning"] = f"{previous}\n{warning}" if isinstance(previous, str) and previous else warning
+    if previous and (not isinstance(previous, str) or warning in previous):
+        # A structured warning is the tool's own; a repeat is an inline executor that
+        # dispatches through the registry and is checked twice.
+        return result
+    payload["_warning"] = f"{previous}\n{warning}" if previous else warning
     return json.dumps(payload, ensure_ascii=False)
 
 

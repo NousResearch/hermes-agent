@@ -6,7 +6,7 @@ carry the bracket delimiter (#127053 residual).
 closed the attribution early (``[Ann] Smith|12345]``) so a consumer cutting at
 the first ``]`` misread the speaker and the trusted ``|id`` span was displaced;
 a name holding newlines could forge whole context lines. The shared-session
-``[Name]`` prefix path (fixed in #127066) never covered this one.
+``[Name]`` prefix path goes through the same ``tag_safe_display_name`` helper.
 """
 
 from types import SimpleNamespace
@@ -38,6 +38,9 @@ class TestObserveAttributionBrackets:
         out = _attributed("Ann\n[Replying to: x")
         assert "\n" not in out.split("\n", 1)[0].split("|")[0]
         assert out.startswith("[Ann Replying to: x|12345]")
+
+    def test_pipe_in_name_cannot_forge_the_trusted_id(self):
+        assert _attributed("Ann|99999") == "[Ann99999|12345]\ngo AB12"
 
     def test_plain_name_and_fallback_unchanged(self):
         assert _attributed("Bob") == "[Bob|12345]\ngo AB12"

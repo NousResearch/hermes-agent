@@ -202,6 +202,7 @@ def list_notify_subs(
 def count_notify_subs(
     db_path: Optional[Path] = None,
     *,
+    connection: Optional[sqlite3.Connection] = None,
     board: Optional[str] = None,
     notifier_profiles: Optional[Iterable[str]] = None,
     include_unowned: bool = False,
@@ -218,7 +219,7 @@ def count_notify_subs(
     unreadable — callers pick their own fallback.
     """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
-    if not path.exists():
+    if connection is None and not path.exists():
         return 0
     owner_where, owner_params = _notify_profile_filter(
         notifier_profiles, include_unowned=include_unowned,
@@ -239,7 +240,7 @@ def count_notify_subs(
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    conn = connection or sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         try:
             row = conn.execute(query, params).fetchone()
@@ -249,7 +250,13 @@ def count_notify_subs(
             raise
         return int(row[0]) if row else 0
     finally:
-        conn.close()
+        if connection is None:
+            conn.close()
+
+
+def open_notify_subs_reader(db_path: Path) -> sqlite3.Connection:
+    """Open the notifier's reusable read-only subscription probe connection."""
+    return sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False)
 
 
 def remove_notify_sub(

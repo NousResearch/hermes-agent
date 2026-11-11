@@ -953,4 +953,6 @@ registry.register(
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+    # The single-task top-level shape, kept for old transcripts.
+    compat_args=("goal", "context", "images", "max_iterations", "output_schema", "role"),
 )

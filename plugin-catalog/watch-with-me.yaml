@@ -1,0 +1,21 @@
+name: watch-with-me
+repo: https://github.com/jcrabapple/watch-with-me
+sha: adb0c77fafd65d6302e51ea5b3b063cf894ec921
+version: "1.0.1"
+subdir: ""
+description: "Follows Plex playback and publishes sourced, spoiler-safe notes about the scene you are watching. Disclosure — once you link Plex (plex.tv PIN sign-in; the token is kept in plugin data), a background thread polls your Plex server for playback; notes and \"what did I just see?\" answers send subtitle/transcript text (and, with a vision model, a timeline frame) to your Hermes auxiliary model, and fetch en.wikipedia.org; optional off-by-default features: Jev entity selection sends entity names to api.typesafe.ai or openrouter.ai with your key, `download_subtitles` writes subtitle files into your Plex library, and `extract_command` runs the command you configure (for example ssh + ffmpeg) to extract subtitles; no telemetry."
+maintainer: jcrabapple
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: "https://github.com/jcrabapple/watch-with-me#readme"
+platforms: []
+capabilities:
+  provides_tools:
+    - watch_with_me_status
+    - watch_with_me_start
+    - watch_with_me_stop
+    - watch_with_me_now
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

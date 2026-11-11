@@ -1295,15 +1295,15 @@ def _reasoning_config_for_wire(agent):
 
     Once the route has answered a disable with "reasoning is mandatory"
     (``agent._reasoning_disable_rejected``), every disable — configured or
-    the one-shot continuation override — is dropped for the rest of the
-    session: the request goes out without a reasoning config and the route
+    the one-shot continuation override — is dropped until the route
+    changes: the request goes out without a reasoning config and the route
     applies its own default.
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
     if getattr(agent, "_reasoning_effort_rejected", False):
         # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:
-        # max`` on an enabled config). Omit the reasoning fields for the rest of the session —
+        # max`` on an enabled config). Omit the reasoning fields until the route changes —
         # the route default — as the auxiliary ladder does; resending would 400 identically.
         agent._wire_reasoning_config = None
         return None
@@ -1444,15 +1444,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
     _profile_endpoint = agent._reasoning_endpoint_profile() is not None
 
-    # _fixed_temperature_for_model may return the OMIT_TEMPERATURE sentinel
-    # (temperature omitted entirely), a numeric override, or None.
-    _omit_temp, _fixed_temp = False, None
-    with contextlib.suppress(Exception):
-        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
-        _ft = _fixed_temperature_for_model(agent.model, agent.base_url)
-        _omit_temp = _ft is OMIT_TEMPERATURE
-        _fixed_temp = None if _omit_temp else _ft
-
     _prefs = _provider_preferences_for_agent(agent)
 
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
@@ -1485,16 +1476,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         **_common,
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
-        is_nous=base_url_host_matches(_host, "nousresearch.com"),
-        is_qwen_portal=_is_qwen,
-        is_nvidia_nim=base_url_host_matches(_host, "integrate.api.nvidia.com"),
         is_kimi=any(base_url_host_matches(agent.base_url, h) for h in ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
         is_tokenhub=base_url_host_matches(_host, "tokenhub.tencentmaas.com"),
-        is_custom_provider=agent.provider == "custom",
-        qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
-        qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
-        fixed_temperature=_fixed_temp,
-        omit_temperature=_omit_temp,
         profile_endpoint=_profile_endpoint, endpoint_reasoning=agent._endpoint_reasoning_payload() if _profile_endpoint else None,
         provider_name=agent.provider,
     )
@@ -2420,8 +2403,8 @@ _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed",
 def _rejects_stream_options(exc: BaseException) -> bool:
     """A 400/422 whose body names ``stream_options`` as an unknown/extra field: strict
     OpenAI-compatible endpoints (Azure AI Foundry MaaS, Pydantic ``extra_forbidden``) reject
-    the usage extension outright (#9705). Distinct from "stream not supported", which flips
-    the whole session to non-streaming."""
+    the usage extension outright (#9705). Distinct from "stream not supported", which turns
+    streaming off on this route (``_disable_streaming`` is a route verdict)."""
     if getattr(exc, "status_code", None) not in (400, 422):
         return False
     body = f"{getattr(exc, 'body', '') or ''} {exc}".lower()
@@ -2578,7 +2561,7 @@ class _BedrockStream:
             "falling back to non-streaming InvokeModel.\n"
             "   Grant that action to restore streaming output.\n", diagnostic=True)
         logger.info("bedrock: converse_stream denied by IAM (%s) — "
-            "using non-streaming converse() for this session.", type(exc).__name__)
+            "using non-streaming converse() on this route.", type(exc).__name__)
         return normalize_converse_response(client.converse(**final_kwargs))
 
     def _worker(self):
@@ -2942,7 +2925,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
         # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
-        # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
+        # already 4xx'd on it on this route (``_stream_options_unsupported``, #9705; see route_verdicts).
         if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
@@ -3224,10 +3207,10 @@ class _StreamingCall(StreamingWaitMonitor):
             getattr(self.agent, "provider", "") or "unknown")
 
     def _adopt_final_response(self, final_response):
-        """Adapter returned a completed response for ``stream=True``: switch the
-        session to non-streaming and replay its content as deltas."""
+        """Adapter returned a completed response for ``stream=True``: switch this
+        route to non-streaming and replay its content as deltas."""
         logger.info("Streaming request returned a final response object instead of an iterator; "
-            "switching %s/%s to non-streaming for this session.", self.agent.provider or "unknown",
+            "switching %s/%s to non-streaming on this route.", self.agent.provider or "unknown",
             self.agent.model or "unknown")
         self.agent._disable_streaming = True
         return self._replay_final_response(final_response)
@@ -3525,14 +3508,14 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._disable_streaming = True
             logger.warning(
                 "Provider stream returned an empty SSE frame (keepalive, no payload) before any "
-                "delta — switching %s/%s to non-streaming for this session.",
+                "delta — switching %s/%s to non-streaming on this route.",
                 self.agent.provider or "unknown", self.agent.model or "unknown")
             # Durable channel, not _buffer_status: this recovery is expected to SUCCEED, and
             # buffered retry chatter is dropped on successful recovery. Fires at most once per
-            # session (streaming is off from here on).
+            # route (streaming is off on this route from here on).
             self.agent._emit_warning(
                 "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
-                "without streaming (streaming stays off for this session).")
+                "without streaming (streaming stays off on this route).")
             return
         from agent.anthropic_adapter import _is_stream_unavailable_error
         if not _is_stream_unavailable_error(e):
@@ -3584,10 +3567,10 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
 
         if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
-            # Nothing streamed yet: drop the usage extension for this session and re-open.
+            # Nothing streamed yet: drop the usage extension on this route and re-open.
             self.agent._stream_options_unsupported = True
             self._compat_retries = 1
-            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it for this session.",
+            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it on this route.",
                         getattr(e, "status_code", None))
             self._cancel_current_stream_attempt("stream_options_rejected_retry")
             self.clients.close_once("stream_options_rejected_retry")

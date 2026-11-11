@@ -243,25 +243,20 @@ def test_a_reader_exit_during_a_failed_scope_stop_is_not_reported_as_killed(monk
 
 
 class _SandboxEnv:
-    """Non-local backend double: answers the poller's log-delta, liveness and exit-code reads,
-    running ``hooks[step]`` first so a test can land a kill at an exact point."""
+    """Non-local backend double: answers the poller's combined log-delta + status read,
+    running ``hooks["poll"]`` first so a test can land a kill at an exact point."""
 
     def __init__(self, *, delta="", alive=False, hooks=None):
         self.delta, self.alive, self.hooks = delta, alive, hooks or {}
 
     def execute(self, command, **_kwargs):
-        if command.startswith("kill -0"):
-            step, out = "check", "0\n" if self.alive else "1\n"
-        elif command.startswith("kill "):
+        if command.startswith("kill "):
             return {"output": ""}
-        elif command.startswith("cat "):
-            step, out = "exit", "0\n"
-        else:
-            step, out = "delta", f"{len(self.delta.encode())} 0\n{self.delta}"
-        hook = self.hooks.pop(step, None)
+        hook = self.hooks.pop("poll", None)
         if hook:
             hook()
-        return {"output": out}
+        status = "run" if self.alive else "exit:0"
+        return {"output": f"{len(self.delta.encode())} 0 {status}\n{self.delta}"}
 
 
 def _sandbox_session(registry, monkeypatch, env) -> ProcessSession:
@@ -280,7 +275,7 @@ def _poll_sandbox(registry, session, env):
 def test_a_sandbox_exit_read_after_a_kill_keeps_the_kill(monkeypatch):
     registry = ProcessRegistry()
     killed = []
-    env = _SandboxEnv(hooks={"exit": lambda: killed.append(registry.kill_process("proc_sandbox"))})
+    env = _SandboxEnv(hooks={"poll": lambda: killed.append(registry.kill_process("proc_sandbox"))})
     session = _sandbox_session(registry, monkeypatch, env)
 
     _poll_sandbox(registry, session, env)
@@ -297,7 +292,7 @@ def test_a_sandbox_lost_after_a_kill_keeps_the_kill(monkeypatch):
         registry.kill_process("proc_sandbox")
         raise RuntimeError("sandbox reaped")
 
-    env = _SandboxEnv(alive=True, hooks={"check": kill_then_lose_the_backend})
+    env = _SandboxEnv(alive=True, hooks={"poll": kill_then_lose_the_backend})
     session = _sandbox_session(registry, monkeypatch, env)
 
     _poll_sandbox(registry, session, env)
@@ -312,7 +307,7 @@ def test_a_lost_sandbox_without_a_kill_is_reported_lost(monkeypatch):
     def lose_the_backend():
         raise RuntimeError("sandbox reaped")
 
-    env = _SandboxEnv(hooks={"check": lose_the_backend})
+    env = _SandboxEnv(hooks={"poll": lose_the_backend})
     session = _sandbox_session(registry, monkeypatch, env)
 
     _poll_sandbox(registry, session, env)
@@ -329,7 +324,7 @@ def test_sandbox_output_fetched_before_a_kill_is_not_added_after_it(monkeypatch)
     registry = ProcessRegistry()
     killed = []
     env = _SandboxEnv(delta="FINAL", alive=True,
-                      hooks={"delta": lambda: killed.append(registry.kill_process("proc_sandbox"))})
+                      hooks={"poll": lambda: killed.append(registry.kill_process("proc_sandbox"))})
     session = _sandbox_session(registry, monkeypatch, env)
     session.append_output("partial")
 
@@ -346,9 +341,9 @@ def test_a_log_rotation_seen_after_a_kill_does_not_clear_its_output(monkeypatch)
     execute = env.execute
 
     def rotated_on_the_second_read(command, **kwargs):
-        if command.startswith("O=7;"):  # second log read: the log shrank, so the offset restarts
+        if "O=7;" in command:  # second log read: the log shrank, so the offset restarts
             registry.kill_process("proc_sandbox")
-            return {"output": "3 0\nnew"}
+            return {"output": "3 0 run\nnew"}
         return execute(command, **kwargs)
 
     monkeypatch.setattr(env, "execute", rotated_on_the_second_read)

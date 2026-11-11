@@ -458,6 +458,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
   const { Textarea } = await import('@/components/ui/textarea')
   const { cn } = await import('@/lib/utils')
   const { randomUuid } = await import('@hermes/shared')
+  const { LruCache } = await import('@/lib/lru-cache')
 
   // The gateway Group Chat row's right-click menu (#143571) renders the real one.
   const { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } =
@@ -494,6 +495,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     Tip: ({ children }: { children: unknown }) => children,
     useGatewayActivationEpoch: () => 0,
     host,
+    LruCache,
     randomUuid,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,

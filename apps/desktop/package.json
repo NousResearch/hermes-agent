@@ -12,7 +12,8 @@
   "type": "module",
   "main": "dist/electron-main.mjs",
   "engines": {
-    "node": ">=26"
+    "node": ">=26",
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
   },
   "scripts": {
     "clean": "pnpm run clean:e2e && pnpm run clean:renderer && pnpm run clean:electron",

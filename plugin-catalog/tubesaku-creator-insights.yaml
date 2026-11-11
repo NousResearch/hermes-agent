@@ -1,0 +1,15 @@
+name: tubesaku-creator-insights
+repo: https://github.com/webbigdata-jp/tubesaku-mcp-server
+sha: 28add0462098cef71bd19feb1cee0d2de1ba7add
+description: "Read-only Japanese VTuber, stream, game trend and cover-song research via hosted TubeSaku MCP. Disclosure — requests and bounded tool arguments/client metadata are logged by tubesaku.com with hashed session IDs; hosted logging cannot be disabled by this package. Read terms before enabling (discovery may contact the service); the skill asks for explicit agreement before tool calls, but consent is not server-enforced. No credentials, local executable, local telemetry or self-updater. Hosted service changes independently of the pinned package."
+maintainer: webbigdata-jp
+tier: community
+category: tools
+version: "1.0.2"
+requires_hermes: ">=0.23.0"
+title: TubeSaku Creator Insights
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

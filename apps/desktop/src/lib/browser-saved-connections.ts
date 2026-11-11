@@ -9,7 +9,7 @@ import type {
 } from '@/global'
 import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, type ServedProfiles } from '@/lib/browser-served-profiles'
 import { browserApi, type BrowserBootstrap, websocketUrl } from '@/lib/browser-transport'
-import { withTimeout } from '@/lib/with-timeout'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 
 /**
  * This machine's saved gateway connections, browser side: the ONE list native Desktop keeps
@@ -324,7 +324,11 @@ export function createBrowserSavedConnections({
     setLastUsed: connectionId => mutated({ body: { id: connectionId }, method: 'POST', path: `${ROUTE}/last-used` }),
     setLaunchMode: mode => mutated({ body: { mode }, method: 'POST', path: `${ROUTE}/launch-mode` }),
     setPrimary: connectionId => mutated({ method: 'POST', path: `${ROUTE}/${id(connectionId)}/primary` }),
-    test: connectionId => api({ method: 'POST', path: `${ROUTE}/${id(connectionId)}/test`, timeoutMs: 20_000 })
+    test: connectionId => api({
+      method: 'POST',
+      path: `${ROUTE}/${id(connectionId)}/test`,
+      timeoutMs: gateway(connectionId)?.kind === 'ssh' ? BACKEND_BOOT_WAIT_TIMEOUT_MS : 20_000
+    })
   }
 
   // Another window or native Desktop may have edited the list while this tab was in the background.

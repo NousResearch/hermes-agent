@@ -3,7 +3,7 @@
 name: selenite
 title: Selenite
 repo: https://github.com/KyaniteLabs/selenite
-sha: 6bc413e9cd4497f966eec905a1f61106cd0708a4
+sha: 6603e379c8ae7fedb95e827ec95781f1e1dd77af
 description: >-
   Takes friction off the person, treated as accessibility: one test, "does this
   step, wait or check earn its cost to you?", applied to steps handed to a person,
@@ -19,21 +19,23 @@ description: >-
   card, and any error fails open. Writes a metadata-only ledger (no block reasons
   or prompt text, 0600, rotates at 4 MB), per-card question counts and a
   counts-only snapshot under plugin-data/antibeaurocracy/, and reports under
-  ~/.local/state/selenite. Reads kanban.db read-only. The CLI's opt-in --judge
+  the Selenite state directory (SELENITE_STATE, else XDG state, else HERMES_HOME).
+  Reads kanban.db read-only. The CLI's opt-in --judge
   runs a command you name; the plugin never does.
 maintainer: KyaniteLabs
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
 version: "0.5.0"
-docs_url: https://github.com/KyaniteLabs/selenite/blob/6bc413e9cd4497f966eec905a1f61106cd0708a4/README.md
+docs_url: https://github.com/KyaniteLabs/selenite/blob/6603e379c8ae7fedb95e827ec95781f1e1dd77af/README.md
 readme: true
-image: https://raw.githubusercontent.com/KyaniteLabs/selenite/6bc413e9cd4497f966eec905a1f61106cd0708a4/docs/banner.png
+image: https://raw.githubusercontent.com/KyaniteLabs/selenite/6603e379c8ae7fedb95e827ec95781f1e1dd77af/docs/banner.png
 platforms: [linux]  # add macos once the Mac capture runs it
 known_issues:
   - "Loads on the next gateway restart. Disable a standalone antibeaurocracy plugin first, or the fake-gate hooks run twice."
   - "The fake-gate classifier is deterministic and phrase-based; text it has no evidence for is recorded, never nudged or asked."
   - "Pedantry is a skill only; it is not counted in the cleanse ranking yet."
+  - "Badges for cards a person unblocks or archives clear within about a minute (Hermes fires no hook for either; Selenite checks the board read-only)."
   - "Tested on Linux; macOS and Windows unverified."
 capabilities:
   provides_tools: [selenite_ledger, bureaucracy_classify, bureaucracy_audit]

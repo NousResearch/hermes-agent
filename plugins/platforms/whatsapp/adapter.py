@@ -285,7 +285,7 @@ from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsap
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, caption_is_command
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
 
@@ -1183,7 +1183,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     cached_urls.append(path)
                     media_types.append(mime)
             media_text_inlined: list[bool] = []
-            if msg_type == MessageType.DOCUMENT and cached_urls:
+            if msg_type == MessageType.DOCUMENT and cached_urls and not caption_is_command(body):
                 body, media_text_inlined = self._inject_document_text(cached_urls, body)
             native_metadata = data.get("nativeMetadata")
             metadata: dict[str, Any] = {k: v for k, v in (

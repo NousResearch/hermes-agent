@@ -215,6 +215,21 @@ def prompt_id_counter() -> Iterator[int]:
     otherwise carry the same id as the first new card and answer it."""
     return itertools.count(secrets.randbelow(10**12) + 1)
 
+def caption_is_command(caption: Optional[str]) -> bool:
+    """A file's caption that is a slash command (``/goal summarize this``). Adapters skip inlining
+    such a file's text: prepended, it hides the command; appended, it becomes the command's
+    arguments. The agent still gets the cached path with a note to read it."""
+    head = (caption or "").lstrip().split(maxsplit=1)
+    return bool(head) and head[0].startswith("/") and "/" not in head[0][1:]
+
+
+def inline_document_text(caption: str, injection: Optional[str], inlined: list) -> tuple[str, list]:
+    """Prepend a document's inlined text to its caption: ``(text, inlined flags)``. Under a command
+    caption the text is left out and the flags cleared, so the agent is told to read the file."""
+    if not injection or caption_is_command(caption):
+        return caption, [False] * len(inlined)
+    return (f"{injection}\n\n{caption}" if caption else injection), inlined
+
 
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
     """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A

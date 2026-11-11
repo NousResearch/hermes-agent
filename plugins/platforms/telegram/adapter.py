@@ -353,7 +353,7 @@ from plugins.platforms.telegram.telegram_chunking import (
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, prompt_id_counter)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, prompt_id_counter)
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
@@ -6274,10 +6274,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if cached.kind == "audio":
                 event.message_type = MessageType.AUDIO
             logger.info("[Telegram] Cached user %s at %s (%s)", cached.kind, cached.path, cached.media_type)
-            # Inject text-readable content (≤100 KB). Gate on extension/MIME, NOT a blind UTF-8 decode:
-            # PDF/zip/docx have decodable ASCII headers. Binary files are surfaced as a cached path only.
+            # Inject text-readable content (≤100 KB); gate on extension/MIME, not a blind UTF-8 decode (PDF/zip/docx
+            # have ASCII headers). Text under a /command caption stays path-only: the command must lead to parse.
             MAX_TEXT_INJECT_BYTES = 100 * 1024
-            _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
+            _is_text = (ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")) and not caption_is_command(event.text)
             if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                 try:
                     text_content = raw_bytes.decode("utf-8")

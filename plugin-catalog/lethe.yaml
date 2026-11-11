@@ -1,7 +1,7 @@
 name: lethe
 title: Lethe
 repo: https://github.com/itsflownium/hermes-lethe
-sha: 4fa0e3181904d9e47eb61d06acb76989342018d2
+sha: 55b56fb03593fb7c76c3e450717ea4676d5df01d
 description: |-
   Take one chat off the record with /lethe: nothing reaches memory, your profile or skills, the transcript is deleted, and a river shows every write it kept out.
 
@@ -14,10 +14,10 @@ category: memory
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/itsflownium/hermes-lethe#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/itsflownium/hermes-lethe/4fa0e3181904d9e47eb61d06acb76989342018d2/assets/banner.png
+image: https://raw.githubusercontent.com/itsflownium/hermes-lethe/55b56fb03593fb7c76c3e450717ea4676d5df01d/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/4fa0e3181904d9e47eb61d06acb76989342018d2/assets/review/panel-light.png
-  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/4fa0e3181904d9e47eb61d06acb76989342018d2/assets/review/panel-dark.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/55b56fb03593fb7c76c3e450717ea4676d5df01d/assets/review/panel-light.png
+  - https://raw.githubusercontent.com/itsflownium/hermes-lethe/55b56fb03593fb7c76c3e450717ea4676d5df01d/assets/review/panel-dark.png
 readme: true
 platforms: [linux, macos]
 known_issues:

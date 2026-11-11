@@ -1,6 +1,6 @@
 name: hermes-issue-orchestrator
 repo: https://github.com/krantikaridev/hermes-issue-orchestrator
-sha: "328a8604a1b28bbebde9fd9913be02a6bf7b991a"
+sha: "9996a56a4dbdcf2bcd56f31f6940425b205af8da"
 description: GitHub issues as Hermes's task queue - claim, post progress with token counts, and hand off.
 maintainer: krantikaridev
 tier: community
@@ -9,8 +9,6 @@ requires_hermes: ">=0.22.0"
 version: "0.1.0"
 readme: true
 title: Hermes Issue Orchestrator
-known_issues:
-  - "Set plugins.entries.hermes-issue-orchestrator.settings.repo to your own repository before use; the default points at the author's sandbox."
 capabilities:
   provides_tools:
     - issue_claim

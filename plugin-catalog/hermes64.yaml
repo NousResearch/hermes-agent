@@ -1,0 +1,58 @@
+name: hermes64
+repo: https://github.com/Qhantom-Labs/hermes64
+sha: c73b0511aad40aa4deff1b58b15a660142c7b970
+subdir: ""
+title: Hermes64
+description: Author and edit room-based N64-era-style 3D games with story checks, bot playtests and local exports.
+maintainer: Qhantom-Labs
+tier: community
+category: tools
+requires_hermes: ">=0.18.2"
+docs_url: https://github.com/Qhantom-Labs/hermes64#readme
+version: "1.0.0-rc"
+image: ""
+screenshots: []
+readme: true
+platforms: []
+known_issues:
+  - "Draft platform metadata is unresolved: native Linux authoring is unavailable; platforms: [] does not establish feature parity."
+  - "Requires standard Godot 4.6.2 and matching hash-verified export templates for exports."
+  - "Windows authoring requires Job Object runner opt-in; it has no OS network or write confinement."
+  - "Windows cannot export macOS apps; final-package Mac and PC retests are pending in this draft."
+  - "No general jumping, vehicle dynamics, multiplayer or seamless open world."
+  - "Starter image audits can fail even when bots complete; agent-designed games require iteration."
+  - "Official setup fetch is human-confirmed; optional export templates download is about 1.25 GB."
+  - "macOS apps are ad-hoc signed, not notarized; other-Mac Gatekeeper acceptance is not established."
+  - "Intermediate validation retains a private host-version-probe warning and an in-process isolation note; final dependency-install gate is pending."
+capabilities:
+  provides_tools:
+    - hermes64_scaffold
+    - hermes64_kits
+    - hermes64_packs
+    - hermes64_pack_create
+    - hermes64_pack_select
+    - hermes64_pack_validate
+    - hermes64_compile
+    - hermes64_check
+    - hermes64_edit
+    - hermes64_build_assets
+    - hermes64_replay
+    - hermes64_benchmark
+    - hermes64_open
+    - hermes64_modules
+    - hermes64_module_add
+    - hermes64_module_edit
+    - hermes64_module_check
+    - hermes64_module_benchmark
+    - hermes64_audio
+    - hermes64_playtest
+    - hermes64_export
+    - hermes64_demo
+    - hermes64_doctor
+    - hermes64_pack_from_refs
+    - hermes64_cover
+    - hermes64_character
+    - hermes64_hub
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

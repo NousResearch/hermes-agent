@@ -7,8 +7,10 @@ manifest must survive the merge: node-deps reads pnpm's version from the package
 
 from __future__ import annotations
 
+import errno
 import io
 import json
+import os
 import tarfile
 from pathlib import Path
 
@@ -94,3 +96,74 @@ def test_pnpm_dirs_replace_every_case_twin_of_their_names():
     assert [key for key in env if key.upper().startswith("PNPM_CONFIG_")] == [
         "pnpm_config_store_dir", "pnpm_config_cache_dir", "pnpm_config_state_dir"]
     assert "/elsewhere" not in "".join(env.values())
+
+
+class TestScannerHolds:
+    """A Windows scanner opens what extraction just wrote, so moving or deleting it is refused for a
+    moment ([WinError 32] on a file, [WinError 5] on a directory, both EACCES). The flatten_single_dir
+    hoist waits that out (#131884); pnpm unpacks with its own hoist."""
+
+    @pytest.fixture(autouse=True)
+    def instant_backoff(self, monkeypatch):
+        from pm import filesystem
+
+        monkeypatch.setattr(filesystem, "_HELD_RETRY_DELAYS", (0,) * len(filesystem._HELD_RETRY_DELAYS))
+
+    def _hold_after_extract(self, monkeypatch, name: str, times: float) -> list[str]:
+        from pm import store
+
+        refusals: list[str] = []
+        extracted: list[Path] = []
+        real_extract, real_rename, real_unlink = store.extract, os.rename, os.unlink
+
+        def extract(archive, dest):
+            real_extract(archive, dest)
+            extracted.append(dest)
+
+        def refuse(path):
+            if extracted and os.path.basename(os.fspath(path)) == name and len(refusals) < times:
+                refusals.append(name)
+                raise PermissionError(errno.EACCES, "The process cannot access the file because it is being "
+                                      "used by another process", os.fspath(path))
+
+        def rename(src, dst, *args, **kwargs):
+            refuse(src)
+            return real_rename(src, dst, *args, **kwargs)
+
+        def unlink(path, *args, **kwargs):
+            refuse(path)
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(store, "extract", extract)
+        monkeypatch.setattr(os, "rename", rename)
+        monkeypatch.setattr(os, "unlink", unlink)
+        return refusals
+
+    def _stage(self, tmp_path: Path) -> Path:
+        package = get_package("pnpm")
+        lock = Lockfile(paths.lockfile_path())
+        exe = _tarball(tmp_path / "exe.tgz", {"pnpm.exe": b"native pnpm", "package.json": b"{}"})
+        launcher = _tarball(tmp_path / "launcher.tgz", {
+            "package.json": b"{}", "bin/pnpm.cjs": b"launcher", "dist/pnpm.cjs": b"bundle"})
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        return _prepare_artifacts(package, _LocalArchives([exe, launcher]), scratch,
+                                  lock.artifacts("pnpm", "win32-x64"), lock.version("pnpm"), "win32-x64")
+
+    @pytest.mark.parametrize("held", ["pnpm.exe", "dist", "pnpm.cjs"],
+                             ids=["executable-hoist", "launcher-dist-hoist", "launcher-leftover-removal"])
+    def test_staging_waits_out_a_scanner_hold(self, tmp_path, monkeypatch, held):
+        refusals = self._hold_after_extract(monkeypatch, held, times=2)
+
+        staged = self._stage(tmp_path)
+
+        assert refusals == [held, held]
+        assert (staged / "pnpm.exe").read_bytes() == b"native pnpm"
+        assert (staged / "dist" / "pnpm.cjs").read_bytes() == b"bundle"
+        assert not (staged / "bin").exists() and not (staged / "package").exists()
+
+    def test_a_hold_that_never_clears_still_fails_the_install(self, tmp_path, monkeypatch):
+        self._hold_after_extract(monkeypatch, "dist", times=float("inf"))
+
+        with pytest.raises(PermissionError):
+            self._stage(tmp_path)

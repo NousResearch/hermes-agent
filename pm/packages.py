@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from pm.filesystem import long_root, native
+from pm.filesystem import long_root, native, remove_tree, retry_held
 from pm.package import (
     DebPackage,
     InstallError,
@@ -818,11 +818,11 @@ class Pnpm(BinaryPackage):
         package = staged / "package"
         dist = package / "dist"
         if dist.is_dir():
-            dist.rename(staged / "dist")
+            retry_held(lambda: dist.rename(staged / "dist"))
         else:
             for item in package.iterdir():
-                item.rename(staged / item.name)
-        shutil.rmtree(package)
+                retry_held(lambda: item.rename(staged / item.name))
+        retry_held(lambda: remove_tree(package))
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
         latest = npm_dist_tags("pnpm").get("latest")

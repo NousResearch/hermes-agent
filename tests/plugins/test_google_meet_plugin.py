@@ -194,11 +194,9 @@ def test_on_session_finalize_noop_when_nothing_active():
 
 @pytest.mark.platforms("linux", "macos")
 def test_bot_survives_turn_end_and_stops_at_session_close(_isolate_home):
-    import yaml
-
     from hermes_cli import lifecycle
 
-    (_isolate_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["google_meet"]}}))
+    (_isolate_home / "config.yaml").write_text("plugins:\n  enabled:\n    - google_meet\n")
     with patch("plugins.google_meet.process_manager.status", return_value={"ok": True, "alive": True}), \
             patch("plugins.google_meet.process_manager.stop") as stop_mock:
         lifecycle.invoke_hook("on_session_end", session_id="s", completed=True, interrupted=False,

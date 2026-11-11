@@ -1,0 +1,21 @@
+name: hermes-lens
+repo: https://github.com/brukchip/hermes-lens
+sha: 487fb7c911fa91e3f3768ce863b77f030ab23b56
+title: Hermes Lens
+description: Talk to your own Hermes agent through Ray-Ban Meta glasses. A platform channel for a companion
+  iPhone app that holds a Gemini Live voice call; requests that need your data or an action become ordinary
+  messages to your agent, and Hermes approvals appear as an Approve / Decline card that only your tap resolves.
+maintainer: brukchip
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/brukchip/hermes-lens#readme
+version: "0.4.0"
+known_issues:
+  - The iPhone app is built from source with Xcode (ios/ in the repo); Meta does not yet allow glasses-toolkit apps in the App Store.
+  - The phone must reach the gateway over HTTPS, e.g. tailscale serve in front of 127.0.0.1:8795.
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: [HERMES_LENS_TOKEN, GEMINI_API_KEY]

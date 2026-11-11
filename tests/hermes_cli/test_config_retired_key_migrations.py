@@ -268,7 +268,7 @@ class TestStampIndependentStepsAreIdempotent:
 
 class TestNewerStamp:
     """A config stamped by a newer build (rollback, mixed desktop/CLI builds) is read as it is: no
-    step runs on it, unknown keys stay, whole-file saves are refused, key-level writes still save."""
+    step runs on it, so this build does not rewrite what the newer one wrote, and saves keep it."""
 
     def _newer(self, tmp_path, monkeypatch):
         from hermes_cli.config import DEFAULT_CONFIG
@@ -319,41 +319,39 @@ class TestNewerStamp:
         discovery.discover_mcp_tools()
         assert spawned == ["t"]
 
-    def test_whole_file_save_is_refused_and_key_level_write_is_kept(self, tmp_path, monkeypatch):
-        import pytest
-        from hermes_cli.config import load_config, save_config, set_config_value
+    def test_whole_file_save_keeps_what_the_newer_build_wrote(self, tmp_path, monkeypatch):
+        """Saves still work on a newer file and keep its stamp, unknown keys and legacy keys:
+        only the migration steps rewrote a newer build's settings."""
+        from hermes_cli.config import load_config, save_config
 
         config_path = self._newer(tmp_path, monkeypatch)
-        before = config_path.read_bytes()
-        with pytest.raises(RuntimeError, match="newer Hermes"):
-            save_config(load_config())
-        assert config_path.read_bytes() == before
-
-        set_config_value("display.personality", "pirate")
+        stamp = yaml.safe_load(config_path.read_text(encoding="utf-8"))["_config_version"]
+        cfg = load_config()
+        cfg.setdefault("display", {})["personality"] = "pirate"
+        save_config(cfg)
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert raw["display"]["personality"] == "pirate"
-        assert raw["_config_version"] == yaml.safe_load(before)["_config_version"]
+        assert raw["_config_version"] == stamp
         assert raw["zz_newer_section"] == {"k": 1}
         assert raw["mcp_servers"]["s"]["disabled"] is True
+        assert raw["security"]["tirith_enabled"] is True
 
-    def test_dashboard_save_is_a_409_with_the_reason(self, tmp_path, monkeypatch):
-        """The refusal is an expected config refusal: the dashboard says why (409), not 500."""
-        from starlette.testclient import TestClient
-        from hermes_cli.config_backend import ConfigWriteError
-        from hermes_cli.config import load_config, save_config
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
-        config_path = self._newer(tmp_path, monkeypatch)
-        before = config_path.read_bytes()
-        import pytest
-        with pytest.raises(ConfigWriteError) as refused:
-            save_config(load_config())
-        assert refused.value.code == "config_newer_stamp"
-        client = TestClient(app, raise_server_exceptions=False)
-        headers = {_SESSION_HEADER_NAME: _SESSION_TOKEN}
-        for path, body in (("/api/config", {"config": {"display": {"skin": "ares"}}}),
-                           ("/api/config/raw", {"yaml_text": "display:\n  skin: ares\n"})):
-            r = client.put(path, json=body, headers=headers)
-            assert r.status_code == 409, (path, r.status_code, r.text)
-            assert "newer Hermes" in r.json()["detail"]
-        assert config_path.read_bytes() == before
+def test_raw_config_editor_maps_an_expected_refusal(tmp_path, monkeypatch):
+    """PUT /api/config/raw says why an expected refusal saved nothing (409 here), not a 500."""
+    from starlette.testclient import TestClient
+    from hermes_cli import config as config_mod
+    from hermes_cli.config_backend import ConfigWriteError
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def lost_race(*_a, **_kw):
+        raise ConfigWriteError("config.yaml changed underneath this save", code="config_version_conflict")
+
+    monkeypatch.setattr(config_mod, "save_config", lost_race)
+    r = TestClient(app, raise_server_exceptions=False).put(
+        "/api/config/raw", json={"yaml_text": "display:\n  skin: ares\n"},
+        headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
+    assert r.status_code == 409, (r.status_code, r.text)
+    assert "changed underneath" in r.json()["detail"]

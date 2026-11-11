@@ -78,7 +78,14 @@ def _connector(name):
     _CatalogBackend().enable(name)
 
 
-@pytest.mark.parametrize("enable", [_picker, _route, _connector], ids=["picker", "PUT route", "connector"])
+def _config_set(name):
+    from hermes_cli.config import set_config_value
+
+    set_config_value(f"mcp_servers.{name}.enabled", "true")
+
+
+@pytest.mark.parametrize("enable", [_picker, _route, _connector, _config_set],
+                         ids=["picker", "PUT route", "connector", "config set"])
 def test_enable_clears_a_legacy_disabled_so_the_server_spawns(enable, tmp_path, monkeypatch):
     """The reader lets a legacy `disabled: true` win over `enabled`, so an enable that only set
     `enabled` reported success and left the server off. Every enable writer drops the key."""

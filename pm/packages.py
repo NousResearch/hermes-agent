@@ -801,11 +801,13 @@ class Pnpm(BinaryPackage):
     deps = ("node",)
     binary_rel = {"win32": "pnpm.exe", "posix": "pnpm"}
     flatten = False
-    gaps = {"linux-arm64-bionic": "Termux ships a prebuilt TUI; nothing installs JS workspaces on device"}
+    # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
+    exe_platforms = {"linux-arm64-bionic": "android-arm64"}
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
+        exe = self.exe_platforms.get(target, target)
         return [
-            f"https://registry.npmjs.org/@pnpm/exe.{target}/-/exe.{target}-{version}.tgz",
+            f"https://registry.npmjs.org/@pnpm/exe.{exe}/-/exe.{exe}-{version}.tgz",
             f"https://registry.npmjs.org/pnpm/-/pnpm-{version}.tgz",
         ]
 
@@ -1059,6 +1061,33 @@ class Ripgrep(BinaryPackage):
 
 
 @register
+class Just(BinaryPackage):
+    """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
+
+    name = "just"
+    optional = True
+    binary_rel = {"win32": "just.exe", "posix": "just"}
+
+    def verify(self, entry: Path, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            return Package.verify(self, entry, target)
+        return super().verify(entry, target)
+
+    def fetch_url(self, version: str, target: str) -> str:
+        if target == "linux-arm64-bionic":
+            target = "linux-arm64"  # This upstream artifact is a static musl executable.
+        triple = _RUST_TRIPLE[target].replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return f"https://github.com/casey/just/releases/download/{version}/just-{version}-{triple}.{ext}"
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        return _github_release_digests("casey/just", version).get(url.rsplit("/", 1)[-1])
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("casey/just")
+
+
+@register
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
@@ -1197,12 +1226,49 @@ class Chromium(Package):
         return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
 
 
+# A fresh Windows has no MSVCP140.dll; it must be at least the newest MSVC toolset of the binaries it serves.
+_VC_RUNTIME = {
+    "win32-x64": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/"
+                 "24a1c8dba0376d9b008ac2ba430d13c06664fc6f163511fd7866485030e289af/"
+                 "Microsoft.VC.14.51.CRT.Redist.X64.base.vsix",
+    "win32-arm64": "https://download.visualstudio.microsoft.com/download/pr/3984a6ef-2ffc-4c07-962e-bf9e9b862819/"
+                   "4090d939c83e50ba36a3023bd46c7ea622082fadd88a42bd0a9bba445ff710c8/"
+                   "Microsoft.VC.14.51.CRT.Redist.ARM64.base.vsix",
+}
+
+
+def _unpack_vc_runtime(name: str, archive: Path, staged: Path, target: str) -> None:
+    """The target's redistributable CRT DLLs, flat. The payload also carries debug builds that
+    may not be redistributed, and its ARM64 CRT folder an x64 vcruntime140_1.dll."""
+    import re
+    import zipfile
+
+    from pm.package import machine_matches_binary
+
+    shutil.rmtree(staged, ignore_errors=True)
+    staged.mkdir(parents=True, exist_ok=True)
+    arch = re.escape(target.split("-")[1])
+    member = re.compile(rf"Contents/VC/Redist/MSVC/[^/]+/{arch}/Microsoft\.VC\d+\.CRT/([^/\\]+\.dll)", re.IGNORECASE)
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            match = member.fullmatch(info.filename)
+            if match is None:
+                continue
+            dll = staged / match[1].lower()
+            dll.write_bytes(zf.read(info))
+            if machine_matches_binary(dll, target) is False:
+                dll.unlink()
+    if not (staged / "msvcp140.dll").is_file():
+        raise InstallError(name, f"{archive.name} carries no {target} msvcp140.dll")
+
+
 class LlamaCpp(BinaryPackage):
     """One llama.cpp backend build. Backends are dlopen'd plugins, so a
     usable engine is one archive per (target, backend) — plus, for CUDA, the
-    cudart archive (end users have no CUDA toolkit), and on Linux the libgomp
-    .deb. Every library lands beside llama-server: Windows resolves DLLs from
-    the executable's directory, and the Linux builds' RUNPATH is $ORIGIN.
+    cudart archive (end users have no CUDA toolkit), on Linux the libgomp
+    .deb, and on Windows Microsoft's VC++ runtime. Every library lands beside
+    llama-server: Windows resolves DLLs from the executable's directory, and
+    the Linux builds' RUNPATH is $ORIGIN.
 
     Backend is a HARDWARE choice, not a target, so each backend is its own
     optional package and the runtime asks for the one this machine can
@@ -1247,10 +1313,11 @@ class LlamaCpp(BinaryPackage):
         return [f"llama-b{version}-bin-{self.assets[target]}.{ext}"]
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
+        runtime = [libs[target] for libs in (self._LIBGOMP, _VC_RUNTIME) if target in libs]
         return [
             f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
             for asset in self._asset_names(version, target)
-        ] + ([self._LIBGOMP[target]] if target in self._LIBGOMP else [])
+        ] + runtime
 
     def fetch_url(self, version: str, target: str) -> str:
         return self.fetch_urls(version, target)[0]
@@ -1278,6 +1345,8 @@ class LlamaCpp(BinaryPackage):
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
         if archive.name.endswith(".deb"):
             unpack_deb(self.name, archive, staged)
+        elif archive.name.endswith(".vsix"):
+            _unpack_vc_runtime(self.name, archive, staged, target)
         else:
             super().unpack(archive, staged, target)
 
@@ -1420,3 +1489,14 @@ class WhisperCppCpu(BinaryPackage):
     binary_rel = {"win32-arm64": "whisper-cli.exe"}
     probe_args = ["--help"]
     url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"
+
+    def fetch_urls(self, version: str, target: str) -> list[str]:
+        return [self.fetch_url(version, target), _VC_RUNTIME[target]]
+
+    def unpack(self, archive: Path, staged: Path, target: str) -> None:
+        if archive.name.endswith(".vsix"):
+            _unpack_vc_runtime(self.name, archive, staged, target)
+            return
+        super().unpack(archive, staged, target)
+        # Before the runtime merges in beside Release/, which would leave stage() nothing to hoist.
+        flatten_single_dir(staged)

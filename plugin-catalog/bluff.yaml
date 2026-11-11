@@ -1,0 +1,24 @@
+name: bluff
+title: Bluff
+repo: https://github.com/salch-cred/bluff
+sha: 4c43c96be7a4411d91ebc0b7de59086639ce0507
+description: >-
+  Does your model make things up? Bluff asks about things that sound real but
+  don't exist (Python functions, built-in exceptions, chemical elements), mixed
+  with real ones and phrased as if they all exist, and checks whether the model
+  admits the made-up ones aren't real. The result is a bluff rate, with real
+  items as a control. Every item is checkable by machine, so no model judges
+  another. Runs on your active model through ctx.llm, no setup.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/salch-cred/bluff
+version: "0.1.0"
+
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

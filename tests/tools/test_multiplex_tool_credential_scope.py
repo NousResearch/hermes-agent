@@ -46,11 +46,11 @@ def test_weixin_home_channel_resolves_from_profile_scope_not_environ(monkeypatch
             return None
 
     monkeypatch.setenv("WEIXIN_HOME_CHANNEL", "wx-default-chat")
-    chat_id, err = send_message_tool._home_chat_id(_NoHome(), None, "weixin")
+    chat_id, _thread, err = send_message_tool._home_chat_id(_NoHome(), None, "weixin")
     assert chat_id is None and err
     # The secondary's own .env value is honoured.
     token = secret_scope.set_secret_scope({"WEIXIN_HOME_CHANNEL": "wx-secondary-chat"})
     try:
-        assert send_message_tool._home_chat_id(_NoHome(), None, "weixin") == ("wx-secondary-chat", None)
+        assert send_message_tool._home_chat_id(_NoHome(), None, "weixin") == ("wx-secondary-chat", None, None)
     finally:
         secret_scope.reset_secret_scope(token)

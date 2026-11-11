@@ -17,9 +17,10 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
+    from agent.route_verdicts import primary_runtime_for_restore
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
-            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
+            "primary_runtime": primary_runtime_for_restore(agent)}
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
@@ -47,6 +48,11 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
             api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        # Endpoint-stamped, so this applies only when the switch landed on the primary's URL; the model
+        # check keeps a fallback that shares that URL from inheriting the primary's verdicts.
+        if isinstance(primary, dict) and primary.get("model") == model:
+            from agent.route_verdicts import restore_primary_route_verdicts
+            restore_primary_route_verdicts(agent, copy.deepcopy(primary))
         if "reasoning_config" in snapshot:
             agent.reasoning_config = snapshot["reasoning_config"]
 

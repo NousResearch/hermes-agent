@@ -6,6 +6,7 @@ was CLEARED: ``turn`` at the end of every turn; ``conversation`` at conversation
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
@@ -24,6 +25,8 @@ class TurnState:
     # redirect re-anchors both to the redirecting message (#115001).
     event: Any = None
     ctx: Any = None
+    # The queued follow-up the turn is running now (its own sender's turn, see ``running_event``).
+    follow_up_event: Any = None
     started_ts: float = 0.0  # 0.0 = not running
     lease: Any = None  # cross-process active-session slot lease
     busy_ack_ts: float = 0.0  # debounce; 0.0 = never acked
@@ -35,9 +38,25 @@ class TurnState:
     # agent): ``_release_running_agent_state`` releases them once the slot clears.
     retired_agents: list[Any] = field(default_factory=list)
 
+    def running_event(self) -> Any:
+        """The event whose input the worker is running now: a drained queued follow-up, else the
+        opener. A steer or redirect folds into THIS one, so it clears the actor approvals read."""
+        return self.follow_up_event if self.follow_up_event is not None else self.event
+
+    @contextmanager
+    def running_follow_up(self, event: Any) -> Iterator[None]:
+        """Run *event* (a queued follow-up) as the slot's running turn; restore the outer one on
+        exit unless the slot was cleared or rebound meanwhile."""
+        previous, self.follow_up_event = self.follow_up_event, event
+        try:
+            yield
+        finally:
+            if self.follow_up_event is event:
+                self.follow_up_event = previous
+
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
-        self.agent = self.lease = self.event = self.ctx = None
+        self.agent = self.lease = self.event = self.ctx = self.follow_up_event = None
         self.started_ts = self.busy_ack_ts = 0.0
 
 
@@ -190,11 +209,7 @@ class SessionFieldView(_RunnerView):
 # One spec per legacy dict attribute.
 LEGACY_FIELD_SPECS: dict[str, _FieldSpec] = {
     "_running_agents": _spec("turn", "agent", None),
-    "_running_agents_ts": _spec("turn", "started_ts", float),
-    "_busy_ack_ts": _spec("turn", "busy_ack_ts", float),
     "_session_model_overrides": _spec("conversation", "model_override", None),
-    "_queued_events": _spec("conversation", "queued_events", list),
-    "_pending_approvals": _spec("persistent", "approvals", None),
     "_pending_messages": _spec("persistent", "pending_command_text", None),
 }
 

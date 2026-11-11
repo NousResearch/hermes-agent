@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 327
+   "undecided": 344
   },
   "rpc": {
    "authority": 108,
@@ -10,7 +10,7 @@
    "undecided": 182
   },
   "websocket": {
-   "undecided": 9
+   "undecided": 10
   }
  },
  "decisions": [
@@ -27,6 +27,9 @@
   {"current_path": "hermes_cli.web_routers.dashboard_ui:delete_agent_plugin", "decision": "undecided", "handler": "DELETE /api/dashboard/agent-plugins/{name:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:remove_env_var", "decision": "undecided", "handler": "DELETE /api/env", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:delete_managed_file", "decision": "undecided", "handler": "DELETE /api/files", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:remove_connection; surface: gateway_connections", "decision": "undecided", "handler": "DELETE /api/gateway-connections/{connection_id}", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:oauth_sign_out; surface: gateway_connections", "decision": "undecided", "handler": "DELETE /api/gateway-connections/{connection_id}/oauth", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:ssh_disconnect; surface: gateway_connections", "decision": "undecided", "handler": "DELETE /api/gateway-connections/{connection_id}/ssh", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:delete_learning_node", "decision": "undecided", "handler": "DELETE /api/learning/node", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_delete", "decision": "undecided", "handler": "DELETE /api/local-models/models/{model_id}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.mcp:cancel_mcp_oauth_flow", "decision": "undecided", "handler": "DELETE /api/mcp/oauth/flows/{flow_id}", "kind": "http", "ref": ""},
@@ -43,6 +46,7 @@
   {"current_path": "hermes_cli.web_routers.sessions:delete_session_endpoint", "decision": "undecided", "handler": "DELETE /api/sessions/{session_id}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:delete_webhook", "decision": "undecided", "handler": "DELETE /api/webhooks/{name}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_server_dashboard:_PluginApiHotMount", "decision": "undecided", "handler": "DELETE GET HEAD OPTIONS PATCH POST PUT /api/plugins/{name}/{path:path}", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.webapp_relay_proxy:relay_http", "decision": "undecided", "handler": "DELETE GET HEAD OPTIONS PATCH POST PUT /api/relay/{connection_id}/{path:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:get_action_status", "decision": "undecided", "handler": "GET /api/actions/{name}/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.analytics:get_models_analytics", "decision": "undecided", "handler": "GET /api/analytics/models", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.analytics:get_usage_analytics", "decision": "undecided", "handler": "GET /api/analytics/usage", "kind": "http", "ref": ""},
@@ -86,6 +90,9 @@
   {"current_path": "hermes_cli.web_routers.files:fs_list", "decision": "undecided", "handler": "GET /api/fs/list", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_read_data_url", "decision": "undecided", "handler": "GET /api/fs/read-data-url", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_read_text", "decision": "undecided", "handler": "GET /api/fs/read-text", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:list_connections; surface: gateway_connections", "decision": "undecided", "handler": "GET /api/gateway-connections", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:oauth_status; surface: gateway_connections", "decision": "undecided", "handler": "GET /api/gateway-connections/{connection_id}/oauth", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:ssh_status; surface: gateway_connections", "decision": "undecided", "handler": "GET /api/gateway-connections/{connection_id}/ssh", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:gateway_migrate_plan", "decision": "undecided", "handler": "GET /api/gateway/migrate/plan", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_base_branches_route", "decision": "undecided", "handler": "GET /api/git/base-branches", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.git:git_branches_route", "decision": "undecided", "handler": "GET /api/git/branches", "kind": "http", "ref": ""},
@@ -168,6 +175,7 @@
   {"current_path": "hermes_cli.web_routers.skills:scan_skill_hub", "decision": "undecided", "handler": "GET /api/skills/hub/scan", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:search_skills_hub", "decision": "undecided", "handler": "GET /api/skills/hub/search", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:list_skills_hub_sources", "decision": "undecided", "handler": "GET /api/skills/hub/sources", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.skills:list_skill_hub_updates", "decision": "undecided", "handler": "GET /api/skills/hub/updates", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_ssh_ownership", "decision": "undecided", "handler": "GET /api/ssh/ownership", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_status", "decision": "undecided", "handler": "GET /api/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_system_stats", "decision": "undecided", "handler": "GET /api/system/stats", "kind": "http", "ref": ""},
@@ -185,6 +193,7 @@
   {"current_path": "hermes_cli.web_routers.dashboard_ui:serve_profile_plugin_asset", "decision": "undecided", "handler": "GET /dashboard-plugins/@{profile}/{plugin_name}/{file_path:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:serve_plugin_asset", "decision": "undecided", "handler": "GET /dashboard-plugins/{plugin_name}/{file_path:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:login_page", "decision": "undecided", "handler": "GET /login", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:oauth_callback; surface: gateway_connections", "decision": "undecided", "handler": "GET /webapp/gateway-connections/oauth/callback", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.webapp:launch_page", "decision": "undecided", "handler": "GET /webapp/launch", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.webapp:child_window_page", "decision": "undecided", "handler": "GET /webapp/window", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_server_dashboard:mount_spa.<locals>.no_frontend", "decision": "undecided", "handler": "GET /{full_path:path}", "kind": "http", "ref": ""},
@@ -228,6 +237,14 @@
   {"current_path": "hermes_cli.web_routers.files:upload_managed_file", "decision": "undecided", "handler": "POST /api/files/upload", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:upload_managed_file_stream", "decision": "undecided", "handler": "POST /api/files/upload-stream", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_write_text", "decision": "undecided", "handler": "POST /api/fs/write-text", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:save_connection; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:set_last_used; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/last-used", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:set_launch_mode; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/launch-mode", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:oauth_complete; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/{connection_id}/oauth/complete", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:oauth_start; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/{connection_id}/oauth/start", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:set_primary; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/{connection_id}/primary", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections_reach:ssh_connect; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/{connection_id}/ssh", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.gateway_connections:test_connection; surface: gateway_connections", "decision": "undecided", "handler": "POST /api/gateway-connections/{connection_id}/test", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:gateway_drain", "decision": "undecided", "handler": "POST /api/gateway/drain", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:gateway_migrate", "decision": "undecided", "handler": "POST /api/gateway/migrate", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:restart_gateway", "decision": "undecided", "handler": "POST /api/gateway/restart", "kind": "http", "ref": ""},
@@ -358,6 +375,7 @@
   {"current_path": "hermes_cli.web_routers.webapp:host_terminal_ws", "decision": "undecided", "handler": "WS /api/host-terminal", "kind": "websocket", "ref": ""},
   {"current_path": "hermes_cli.web_routers.chat_ws:pty_ws", "decision": "undecided", "handler": "WS /api/pty", "kind": "websocket", "ref": ""},
   {"current_path": "hermes_cli.web_routers.chat_ws:pub_ws", "decision": "undecided", "handler": "WS /api/pub", "kind": "websocket", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.webapp_relay_proxy:relay_ws", "decision": "undecided", "handler": "WS /api/relay/{connection_id}/{path:path}", "kind": "websocket", "ref": ""},
   {"current_path": "hermes_cli.web_routers.chat_ws:gateway_ws", "decision": "undecided", "handler": "WS /api/ws", "kind": "websocket", "ref": ""},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "a2a.forward", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "agents.list", "kind": "rpc", "ref": "D3"},

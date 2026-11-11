@@ -3,7 +3,7 @@
 xAI returns HTTP 403 (not 401) with "unauthenticated:bad-credentials" when
 an OAuth2 access token has expired.  These tests verify the three fixes:
 
-1. _is_auth_error detects xAI 403 as an auth failure
+1. the aux error policy reads xAI's 403 as a refreshable auth failure
 2. _recoverable_pool_provider maps api.x.ai to xai-oauth
 3. _refresh_provider_credentials includes xai-oauth refresh logic
 """
@@ -11,19 +11,15 @@ an OAuth2 access token has expired.  These tests verify the three fixes:
 import pytest
 
 
-# ── _is_auth_error ──────────────────────────────────────────────────────────
-
-def _import_is_auth_error():
-    from agent.auxiliary_client import _is_auth_error
-    return _is_auth_error
-
+# ── auth refresh decision ───────────────────────────────────────────────────
 
 class TestIsAuthErrorXaiOauth403:
-    """Verify _is_auth_error correctly identifies xAI's 403 bad-credentials."""
+    """The shared classifier reads xAI's 403 bad-credentials as a refreshable auth failure."""
 
     @pytest.fixture(autouse=True)
     def _import(self):
-        self.is_auth_error = _import_is_auth_error()
+        from agent.auxiliary_error_policy import auth_refresh, classify_attempt
+        self.is_auth_error = lambda exc: auth_refresh(classify_attempt(exc, "xai-oauth"))
 
     def test_xai_403_bad_credentials_is_auth_error(self):
         """The exact error xAI returns for expired OAuth tokens."""

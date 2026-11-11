@@ -13,9 +13,7 @@ from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
-from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
-from hermes_cli.web_server_mcp import _normalize_mcp_server_create
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -199,44 +197,15 @@ def _resolve_profile_dir(name: str) -> Path:
     return profiles_mod.get_profile_dir(name)
 
 
-def _write_profile_mcp_servers(profile_dir: Path, servers: list[MCPServerCreate]) -> int:
-    """Write MCP server entries into ``profile_dir``'s config.yaml (HERMES_HOME-scoped).
-
-    Mirrors the per-server shape ``POST /api/mcp/servers`` builds, batched so the whole
-    profile-create write is one config save. Returns the number of servers written.
-    """
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.mcp_config import _save_bearer_auth_token
-    written = 0
-    with _hermes_home_scope(profile_dir):
-        cfg = load_config()
-        mcp = cfg.setdefault("mcp_servers", {})
-        for server in servers:
-            try:
-                name, entry, bearer_token = _normalize_mcp_server_create(server)
-            except ValueError as exc:
-                display_name = (server.name or "").strip() or "<unnamed>"
-                _log.warning("Profile-create: skipping MCP server '%s': %s", display_name, exc)
-                continue
-            if bearer_token is not None:
-                entry["headers"] = _save_bearer_auth_token(name, bearer_token)
-            mcp[name] = entry
-            written += 1
-        if written:
-            save_config(cfg)
-        elif not mcp:
-            # Don't leave the stray empty key we just created in the new profile's config.
-            cfg.pop("mcp_servers", None)
-            save_config(cfg)
-    return written
-
-
 # Skills & Tools endpoints accept an optional ``profile`` query param so the dashboard can
 # manage ANY profile's skills/toolsets ("Set as active" only flips the sticky active_profile
 # file for FUTURE invocations, which misled users into thinking toggles landed there).
 
 
 _SKILLS_PROFILE_LOCK = threading.RLock()
+# Held across a config.yaml load -> mutate -> save span (config._CONFIG_LOCK covers each call only);
+# an RLock because nested writers take it again.
+_CONFIG_MUTATION_LOCK = threading.RLock()
 
 
 @contextmanager

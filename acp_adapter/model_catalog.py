@@ -232,7 +232,9 @@ class _ModelCatalog:
             for named_model, named_desc in named_catalog:
                 is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
-                self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
+                self.add(
+                    named_slug, named_model, f"{named_label} · {named_model}", " • ".join(part for part in parts if part)
+                )
 
 
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:

@@ -246,8 +246,7 @@ def recover_config_secrets(authority, policy, skip=None):
     caller of a following session skips its followed sections: the live profile supplies them, so a key
     rotation there is not a revoked launch credential."""
     if skip is None:
-        from gateway.session_policy import FOLLOW_SECTIONS
-        skip = FOLLOW_SECTIONS if policy.follows_profile else ()
+        skip = policy.followed_sections
     ref = policy.config_secret_ref
     if not ref.startswith(PREFIX):
         values = getattr(authority, '_local_config_secrets', {}).get(ref)

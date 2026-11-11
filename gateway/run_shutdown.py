@@ -30,7 +30,11 @@ from gateway.restart import (
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
 from gateway.session_runtime_workers import uncounted_runtime_work_units
-from gateway.run_shutdown_home_notice import GatewayHomeShutdownNoticeMixin, settle_home_online_notice_debt
+from gateway.run_shutdown_home_notice import (
+    HOME_NOTICE_MUTED,
+    GatewayHomeShutdownNoticeMixin,
+    settle_home_online_notice_debt,
+)
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -1037,12 +1041,26 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 )
         notified: set[tuple[str, str, Optional[str]]] = set()
         delivered: set[tuple[str, str, Optional[str]]] = set()  # the subset that really got the notice
+        # Record the loop before sending active-chat notices: a running task in a home chat must not
+        # bypass the same restart-loop cap that applies to the home broadcast (#60438).
+        home_skip_reason = self._home_shutdown_broadcast_skip_reason()
+        muted_home_targets = set()
+        if self._home_shutdown_notice == HOME_NOTICE_MUTED:
+            muted_home_targets = {
+                _delivery_target_key(platform.value, cfg.home_channel.chat_id,
+                                     cfg.home_channel.thread_id, profile=profile)
+                for profile, platform, cfg in self._served_home_channel_configs()
+                if cfg.home_channel and cfg.home_channel.chat_id
+            }
         for session_key in self._snapshot_running_agents():
             target = await self._shutdown_notification_target(session_key)
             if target is None:
                 continue
             source, platform_str, chat_id, thread_id, profile = target
             dedup_key = _delivery_target_key(platform_str, chat_id, thread_id, profile=profile)
+            if dedup_key in muted_home_targets:
+                notified.add(dedup_key)
+                continue
             if dedup_key in notified:
                 continue
             try:
@@ -1085,7 +1103,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
             if not presented:
                 notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
-        await self._notify_home_channels_of_shutdown(msg, notified, delivered)
+        await self._notify_home_channels_of_shutdown(
+            msg, notified, delivered, skip_reason=home_skip_reason
+        )
 
     # Agent finalization / resource cleanup
     @staticmethod

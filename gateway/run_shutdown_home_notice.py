@@ -86,7 +86,9 @@ class GatewayHomeShutdownNoticeMixin:
             if cfg.home_channel and cfg.home_channel.chat_id
         )
 
-    async def _notify_home_channels_of_shutdown(self, msg: str, notified: set, delivered: set) -> None:
+    async def _notify_home_channels_of_shutdown(
+        self, msg: str, notified: set, delivered: set, *, skip_reason: Optional[str]
+    ) -> None:
         """Send ``msg`` to EVERY served profile's home channel through that profile's OWN bot.
 
         ``notified`` holds the targets the active-session pass already handled; ``delivered`` the subset
@@ -101,9 +103,8 @@ class GatewayHomeShutdownNoticeMixin:
 
         if self._home_got_active_session_notice(delivered):
             self._home_shutdown_notice = HOME_NOTICE_SENT
-        reason = self._home_shutdown_broadcast_skip_reason()  # a loop mute overrides the debt above
-        if reason is not None:
-            logger.info("Home-channel shutdown broadcast suppressed: %s", reason)
+        if skip_reason is not None:
+            logger.info("Home-channel shutdown broadcast suppressed: %s", skip_reason)
             return
         profile_adapters = getattr(self, "_profile_adapters", None) or {}
         for profile, platform, platform_cfg in list(self._served_home_channel_configs()):

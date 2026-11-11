@@ -959,9 +959,9 @@ _PROTOCOL_VIOLATION_ERROR = (
     # paperwork was skipped, so a retry usually completes; the corrective sentence below is surfaced to the
     # retry worker via the prior-attempt error in ``build_worker_context`` (guidance approach from #61817).
     # Keep this short: ``_record_task_failure`` caps the stored error at 500 chars and the worker's own
-    # last output (``kanban_db_transport.worker_final_output``, up to 400 chars) is appended — a longer preamble
-    # after it — a longer preamble truncates away the worker's explanation, which is the part the
-    # board and the retry worker need.
+    # last output (``kanban_db_transport.worker_final_output``, up to 400 chars) is appended after
+    # it — a longer preamble truncates away the worker's explanation, which is the part the board
+    # and the retry worker need.
     "worker exited cleanly (rc=0) without kanban_complete, kanban_block "
     "or kanban_request_review — protocol violation. "
     "If the prior run already did the work, verify it and "

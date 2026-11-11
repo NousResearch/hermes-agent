@@ -166,7 +166,7 @@ const authoredLabel = (label: string | undefined): string | undefined => label?.
 // records it per cell, so a label never strands its target: terminals that
 // speak OSC 8 make it clickable, and the in-process click dispatcher covers
 // the ones that don't.
-const renderLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+export const renderLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
   const target = normalizeExternalUrl(rawUrl)
 
   return (

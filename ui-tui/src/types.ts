@@ -209,6 +209,8 @@ export interface SudoReq {
 
 export interface SecretReq {
   envVar: string
+  /** Where to get the value (often the provider's API-key page), from the skill's setup metadata. */
+  help?: string
   prompt: string
   requestId: string
 }

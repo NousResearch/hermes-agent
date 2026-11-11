@@ -214,6 +214,7 @@ export function PromptZone({
         <SecretPrompt
           cols={cols}
           envVar={overlay.secret.envVar}
+          help={overlay.secret.help}
           onSubmit={onSecretSubmit}
           prompt={overlay.secret.prompt}
           t={theme}

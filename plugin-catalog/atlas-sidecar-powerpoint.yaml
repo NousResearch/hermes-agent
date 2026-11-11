@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Atlas Omnia
+name: atlas-sidecar-powerpoint
+title: "Sidecar for PowerPoint"
+repo: https://github.com/AtlasOmnia/sidecar
+subdir: powerpoint/plugins/atlas-sidecar-powerpoint
+docs_url: https://github.com/AtlasOmnia/sidecar/tree/cae879e0cddead4717ba381bc759e91552c9ee39/powerpoint#readme
+sha: cae879e0cddead4717ba381bc759e91552c9ee39
+version: "1.1.0"
+description: "Sidecar by Atlas Omnia — Your Hermes agent, in the sidebar of Microsoft Excel, Word, and PowerPoint. Sidecar puts your Hermes agent in a side panel next to the file you're working on. Ask it to draft, edit, analyze, or build without leaving your document, spreadsheet, or deck. In PowerPoint it reads slides, adds slides, text boxes and shapes, replaces and formats text, and reorders, deletes or re-lays out slides. After one manual local-CA trust step, connect with one click; approval authorizes subsequent chat-driven edits, not per-edit confirmation; runs on your machine, no API key files (protected TLS keys in plugin data). Your agent: it runs on your own Hermes setup, with the models and tools you already use. Setup: install the plugin, enable the Hermes API server, manually trust the per-install local CA using the printed command (never run automatically), load the sidebar manifest into PowerPoint, click Connect to Hermes and allow it in Hermes with /sidecar-powerpoint. Disclosure — runs an HTTPS localhost listener bound to 127.0.0.1:47650-47654 (first free port) inside the process that runs the Hermes gateway (or plugin host) from when the gateway loads the plugin (setting autostart, default on; off: from the first /sidecar-powerpoint or sidecar_powerpoint_* call) until the plugin stops or Hermes exits; it accepts only the sidebar site's exact origin (plugin setting addin_base) and exactly one Host localhost:<actual-port>. A per-install CA and localhost certificate are generated in plugin-data/atlas-sidecar-powerpoint/tls/; private keys are owner-only, never logged. For TLS it can only vouch for localhost. The trust command does not limit the certificate to TLS, so protect the key file and remove the trust when you stop using Sidecar. Critical permitted DNS localhost subtree and IP 127.0.0.1/32; no IPv6; CA validity is at most 825 days, leaf at most 397. Legacy unconstrained CAs refuse service: manually remove old trust before deleting the TLS directory and restarting. Protect its CA key and remove OS trust manually on uninstall. Requires cryptography>=43. Allowing lets the configured origin use your Hermes agent and all its tools until you revoke. Use a site you control or trust; open only documents you trust. A sidebar gets a session only after the user allows it in Hermes (/sidecar-powerpoint, or hermes sidecar-powerpoint allow); the approval is remembered as a SHA-256 hash of a per-sidebar grant in plugin-data/atlas-sidecar-powerpoint/approvals.json (owner-only) and revoked with /sidecar-powerpoint revoke. No Sidecar tool can approve; an agent with shell access could run the CLI allow command, subject to Hermes command approval. Forwards the sidebar's chat requests to the user's Hermes API server on loopback (setting api_server_url, default http://127.0.0.1:8642) with API_SERVER_KEY (requires_env, secret) read through agent.secret_scope.get_secret, kept in memory only, never written, logged or sent to the sidebar. The sidebar page is served from addin_base, outside this catalog pin; it loads Office.js from appsforoffice.microsoft.com and sends document data only to the HTTPS localhost bridge; a reproducible build (npm run build:static) writes SHA256SUMS. Tool calls from another Hermes chat than the sidebar's are refused. The bridge makes no other outbound service calls, runs no shell commands and has no telemetry or self-updater. Hermes itself uses the configured model/provider and tools; local bridge transport is not a promise of local-only inference. Same author as Workbench (hermes-office-desktop, Office for the web in Hermes Desktop); separate lineage (desktop Office sidebar), distinct sidecar_powerpoint_ tool names and ports, installable together. Sidecar is developed by Atlas Omnia. It is not affiliated with or endorsed by Microsoft or Nous Research. Microsoft, Excel, Word, and PowerPoint are trademarks of the Microsoft group of companies."
+maintainer: AtlasOmnia
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: [macos] # Windows desktop PowerPoint is untested; not claimed as supported.
+known_issues:
+  - "TLS-only trust (-p ssl) and a server-auth EKU on the CA are planned hardening; neither is implemented yet."
+  - "Live-tested in desktop PowerPoint for Mac at `315f1f0`, 2026-11-11 about 00:32: Connect and Allow; one prompt changed slide 1's title and subtitle, verified by readback from the deck, and produced exactly one request to Hermes. After a plugin reload with the sidebar open, it showed “Lost the connection to Hermes on this computer.” with a Try again button; Try again reconnected. Revoke dropped the sidebar to “needs your OK”. In the earlier run at `3682e5f`, about 00:01 the same night (behaviour unchanged since), one prompt changed slide 1's title and subtitle and added a second slide with three bullets, verified by readback. The request stayed open for about 24 seconds with no timeout or repeat. After a plugin reload in that run the sidebar showed “Not connected” and did not reconnect within 10 seconds; reopening it connected. Reversal on request restored the deck (no real undo). Approval was remembered after restarting PowerPoint; the next Connect after revoke asked for approval again. PowerPoint needs Try again (or reopen the sidebar) after a plugin reload; Excel and Word reconnect by themselves. Both runs used a private test site via the `addin_base` setting, with the CA trusted in the login keychain only. Windows desktop PowerPoint is untested. Dark theme, keyboard-only use, PowerPoint for the web and TLS-only trust were not tested. The public GitHub Pages origin is first exercised at publication."
+  - "The sidebar must reach https://localhost with the per-install local CA manually trusted; network restrictions or missing trust leave the sidebar on 'Hermes is not reachable'."
+  - "Default addin_base: https://atlasomnia.github.io/sidecar-powerpoint/. Live-tested with the sidebar served from a private test site; the public GitHub Pages origin is first exercised at publication."
+  - "After a plugin reload, use Try again or reopen the sidebar to reconnect. After an update, close and reopen the sidebar to load the current pane. There is no real undo: Hermes reverses an edit by editing again. Stopping does not roll back edits."
+  - "Trust the plugin local CA once using the printed login-keychain command. To remove on Mac: Keychain Access > login > Certificates > Sidecar for PowerPoint local CA ... (older installs: Sidecar local CA ...) > Delete, then delete only this plugin's tls folder while stopped."
+capabilities:
+  provides_tools:
+    - sidecar_powerpoint_get_presentation_overview
+    - sidecar_powerpoint_read_selected_slides
+    - sidecar_powerpoint_read_all_slides
+    - sidecar_powerpoint_create_slide
+    - sidecar_powerpoint_create_text_slide
+    - sidecar_powerpoint_add_text_box
+    - sidecar_powerpoint_update_slide_text
+    - sidecar_powerpoint_add_shape
+    - sidecar_powerpoint_read_slide_content
+    - sidecar_powerpoint_delete_slide
+    - sidecar_powerpoint_reorder_slide
+    - sidecar_powerpoint_find_and_replace_text
+    - sidecar_powerpoint_list_slide_layouts
+    - sidecar_powerpoint_set_slide_layout
+    - sidecar_powerpoint_format_text
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - API_SERVER_KEY

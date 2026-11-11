@@ -1,6 +1,6 @@
 name: omniscience
 repo: https://github.com/KeyArgo/hermes-omniscience
-sha: 38ea8c249698235836a0aa3f35c480f2d87c93fa
+sha: baa102d2cb3937e547e2d311696475ca827d24d8
 title: Omniscience
 description: 'Local, read-only observability for Hermes Agent: a live graph of every session, turn, model request, tool call and subagent, plain-English failure briefings, and deterministic replay of a stored run. Disclosure: records sanitized metadata only (IDs, timings, model and provider names, token counts, statuses, error types, tool names, argument names and character counts) from observer hooks into a local SQLite database in the profile plugin-data directory; prompts, history, assistant text, tool argument values and results, request and response bodies, headers, environment values and credentials are never stored. The viewer is a separate process that opens the database read-only, binds 127.0.0.1, needs a per-launch key and has no write endpoints. No network calls, no LLM calls, no stored credentials, no self-updater.'
 maintainer: KeyArgo
@@ -8,10 +8,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 version: "1.0.0"
-docs_url: https://github.com/KeyArgo/hermes-omniscience/blob/38ea8c249698235836a0aa3f35c480f2d87c93fa/docs/INSTALL.md
+docs_url: https://github.com/KeyArgo/hermes-omniscience/blob/baa102d2cb3937e547e2d311696475ca827d24d8/docs/INSTALL.md
 screenshots:
-  - https://raw.githubusercontent.com/KeyArgo/hermes-omniscience/38ea8c249698235836a0aa3f35c480f2d87c93fa/docs/img/graph.png
-  - https://raw.githubusercontent.com/KeyArgo/hermes-omniscience/38ea8c249698235836a0aa3f35c480f2d87c93fa/docs/img/window-map.png
+  - https://raw.githubusercontent.com/KeyArgo/hermes-omniscience/baa102d2cb3937e547e2d311696475ca827d24d8/docs/img/graph.png
+  - https://raw.githubusercontent.com/KeyArgo/hermes-omniscience/baa102d2cb3937e547e2d311696475ca827d24d8/docs/img/window-map.png
 platforms: []
 capabilities:
   provides_tools: []

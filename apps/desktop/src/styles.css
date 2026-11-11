@@ -4269,8 +4269,9 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
 }
 
 /* Explicit stored-transcript match selection; cleared on query/scope change. */
-/* Inset: message rows use content-visibility:auto, which clips paint outside the row box. */
+/* Message rows use content-visibility:auto, which clips paint to the row box, and the user
+   message root bleeds 1rem past it on each side (-mx-4): inset the outline past that bleed. */
 [data-message-id][data-conversation-match] {
   outline: 2px solid var(--ui-accent);
-  outline-offset: -2px;
+  outline-offset: calc(-1rem - 2px);
 }

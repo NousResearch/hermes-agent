@@ -68,7 +68,8 @@ export function ConversationSearch() {
 
           const bounds = surface()?.querySelector('[data-slot="composer-bounds"]')?.getBoundingClientRect()
 
-          return bounds ? new DOMRect(bounds.left + 12, bounds.top + 8, 0, 0) : (own ?? new DOMRect())
+          // +24: Radix puts the arrow tip (12px padding + half its width) on the anchor.
+          return bounds ? new DOMRect(bounds.left + 24, bounds.top + 8, 0, 0) : (own ?? new DOMRect())
         }
       }
     }),

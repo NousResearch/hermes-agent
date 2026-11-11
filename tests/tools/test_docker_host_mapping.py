@@ -12,6 +12,10 @@ import pytest
 
 import tools.docker_host_mapping as dhm
 
+# These tests drive the detection fixtures directly; the root-conftest autouse stub
+# that pins gateway Docker detection to "bare metal" would defeat them.
+pytestmark = pytest.mark.real_container_detection
+
 
 @pytest.fixture(autouse=True)
 def _reset_caches():
@@ -229,3 +233,83 @@ class TestApplyHostMapping:
 
     def test_trailing_slashes_in_config_tolerated(self):
         assert dhm.apply_host_mapping("/opt/data/x", {"/opt/data/": "/host/data/"}) == "/host/data/x"
+
+
+class TestMountBuilderIntegration:
+    """The Docker mount builder emits HOST-view ``-v`` sources when the gateway
+    is itself containerized and gateway-view sources everywhere else. The gateway-view source
+    must exist before the mount is emitted (DinD auto-creates missing sources as dirs)."""
+
+    @staticmethod
+    def _ro_args(monkeypatch, mapping, cache_mounts):
+        import tools.credential_files as cf
+        import tools.environments.docker as docker_env
+        monkeypatch.setattr(dhm, "resolve_host_mapping", lambda: dict(mapping))
+        monkeypatch.setattr(cf, "get_cache_directory_mounts", lambda: list(cache_mounts))
+        monkeypatch.setattr(cf, "get_skills_directory_mount", list)
+        monkeypatch.setattr(cf, "get_credential_file_mounts", list)
+        return docker_env._readonly_skill_mount_args()
+
+    @staticmethod
+    def _volumes(args):
+        return [args[i + 1] for i, a in enumerate(args) if a == "-v"]
+
+    def _existing_cache_mount(self, tmp_path):
+        web = tmp_path / "opt-data" / "cache" / "web"
+        web.mkdir(parents=True)
+        return web, [{"host_path": str(web), "container_path": "/root/.hermes/cache/web"}]
+
+    def test_containerized_gateway_emits_host_paths(self, tmp_path, monkeypatch):
+        _web, mounts = self._existing_cache_mount(tmp_path)
+        args = self._ro_args(monkeypatch, {str(tmp_path / "opt-data"): "/home/user/hermes/data"}, mounts)
+        assert self._volumes(args) == ["/home/user/hermes/data/cache/web:/root/.hermes/cache/web:ro"]
+
+    def test_bare_metal_keeps_current_behavior(self, tmp_path, monkeypatch):
+        web, mounts = self._existing_cache_mount(tmp_path)
+        args = self._ro_args(monkeypatch, {}, mounts)
+        assert self._volumes(args) == [f"{web}:/root/.hermes/cache/web:ro"]
+
+    def test_missing_source_skipped_despite_mapping(self, tmp_path, monkeypatch):
+        mounts = [{"host_path": str(tmp_path / "gone"), "container_path": "/root/.hermes/cache/web"}]
+        assert self._ro_args(monkeypatch, {str(tmp_path): "/host"}, mounts) == []
+
+    def test_sandbox_dirs_mapped_gateway_view_kept(self, tmp_path, monkeypatch):
+        import tools.environments.docker as docker_env
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path / "sandboxes"))
+        monkeypatch.setattr(dhm, "resolve_host_mapping",
+                            lambda: {str(tmp_path / "sandboxes"): "/host/hermes/data/sandboxes"})
+        env = object.__new__(docker_env.DockerEnvironment)
+        env._persistent = True
+        env._sandbox_mounts = []
+        _volume_args, writable = docker_env.DockerEnvironment._mount_args(env, [], None, False, "t1")
+        assert self._volumes(writable) == [
+            "/host/hermes/data/sandboxes/docker/t1/home:/root",
+            "/host/hermes/data/sandboxes/docker/t1/workspace:/workspace",
+        ]
+        # Gateway-side bookkeeping (chown/reclaim) keeps the gateway-view paths.
+        assert env._sandbox_mounts == [
+            (str(tmp_path / "sandboxes" / "docker" / "t1" / "home"), "/root"),
+            (str(tmp_path / "sandboxes" / "docker" / "t1" / "workspace"), "/workspace"),
+        ]
+
+    def test_host_cwd_bind_translated(self, tmp_path, monkeypatch):
+        import tools.environments.docker as docker_env
+        repo = tmp_path / "opt-data" / "repo"
+        repo.mkdir(parents=True)
+        monkeypatch.setattr(dhm, "resolve_host_mapping", lambda: {str(tmp_path / "opt-data"): "/host/data"})
+        env = object.__new__(docker_env.DockerEnvironment)
+        env._persistent = False
+        env._sandbox_mounts = []
+        volume_args, _writable = docker_env.DockerEnvironment._mount_args(env, [], str(repo), True, "t1")
+        assert self._volumes(volume_args) == ["/host/data/repo:/workspace"]
+        assert env.host_cwd == str(repo)  # tools still see the gateway view
+
+    def test_user_volumes_never_rewritten(self, tmp_path, monkeypatch):
+        import tools.environments.docker as docker_env
+        monkeypatch.setattr(dhm, "resolve_host_mapping", lambda: {"/opt/data": "/host/data"})
+        env = object.__new__(docker_env.DockerEnvironment)
+        env._persistent = False
+        env._sandbox_mounts = []
+        volume_args, _writable = docker_env.DockerEnvironment._mount_args(
+            env, ["/host/data/x:/in-sandbox"], None, False, "t1")
+        assert self._volumes(volume_args) == ["/host/data/x:/in-sandbox"]

@@ -1,0 +1,30 @@
+name: accountability-partner
+repo: https://github.com/ZK-Snarky/hermes-accountability-partner
+sha: 5d8cd9f1716469d9983780f1d28a39a2d4b84b47
+title: Accountability Partner
+description: "Holds you to what you said, in your own words: saves promises with your exact quote, checks in each night, takes a one-tap 'yes no' answer, and keeps an honest score (streaks, weekly 'you said, you did' receipt, consequences you chose). Checks receipts: a promise can name where proof lives and what counts as a win in the user's own rule (a WHOOP workout, GitHub commits, a Strava run, a calendar event); for a promise with a rule (e.g. 'minutes >= 30', 'commits >= 1') the plugin checks the rule in code on that tool's result; if the user allowed that tool (setting proof_tools, empty by default, via /promises allow <tool>) the plugin fetches it itself through ctx.dispatch_tool at check-in, otherwise the agent fetches it; data that falls short is shown to the user and they are asked, unless they said 'the data decides' when making the promise (then a reading that fails the rule at check-in is a miss); missing data or a failed tool is never a miss. Without a rule, promise_prove accepts only evidence text a tool really returned in that session (seen via post_tool_call). Consequences enforce themselves: on a miss the agent carries out the user's chosen consequence with any connected tool (a wallet, an app blocker), through Hermes's normal approvals, and promise_enforced counts it only with that tool's result as proof. Optional lock-in on the user's explicit words: until an end date (max 90 days, 24h cool-off) the promise can't be dropped and its consequence fires without a new yes; the user grants the enforcing tool a standing OK in Hermes once at setup. The pre_tool_call hook, only while a consequence is owed through a named tool, blocks calls over the user's max amount or to another recipient and escalates to Hermes approval when not locked in. Only the user's own words or a real tool receipt change the ledger: every write needs a quote the plugin checks against the user's current message or a tool result. Disclosure: one sqlite file under plugin-data/accountability-partner; the pre_llm_call hook sees each user message and keeps the latest per session in memory for 15 minutes for the quote check; the post_tool_call hook keeps the last 40 tool results per session in memory for 30 minutes to check receipts, writing only the short evidence quote to disk. Apart from calls to proof tools the user allowed, the plugin never calls tools itself; consequences are carried out by the agent. No network calls, shell commands, background threads, secrets or telemetry. Schedules are two Automation Blueprints the user turns on."
+maintainer: ZK-Snarky
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/ZK-Snarky/hermes-accountability-partner#readme
+version: "0.8.0"
+readme: true
+capabilities:
+  provides_tools:
+  - promise_add
+  - promise_checkin
+  - promise_drop
+  - promise_enforced
+  - promise_list
+  - promise_lock
+  - promise_prove
+  - promise_record
+  - promise_report
+  provides_hooks:
+  - post_tool_call
+  - pre_llm_call
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+  # config_schema: proof_tools (list, default [])

@@ -19,14 +19,15 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     # Keep retries fast: tiny jitter, short-but-sufficient patience.
-    monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 2.0)
-    monkeypatch.setattr(SessionDB, "_WRITE_RETRY_MIN_S", 0.001)
-    monkeypatch.setattr(SessionDB, "_WRITE_RETRY_MAX_S", 0.005)
+    monkeypatch.setattr(StoreHolder, "_WRITE_PATIENCE_S", 2.0)
+    monkeypatch.setattr(StoreHolder, "_WRITE_RETRY_MIN_S", 0.001)
+    monkeypatch.setattr(StoreHolder, "_WRITE_RETRY_MAX_S", 0.005)
     d = SessionDB(db_path=tmp_path / "state.db")
     yield d
     d.close()
@@ -83,7 +84,7 @@ class TestNoMoreRowsRetry:
     def test_exhausted_patience_propagates_the_transient_error(self, db, monkeypatch):
         """If contention never clears within the patience budget, the
         original error must surface rather than looping forever."""
-        monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.05)
+        monkeypatch.setattr(StoreHolder, "_WRITE_PATIENCE_S", 0.05)
 
         def always(conn):
             raise sqlite3.InterfaceError("no more rows available")

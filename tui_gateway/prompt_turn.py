@@ -1015,6 +1015,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
 def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseException) -> None:
     """Except-path of the turn: crash log, history restore, terminal error frame."""
     import traceback
+
+    from storage_user_copy import error_type_name
     with contextlib.suppress(Exception):
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
@@ -1022,7 +1024,7 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
                 f"\n=== turn-dispatcher exception · "
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n")
             f.write(traceback.format_exc())
-    print(f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+    print(f"[gateway-turn] {error_type_name(e)}: {e}", file=sys.stderr, flush=True)
     # A finalizer exception can leave in-memory history at the turn-start snapshot.
     _restore_agent_history_after_turn_error(session, st.agent)
     if st.terminal_callback is not None and not st.receipt_attempted:
@@ -1036,7 +1038,7 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
         # Same terminal error frame shape as the returned-error path.
         _emit_terminal_turn_error(sid, session, e, retire_marker=st.receipt_committed)
         st.error_retained = True
-        st.error_detail = _turn_failure_detail(e, type(e).__name__, st.prompt_text)
+        st.error_detail = _turn_failure_detail(e, error_type_name(e), st.prompt_text)
     except Exception as emit_exc:
         print(
             f"[gateway-turn] terminal error emit failed: {type(emit_exc).__name__}: {emit_exc}",

@@ -18,12 +18,20 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+from persistence.sqlite import _holder
+from persistence.sqlite._holder import StoreHolder
 
 
 @pytest.fixture()
-def db(tmp_path):
+def db(tmp_path, monkeypatch):
     db_path = tmp_path / "test_state.db"
     session_db = SessionDB(db_path=db_path)
+    # The store holder's queue applies each delta through the backend's registered applier; route this
+    # handle's deltas through its own update_token_counts so a test can wrap that method.
+    applier = _holder._token_delta_applier
+    monkeypatch.setattr(_holder, "_token_delta_applier", lambda holder, session_id, kwargs: (
+        session_db.update_token_counts(session_id, **kwargs) if holder is session_db._holder
+        else applier(holder, session_id, kwargs)))
     yield session_db
     session_db.close()
 
@@ -344,7 +352,7 @@ class TestDurability:
 
     def test_idle_writer_restarts_for_later_delta(self, tmp_path, monkeypatch):
         db = SessionDB(db_path=tmp_path / "writer-restart.db")
-        monkeypatch.setattr(SessionDB, "_TOKEN_WRITER_IDLE_SECONDS", 0.01)
+        monkeypatch.setattr(StoreHolder, "_TOKEN_WRITER_IDLE_SECONDS", 0.01)
         try:
             db.create_session("s-restart", "test")
             db.queue_token_counts("s-restart", input_tokens=1, api_call_count=1)
@@ -372,16 +380,18 @@ class TestDurability:
         from hermes_cli.sqlite_safe_read import has_live_connection
 
         db_path = tmp_path / "abandoned.db"
-        monkeypatch.setattr(SessionDB, "_TOKEN_WRITER_IDLE_SECONDS", 0.01, raising=False)
+        monkeypatch.setattr(StoreHolder, "_TOKEN_WRITER_IDLE_SECONDS", 0.01, raising=False)
         db = SessionDB(db_path=db_path)
         db.create_session("s-abandoned", "test")
         db.queue_token_counts("s-abandoned", input_tokens=1, api_call_count=1)
         assert db.flush_token_counts()
 
         ref = weakref.ref(db)
+        # The writer thread pins the store holder the SessionDB serves through until it retires.
+        holder_ref = weakref.ref(db._holder)
         del db
         deadline = time.monotonic() + 2.0
-        while ref() is not None and time.monotonic() < deadline:
+        while (ref() is not None or holder_ref() is not None) and time.monotonic() < deadline:
             gc.collect()
             time.sleep(0.01)
 

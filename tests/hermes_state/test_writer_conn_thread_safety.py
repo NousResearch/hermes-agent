@@ -28,13 +28,15 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+from persistence.sqlite import _schema
+from persistence.sqlite._holder import StoreHolder
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 2.0)
-    monkeypatch.setattr(SessionDB, "_WRITE_RETRY_MIN_S", 0.001)
-    monkeypatch.setattr(SessionDB, "_WRITE_RETRY_MAX_S", 0.005)
+    monkeypatch.setattr(StoreHolder, "_WRITE_PATIENCE_S", 2.0)
+    monkeypatch.setattr(StoreHolder, "_WRITE_RETRY_MIN_S", 0.001)
+    monkeypatch.setattr(StoreHolder, "_WRITE_RETRY_MAX_S", 0.005)
     d = SessionDB(db_path=tmp_path / "state.db")
     yield d
     d.close()
@@ -144,7 +146,7 @@ class TestSystemErrorTransactionBoundary:
         before = db._write_count
         maintenance_calls = {"n": 0}
 
-        def fail_once(*, max_pages):
+        def fail_once(holder, *, max_pages):
             maintenance_calls["n"] += 1
             if maintenance_calls["n"] == 1:
                 raise SystemError(
@@ -154,7 +156,7 @@ class TestSystemErrorTransactionBoundary:
             return 0
 
         monkeypatch.setattr(db, "_FTS_MERGE_EVERY_N_WRITES", 1)
-        monkeypatch.setattr(db, "_merge_fts_incrementally", fail_once)
+        monkeypatch.setattr(_schema, "_merge_fts_incrementally", fail_once)
 
         message_id = db.append_message("s1", "user", "exactly-once")
         matching = [

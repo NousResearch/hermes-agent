@@ -79,6 +79,7 @@ def test_monitor_url_rejects_direct_loopback(public_host):
     port, hits = public_host
     ok, out = _fetch_monitor_url(f"http://127.0.0.1:{port}/secret")
     assert ok is False
+    assert "monitor_url blocked:" in out
     assert "internal-secret" not in out
     assert hits == []
 
@@ -89,8 +90,9 @@ def test_monitor_url_rejects_redirect_to_loopback(public_host):
     port, hits = public_host
     ok, out = _fetch_monitor_url(f"http://{PUBLIC_HOST}:{port}/redirect")
     assert ok is False
+    assert "monitor_url blocked:" in out
     assert "internal-secret" not in out
-    assert "/secret" not in hits
+    assert hits == ["/redirect"]
 
 
 def test_monitor_url_public_fetch_still_works_and_is_capped(public_host):

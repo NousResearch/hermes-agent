@@ -4,20 +4,38 @@ repo: https://github.com/mojomast/hermes-photo-to-part
 sha: d924991f56ad4cf7b94e33f2ac5dcb6cf24fac5f
 subdir: plugin
 description: >-
-  Skill id photo-to-part:photo-to-printable-part. Pass that exact string
-  only to skill_view. Do not pass it to skills_list, and do not add a
-  plugin: prefix or a slash. Turn photos, a few
-  measurements, or a messy scan into a parametric printable part and check
-  the mesh locally. Tools read and write only the paths you pass (STL, 3MF,
-  PNG, JSON). No credentials and no printer connection. Enabling the plugin
-  installs its Python packages from PyPI after Hermes dependency consent.
-  A STEP solid needs CadQuery or build123d in the project environment; that
-  install downloads packages and can take several minutes. Chat photos still
-  go to your model provider.
-  A user-stated millimetre value is not replaced by a photo measurement.
-  Hermes --yolo auto-approves a build prompt; this plugin does not block that flag.
-  Hermes Desktop 0.23 or newer can show an optional Part studio pane while a
-  run is in progress. The six tools still install and run when that pane is unavailable.
+  Photo to Part for Hermes: turn photos, a few measurements, or a messy 3D scan
+  into a parametric printable part, and check the mesh locally before you print.
+  The agent writes the solid in code, checks that it is watertight and the right
+  size, and renders views you can hold next to the original. Six tools:
+  photo_part_template (watertight starting shapes such as plates with holes, an
+  L-bracket, a print-in-place hinge, thread, knurl, hex standoff, bottle cap,
+  spur gear and strap hinge), photo_part_build (runs one local build script
+  after Hermes approval), photo_part_validate (watertightness, shell count,
+  size, bores, printability and spec.json dimension checks), photo_part_render
+  (fitted views, a comparison sheet and a silhouette overlay scored against your
+  photo), photo_part_heal (weld, fill holes and clean up a scan) and
+  photo_part_measure (pixels per millimetre from a coin, a ruler or an
+  ArUco/AprilTag marker). Output is STL or 3MF; a STEP solid needs CadQuery or
+  build123d in the project environment. A millimetre value you state is never
+  replaced by a photo measurement. Hermes Desktop 0.23 or newer can show an
+  optional Part studio pane with the stage, photo and overlay, renders, history
+  and file paths while a run is in progress; the six tools still install and run
+  when that pane is unavailable. It is for makers replacing a broken clip,
+  bracket, knob, cap or gear, printing a fit test, or turning a scan into a
+  clean solid. To start, run hermes plugins install photo-to-part and enable it,
+  then start a new session. Attach a photo with a coin or ruler in frame, give
+  any dimensions you know, and ask for a printable replacement. The skill id is
+  photo-to-part:photo-to-printable-part. Pass that exact string only to
+  skill_view. Do not pass it to skills_list, and do not add a plugin: prefix or
+  a slash. Disclosure — files and network: tools read and write only the paths
+  you pass (STL, 3MF, PNG, JSON). No credentials and no printer connection.
+  Enabling the plugin installs its Python packages from PyPI after Hermes
+  dependency consent. Installing CadQuery or build123d for a STEP solid
+  downloads packages and can take several minutes. Chat photos still go to your
+  model provider. Disclosure — build approval: photo_part_build asks for
+  approval before it runs a local Python file with a timeout. Hermes --yolo
+  auto-approves a build prompt; this plugin does not block that flag.
 maintainer: mojomast
 tier: community
 category: tools

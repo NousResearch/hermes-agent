@@ -147,6 +147,7 @@ def test_a_standalone_linked_profile_runs_under_its_profiles_entry(tmp_path, mon
     root, _target, link = _layout(tmp_path, monkeypatch, standalone=True)
     started = []
     monkeypatch.setattr(service, 'discover_existing_gateway_service', lambda *a, **k: None)
+    monkeypatch.setattr(start, 'start_gateway_job', lambda *a, **k: None)  # plain-child fallback: the Popen fake owns the spawn
     monkeypatch.setattr(gateway_windows, 'windowless_gateway_restart_spec',
                         lambda command: (command, None, {'RUNTIME_TEST_OVERLAY': '1'}))
     monkeypatch.setattr(start.subprocess, 'Popen', lambda command, **kwargs: started.append(
@@ -179,6 +180,7 @@ def test_a_home_nested_in_a_profile_starts_as_itself(tmp_path, monkeypatch):
     nested = root / 'profiles' / 'alpha' / 'task-home'
     nested.mkdir(parents=True)
     started = []
+    monkeypatch.setattr(start, 'start_gateway_job', lambda *a, **k: None)  # plain-child fallback: the Popen fake owns the spawn
     monkeypatch.setattr(gateway_windows, 'windowless_gateway_restart_spec',
                         lambda command: (command, None, {'RUNTIME_TEST_OVERLAY': '1'}))
     monkeypatch.setattr(start.subprocess, 'Popen', lambda command, **kwargs: started.append(

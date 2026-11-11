@@ -14,7 +14,10 @@ Sync fallbacks preserved:
 """
 import json
 import threading
+import time
 from unittest.mock import patch
+
+import pytest
 
 from tests.waiting import wait_until
 
@@ -120,6 +123,19 @@ class TestBackgroundDispatch:
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
         assert "LOCAL JOB PAYLOAD" in found["summary"]
+
+    @pytest.mark.parametrize("delivery_error, echoed", [(None, False), ("chat not found", True)])
+    def test_external_delivery_echoes_job_output_only_when_delivery_failed(self, delivery_error, echoed):
+        """A failed delivery reached nobody, so its output must stay in the completion the agent
+        relays; a delivered one is not copied into the invoking session."""
+        from tools.cronjob_tools import _manual_run_completion
+
+        refreshed = {"last_status": "ok", "last_delivery_error": delivery_error}
+        with patch("tools.cronjob_tools.get_job", return_value=refreshed), \
+             patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
+            out = _manual_run_completion(
+                {"success": True}, "j1", "nightly", "telegram:-100999", time.time())
+        assert ("THE REPORT" in out["summary"]) is echoed
 
     def test_external_delivery_completion_does_not_echo_job_output(self):
         """A manual run's completion returns to the invoking session, which may

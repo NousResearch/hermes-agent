@@ -29,6 +29,8 @@ _PEER_GONE_ERRNOS = frozenset({
 
 logger = logging.getLogger(__name__)
 
+_LINE_SEPARATOR_ESCAPES = str.maketrans({"\u2028": "\\u2028", "\u2029": "\\u2029"})
+
 # When true, StdioTransport skips ``stream.flush`` after writing: on a half-closed pipe (TUI Node parent quit
 # while the gateway still emits) flush can block long enough to starve the worker pool. Python text stdout is
 # fully buffered on a pipe, so this ONLY makes sense with ``-u``/``PYTHONUNBUFFERED=1``; otherwise the TUI hangs.
@@ -85,14 +87,14 @@ def serialize_frame(obj: dict, peer: str, log: logging.Logger) -> str:
     the original id. Shared by every transport: without it the TypeError escaped from a pool
     worker (the executor swallows it), so the client waited forever with no log line (#92506)."""
     try:
-        return json.dumps(obj, ensure_ascii=False)
+        return json.dumps(obj, ensure_ascii=False).translate(_LINE_SEPARATOR_ESCAPES)
     except (TypeError, ValueError) as exc:
         rid = obj.get("id") if isinstance(obj, dict) else None
         log.error("frame serialization failed peer=%s id=%s error_type=%s error=%s",
                   peer, rid, type(exc).__name__, exc)
         fallback = {"jsonrpc": "2.0", "id": rid,
                     "error": {"code": -32603, "message": f"response serialization error: {exc}"}}
-        return json.dumps(fallback, ensure_ascii=False)
+        return json.dumps(fallback, ensure_ascii=False).translate(_LINE_SEPARATOR_ESCAPES)
 
 
 class StdioTransport:

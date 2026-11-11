@@ -1,0 +1,36 @@
+name: adeptory
+title: Adeptory
+repo: https://github.com/brefledev/adeptory
+sha: dacb27ec6a800d2e7215dff7645685a7515adb13
+subdir: ''
+image: https://raw.githubusercontent.com/brefledev/adeptory/dacb27ec6a800d2e7215dff7645685a7515adb13/docs/assets/adeptory-hero.webp
+screenshots:
+  - https://raw.githubusercontent.com/brefledev/adeptory/dacb27ec6a800d2e7215dff7645685a7515adb13/docs/assets/native-grant-operations.png
+readme: true
+description: >-
+  Builds specialist Hermes profiles with researched knowledge, searchable
+  libraries, working procedures, and a roadmap for useful tools.
+maintainer: brefledev
+tier: community
+category: tools
+requires_hermes: '>=0.23.1'
+version: '0.1.0'
+platforms: [windows]
+capabilities:
+  provides_tools:
+    - adeptory_build
+    - adeptory_library
+    - adeptory_propose
+    - adeptory_source
+    - adeptory_lookup
+    - adeptory_note
+    - adeptory_check
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_end
+  provides_middleware:
+    - llm_request
+    - tool_request
+  requires_env: []

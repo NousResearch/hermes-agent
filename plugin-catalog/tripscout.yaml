@@ -2,31 +2,11 @@ name: tripscout
 repo: https://github.com/marcofailli/tripscout
 sha: 3a0e1e1a1320669efdf0ef9d0a614050f1a47856
 subdir: ""
-description: >-
-  Cheap city-break finder: prices flights AND lodging together across a date window, adds the
-  ground cost of reaching each departure airport, and ranks whole trips by total cost, with
-  lodging-type filters (hotel/hostel/apartment) and optional food and attraction estimates.
-  Say where you leave from and it works out the airports serving you: any town on earth is
-  geocoded on OpenStreetMap and its nearest airports with scheduled flights are found in a
-  bundled OurAirports table (4,008 airports), with train/bus costs estimated from distance;
-  33 hand-checked departure presets and 49 destinations ship with it. Every result carries
-  prefilled booking links (flight, stay, ground, airport transfer). Ships
-  four agent tools plus a Hermes Desktop pane (desktop/plugin.js) whose backend runs the same
-  engine as the tools.
-  Disclosure — no API key and no account: searches read the Google Flights results page and
-  Google Hotels' public batchexecute RPC from your own IP address with a browser TLS
-  fingerprint, so the cities, airports, dates, traveller count and currency you search are
-  sent to Google and nothing else about you is. Prices, hotel names and cache keys are stored
-  locally in SQLite under Hermes' plugin data directory. A consent cookie declaring
-  essential-only cookies is sent, because from the EU Google otherwise answers with its
-  "Before you continue" interstitial instead of results; no tracking-consent value is ever
-  sent. Python dependencies (fast-flights, primp, typing_extensions) are prepared in the
-  shared plugin environment at install time with the user's consent. Nothing is booked, no
-  card or passport data is taken, and no credentials are stored.
+description: "Cheap city-break finder: prices flights AND lodging together across a date window, adds the ground cost of reaching each departure airport, and ranks whole trips by total cost, with lodging-type filters (hotel/hostel/apartment) and optional food and attraction estimates. Say where you leave from and it works out the airports serving you: any town on earth is geocoded on OpenStreetMap and its nearest airports with scheduled flights are found in a bundled OurAirports table (4,008 airports), with train/bus costs estimated from distance; 33 hand-checked departure presets and 49 destinations ship with it. Every result carries prefilled booking links (flight, stay, ground, airport transfer). Ships four agent tools plus a Hermes Desktop pane (desktop/plugin.js) whose backend runs the same engine as the tools. Disclosure — no API key and no account: searches read the Google Flights results page and Google Hotels' public batchexecute RPC from your own IP address with a browser TLS fingerprint, so the cities, airports, dates, traveller count and currency you search are sent to Google; a departure place that is not one of the built-in presets is also sent as a search query to OpenStreetMap's Nominatim geocoder (nominatim.openstreetmap.org) to find nearby airports; nothing else about you is sent. Prices, hotel names, geocoding results and cache keys are stored locally in SQLite under Hermes' plugin data directory. A consent cookie declaring essential-only cookies is sent, because from the EU Google otherwise answers with its \"Before you continue\" interstitial instead of results; no tracking-consent value is ever sent. Results include prefilled search links to Google Flights/Hotels/Maps, Booking.com, Hostelworld and Airbnb that open only when you click them. Python dependencies (fast-flights, primp, typing_extensions) are prepared in the shared plugin environment at install time with the user's consent. Nothing is booked, no card or passport data is taken, and no credentials are stored."
 maintainer: marcofailli
 tier: community
 category: tools
-requires_hermes: ">=0.23"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/marcofailli/tripscout/tree/3a0e1e1a1320669efdf0ef9d0a614050f1a47856
 version: "0.4.0"
 readme: true

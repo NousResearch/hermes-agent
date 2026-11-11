@@ -1,7 +1,7 @@
 name: sovereign-finance
 title: Sovereign Finance
 repo: https://github.com/gabonaut/hermes-sovereign-finance
-sha: a233c79d8a52c246e935a924ff31efccc4502d0c
+sha: 5433106efe38b2a2d9f4debb06f6293e0e7dbdc2
 description: "A self-custodial Smart Agentic Wallet powered by Altana, for your agent on BNB Chain and Ethereum, with a Desktop pane. Your passkey is the admin, and the agent's session key is limited onchain to the contracts, functions and daily caps you approve. Disclosure: talks to the Altana relay, public RPCs, DexScreener and skills.altana.network; runs a bundled Node CLI; serves one localhost page for passkey prompts; stores session keys (mode 0600) in plugin-data; a pre_tool_call hook guards its files and gates sovereign_execute behind approval; no telemetry."
 maintainer: gabonaut
 tier: community
@@ -9,6 +9,12 @@ category: tools
 requires_hermes: ">=0.23.0"
 version: "0.1.0"
 docs_url: https://github.com/gabonaut/hermes-sovereign-finance#readme
+image: https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/5433106efe38b2a2d9f4debb06f6293e0e7dbdc2/assets/catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/5433106efe38b2a2d9f4debb06f6293e0e7dbdc2/assets/screenshots/1-setup-steps.png
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/5433106efe38b2a2d9f4debb06f6293e0e7dbdc2/assets/screenshots/2-permissions.png
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/5433106efe38b2a2d9f4debb06f6293e0e7dbdc2/assets/screenshots/3-position-in-range.png
+  - https://raw.githubusercontent.com/gabonaut/hermes-sovereign-finance/5433106efe38b2a2d9f4debb06f6293e0e7dbdc2/assets/screenshots/4-refused-transfer.png
 platforms: [macos, linux]
 known_issues:
   - "The session scope limits contracts, functions and daily amounts. Recipients are set by the plugin before signing, so keep the session key file private."

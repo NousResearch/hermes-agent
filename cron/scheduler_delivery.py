@@ -1347,8 +1347,8 @@ def _live_send_text(
         # The head of a split send is already on screen: a standalone resend would duplicate it.
         raw = getattr(ex.result, "raw_response", None) or {}
         _note_target_error(
-            job, f"live adapter send to {t.where} delivered {raw.get('delivered_chunks', '?')} of "
-            f"{raw.get('total_chunks', '?')} chunks, then failed: {ex}", delivery_errors)
+            job, f"live adapter send to {t.where} delivered {_result_field(raw, 'delivered_chunks', '?')} "
+            f"of {_result_field(raw, 'total_chunks', '?')} chunks, then failed: {ex}", delivery_errors)
         return True, False, None
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone. The router raises
@@ -1380,8 +1380,8 @@ def _live_send_text(
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
-    if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
-        requested_thread_id = send_raw_response.get("requested_thread_id") or t.thread_id
+    if send_raw_response and t.thread_id and _result_field(send_raw_response, "thread_fallback"):
+        requested_thread_id = _result_field(send_raw_response, "requested_thread_id") or t.thread_id
         _note_target_error(
             job,
             f"configured thread_id {requested_thread_id} for "

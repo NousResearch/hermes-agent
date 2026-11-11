@@ -165,18 +165,17 @@ def write_mcp_server_enabled(cfg: dict, on: bool) -> None:
     cfg.pop("disabled", None)
 
 
-def drop_legacy_disabled_for_key(located) -> None:
+def drop_legacy_disabled_for_key(located) -> bool:
     """A generic write of ``mcp_servers.<name>.enabled`` (``hermes config set``) also drops the
     legacy ``disabled``, as :func:`write_mcp_server_enabled` does, or an enable would not take.
     *located*: ``hermes_cli.config._locate_nested`` of the written key, so a server name with a
-    dot resolves to the same entry the write landed on."""
+    dot resolves to the same entry the write landed on. True when it dropped one."""
     if located is None:
-        return
+        return False
     parents, entry, key = located
     if key != "enabled" or len(parents) != 2 or parents[0][1] != "mcp_servers" or not isinstance(entry, dict):
-        return
-    if entry.pop("disabled", None) is not None:
-        print(f"  (removed the legacy mcp_servers.{parents[1][1]}.disabled key)")
+        return False
+    return entry.pop("disabled", None) is not None
 
 
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:

@@ -186,19 +186,6 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             return adapter._post_delivery_callbacks.pop(key, None)
         return None
 
-    async def _hmwa_stop_typing_for_turn(self, event, source):
-        """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
-        metadata (Slack AI status is thread-scoped), on this turn's own message, not the chat's latest."""
-        from gateway.platforms.helpers import typing_metadata_for_turn
-        with suppress(Exception):
-            _typing_adapter = self._delivery_adapter_for(source)
-            _kind = type(_typing_adapter)
-            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
-                await _typing_adapter._stop_typing_with_metadata(source.chat_id, typing_metadata_for_turn(_typing_adapter,
-                    source.chat_id, self._reply_anchor_for_event(event), self._event_thread_metadata(event, source)))
-            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
-                await _typing_adapter.stop_typing(source.chat_id)
-
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -295,6 +282,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
             )
+            if _intentional_silence:
+                self._hmwa_pause_typing_after_silence(event, source)
             response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.

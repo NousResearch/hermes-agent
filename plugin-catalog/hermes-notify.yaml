@@ -1,12 +1,12 @@
 name: hermes-notify
 title: Hermes Pocket
 repo: https://github.com/Belweave/hermes-notify
-sha: "8da4f2bf8a682bc5520757f66c2b804e02426aaa"
-description: "Phone notifications, questions, release progress and exact command approvals through Notify. Run `hermes notify setup` to sign in, connect the phone app and send a test. Disclosure — when enabled, sends model-written notifications and questions, optional release workspace data, and (only if you select `security.approval.transport: notify`) each Hermes approval request's redacted command and description to the third-party Notify service (notify.belweave.ai); release Apps also go to a Cloudflare Worker you deploy yourself. Command approvals are approve-once or deny only, denied on timeout or error; phone replies are injected into the session only when you set allow_reply_injection; `hermes notify setup` saves NOTIFY_API_TOKEN to the profile .env; runs one background delivery thread."
+sha: "e861cca4f29310913c1d4c315dafff67159d728b"
+description: "Phone notifications, questions, release progress and exact command approvals through Notify. Run `hermes notify setup` to sign in, connect the phone app, send a test and route command approvals to the phone. Disclosure — when enabled, sends model-written notifications and questions, optional release workspace data, and (when security.approval.transport is notify) each Hermes approval request's redacted command and description to the third-party Notify service (notify.belweave.ai); release Apps also go to a Cloudflare Worker you deploy yourself. `hermes notify setup` saves NOTIFY_API_TOKEN to the profile .env and, once a phone is registered and no other transport is chosen, runs `hermes config set` to select security.approval.transport notify and transport_fallback builtin (terminal prompt when Notify is unreachable; skip with --no-approvals, undo with `hermes notify approvals off`). Phone approvals are approve-once or deny only; a phone timeout denies. Phone replies are injected into the session only when you set allow_reply_injection. Runs one background delivery thread."
 maintainer: belweave
 tier: community
 category: automation
-version: "0.2.1"
+version: "0.2.2"
 readme: true
 platforms: [macos, linux, windows]
 screenshots:

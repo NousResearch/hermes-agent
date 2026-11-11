@@ -1,11 +1,21 @@
 name: deadline-guard
+title: Deadline Guard
 repo: https://github.com/Snedz/hermes-deadline-guard
 sha: e79b9e96042a73b85aaf3c8187b6a171e3882c74
-description: "Deadline awareness for Hermes: reads a local Markdown deadlines table and exposes check_deadlines, next_founder_steps, and propose_status_update tools. Buckets commitments into overdue / 24h / 72h / 7d, surfaces founder-gated next steps, and refuses to record a 'submitted' status without a receipt URL. Stdlib only, no network, reads only the configured local file."
+version: "0.1.7"
+description: "Deadline governance for Hermes. Reads a local Markdown deadlines table and exposes check_deadlines, next_founder_steps, propose_status_update, and deadline_guard_cron: commitments are bucketed overdue / 24h / 72h / 7d, founder-gated next steps are surfaced before they go critical, and a status can never be recorded as 'submitted' without an http(s) receipt URL - the proposal comes back unapplied for a human to confirm. Ships a daily-check automation blueprint (08:00 cron) and a bundled deadline-guard skill. Validated on Hermes 0.23.0: hermes plugins validate --install-deps exit 0, all 15 checks pass; 47 tests pass. Disclosure - stdlib only, no network calls, no model calls, no telemetry; reads only the configured local deadlines file (config deadlines_path, default examples/hackathon-deadlines.md); writes nothing itself."
 maintainer: Snedz
 tier: community
 category: automation
-version: "0.1.0"
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Snedz/hermes-deadline-guard#readme
 readme: true
 capabilities:
-  provides_tools: true
+  provides_tools:
+    - check_deadlines
+    - next_founder_steps
+    - propose_status_update
+    - deadline_guard_cron
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

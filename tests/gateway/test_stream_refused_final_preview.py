@@ -101,3 +101,25 @@ async def test_preview_holding_part_of_the_first_word_is_replaced_by_the_whole_a
     shown = list(adapter.messages.values())
     # One message holds the whole answer; nothing starts mid-word or keeps a fragment beside it.
     assert shown == [answer], shown
+
+
+@pytest.mark.asyncio
+async def test_a_first_word_fragment_whose_send_timed_out_is_continued_not_repeated():
+    first_word = "<<" + "x" * 60 + ">>"
+    answer = f"{first_word} q000 q001 q002 <<end>>"
+    adapter = _SlotAdapter(refuse="<<end>>")
+    send = adapter.send
+
+    async def first_send_times_out(chat_id, content, reply_to=None, metadata=None):
+        adapter.send = send
+        await send(chat_id, content, reply_to, metadata)  # it landed, but no id came back
+        return SimpleNamespace(success=False, message_id=None, retryable=False, error="Timed out",
+                               raw_response={"delivery_uncertain": True})
+
+    adapter.send = first_send_times_out
+    await _stream(adapter, _pieces(answer, 12))
+
+    shown = list(adapter.messages.values())
+    # The fragment cannot be deleted (its id is unknown), so the whole answer must not follow it.
+    joined = "".join(shown)
+    assert joined.count("<<x") == 1 and joined.count("<<end>>") == 1, shown

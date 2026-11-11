@@ -102,7 +102,13 @@ class StreamFallbackMixin:
             span = open_code_fence_span(final_text, cut)
             if span is None:
                 resume = self._prose_resume_point(final_text, cut)
-                return final_text if resume <= lead else final_text[resume:].lstrip()
+                if resume <= lead:
+                    # The whole answer replaces the fragment only when the fragment can be deleted: a
+                    # preview whose send timed out has no id, so it stays and only the tail may follow.
+                    if self._message_id not in (None, "__no_edit__"):
+                        return final_text
+                    resume = cut
+                return final_text[resume:].lstrip()
             # The tail starts inside a code block the user saw closed: reopen it with the model's
             # own opener (a cut inside its language tag must not turn the tag's rest into code),
             # and keep the code's indentation. A cut mid-line re-sends that whole line: a code

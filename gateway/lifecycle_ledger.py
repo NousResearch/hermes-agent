@@ -17,6 +17,7 @@ import os
 import sqlite3
 import time
 from contextlib import closing
+from functools import lru_cache
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -46,14 +47,15 @@ def _now_iso() -> str:
 
 
 def _proc_fields(path: str, wanted: dict[str, str]) -> dict[str, int]:
-    """``{dst: int}`` for each ``src: dst`` key found in a ``Key: value`` /proc file."""
+    """``{dst: int}`` for each ``src: dst`` key found in a ``Key: value`` or ``key value``
+    (``/proc/vmstat``, cgroup ``memory.events``) file."""
     found: dict[str, int] = {}
     try:
         with open(path, encoding="utf-8-sig") as fh:
             for line in fh:
-                key = line.split(":", 1)[0]
+                key, *values = line.replace(":", " ", 1).split() or [""]
                 if key in wanted:
-                    found[wanted[key]] = int(line.split()[1])
+                    found[wanted[key]] = int(values[0])
                     if len(found) == len(wanted):
                         break
     except (OSError, ValueError, IndexError):
@@ -72,6 +74,131 @@ def sample_memory() -> dict[str, Any]:
     if swap_total is not None and swap_free is not None:
         sample["swap_used_kib"] = swap_total - swap_free
     return sample
+
+
+_PSI_ROOT = Path("/proc/pressure")
+
+
+def _psi_fields(path: Path) -> dict[str, float]:
+    """``{some_avg10, some_avg60, full_avg10, full_avg60}`` from one PSI file, whose lines read
+    ``some avg10=0.00 avg60=0.00 avg300=0.00 total=0``."""
+    fields: dict[str, float] = {}
+    with open(path, encoding="utf-8-sig") as fh:
+        for line in fh:
+            kind, *pairs = line.split() or [""]
+            if kind not in ("some", "full"):
+                continue
+            for key, _, value in (pair.partition("=") for pair in pairs):
+                if key in ("avg10", "avg60"):
+                    fields[f"{kind}_{key}"] = float(value)
+    return fields
+
+
+def sample_pressure_stall(root: Optional[Path] = None) -> dict[str, dict[str, float]]:
+    """Linux PSI stall percentages: ``{"memory": {...}, "io": {...}}`` from ``/proc/pressure``
+    (``root`` overrides it for tests).  A resource whose file is missing or unparsable is left
+    out, so off Linux the result is ``{}``.  Never raises."""
+    base = _PSI_ROOT if root is None else root
+    sample: dict[str, dict[str, float]] = {}
+    for resource in ("memory", "io"):
+        try:
+            if fields := _psi_fields(base / resource):
+                sample[resource] = fields
+        except (OSError, ValueError):
+            continue
+    return sample
+
+
+_VMSTAT_PATH = "/proc/vmstat"
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+# Counter growth is compared only when the dead life's last heartbeat is this recent: a supervisor
+# restart takes seconds, and over a longer gap the counters say nothing about that death.
+_OOM_WINDOW_S = 900.0
+
+
+@lru_cache(maxsize=1)
+def _cgroup_v2_events_path() -> Optional[Path]:
+    """This process's cgroup v2 ``memory.events``, or ``None`` without a unified-hierarchy entry.
+    Resolved once: a process's cgroup path is fixed for its life."""
+    try:
+        from gateway.cgroup_cleanup import _own_cgroup_path
+
+        own = _own_cgroup_path()
+    except (ImportError, OSError, ValueError):
+        return None
+    return _CGROUP_ROOT / own.lstrip("/") / "memory.events" if own else None
+
+
+def sample_oom_kills() -> dict[str, Any]:
+    """Kernel OOM-kill counters, so the next boot can tell whether the kernel OOM-killed a
+    process while this life was dying: ``boot_id``, ``host_oom_kills`` (``oom_kill`` in
+    ``/proc/vmstat``, host-wide: counts every process the kernel OOM-killed) and
+    ``cgroup_oom_kills`` (``oom_kill`` in this process's cgroup v2 ``memory.events``: only kills
+    inside the gateway's own cgroup, i.e. its systemd unit or container, tool subprocesses
+    included) with ``cgroup_id`` (the cgroup directory's inode: a recreated cgroup, e.g. after a
+    systemd unit or container restart, gets a new one and a counter reset to 0).  Each key is
+    present only when readable: Linux-only (``{}`` elsewhere), cgroup v1 has no counter.  Never
+    raises."""
+    sample: dict[str, Any] = {}
+    try:
+        from hermes_cli.process_identity import _live_boot_id
+
+        if boot_id := _live_boot_id():
+            sample["boot_id"] = boot_id
+    except Exception:
+        logger.debug("boot_id unavailable for the OOM-kill sample", exc_info=True)
+    sample.update(_proc_fields(_VMSTAT_PATH, {"oom_kill": "host_oom_kills"}))
+    if (events := _cgroup_v2_events_path()) is not None and (
+            counter := _proc_fields(str(events), {"oom_kill": "cgroup_oom_kills"})):
+        try:
+            sample.update(counter, cgroup_id=events.parent.stat().st_ino)
+        except (OSError, ValueError):
+            pass  # cgroup removed between the read and the stat: no comparable counter
+    return sample
+
+
+def _heartbeat_oom_baseline(sentinel: dict[str, Any], hb: dict[str, Any]) -> Any:
+    """The heartbeat's ``oom`` sample when the heartbeat provably belongs to the life the
+    sentinel describes (same pid, written after that life's claim) and was written at most
+    ``_OOM_WINDOW_S`` ago, else ``None``.  ``record_startup`` replaces the sentinel before the
+    new life's first heartbeat, so a life that dies before then leaves an older life's
+    heartbeat behind; its counters must not be read as this life's."""
+    pid = hb.get("pid")
+    if type(pid) is not int or pid != sentinel.get("pid"):
+        return None
+    from gateway.memory_status import _parse_iso
+
+    written = _parse_iso(hb.get("updated_at"))
+    if written is None:
+        return None
+    claimed = sentinel.get("start_time")
+    if isinstance(claimed, (int, float)) and written.timestamp() < claimed:
+        return None
+    return hb.get("oom") if 0 <= time.time() - written.timestamp() <= _OOM_WINDOW_S else None
+
+
+def _oom_kill_scope(prior: Any) -> Optional[str]:
+    """``"cgroup"``/``"host"`` when an OOM-kill counter grew since the heartbeat sample
+    ``prior`` within the same boot, else ``None``.  Growth shows only that the kernel
+    OOM-killed SOME process in that scope, not which one: the gateway, a tool subprocess in
+    its cgroup, or (host scope) any process on the host.
+
+    ``cgroup`` (kills inside the gateway's own cgroup) is used when the cgroup is still the same
+    one, i.e. the gateway restarted inside a surviving cgroup.  Otherwise the host counter is
+    used, with scope ``host``: no cgroup v2 counter on either side (cgroup v1, no memory
+    controller), or a different cgroup now; a systemd unit or container restart recreates the
+    cgroup at 0, so after a supervisor restart the comparison is usually host-scoped."""
+    if not isinstance(prior, dict) or not isinstance(prior.get("boot_id"), str):
+        return None
+    now = sample_oom_kills()
+    if prior["boot_id"] != now.get("boot_id"):
+        return None  # a reboot reset the counters; nothing to compare
+    same_cgroup = type(prior.get("cgroup_id")) is int and prior.get("cgroup_id") == now.get("cgroup_id")
+    key, source = ("cgroup_oom_kills", "cgroup") if same_cgroup else ("host_oom_kills", "host")
+    before, after = prior.get(key), now.get(key)
+    if type(before) is int and type(after) is int and after > before:
+        return source
+    return None
 
 
 def _read_json(path: Path) -> Optional[dict[str, Any]]:
@@ -178,6 +305,11 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
         evidence["last_heartbeat_mem"] = mem
         if _suspected_oom(mem):
             evidence["suspected_oom"] = True
+    try:  # optional enrichment: a failure here must never cost the unclean-exit verdict
+        if scope := _oom_kill_scope(_heartbeat_oom_baseline(sentinel, hb)):
+            evidence["oom_kill_seen"], evidence["oom_kill_scope"] = True, scope
+    except Exception:
+        logger.debug("OOM-kill enrichment failed", exc_info=True)
     return evidence
 
 
@@ -305,15 +437,40 @@ def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path], *, defe
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
         "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
-        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s "
+        "oom_kill_seen=%s oom_kill_scope=%s",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
+        evidence.get("oom_kill_seen", False), evidence.get("oom_kill_scope"),
     )
+
+
+def _report_watchdog_exit(home: Optional[Path]) -> dict[str, Any]:
+    """``prior_*`` keys for the new claim when the previous life was killed by a watchdog
+    (``phase=exited`` with a ``WATCHDOG_EXIT_REASONS`` reason), after appending a
+    ``gateway.previous_watchdog_exit`` exit-diag record; ``{}`` otherwise.  Without this the
+    next claim overwrites the only record of why the gateway restarted (#148527)."""
+    from gateway.status import is_watchdog_exit_reason
+
+    sentinel = _read_json(get_lifecycle_sentinel_path(home)) or {}
+    reason = sentinel.get("exit_reason")
+    if sentinel.get("phase") != "exited" or not is_watchdog_exit_reason(reason):
+        return {}
+    carry: dict[str, Any] = {"prior_exit_reason": reason}
+    pressure = sentinel.get("host_memory_pressure")
+    if isinstance(pressure, str) and pressure:
+        carry["prior_host_memory_pressure"] = pressure
+    _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_watchdog_exit", "pid": os.getpid(),
+                       "prior_pid": sentinel.get("pid"), "prior_exit_code": sentinel.get("exit_code"),
+                       "prior_exited_at": sentinel.get("exited_at"), **carry}, home)
+    return carry
 
 
 def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool = True) -> Optional[dict[str, Any]]:
     """Boot entry point: report any unclean previous exit (evidence dict, also persisted
-    to ``gateway-exit-diag.log`` and logged at WARNING) then claim the sentinel.  Never raises.
+    to ``gateway-exit-diag.log`` and logged at WARNING), or carry a watchdog exit's reason and
+    host memory pressure into the claim as ``prior_*`` (see ``_report_watchdog_exit``), then
+    claim the sentinel.  Never raises.
 
     ``defer_integrity_check`` defaults to True: the state.db integrity scan is forensic and
     must NOT gate platform startup (a large store's ``quick_check`` blocked the ``:8644`` fleet
@@ -322,10 +479,13 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
     :func:`run_deferred_integrity_check`.  Pass False for the historic INLINE scan.
     """
     evidence: Optional[dict[str, Any]] = None
+    watchdog_exit: dict[str, Any] = {}
     try:
         evidence = detect_unclean_exit(home)
         if evidence is not None:
             _report_unclean_exit(evidence, home, defer_integrity_check=defer_integrity_check)
+        else:
+            watchdog_exit = _report_watchdog_exit(home)
     except Exception:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
@@ -344,6 +504,9 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
             claim["prior_unclean_exit"] = True
             if evidence.get("suspected_oom"):
                 claim["prior_suspected_oom"] = True
+            if evidence.get("oom_kill_seen"):
+                claim["prior_oom_kill_seen"], claim["prior_oom_kill_scope"] = True, evidence.get("oom_kill_scope")
+        claim.update(watchdog_exit)
         _write_sentinel(claim, home)
     except Exception:
         logger.debug("Failed to claim lifecycle sentinel", exc_info=True)
@@ -409,8 +572,10 @@ def run_deferred_integrity_check(
         return "check-failed: deferred scan raised"
 
 
-def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdown", home: Optional[Path] = None) -> None:
-    """Mark the current life as cleanly exited.  Idempotent, never raises.
+def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdown", home: Optional[Path] = None,
+                *, host_memory_pressure: Optional[str] = None) -> None:
+    """Mark the current life as cleanly exited.  Idempotent, never raises.  ``host_memory_pressure``
+    (the liveness watchdog's fire-time ``classify_pressure`` verdict) is stamped only when given.
 
     Only rewrites a sentinel provably owned by this process: during ``--replace``
     the replacement claims it before the old process finishes teardown and must not
@@ -422,6 +587,8 @@ def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdow
             return
         exited: dict[str, Any] = {"phase": "exited", "pid": os.getpid(), "exit_code": exit_code, "exit_reason": reason,
                                   "exited_at": _now_iso()}
+        if host_memory_pressure:
+            exited["host_memory_pressure"] = host_memory_pressure
         # Carry the incarnation identity: the Windows start attestation matches a clean exit by
         # PID *and* start time so a reused PID's exit cannot vouch for a different life (#110020).
         for key in ("start_time", "create_time"):

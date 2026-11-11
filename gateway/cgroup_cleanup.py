@@ -21,7 +21,8 @@ from pathlib import Path
 def _own_cgroup_path() -> str | None:
     """Return the cgroup v2 path for the calling process, or None."""
     try:
-        text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+        # surrogateescape: a cgroup path holds filesystem bytes, which need not be UTF-8.
+        text = Path("/proc/self/cgroup").read_text(encoding="utf-8-sig", errors="surrogateescape")
     except OSError:
         return None
     match = re.search(r"^0::(.+)$", text, re.MULTILINE)

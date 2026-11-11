@@ -120,6 +120,7 @@ export {
   usageLevel,
   usageTag
 } from './plan-usage'
+export { type ProfileNameMetadata, profileVisibleName } from './profile-name'
 export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,

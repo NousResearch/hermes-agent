@@ -9,6 +9,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
+import { projectCanonicalGroupNames } from './canonical-group-names'
 import { peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
 import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
@@ -199,9 +200,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         cursor = next
       }
 
+      const room = await projectCanonicalGroupNames(binding, snapshot.room)
+
       if (alive.current && version === revision.current) {
         seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
-        setState(snapshot)
+        setState({ ...snapshot, room })
 
         // The stop notice tells people to use Retry or Discard on kept turns: it stays while any wait.
         if (snapshot.driver_status && !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping &&

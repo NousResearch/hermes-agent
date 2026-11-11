@@ -5,9 +5,10 @@ import type { captureGroupRequests } from './canonical-group-contract-test-utils
 const doubles = vi.hoisted(() => ({ request: vi.fn(), capture: undefined as ReturnType<typeof captureGroupRequests> | undefined }))
 vi.mock('@hermes/plugin-sdk', async () => {
   const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
+  const { profileVisibleName, randomUuid } = await import('@hermes/shared')
   doubles.capture = captureGroupRequests(doubles.request)
 
-  return { host: { requestProfile: doubles.capture.request }, randomUuid: (await import('@hermes/shared')).randomUuid }
+  return { host: { requestProfile: doubles.capture.request }, profileVisibleName, randomUuid }
 })
 
 import {

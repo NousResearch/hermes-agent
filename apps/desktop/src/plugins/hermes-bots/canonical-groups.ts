@@ -1,4 +1,4 @@
-import { host, randomUuid } from '@hermes/plugin-sdk'
+import { host, profileVisibleName, randomUuid } from '@hermes/plugin-sdk'
 
 import { canonicalApprovalPreview } from './canonical-group-approval'
 import type { CanonicalGroupMessages } from './canonical-group-locales'
@@ -19,6 +19,8 @@ export interface CanonicalRoomMember {
   profile: string
   handle: string
   display_name?: string
+  /** Read-time primary name from this room's authority; never persisted or used for routing. */
+  current_display_name?: string
   target?: Record<string, unknown>
 }
 
@@ -218,10 +220,12 @@ function rosterEntry(member: GroupMember, members: GroupMember[], pin: Canonical
   if (!pin) {
     const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
     // Saved on the gateway and read from any computer: "This device" would be wrong elsewhere.
-    const display = member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
+    const display = profileVisibleName({ ...member, name: '', bot_title: member.title }) ||
+      (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
 
     return { member_id: profile, profile, handle: base, target: { kind: 'local', profile },
-      ...(display ? { display_name: display } : {}) }
+      // Over-long configured names must not make the gateway reject the group.
+      ...(display && display.length <= 200 ? { display_name: display } : {}) }
   }
 
   const handle = rivals.length ? `${base}-${connectionSuffix(member, rivals)}` : base

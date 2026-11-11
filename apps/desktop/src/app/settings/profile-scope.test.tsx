@@ -20,9 +20,9 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
-const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
+const { $activeGatewayProfile, $profiles, profileLabel } = await import('@/store/profile')
 const { $settingsScopeOverride } = await import('@/store/settings-scope')
-const { ActiveProfileNote, SettingsProfileScope } = await import('./profile-scope')
+const { ActiveProfileNote, SettingsProfileScope, settingsScopeLabel } = await import('./profile-scope')
 
 const profile = (name: string, isDefault = false, extra: Partial<ProfileInfo> = {}): ProfileInfo =>
   ({ has_env: false, is_default: isDefault, model: null, name, ...extra }) as ProfileInfo
@@ -115,16 +115,29 @@ describe('SettingsProfileScope', () => {
   })
 
   it('keeps selection keyed on the canonical name while showing the presentation label', () => {
-    $profiles.set([profile('default', true), profile('coder', false, { bot_title: 'JordyV' })])
+    $profiles.set([profile('default', true), profile('coder', false, { bot_title: '  中文助手  ' })])
 
     render(<SettingsProfileScope />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'JordyV' }))
+    fireEvent.click(screen.getByRole('button', { name: '中文助手' }))
     // The label changed, the identity did not: the override stores the slug.
     expect($settingsScopeOverride.get()).toBe('coder')
     // The "applies to" note names the target the way its chip does.
-    expect(document.querySelector('[role="status"]')?.textContent).toContain('JordyV')
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('中文助手')
     expect(document.querySelector('[role="status"]')?.textContent).not.toContain('coder')
+  })
+})
+
+describe('settingsScopeLabel shares ordinary agent names', () => {
+  it.each([
+    [{ name: 'worker', bot_title: '  中文助手  ', display_name: 'Worker' }, '中文助手'],
+    [{ name: 'worker', ui_meta: { 'hermes-bots': { title: '  元数据助手  ' } } }, '元数据助手'],
+    [{ name: 'worker', bot_title: '  ', display_name: '  Writer  ' }, 'Writer'],
+    [{ name: 'default', bot_title: '  ', display_name: '\t' }, 'default'],
+    [{ name: 'legacy', bot_title: '\t', display_name: '  ' }, 'legacy']
+  ])('uses the same label for %o', (metadata, expected) => {
+    expect(settingsScopeLabel(metadata)).toBe(expected)
+    expect(settingsScopeLabel(metadata)).toBe(profileLabel(metadata))
   })
 })
 

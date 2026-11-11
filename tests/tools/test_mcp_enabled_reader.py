@@ -125,3 +125,24 @@ def test_v46_turns_off_exactly_what_the_reader_reads_as_off(case, tmp_path, monk
     entry = yaml.safe_load(config_path.read_text(encoding="utf-8"))["mcp_servers"]["s"]
 
     assert (entry.get("enabled") is False) is (not case["on"])
+
+
+@pytest.mark.parametrize("key", ["mcp_servers.s.example.enabled", "mcp_servers.s\\.example.enabled"],
+                         ids=["unescaped", "escaped"])
+def test_config_set_enable_clears_disabled_on_a_dotted_server_name(key, tmp_path, monkeypatch):
+    """`config set` resolves an existing dotted server name greedily; the cleanup must reach the
+    same entry, or the server stays off after a printed success."""
+    import hermes_yaml as yaml
+    from hermes_cli.config import DEFAULT_CONFIG, load_config, set_config_value
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "_config_version": DEFAULT_CONFIG["_config_version"],
+        "mcp_servers": {"s.example": {"command": "true", "disabled": True}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    set_config_value(key, "true")
+    entry = yaml.safe_load(config_path.read_text(encoding="utf-8"))["mcp_servers"]["s.example"]
+    assert "disabled" not in entry and entry["enabled"] is True
+    assert mcp_server_enabled(load_config()["mcp_servers"]["s.example"]) is True

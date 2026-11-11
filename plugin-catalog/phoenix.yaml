@@ -1,7 +1,7 @@
 ﻿name: phoenix
 title: "Phoenix - The Black Box Flight Recorder for Hermes Agents"
 repo: https://github.com/Ratz00007/phoenix
-sha: 45026f5775b2839a59146153b54e0e75eec71cb8
+sha: 2db4a5d7c775e161f87e0c431daaeefc42a93512
 description: >-
   Transactional SQLite WAL flight recorder, pre/post SHA-256 state fingerprinting,
   live idempotency guard, and deterministic fault-injection wind tunnel with

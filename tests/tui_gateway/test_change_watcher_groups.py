@@ -8,25 +8,55 @@ holds (a pending approval, the tool a member is in). It must not move on a store
 Real temp stores, real ``hosted_rooms`` / ``hosted_room_driver`` writes; only the broadcast is captured.
 """
 
-import sqlite3
 import threading
-from contextlib import closing
+from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from persistence_assembly import store_location
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tui_gateway import hosted_room_member_activity as activity
 from tui_gateway import hosted_room_service
 from tui_gateway import server
+
+_MEMBERS = [{"profile": "ops", "handle": "ops"}]
+
+
+class RoomStore(NamedTuple):
+    """One room store as the watcher reads it: a store handle, its placement, and the file it names."""
+
+    store: object
+    placement: str
+    path: object
+
+
+def _profile_store(home):
+    """*home*'s own ``state.db`` as a room store."""
+    store = storage_handle(home)
+    return RoomStore(store, "profile", store_location(store.scope))
+
+
+def _room(store, room_id, placement="profile"):
+    rooms.create_room(store, placement=placement, room_id=room_id, name="Room", members=_MEMBERS,
+                      authority_gateway_id="gateway-a", now=10)
+
+
+def _room_service(store):
+    return hosted_room_service.HostedRoomService(
+        SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock()), store=store, placement="profile")
 
 
 class _Service:
     """A room service as the watcher sees one: its store, its live status, its wake."""
 
-    def __init__(self, db_path, live=None):
-        self.db_path, self.live, self.wakes = db_path, live or {}, 0
+    def __init__(self, store, placement, db_path, live=None):
+        self.store, self.placement, self.db_path, self.live, self.wakes = store, placement, db_path, live or {}, 0
 
     def live_status_sig(self):
         return {"": (True,), **self.live}
@@ -40,14 +70,15 @@ def room_watch(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     (home / "config.yaml").write_text("display: {}\n")
-    shared = tmp_path / "shared-state.db"
+    # The install's shared room store is the active home's ``shared-state.db``, written through its store handle.
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    shared = RoomStore(storage_handle(home), "shared", rooms.default_db_path())
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr(server, "_cfg_cache", None)
     for name, value in (("_change_sigs", {}), ("_change_checked_at", {}), ("_change_broadcast_at", {}),
                         ("_room_store_sig_cache", {}), ("_groups_woken_heads", {})):
         monkeypatch.setattr(server, name, value)
-    monkeypatch.setattr(rooms, "default_db_path", lambda: shared)
     # Every other watch is someone else's contract; keep the captured stream to this one.
     monkeypatch.setattr(server, "_CHANGE_WATCHES", {"groups.changed": server._CHANGE_WATCHES["groups.changed"]})
     services = []
@@ -55,8 +86,7 @@ def room_watch(tmp_path, monkeypatch):
     events = []
     monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: events.append((ev, payload)))
     for room_id in ("room-1", "room-2"):
-        rooms.create_room(shared, room_id=room_id, name="Room", members=[{"profile": "ops", "handle": "ops"}],
-                          authority_gateway_id="gateway-a", now=10)
+        _room(shared.store, room_id, shared.placement)
     clock = iter(range(0, 10_000, 10))
 
     def tick():
@@ -71,8 +101,9 @@ def room_watch(tmp_path, monkeypatch):
 
 def _post(db, n, room_id="room-1"):
     return rooms.append_event(
-        db, room_id=room_id, event_id=f"post-{room_id}-{n}", kind="message.user", actor={"kind": "user", "id": "u"},
-        payload={"text": f"post {n}", "thread_id": "t"}, authority_gateway_id="gateway-a", authority_epoch=1)
+        db.store, placement=db.placement, room_id=room_id, event_id=f"post-{room_id}-{n}", kind="message.user",
+        actor={"kind": "user", "id": "u"}, payload={"text": f"post {n}", "thread_id": "t"},
+        authority_gateway_id="gateway-a", authority_epoch=1)
 
 
 def test_an_append_from_another_process_names_its_room_once(room_watch):
@@ -87,24 +118,26 @@ def test_a_task_transition_with_no_append_broadcasts_but_a_lease_does_not(room_w
     """queued -> running changes ``groups.state`` (member_activity) but appends nothing to the log."""
     db, tick, _services, _events = room_watch
     seq = _post(db, 1)["seq"]
+    store, placement = db.store, db.placement
     task = driver.admit_task(
-        db, driver.TaskIdentity(room_id="room-1", task_id="t1", thread_id="t", turn_id="t1"),
+        store, HostedTaskIdentity(room_id="room-1", task_id="t1", thread_id="t", turn_id="t1"), placement=placement,
         payload={"target_profile": "ops", "prompt": "go", "source_event_seq": seq}, clock=lambda: 20.0)
     before = len(tick())
-    lease = driver.acquire_lease(db, room_id="room-1", gateway_id="gateway-a", authority_epoch=1,
-                                 process_generation="p1", ttl_seconds=30, clock=lambda: 30.0)
-    lease = driver.renew_lease(db, lease, ttl_seconds=30, clock=lambda: 31.0)
+    lease = driver.acquire_lease(store, placement=placement, room_id="room-1", gateway_id="gateway-a",
+                                 authority_epoch=1, process_generation="p1", ttl_seconds=30, clock=lambda: 30.0)
+    lease = driver.renew_lease(store, lease, placement=placement, ttl_seconds=30, clock=lambda: 31.0)
     assert len(tick()) == before, "taking or renewing a lease changes nothing a room view shows"
-    attempt = driver.start_task(db, task["identity"], lease, expected_cancel_generation=0, clock=lambda: 32.0)
+    attempt = driver.start_task(store, task["identity"], lease, placement=placement, expected_cancel_generation=0,
+                                clock=lambda: 32.0)
     assert tick()[before:] == [{"room_ids": ["room-1"]}]
-    driver.requeue_not_admitted_task(db, attempt, clock=lambda: 33.0)
+    driver.requeue_not_admitted_task(store, attempt, placement=placement, clock=lambda: 33.0)
     assert tick()[before + 1:] == [{"room_ids": ["room-1"]}], "running -> queued, nothing appended"
 
 
 def test_process_local_status_broadcasts_without_any_store_write(room_watch):
     """An approval prompt or a member entering a tool writes nothing to the store."""
     db, tick, services, _events = room_watch
-    service = _Service(db)
+    service = _Service(*db)
     services.append(service)
     assert tick() == [{}], "a worker appearing is process-wide: every view re-reads"
     service.live = {"room-2": (True, ("action", "ops", "approve"))}
@@ -130,7 +163,7 @@ def test_only_the_store_whose_log_grew_wakes_its_driver(room_watch, tmp_path):
     """A cron post must reach the driver now, not at its 5 s idle poll; a status move or another store's
     append must not wake it (each wake re-schedules every busy room)."""
     db, tick, services, _events = room_watch
-    owner, other = _Service(db), _Service(tmp_path / "home" / "state.db")
+    owner, other = _Service(*db), _Service(*_profile_store(tmp_path / "home"))
     services += [owner, other]
     tick()
     _post(db, 1)
@@ -144,11 +177,9 @@ def test_only_the_store_whose_log_grew_wakes_its_driver(room_watch, tmp_path):
 def test_room_status_signature_reads_the_live_service(tmp_path):
     """The real service registers itself and signs what only it holds: approvals, and a preparation's stall
     and last error."""
-    db = tmp_path / "state.db"
-    rooms.create_room(db, room_id="room-1", name="Room", members=[{"profile": "ops", "handle": "ops"}],
-                      authority_gateway_id="gateway-a", now=10)
-    service = hosted_room_service.HostedRoomService(
-        SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock()), db_path=db)
+    store = storage_handle(tmp_path)
+    _room(store, "room-1")
+    service = _room_service(store)
     assert service in hosted_room_service.live_room_services()
     quiet = service.live_status_sig()
     service._set_pending_action("room-1", "ops", {"kind": "approval", "task_id": "t1", "request_id": "r1"})
@@ -221,11 +252,9 @@ def test_a_failing_driver_wake_does_not_end_the_watcher_thread(monkeypatch):
 def test_live_status_never_waits_for_the_policy_lock(tmp_path):
     """prepare_room/stop_room hold _policy_lock across store writes (10 s busy timeout) and peer calls; the
     watcher thread every push shares must read live status without waiting for it."""
-    db = tmp_path / "state.db"
-    rooms.create_room(db, room_id="room-1", name="Room", members=[{"profile": "ops", "handle": "ops"}],
-                      authority_gateway_id="gateway-a", now=10)
-    service = hosted_room_service.HostedRoomService(
-        SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock()), db_path=db)
+    store = storage_handle(tmp_path)
+    _room(store, "room-1")
+    service = _room_service(store)
     service._set_pending_action("room-1", "ops", {"kind": "approval", "task_id": "t1", "request_id": "r1"})
     held, done, result = threading.Event(), threading.Event(), {}
 
@@ -252,19 +281,24 @@ def test_a_room_service_lists_approval_cards_before_retry(tmp_path):
     """groups.state's action order is the Desktop's card order. Both room kinds list the stall and approval
     cards first and the per-attempt Retry after them (a gateway-owned room always did; reading the rows in
     one snapshot does not change it)."""
-    db = tmp_path / "state.db"
-    rooms.create_room(db, room_id="room-1", name="Room", members=[{"profile": "ops", "handle": "ops"}],
-                      authority_gateway_id="gateway-a", now=10)
-    identity = driver.TaskIdentity("room-1", "task-1", "thread", "turn")
+    store, placement = storage_handle(tmp_path), "profile"
+    _room(store, "room-1")
+    identity = HostedTaskIdentity("room-1", "task-1", "thread", "turn")
     payload = {"target_profile": "ops", "target_member_id": "ops", "source_event_seq": 1, "prompt": "p"}
-    driver.admit_task(db, identity, payload=payload, clock=lambda: 10)
-    with closing(sqlite3.connect(db)) as conn, conn:
-        conn.execute("UPDATE hosted_room_driver_tasks SET status='deferred' WHERE task_id='task-1'")
-    service = hosted_room_service.HostedRoomService(
-        SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock()), db_path=db)
-    with closing(sqlite3.connect(db)) as conn:
-        generation, = conn.execute(
-            "SELECT execution_generation FROM hosted_room_driver_tasks WHERE task_id='task-1'").fetchone()
+    driver.admit_task(store, identity, placement=placement, payload=payload, clock=lambda: 10)
+    # The task deferred through the driver: an attempt starts under a lease, is fenced as indeterminate, then deferred.
+    lease = driver.acquire_lease(store, placement=placement, room_id="room-1", gateway_id="gateway-a",
+                                 authority_epoch=1, process_generation="p1", ttl_seconds=30, clock=lambda: 11)
+    attempt = driver.start_task(store, identity, lease, placement=placement, expected_cancel_generation=0,
+                                clock=lambda: 12)
+    driver.mark_attempt_indeterminate(store, attempt, lease, placement=placement, clock=lambda: 13)
+    driver.defer_indeterminate_task(
+        store, identity, lease, placement=placement, expected_execution_generation=attempt.execution_generation,
+        expected_cancel_generation=0, reason="member_unavailable", clock=lambda: 13)
+    service = _room_service(store)
+    task = driver.get_task(store, identity, placement=placement)
+    assert task["status"] == "deferred"
+    generation = task["execution_generation"]
     # The approval names that attempt: status() offers only an approval for an attempt still approvable.
     service._set_pending_action("room-1", "ops", {"kind": "approval", "task_id": "task-1",
                                                   "execution_generation": generation, "request_id": "r9"})
@@ -275,20 +309,34 @@ def test_room_change_rows_read_live_rows_through_the_status_index_and_skip_disba
     """The watcher re-reads a store on every commit to it (a streaming turn's state.db: about twice a second),
     so each room's read must touch only its live rows: never the retained terminal tasks (up to 2048 a room)
     or a disbanded room's tombstone (up to 512 a store)."""
-    db = tmp_path / "state.db"
+    store, placement = storage_handle(tmp_path), "profile"
     for room_id in ("live", "gone"):
-        rooms.create_room(db, room_id=room_id, name="Room", members=[{"profile": "ops", "handle": "ops"}],
-                          authority_gateway_id="gateway-a", now=10)
-    driver.admit_task(db, driver.TaskIdentity("live", "t1", "thread", "turn"),
+        _room(store, room_id)
+    driver.admit_task(store, HostedTaskIdentity("live", "t1", "thread", "turn"), placement=placement,
                       payload={"target_profile": "ops", "prompt": "p", "source_event_seq": 1}, clock=lambda: 10)
-    rooms.disband_room(db, room_id="gone", expected_gateway_id="gateway-a", expected_epoch=1, now=20)
-    queries = []
-    with closing(sqlite3.connect(db)) as conn:
-        conn.set_trace_callback(queries.append)
-        rows = driver.room_change_rows(conn)
-        conn.set_trace_callback(None)
-        statuses = driver.SHOWN_TASK_STATUSES
-        task_reads = [sql for sql in queries if "FROM hosted_room_driver_tasks" in sql]
+    rooms.disband_room(store, placement=placement, room_id="gone", expected_gateway_id="gateway-a",
+                       expected_epoch=1, now=20)
+    # Trace the statements the store's read connection runs for the change rows (a profile placement reads
+    # through the store's holder).
+    queries, holder = [], raw_holder(store)
+    original = holder._read_ctx_with_timeout
+
+    @contextmanager
+    def traced(*args, **kwargs):
+        with original(*args, **kwargs) as conn:
+            conn.set_trace_callback(queries.append)
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+    holder._read_ctx_with_timeout = traced
+    try:
+        rows = driver.room_change_rows(store, placement=placement)
+    finally:
+        del holder._read_ctx_with_timeout
+    statuses = driver.SHOWN_TASK_STATUSES
+    task_reads = [sql for sql in queries if "FROM hosted_room_driver_tasks" in sql]
+    with holder._read_ctx() as conn:
         plans = [row[-1] for sql in task_reads for row in conn.execute("EXPLAIN QUERY PLAN " + sql)]
     assert set(rows) == {"live"}
     assert rows["live"].tasks == (("t1", "queued", 0, 0),)
@@ -345,11 +393,10 @@ def test_a_store_only_a_room_service_names_is_watched(room_watch, tmp_path):
     """A multiplexing gateway's secondary authority keeps its rooms in its own home's state.db, which is
     neither the watcher home's store nor the shared one: the service registry is how the watcher finds it."""
     _shared, tick, services, _events = room_watch
-    store = tmp_path / "secondary" / "state.db"
-    store.parent.mkdir()
-    rooms.create_room(store, room_id="room-9", name="Room", members=[{"profile": "ops", "handle": "ops"}],
-                      authority_gateway_id="gateway-a", now=10)
-    service = _Service(store)
+    (tmp_path / "secondary").mkdir()
+    store = _profile_store(tmp_path / "secondary")
+    _room(store.store, "room-9", store.placement)
+    service = _Service(*store)
     services.append(service)
     seen = len(tick())
     _post(store, 1, "room-9")
@@ -360,8 +407,7 @@ def test_a_store_only_a_room_service_names_is_watched(room_watch, tmp_path):
 def test_a_room_service_starting_or_stopping_moves_its_live_signature(tmp_path):
     """groups.state drops driver_status while the room service is not running (session_group_controls._group),
     and no store write marks that: the worker's run state is the part of the signature that moves."""
-    service = hosted_room_service.HostedRoomService(
-        SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock()), db_path=tmp_path / "state.db")
+    service = _room_service(storage_handle(tmp_path))
     idle = service.live_status_sig()
     service.start()
     try:

@@ -264,6 +264,45 @@ def _is_openai_api_base_url(base_url: Any) -> bool:
         return False
 
 
+_GEMINI_TOOL_RESULT_MAX_DEPTH = 16
+
+
+def _reencode_deep_json(value: Any, depth: int = 0) -> Any:
+    """Keep deep tool-result JSON data while avoiding Gemini's protobuf recursion limit."""
+    if depth >= _GEMINI_TOOL_RESULT_MAX_DEPTH and isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    if isinstance(value, dict):
+        return {key: _reencode_deep_json(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_reencode_deep_json(item, depth + 1) for item in value]
+    return value
+
+
+def _sanitize_gemini_tool_content(content: Any) -> Any:
+    """Re-encode deeply nested JSON in a tool result without changing stored history."""
+    if not isinstance(content, str):
+        return content
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(content):
+        if char not in "[{":
+            continue
+        try:
+            value, end = decoder.raw_decode(content[start:])
+        except (TypeError, ValueError):
+            continue
+        rewritten = _reencode_deep_json(value)
+        if rewritten != value:
+            return content[:start] + json.dumps(rewritten, ensure_ascii=False) + content[start + end:]
+    return content
+
+
+def _sanitize_gemini_tool_message(msg: Any, model: Any) -> dict | None:
+    if not isinstance(msg, dict) or msg.get("role") != "tool" or not _model_consumes_thought_signature(model):
+        return None
+    content = _sanitize_gemini_tool_content(msg.get("content"))
+    return None if content == msg.get("content") else {**msg, "content": content}
+
+
 _GEMINI_SIGNATURE_HOSTS = ("generativelanguage.googleapis.com", "aiplatform.googleapis.com")
 _GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex"})
 
@@ -554,6 +593,11 @@ class ChatCompletionsTransport(ProviderTransport):
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type,
                                                  mistral_tool_ids=mistral_ids))
                            for m in messages]
+        if _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider):
+            sanitized_pairs = [
+                (m, _sanitize_gemini_tool_message(m, kwargs.get("model")) or s)
+                for m, s in sanitized_pairs
+            ]
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]

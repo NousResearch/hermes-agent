@@ -1,0 +1,24 @@
+name: glassbox
+title: Glassbox
+repo: https://github.com/rkfshakti/hermes-glassbox
+sha: 2b070ee7fc94d880929fea3743f1ad8e97b66f15
+maintainer: rkfshakti
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+version: "1.0.0"
+docs_url: https://github.com/rkfshakti/hermes-glassbox#readme
+platforms: [macos]
+image: https://raw.githubusercontent.com/rkfshakti/hermes-glassbox/2b070ee7fc94d880929fea3743f1ad8e97b66f15/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/rkfshakti/hermes-glassbox/2b070ee7fc94d880929fea3743f1ad8e97b66f15/docs/report.png
+  - https://raw.githubusercontent.com/rkfshakti/hermes-glassbox/2b070ee7fc94d880929fea3743f1ad8e97b66f15/docs/demo.gif
+description: "A contained, auditable terminal backend for macOS. Select it with `hermes config set terminal.backend glassbox` and every terminal, execute_code, read_file, write_file, patch and search_files call runs under a generated Seatbelt profile: the system stays readable, the workspace is writable, the rest of the user's home is hidden, and network access is off by default. The kernel-refused reads, writes and network attempts are recorded in a local audit log, so \"what did the agent try to touch?\" is answerable: `hermes glassbox report` (text or a self-contained dark HTML timeline), `/glassbox status|verify|report|profile`, the glassbox_report / glassbox_policy / glassbox_verify tools, a containment self-test (`hermes glassbox verify`: workspace read/write, home read/write denial, child-process confinement, parent traversal, network denial, secret-env filtering) and a one-command demo (`hermes glassbox demo`). A pre_tool_call preflight turns file-tool denials into an actionable error with the exact `hermes config set` line to allow a path, instead of the masked empty read a `2>/dev/null` shell probe would otherwise produce. Settings: network, allow_home, workspace_writable, read_paths, write_paths, deny_paths, audit — apply to the next command, editable from the Desktop Plugins tab. Disclosure — macOS only; runs the agent's shell commands on this Mac as the same UNIX user under /usr/bin/sandbox-exec (an OS kernel sandbox, not a VM or a separate UID; it does not defend against a kernel exploit); osascript, open, security and launchctl are blocked and Apple Events mach services are denied so a command cannot delegate access to another app; the generated profile, a private scratch home/tmp area and the audit log live under HERMES_HOME/plugin-data/glassbox/ (the audit stores command text truncated to 2000 chars, cwd, exit code, duration, blocked paths and a short output excerpt only when something was blocked — local only, capped at 4 MB with one rotation, never uploaded, `hermes glassbox clear` deletes it); reads the workspace and any extra read_paths/write_paths the user configures; runs two `git config --global --get` calls to copy the Git author name/email into the sandbox environment because ~/.gitconfig is hidden; provider keys, tokens, passwords and SSH agent sockets are filtered from every sandboxed child environment; no network calls of its own, no background processes, no telemetry; Seatbelt is marked deprecated by Apple but shipped and functional on current macOS — if a future macOS drops sandbox-exec the backend reports unavailable instead of running unconfined."
+known_issues:
+  - "Seatbelt is a deny-by-default OS sandbox, not a virtual machine: commands run as the same user, and the plugin does not defend against a kernel exploit or against a process the user deliberately launches outside the sandbox."
+  - "Commands that need network (package installs, git push over HTTPS) require `network: true` or a local mirror; SSH agent sockets and ~/.ssh are never passed in."
+capabilities:
+  provides_tools: [glassbox_report, glassbox_policy, glassbox_verify]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

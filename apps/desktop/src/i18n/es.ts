@@ -3730,7 +3730,9 @@ export const esOverrides = {
       ageNow: 'ahora',
       ageDay: 'd',
       ageHour: 'h',
-      ageMin: 'm'
+      ageMin: 'm',
+      summaryUpdated: 'Actualizado',
+      summaryMessageCount: count => `${count} ${count === 1 ? 'mensaje' : 'mensajes'}`
     },
     dateDivider: {
       today: 'Hoy, más temprano',

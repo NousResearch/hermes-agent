@@ -2278,7 +2278,9 @@ export const jaOverrides = {
       ageNow: 'たった今',
       ageDay: '日',
       ageHour: '時間',
-      ageMin: '分'
+      ageMin: '分',
+      summaryUpdated: '更新',
+      summaryMessageCount: count => `${count} ${count === 1 ? 'メッセージ' : 'メッセージ'}`
     },
     dateDivider: {
       today: '今日の早い時間',

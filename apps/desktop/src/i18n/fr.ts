@@ -3749,7 +3749,9 @@ export const frOverrides = {
       ageNow: 'maintenant',
       ageDay: 'j',
       ageHour: 'h',
-      ageMin: 'm'
+      ageMin: 'm',
+      summaryUpdated: 'Mis à jour',
+      summaryMessageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`
     },
     dateDivider: {
       today: "Aujourd'hui",

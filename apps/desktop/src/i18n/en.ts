@@ -3298,7 +3298,12 @@ export const en: Translations = {
       ageNow: 'now',
       ageDay: 'd',
       ageHour: 'h',
-      ageMin: 'm'
+      ageMin: 'm',
+      /** Hover card footer (issue #45103): "Updated 2h ago" — the cached
+       *  summary's age. Paired with the sidebar's ageDay/ageHour/ageMin. */
+      summaryUpdated: 'Updated',
+      /** Hover card footer: the summarized message count. */
+      summaryMessageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`
     },
     dateDivider: {
       today: 'Earlier today',

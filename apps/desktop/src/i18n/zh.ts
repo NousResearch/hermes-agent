@@ -3197,7 +3197,9 @@ export const zhOverrides = {
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',
-      ageMin: '分'
+      ageMin: '分',
+      summaryUpdated: '更新于',
+      summaryMessageCount: count => `${count} 条消息`
     },
     dateDivider: {
       today: '今天早些时候',

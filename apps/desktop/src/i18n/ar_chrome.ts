@@ -340,7 +340,9 @@ export const arChrome = {
       ageNow: 'الآن',
       ageDay: 'يوم',
       ageHour: 'ساعة',
-      ageMin: 'دقيقة'
+      ageMin: 'دقيقة',
+      summaryUpdated: 'تم التحديث',
+      summaryMessageCount: count => `${count} ${count === 1 ? 'رسالة' : 'رسائل'}`
     }
   },
   shell: {

@@ -1,0 +1,35 @@
+name: hermes-issue-sync
+repo: https://github.com/elijahboston/hermes-issue-sync
+sha: 5d801f510ed19eb90e14693bf9317426c24cd9c7
+description: >-
+  Two-way sync between Hermes kanban cards and Linear or Jira issues. Open issues with a
+  chosen label in the projects you pick become cards; card status moves the issue through
+  its workflow; a finished card posts its summary on the issue; a worker that blocks with a
+  question gets it posted on the issue, and the first human reply there unblocks the card
+  with the answer. Several connections (Linear workspaces, Jira sites, several projects
+  each) run side by side, and one failing never stops the others. Desktop adds an Issue
+  Sync panel, a status-bar chip and kanban card badges; /issues status and /issues show
+  work from any chat. Disclosure — calls api.linear.app and your Jira Cloud site with your
+  own API key or token (read by name through the profile secret scope, never stored);
+  moves issues and posts comments as you, each signed "— via Hermes issue-sync"; runs a
+  short background sync thread on kanban dispatcher ticks and runs `hermes kanban`
+  subcommands to read and update the board; writes only to its own plugin data folder; no
+  telemetry. On multi-profile gateways it binds the profile's secret scope itself through
+  the public agent.secret_scope API until NousResearch/hermes-agent#151126 is fixed.
+maintainer: elijahboston
+tier: community
+category: automation
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/elijahboston/hermes-issue-sync#readme
+version: "0.1.0"
+screenshots: []
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_kanban_dispatch_tick
+    - kanban_task_claimed
+    - kanban_task_completed
+    - kanban_task_blocked
+  provides_middleware: []
+  requires_env: []

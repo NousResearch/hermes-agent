@@ -2,9 +2,7 @@ name: hermes-lens
 repo: https://github.com/brukchip/hermes-lens
 sha: 487fb7c911fa91e3f3768ce863b77f030ab23b56
 title: Hermes Lens
-description: Talk to your own Hermes agent through Ray-Ban Meta glasses. A platform channel for a companion
-  iPhone app that holds a Gemini Live voice call; requests that need your data or an action become ordinary
-  messages to your agent, and Hermes approvals appear as an Approve / Decline card that only your tap resolves.
+description: "Talk to your own Hermes agent through Ray-Ban Meta glasses. A platform channel for a companion iPhone app that holds a Gemini Live voice call; requests that need your data or an action become ordinary messages to your agent, and Hermes approvals appear as an Approve / Decline card that only your tap resolves. Disclosure — opens an HTTP listener (default 127.0.0.1:8795, plaintext; expose it only through a TLS proxy such as tailscale serve) where any phone holding the shared HERMES_LENS_TOKEN chats with the agent as its owner, bypassing the gateway allowlist, and resolves approval prompts with a tap; sends GEMINI_API_KEY only to generativelanguage.googleapis.com to mint single-use Gemini Live call tokens, after which the companion app speaks the agent's answers and any glasses photos you attach through Google's Gemini Live (with Google Search); `hermes lens setup` writes HERMES_LENS_TOKEN (and a Gemini key you type) to the profile .env; stores only daily call-time totals in its plugin data dir; no telemetry."
 maintainer: brukchip
 tier: community
 category: platform

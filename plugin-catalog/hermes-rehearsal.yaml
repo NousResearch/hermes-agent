@@ -1,0 +1,27 @@
+{
+  "name": "hermes-rehearsal",
+  "title": "Rehearsal",
+  "repo": "https://github.com/Mugunth007/hermes-rehearsal",
+  "sha": "0abffaa94b1623546977b9b37a7abf0862ad700c",
+  "description": "Rehearse SQLite customer merges, inspect exact changes and conflicting identities, then apply human-approved verified plans.",
+  "maintainer": "MugunthPerumal",
+  "tier": "community",
+  "category": "tools",
+  "requires_hermes": ">=0.23.0",
+  "version": "0.1.0",
+  "capabilities": {
+    "provides_tools": [
+      "rehearsal_demo",
+      "rehearsal_databases",
+      "rehearsal_inspect",
+      "rehearsal_propose",
+      "rehearsal_report"
+    ],
+    "provides_hooks": [],
+    "provides_middleware": [],
+    "requires_env": []
+  },
+  "screenshots": [
+    "https://raw.githubusercontent.com/Mugunth007/hermes-rehearsal/0abffaa94b1623546977b9b37a7abf0862ad700c/docs/screenshots/local-review.png"
+  ]
+}

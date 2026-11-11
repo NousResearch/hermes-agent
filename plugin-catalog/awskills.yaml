@@ -1,0 +1,18 @@
+name: awskills
+title: awskills
+repo: https://github.com/Aitherium/awskills
+sha: 5c5c1a67a3d7ccfd074060124997bdd54f58473a
+version: "1.0.0"
+description: "About 100 portable skills for operating AI agents and the Aither/awdk toolchain: install the adk CLI and run an agent locally, find and install tool packs and skills, author and ship your own tool pack, use Aither from Hermes and other harnesses over skills, MCP and A2A, work safely in a shared git worktree, and debug agent failures. Portable Agent Plugins v1 package (plugin.json + skills/), skills only, no plugin code, no MCP server bundled. Disclosure — skills are instructions only, but many tell the agent to run local CLIs (adk, awnode) and to download and run vendor install scripts with curl|sh or irm|iex from aitherium.com, raw.githubusercontent.com/Aitherium, openclaw.ai, install.osmantic.com, twotimespi.dev and ollama.com (each command goes through Hermes' terminal approval); some skills connect to Aitherium's hosted services (mcp.aitherium.com, gateway.aitherium.com, weights.aitherium.com) when the user follows them. The repo's hooks/, tools/ and scripts/ files are not loaded by Hermes."
+maintainer: Aitherium
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Aitherium/awskills#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

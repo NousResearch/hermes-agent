@@ -16,6 +16,8 @@ initialize — #87015), then fall through to the dual-stack hostname last,
 and "stick" to whichever path works.
 """
 
+import contextlib
+
 import httpx
 import pytest
 import socket
@@ -363,19 +365,21 @@ class FakeDoHClient:
 
     @staticmethod
     def _make_response(status, body, url):
-        """Build an httpx.Response with a request attached (needed for raise_for_status)."""
-        request = httpx.Request("GET", url)
-        return httpx.Response(status, json=body, request=request)
+        """A streamed httpx.Response with a request attached (needed for raise_for_status)."""
+        import json as _json
+        return httpx.Response(status, stream=httpx.ByteStream(_json.dumps(body).encode()), request=httpx.Request("GET", url))
 
-    async def get(self, url, *, params=None, headers=None, **kwargs):
+    @contextlib.asynccontextmanager
+    async def stream(self, method, url, *, params=None, headers=None, **kwargs):
         self.requests_made.append({"url": url, "params": params, "headers": headers})
         for prefix, action in self._responses.items():
             if url.startswith(prefix):
                 if isinstance(action, Exception):
                     raise action
                 status, body = action
-                return self._make_response(status, body, url)
-        return self._make_response(200, {}, url)
+                yield self._make_response(status, body, url)
+                return
+        yield self._make_response(200, {}, url)
 
     async def __aenter__(self):
         return self
@@ -435,24 +439,19 @@ class TestDiscoverFallbackIps:
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.167.220"]
+        assert ips == ["149.154.167.220", "149.154.166.110"]
 
     @pytest.mark.asyncio
     async def test_all_doh_ips_same_as_system_dns_kept(self, monkeypatch):
-        """DoH agrees with system DNS — keep that IP instead of seed list (#14520).
-
-        Previous behavior fell through to ``_SEED_FALLBACK_IPS`` here, but the
-        seed addresses are not routable on every network.  When DoH confirms
-        the system IP, that IP is the best candidate we have and should be
-        used as the fallback target.
-        """
+        """DoH agrees with system DNS — that IP stays first (#14520); the seeds
+        follow it so a dead lone edge cannot strand the fallback path."""
         self._patch_doh(monkeypatch, {
             "https://dns.google": (200, _doh_answer("149.154.166.110")),
             "https://cloudflare-dns.com": (200, _doh_answer("149.154.166.110")),
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.166.110"]
+        assert ips == ["149.154.166.110", "149.154.167.220"]
 
     @pytest.mark.asyncio
     async def test_hung_system_dns_does_not_gate_doh_results(self, monkeypatch):
@@ -477,5 +476,5 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         elapsed = _time.monotonic() - start
 
-        assert ips == ["149.154.167.220"]
+        assert ips == ["149.154.167.220", "149.154.166.110"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"

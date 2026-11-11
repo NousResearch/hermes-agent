@@ -10,8 +10,11 @@ import { lockImporters } from './pnpm-lock.mjs'
 
 // Do not require('electron'): Electron 42's entry point can acquire a binary.
 // Only this explicit preparation phase may execute the installed installer.
-/** @param {{ source: string, install?: boolean, env?: NodeJS.ProcessEnv }} options @returns {string} */
-export function prepareElectronRuntime({ source, install = true, env = process.env }) {
+// `run` runs the installer; node-deps passes one that kills it once its run loses the checkout lock.
+const runInstaller = (file, args, options) => execFileSync(file, args, { ...options, stdio: 'inherit' })
+
+/** @param {{ source: string, install?: boolean, env?: NodeJS.ProcessEnv, run?: typeof runInstaller }} options @returns {string} */
+export function prepareElectronRuntime({ source, install = true, env = process.env, run = runInstaller }) {
   source = resolve(source)
   const link = join(source, 'apps/desktop/node_modules/electron/package.json')
   if (!existsSync(link)) throw new Error('Missing prepared Electron dependency; install the locked desktop workspace first')
@@ -55,7 +58,7 @@ export function prepareElectronRuntime({ source, install = true, env = process.e
     copyFileSync(env.HERMES_VC_RUNTIME, join(binding, 'vcruntime140.dll'))
   }
   console.log(`electron-runtime: preparing locked Electron ${version} (${process.platform}-${process.arch})...`)
-  execFileSync(process.execPath, [join(packageRoot, 'install.js')], { cwd: source, env: installerEnv, stdio: 'inherit' })
+  run(process.execPath, [join(packageRoot, 'install.js')], { cwd: source, env: installerEnv })
   if (!prepared()) throw new Error('Electron installer did not produce the prepared host runtime')
   return executable
 }

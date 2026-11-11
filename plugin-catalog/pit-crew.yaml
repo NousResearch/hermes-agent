@@ -1,0 +1,37 @@
+name: pit-crew
+repo: https://github.com/trevornk/pit-crew
+sha: "91dec4414b60f7a90b5bdd561d336604b1cc630e"
+title: Pit Crew
+description: "Proactive, safety-gated car agent: live state, a \"will I be ready?\" planner, a background watcher and approval-gated commands, with Home Assistant, Teslemetry/Tessie, TeslaMate or a built-in simulated car. Disclosure — once you switch it live with `/car live`, Pit Crew sends real commands to your vehicle (unlock, trunk, frunk, vent, Sentry-off, honk and flash go through Hermes's approval prompt and follow your approval setting), and its background watcher polls your configured Home Assistant / Teslemetry / Tessie / TeslaMate endpoint and posts alerts to the chats you bind."
+image: "https://raw.githubusercontent.com/trevornk/pit-crew/91dec4414b60f7a90b5bdd561d336604b1cc630e/docs/screenshots/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/trevornk/pit-crew/91dec4414b60f7a90b5bdd561d336604b1cc630e/docs/screenshots/pit-crew-page.png"
+  - "https://raw.githubusercontent.com/trevornk/pit-crew/91dec4414b60f7a90b5bdd561d336604b1cc630e/docs/screenshots/live-confirmed.png"
+  - "https://raw.githubusercontent.com/trevornk/pit-crew/91dec4414b60f7a90b5bdd561d336604b1cc630e/docs/screenshots/alert.png"
+readme: true
+maintainer: trevornk
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+docs_url: https://github.com/trevornk/pit-crew#readme
+platforms: []
+known_issues:
+  - "Unlock, trunk, frunk, vent, Sentry-off, honk and flash follow the user's Hermes approval setting (asked when approvals are on; not asked when off/yolo). The Advanced 'Always ask a person' setting (require_human_for) relies on Hermes' post_approval_response hook."
+  - "Only the Home Assistant tesla_fleet profile is built from recordings of a real car (verified live on a real Model Y: status, twelve no-approval commands and all seven approval-class commands, each confirmed by the car; that run had Hermes approvals off, so the approval prompt with approvals on is covered in CI only). The BMW and Kia/Hyundai profiles are verified against each integration's source and test fixtures, not run on a real car. Home Assistant removed its BMW Connected Drive integration in March 2026 (BMW blocked third-party access), so that profile only fits an install that still has the old entities; the Kia/Hyundai profile targets the kia_uvo HACS custom integration."
+  - "Home Assistant ships the Tesla Fleet Odometer, Shift state, Speed, Tire pressure and Tire pressure warning entities disabled; enable them for the odometer, the unlock/trunk motion check and the tire alerts (/car and car_status list the missing ones)."
+  - "The direct Tesla adapter (Teslemetry / Tessie) is tested with mocks of tesla-fleet-api only; no live account was available. Tesla Fleet API (own developer app) works through Home Assistant; a native Fleet-direct mode waits on a Hermes OAuth enhancement."
+capabilities:
+  provides_tools:
+    - car_status
+    - car_history
+    - car_readiness
+    - car_command
+    - car_alerts
+    - car_rules
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,24 @@
+name: vitam
+repo: https://github.com/taylorwtf/vitam
+sha: effa783fd171bd7d5042aea77d207569c8f2a5ba
+subdir: ""
+description: "Turn a modded PS Vita into a voice-powered Hermes handheld: hold-to-talk mic with faster-whisper STT on your own machine, an agent turn through your Hermes gateway, TTS reply spoken through the Vita speaker, and optional rear-camera vision frames. LAN-only; the bridge makes no outbound calls except to your configured gateway."
+maintainer: taylorwtf
+tier: community
+category: voice
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/taylorwtf/vitam#readme
+version: "1.0.0"
+readme: true
+platforms:
+- linux
+- macos
+known_issues:
+- "Requires a modded PS Vita or PS TV (HENkaku/h-encore 3.60) and a machine on the same LAN to run the bridge daemon."
+- "Speech recognition and TTS use small local models: intelligible, not studio quality."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - HERMES_VITA_GATEWAY_KEY

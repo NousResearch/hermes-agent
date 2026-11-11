@@ -1,0 +1,18 @@
+name: hermes-skill-router
+repo: https://github.com/mortang2410/hermes-skill-router
+sha: edffe7bbefb624cd4a755c3d25ddcbbc2b8b8745
+subdir: ""
+description: Removes the always-on skill catalog from every request and injects a short fused shortlist instead. Learns which skills you loaded for similar prompts.
+maintainer: mortang2410
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/mortang2410/hermes-skill-router/edffe7bbefb624cd4a755c3d25ddcbbc2b8b8745/docs/assets/performance.png
+screenshots:
+- https://raw.githubusercontent.com/mortang2410/hermes-skill-router/edffe7bbefb624cd4a755c3d25ddcbbc2b8b8745/docs/assets/performance.png
+capabilities:
+  provides_tools: [skill_router_search]
+  provides_hooks: []
+  provides_middleware: [llm_request]
+  requires_env: []

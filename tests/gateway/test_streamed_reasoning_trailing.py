@@ -13,14 +13,14 @@ from gateway.platforms.event import MessageEvent, MessageType, SessionSource
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _make_runner
 
 
-async def _deliver(monkeypatch, *, show_reasoning: bool, already_sent: bool):
+async def _deliver(monkeypatch, *, show_reasoning: bool, already_sent: bool, is_bot: bool = False):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_load_gateway_config",
                         lambda: {"display": {"show_reasoning": show_reasoning}})
     adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", is_bot=is_bot)
     event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="1")
     result = {"final_response": "the answer is 42", "last_reasoning": "thinking hard about it",
               "already_sent": already_sent}
@@ -52,3 +52,12 @@ async def test_no_trailing_reasoning_when_hidden_or_not_streamed(monkeypatch, sh
     assert adapter.sent == []
     if not already_sent:  # the caller's normal send carries the reasoning above the answer
         assert returned.startswith("💭") and returned.endswith("the answer is 42")
+
+
+@pytest.mark.asyncio
+async def test_a_bot_peer_gets_no_trailing_reasoning_message(monkeypatch):
+    """A second message to a bot peer is fresh input that can start another paid turn."""
+    adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=True, is_bot=True)
+
+    assert returned is None
+    assert adapter.sent == []

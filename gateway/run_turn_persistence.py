@@ -808,7 +808,8 @@ class GatewayTurnPersistenceMixin:
             # The stream showed only the answer: the reasoning block prepended to ``response`` for
             # show_reasoning never reached the chat, so it follows as its own message (#7251).
             reasoning_block = self._hmwa_reasoning_block(agent_result, response, source, _intentional_silence)
-            if reasoning_block and adapter:
+            # A bot peer would take a second message as fresh input: gated like the footer line.
+            if reasoning_block and adapter and automatic_notices_allowed(source):
                 try:
                     await adapter.send(source.chat_id, reasoning_block, metadata=self._event_thread_metadata(event, source))
                 except Exception:

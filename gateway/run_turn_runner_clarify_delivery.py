@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import suppress
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -25,6 +24,9 @@ UNDELIVERED_NO_SURFACE = "[clarify prompt could not be delivered: no chat surfac
 
 # Seconds a scheduled card send may take before it is classified ``ambiguous`` (possibly posted).
 SEND_ACK_WINDOW = 15
+# How much longer the clarify card waits for its explanation's send once it is ready to post. A send
+# that never returns (a plugin adapter with no HTTP timeout) must not hold the question back.
+CARD_WAITS_FOR_CONTEXT = 5
 
 
 def text_fallback_coro(adapter, **send_kwargs):
@@ -217,10 +219,18 @@ def clarify_context_sink(runner) -> Optional[Callable[..., None]]:
 
 
 async def await_clarify_context(runner) -> None:
-    """Hold the clarify card until its explanation's send has finished. The agent thread waits only
-    ``SEND_ACK_WINDOW`` for it, and the card path does not take the adapter's text-send lock, so a
-    slow split send would otherwise let the buttons land above the rest of the explanation."""
+    """Hold the clarify card until its explanation's send has finished, for at most
+    ``CARD_WAITS_FOR_CONTEXT`` seconds. The agent thread waits only ``SEND_ACK_WINDOW`` for it, and the
+    card path does not take the adapter's text-send lock, so a slow split send would otherwise let the
+    buttons land above the rest of the explanation. A send that never returns still lets the card post:
+    the user must always get the question the turn is waiting on."""
     fut, runner._clarify_context_send = getattr(runner, "_clarify_context_send", None), None
-    if fut is not None and not fut.done():
-        with suppress(Exception):  # a failed explanation send was already logged; the card still goes
-            await asyncio.wrap_future(fut)
+    if fut is None or fut.done():
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(fut)), CARD_WAITS_FOR_CONTEXT)
+    except TimeoutError:
+        logger.warning("Clarify context still sending after %ss; posting the prompt anyway",
+                       CARD_WAITS_FOR_CONTEXT)
+    except Exception:  # a failed explanation send was already logged; the card still goes
+        logger.debug("clarify context send failed before the prompt", exc_info=True)

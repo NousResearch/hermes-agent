@@ -761,3 +761,48 @@ def test_dm_reaction_from_allowlisted_user_is_routed(monkeypatch):
     adapter = _reaction_adapter()
     adapter._allowed_group_users = frozenset({"ou_owner"})
     assert len(_run_reaction(adapter, "ou_owner", chat_id="oc_dm", chat_type="p2p")) == 1
+
+
+# --- Generic card clicks (synthetic /card commands) share the gate ---------
+
+
+def _run_card_click(adapter, open_id: str, *, chat_id: str, raw_chat_type: str = "group"):
+    import asyncio
+
+    adapter._card_action_tokens = {}
+
+    async def _get_chat_info(_chat_id):
+        return {"name": "Chat", "type": None, "raw_type": raw_chat_type}
+
+    adapter.get_chat_info = _get_chat_info
+    data = SimpleNamespace(event=SimpleNamespace(
+        token="", context=SimpleNamespace(open_chat_id=chat_id),
+        operator=SimpleNamespace(open_id=open_id),
+        action=SimpleNamespace(tag="button", value={"custom_action": "x"}),
+    ))
+    asyncio.run(adapter._handle_card_action_event(data))
+    return adapter._routed
+
+
+def test_group_card_click_from_non_allowlisted_user_is_dropped():
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_card_click(adapter, "ou_stranger", chat_id="oc_g") == []
+    routed = _run_card_click(adapter, "ou_owner", chat_id="oc_g")
+    assert [e.text for e in routed] == ["/card button {\"custom_action\": \"x\"}"]
+
+
+def test_group_card_click_respects_per_chat_disabled_rule():
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._group_rules = {"oc_locked": FeishuGroupRule(policy="disabled")}
+    assert _run_card_click(adapter, "ou_anyone", chat_id="oc_locked") == []
+
+
+def test_dm_card_click_from_non_allowlisted_user_is_dropped(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    adapter = _reaction_adapter(group_policy="open")
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    assert _run_card_click(adapter, "ou_stranger", chat_id="oc_dm", raw_chat_type="p2p") == []
+    assert len(_run_card_click(adapter, "ou_owner", chat_id="oc_dm", raw_chat_type="p2p")) == 1

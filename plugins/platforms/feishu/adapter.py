@@ -2463,14 +2463,10 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         action = "added" if "created" in event_type else "removed"
         synthetic_text = f"reaction:{action}:{emoji_type}"
 
-        # Reactions become agent turns, so they must clear the same
-        # admission gate as a text message from this operator in this chat:
-        # DM allowlist, group policy (allowlist / admin_only / disabled /
-        # per-chat rules) and bot-sender policy. Without this, anyone who
-        # can see a bot message in a group can wake the agent by reacting,
-        # even under FEISHU_GROUP_POLICY=allowlist. A reaction has no
-        # mention payload, so mention gating is not applied.
-        reject = self._admit_reaction(user_id_obj, chat_id=chat_id, chat_type=chat_type_raw)
+        # Reactions become agent turns, so they must clear the same admission gate as text
+        # from this operator in this chat; otherwise anyone who can see a bot message in a
+        # group wakes the agent by reacting, even under FEISHU_GROUP_POLICY=allowlist.
+        reject = self._admit_synthetic(user_id_obj, chat_id=chat_id, chat_type=chat_type_raw)
         if reject is not None:
             logger.debug(
                 "[Feishu] dropping reaction %s:%s on %s: %s",
@@ -2518,10 +2514,18 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
+        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+        # Same gate as reactions. The callback carries no chat type, so ask the (cached) chat
+        # lookup; anything not known to be a DM is judged as a group.
+        chat_type = "p2p" if (await self.get_chat_info(chat_id)).get("raw_type") == "p2p" else "group"
+        reject = self._admit_synthetic(sender_id, chat_id=chat_id, chat_type=chat_type)
+        if reject is not None:
+            logger.debug("[Feishu] dropping card action %r from %s in %s: %s", action_tag, open_id, chat_id, reject)
+            return
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._dispatch_synthetic_event(
             text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
-            sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
+            sender_id=sender_id, event_chat_type="group",
             raw_message=data, message_id=token or str(uuid.uuid4()),
         )
 
@@ -3495,15 +3499,15 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return rule.require_mention
         return self._require_mention
 
-    def _admit_reaction(
+    def _admit_synthetic(
         self, user_id_obj: Any, *, chat_id: str, chat_type: str
     ) -> Optional[RejectReason]:
-        """Admission for a reaction that would become a synthetic agent turn.
+        """Admission for a reaction / card click that would become a synthetic agent turn.
 
         DMs go through ``_admit`` unchanged (allowlist / allow-all / pairing
         intake). Groups apply self-echo and ``_allow_group_message`` (global
         policy, per-chat ``group_rules``, admins) but skip the mention
-        requirement, because a reaction carries no @ payload.
+        requirement, because a reaction or click carries no @ payload.
         """
         sender = SimpleNamespace(sender_type="user", sender_id=user_id_obj)
         message = SimpleNamespace(

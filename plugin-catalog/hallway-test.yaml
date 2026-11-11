@@ -1,11 +1,11 @@
 name: hallway-test
 repo: https://github.com/lexipej/hallway-test
 sha: 7e5381a56f411114e52e0a61d73664142dba7803
-description: Five simulated people with code-enforced limits (low vision, screen reader, colour blindness, tremor) usability-test your web page in real browsers and report who got stuck and why.
+description: "Five simulated people with code-enforced limits (low vision, screen reader, colour blindness, tremor) usability-test your web page in real browsers and report who got stuck and why. Disclosure — the hallway_test tool opens the page you or the agent name in headless Chromium (Playwright) and five simulated testers browse it, sending page text and screenshots to the model set for 'Hallway Test people' (your main model if unset); only http/https pages are opened, link-local and cloud-metadata addresses are always refused and private-network hosts only when allow_private_hosts is on (loopback always allowed), with each navigation redirect checked (subresource redirects are logged, not blocked); the bundled demo is served on 127.0.0.1; reports, screenshots and replays are saved under $HERMES_HOME/plugin-data/hallway-test/; no telemetry."
 maintainer: lexipej
 tier: community
 category: tools
-requires_hermes: ">=0.23"
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/lexipej/hallway-test#readme
 version: "0.1.0"
 title: Hallway Test

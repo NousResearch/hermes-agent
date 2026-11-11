@@ -497,6 +497,34 @@ def convert_table_to_bullets(text: str) -> str:
     return '\n'.join(out)
 
 
+def voice_mention_gate_enabled(extra: Optional[dict]) -> bool:
+    """``voice_mention_patterns``: opt-in, because it sends unaddressed members' voice notes to STT."""
+    from utils import is_truthy_value
+    return is_truthy_value((extra or {}).get("voice_mention_patterns"), default=False)
+
+
+async def spoken_mention_clips(paths: list[str], patterns) -> list[str]:
+    """Transcribe a group voice note that only a spoken wake word could admit and match ``patterns``
+    against the transcript (the text gate runs before STT, so it never sees one: #102330). On a
+    match, the clips to attach; the turn reuses their transcripts, one STT call per clip. Otherwise
+    ``[]``, and the clips, fetched only for this check, are deleted."""
+    from gateway.run_inbound_transcription import remember_gate_transcript, transcribe_one_clip
+    results: dict = {}
+    for path in paths:
+        try:
+            results[path] = await transcribe_one_clip(path)
+        except Exception as exc:  # health: allow BLE001 -- an STT failure is a non-match, never a crash
+            logger.warning("Spoken mention check could not transcribe %s: %s", path, exc)
+    if any(text and any(p.search(text) for p in patterns) for text, _note in results.values()):
+        for path, result in results.items():
+            remember_gate_transcript(path, result)
+        return list(paths)
+    for path in paths:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+    return []
+
+
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,
                              display_label: str | None = None, defaults: list[str] | None = None,
                              logger_: logging.Logger | None = None) -> list[re.Pattern]:

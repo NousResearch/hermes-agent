@@ -244,7 +244,10 @@ addresses by LID matches through the phone number Baileys supplies alongside it,
 `allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
 needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
 message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
-bot, or `/commands` (groups in `free_response_chats` are exempt).
+bot, or `/commands` (groups in `free_response_chats` are exempt). Regex wake words go in `mention_patterns`.
+A captionless voice note can only match them with `voice_mention_patterns: true`, which transcribes the group
+voice note first (off by default: every unaddressed voice note then goes to your speech-to-text provider; the
+turn reuses that transcript).
 
 Then start the gateway:
 

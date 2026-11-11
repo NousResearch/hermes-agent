@@ -42,7 +42,8 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, spoken_mention_clips, strip_markdown
+from gateway.platforms.helpers import voice_mention_gate_enabled
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from gateway.platforms.send_targets import regex_stripped_parser
 from utils import atomic_json_write
@@ -926,7 +927,8 @@ class PhotonAdapter(BasePlatformAdapter):
         # Mention gate BEFORE normalising: _normalize_content persists inline attachment
         # bytes to the media cache, and a dropped group message must not leave files behind.
         gated = chat_type == "group" and self.require_mention
-        if gated and not self._message_matches_mention_patterns(_mention_gate_text(content)):
+        spoken = gated and ctype == "voice" and voice_mention_gate_enabled(self.config.extra)  # #102330
+        if gated and not spoken and not self._message_matches_mention_patterns(_mention_gate_text(content)):
             logger.debug("[photon] ignoring group message (require_mention=true, no mention pattern matched)")
             return
         if ctype in _BINARY_CONTENT_TYPES:
@@ -934,6 +936,9 @@ class PhotonAdapter(BasePlatformAdapter):
             text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
+        if spoken and not await spoken_mention_clips(media_urls, self._mention_patterns):
+            logger.debug("[photon] ignoring group voice note (require_mention=true, no wake word spoken)")
+            return
         if gated:
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)

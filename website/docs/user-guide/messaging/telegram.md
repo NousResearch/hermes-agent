@@ -841,6 +841,10 @@ Messages in Telegram topics `31` and `42` are always ignored before the mention 
 - Patterns use Python regular expressions
 - Matching is case-insensitive
 - Patterns are checked against both text messages and media captions
+- A captionless voice note has no text, so it can only wake the bot by reply or @mention. Set
+  `voice_mention_patterns: true` to transcribe such a group voice note first and match these patterns
+  against what was said. It is off by default because every unaddressed voice note in the group then
+  goes to your speech-to-text provider. The turn reuses that transcript (one STT call)
 - Invalid regex patterns are ignored with a warning in the gateway logs rather than crashing the bot
 - If you want a pattern to match only at the start of a message, anchor it with `^`
 

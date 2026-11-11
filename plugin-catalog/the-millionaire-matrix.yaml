@@ -1,0 +1,20 @@
+name: the-millionaire-matrix
+version: "0.4.0"
+repo: https://github.com/bufirstrepo/hybrid-critic-loop
+sha: "371c0325de3412c593f88b73d3ab92fb8cdba7be"
+description: "Every model family you have a seat for generates a candidate; all of them blind-score each other on a peer validity matrix anchored by real tests (hard and measured gates outrank the matrix), the field steps down round by round to one answer behind a human gate, and verified lessons carry into your next session."
+category: tools
+tier: community
+maintainer: bufirstrepo
+requires_hermes: ">=0.21.0"
+capabilities:
+  provides_tools:
+    - critic_run
+    - critic_matrix
+    - critic_lessons
+    - critic_ledger
+    - critic_gate
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+  requires_env: []

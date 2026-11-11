@@ -216,6 +216,13 @@ dropped silently. The mechanics, in the order the due scan applies them
    resume applies rules 3–5 to it — one late/catch-up run, or a logged skip.
    One-shots and future instants recompute from now on resume.
 
+Late and catch-up fires go to the parallel pool like any other. With
+`cron.catch_up_serial: true`, a tick holding two or more overdue cron-expression
+jobs submits them in `_scheduled_instant` order to a per-home single-worker
+lane (`scheduler._get_catch_up_lane`, reaped with the parallel pools) instead;
+cron jobs due while the lane still has queued work join it, interval and
+one-shot jobs stay on the pool (`cron/scheduler_tick.py::_catch_up_lane`).
+
 The same store fields drive every topology: a standalone `hermes -p X gateway
 run` and a profile served by the host gateway (`_start_multiplex` ticks each
 home under `_profile_cron_scope`) evaluate the identical record. One gateway

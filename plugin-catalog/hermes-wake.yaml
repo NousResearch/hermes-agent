@@ -1,6 +1,6 @@
 name: hermes-wake
 repo: https://github.com/getaskclaw/hermes-wake
-sha: e536325a309c4b0a757e0173b42217619cd2a98e
+sha: 1e6ba97109b06592e0652b7d6df905969100031f
 description: >-
   Wakes the exact chat session (Matrix room, Telegram forum topic, ...) that
   started detached background work (systemd-run unit, PID or file) when that
@@ -27,4 +27,4 @@ capabilities:
   provides_middleware: []
   requires_env: []
 screenshots:
-  - https://raw.githubusercontent.com/getaskclaw/hermes-wake/e536325a309c4b0a757e0173b42217619cd2a98e/demo/wake.png
+  - https://raw.githubusercontent.com/getaskclaw/hermes-wake/1e6ba97109b06592e0652b7d6df905969100031f/demo/wake.png

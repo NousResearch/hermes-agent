@@ -169,6 +169,10 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
+    # Injected only when skill_view exists AND the hermes-agent skill is installed (system_prompt.py slot
+    # resolution). No "when the two differ" clause: docs-are-authoritative already carries the precedence.
+    # Names Hermes Agent without restating identity: SOUL.md line 1 already says who you are, while a custom
+    # persona (no Hermes identity line) still learns from "Hermes Agent itself" + "your own features" what it runs on.
     "For help with Unitalk AI Collaborator itself — configuring, setting up, using, extending, or troubleshooting it — "
     "or to understand your own features, tools, or capabilities, the documentation at "
     "https://hermes-agent.nousresearch.com/docs is your "
@@ -177,6 +181,7 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "before configuring, modifying, or troubleshooting Unitalk so you don't guess or invent workarounds."
 )
 
+# Variant for sessions without the skills toolset (e.g. Blank Slate): naming skill_view() there would dangle.
 HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
     "For help with Unitalk AI Collaborator itself — configuring, setting up, using, extending, or troubleshooting it — "
     "or to understand your own features, tools, or capabilities, the documentation at "
@@ -186,9 +191,11 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
 )
 
 
+# Keep the every-session memory scope even when task knowledge cannot be saved as a skill.
 def build_memory_guidance(
     memory_enabled: bool = True, profile_enabled: bool = True, *, skill_manage_available: bool = True,
 ) -> str:
+    """Adapt store and skill-write guidance without widening what belongs in memory."""
     if not memory_enabled and not profile_enabled:
         return ""
     if memory_enabled:
@@ -226,6 +233,7 @@ def build_memory_guidance(
     )
 
 
+# Legacy aliases still imported by call sites and tests.
 MEMORY_GUIDANCE = build_memory_guidance(True, True)
 USER_PROFILE_GUIDANCE = build_memory_guidance(False, True)
 
@@ -234,6 +242,22 @@ SESSION_SEARCH_GUIDANCE = (
     "context exists, use session_search to recall it before asking them to repeat themselves."
 )
 
+# The opening sentence is worded deliberately: Anthropic's server-side filter rejected the previous phrasing
+# ("After completing a complex task (5+ tool calls)... save the approach as a skill...") on subscription OAuth
+# credentials, surfacing as a billing-shaped HTTP 400. If you rewrite it, re-verify with a subscription OAuth
+# token — sk-ant-api keys do not hit the filter.
+# Anthropic's server-side content filter rejects the previous phrasing ("After completing a complex task (5+
+# tool calls), fixing a tricky error, or discovering a non-trivial workflow, save the approach as a skill
+# with skill_manage so you can reuse it next time.") on subscription OAuth credentials, and surfaces that
+# rejection as a billing-shaped HTTP 400 ("You're out of extra usage"), which sends users to buy quota they
+# do not need. Bisected against the live API: that sentence alone reproduces the 400 and removing it alone
+# clears it; size and the system[0] identity gate were both ruled out. The reword is empirically validated,
+# not understood — if you rewrite this sentence, re-verify against a subscription OAuth token, not an
+# sk-ant-api… key, which does not hit the filter. Dieted (#95681, maintainer-directed): the record-it /
+# patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
+# to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. The
+# [SKILL_PRUNED] reload rule that followed moved to the compaction summary, the only place markers exist
+# (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
 SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
 KANBAN_GUIDANCE = (
@@ -329,13 +353,33 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "user. Responses that only describe intentions without acting are not acceptable."
 )
 
+# "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls and the turn closes on
+# finish_reason=stop (#96550).
+# "nemotron" is deliberately absent from this list and EXECUTION_GUIDANCE_MODELS. We ran Nemotron 3.5 Super VL 5 times
+# with the tool-use enforcement, execution guidance and Google operational guidance blocks forced on and 5 times with
+# them off: pass rate moved by under 1 point on SWE-bench Verified, SWE-bench Pro and GDPval, and by +3.7 points on
+# Terminal-Bench 2.1, which was not significant per task (p = 0.14).
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
+# Models that receive OPENAI_MODEL_EXECUTION_GUIDANCE when agent.execution_guidance is "auto" (agentic-eval
+# traces showed the same failure modes; Muse Spark stops after a chat-only turn on defaults). Gemini/Gemma get
+# GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead; Claude does not exhibit these modes. Any model can opt in via
+# config.yaml (`true` or a substring list).
+# Model name substrings whose sessions receive OPENAI_MODEL_EXECUTION_GUIDANCE (execution discipline: tool
+# persistence, mandatory tool use for arithmetic, external-write read-back, count reconciliation, literal
+# preservation, verification-gated completion) when agent.execution_guidance is "auto". gpt/codex/grok are
+# the historical set; deepseek/kimi/qwen/glm/minimax/ mimo/mistral were added after Composio agentic-eval
+# traces showed the same failure modes on those families (financial math in prose, no read-back after
+# external writes, identifier "repair", completeness claims despite count mismatches). GLM's
+# tool-calls-as-plain-text stall (#53847) and MiMo (#41874) are covered here too. Gemini/Gemma are excluded
+# — they get the more specific GOOGLE_MODEL_OPERATIONAL_GUIDANCE block instead.
 EXECUTION_GUIDANCE_MODELS = (
     "gpt", "codex", "grok",
     "deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral", "muse",
 )
 
+# Universal "finish the job" guidance (ALL models): don't stop after a stub, never
+# fabricate output when the real path is blocked. Ships in every cached prompt — keep tight.
 TASK_COMPLETION_GUIDANCE = (
     "# Finishing the job\n"
     "When the user asks you to build, run, or verify something, the deliverable is a working artifact backed by real "
@@ -348,6 +392,22 @@ TASK_COMPLETION_GUIDANCE = (
     "produce. Reporting a blocker honestly is always better than inventing a result."
 )
 
+# Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
+# concurrently. Supersedes the former Google-only bullet so no model receives the steer twice.
+# Why this matters for cost: every assistant turn resends the entire accumulated conversation (and, on
+# cache-friendly providers, re-reads the cached prefix and pays for the newly-appended turn). A model that
+# issues one tool call per turn multiplies the number of round-trips — and therefore the resent context —
+# for any task that needs several independent reads, searches, or safe lookups. Batching independent calls
+# into a single assistant response collapses N turns into one, cutting both latency and the resent-context
+# cost that compounds over a long conversation. The hermes-agent runtime already executes a batch of tool
+# calls concurrently when they are independent (read-only tools always; path-scoped file ops when their
+# targets don't overlap — see run_agent._execute_tool_calls / tool_dispatch_helpers). The missing piece was
+# telling the *model* to emit those calls together in the first place. Until now the only batching steer in
+# the prompt lived in GOOGLE_MODEL_OPERATIONAL_GUIDANCE — Gemini/Gemma got it, every other model got
+# nothing. Short on purpose — shipped in the cached system prompt to every user, every session. Token cost
+# is paid once at install and amortised across all sessions via prefix caching. Keep it tight. Ported from
+# cline/cline#11514 ("encourage parallel tool calls"), adapted from Cline's TypeScript tool-surface guidance
+# to hermes-agent's Python prompt-assembly architecture.
 PARALLEL_TOOL_CALL_GUIDANCE = (
     "# Parallel tool calls\n"
     "When you need several pieces of information that don't depend on each other, request them together in a "
@@ -358,6 +418,18 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "read a file before you can patch it). When in doubt and the calls are independent, batch them."
 )
 
+# Execution-discipline guidance for models that abandon partial results, skip prerequisite lookups, answer
+# from memory, or declare "done" unverified. Body is family-agnostic (OPENAI_ prefix reflects origin).
+# Injection gate: system_prompt.py via config.yaml ``agent.execution_guidance`` (auto/true/false/list).
+# OpenAI GPT/Codex-specific execution guidance. Addresses known failure modes where GPT models abandon work
+# on partial results, skip prerequisite lookups, hallucinate instead of using tools, and declare "done"
+# without verification. Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+# Also applied to xAI Grok — same failure modes in practice (claims completion without tool calls, suggests
+# workarounds instead of using existing tools, replies with plans/suggestions instead of executing). As of
+# the Composio agentic-eval follow-up, the block is no longer fenced to gpt/codex/grok: eval traces showed
+# DeepSeek/Kimi doing financial math in prose, skipping read-back verification after external writes,
+# "repairing" malformed identifiers, and claiming completeness despite count mismatches — exactly the
+# failure modes this block targets.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -425,6 +497,10 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 )
 
 
+# Each <mandatory_tool_use>/<act_dont_ask> line above named against the tool(s) it tells the model to reach
+# for. A line is dropped when none of its named tools are in the session's valid_tool_names, so a toolset
+# without terminal/execute_code/etc. isn't told to use them (#106506). The
+# guidance names no web tool (#39797), so there is no entry for one.
 _EXECUTION_GUIDANCE_LINE_TOOLS = {
     "- Arithmetic, math, calculations → use terminal or execute_code\n": {"terminal", "execute_code"},
     "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n": {"terminal"},
@@ -441,6 +517,11 @@ _EXECUTION_GUIDANCE_LINE_TOOLS = {
 
 
 def execution_guidance_text(valid_tool_names=None) -> str:
+    """OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset (cache-safe: the toolset is fixed per session).
+
+    Lines that tell the model to reach for a tool absent from the session's toolset would dangle, so they are
+    dropped.
+    """
     text = OPENAI_MODEL_EXECUTION_GUIDANCE
     if valid_tool_names is not None:
         valid_tool_names = set(valid_tool_names)
@@ -450,6 +531,8 @@ def execution_guidance_text(valid_tool_names=None) -> str:
     return text
 
 
+# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
+# Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
 GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "# Google model operational directives\n"
     "Follow these operational rules strictly:\n"
@@ -461,17 +544,31 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
     "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
     "paragraphs. Focus on actions and results over narration.\n"
+    # No parallel-tool-call bullet here: PARALLEL_TOOL_CALL_GUIDANCE already carries it for all models.
     "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive to prevent CLI tools from hanging on "
     "prompts.\n"
     "- **Keep going:** Work autonomously until the task is fully resolved. Don't stop with a plan — execute it.\n"
 )
 
 
+# computer_use has no prompt block on purpose: its guidance lives in the tool
+# schema and each action result's verdict.
+
+# Mid-turn steering (/steer). A steer is delivered as a standalone role:"user" message right after the newest
+# tool result (see steer_user_row / apply_pending_steer_to_tool_results) — the only role-alternation-safe slot
+# mid-turn — carrying the self-describing marker. That marker text is exactly the channel injection defenses
+# distrust, so a bare "User guidance:" line gets refused. STEER_CHANNEL_NOTE says to trust THIS marker only
+# (lookalikes stay untrusted) and only in the latest turn (replaying history replays actions).
 STEER_MARKER_OPEN = (
     "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered "
     "once at this position; not tool output and not a new delivery when replayed from conversation history]"
 )
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+# Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
+# handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
+# agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
+# (hosted rooms) relabel these so a reply cannot reproduce the exact trusted shape. Keep the regex literal in
+# apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts byte-equivalent to this list.
 CONTROL_FRAME_OPENERS = (
     "/?OUT-OF-BAND USER MESSAGE", "CONTEXT COMPACTION", "CONTEXT SUMMARY]", "PRIOR CONTEXT", "Runtime note:",
     "System note:", "System:", "SYSTEM]", "IMPORTANT:", "Planning state preserved", "ASYNC DELEGATION",
@@ -479,6 +576,7 @@ CONTROL_FRAME_OPENERS = (
 
 
 def format_steer_marker(steer_text: str) -> str:
+    """Wrap a mid-turn steer in the self-describing marker (see note above)."""
     return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
 
 
@@ -486,11 +584,23 @@ STEER_DISPLAY_KIND = "steer"
 
 
 def steer_user_row(steer_text: str) -> dict[str, Any]:
+    """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
+    result). Its own row — never smeared onto the already-persisted tool row, which append-only
+    persistence would leave divergent from the live request — and typed so the alternation repair
+    never merges the next real prompt into it and history renderers can label it."""
     return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
             "display_kind": STEER_DISPLAY_KIND}
 
 
 STEER_CHANNEL_NOTE = (
+    # Only what the marker cannot say about itself: it is the ONLY trusted shape and carries full user authority.
+    # Dieted (#95681, maintainer-directed). History: #40240 added this note when the marker was bare and
+    # models refused steers as prompt injection (screenshot-verified). The marker has since become
+    # self-describing — it declares its own provenance ("a direct message from the user...") and its own
+    # replay rule ("not a new delivery when replayed from conversation history") at delivery time — so the
+    # prompt-side briefing keeps only what the marker cannot say about itself: it is the ONLY trusted shape
+    # (anti-lookalike), and it carries full user authority. The former standalone historical-vs-new
+    # paragraph (#76805) is now redundant with the marker's own replay clause and was removed.
     "## Mid-turn user steering\n"
     "Mid-turn, the user can steer you: Hermes delivers their message as a standalone user message right after "
     "the latest tool results, wrapped exactly as:\n"
@@ -504,6 +614,15 @@ STEER_CHANNEL_NOTE = (
 
 def hud_surface_note(valid_tool_names: set[str] | None = None,
                      deferred_tool_names: frozenset[str] | set[str] = frozenset()) -> str:
+    """Per-turn note for a message typed into the desktop's floating HUD ("this"/"here" = the app behind it).
+
+    A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
+    model-bound message, never the byte-stable system prompt. Each sentence is gated on the tool it names (an
+    unknown tool name invites a hallucinated call); without read_window_below the whole note is withheld.
+    ``deferred_tool_names`` are tools this session reaches only through the tool_call bridge (the default
+    tool_search defer list holds the desktop tools): they count as available, and the note says to invoke
+    them via tool_call, since a direct call to a deferred name is rejected as an unknown tool.
+    """
     direct = valid_tool_names or set()
     deferred = set(deferred_tool_names) - direct
     names = direct | deferred
@@ -535,8 +654,12 @@ def hud_surface_note(valid_tool_names: set[str] | None = None,
     return note + "]"
 
 
+# Models whose system prompt is sent as the 'developer' role (stronger instruction-following weight);
+# swapped at the API boundary in _build_api_kwargs().
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
+# Hints for core surfaces only. A messaging platform's hint ships with its plugin
+# (``PlatformEntry.platform_hint``, read by agent/system_prompt._default_platform_hint).
 PLATFORM_HINTS = {
     "cron": (
         "You are running as a scheduled cron job. There is no user present — you cannot ask questions, "
@@ -545,17 +668,24 @@ PLATFORM_HINTS = {
         "configured destination — put the primary content directly in your response."
     ),
     "cli": (
+        # Maintainer-verified live: the CLI prints raw text.
         "You are in a plain terminal (CLI). Markdown does NOT render — asterisks, headers, and fences appear as "
         "literal characters, so write plain text (indentation and blank lines are your only layout tools). Files: "
         "there is no attachment channel and MEDIA:/path tags are NOT intercepted here (they print as literal text) — "
+        # The cron local-only delivery caveat lives in cronjob_manage's deliver description (deferred: paid
+        # only when the tool is loaded), not in every CLI/TUI prompt.
         "deliver a file by stating its absolute path or URL in plain text; the user opens it themselves."
     ),
     "tui": (
+        # Same file-delivery reality as the CLI: no MEDIA: interception in tui/.
         "You are in the Unitalk terminal UI (TUI). Files: there is no attachment channel and MEDIA:/path tags "
         "are NOT intercepted here (they print as literal text) — deliver a file by stating its absolute path "
         "or URL in plain text."
     ),
     "desktop": (
+        # Every claim verified against the shipping renderer (inline-preview-directive.tsx). Widget text is
+        # recipe-first: HOW (an inline widget IS a ::preview'd HTML file) and WHY (the frame injects the theme
+        # prelude first; width adopts the first measured span). setup_mcp is taught by its own tool schema.
         "You are chatting inside the Unitalk desktop app, a graphical chat surface. Markdown renders with full GitHub "
         "flavor (tables, syntax-highlighted code, math via $...$, task lists, callouts). Deliver files by writing "
         "MEDIA:/absolute/path/to/file — any file type: images/audio/video render inline, everything else becomes a "
@@ -580,8 +710,18 @@ PLATFORM_HINTS = {
         "intercepts nothing — a MEDIA: tag there renders as literal text exposing a raw host filesystem path. For "
         "those cases, state the plain file path in your response text instead of a MEDIA: tag."
     ),
+    # No "webui" hint on purpose: nothing constructs platform="webui" (the dashboard chat resolves to
+    # 'desktop' or 'tui'). If a real WebUI chat surface ships, write a hint from its actual renderer.
 }
 
+# Telegram rich-messages extension — injected only with
+# ``platforms.telegram.extra.rich_messages: true`` (gateway.* or top-level).
+# NOTE: a "webui" hint lived here until 2026-08-29. It was a ghost (verified in the all-platform hint audit,
+# PR #97873): no code path constructs platform="webui" — the dashboard chat resolves to 'desktop' or 'tui'
+# (tui_gateway/server.py:_resolve_session_platform), and the browser chat tab is an xterm.js PTY hosting the
+# TUI, not an HTML chat renderer. Its content (tables/LaTeX/Mermaid, MEDIA: rich previews incl. Excalidraw)
+# described a renderer that does not exist anywhere in web/. If a real WebUI chat surface ships, write a
+# hint from its actual renderer — do not resurrect this text.
 TELEGRAM_RICH_MESSAGES_HINT = (
     "Rich messages are on for this chat, so the bullets/no-tables advice above does not apply. "
     "Telegram now supports rich Markdown, so lean into it: whenever it makes the answer clearer or easier to scan, "
@@ -594,6 +734,8 @@ TELEGRAM_RICH_MESSAGES_HINT = (
     "constructs like math and collapsible details may render as plain source text in that case. "
 )
 
+# Environment hints — the machine/OS the agent's tools actually run on
+# (PLATFORM_HINTS describe the messaging channel instead).
 WSL_ENVIRONMENT_HINT = (
     "You are running inside WSL (Windows Subsystem for Linux). The Windows host filesystem is mounted under /mnt/ — "
     "/mnt/c/ is the C: drive, /mnt/d/ is D:, etc. The user's Windows files are typically at "
@@ -602,8 +744,11 @@ WSL_ENVIRONMENT_HINT = (
 )
 
 
+# Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
+# would mislead, so the agent only sees the machine it can touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({"docker", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal"})
 
+# Used when the live probe fails: only what the backend choice implies — never an invented cwd/user/$HOME.
 _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "docker": "a Docker container (Linux)",
     "modal": "a Modal sandbox (Linux)",
@@ -613,10 +758,14 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
+# Per-process probe cache keyed by (home key, env_type, cwd_hint) so a mid-process backend switch
+# rebuilds; the home key because the probe runs against the profile's own terminal.* backend
+# (docker image / ssh host) and one multiplexed process serves several profiles.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
 
 
 def _plugin_backend_attr(backend: str, attr: str, default=None):
+    """*attr* of a plugin-registered terminal backend, fail-soft (unknown backend / raising plugin -> *default*)."""
     try:
         from agent.terminal_env_registry import provider_flag
         return provider_flag(backend, attr, default)
@@ -625,11 +774,19 @@ def _plugin_backend_attr(backend: str, attr: str, default=None):
 
 
 def _plugin_backend_is_remote(backend: str) -> bool:
+    """Whether a plugin-registered terminal backend runs commands remotely (unknown names are local)."""
     return bool(backend and backend != "local" and backend not in _REMOTE_TERMINAL_BACKENDS
                 and _plugin_backend_attr(backend, "is_remote", False))
 
 
 def _windows_marketing_version() -> str:
+    """"10"/"11" (``platform.release()`` says 10 for both; 11 is build >= 22000).
+
+    ``platform.release()`` reports the kernel version, which is ``10`` for BOTH Windows 10 and Windows 11 —
+    the prompt then claims "Windows (10)" on Windows 11 hosts and misleads the model about the OS (#51755).
+    Windows 11 is distinguished by build number: >= 22000 is 11. Falls back to ``platform.release()`` on any
+    lookup failure.
+    """
     try:
         return "11" if sys.getwindowsversion().build >= 22000 else "10"  # type: ignore[attr-defined]
     except Exception:
@@ -643,8 +800,10 @@ _WINDOWS_BASH_SHELL_HINT = (
     "MSYS-style paths like `/c/Users/<user>/...` work alongside native `C:\\Users\\<user>\\...` paths. PowerShell "
     "builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their POSIX equivalents (`ls`, "
     "`$FOO`, `grep`). Path arguments for NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
+    # no-tmp: ok — illustrates the MSYS path that FAILS for native Windows tools
     "path conversion is disabled here, so `git -C /c/Users/x` or `node /tmp/a.js` fails with 'cannot change to'/'not "
     "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
+    # no-tmp: ok — tells the model what NOT to use
     "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
     "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
@@ -655,6 +814,9 @@ _WINDOWS_BASH_SHELL_HINT = (
 
 
 def _tenv_read(name: str, default: str = "") -> str:
+    """Scope-aware TERMINAL_* read: the multiplexing gateway's per-turn scope carries
+    the active profile's settings (raw os.getenv could read a previous profile's value).
+    Only an import failure falls back — an active refusal scope must raise."""
     try:
         from tools.terminal_scope import terminal_env
     except ImportError:
@@ -663,6 +825,10 @@ def _tenv_read(name: str, default: str = "") -> str:
 
 
 _BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "modal", "daytona")}
+# (config key, default) pairs forwarded to _create_environment's container_config.
+# Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
+# OS/kernel only: the sandbox's user, $HOME and cwd are user-identifying and nothing consumes
+# them — the model can `whoami && pwd` when a task actually needs them.
 _BACKEND_PROBE_CMD = (
     "printf 'os=%s\\nkernel=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
     "\"$(uname -r 2>/dev/null || echo unknown)\""
@@ -670,9 +836,13 @@ _BACKEND_PROBE_CMD = (
 
 
 def _run_backend_probe(env_type: str, terminal_tool) -> str:
+    """Execute the probe command inside a freshly built backend; "" when it yields nothing."""
     from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool_lifecycle import _cleanup_env
+
     config = terminal_tool._get_env_config()
+    # Same container_config shaper as the live terminal path: a private copy of the key table here
+    # drifted (no docker_network) and gave the probe a bridge-networked container under lockdown.
     env = _create_environment(
         env_type=env_type, image=config.get(_BACKEND_IMAGE_KEYS[env_type], "") if env_type in _BACKEND_IMAGE_KEYS else "", cwd=config.get("cwd", ""),
         timeout=config.get("timeout", 180),
@@ -680,11 +850,16 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
         container_config=(_container_config_from_config(config)
                           if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
+        # Only ssh honors this: an isolated ControlMaster socket and no remote dir setup / file sync /
+        # snapshot. A normal SSHEnvironment would upload the whole ~/.hermes tree just to run `uname`,
+        # and its later __del__ would sync_back() and close the master shared with the agent's own env.
         probe_only=True,
     )
     try:
         result = env.execute(_BACKEND_PROBE_CMD, timeout=4)
     finally:
+        # One-shot `uname`; without teardown the backend leaves a second idle sandbox
+        # (task_id="prompt-backend-probe") running for the whole process next to the agent's own.
         try:
             _cleanup_env(env, force_remove=True)
         except Exception:
@@ -696,6 +871,7 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
 
 
 def _format_backend_probe(output: str) -> str:
+    """Render the probe's key=value lines as an indented summary ("" if nothing usable)."""
     parsed = {k.strip(): v.strip() for k, _, v in (line.partition("=") for line in output.splitlines() if "=" in line)}
     known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None
     os_line = " ".join(x for x in (known("os"), known("kernel")) if x)
@@ -703,13 +879,14 @@ def _format_backend_probe(output: str) -> str:
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
+    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
     from hermes_constants import hermes_home_key
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
         formatted = ""
         try:
-            from tools import terminal_tool
+            from tools import terminal_tool  # heavy; only needed for non-local backends
         except Exception as e:
             logger.debug("Backend probe unavailable (import failed): %s", e)
         else:
@@ -722,11 +899,14 @@ def _probe_remote_backend(env_type: str) -> str | None:
 
 
 def _clear_backend_probe_cache() -> None:
+    """Test helper — drop the backend probe cache so monkeypatched backends take effect."""
     _BACKEND_PROBE_CACHE.clear()
 
 
 def _local_host_hints() -> list[str]:
+    """Host OS / home / cwd block for a local terminal backend (tools run on this host)."""
     import platform
+
     host = (
         "WSL (Windows Subsystem for Linux)" if is_wsl()
         else f"Windows ({_windows_marketing_version()})" if sys.platform == "win32"
@@ -738,6 +918,8 @@ def _local_host_hints() -> list[str]:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
     except OSError:
         pass
+    # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
+    # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
     try:
         host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
                           "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
@@ -749,10 +931,16 @@ def _local_host_hints() -> list[str]:
         "Note: on Windows, the machine hostname (e.g. from `hostname` or uname) is NOT the username. "
         "Use the 'User home directory' above to construct paths under C:\\Users\\<user>\\, never the hostname."
     )
+    # Windows-local terminal runs bash, not PowerShell — without this the model issues PowerShell syntax.
     return ["\n".join(host_lines), _WINDOWS_BASH_SHELL_HINT]
 
 
 def bot_screen_note(running: bool, display: str | None, holder: str) -> str:
+    """The one-line Bot Screen status the model sees — the prompt's ``_bot_screen_hint`` body,
+    parameterised so the display watcher can stage the same sentence as a per-turn note when a
+    screen starts or stops mid-session (#125830; the byte-stable prompt only converges at
+    compaction). ``holder`` is ``lease.AGENT``/``lease.HUMAN``; "" when there is nothing to say
+    (a stop with no display known, or an unknown holder on a running screen)."""
     if running:
         if not display:
             return ""
@@ -771,6 +959,11 @@ def bot_screen_note(running: bool, display: str | None, holder: str) -> str:
 
 
 def _bot_screen_hint() -> str:
+    """One line naming this profile's running Bot Screen (#125830): the display, and who holds it.
+
+    Pure reads (``published_env`` + the lease file); never raises — a missing/unimportable
+    bot_desktop module or an unreadable lease must not break prompt construction. ``""`` when
+    no screen is running, so the block simply drops out of the environment hints."""
     try:
         from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
         return bot_screen_note(True, _bd_runtime.published_env().get("DISPLAY"), _bd_lease.get().holder)
@@ -779,6 +972,7 @@ def _bot_screen_hint() -> str:
 
 
 def _remote_backend_hint(backend: str) -> str:
+    """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
             f"`search_files` tools all operate inside ")
     probe = _probe_remote_backend(backend)
@@ -802,6 +996,7 @@ def _remote_backend_hint(backend: str) -> str:
 
 
 def _config_readonly(what: str) -> dict:
+    """config.yaml as a dict, or {} when unreadable (logged at debug with *what* for context)."""
     try:
         from hermes_cli.config import load_config_readonly
         return load_config_readonly()
@@ -811,20 +1006,28 @@ def _config_readonly(what: str) -> dict:
 
 
 def _embedder_environment_hint() -> str:
+    """Embedder-supplied environment description: HERMES_ENVIRONMENT_HINT (container ENV)
+    wins over config.yaml ``agent.environment_hint``. Read once at prompt-build time."""
     return (os.getenv("HERMES_ENVIRONMENT_HINT") or "").strip() or str(
         (_config_readonly("agent.environment_hint").get("agent", {}) or {}).get("environment_hint", "")).strip()
 
 
 def build_environment_hints() -> str:
+    """Execution-environment block: local backends get host OS/home/cwd; remote/sandbox
+    backends get ONLY the backend's own state (the agent's tools cannot touch the host).
+    WSL and embedder hints are appended."""
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
     hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+    # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
+    # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
     if not is_remote_backend:
         hints.append(_bot_screen_hint())
     hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 
 
+# Marks the runtime block after project prose for persisted-prompt cwd validation.
 RUNTIME_ENVIRONMENT_HEADING = "# Hermes runtime environment"
 RUNTIME_ENVIRONMENT_END = "<!-- End Hermes runtime environment -->"
 
@@ -832,11 +1035,14 @@ CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
+# Dynamic cap (no explicit context_file_max_chars): a small slice of the window since context files
+# share the cached prefix; small models stay at the floor.
 _CONTEXT_FILE_WINDOW_FRACTION = 0.06
 _CONTEXT_FILE_DYNAMIC_CEILING = 500_000
 
 
 def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
+    """Char cap from the model's window, clamped to [20K floor, 500K ceiling]; flat default when unknown."""
     if not isinstance(context_length, int) or context_length <= 0:
         return CONTEXT_FILE_MAX_CHARS
     budget = int(context_length * CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION)
@@ -844,25 +1050,36 @@ def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
 
 
 def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
+    """Context-file truncation limit: explicit config.yaml ``context_file_max_chars`` wins, else the dynamic cap."""
     val = _config_readonly("context_file_max_chars").get("context_file_max_chars")
     return int(val) if isinstance(val, (int, float)) and val > 0 else _dynamic_context_file_max_chars(context_length)
 
 
+# Truncation warnings for run_agent to surface. A ContextVar so concurrent gateway prompt builds cannot
+# drain each other's.
 _truncation_warnings: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
     "context_file_truncation_warnings", default=None
 )
 
 
 def drain_truncation_warnings() -> list:
+    """Return and clear any truncation warnings accumulated in this context."""
     warnings = _truncation_warnings.get() or []
     drained = list(warnings)
     warnings.clear()
     return drained
 
 
+# Skills index (two-layer cache: in-process LRU, then disk snapshot).
+# One entry per profile × platform (key carries skills_dir); a multiplexing gateway needs more than a handful.
+# Sized for multi-profile processes: since #86313 the cache key carries a per-profile skills_dir (one entry
+# per profile × platform), so the old cap of 8 could thrash on a gateway multiplexing default + several bots
+# (each miss = full os.walk manifest rebuild). ~32 costs low single-digit MB worst case.
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
+# v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
+# duplicate-name resolution; v5 stores descriptions clipped at a word boundary. Older snapshots are rebuilt.
 _SKILLS_SNAPSHOT_VERSION = 5
 
 
@@ -871,6 +1088,7 @@ def _skills_prompt_snapshot_path() -> Path:
 
 
 def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
+    """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
     try:
@@ -881,6 +1099,7 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
 
 
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
+    """File-signature manifest of every SKILL.md and DESCRIPTION.md."""
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     prefix_len = len(os.path.join(skills_dir_str, ""))
@@ -899,9 +1118,10 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
 
 
 def _load_skills_snapshot(skills_dir: Path, manifest: Optional[dict] = None) -> Optional[dict]:
+    """The disk snapshot if it exists, is current-version, and its manifest still matches."""
     try:
         snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))
-    except Exception:
+    except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
             and snapshot.get("manifest") == (manifest if manifest is not None else _build_skills_manifest(skills_dir))):
@@ -916,8 +1136,9 @@ def _requires_apps_list(frontmatter: dict) -> list[str]:
 
 
 def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
+    """Serialisable metadata dict for one skill."""
     parts = skill_file.relative_to(skills_dir).parts
-    skill_name = skill_file.parent.name
+    skill_name = skill_file.parent.name  # == parts[-2] whenever a parent component exists
     category = "general" if len(parts) < 2 else "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
     platforms = frontmatter.get("platforms") or []
     platforms = [platforms] if isinstance(platforms, str) else platforms
@@ -932,9 +1153,11 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
 
 
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
+    """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
     try:
         raw = skill_file.read_text(encoding="utf-8-sig")
         frontmatter, _ = parse_frontmatter(raw)
+        # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
             return False, frontmatter, extract_skill_description(frontmatter)
         return True, frontmatter, extract_skill_description(frontmatter)
@@ -947,12 +1170,15 @@ def _skill_should_show(
     conditions: dict, available_tools: set[str] | None, available_toolsets: set[str] | None,
     session_platform: str | None = None,
 ) -> bool:
+    """False if the skill's conditional activation rules exclude it."""
+    # Gateway-channel gate runs regardless of tool info; fails open when the platform is unknown.
     wanted_platforms = [str(p).strip().lower() for p in (conditions.get("session_platforms") or []) if str(p).strip()]
     if wanted_platforms and session_platform and session_platform.strip().lower() not in wanted_platforms:
         return False
     if available_tools is None and available_toolsets is None:
-        return True
+        return True  # no filtering info — show everything
     at, ats = available_tools or set(), available_toolsets or set()
+    # fallback_for: hide when the primary IS available; requires: hide when a requirement is NOT.
     return not (
         any(ts in ats for ts in conditions.get("fallback_for_toolsets", []))
         or any(t in at for t in conditions.get("fallback_for_tools", []))
@@ -965,10 +1191,16 @@ def _plugin_skill_prompt_rows(
     disabled: set[str], available_tools: set[str] | None, available_toolsets: set[str] | None,
     session_platform: str | None,
 ) -> list[tuple[str, str]]:
+    """``(qualified_name, description)`` for every skill registered by an ENABLED plugin
+    (``ctx.register_skill``), filtered through the same offer-time gates as on-disk skills.
+    Plugin skills live in the plugin-manager registry — never under the profile skills tree —
+    so the disk scans above cannot see them; this is their one path into ``<available_skills>``.
+    The qualified ``plugin:skill`` name is exactly what ``skill_view`` resolves, and disabling
+    or unloading a plugin removes its registry entries, so enablement gating is inherent."""
     rows: list[tuple[str, str]] = []
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        discover_plugins()
+        discover_plugins()  # idempotent; joins an in-flight discovery (same call skills_list makes)
         for meta in get_plugin_manager().list_plugin_skill_metadata():
             name = str(meta.get("name") or "")
             if not name or name in disabled:
@@ -988,6 +1220,7 @@ def _plugin_skill_prompt_rows(
 
 
 def _current_session_platform_hint() -> str:
+    """Active platform without importing the gateway package on CLI startup."""
     platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
     if platform:
         return platform
@@ -1002,7 +1235,16 @@ def build_skills_system_prompt(
     available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
     compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
 ) -> str:
+    """Compact skill index for the system prompt.
+
+    Same-named skills resolve like skill_view: project > local > create_dir > external_dirs, and a
+    same-tier duplicate is listed under its exact relative path (``agent.skill_utils.resolve_skill_catalog``).
+    ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
+    ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
+    ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    """
     from agent.safe_worker_policy import safe_worker_enabled
+
     if safe_worker_enabled():
         return ""
     _home_token = None
@@ -1012,6 +1254,8 @@ def build_skills_system_prompt(
     else:
         skills_dir = get_skills_dir()
     try:
+        # Every non-local root as (tier, dir) in the shared precedence order: trusted project dirs (cwd/trust
+        # are session-stable, so byte-stable), skills.create_dir, skills.external_dirs.
         extra_roots = [(t, d) for t, d in get_skill_search_roots(skills_dir) if t != TIER_LOCAL]
         if not skills_dir.exists() and not extra_roots:
             return ""
@@ -1027,6 +1271,7 @@ def _entry_name(entry: dict) -> str:
 
 
 def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[tuple[dict, bool]]:
+    """``(entry tagged with tier/root, is_compatible)`` for every skill under a project/create_dir/external root."""
     rows = []
     for skill_file in skill_files:
         try:
@@ -1038,6 +1283,7 @@ def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[t
 
 
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
+    """Index rows under each entry's ``load_name`` (what skill_view accepts)."""
     from agent.skill_utils import TIER_PROJECT
     for entry in (e for e in visible_entries if e["load_name"]):
         desc = entry.get("description", "")
@@ -1051,8 +1297,12 @@ def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]],
     compact_categories: frozenset[str] | None, available_tools: set[str] | None, unloadable: list[str] = (),
 ) -> str:
+    """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
+    sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row skill_view would refuse."""
     if not skills_by_category:
         return ""
+    # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
+    # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
     demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
@@ -1063,6 +1313,7 @@ def _render_skills_index(
         hidden_note += (f"\n(A copy of {', '.join(unloadable)} is not listed: it shares both its name and its path "
                         "with a different skill in the same skills directory tier (e.g. another external_dirs entry), "
                         "so skill_view cannot load it — rename one.)")
+    # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
     for category in sorted(skills_by_category):
@@ -1071,8 +1322,10 @@ def _render_skills_index(
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
         rows: dict[str, str] = {}
-        for name, desc in sorted(entries, key=lambda x: x[0]):
+        for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
             rows.setdefault(name, desc)
+        # A one-skill category is a single top-level row: its header would only repeat what the row
+        # says (a skill at the top of the tree is its own category, so the name printed twice).
         indent = "  " if len(rows) == 1 else "    "
         if len(rows) > 1:
             index_lines.append(f"  {category}:")
@@ -1116,9 +1369,15 @@ def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
 ) -> str:
+    # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
+    # root — the snapshot manifest can't see them change, so they participate in the cache key.
     plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
+    # Skill files are part of the key: another process (a hub install in a second terminal, the curator
+    # inside the gateway, a git pull of an external dir) never clears this process's LRU, so a key of
+    # config alone served the pre-change index to every running session until restart (#92313).
     manifest = _build_skills_manifest(skills_dir)
     files = frozenset((rel, *sig) for rel, sig in manifest.items())
     files |= {(str(d), rel, *sig) for _, d in extra_roots for rel, sig in _build_skills_manifest(d).items()}
@@ -1140,11 +1399,14 @@ def _build_skills_system_prompt_inner(
             return cached
 
     def hides(skill_name: str, conditions: dict) -> bool:
+        """Per-build visibility rule shared by every skill source (snapshot, scan, project, external)."""
         return (skill_name in disabled
                 or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None))
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
     if snapshot is not None:
+        # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
         candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
                        and skill_matches_apps({"requires_apps": entry.get("requires_apps") or []}))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
@@ -1153,6 +1415,9 @@ def _build_skills_system_prompt_inner(
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
+    # Every tier is resolved together, exactly as skill_view resolves names (agent.skill_utils precedence:
+    # project > local > create_dir > external_dirs; same-tier duplicates listed by exact path). Hidden and
+    # incompatible copies still take part — skill_view sees them too.
     from agent.skill_utils import TIER_PROJECT, is_disabled_entry, iter_project_skill_files, resolve_skill_catalog
     project_roots = [d for t, d in extra_roots if t == TIER_PROJECT and d.exists()]
     rows: list[tuple[dict, bool]] = []
@@ -1169,12 +1434,14 @@ def _build_skills_system_prompt_inner(
                        if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
     _label_visible_entries(visible_entries, skills_by_category)
     if plugin_rows:
+        # Same category label skills_list gives registry skills; qualified names are already
+        # namespaced (plugin:skill) so they cannot collide with on-disk load_names.
         listed = {name for entries in skills_by_category.values() for name, _ in entries}
         for name, desc in plugin_rows:
             if name not in listed:
                 listed.add(name)
                 skills_by_category.setdefault("plugin", []).append((name, desc))
-    if snapshot is None:
+    if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         try:
             atomic_json_write(_skills_prompt_snapshot_path(), {
                 "version": _SKILLS_SNAPSHOT_VERSION, "manifest": _build_skills_manifest(skills_dir),
@@ -1197,6 +1464,10 @@ def _truncate_content(
     content: str, filename: str, max_chars: Optional[int] = None, context_length: Optional[int] = None,
     read_path: Optional[str] = None, queue_warning: bool = True,
 ) -> str:
+    """Head/tail truncation with a marker in the middle; ``read_path`` (default ``filename``) is what the
+    agent is told to ``read_file`` to recover the full content. ``queue_warning=False`` is for bounded
+    previews (subdirectory hints) whose fixed cap no config key or model raises: the truncation is logged
+    with the marker as the only disclosure, never queued for the chat status line."""
     if max_chars is None:
         max_chars = _get_context_file_max_chars(context_length)
     if len(content) <= max_chars:
@@ -1224,7 +1495,10 @@ def _truncate_content(
 
 
 def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> list:
+    """Markdown headings whose line starts inside ``content[start:end]``, so a truncation marker tells
+    the agent what it lost; ``#`` lines inside fenced code blocks are comments, not headings."""
     import re
+
     headings, offset, fenced = [], 0, False
     for line in content.splitlines(keepends=True):
         stripped = line.strip()
@@ -1237,7 +1511,18 @@ def _omitted_headings(content: str, start: int, end: int, limit: int = 15) -> li
 
 
 def load_soul_md(context_length: Optional[int] = None, home_override: Path | None = None) -> Optional[str]:
+    """SOUL.md from HERMES_HOME (identity slot #1), or None.
+
+    Callers must pass ``skip_soul=True`` to ``build_context_files_prompt`` so it isn't injected twice.
+    ``home_override`` pins the profile home (a thread that lost the HERMES_HOME ContextVar reads the wrong one).
+
+    ``home_override`` scopes the read to an explicit profile home (the agent knows its own home from its
+    session_db path). Without it, resolution is ambient — which on a thread that lost the HERMES_HOME
+    ContextVar falls back to the launch home and reads the wrong profile's SOUL.md (#50233, same class as
+    the skills-index leak fixed in #86313).
+    """
     from agent.safe_worker_policy import safe_worker_enabled
+
     if safe_worker_enabled():
         return None
     try:
@@ -1251,16 +1536,22 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     try:
         content = (_read_text_with_timeout(soul_path) or "").strip()
         if content:
+            # Plugin-era desktop builds appended a frozen Bot Mode roster to SOUL.md; the server
+            # now injects the live section in Bot Chat only, so the copy is dead weight everywhere.
             from tools.bot_mode_probe import strip_legacy_protocol
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None
+        # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
+        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
+        # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
+        # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
         from hermes_cli.profile_distribution import read_manifest
         try:
             manifest = read_manifest(soul_path.parent)
             user_authored = manifest is None or (bool(manifest.distribution_owned)
                                                  and "SOUL.md" not in manifest.distribution_owned)
-        except Exception as e:
+        except Exception as e:  # unparseable manifest is still a distribution: fail closed
             logger.debug("Could not read distribution manifest next to %s: %s", soul_path, e)
             user_authored = False
         return _truncate_content(_scan_context_content(content, "SOUL.md", user_authored=user_authored), "SOUL.md",
@@ -1271,6 +1562,7 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
 
 
 def _read_context_file(path: Path) -> str:
+    """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug)."""
     if not path.exists():
         return ""
     try:
@@ -1281,11 +1573,13 @@ def _read_context_file(path: Path) -> str:
 
 
 def _context_section(content: str, label: str, warn_name: str, path: Path, context_length: Optional[int]) -> str:
+    """Threat-scan *content*, render it as ``## <label>``, cap it to the budget (*warn_name* labels warnings)."""
     body = f"## {label}\n\n{_scan_context_content(content, label)}"
     return _truncate_content(body, warn_name, context_length=context_length, read_path=str(path))
 
 
 def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+    """.hermes.md / HERMES.md — nearest match walking up to the git root."""
     path = _find_hermes_md(cwd_path)
     if path is None:
         return []
@@ -1294,6 +1588,7 @@ def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
 
 
 def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
+    """Directories to check for AGENTS.md: git root first, cwd last (deeper = precedence); cwd only without a root."""
     current = cwd_path.resolve()
     root = _find_git_root(current)
     if root is None or root == current or not current.is_relative_to(root):
@@ -1303,6 +1598,8 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
 
 
 def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+    """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
+    ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
     cwd_resolved = cwd_path.resolve()
     found: list[tuple[str, Path, str]] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
@@ -1314,11 +1611,12 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
             label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
             found.append((label, candidate, content))
             if content:
-                break
+                break  # first name match wins per directory
     return found
 
 
 def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+    """CLAUDE.md / claude.md — cwd only, first non-empty wins."""
     found: list[tuple[str, Path, str]] = []
     for name in ("CLAUDE.md", "claude.md"):
         candidate = cwd_path / name
@@ -1332,6 +1630,7 @@ def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
 
 
 def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+    """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
     candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     if _is_dir_or_denied(cursor_rules_dir):
@@ -1339,6 +1638,9 @@ def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
 
 
+# Project-context types in priority order: the first type with any non-empty file wins, later types are
+# shadowed. Both the prompt build (loaders below) and the /context manifest
+# (``agent/context_file_sources.py``) enumerate files through these finders, so the two cannot drift.
 _CONTEXT_FILE_CANDIDATES = {
     "hermes_md": _hermes_md_candidates,
     "agents_md": _agents_md_candidates,
@@ -1348,16 +1650,24 @@ _CONTEXT_FILE_CANDIDATES = {
 
 
 def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
+    """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
+    ``content == ""`` means empty or unreadable — such a file is never loaded."""
     return [(kind, label, path, content)
             for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
 
 
 def _project_context_suppressed(cwd: Optional[str], cwd_path: Path, allow_install_tree_fallback: bool) -> bool:
+    """A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
+    default would load this repo's contributor AGENTS.md). An explicitly configured cwd is honored verbatim —
+    the Hermes tree is a legitimate workspace when the user deliberately points a session at it — and
+    CLI-style surfaces pass allow_install_tree_fallback=True because their launch dir IS the user's shell cwd
+    (developing Hermes in-tree). See #64590."""
     from agent.runtime_cwd import _is_install_tree
     return cwd is None and not allow_install_tree_fallback and _is_install_tree(cwd_path)
 
 
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+    """.hermes.md / HERMES.md — nearest match walking up to the git root."""
     for label, path, content in _hermes_md_candidates(cwd_path):
         if content:
             return _context_section(_strip_yaml_frontmatter(content), label, ".hermes.md", path, context_length)
@@ -1365,19 +1675,31 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+    """AGENTS.md — merged directory chain from git root down to cwd.
+
+    Each directory on the chain (see ``_agents_md_candidates``) contributes its ``AGENTS.override.md`` /
+    ``AGENTS.md`` / ``agents.md`` (first name wins per directory) as its own provenance-labelled section.
+    ``AGENTS.override.md`` wins over ``AGENTS.md`` so a developer can keep a personal, typically-gitignored
+    override next to the committed project instructions without editing the tracked file (same convention as
+    earendil-works/pi#7681). Identical content encountered again further down the chain (copied or symlinked
+    files) is deduplicated. With a single match — the common case, and always the case outside a git repo —
+    output is identical to the historical single-file behavior.
+    """
     sections: list[str] = []
     seen_content: set = set()
     for label, candidate, content in _agents_md_candidates(cwd_path):
-        if content and content not in seen_content:
+        if content and content not in seen_content:  # else: empty, or an identical copy along the chain
             seen_content.add(content)
             sections.append(_context_section(content, label, label, candidate, context_length))
     if len(sections) <= 1:
         return sections[0] if sections else ""
+    # Per-file budgets applied above; also cap the merged chain so a deep monorepo can't multiply the budget.
     return _truncate_content("\n\n".join(sections), "AGENTS.md (directory chain)", context_length=context_length,
                              read_path=str(cwd_path.resolve() / "AGENTS.md"))
 
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+    """CLAUDE.md / claude.md — cwd only."""
     for name, path, content in _claude_md_candidates(cwd_path):
         if content:
             return _context_section(content, name, "CLAUDE.md", path, context_length)
@@ -1385,6 +1707,7 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
+    """.cursorrules + .cursor/rules/*.mdc — cwd only, concatenated."""
     cursorrules_content = "".join(
         f"## {label}\n\n{_scan_context_content(content, label)}\n\n"
         for label, _path, content in _cursorrules_candidates(cwd_path) if content
@@ -1399,7 +1722,14 @@ def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: Path | None = None,
 ) -> str:
+    """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
+
+    Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
+    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
+    from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
+    """
     from agent.safe_worker_policy import safe_worker_enabled
+
     if safe_worker_enabled():
         return ""
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()

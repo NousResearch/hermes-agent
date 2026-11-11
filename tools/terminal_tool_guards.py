@@ -207,11 +207,13 @@ def _is_bounded_server_form(word: str, args: list, tokens: list) -> bool:
 def _only_names_a_server(segment: str) -> bool:
     """True when *segment* cannot start a server whatever names it mentions."""
     # A substitution runs its contents whatever the outer command is (`echo $(npm run dev)`), and
-    # an unbalanced `)` is a case arm (`dev ) npm run dev ;;`) whose first word is a pattern.
+    # an unbalanced `)` before the end is a case arm (`dev ) npm run dev ;;`) whose first word is
+    # a pattern. A closing `)` / `}` at the very end only ends a subshell or group.
+    body = segment.rstrip(")} \t\r")
     if (any(marker in segment for marker in _EXECUTABLE_SUBSTITUTION_MARKERS)
-            or segment.count(")") > segment.count("(")):
+            or body.count(")") > body.count("(")):
         return False
-    tokens = segment.split()
+    tokens = body.split()
     word, args = _command_word(tokens)
     if _is_bounded_server_form(word, args, tokens):
         return True

@@ -729,18 +729,19 @@ class GatewayTurnPersistenceMixin:
                                              generation=run_generation)
         return delivered
 
-    async def _ledger_uncertain_streamed_final(self, event, session_key, response, adapter) -> None:
+    async def _ledger_uncertain_streamed_final(self, event, session_key, response, adapter) -> bool:
         """A stream send of this answer timed out after the request left and was counted as shown: on
         screen or lost, the wire cannot tell. Sending it again now would be a silent second copy; the
         adapter ledgers it as a failed row instead, so the timed redelivery sends it once more WITH the
         may-be-a-duplicate marker and a lost send is not silence. That is what ``send_final_ledgered``
         gives a timed-out final on a non-streaming platform. Both the completion path and the queued
         first-response lane (whose result the follow-up replaces) ledger through here; an adapter
-        without the base contract has no ledger and keeps the old behaviour."""
+        without the base contract has no ledger and keeps the old behaviour. True when ledgered."""
         if not callable(getattr(adapter, "ledger_attempted_final", None)):
-            return
+            return False
         await adapter.ledger_attempted_final(
             event, session_key, response, error="Timed out: the streamed send may not have landed")
+        return True
 
     async def _hmwa_stop_typing_for_turn(self, event, source):
         """Stop the typing indicator (never raises), with the delivery path's thread/workspace routing
@@ -803,11 +804,13 @@ class GatewayTurnPersistenceMixin:
             if response and adapter and not agent_result.get("media_already_delivered"):
                 _footer_captioned = await self._deliver_media_from_response(
                     response, event, adapter, footer_line="" if _intentional_silence else _footer_line)
-            if response and adapter and agent_result.get("delivery_uncertain"):
-                await self._ledger_uncertain_streamed_final(event, session_key, response, adapter)
+            ledgered = bool(response and adapter and agent_result.get("delivery_uncertain")) and (
+                await self._ledger_uncertain_streamed_final(event, session_key, response, adapter))
             # The stream showed only the answer: the reasoning block prepended to ``response`` for
-            # show_reasoning never reached the chat, so it follows as its own message (#7251).
-            reasoning_block = self._hmwa_reasoning_block(agent_result, response, source, _intentional_silence)
+            # show_reasoning never reached the chat, so it follows as its own message (#7251). A
+            # ledgered final already carries it: its redelivery sends reasoning and answer together.
+            reasoning_block = "" if ledgered else self._hmwa_reasoning_block(
+                agent_result, response, source, _intentional_silence)
             # A bot peer would take a second message as fresh input: gated like the footer line.
             if reasoning_block and adapter and automatic_notices_allowed(source):
                 try:

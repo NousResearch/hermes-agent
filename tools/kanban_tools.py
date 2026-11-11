@@ -135,6 +135,10 @@ _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
     "kanban_attach_url": frozenset({"title"}),
 }
 
+# Required arguments whose absence the handler answers with guidance of its own.
+_SELF_CHECKED_ARGS: dict[str, frozenset[str]] = {
+    "kanban_create": frozenset({"assignee"}), "kanban_comment": frozenset({"task_id"})}
+
 
 def _persisted_identity() -> str:
     """Profile name persisted into board records (comment author, task creator).
@@ -1312,4 +1316,5 @@ _TOOLS = (
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
     registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
-                      check_fn=_gate)
+                      check_fn=_gate, compat_args=_UNDECLARED_ARGS.get(_name, ()),
+                      self_checked_args=_SELF_CHECKED_ARGS.get(_name, ()))

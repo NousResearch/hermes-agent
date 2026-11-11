@@ -1751,4 +1751,6 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    # ``code`` is the wrong-tool guard (points at execute_code); the other two are the legacy notify interface.
+    compat_args=("code", "notify_on_complete", "watch_patterns"),
 )

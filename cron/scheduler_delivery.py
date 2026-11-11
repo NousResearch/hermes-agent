@@ -1059,6 +1059,7 @@ class _TargetDelivery:
     # Telegram's "Not connected" is retryable while the bot client rebuilds, permanent when the fatal
     # is not — so the queue gate keys on this flag, not on widening a string set.
     live_retryable: Optional[bool] = None
+    standalone_in_flight: bool = False  # the standalone send timed out and may still land
 
     @property
     def is_relay(self) -> bool:
@@ -1506,7 +1507,7 @@ def _deliver_standalone(
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
-    result, err, in_flight = _standalone_send(t, content, media_files)
+    result, err = _standalone_send(t, content, media_files)
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
@@ -1514,7 +1515,7 @@ def _deliver_standalone(
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
-        if in_flight:
+        if t.standalone_in_flight:
             # A timed-out send may still land; queueing it would let the redelivery sweep replay
             # a payload that in fact went out. Possible loss over certain duplication: surface
             # the window loudly instead of queueing.

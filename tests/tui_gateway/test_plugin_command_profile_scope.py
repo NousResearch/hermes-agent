@@ -185,3 +185,30 @@ def test_sessionless_dispatch_runs_the_named_profiles_plugin(plugin_homes, monke
         assert res["error"]["code"] == 4018, res
     else:
         assert res["result"]["output"].endswith(expected), res
+
+
+def test_plugin_that_reads_a_secret_while_registering_loads_in_its_profile(plugin_homes):
+    """The first plugin-command lookup discovers the profile's plugins, so ``register(ctx)`` runs
+    then: it must run under the profile's secret scope, or a plugin that reads a secret while
+    registering fails to load (UnscopedSecretError) and its command is never found."""
+    from agent.secret_scope import set_multiplex_active
+
+    from tui_gateway import server
+
+    secondary = plugin_homes["secondary"]
+    pkg = secondary / "plugins" / "probe-reg"
+    pkg.mkdir(parents=True)
+    (pkg / "plugin.yaml").write_text("name: probe-reg\nversion: 1.0.0\ndescription: p\nauthor: p\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text(
+        "def register(ctx):\n"
+        "    from agent.secret_scope import get_secret\n"
+        "    key = get_secret('PROBE_KEY')\n"
+        "    ctx.register_command('regkey', handler=lambda args: 'reg:' + str(key), description='p')\n",
+        encoding="utf-8")
+    (secondary / "config.yaml").write_text("plugins:\n  enabled:\n    - probe-infra\n    - probe-reg\n", encoding="utf-8")
+    set_multiplex_active(True)
+    try:
+        res = server._dispatch_plugin(1, {}, _infra_session(secondary), "regkey", "")
+    finally:
+        set_multiplex_active(False)
+    assert res is not None and res["result"]["output"] == "reg:infra-key", res

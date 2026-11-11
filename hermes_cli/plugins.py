@@ -1049,19 +1049,31 @@ def has_hook(hook_name: str) -> bool:
     return _delivery_manager().has_hook(hook_name)
 
 
-def hook_unused_nowait(hook_name: str) -> bool:
-    """True when this home's plugins are loaded and none handles *hook_name*. Never discovers or
-    waits (an unloaded home, or one whose (re)load is still running on another thread, answers False:
-    unknown, not unused), so it is safe on an event loop."""
+def _loaded_manager_nowait() -> Optional[PluginManager]:
+    """This home's manager when its plugins are loaded, else None. Never discovers or waits: an
+    unloaded home, or one whose (re)load is still running on another thread, answers None (unknown).
+    ``_discovered`` is set before a sweep finishes and a force reload clears the registries first, so
+    a held discovery lock counts as unknown."""
     manager = get_plugin_manager()
-    # ``_discovered`` is set before a sweep finishes and a force reload clears ``_hooks`` first, so a
-    # sweep in flight could read as "no consumer": treat a held discovery lock as unknown.
     if not manager._discovery_lock.acquire(blocking=False):
-        return False
+        return None
     try:
-        return manager._discovered and not manager.has_hook(hook_name)
+        return manager if manager._discovered else None
     finally:
         manager._discovery_lock.release()
+
+
+def hook_unused_nowait(hook_name: str) -> bool:
+    """True when this home's plugins are loaded and none handles *hook_name*; safe on an event loop."""
+    manager = _loaded_manager_nowait()
+    return manager is not None and not manager.has_hook(hook_name)
+
+
+def plugin_command_absent_nowait(name: str) -> bool:
+    """True when this home's plugins are loaded and none registered command *name*. Never discovers
+    (discovery runs every plugin's ``register()``, which needs the caller's profile scope)."""
+    manager = _loaded_manager_nowait()
+    return manager is not None and name not in manager._plugin_commands
 
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:

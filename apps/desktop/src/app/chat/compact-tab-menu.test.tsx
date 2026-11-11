@@ -143,7 +143,9 @@ it('hands focus back to the picker when a tab menu closes without a dialog', asy
   render(<Host />)
 
   openTabMenu('Trip plan')
-  fireEvent.keyDown((await screen.findByRole('menuitem', { name: 'Archive' })).closest('[role=menu]')!, { key: 'Escape' })
+  fireEvent.keyDown((await screen.findByRole('menuitem', { name: 'Archive' })).closest('[role=menu]')!, {
+    key: 'Escape'
+  })
 
   await waitFor(() => expect(globalThis.document.activeElement).toBe(screen.getByRole('button', { name: /^3 tabs/ })))
 })

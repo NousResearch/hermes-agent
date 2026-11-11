@@ -1,0 +1,26 @@
+# Replace both SHA placeholders with the reviewed public commit before submission.
+name: defuzz
+title: Defuzz
+repo: https://github.com/defuzzr/defuzz
+sha: 649634cb2d53a9c5506831996b98a6a79a0090a1
+version: "0.1.0"
+description: "Start projects from templates, organize adopted copies, place new files by folder rules, and run project checks or a read-only Hermes-home audit."
+maintainer: defuzzr
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/defuzzr/defuzz#readme
+image: https://raw.githubusercontent.com/defuzzr/defuzz/649634cb2d53a9c5506831996b98a6a79a0090a1/docs/images/project-defuzz-banner.png
+screenshots: []
+readme: true
+platforms: [linux]
+known_issues:
+  - "Requires Python 3.13 or newer and Git; Linux only."
+  - "Workspace kits require the optional defuzz-componentize companion; templates do not."
+  - "Template checks and manual lint can execute project code with your permissions, without a sandbox."
+  - "External lint tools and SDKs require separate, confirmed setup downloads."
+capabilities:
+  provides_tools: [defuzz_audit, defuzz_project, defuzz_place]
+  provides_hooks: [pre_tool_call, transform_tool_result]
+  provides_middleware: []
+  requires_env: []

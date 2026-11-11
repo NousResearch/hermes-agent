@@ -29,7 +29,7 @@ export const arCapabilities = {
         pickerTitle: (name: string) => `اختر مجلدًا لـ ${name}`,
         pickerButton: 'السماح بالوصول',
         refusedProtected: (name: string) =>
-          `لا يمكن لـ ${name} استخدام هذا المجلد: فهو يحتوي على إعدادات Hermes أو مفاتيحه أو بيانات الإضافات. اختر مجلدًا لا يحتويها.`,
+          `لا يمكن لـ ${name} استخدام هذا المجلد: فهو يحتوي على إعدادات Unitalk أو مفاتيحه أو بيانات الإضافات. اختر مجلدًا لا يحتويها.`,
         loadFailed: (name: string) => `تعذّر تحميل المجلدات المشتركة مع ${name}.`
       }
     },

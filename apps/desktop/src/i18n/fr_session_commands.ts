@@ -7,7 +7,7 @@ export const frSessionCommands = {
   retryNothing: 'rien à réessayer',
   retryUnsupported: '/retry : impossible de réessayer un contenu multimédia ou des parties inconnues',
   busy: (command: string) =>
-    `session occupée — Hermes est encore en train de répondre. Arrêtez d’abord la réponse en cours (bouton Arrêter ou Ctrl+C dans un terminal), puis lancez /${command}.`,
+    `session occupée — Unitalk est encore en train de répondre. Arrêtez d’abord la réponse en cours (bouton Arrêter ou Ctrl+C dans un terminal), puis lancez /${command}.`,
   busyCompressing: (command: string) =>
     `session occupée — un /compress est en cours ; lancez /${command} quand il sera terminé.`,
   steerUsage: 'utilisation : /steer <prompt>',
@@ -23,5 +23,5 @@ export const frSessionCommands = {
     "Il a démarré ou a été refusé avant l'enregistrement de ta modification. Ton texte modifié est dans la zone de saisie.",
   queueEditUnconfirmedTitle: 'Modification non confirmée',
   queueEditUnconfirmed:
-    "Hermes n'a pas pu confirmer ta modification. Enregistre à nouveau pour réessayer la même modification ; elle n'est jamais mise en file deux fois."
+    "Unitalk n'a pas pu confirmer ta modification. Enregistre à nouveau pour réessayer la même modification ; elle n'est jamais mise en file deux fois."
 }

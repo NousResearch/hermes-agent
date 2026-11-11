@@ -269,7 +269,7 @@ export const SETTINGS_MANIFEST = {
   },
   about: {
     updates: {
-      // A Webapp served by Hermes Cloud renders no Updates section.
+      // A Webapp served by Unitalk Cloud renders no Updates section.
       available: () => !servedByHermesCloud(),
       subpage: 'updates',
       keywords: ['update', 'auto update', 'download', 'release', 'version'],

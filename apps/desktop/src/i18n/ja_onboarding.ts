@@ -1,12 +1,12 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const jaOnboarding: TranslationOverrides['onboarding'] = {
-  headerTitle: 'Hermes Agent のセットアップをしましょう',
+  headerTitle: 'Unitalk Agent のセットアップをしましょう',
   headerDesc: 'チャットを始めるにはモデルプロバイダーを接続してください。ほとんどのオプションはワンクリックです。',
-  preparingInstall: 'Hermes はインストールを完了中です。初回実行では通常 1 分以内に完了します。',
-  starting: 'Hermes を起動中…',
+  preparingInstall: 'Unitalk はインストールを完了中です。初回実行では通常 1 分以内に完了します。',
+  starting: 'Unitalk を起動中…',
   setupSlowTitle: 'セットアップにいつもより時間がかかっています。',
-  setupSlowBody: 'Hermes はバックグラウンドで起動を続けています。',
+  setupSlowBody: 'Unitalk はバックグラウンドで起動を続けています。',
   continueWithoutSetup: 'セットアップせずに続行',
   lookingUpProviders: 'プロバイダーを検索中...',
   collapse: '折りたたむ',
@@ -15,7 +15,7 @@ export const jaOnboarding: TranslationOverrides['onboarding'] = {
   chooseLater: '後でプロバイダーを選択します',
   recommended: '推奨',
   connected: '接続済み',
-  featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
+  featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Unitalk を実行するための推奨方法',
   fireworksPitch: '直接モデル API — Fireworks がホストする最先端モデル',
   localModelsTitle: 'モデルをローカルで実行',
   localModelsPitch: 'アカウント不要——モデルをダウンロードしてこのマシンで実行',
@@ -35,7 +35,7 @@ export const jaOnboarding: TranslationOverrides['onboarding'] = {
     local: {
       short: 'セルフホスト',
       description:
-        'ローカルまたはセルフホストの OpenAI 互換エンドポイント（vLLM、llama.cpp、Ollama など）に Hermes を接続。'
+        'ローカルまたはセルフホストの OpenAI 互換エンドポイント（vLLM、llama.cpp、Ollama など）に Unitalk を接続。'
     }
   },
   backToSignIn: 'サインインに戻る',
@@ -47,7 +47,7 @@ export const jaOnboarding: TranslationOverrides['onboarding'] = {
   update: '更新',
   flowSubtitles: {
     pkce: 'ブラウザーを開いてサインインし、ここに戻ります',
-    device_code: 'ブラウザーで確認ページを開きます — Hermes が自動接続します',
+    device_code: 'ブラウザーで確認ページを開きます — Unitalk が自動接続します',
     external: 'ターミナルで一度サインインして、チャットに戻ります'
   },
   startingSignIn: provider => `${provider} のサインインを開始中...`,
@@ -60,7 +60,7 @@ export const jaOnboarding: TranslationOverrides['onboarding'] = {
   pickDifferentProvider: '別のプロバイダーを選択',
   signInWith: provider => `${provider} でサインイン`,
   openedBrowser: provider => `${provider} をブラウザーで開きました。`,
-  authorizeThere: 'そこで Hermes を承認してください。',
+  authorizeThere: 'そこで Unitalk を承認してください。',
   copyAuthCode: '認証コードをコピーして以下に貼り付けてください。',
   pasteAuthCode: '認証コードを貼り付け',
   reopenAuthPage: '認証ページを再度開く',

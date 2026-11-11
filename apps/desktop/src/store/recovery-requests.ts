@@ -27,7 +27,7 @@ export function requestRoute(path: string): void {
   $routeRequest.set({ seq: routeSeq, path })
 }
 
-/** Restart the local Hermes service for the profile currently in view. */
+/** Restart the local Unitalk service for the profile currently in view. */
 export const $backendRestartRequest = atom(0)
 
 export function requestBackendRestart(): void {

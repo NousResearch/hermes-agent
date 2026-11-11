@@ -13,7 +13,7 @@ import { $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } from '@/sto
 
 /**
  * Which engine the next voice conversation mounts: the chained
- * speech-to-text → Hermes → speech loop, or GPT-Live delegating to Hermes.
+ * speech-to-text → Unitalk → speech loop, or GPT-Live delegating to Unitalk.
  *
  * Radio rows, not a toggle: the user is choosing between two named things and
  * the checked row tells them which one the next press starts. Rendered inside

@@ -9,7 +9,7 @@ export const frCronControl: CronControlCopy = {
   failedStop: 'Impossible d’arrêter l’exécution',
   lastCancelled: (reason: string) => (reason ? `Dernière exécution annulée: ${reason}` : 'Dernière exécution annulée'),
   catchUpLabel: 'Exécutions manquées',
-  catchUpHint: 'Que faire des exécutions manquées pendant que Hermes ne tournait pas.',
+  catchUpHint: 'Que faire des exécutions manquées pendant que Unitalk ne tournait pas.',
   catchUpChoices: {
     default: 'Utiliser la valeur par défaut',
     run: 'Exécuter une fois au retour',

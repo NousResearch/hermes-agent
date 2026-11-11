@@ -12,7 +12,7 @@ export const esPluginUpdate: PluginUpdateTranslations = {
     pickerTitle: (name: string) => `Elige una carpeta para ${name}`,
     pickerButton: 'Permitir acceso',
     refusedProtected: (name: string) =>
-      `${name} no puede usar esa carpeta: contiene ajustes, claves o datos de plugins de Hermes. Elige una carpeta que no los contenga.`,
+      `${name} no puede usar esa carpeta: contiene ajustes, claves o datos de plugins de Unitalk. Elige una carpeta que no los contenga.`,
     loadFailed: (name: string) => `No se pudieron cargar las carpetas compartidas con ${name}.`
   },
   updateToPin: (sha: string) => `Actualizar a ${sha}`,

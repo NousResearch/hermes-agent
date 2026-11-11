@@ -2,7 +2,7 @@ import type { ClarifyCopy } from './types_clarify'
 
 export const enClarify: ClarifyCopy = {
   notReady: 'Clarify request is not ready yet',
-  gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.',
+  gatewayDisconnected: 'Unitalk is offline right now. Reconnect, then send it again.',
   sendFailed: 'Could not send clarify response',
   loadingQuestion: 'Loading question…',
   other: 'Other (type your answer)',

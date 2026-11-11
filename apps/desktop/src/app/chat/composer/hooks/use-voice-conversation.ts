@@ -543,7 +543,7 @@ export function useVoiceConversation({
         // Fail-closed echo guard (tools/voice_mode_transcript.is_tts_echo):
         // over speakers the reply bleeds into the mic and trips the playback-
         // phase trigger. A transcript matching what was being spoken is
-        // Hermes hearing itself — treat it as silence: no submit, and clear
+        // Unitalk hearing itself — treat it as silence: no submit, and clear
         // the interruption latch so a later real turn isn't annotated.
         if (echoSource && isTtsEcho(transcript, echoSource)) {
           takeVoicePlaybackInterrupted()

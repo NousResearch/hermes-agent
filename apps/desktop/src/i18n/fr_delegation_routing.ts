@@ -21,7 +21,7 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
   pluginMissing: 'Routes de modèle et Routes de profil proviennent du plugin Advanced Delegation.',
   pluginDisabled: 'Advanced Delegation est installé mais désactivé pour ce profil.',
   pluginNotLoaded:
-    "Advanced Delegation est activé, mais Hermes ne l'a pas encore chargé. Redémarrez Hermes pour terminer.",
+    "Advanced Delegation est activé, mais Unitalk ne l'a pas encore chargé. Redémarrez Unitalk pour terminer.",
   installPlugin: 'Installer le plugin',
   installUnavailable:
     "Advanced Delegation n'est pas encore dans le catalogue de plugins. Installez-le depuis Capacités › Plugins.",
@@ -31,11 +31,11 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
   loadFailed: 'Impossible de charger le routage des sous-agents',
   blockedPill: 'Inactif',
   blockedDetail:
-    'Ce mode est enregistré : Hermes refuse donc chaque sous-agent au lieu de passer discrètement à Par défaut.',
+    'Ce mode est enregistré : Unitalk refuse donc chaque sous-agent au lieu de passer discrètement à Par défaut.',
   blockedMissing: 'Les sous-agents ne démarreront pas tant qu’Advanced Delegation n’est pas installé.',
   blockedDisabled: 'Les sous-agents ne démarreront pas tant qu’Advanced Delegation n’est pas activé pour ce profil.',
   blockedNotLoaded:
-    'Les sous-agents ne démarreront pas tant que Hermes n’a pas chargé Advanced Delegation. Redémarrez Hermes pour terminer.',
+    'Les sous-agents ne démarreront pas tant que Unitalk n’a pas chargé Advanced Delegation. Redémarrez Unitalk pour terminer.',
   blockedUnavailable: label =>
     `Les sous-agents ne démarreront pas tant que ${label} ne peut pas fonctionner ici. Son plugin indique qu’il ne le peut pas.`,
   blockedUnregistered: name =>

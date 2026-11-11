@@ -1,7 +1,7 @@
 import type { DesktopCloudAgentSignInResult } from '@/global'
 
 /**
- * Re-establish a Hermes Cloud agent's gateway session from the shared portal
+ * Re-establish a Unitalk Cloud agent's gateway session from the shared portal
  * session: drop any lapsed gateway cookies, make sure the portal session is
  * live (interactive login window when it has lapsed), then run the silent
  * per-agent cascade so a fresh gateway session cookie lands for `url`.

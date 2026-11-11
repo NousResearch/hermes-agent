@@ -7,7 +7,7 @@ export const esThemePicker: ThemePickerCopy = {
   customColor: 'Color personalizado',
   themeAccent: 'Predeterminado del tema',
   basic: 'Básico',
-  basicDetail: 'Para hablar con Hermes.',
+  basicDetail: 'Para hablar con Unitalk.',
   elite: 'Élite',
   eliteDetail: 'Para desarrolladores: terminal, archivos, diffs.',
   noPick: 'Sin elección'

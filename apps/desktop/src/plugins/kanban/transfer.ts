@@ -14,7 +14,7 @@ import { exportBoard, importBoard } from './api'
 import type { KanbanText } from './i18n'
 import { errText } from './ui'
 
-const ARCHIVE_FILTERS = [{ extensions: ['tar.gz', 'tgz'], name: 'Hermes board' }]
+const ARCHIVE_FILTERS = [{ extensions: ['tar.gz', 'tgz'], name: 'Unitalk board' }]
 
 /** Pick a destination and export `slug`. Returns the archive path, or null
  *  when the user cancelled or the export failed. */

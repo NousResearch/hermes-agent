@@ -14,5 +14,5 @@ export const zhHantPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptRevoke: (origin: string) => `撤銷對 ${origin} 的存取`,
   previewScriptRevoked: (plugin: string, origin: string) => `${plugin} 不能再於 ${origin} 上執行指令碼。`,
   previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
-    `無法儲存此變更，因此它僅在 Hermes 重新啟動前有效。目前 ${plugin} 在 ${origin} 上被封鎖。`
+    `無法儲存此變更，因此它僅在 Unitalk 重新啟動前有效。目前 ${plugin} 在 ${origin} 上被封鎖。`
 }

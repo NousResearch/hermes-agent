@@ -14,5 +14,5 @@ export const dePluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptRevoke: (origin: string) => `Zugriff auf ${origin} widerrufen`,
   previewScriptRevoked: (plugin: string, origin: string) => `${plugin} kann keine Skripte mehr auf ${origin} ausführen.`,
   previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
-    `Die Änderung konnte nicht gespeichert werden und gilt nur bis zum Neustart von Hermes. ${plugin} ist auf ${origin} vorerst gesperrt.`
+    `Die Änderung konnte nicht gespeichert werden und gilt nur bis zum Neustart von Unitalk. ${plugin} ist auf ${origin} vorerst gesperrt.`
 }

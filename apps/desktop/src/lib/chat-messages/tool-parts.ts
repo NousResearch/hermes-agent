@@ -430,7 +430,7 @@ export const hasUnresolvedToolCall = (message: ChatMessage) =>
  *
  * Only an UNRESOLVED part (never completed: no `result` key, sealed or not)
  * can own an event. Tool call ids are not unique across turns — llama.cpp
- * emits one constant id for every call and Hermes' own deterministic ids
+ * emits one constant id for every call and Unitalk' own deterministic ids
  * repeat — so a part that already carries its completion is a finished call
  * from an earlier turn, not the owner of the new one. Routing to it would
  * draw the new call over the old row and leave the live turn empty.
@@ -1106,7 +1106,7 @@ export function applyStoredToolResultToParts(
       ? toolMessage.content
       : (toolMessage.text ?? toolMessage.context ?? toolMessage.name)
 
-  // Tool-call ids are not unique across turns (llama.cpp/Hermes reuse them),
+  // Tool-call ids are not unique across turns (llama.cpp/Unitalk reuse them),
   // so only an unresolved part may own a stored result. Property presence,
   // not truthiness: `false`/`null`/`''`/`0` are completed results too.
   const partIndex = parts.findIndex(

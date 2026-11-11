@@ -10,7 +10,7 @@ export const zhNotices = {
   butterbar: {
     goTo: (index, total) => `显示第 ${index} 条通知，共 ${total} 条`,
     legal: {
-      before: '使用 Hermes Agent 即表示受我们的',
+      before: '使用 Unitalk 即表示受我们的',
       terms: '服务条款',
       between: '和',
       privacy: '隐私政策',
@@ -28,8 +28,8 @@ export const zhNotices = {
     desktopCommands: zhDesktopCommands
   },
   keepAwakeOffer: {
-    title: '电脑在 Hermes 工作时进入了睡眠',
-    message: 'Hermes 可以在任务运行时保持电脑唤醒。屏幕仍会照常关闭，使用电池时电脑仍可能睡眠。',
+    title: '电脑在 Unitalk 工作时进入了睡眠',
+    message: 'Unitalk 可以在任务运行时保持电脑唤醒。屏幕仍会照常关闭，使用电池时电脑仍可能睡眠。',
     action: '运行期间保持唤醒'
   },
   billingBlock: {

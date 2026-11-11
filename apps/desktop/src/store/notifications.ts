@@ -226,7 +226,7 @@ const ERROR_SUMMARIES: ErrorSummaryRule[] = [
     category: 'rpc_out_of_sync',
     test: msg => isOutOfSyncRpcParams(msg),
     summarize: () => translateNow('notifications.errors.rpcOutOfSync'),
-    // A Webapp served by Hermes Cloud has no updater: reloading picks up the agent's new app.
+    // A Webapp served by Unitalk Cloud has no updater: reloading picks up the agent's new app.
     action: () => (servedByHermesCloud() ? RECOVERY_ACTIONS.reload() : RECOVERY_ACTIONS.openUpdates())
   },
   {

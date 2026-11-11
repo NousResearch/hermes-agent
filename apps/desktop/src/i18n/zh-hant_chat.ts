@@ -4,12 +4,12 @@ export const zhHantChat = {
   composer: {
     message: '訊息',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
-    placeholderStarting: '正在啟動 Hermes...',
-    placeholderReconnecting: '正在重新連線至 Hermes…',
+    placeholderStarting: '正在啟動 Unitalk...',
+    placeholderReconnecting: '正在重新連線至 Unitalk…',
     placeholderFollowUp: '傳送後續訊息',
     newSessionPlaceholders: [
       '我們要建立什麼？',
-      '給 Hermes 一個任務',
+      '給 Unitalk 一個任務',
       '您在想什麼？',
       '描述您需要什麼',
       '我們該處理什麼？',
@@ -88,7 +88,7 @@ export const zhHantChat = {
       '/journey': '開啟記憶圖譜 — 查看技能與記憶隨時間的變化',
       '/queue': '排入、檢視、編輯、移除、移動或清空下一回合提示詞',
       '/steer': '在下一次工具呼叫後插入訊息，不會中斷目前工作',
-      '/goal': '設定持續目標，讓 Hermes 跨回合工作直到完成',
+      '/goal': '設定持續目標，讓 Unitalk 跨回合工作直到完成',
       '/heartbeat': '設定週期性提示詞，在閒置時重新進入此工作階段',
       '/refine': '立即檢查此對話，並將心得儲存至記憶或技能',
       '/review': '產生獨立子代理，審查剛才討論的工作（PR、程式碼、文件）',
@@ -100,7 +100,7 @@ export const zhHantChat = {
       '/egress': '顯示 Docker 對外連線代理狀態',
       '/context': '顯示詳細的上下文視窗，包括用量、分類明細、壓縮統計與吞吐量',
       '/whoami': '顯示你的斜線指令存取權限（admin / user）',
-      '/profile': '切換作用中的 Hermes 設定檔',
+      '/profile': '切換作用中的 Unitalk 設定檔',
       '/codex-runtime': '切換 OpenAI/Codex 模型使用的 Codex app-server runtime',
       '/personality': '設定預先定義的人格',
       '/battery': '切換狀態列中的彩色電池指示器',
@@ -127,7 +127,7 @@ export const zhHantChat = {
       '/subscription': '檢視你的 Nous 方案，並在瀏覽器中變更',
       '/topup': '顯示你的 Nous 餘額，並在 Portal 管理帳務',
       '/platform': '暫停、恢復或列出故障的閘道平台',
-      '/version': '顯示 Hermes Agent 版本',
+      '/version': '顯示 Unitalk Agent 版本',
       '/debug': '上傳偵錯報告（系統資訊與記錄），並取得可分享連結',
       '/model': '切換此工作階段的模型'
     },
@@ -142,7 +142,7 @@ export const zhHantChat = {
       'composer.history': '循環彈出視窗 / 歷史記錄'
     },
     attachUrlTitle: '附加 URL',
-    attachUrlDesc: 'Hermes 將擷取該頁面並作為此回合的脈絡。',
+    attachUrlDesc: 'Unitalk 將擷取該頁面並作為此回合的脈絡。',
     urlPlaceholder: 'https://example.com/post',
     urlHintPre: '請輸入完整 URL，例如 ',
     attach: '附加',
@@ -358,7 +358,7 @@ export const zhHantChat = {
       createPr: '建立 PR',
       openPr: '開啟 PR',
       ghMissing: '安裝 GitHub CLI (gh) 並登入後可開啟 PR',
-      agentShip: '讓 Hermes 提交並開 PR',
+      agentShip: '讓 Unitalk 提交並開 PR',
       agentShipUnavailable: '擁有這些變更的對話目前不在畫面上。',
       agentShipPrompt: '檢查目前的變更，使用清晰的約定式提交訊息提交，推送分支，並開啟一個拉取請求。',
       newBranch: '新增分支',
@@ -370,17 +370,17 @@ export const zhHantChat = {
   },
 
   prompts: {
-    gatewayDisconnected: 'Hermes 閘道未連線',
+    gatewayDisconnected: 'Unitalk 閘道未連線',
     sudoSendFailed: '無法傳送 sudo 密碼',
     secretSendFailed: '無法傳送密鑰',
     sudoTitle: '管理員密碼',
     sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
     sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
     sudoInstallDesc:
-      'Hermes 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
+      'Unitalk 需要您的 sudo 密碼，以在閘道主機上安裝 Bot Screen 套件（TigerVNC + Xfce）。它只會傳送到該主機。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
-    secretDesc: 'Hermes 需要一個憑證才能繼續。',
+    secretDesc: 'Unitalk 需要一個憑證才能繼續。',
     secretPlaceholder: '密鑰值',
     vaultUnlockSendFailed: '無法傳送主密碼',
     vaultUnlockTitle: name => `解鎖 ${name}`,
@@ -392,7 +392,7 @@ export const zhHantChat = {
     vaultSaveSendFailed: '無法儲存登入資訊',
     vaultSaveTitle: site => `儲存 ${site} 的登入資訊？`,
     vaultSaveDesc: origin =>
-      `Hermes 到達了 ${origin} 的登入頁，但沒有為它儲存的登入資訊。在此輸入一次；它會在本機加密儲存並直接填入頁面，模型永遠看不到密碼。`,
+      `Unitalk 到達了 ${origin} 的登入頁，但沒有為它儲存的登入資訊。在此輸入一次；它會在本機加密儲存並直接填入頁面，模型永遠看不到密碼。`,
     vaultSaveIdentifierLabel: '電子郵件或使用者名稱',
     vaultSaveIdentifierPlaceholder: 'you@example.com',
     vaultSavePasswordPlaceholder: '密碼',
@@ -402,9 +402,9 @@ export const zhHantChat = {
     vaultCodeSendFailed: '無法傳送驗證碼',
     vaultCodeTitle: site => `${site} 的驗證碼`,
     vaultCodeDesc: site =>
-      `${site} 要求輸入一次性驗證碼（簡訊、電子郵件或驗證器應用程式）。在此輸入，Hermes 會將其填入頁面；模型永遠看不到它。`,
+      `${site} 要求輸入一次性驗證碼（簡訊、電子郵件或驗證器應用程式）。在此輸入，Unitalk 會將其填入頁面；模型永遠看不到它。`,
     vaultCodeLabel: '驗證碼',
-    vaultCodeFootnote: '提示：在「設定 → 密碼與登入」中為此登入儲存驗證器金鑰後，Hermes 會自動填寫驗證碼。',
+    vaultCodeFootnote: '提示：在「設定 → 密碼與登入」中為此登入儲存驗證器金鑰後，Unitalk 會自動填寫驗證碼。',
     vaultCodeSkip: '略過',
     vaultCodeConfirm: '輸入驗證碼'
   },
@@ -474,8 +474,8 @@ export const zhHantChat = {
     sessionExportFailed: '無法匯出工作階段',
     imageSaved: '圖片已儲存',
     downloadStarted: '下載已開始',
-    restartToUseSaveImage: '重新啟動 Hermes Desktop 後可使用儲存圖片。',
-    restartToSaveImages: '重新啟動 Hermes Desktop 以儲存圖片',
+    restartToUseSaveImage: '重新啟動 Unitalk Desktop 後可使用儲存圖片。',
+    restartToSaveImages: '重新啟動 Unitalk Desktop 以儲存圖片',
     imageDownloadFailed: '圖片下載失敗',
     openImage: '開啟圖片',
     downloadImage: '下載圖片',
@@ -514,14 +514,14 @@ export const zhHantChat = {
       },
       skills: {
         title: '教一次就夠',
-        text: '技能是一組說明檔，Hermes 會在需要時自行載入。'
+        text: '技能是一組說明檔，Unitalk 會在需要時自行載入。'
       },
       messaging: {
         title: '離開電腦也能用',
         text: '接上 Telegram、Discord、Slack 等 — 同一個代理，同一份記憶。'
       },
       artifacts: {
-        title: 'Hermes 做過的一切',
+        title: 'Unitalk 做過的一切',
         text: '所有工作階段的圖片、檔案與連結，都彙整在這裡。'
       },
       cron: {
@@ -534,7 +534,7 @@ export const zhHantChat = {
       },
       profiles: {
         title: '設定檔彼此獨立',
-        text: '每個都是獨立的 Hermes — 自己的金鑰、記憶與工作階段。'
+        text: '每個都是獨立的 Unitalk — 自己的金鑰、記憶與工作階段。'
       },
       'composer-mentions': {
         title: '附件與指令',

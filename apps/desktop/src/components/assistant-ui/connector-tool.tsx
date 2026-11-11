@@ -441,7 +441,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   )
 }
 
-/** One line per account Hermes named and connected; Rename opens that account's editor on the Connectors tab. */
+/** One line per account Unitalk named and connected; Rename opens that account's editor on the Connectors tab. */
 function NamedAccountNotices({ owner, targets }: { owner: ConnectionOwner; targets: readonly ConnectionTarget[] }) {
   const named = targets.filter(target => target.state === 'connected' && target.alias)
 

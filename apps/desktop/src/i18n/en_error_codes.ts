@@ -35,7 +35,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   timeout: {
     title: provider => `Can't reach ${provider}`,
-    body: provider => `Hermes couldn't reach ${provider}. Check your connection, then retry.`
+    body: provider => `Unitalk couldn't reach ${provider}. Check your connection, then retry.`
   },
   stream_drop: {
     title: 'The reply was cut off',
@@ -43,7 +43,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   no_reply: {
     title: "The reply didn't arrive",
-    body: 'Hermes finished this turn, but no reply reached this window. Retry to send it again.'
+    body: 'Unitalk finished this turn, but no reply reached this window. Retry to send it again.'
   },
   upstream_blocked: {
     title: provider => `${provider} blocked this request`,
@@ -98,11 +98,11 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     body: provider => `${provider} returned nothing for this message. Retry in a moment.`
   },
   loop_error: {
-    title: "Hermes couldn't finish this step",
+    title: "Unitalk couldn't finish this step",
     body: 'Something went wrong handling the reply. Retry; if it happens again, send diagnostics from the details.'
   },
   SESSION_OWNER_BUSY: {
-    title: 'Hermes is busy in this chat',
+    title: 'Unitalk is busy in this chat',
     body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
   },
   cron_session_read_only: {
@@ -111,7 +111,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   session_read_only: {
     title: 'This chat is read-only',
-    body: 'It is stored history Hermes can show but not continue, so your message was not run. Start a new chat to send it.'
+    body: 'It is stored history Unitalk can show but not continue, so your message was not run. Start a new chat to send it.'
   },
   workspace_unavailable: {
     title: "This chat's folder is gone",
@@ -125,7 +125,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     title: "Can't reach the local model server",
     body: "The local model server isn't serving yet: it may still be starting. Retry in a moment, or switch to another model.",
     bodyNoRetry:
-      'The local model server is turned off. Start it from the Hermes desktop app or `hermes model` in a terminal, or switch to another model.'
+      'The local model server is turned off. Start it from the Unitalk desktop app or `hermes model` in a terminal, or switch to another model.'
   },
   SESSION_OWNER_UNCONFIRMED: {
     title: 'Your message may already be queued',
@@ -134,15 +134,15 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   agent_init_failed: {
     title: "Couldn't start this chat",
     body: provider =>
-      `Hermes couldn't connect to ${provider} for this chat. Retry; if it keeps failing, check the provider in Settings.`
+      `Unitalk couldn't connect to ${provider} for this chat. Retry; if it keeps failing, check the provider in Settings.`
   },
   SESSION_NOT_OWNED: {
     title: 'Chat open somewhere else',
-    body: 'This chat is open in another Hermes window or terminal. Start a new chat here, or close it there first.'
+    body: 'This chat is open in another Unitalk window or terminal. Start a new chat here, or close it there first.'
   },
   disk_full: {
     title: 'Your disk is full',
-    body: "Hermes couldn't save this conversation. Free up space, then retry."
+    body: "Unitalk couldn't save this conversation. Free up space, then retry."
   },
   // Nous free tier. The body is normally the backend's own sentence (it names the wait
   // and the way forward); these bodies stand in for an older backend that sent none.
@@ -160,7 +160,7 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   },
   free_tier_model_not_free: {
     title: 'This model needs a sign-in',
-    body: "Hermes uses the free model for now. Sign in with a Nous account for more models, it's free."
+    body: "Unitalk uses the free model for now. Sign in with a Nous account for more models, it's free."
   },
   free_tier_route: {
     title: "Can't reach the free model",

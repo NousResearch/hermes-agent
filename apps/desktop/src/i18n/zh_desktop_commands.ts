@@ -25,7 +25,7 @@ export const zhDesktopCommands = {
   historyHeader: (count: string) => `对话历史（${count} 条消息）：`,
   historyEmpty: '还没有消息。',
   historyYou: '你',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: '用法：/save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     '未保存：此网关无法导出脱敏、指定文件名或非 JSON 的副本。请更新网关，或不带选项运行 /save，在网关主机上写入原始 JSON。',

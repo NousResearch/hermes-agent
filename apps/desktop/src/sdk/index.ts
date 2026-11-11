@@ -766,7 +766,7 @@ export const host = {
     const bridge = window.hermesDesktop?.connections
 
     if (!bridge) {
-      throw new Error('This Desktop build has no connection registry. Update Hermes Desktop.')
+      throw new Error('This Desktop build has no connection registry. Update Unitalk Desktop.')
     }
 
     const registryPayload = await bridge.list()
@@ -783,7 +783,7 @@ export const host = {
     const roster = window.hermesDesktop?.getAgentRoster
 
     if (!roster) {
-      throw new Error('This Desktop build cannot enumerate multi-source agents. Update Hermes Desktop.')
+      throw new Error('This Desktop build cannot enumerate multi-source agents. Update Unitalk Desktop.')
     }
 
     return roster()
@@ -1253,7 +1253,7 @@ export const host = {
       const openTab = $newSessionTabAction.get()
 
       if (!openTab) {
-        notify({ kind: 'error', message: 'Update Hermes Desktop to open another bot chat.' })
+        notify({ kind: 'error', message: 'Update Unitalk Desktop to open another bot chat.' })
 
         return
       }
@@ -1350,7 +1350,7 @@ export const host = {
     const getProfileRoutes = desktop?.getProfileRoutes
 
     if (!getProfileRoutes) {
-      throw new Error('Hermes Desktop connection routing unavailable')
+      throw new Error('Unitalk Desktop connection routing unavailable')
     }
 
     let profiles = $profiles.get()
@@ -1508,7 +1508,7 @@ export const host = {
     const gateway = $gateway.get()
 
     if (!gateway) {
-      throw new Error('Hermes gateway unavailable')
+      throw new Error('Unitalk gateway unavailable')
     }
 
     return timeoutMs === undefined ? gateway.request<T>(method, params) : gateway.request<T>(method, params, timeoutMs)
@@ -1963,7 +1963,7 @@ export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
 /** THE id minter: a v4 UUID on every origin. `crypto.randomUUID` exists only in secure contexts,
  *  so a Webapp opened over plain HTTP from another machine has none. */
 export { randomUuid } from '@hermes/shared'
-/** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
+/** Unitalk' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {
   DEFAULT_REASONING_EFFORT,

@@ -10,7 +10,7 @@ export interface PluginProfileRoute {
   primary?: true
   /** Desktop profile used to select the connection route. */
   profile: string
-  /** Backend Hermes profile served by that route. */
+  /** Backend Unitalk profile served by that route. */
   targetProfile: string
 }
 

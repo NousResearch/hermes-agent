@@ -4,10 +4,10 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const esGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Ajustes del gateway no disponibles',
   unavailableDesc:
-    'Los ajustes de conexión solo se pueden cambiar desde la app Hermes Desktop en el equipo que la ejecuta.',
-  webappHostTitle: 'Host de Hermes',
+    'Los ajustes de conexión solo se pueden cambiar desde la app Unitalk Desktop en el equipo que la ejecuta.',
+  webappHostTitle: 'Host de Unitalk',
   webappHostDesc:
-    'La Webapp siempre se ejecuta en el host de Hermes que la sirve. Las conexiones guardadas de abajo son la lista de esta máquina, compartida con la app Hermes Desktop; los demás gateways se alcanzan a través de este host.',
+    'La Webapp siempre se ejecuta en el host de Unitalk que la sirve. Las conexiones guardadas de abajo son la lista de esta máquina, compartida con la app Unitalk Desktop; los demás gateways se alcanzan a través de este host.',
   webappOauthPaste: {
     title: 'Terminar de iniciar sesión',
     description: 'Si la pestaña de inicio de sesión terminó en una dirección que no carga (este navegador no está en la máquina del gateway), pega esa dirección aquí.',
@@ -17,7 +17,7 @@ export const esGatewayHost: GatewayHostTranslations = {
   },
   webAccess: {
     title: 'Acceso web',
-    intro: 'Abre Hermes de este ordenador desde tu teléfono u otro ordenador, con tu cuenta de Nous. Quien inicie sesión puede ejecutar comandos en este ordenador.',
+    intro: 'Abre Unitalk de este ordenador desde tu teléfono u otro ordenador, con tu cuenta de Nous. Quien inicie sesión puede ejecutar comandos en este ordenador.',
     failed: 'No se pudo cambiar el acceso web',
     running: 'En ejecución',
     stopped: 'Detenido',
@@ -25,7 +25,7 @@ export const esGatewayHost: GatewayHostTranslations = {
     stopping: 'Deteniendo',
     restartNeeded: 'Reinicio necesario',
     unavailable: 'No disponible',
-    notRunningDetail: 'Inícialo para abrir Hermes desde otro dispositivo.',
+    notRunningDetail: 'Inícialo para abrir Unitalk desde otro dispositivo.',
     needsNous: 'Primero inicia sesión en tu cuenta de Nous en Proveedores.',
     runningLan: 'Abre esta dirección en un dispositivo de la misma red.',
     runningPublic: 'Servido a través de tu URL.',

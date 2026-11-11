@@ -26,7 +26,7 @@ export const zhHantDesktopCommands = {
   historyHeader: (count: string) => `對話紀錄（${count} 則訊息）：`,
   historyEmpty: '還沒有訊息。',
   historyYou: '你',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: '用法：/save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     '未儲存：此閘道無法匯出遮蔽、指定檔名或非 JSON 的副本。請更新閘道，或不帶選項執行 /save，在閘道主機上寫入原始 JSON。',

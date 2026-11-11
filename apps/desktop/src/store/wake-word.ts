@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { type ClientWakeCaptureHandle, startClientWakeCapture } from '@/lib/wake-client-capture'
 import { $gateway } from '@/store/gateway'
 
-// "Hey Hermes" wake-word listener state for the composer toggle. The gateway is
+// "Hey Unitalk" wake-word listener state for the composer toggle. The gateway is
 // the single source of truth (the listener lives in the backend and is shared
 // with the TUI under a single-owner mic lease); this atom is the renderer's
 // cache of that truth, refreshed from every wake.* RPC response we see.
@@ -159,7 +159,7 @@ const gatewayRequester: WakeRequester = async <T>(method: string, params: Record
   const gateway = $gateway.get()
 
   if (!gateway) {
-    throw new Error('Hermes gateway unavailable')
+    throw new Error('Unitalk gateway unavailable')
   }
 
   return method === 'wake.start'

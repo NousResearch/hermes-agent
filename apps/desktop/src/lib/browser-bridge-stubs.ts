@@ -8,7 +8,7 @@ function readyBootProgress(): DesktopBootProgress {
   return {
     error: null,
     fakeMode: false,
-    message: 'Hermes browser-hosted desktop is ready',
+    message: 'Unitalk browser-hosted desktop is ready',
     phase: 'runtime.ready',
     progress: 100,
     running: false,

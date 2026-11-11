@@ -32,7 +32,7 @@ type StopId = keyof typeof SELECTORS
 const ESSENTIALS: StopId[] = ['sessions', 'composer', 'newSession', 'model']
 
 /** Full adds what the interface mode puts on screen:
- *  Simple is for talking to Hermes, Advanced has the working pane. */
+ *  Simple is for talking to Unitalk, Advanced has the working pane. */
 const SIMPLE_EXTRAS: StopId[] = ['capabilities', 'messaging']
 const ADVANCED_EXTRAS: StopId[] = ['rightPane', 'capabilities']
 

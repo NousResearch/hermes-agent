@@ -110,7 +110,7 @@ export function renderRosterDialogs({
             <span>
               {'This will permanently delete the bot '}
               <span className="font-medium text-foreground">{deleting.name}</span>
-              {' and its associated Hermes profile at '}
+              {' and its associated Unitalk profile at '}
               <span className="font-mono text-xs">{deleting.path}</span>. This cannot be undone.
             </span>
           ) : null

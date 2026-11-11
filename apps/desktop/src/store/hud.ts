@@ -2,7 +2,7 @@
  * HUD mode — the chrome-free floating chat.
  *
  * A transparent, frameless, always-on-top window showing nothing but the REAL
- * composer with the reply scrolling above it, so Hermes can be driven while
+ * composer with the reply scrolling above it, so Unitalk can be driven while
  * the user works in another app (Figma, a browser).
  *
  * It is NOT a puppet window. Unlike the pet overlay / quick entry, the HUD is

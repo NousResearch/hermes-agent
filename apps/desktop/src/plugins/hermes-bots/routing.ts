@@ -307,7 +307,7 @@ function asRpcError(value: unknown, fallback: string): unknown {
 // backend answers the roster itself, the row's identity is (C, 'default') —
 // a DIFFERENT key than the alias meta (C::moxie / 'moxie') — so the friendly
 // name fell off after source/session activation: the row regressed to the
-// raw Cloud hostname, or to generic 'Hermes' in Cloud-only mode.
+// raw Cloud hostname, or to generic 'Unitalk' in Cloud-only mode.
 //
 // aliasRouteIndex bridges the backend row identity back to its configured
 // alias. It is keyed by (connectionId, targetProfile), so two same-named
@@ -463,7 +463,7 @@ function speaksAs(from: GroupMessageAuthor, bot: Partial<RosterRow>): boolean {
 /** The row a transcript line's speaker is named from. Seated members first; a
  *  former member (or a seat whose source has not painted yet) resolves against
  *  the live roster, else to a row carrying the line's own owner, so a remote
- *  speaker never falls back to this device's identity ("Hermes" for every
+ *  speaker never falls back to this device's identity ("Unitalk" for every
  *  `default`). Null for user lines. */
 export function groupTranscriptSpeaker(
   entry: TranscriptEntry,

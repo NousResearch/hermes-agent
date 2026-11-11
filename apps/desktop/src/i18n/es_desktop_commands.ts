@@ -28,7 +28,7 @@ export const esDesktopCommands = {
   historyHeader: (count: string) => `Historial de la conversación (${count} mensajes):`,
   historyEmpty: 'Todavía no hay mensajes.',
   historyYou: 'Tú',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: 'uso: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     'No guardado: esta pasarela no puede exportar una copia censurada, con nombre o que no sea JSON. Actualiza la pasarela o ejecuta /save sin opciones para escribir el JSON sin procesar en el host de la pasarela.',

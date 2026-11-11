@@ -4,7 +4,7 @@ export const deNotifications = {
   intro: 'OS-Benachrichtigungen (keine In-App-Toasts). Pro Gerät.',
   enableAll: 'Benachrichtigungen aktivieren',
   enableAllDesc: 'Aus schaltet jede Benachrichtigung unten stumm.',
-  focusedHint: 'Abschluss-Alerts feuern nur, während Hermes im Hintergrund ist.',
+  focusedHint: 'Abschluss-Alerts feuern nur, während Unitalk im Hintergrund ist.',
   kinds: {
     approval: {
       label: 'Genehmigung nötig',
@@ -12,11 +12,11 @@ export const deNotifications = {
     },
     input: {
       label: 'Eingabe nötig',
-      description: 'Hermes hat eine Frage gestellt oder braucht ein Passwort oder Geheimnis.'
+      description: 'Unitalk hat eine Frage gestellt oder braucht ein Passwort oder Geheimnis.'
     },
     turnDone: {
       label: 'Antwort bereit',
-      description: 'Ein Turn wurde beendet, während Hermes im Hintergrund war.'
+      description: 'Ein Turn wurde beendet, während Unitalk im Hintergrund war.'
     },
     turnError: {
       label: 'Turn fehlgeschlagen',
@@ -32,7 +32,7 @@ export const deNotifications = {
     },
     plugin: {
       label: 'Plugin-Benachrichtigungen',
-      description: 'Ein Desktop-Plugin hat eine Benachrichtigung gesendet, während Hermes im Hintergrund war.'
+      description: 'Ein Desktop-Plugin hat eine Benachrichtigung gesendet, während Unitalk im Hintergrund war.'
     }
   },
   browserPermission: {
@@ -48,7 +48,7 @@ export const deNotifications = {
     }
   },
   test: 'Testbenachrichtigung senden',
-  testTitle: 'Hermes',
+  testTitle: 'Unitalk',
   testBody: 'Benachrichtigungen funktionieren.',
   testSent:
     'Test gesendet. Wenn nichts erscheint, überprüfen Sie die Benachrichtigungsberechtigungen Ihres Betriebssystems und Fokus/Nicht stören.',

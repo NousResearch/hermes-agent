@@ -14,7 +14,7 @@
  * Two delivery doors, complementary by design:
  *  - `host.notify` — the in-app toast, covers the foreground case;
  *  - `ctx.os.notify` (when bound) — the native OS notification, which the
- *    desktop shell fires only while the user is AWAY from Hermes. This is the
+ *    desktop shell fires only while the user is AWAY from Unitalk. This is the
  *    door that covers "walked away and the worker hit a blocker".
  *
  * Cursor contract: first observation of a board baselines
@@ -172,7 +172,7 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
   })
 
   // Native OS notification — the desktop shell fires it only while the user
-  // is away from Hermes (the toast above covers the foreground case). Isolated:
+  // is away from Unitalk (the toast above covers the foreground case). Isolated:
   // a missing/broken shell must not mark the toast as unfired.
   try {
     osDoor?.notify({ title, body: [message, detail].filter(Boolean).join('\n') })

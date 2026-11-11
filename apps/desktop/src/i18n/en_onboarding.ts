@@ -6,7 +6,7 @@ export const enOnboarding: Translations['onboarding'] = {
   preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
   starting: 'Starting Hermes…',
   setupSlowTitle: 'Setup is taking longer than usual.',
-  setupSlowBody: 'Hermes is still starting in the background.',
+  setupSlowBody: 'Unitalk is still starting in the background.',
   continueWithoutSetup: 'Continue without setup',
   lookingUpProviders: 'Looking up providers...',
   collapse: 'Collapse',
@@ -34,7 +34,7 @@ export const enOnboarding: Translations['onboarding'] = {
     xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
     local: {
       short: 'self-hosted',
-      description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
+      description: 'Point Unitalk at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
     }
   },
   backToSignIn: 'Back to sign in',
@@ -48,7 +48,7 @@ export const enOnboarding: Translations['onboarding'] = {
   update: 'Update',
   flowSubtitles: {
     pkce: 'Opens your browser to sign in, then continues here',
-    device_code: 'Opens a verification page in your browser — Hermes connects automatically',
+    device_code: 'Opens a verification page in your browser — Unitalk connects automatically',
     external: 'Sign in once in your terminal, then come back to chat'
   },
   startingSignIn: provider => `Starting sign-in for ${provider}...`,
@@ -66,7 +66,7 @@ export const enOnboarding: Translations['onboarding'] = {
   pickDifferentProvider: 'Pick a different provider',
   signInWith: provider => `Sign in with ${provider}`,
   openedBrowser: provider => `We opened ${provider} in your browser.`,
-  authorizeThere: 'Authorize Hermes there.',
+  authorizeThere: 'Authorize Unitalk there.',
   copyAuthCode: 'Copy the authorization code and paste it below.',
   pasteAuthCode: 'Paste authorization code',
   reopenAuthPage: 'Re-open authorization page',

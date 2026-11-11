@@ -1,12 +1,12 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const zhOnboarding: TranslationOverrides['onboarding'] = {
-  headerTitle: '开始设置 Hermes Agent',
+  headerTitle: '开始设置 Unitalk Agent',
   headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
-  preparingInstall: 'Hermes 正在完成安装。首次运行通常不到一分钟。',
-  starting: '正在启动 Hermes…',
+  preparingInstall: 'Unitalk 正在完成安装。首次运行通常不到一分钟。',
+  starting: '正在启动 Unitalk…',
   setupSlowTitle: '设置所需时间比平常更长。',
-  setupSlowBody: 'Hermes 仍在后台启动。',
+  setupSlowBody: 'Unitalk 仍在后台启动。',
   continueWithoutSetup: '跳过设置并继续',
   lookingUpProviders: '正在查找提供方...',
   collapse: '收起',
@@ -15,7 +15,7 @@ export const zhOnboarding: TranslationOverrides['onboarding'] = {
   chooseLater: '稍后再选择提供方',
   recommended: '推荐',
   connected: '已连接',
-  featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
+  featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Unitalk 的推荐方式',
   fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
   localModelsTitle: '本地运行模型',
   localModelsPitch: '无需账号——下载模型，在本机运行',
@@ -28,7 +28,7 @@ export const zhOnboarding: TranslationOverrides['onboarding'] = {
     xai: { short: 'Grok 模型', description: '直接访问 xAI Grok 模型。' },
     local: {
       short: '自托管',
-      description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
+      description: '将 Unitalk 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
     }
   },
   backToSignIn: '返回登录',
@@ -42,7 +42,7 @@ export const zhOnboarding: TranslationOverrides['onboarding'] = {
   update: '更新',
   flowSubtitles: {
     pkce: '打开浏览器登录，然后回到这里继续',
-    device_code: '在浏览器中打开验证页面 — Hermes 会自动连接',
+    device_code: '在浏览器中打开验证页面 — Unitalk 会自动连接',
     external: '先在终端登录一次，然后回来继续对话'
   },
   startingSignIn: provider => `正在为 ${provider} 启动登录...`,
@@ -55,7 +55,7 @@ export const zhOnboarding: TranslationOverrides['onboarding'] = {
   pickDifferentProvider: '选择其他提供方',
   signInWith: provider => `使用 ${provider} 登录`,
   openedBrowser: provider => `已在浏览器中打开 ${provider}。`,
-  authorizeThere: '请在那里授权 Hermes。',
+  authorizeThere: '请在那里授权 Unitalk。',
   copyAuthCode: '复制授权码并粘贴到下面。',
   pasteAuthCode: '粘贴授权码',
   reopenAuthPage: '重新打开授权页面',

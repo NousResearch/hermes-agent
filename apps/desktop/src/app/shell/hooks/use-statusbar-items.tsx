@@ -458,7 +458,7 @@ export function useStatusbarItems({
       version: desktopVersion?.appVersion
     })
 
-    // A Webapp served by Hermes Cloud: Cloud updates it, so there is no version/update pill to open.
+    // A Webapp served by Unitalk Cloud: Cloud updates it, so there is no version/update pill to open.
     return versionItem('client', status, applying, copy.toggleVersion, cloudOwnsUpdates.client)
   }, [
     cloudOwnsUpdates.client,
@@ -473,7 +473,7 @@ export function useStatusbarItems({
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
-    // Hermes Cloud updates its agents itself: no backend pill, as outside remote mode.
+    // Unitalk Cloud updates its agents itself: no backend pill, as outside remote mode.
     if (connection?.mode !== 'remote' || cloudOwnsUpdates.backend) {
       return null
     }

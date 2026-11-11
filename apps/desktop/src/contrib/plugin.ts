@@ -66,7 +66,7 @@ export interface PluginStorage {
 export interface PluginOs {
   /** Native OS notification (Electron), attributed to this plugin. Gated by
    *  Settings ▸ Notifications ▸ "Plugin notifications" and fires only while
-   *  the user is away from Hermes — use `host.notify` for the in-app toast.
+   *  the user is away from Unitalk — use `host.notify` for the in-app toast.
    *  Throttled per plugin; reserve it for genuinely notable events.
    *  Supports `icon`, `activate` (e.g. `hermes://index-network/intent/1`),
    *  action buttons, and renderer `onActivate` / `onAction` callbacks. */
@@ -184,7 +184,7 @@ export interface PluginContext {
   storage: PluginStorage
   /** Folder-scoped file access: this plugin's own data folder plus folders
    *  the user grants it through the app's picker, by relative path. The app
-   *  checks every call; nothing outside those folders (or inside Hermes'
+   *  checks every call; nothing outside those folders (or inside Unitalk'
    *  own data) is reachable. Feature-detect on older hosts: `ctx.files?.…`. */
   files: PluginFiles
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,

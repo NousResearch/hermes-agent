@@ -109,7 +109,7 @@ export const GROUP_SURFACE_ES = {
     statusUnknown: "Estado desconocido",
     unavailable: "No disponible",
     retryNow: "Reintentar ahora",
-    rosterUnavailable: reason => `Lista no disponible: ${reason}. Si tu pasarela no admite profiles.list, actualiza Hermes y reinicia la pasarela.`,
+    rosterUnavailable: reason => `Lista no disponible: ${reason}. Si tu pasarela no admite profiles.list, actualiza Unitalk y reinicia la pasarela.`,
     waitingForGateway: "Esperando la conexión con la pasarela… (las pasarelas remotas pueden tardar unos segundos; se reintenta automáticamente)"
   },
   sections: {

@@ -9,7 +9,7 @@ export const enSessionCommands: SessionCommandNotices = {
   retryNothing: 'nothing to retry',
   retryUnsupported: '/retry: retry does not support media or unknown content parts',
   busy: (command: string) =>
-    `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
+    `session busy — Unitalk is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
   busyCompressing: (command: string) =>
     `session busy — a /compress is running; run /${command} when it finishes.`,
   steerUsage: 'usage: /steer <prompt>',
@@ -24,5 +24,5 @@ export const enSessionCommands: SessionCommandNotices = {
   queueEditKept: 'It started or was refused before your edit was saved. Your edited text is in the composer.',
   queueEditUnconfirmedTitle: 'Edit not confirmed',
   queueEditUnconfirmed:
-    'Hermes could not confirm your edit. Save again to retry the same edit; it is never queued twice.'
+    'Unitalk could not confirm your edit. Save again to retry the same edit; it is never queued twice.'
 }

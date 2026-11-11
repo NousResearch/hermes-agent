@@ -65,7 +65,7 @@ export function createBrowserFilesBridge({
     const target = new URL(url, window.location.href)
 
     // Cross-origin anchors ignore download and navigate the current tab.
-    // Fetch without Hermes credentials; CORS denial must not fall back to navigation.
+    // Fetch without Unitalk credentials; CORS denial must not fall back to navigation.
     if (target.origin !== window.location.origin && !['blob:', 'data:'].includes(target.protocol)) {
       const image = await fetchBrowserImage(target)
 

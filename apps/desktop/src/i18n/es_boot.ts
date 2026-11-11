@@ -3,46 +3,46 @@ import type { TranslationOverrides } from './define-locale'
 // The boot screen's copy (including the update-hold screen), composed by es.ts.
 export const esBoot = {
   boot: {
-    ready: 'Hermes Desktop está listo',
+    ready: 'Unitalk Desktop está listo',
     desktopBootFailedWithMessage: message => `Falló el arranque del escritorio: ${message}`,
     steps: {
       connectingGateway: 'Conectando el gateway de escritorio en vivo',
-      loadingSettings: 'Cargando la configuración de Hermes',
+      loadingSettings: 'Cargando la configuración de Unitalk',
       loadingSessions: 'Cargando sesiones recientes',
-      retryingRemoteBackend: 'Reconectando al backend remoto de Hermes…',
+      retryingRemoteBackend: 'Reconectando al backend remoto de Unitalk…',
       startingDesktopConnection: 'Iniciando la conexión de escritorio',
-      startingHermesDesktop: 'Iniciando Hermes Desktop…'
+      startingHermesDesktop: 'Iniciando Unitalk Desktop…'
     },
     errors: {
       backgroundExited:
         'El servicio que ejecuta tus chats se cerró de forma inesperada. Reinícialo para continuar; tus chats y ajustes están a salvo.',
-      backgroundExitedDuringStartup: 'Hermes se detuvo justo después de iniciarse.',
-      backendStopped: 'Hermes dejó de funcionar en segundo plano',
-      restartHermes: 'Reiniciar Hermes',
+      backgroundExitedDuringStartup: 'Unitalk se detuvo justo después de iniciarse.',
+      backendStopped: 'Unitalk dejó de funcionar en segundo plano',
+      restartHermes: 'Reiniciar Unitalk',
       openLogs: 'Abrir registros',
-      desktopBootFailed: 'Hermes no pudo iniciarse',
-      gatewayConnectionLost: 'Hermes perdió la conexión',
+      desktopBootFailed: 'Unitalk no pudo iniciarse',
+      gatewayConnectionLost: 'Unitalk perdió la conexión',
       gatewayConnectionLostDetail:
         'Seguimos intentando reconectar. Puedes seguir leyendo y escribiendo borradores. Si continúa, reconecta ahora o revisa los ajustes de conexión.',
       reconnectNow: 'Reconectar ahora',
       connectionSettings: 'Configuración de conexión',
-      gatewaySignInRequired: 'Tu Hermes remoto cerró tu sesión',
+      gatewaySignInRequired: 'Tu Unitalk remoto cerró tu sesión',
       gatewaySignInRequiredDetail: 'Vuelve a iniciar sesión para reconectar. Tus chats y ajustes están a salvo.',
       signInAgain: 'Volver a iniciar sesión',
-      ipcBridgeUnavailable: 'Hermes Desktop no pudo comunicarse con su propia capa en segundo plano. Reinicia la app.'
+      ipcBridgeUnavailable: 'Unitalk Desktop no pudo comunicarse con su propia capa en segundo plano. Reinicia la app.'
     },
     causes: {
-      exitedEarly: 'El servicio en segundo plano de Hermes se detuvo justo después de iniciarse.',
-      timedOut: 'El servicio en segundo plano de Hermes no respondió a tiempo.',
-      permission: 'Hermes no pudo escribir en su carpeta de datos (problema de permisos).',
-      diskFull: 'El disco está lleno, así que Hermes no pudo iniciarse.',
-      portInUse: 'Otro programa está usando el puerto de red que necesita Hermes.',
-      installMissing: 'Falta parte de la instalación de Hermes. Elige Reparar instalación para restaurarla.'
+      exitedEarly: 'El servicio en segundo plano de Unitalk se detuvo justo después de iniciarse.',
+      timedOut: 'El servicio en segundo plano de Unitalk no respondió a tiempo.',
+      permission: 'Unitalk no pudo escribir en su carpeta de datos (problema de permisos).',
+      diskFull: 'El disco está lleno, así que Unitalk no pudo iniciarse.',
+      portInUse: 'Otro programa está usando el puerto de red que necesita Unitalk.',
+      installMissing: 'Falta parte de la instalación de Unitalk. Elige Reparar instalación para restaurarla.'
     },
     failure: {
-      title: 'Hermes no pudo iniciarse',
+      title: 'Unitalk no pudo iniciarse',
       description:
-        'El servicio en segundo plano de Hermes no arrancó. Prueba uno de los pasos de recuperación de abajo. Nada de esto elimina tus chats ni tus ajustes.',
+        'El servicio en segundo plano de Unitalk no arrancó. Prueba uno de los pasos de recuperación de abajo. Nada de esto elimina tus chats ni tus ajustes.',
       details: 'Detalles',
       remoteTitle: 'Se requiere iniciar sesión en el gateway remoto',
       remoteDescription:
@@ -77,30 +77,30 @@ export const esBoot = {
       identityProvider: 'tu proveedor de identidad'
     },
     updateHold: {
-      title: 'Una actualización anterior todavía retiene Hermes',
-      titleUnverified: 'Hermes no puede confirmar que la última actualización terminó',
+      title: 'Una actualización anterior todavía retiene Unitalk',
+      titleUnverified: 'Unitalk no puede confirmar que la última actualización terminó',
       description:
-        'Hermes espera antes de iniciar para no cargar archivos que una actualización quizá todavía esté cambiando. Se inicia solo en cuanto termine la retención.',
+        'Unitalk espera antes de iniciar para no cargar archivos que una actualización quizá todavía esté cambiando. Se inicia solo en cuanto termine la retención.',
       heldByProcess: pid =>
-        `La actualización (proceso ${pid}) terminó, pero un proceso que inició todavía retiene la instalación de Hermes.`,
-      heldUnknown: 'Una actualización terminó, pero un proceso que inició todavía retiene la instalación de Hermes.',
+        `La actualización (proceso ${pid}) terminó, pero un proceso que inició todavía retiene la instalación de Unitalk.`,
+      heldUnknown: 'Una actualización terminó, pero un proceso que inició todavía retiene la instalación de Unitalk.',
       unverified:
-        'El asistente de actualización no pudo comprobar quién tiene la instalación de Hermes. Hermes sigue comprobando.',
+        'El asistente de actualización no pudo comprobar quién tiene la instalación de Unitalk. Unitalk sigue comprobando.',
       since: time => `Esperando desde ${time}`,
       lastChecked: time => `Última comprobación ${time}`,
       recoveryHint:
-        'Esto suele resolverse en unos minutos. Si no: cierra Hermes, termina los procesos git o hermes que queden (o reinicia el equipo) y vuelve a abrir Hermes.',
+        'Esto suele resolverse en unos minutos. Si no: cierra Unitalk, termina los procesos git o hermes que queden (o reinicia el equipo) y vuelve a abrir Unitalk.',
       checkAgain: 'Comprobar de nuevo',
-      quit: 'Salir de Hermes',
+      quit: 'Salir de Unitalk',
       openLogs: 'Abrir registros',
       startAnyway: 'Iniciar de todos modos…',
-      confirmTitle: '¿Iniciar Hermes mientras la actualización todavía lo retiene?',
+      confirmTitle: '¿Iniciar Unitalk mientras la actualización todavía lo retiene?',
       confirmBody:
-        'El proceso de actualización restante quizá siga cambiando archivos de Hermes. Iniciar ahora puede cargar una instalación a medio actualizar, que puede no funcionar hasta que vuelvas a ejecutar la actualización. Hermes registra esta decisión y deja el marcador de actualización en su lugar.',
+        'El proceso de actualización restante quizá siga cambiando archivos de Unitalk. Iniciar ahora puede cargar una instalación a medio actualizar, que puede no funcionar hasta que vuelvas a ejecutar la actualización. Unitalk registra esta decisión y deja el marcador de actualización en su lugar.',
       confirmKeepWaiting: 'Seguir esperando',
       confirmStart: 'Iniciar de todos modos',
       startAnywayRefused:
-        'Lo que retiene la instalación cambió antes de que Hermes pudiera iniciar. Revísalo e inténtalo de nuevo.'
+        'Lo que retiene la instalación cambió antes de que Unitalk pudiera iniciar. Revísalo e inténtalo de nuevo.'
     }
   }
 } satisfies Pick<TranslationOverrides, 'boot'>

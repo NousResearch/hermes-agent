@@ -4,7 +4,7 @@ export const ruNotifications = {
   intro: 'Системные уведомления (не всплывающие внутри приложения). Настраивается для каждого устройства.',
   enableAll: 'Включить уведомления',
   enableAllDesc: 'Если выключено — все уведомления ниже будут заглушены.',
-  focusedHint: 'Оповещения о завершении срабатывают только пока Hermes в фоне.',
+  focusedHint: 'Оповещения о завершении срабатывают только пока Unitalk в фоне.',
   kinds: {
     approval: {
       label: 'Нужно одобрение',
@@ -12,11 +12,11 @@ export const ruNotifications = {
     },
     input: {
       label: 'Нужен ввод',
-      description: 'Hermes задал вопрос или требует пароль/секрет.'
+      description: 'Unitalk задал вопрос или требует пароль/секрет.'
     },
     turnDone: {
       label: 'Ответ готов',
-      description: 'Ход завершился, пока Hermes был в фоне.'
+      description: 'Ход завершился, пока Unitalk был в фоне.'
     },
     turnError: {
       label: 'Ход не удался',
@@ -32,7 +32,7 @@ export const ruNotifications = {
     },
     plugin: {
       label: 'Уведомления плагинов',
-      description: 'Плагин приложения отправил уведомление, пока Hermes был в фоне.'
+      description: 'Плагин приложения отправил уведомление, пока Unitalk был в фоне.'
     }
   },
   browserPermission: {
@@ -48,7 +48,7 @@ export const ruNotifications = {
     }
   },
   test: 'Отправить тестовое уведомление',
-  testTitle: 'Hermes',
+  testTitle: 'Unitalk',
   testBody: 'Уведомления работают.',
   testSent:
     'Тест отправлен. Если ничего не появилось, проверьте разрешения на уведомления в системе и режим «Не беспокоить».',

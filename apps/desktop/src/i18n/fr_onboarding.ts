@@ -7,7 +7,7 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   preparingInstall: "Hermes finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",
   starting: 'Démarrage de Hermes…',
   setupSlowTitle: 'La configuration prend plus de temps que d’habitude.',
-  setupSlowBody: 'Hermes est toujours en cours de démarrage en arrière-plan.',
+  setupSlowBody: 'Unitalk est toujours en cours de démarrage en arrière-plan.',
   continueWithoutSetup: 'Continuer sans configuration',
   lookingUpProviders: 'Recherche des fournisseurs...',
   collapse: 'Réduire',
@@ -46,7 +46,7 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
     local: {
       short: 'auto-hébergé',
       description:
-        'Pointez Hermes vers un point de terminaison local ou auto-hébergé compatible OpenAI (vLLM, llama.cpp, Ollama, etc).'
+        'Pointez Unitalk vers un point de terminaison local ou auto-hébergé compatible OpenAI (vLLM, llama.cpp, Ollama, etc).'
     }
   },
   backToSignIn: 'Retour à la connexion',
@@ -60,7 +60,7 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   update: 'Mettre à jour',
   flowSubtitles: {
     pkce: 'Ouvre votre navigateur pour vous connecter, puis continue ici',
-    device_code: 'Ouvre une page de vérification dans votre navigateur — Hermes se connecte automatiquement',
+    device_code: 'Ouvre une page de vérification dans votre navigateur — Unitalk se connecte automatiquement',
     external: 'Connectez-vous une fois dans votre terminal, puis revenez discuter'
   },
   startingSignIn: provider => `Démarrage de la connexion pour ${provider}...`,
@@ -78,7 +78,7 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   pickDifferentProvider: 'Choisissez un autre fournisseur',
   signInWith: provider => `Se connecter avec ${provider}`,
   openedBrowser: provider => `Nous avons ouvert ${provider} dans votre navigateur.`,
-  authorizeThere: 'Autorisez Hermes là-bas.',
+  authorizeThere: 'Autorisez Unitalk là-bas.',
   copyAuthCode: "Copiez le code d'autorisation et collez-le ci-dessous.",
   pasteAuthCode: "Coller le code d'autorisation",
   reopenAuthPage: "Rouvrir la page d'autorisation",

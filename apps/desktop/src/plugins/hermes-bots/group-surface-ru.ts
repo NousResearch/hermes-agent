@@ -109,7 +109,7 @@ export const GROUP_SURFACE_RU = {
     statusUnknown: "Статус неизвестен",
     unavailable: "Недоступен",
     retryNow: "Повторить сейчас",
-    rosterUnavailable: reason => `Список недоступен: ${reason}. Если шлюз не поддерживает profiles.list, обновите Hermes и перезапустите шлюз.`,
+    rosterUnavailable: reason => `Список недоступен: ${reason}. Если шлюз не поддерживает profiles.list, обновите Unitalk и перезапустите шлюз.`,
     waitingForGateway: "Ожидание подключения к шлюзу… (удалённые шлюзы могут отвечать несколько секунд; повторная попытка автоматически)"
   },
   sections: {

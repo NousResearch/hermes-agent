@@ -27,7 +27,7 @@ export const ruDesktopCommands = {
   historyHeader: (count: string) => `История разговора (сообщений: ${count}):`,
   historyEmpty: 'Сообщений пока нет.',
   historyYou: 'Вы',
-  historyHermes: 'Hermes',
+  historyHermes: 'Unitalk',
   saveUsage: 'использование: /save [json|md|html] [filename] [redact]',
   saveLegacyRefused:
     'Не сохранено: этот шлюз не умеет экспортировать скрытую, именованную или не-JSON копию. Обновите шлюз или выполните /save без параметров, чтобы записать исходный JSON на хосте шлюза.',

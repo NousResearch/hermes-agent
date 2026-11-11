@@ -37,7 +37,7 @@ export const arFirstRun: FirstRunCopy = {
     notNow: 'ليس الآن'
   },
   intro: {
-    greeting: 'مرحبًا، أنا Hermes.',
+    greeting: 'مرحبًا، أنا Unitalk.',
     plan: 'لنجهّز كل شيء لك، ثم ننجز معًا شيئًا رائعًا.'
   },
   rerun: {

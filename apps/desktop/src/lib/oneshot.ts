@@ -33,7 +33,7 @@ export interface OneShotRequest {
 }
 
 /**
- * Send a one-off request to Hermes and return the generated text.
+ * Send a one-off request to Unitalk and return the generated text.
  * Throws when the gateway is offline or the backend reports an error.
  */
 export async function requestOneShot(req: OneShotRequest): Promise<string> {

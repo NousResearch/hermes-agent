@@ -12,7 +12,7 @@ export const frPluginUpdate: PluginUpdateTranslations = {
     pickerTitle: (name: string) => `Choisir un dossier pour ${name}`,
     pickerButton: 'Autoriser l’accès',
     refusedProtected: (name: string) =>
-      `${name} ne peut pas utiliser ce dossier : il contient des réglages, des clés ou des données de plugins Hermes. Choisissez un dossier qui ne les contient pas.`,
+      `${name} ne peut pas utiliser ce dossier : il contient des réglages, des clés ou des données de plugins Unitalk. Choisissez un dossier qui ne les contient pas.`,
     loadFailed: (name: string) => `Impossible de charger les dossiers partagés avec ${name}.`
   },
   updateToPin: (sha: string) => `Mettre à jour vers ${sha}`,

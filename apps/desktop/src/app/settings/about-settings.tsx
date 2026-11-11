@@ -42,7 +42,7 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
   const version = useStore($desktopVersion)
   const connection = useStore($connection)
   const remote = connection?.mode === 'remote'
-  // Hermes Cloud updates its agents itself: no checker, channel or Update button for what it owns.
+  // Unitalk Cloud updates its agents itself: no checker, channel or Update button for what it owns.
   const cloudOwned = useStore($cloudOwnsUpdates)
   const showBackend = remote && !cloudOwned.backend
 

@@ -58,7 +58,7 @@ export const zhCatalog = {
   retry: '重试',
   more: '显示更多',
   pinned: '已审核的提交',
-  snapshotHint: '内容来自 Hermes 目录。浏览时不会连接来源代码仓库。',
+  snapshotHint: '内容来自 Unitalk 目录。浏览时不会连接来源代码仓库。',
   installHint: '安装前请检查源代码。更改将在新会话中生效。',
   results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
   back: '返回结果'

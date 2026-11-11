@@ -33,17 +33,38 @@ _snapshot_root: Path | None = None
 _snapshot_lock = threading.Lock()
 
 
-def _snapshot(plugin_dir: Path, fingerprint: str) -> Path:
-    """A frozen copy of *plugin_dir* for this fingerprint, named like the original (load errors key on it)."""
+def _snapshot(plugin_dir: Path, module_name: str) -> Path:
+    """A frozen copy of *plugin_dir* for *module_name* (per home, plugin and tree), named like the original
+    (load errors key on it). Copied into a private directory and published by one rename, so a concurrent scan
+    never imports a half-written copy; a failed copy leaves nothing behind."""
     global _snapshot_root
     with _snapshot_lock:
         if _snapshot_root is None:
             _snapshot_root = Path(tempfile.mkdtemp(prefix="hermes-provider-plugins-"))
             atexit.register(shutil.rmtree, _snapshot_root, True)
-    target = _snapshot_root / fingerprint / plugin_dir.name
-    if not target.is_dir():
-        shutil.copytree(plugin_dir, target, ignore=_SNAPSHOT_IGNORE)
+    target = _snapshot_root / module_name / plugin_dir.name
+    if target.is_dir():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    private = Path(tempfile.mkdtemp(prefix=".copy-", dir=target.parent))
+    try:
+        shutil.copytree(plugin_dir, private / plugin_dir.name, ignore=_SNAPSHOT_IGNORE)
+        os.rename(private / plugin_dir.name, target)
+    except OSError:
+        if not target.is_dir():  # another scan publishing the same copy first is fine
+            raise
+    finally:
+        shutil.rmtree(private, ignore_errors=True)
     return target
+
+
+def _import_source(plugin_dir: Path, module_name: str) -> Path:
+    """Where the plugin's code is imported from: its frozen copy in-process. Under ``plugins.isolation: host``
+    the host child imports the plugin, keyed by the installed path for its extraction cache, so that path is
+    passed through unchanged."""
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+
+    return plugin_dir if isolation_mode() == ISOLATION_HOST else _snapshot(plugin_dir, module_name)
 
 
 def tree_fingerprint(plugin_dir: Path) -> str:
@@ -77,7 +98,10 @@ def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     staging = P._HomeLayer()
     token = P._REGISTRATION_TARGET.set(staging)
     try:
-        P._import_user_module(_snapshot(plugin_dir, fingerprint), source, module_name)
+        P._import_user_module(_import_source(plugin_dir, module_name), source, module_name)
+    except OSError as exc:  # the frozen copy could not be made: keep serving the previous version
+        logger.warning("Could not stage provider plugin %s: %s", plugin_dir.name, exc)
+        staging.errors[plugin_dir.name] = f"{type(exc).__name__}: {exc}"
     finally:
         P._REGISTRATION_TARGET.reset(token)
     if module_name in sys.modules or module_name in staging.hosted:

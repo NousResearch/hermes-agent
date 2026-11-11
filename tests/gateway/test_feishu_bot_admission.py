@@ -645,6 +645,32 @@ def test_dm_admission_config_falls_back_to_os_environ_when_unscoped(monkeypatch)
 # --- Reaction routing must clear the same admission gate -------------------
 
 
+class _SdkMessage:
+    """lark-oapi 1.7.5 GET im/v1/messages item: chat_id + sender, and no chat_type field."""
+
+    def __init__(self, chat_id: str):
+        self.chat_id = chat_id
+        self.sender = SimpleNamespace(id="cli_self_app", id_type="app_id", sender_type="app")
+
+
+def _chat_get_info(chat_id: str, chat_mode):
+    """get_chat_info built from a real chat.get body: chat_type is private/public, chat_mode the DM marker."""
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = object.__new__(FeishuAdapter)
+    adapter._chat_info_cache = {}
+    adapter._build_get_chat_request = lambda _cid: object()
+    data = SimpleNamespace(name="Chat", chat_type="private", chat_mode=chat_mode)
+    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(chat=SimpleNamespace(
+        get=lambda _req: SimpleNamespace(success=lambda: True, data=data)))))
+
+    async def _run_blocking(func, *args):
+        return func(*args)
+
+    adapter._run_blocking = _run_blocking
+    return adapter.get_chat_info
+
+
 def _reaction_adapter(**kwargs):
     """Adapter whose GET-message lookup says the reacted-to message is ours."""
     adapter = make_adapter_skeleton(**kwargs)
@@ -656,13 +682,7 @@ def _reaction_adapter(**kwargs):
                     get=lambda _req: SimpleNamespace(
                         success=lambda: True,
                         data=SimpleNamespace(
-                            items=[
-                                SimpleNamespace(
-                                    sender=SimpleNamespace(id="cli_self_app"),
-                                    chat_id=adapter._reaction_chat_id,
-                                    chat_type=adapter._reaction_chat_type,
-                                )
-                            ]
+                            items=[_SdkMessage(adapter._reaction_chat_id)]
                         ),
                     )
                 )
@@ -681,10 +701,6 @@ def _reaction_adapter(**kwargs):
 
     adapter._resolve_sender_profile = _resolve_sender_profile
 
-    async def _get_chat_info(_chat_id):
-        return {"name": "Chat", "type": None}
-
-    adapter.get_chat_info = _get_chat_info
     adapter._resolve_channel_prompt = lambda *_a, **_k: None
     adapter.build_source = lambda **kw: SimpleNamespace(**kw)
     routed: list = []
@@ -708,11 +724,11 @@ def _reaction_data(open_id: str):
     )
 
 
-def _run_reaction(adapter, open_id: str, *, chat_id: str, chat_type: str):
+def _run_reaction(adapter, open_id: str, *, chat_id: str, chat_mode="group"):
     import asyncio
 
     adapter._reaction_chat_id = chat_id
-    adapter._reaction_chat_type = chat_type
+    adapter.get_chat_info = _chat_get_info(chat_id, chat_mode)
     asyncio.run(adapter._handle_reaction_event("im.message.reaction.created_v1", _reaction_data(open_id)))
     return adapter._routed
 
@@ -721,13 +737,13 @@ def test_group_reaction_from_non_allowlisted_user_is_dropped(monkeypatch):
     """FEISHU_GROUP_POLICY=allowlist must gate reactions like text (#bypass)."""
     adapter = _reaction_adapter(group_policy="allowlist")
     adapter._allowed_group_users = frozenset({"ou_owner"})
-    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_g", chat_type="group") == []
+    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_g") == []
 
 
 def test_group_reaction_from_allowlisted_user_is_routed(monkeypatch):
     adapter = _reaction_adapter(group_policy="allowlist")
     adapter._allowed_group_users = frozenset({"ou_owner"})
-    routed = _run_reaction(adapter, "ou_owner", chat_id="oc_g", chat_type="group")
+    routed = _run_reaction(adapter, "ou_owner", chat_id="oc_g")
     assert len(routed) == 1
     assert routed[0].text == "reaction:added:THUMBSUP"
 
@@ -735,7 +751,7 @@ def test_group_reaction_from_allowlisted_user_is_routed(monkeypatch):
 def test_group_reaction_ignores_mention_requirement(monkeypatch):
     """require_mention applies to text; a reaction has no @ payload."""
     adapter = _reaction_adapter(group_policy="open", require_mention=True)
-    routed = _run_reaction(adapter, "ou_anyone", chat_id="oc_g", chat_type="group")
+    routed = _run_reaction(adapter, "ou_anyone", chat_id="oc_g")
     assert len(routed) == 1
 
 
@@ -744,7 +760,7 @@ def test_group_reaction_respects_per_chat_disabled_rule(monkeypatch):
 
     adapter = _reaction_adapter(group_policy="open")
     adapter._group_rules = {"oc_locked": FeishuGroupRule(policy="disabled")}
-    assert _run_reaction(adapter, "ou_anyone", chat_id="oc_locked", chat_type="group") == []
+    assert _run_reaction(adapter, "ou_anyone", chat_id="oc_locked") == []
 
 
 def test_dm_reaction_from_non_allowlisted_user_is_dropped(monkeypatch):
@@ -752,7 +768,7 @@ def test_dm_reaction_from_non_allowlisted_user_is_dropped(monkeypatch):
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     adapter = _reaction_adapter()
     adapter._allowed_group_users = frozenset({"ou_owner"})
-    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_dm", chat_type="p2p") == []
+    assert _run_reaction(adapter, "ou_stranger", chat_id="oc_dm", chat_mode="p2p") == []
 
 
 def test_dm_reaction_from_allowlisted_user_is_routed(monkeypatch):
@@ -760,21 +776,17 @@ def test_dm_reaction_from_allowlisted_user_is_routed(monkeypatch):
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     adapter = _reaction_adapter()
     adapter._allowed_group_users = frozenset({"ou_owner"})
-    assert len(_run_reaction(adapter, "ou_owner", chat_id="oc_dm", chat_type="p2p")) == 1
+    assert len(_run_reaction(adapter, "ou_owner", chat_id="oc_dm", chat_mode="p2p")) == 1
 
 
 # --- Generic card clicks (synthetic /card commands) share the gate ---------
 
 
-def _run_card_click(adapter, open_id: str, *, chat_id: str, raw_chat_type: str = "group"):
+def _run_card_click(adapter, open_id: str, *, chat_id: str, chat_mode="group"):
     import asyncio
 
     adapter._card_action_tokens = {}
-
-    async def _get_chat_info(_chat_id):
-        return {"name": "Chat", "type": None, "raw_type": raw_chat_type}
-
-    adapter.get_chat_info = _get_chat_info
+    adapter.get_chat_info = _chat_get_info(chat_id, chat_mode)
     data = SimpleNamespace(event=SimpleNamespace(
         token="", context=SimpleNamespace(open_chat_id=chat_id),
         operator=SimpleNamespace(open_id=open_id),
@@ -804,5 +816,38 @@ def test_dm_card_click_from_non_allowlisted_user_is_dropped(monkeypatch):
     monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
     adapter = _reaction_adapter(group_policy="open")
     adapter._allowed_group_users = frozenset({"ou_owner"})
-    assert _run_card_click(adapter, "ou_stranger", chat_id="oc_dm", raw_chat_type="p2p") == []
-    assert len(_run_card_click(adapter, "ou_owner", chat_id="oc_dm", raw_chat_type="p2p")) == 1
+    assert _run_card_click(adapter, "ou_stranger", chat_id="oc_dm", chat_mode="p2p") == []
+    assert len(_run_card_click(adapter, "ou_owner", chat_id="oc_dm", chat_mode="p2p")) == 1
+
+
+def test_group_reaction_per_chat_allowlist_excludes_globally_allowed_user():
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = _reaction_adapter(group_policy="allowlist")
+    adapter._allowed_group_users = frozenset({"ou_owner", "ou_dm_only"})
+    adapter._group_rules = {"oc_g": FeishuGroupRule(policy="allowlist", allowlist={"ou_owner"})}
+    assert _run_reaction(adapter, "ou_dm_only", chat_id="oc_g") == []
+
+
+def test_group_reaction_source_is_group_typed():
+    routed = _run_reaction(_reaction_adapter(group_policy="open"), "ou_owner", chat_id="oc_g")
+    assert [e.source.chat_type for e in routed] == ["group"]
+
+
+def test_dm_card_click_routes_under_pairing_default():
+    """Empty FEISHU_ALLOWED_USERS + allowlist group policy: a p2p click reaches gateway pairing authz."""
+    adapter = _reaction_adapter(group_policy="allowlist")
+    assert len(_run_card_click(adapter, "ou_paired", chat_id="oc_dm", chat_mode="p2p")) == 1
+
+
+def test_synthetic_turn_with_unknown_chat_mode_is_judged_as_group():
+    """A failed or modeless chat lookup must not unlock the DM branch."""
+    adapter = _reaction_adapter(group_policy="allowlist", allow_all_dm=True)
+    assert _run_reaction(adapter, "ou_anyone", chat_id="oc_x", chat_mode=None) == []
+    assert _run_card_click(adapter, "ou_anyone", chat_id="oc_x", chat_mode=None) == []
+
+
+def test_dm_card_click_source_is_dm_typed():
+    adapter = _reaction_adapter(group_policy="open", allow_all_dm=True)
+    routed = _run_card_click(adapter, "ou_anyone", chat_id="oc_dm", chat_mode="p2p")
+    assert [e.source.chat_type for e in routed] == ["dm"]

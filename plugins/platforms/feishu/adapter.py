@@ -2010,9 +2010,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 return fallback
             data = getattr(response, "data", None)
             raw_chat_type = str(getattr(data, "chat_type", "") or "").strip().lower()
+            # chat.get's chat_type is private/public; the DM marker is chat_mode == "p2p".
+            raw_chat_mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
             info = {
                 "chat_id": chat_id, "name": str(getattr(data, "name", None) or chat_id),
                 "type": self._map_chat_type(raw_chat_type), "raw_type": raw_chat_type or None,
+                "raw_mode": raw_chat_mode or None,
             }
             self._chat_info_cache[chat_id] = info
             return dict(info)
@@ -2451,7 +2454,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             if str(getattr(sender, "id", "") or "") != self._app_id:
                 return
             chat_id = str(getattr(msg, "chat_id", "") or "")
-            chat_type_raw = str(getattr(msg, "chat_type", "p2p") or "p2p")
             if not chat_id:
                 return
         except Exception:
@@ -2466,6 +2468,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         # Reactions become agent turns, so they must clear the same admission gate as text
         # from this operator in this chat; otherwise anyone who can see a bot message in a
         # group wakes the agent by reacting, even under FEISHU_GROUP_POLICY=allowlist.
+        # GET im/v1/messages items carry no chat_type, so the chat lookup decides.
+        chat_type_raw = await self._synthetic_chat_type(chat_id)
         reject = self._admit_synthetic(user_id_obj, chat_id=chat_id, chat_type=chat_type_raw)
         if reject is not None:
             logger.debug(
@@ -2515,9 +2519,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             except Exception:
                 pass
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
-        # Same gate as reactions. The callback carries no chat type, so ask the (cached) chat
-        # lookup; anything not known to be a DM is judged as a group.
-        chat_type = "p2p" if (await self.get_chat_info(chat_id)).get("raw_type") == "p2p" else "group"
+        # Same gate as reactions; the callback carries no chat type either.
+        chat_type = await self._synthetic_chat_type(chat_id)
         reject = self._admit_synthetic(sender_id, chat_id=chat_id, chat_type=chat_type)
         if reject is not None:
             logger.debug("[Feishu] dropping card action %r from %s in %s: %s", action_tag, open_id, chat_id, reject)
@@ -2525,9 +2528,17 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._dispatch_synthetic_event(
             text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
-            sender_id=sender_id, event_chat_type="group",
+            sender_id=sender_id, event_chat_type=chat_type,
             raw_message=data, message_id=token or str(uuid.uuid4()),
         )
+
+    async def _synthetic_chat_type(self, chat_id: str) -> str:
+        """"p2p" only when the (cached) chat lookup reports chat_mode p2p; else "group".
+
+        Unknown fails closed to group: a DM reaction/click whose lookup fails is judged by
+        group policy (and dropped under the pairing default) rather than skipping it.
+        """
+        return "p2p" if (await self.get_chat_info(chat_id)).get("raw_mode") == "p2p" else "group"
 
     async def _dispatch_synthetic_event(
         self, *, text: str, message_type: MessageType, chat_id: str, sender_id: Any, event_chat_type: str,

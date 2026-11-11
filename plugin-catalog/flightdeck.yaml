@@ -1,0 +1,37 @@
+name: flightdeck
+title: Flightdeck
+repo: https://github.com/freemanconsulting/hermes-flightdeck
+sha: 0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc
+description: Live air-traffic control for your agents and model servers — which agent holds which local GPU slot, who's queued, plan usage on cloud lanes, and opt-in capacity-aware subagent placement.
+maintainer: freemanconsulting
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/freemanconsulting/hermes-flightdeck#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/by-model.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/swim-lane.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/server-cards.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/cloud-cards.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/by-agent.png
+  - https://raw.githubusercontent.com/freemanconsulting/hermes-flightdeck/0b3be1cda40df18cb2d8739bbf83cd0ba4695fbc/docs/img/routing.png
+readme: true
+platforms: []
+known_issues:
+  - "Cloud lanes are Hermes-observed only: providers do not publish server load, so cloud numbers cover this machine's Hermes traffic, not the provider's fleet."
+  - "Plan usage on cloud cards depends on the provider's usage hook and can be briefly unavailable; it is shown as unavailable, not as zero."
+  - "Capacity routing is opt-in and local-only: it requires route_delegation: true and delegation.backend: flightdeck, and only inner_backend: default is supported; any other inner_backend reports routing unavailable and refuses to arm."
+capabilities:
+  provides_tools:
+    - fleet_status
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - pre_auxiliary_call
+    - post_auxiliary_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

@@ -133,3 +133,18 @@ def test_live_media_routing(loop, name, force_document, expected):
 
     assert errors == []
     assert adapter.calls == [(expected, name)]
+
+
+def test_directive_in_the_job_name_does_not_force_a_document(loop):
+    # cron.wrap_response (default on) puts the job name into the delivered text; only the job's
+    # own output may carry the directive.
+    adapter = _FakeTelegram()
+    job = dict(_JOB, name="How to use [[as_document]]")
+    content = f"Preview.\nMEDIA:{_media('chart.png')}"
+
+    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()):
+        error = _deliver_result(job, content, adapters={Platform.TELEGRAM: adapter}, loop=loop)
+
+    assert error is None
+    assert ("send_image_file", "chart.png") in adapter.calls
+    assert not any(method == "send_document" for method, _ in adapter.calls)

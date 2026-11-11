@@ -21,9 +21,9 @@ import os
 import shutil
 import threading
 import weakref
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -95,30 +95,36 @@ class ProvisionResult:
     warnings: list[str] = field(default_factory=list)
 
 
+#: What a receipt's ``mirrored`` can hold: ``auth`` is ``"shared"`` when the profile reads the root's auth.json.
+MirroredValue = bool | Literal["shared"]
+
+
 @dataclass(frozen=True)
-class CreateReceipt:
+class ProfileCreateReceipt:
     """What ``hermes profile create`` prints about a new profile, read on the machine (and in the
-    profile scope) that made it: :meth:`of` builds it after a create here, and a gateway that made it
-    sends the same fields (``profiles.create`` with ``report``; the contract's ``ProfileCreateReceipt``
-    lists them too, ``tests/hermes_cli/test_profile_provision_gateway.py`` keeps the two equal)."""
+    profile scope) that made it: built after a local create, or sent by the gateway that made it
+    (``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a
+    local create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,
+    as an unknown outcome."""
 
     path: str
     display_path: str
     launch_label: str
     source_label: str
-    skills_seeded: Optional[dict]
+    skills_synced: Optional[int]  # bundled skills a fresh create copied; None: not seeded (clone, or it failed)
+    skills_opted_out: bool        # ``--no-skills``: only the essentials were seeded
     alias_path: Optional[str]
     alias_collision: Optional[str]
-    mirrored: dict
-    warnings: list
-    cloned_plugins: list
+    mirrored: dict[str, MirroredValue]  # a key a newer gateway adds is kept, never printed
+    warnings: list[str]
+    cloned_plugins: list[str]
     memory_provider: Optional[str]
-    channels_left_behind: list
-    shared_channels: list
+    channels_left_behind: list[str]
+    shared_channels: list[str]
     served_now: Optional[bool]  # None: no live multiplexer recorded what it serves
 
     @classmethod
-    def of(cls, request: ProfileCreateRequest, result: ProvisionResult) -> CreateReceipt:
+    def of(cls, request: ProfileCreateRequest, result: ProvisionResult) -> ProfileCreateReceipt:
         """Every read is best-effort: the profile exists whatever a read says, so this never raises."""
         from hermes_cli import profiles
         from hermes_cli.gateway_multiplex_served import recorded_served_profiles
@@ -142,9 +148,13 @@ class CreateReceipt:
         served = _try("served profiles", recorded_served_profiles, None)
         served_now = None if served is None else _try("served profiles", lambda: profiles.normalize_profile_name(
             request.name) in {profiles.normalize_profile_name(p) for p in served}, None)
+        seeded = result.skills_seeded or {}
+        copied = seeded.get("copied")
         return cls(
             path=str(path), display_path=display_hermes_home(path), launch_label=launch, source_label=source,
-            skills_seeded=result.skills_seeded, alias_path=str(result.alias_path) if result.alias_path else None,
+            skills_synced=len(copied) if isinstance(copied, list) else None,
+            skills_opted_out=bool(seeded.get("skipped_opt_out")),
+            alias_path=str(result.alias_path) if result.alias_path else None,
             alias_collision=result.alias_collision, mirrored=dict(result.mirrored), warnings=list(result.warnings),
             cloned_plugins=list(plugins), memory_provider=memory, channels_left_behind=list(left_behind),
             shared_channels=list(shared), served_now=served_now)
@@ -153,32 +163,24 @@ class CreateReceipt:
         return asdict(self)
 
     @classmethod
-    def from_wire(cls, data: Any) -> Optional[CreateReceipt]:
-        """The receipt a gateway sent, or None unless it is a complete, well-typed one: the contract's
-        ``ProfileCreateReceipt``, strictly (a gateway that predates a field, or sends a wrong type, must
-        not have the rest printed from guesses). Fields this version doesn't know are dropped."""
-        from pydantic import ValidationError
-        from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfileCreateReceipt
-        if not isinstance(data, dict):
-            return None
+    def from_wire(cls, data: Any) -> Optional[ProfileCreateReceipt]:
+        """The receipt a gateway sent, or None unless every field is there with its type, strictly (no
+        ``"false"`` for a bool): a gateway that predates a field or sends a wrong type must not have the rest
+        printed from guesses. Fields this version doesn't know are dropped."""
+        import json
+        from pydantic import TypeAdapter, ValidationError
         try:
-            checked = ProfileCreateReceipt.model_validate({k: data[k] for k in RECEIPT_FIELDS if k in data},
-                                                          strict=True)
-        except ValidationError:
+            made = TypeAdapter(cls).validate_json(json.dumps(data), strict=True)
+        except (TypeError, ValueError, ValidationError):  # not JSON-shaped, or not a receipt
             return None
-        if not checked.path or not isinstance((checked.skills_seeded or {}).get("copied", []), list):
-            return None
-        return cls(**{**checked.model_dump(), "mirrored": checked.mirrored.model_dump()})
+        return made if made.path else None
 
-
-RECEIPT_FIELDS = tuple(f.name for f in fields(CreateReceipt))
 
 #: What a create refuses with: a bad request, nothing made. Every surface maps these to its "refused"
-#: answer (``profiles.create`` 4062, ``hermes profile create``'s ``Error:``); a subclass travels as the
-#: nearest of these (``refusal``), so a ``JSONDecodeError`` from a broken source config stays a refusal.
+#: answer (``profiles.create`` 4062, ``hermes profile create``'s ``Error:``, ``POST /api/profiles`` 400);
+#: a subclass travels as the nearest of these (``refusal``), so a ``JSONDecodeError`` from a broken
+#: source config stays a refusal.
 CREATE_REFUSALS: tuple[type[Exception], ...] = (FileExistsError, FileNotFoundError, ValueError)
-#: ``gateway_client`` keeps only short strings and short lists of them in ``error.data``.
-_PART, _PARTS = 200, 16
 
 
 def redact_create_text(text: Any) -> str:
@@ -190,20 +192,22 @@ def refusal(exc: BaseException) -> tuple[str, dict]:
     """``(error.message, error.data)`` for a failed create. The message is the whole text, redacted (a
     parse error can quote a line of the source's config/.env); ``data`` names the nearest
     :data:`CREATE_REFUSALS` type (none: not a refusal) and repeats the text in the short parts
-    ``gateway_client`` keeps (it drops longer strings whole)."""
+    ``gateway_client`` keeps in ``error.data`` (it drops longer strings whole)."""
+    from hermes_cli.gateway_client import ERROR_DATA_ITEMS, ERROR_DATA_TEXT
     text = redact_create_text(exc)
     kind = next((k for k in CREATE_REFUSALS if isinstance(exc, k)), None)
-    return text, {"type": kind.__name__ if kind else type(exc).__name__,
-                  "message_parts": [text[i:i + _PART] for i in range(0, len(text), _PART)][:_PARTS]}
+    parts = [text[i:i + ERROR_DATA_TEXT] for i in range(0, len(text), ERROR_DATA_TEXT)][:ERROR_DATA_ITEMS]
+    return text, {"type": kind.__name__ if kind else type(exc).__name__, "message_parts": parts}
 
 
 def refusal_from(data: dict) -> Optional[Exception]:
     """The refusal a ``refusal`` ``error.data`` names, re-raised with its text; None when it names none."""
+    kind = next((k for k in CREATE_REFUSALS if k.__name__ == data.get("type")), None)
+    if kind is None:
+        return None
     parts = data.get("message_parts")
     text = redact_create_text("".join(p for p in parts if isinstance(p, str))) if isinstance(parts, list) else ""
-    kind = next((k for k in CREATE_REFUSALS if k.__name__ == data.get("type")), None)
-    return kind(text) if kind is not None and text else None
-
+    return kind(text or "the gateway refused the create; nothing was created")
 
 def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     """Create the profile, then apply every requested step in order.

@@ -2177,16 +2177,17 @@ export interface ProfileMirrored {
   model_inherited?: boolean
   voice?: boolean
 }
-/** ``hermes_cli.profile_provision.CreateReceipt``, read where the profile was made. A gateway always sends every field; a client treats a receipt missing one as an unknown outcome. */
+/** What ``hermes profile create`` prints about a new profile, read on the machine (and in the profile scope) that made it: built after a local create, or sent by the gateway that made it (``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a local create never loads pydantic. A client treats a receipt missing a field, or with a wrong type, as an unknown outcome. */
 export interface ProfileCreateReceipt {
   path: string
   display_path: string
   launch_label: string
   source_label: string
-  skills_seeded: Record<string, unknown> | null
+  skills_synced: number | null
+  skills_opted_out: boolean
   alias_path: string | null
   alias_collision: string | null
-  mirrored: ProfileMirrored
+  mirrored: Record<string, boolean | 'shared'>
   warnings: string[]
   cloned_plugins: string[]
   memory_provider: string | null

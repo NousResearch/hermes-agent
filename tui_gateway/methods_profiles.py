@@ -309,8 +309,9 @@ def _(rid, params: dict) -> dict:
     On ``/api/ws`` it runs in the connection's profile (``ws_legacy_fallback.dispatch_legacy`` binds the
     ticket's), so ``--clone`` and the copied keys/model come from the profile the terminal is on. A
     refused create answers 4062 with ``data.type`` / ``data.message_parts`` so a client re-raises it."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_cli.profile_provision import (
-        CREATE_REFUSALS, CreateReceipt, ProfileCreateRequest, provision_profile, refusal,
+        CREATE_REFUSALS, ProfileCreateReceipt, ProfileCreateRequest, provision_profile, refusal,
     )
     name = str(params.get("name") or "").strip()
     if not name:  # the CLI shows its usual empty-name error, never "may have created"
@@ -333,14 +334,19 @@ def _(rid, params: dict) -> dict:
         model=model, provider=provider)
     try:
         result = provision_profile(request)
-    except Exception as e:
+        receipt = ProfileCreateReceipt.of(request, result) if is_truthy_value(params.get("report", False)) else None
+    except (Exception, ConfigBackendUnavailable) as e:  # health: allow BLE001 -- the request's one reply (a config outage is a SystemExit)
         # The full text (redacted) for Desktop's dialog; ``data`` carries it in the parts a client keeps.
         message, data = refusal(e)
-        return _err(rid, 4062 if isinstance(e, CREATE_REFUSALS) else 5062, message, data=data)
+        if isinstance(e, CREATE_REFUSALS):
+            return _err(rid, 4062, message, data=data)
+        # Not a refusal: it may have failed after the profile was made, so never "nothing was created".
+        logging.getLogger(__name__).warning("profiles.create %r failed", name, exc_info=True)
+        return _err(rid, 5062, message, data=data)
     out = {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
            "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings}
-    if is_truthy_value(params.get("report", False)):
-        out["receipt"] = CreateReceipt.of(request, result).to_wire()
+    if receipt is not None:
+        out["receipt"] = receipt.to_wire()
     return _ok(rid, out)
 
 

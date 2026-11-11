@@ -30418,8 +30418,7 @@
         "type": "object"
       },
       "ProfileCreateReceipt": {
-        "additionalProperties": false,
-        "description": "``hermes_cli.profile_provision.CreateReceipt``, read where the profile was made. A gateway always\nsends every field; a client treats a receipt missing one as an unknown outcome.",
+        "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
         "properties": {
           "path": {
             "title": "Path",
@@ -30437,17 +30436,20 @@
             "title": "Source Label",
             "type": "string"
           },
-          "skills_seeded": {
+          "skills_synced": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Skills Seeded"
+            "title": "Skills Synced"
+          },
+          "skills_opted_out": {
+            "title": "Skills Opted Out",
+            "type": "boolean"
           },
           "alias_path": {
             "anyOf": [
@@ -30472,7 +30474,19 @@
             "title": "Alias Collision"
           },
           "mirrored": {
-            "$ref": "#/components/schemas/ProfileMirrored"
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "shared",
+                  "type": "string"
+                }
+              ]
+            },
+            "title": "Mirrored",
+            "type": "object"
           },
           "warnings": {
             "items": {
@@ -30530,7 +30544,8 @@
           "display_path",
           "launch_label",
           "source_label",
-          "skills_seeded",
+          "skills_synced",
+          "skills_opted_out",
           "alias_path",
           "alias_collision",
           "mirrored",

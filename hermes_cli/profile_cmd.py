@@ -193,7 +193,7 @@ def _refuse_create_args(args, clone_from: Optional[str], cloned: bool) -> None:
 
 
 def _profile_create(args):
-    from hermes_cli.profile_provision import CREATE_REFUSALS, CreateReceipt, ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision import CREATE_REFUSALS, ProfileCreateReceipt, ProfileCreateRequest, provision_profile
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path
     name = args.profile_name
@@ -216,7 +216,7 @@ def _profile_create(args):
     try:
         # A gateway serving this terminal makes the profile (one HERMES_TUI_GATEWAY_URL names always
         # does); with none it is made here. Either way the receipt below is read where it was made.
-        made = create_through_gateway(request) or CreateReceipt.of(request, provision_profile(request))
+        made = create_through_gateway(request) or ProfileCreateReceipt.of(request, provision_profile(request))
     except (*CREATE_REFUSALS, GatewayCreateError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {made.path}")
@@ -236,11 +236,10 @@ def _profile_create(args):
         _print_channel_clone_notice(name, made, clone_channels, "--clone-all" if clone_all else "--clone")
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
-        seeded = made.skills_seeded
-        if seeded and seeded.get("skipped_opt_out"):
+        if made.skills_opted_out:
             print("No bundled skills seeded (--no-skills). Delete .no-bundled-skills in the profile to opt back in.")
-        elif seeded:
-            print(f"{len(seeded.get('copied', []))} bundled skills synced.")
+        elif made.skills_synced is not None:
+            print(f"{made.skills_synced} bundled skills synced.")
         else:
             print(f"⚠ Skills could not be seeded. Run `{name} update` to retry.")
     if not no_alias:
@@ -258,7 +257,6 @@ def _profile_create(args):
                     isolate_hint=not getattr(args, "isolated_auth", False) and not getattr(args, "no_credentials", False))
     for warning in made.warnings:
         print(f"⚠ {warning}")
-    profile_dir_display = made.display_path
     print("\nNext steps:")
     print(f"  {name} setup              Configure API keys and model")
     print(f"  {name} chat               Start chatting")
@@ -270,12 +268,12 @@ def _profile_create(args):
     else:
         print(f"  {name} gateway start      Start the messaging gateway")
     if cloned or made.mirrored.get("env"):
-        print(f"\n  Edit {profile_dir_display}/.env for different API keys")
-        print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
+        print(f"\n  Edit {made.display_path}/.env for different API keys")
+        print(f"  Edit {made.display_path}/SOUL.md for different personality")
     else:
         print(f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,")
         print("    or it will inherit keys from your shell environment.")
-        print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
+        print(f"  Edit {made.display_path}/SOUL.md to customize personality")
     print()
 
 

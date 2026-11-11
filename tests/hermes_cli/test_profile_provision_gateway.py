@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import profiles
-from hermes_cli.profile_provision import RECEIPT_FIELDS, CreateReceipt, ProfileCreateRequest, provision_profile
+from hermes_cli.profile_provision import ProfileCreateReceipt, ProfileCreateRequest, provision_profile
 
 
 @pytest.fixture()
@@ -36,9 +36,11 @@ def _raise(exc):
     return fail
 
 
-def test_the_receipt_matches_its_contract():
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfileCreateReceipt
-    assert tuple(ProfileCreateReceipt.model_fields) == RECEIPT_FIELDS
+def test_the_contract_carries_the_cli_receipt_itself():
+    """One definition: the contract's ``receipt`` is the dataclass the CLI builds and reads back."""
+    from typing import Optional
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesCreateResult
+    assert ProfilesCreateResult.model_fields["receipt"].annotation == Optional[ProfileCreateReceipt]
 
 
 def test_clone_config_copies_the_callers_profile_and_reports_it(root):
@@ -49,8 +51,10 @@ def test_clone_config_copies_the_callers_profile_and_reports_it(root):
     clone = server._methods["profiles.create"](
         1, {"name": "copy", "no_alias": True, "clone_config": True, "report": True})["result"]
     assert "root's soul" in (Path(clone["path"]) / "SOUL.md").read_text()
-    made = CreateReceipt.from_wire(clone["receipt"])
+    made = ProfileCreateReceipt.from_wire(clone["receipt"])
     assert made is not None and made.source_label == "default" and made.path == clone["path"]
+    fresh = server._methods["profiles.create"](1, {"name": "fresh", "no_alias": True, "report": True})["result"]
+    assert ProfileCreateReceipt.from_wire(fresh["receipt"]).skills_synced == 0  # the stub copied none
 
 
 def test_a_quiet_create_reports_why_seeding_failed(root, monkeypatch):
@@ -58,7 +62,7 @@ def test_a_quiet_create_reports_why_seeding_failed(root, monkeypatch):
         problems.append("⚠ Skill seeding timed out (60s)")
     monkeypatch.setattr(profiles, "seed_profile_skills", failing)
     request = ProfileCreateRequest(name="slow", alias=False)
-    assert "Skill seeding timed out (60s)" in CreateReceipt.of(request, provision_profile(request)).warnings
+    assert "Skill seeding timed out (60s)" in ProfileCreateReceipt.of(request, provision_profile(request)).warnings
 
 
 def test_a_refused_create_answers_with_its_type_and_whole_text(root, monkeypatch):
@@ -109,9 +113,10 @@ def _gateway(monkeypatch, outcome, *, reachable=True):
 
 
 def _receipt(**over):
-    return {**dict.fromkeys(RECEIPT_FIELDS), "path": "/p/x", "display_path": "~/p/x", "launch_label": "default",
-            "source_label": "default", "mirrored": {"env": True}, "warnings": [], "cloned_plugins": [],
-            "channels_left_behind": [], "shared_channels": [], **over}
+    return {"path": "/p/x", "display_path": "~/p/x", "launch_label": "default", "source_label": "default",
+            "skills_synced": 3, "skills_opted_out": False, "alias_path": None, "alias_collision": None,
+            "mirrored": {"env": True}, "warnings": [], "cloned_plugins": [], "memory_provider": None,
+            "channels_left_behind": [], "shared_channels": [], "served_now": None, **over}
 
 
 def test_typed_refusals_and_fallbacks(root, monkeypatch):
@@ -222,7 +227,9 @@ def test_the_wrapper_is_written_here_only_for_this_machines_profile(root, monkey
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "wss://gw.invalid/api/ws")
     assert create_through_gateway(request).alias_path == "/bin/x"  # any URL, as long as it landed here
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:9/api/ws?token=t")
-    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path="/elsewhere/.hermes/profiles/x")})
+    elsewhere = root.parent / "container-home" / "profiles" / "x"  # exists here too, but is not `-p x`
+    elsewhere.mkdir(parents=True)
+    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(path=str(elsewhere))})
     assert create_through_gateway(request).alias_path is None  # loopback, but another home: no wrapper
     assert wrote == ["x", "x"]
 
@@ -233,8 +240,8 @@ def test_the_wrapper_is_written_here_only_for_this_machines_profile(root, monkey
 
 
 def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
-    """A ``ValueError`` subclass from the create (a broken source config), a missing name and an
-    unavailable profile are refusals: nothing was made, so never "may have created"."""
+    """A ``ValueError`` subclass from the create (a broken source config), a missing name and a typed
+    refusal with no text are refusals: nothing was made, so never "may have created"."""
     from hermes_cli.gateway_client import GatewayRPCError, rpc_error
     from hermes_cli.profile_provision import refusal
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
@@ -251,8 +258,8 @@ def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
     _gateway(monkeypatch, rpc_error(blank))
     with pytest.raises(ValueError, match="profile name cannot be empty"):
         create_through_gateway(request)
-    _gateway(monkeypatch, GatewayRPCError("profile_unavailable", 4064))
-    with pytest.raises(GatewayCreateError, match="nothing was created"):
+    _gateway(monkeypatch, GatewayRPCError("bad", 4062, {"type": "FileNotFoundError"}))  # typed, no text
+    with pytest.raises(FileNotFoundError, match="nothing was created"):
         create_through_gateway(request)
     token = "ghp_" + "A" * 36  # a bounded reason code the client keeps, credential-shaped
     _gateway(monkeypatch, GatewayRPCError(token, -32000))
@@ -261,11 +268,55 @@ def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
     assert token not in str(untyped.value)
 
 
-@pytest.mark.parametrize("bad", [{"skills_seeded": "broken"}, {"skills_seeded": {"copied": 1}},
+@pytest.mark.parametrize("bad", [{"skills_synced": "3"}, {"skills_synced": True}, {"skills_opted_out": None},
                                  {"cloned_plugins": [1]}, {"served_now": "false"}, {"display_path": None},
-                                 {"mirrored": {"env": "yes"}}, {"alias_path": 5}])
+                                 {"mirrored": {"env": "yes"}}, {"alias_path": 5}, {"path": ""}])
 def test_a_receipt_with_a_wrong_type_is_an_unknown_outcome(root, monkeypatch, bad):
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
     _gateway(monkeypatch, {"ok": True, "receipt": _receipt(**bad)})
     with pytest.raises(GatewayCreateError, match="may have created 'x'"):
         create_through_gateway(ProfileCreateRequest(name="x", alias=False))
+
+
+def test_a_newer_gateways_extra_receipt_fields_are_dropped(root, monkeypatch):
+    from hermes_cli.profile_provision_gateway import create_through_gateway
+    _gateway(monkeypatch, {"ok": True, "receipt": _receipt(mirrored={"env": True, "skills": True}, extra=[1])})
+    made = create_through_gateway(ProfileCreateRequest(name="x", alias=False))
+    assert made.mirrored == {"env": True, "skills": True} and not hasattr(made, "extra")
+
+
+@pytest.mark.parametrize("where", ["create", "receipt"])
+def test_a_config_outage_mid_create_is_an_unknown_outcome(root, monkeypatch, where):
+    """``ConfigBackendUnavailable`` is a ``SystemExit``: past ``except Exception`` it reached the
+    dispatcher's 4064 ("profile unavailable"), read as nothing created although the profile existed."""
+    from hermes_cli import profile_provision
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_cli.gateway_client import rpc_error
+    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
+    from tui_gateway.server import handle_request  # the real dispatcher (rebound onto server)
+    if where == "create":
+        monkeypatch.setattr(profile_provision, "provision_profile", _raise(ConfigBackendUnavailable("backend down")))
+    else:  # the profile is published; reading what the CLI prints fails
+        monkeypatch.setattr(ProfileCreateReceipt, "of", _raise(ConfigBackendUnavailable("backend down")))
+    error = handle_request({"jsonrpc": "2.0", "id": 1, "method": "profiles.create",
+                            "params": {"name": "w2", "no_alias": True, "report": True}})["error"]
+    assert error["code"] == 5062
+    _gateway(monkeypatch, rpc_error(error))
+    with pytest.raises(GatewayCreateError, match="may have created 'w2'"):
+        create_through_gateway(ProfileCreateRequest(name="w2", alias=False))
+    _gateway(monkeypatch, rpc_error({"code": 4064, "message": "profile unavailable"}))  # never "nothing made"
+    with pytest.raises(GatewayCreateError, match="may have created 'w2'"):
+        create_through_gateway(ProfileCreateRequest(name="w2", alias=False))
+
+
+def test_a_create_with_no_gateway_url_loads_no_gateway_platforms_or_pydantic():
+    """Every ``hermes profile create`` runs this module: naming a URL needs ``gateway.platforms`` (~225
+    modules) and reading a gateway's receipt needs pydantic, so neither loads on the way to a local create."""
+    import subprocess
+    import sys
+    probe = ("import sys; from hermes_cli.profile_provision_gateway import _where; "
+             "from hermes_cli.profile_provision import ProfileCreateReceipt; _where(''); "
+             "print([m for m in ('gateway.platforms', 'pydantic') if m in sys.modules])")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True,
+                         cwd=Path(__file__).resolve().parents[2])
+    assert out.stdout.strip() == "[]"

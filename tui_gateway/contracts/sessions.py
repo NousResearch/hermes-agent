@@ -516,7 +516,7 @@ method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
 
 
 class SessionContextBreakdownParams(SessionParams):
-    pass
+    include_details: bool = False
 
 
 class ContextCategory(Result):
@@ -537,6 +537,23 @@ class ContextFileSource(Result):
     status: str
 
 
+class ContextSkillCost(Result):
+    name: str
+    index_tokens: int
+    skill_md_tokens: int | None
+
+
+class ContextToolsetCost(Result):
+    toolset: str
+    tool_count: int
+    schema_tokens: int
+
+
+class ContextDetails(Result):
+    skills: list[ContextSkillCost]
+    toolsets: list[ContextToolsetCost]
+
+
 class SessionContextBreakdownResult(Result):
     """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
     plus the per-file context manifest (empty until the agent exists)."""
@@ -550,6 +567,7 @@ class SessionContextBreakdownResult(Result):
     context_source: str
     model: str
     context_files: list[ContextFileSource] = []
+    details: ContextDetails | None = None
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

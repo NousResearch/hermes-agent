@@ -1650,7 +1650,21 @@ def check_respawn_guard(
         # Strictly after: a same-second tie stays guarded (fail closed).
         if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
                 conn, "task_events", task_id, max(pr_times),
-                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
+                "AND kind IN ('assigned', 'changes_requested', 'review_reopened', "
+                "'specified', 'promoted_manual', 'unblocked', 'reopened_done')",
+                cols=", kind, payload", strict=True)):
+            # 'specified'/'promoted_manual'/'unblocked'/'reopened_done' are deliberate
+            # operator/manager re-queues of THIS card: resume its own PR. The automatic
+            # 'promoted' (recompute_ready) and crash/reclaim stay guarded (2026-11-06,
+            # t_c53d4095 held 2h by its own checkpoint comment after a manager re-spec).
+            return None
+        # The card's own scheduled continuation (kanban_schedule at or after the newest PR comment, then woken
+        # by an unblock) is the PR owner resuming THAT PR, not a duplicate implementation. Workers post the
+        # PR checkpoint and schedule in the same second, so the schedule is matched non-strictly (2026-11-04).
+        sched = max((t for t, _ in _rows_since(conn, "task_events", task_id, max(pr_times),
+                                               "AND kind = 'scheduled'")), default=None)
+        if sched is not None and any(_rows_since(conn, "task_events", task_id, sched,
+                                                 "AND kind = 'unblocked'", strict=True)):
             return None
         return "active_pr"
 

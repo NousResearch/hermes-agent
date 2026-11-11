@@ -54,6 +54,8 @@ def _endpoint_urls(cfg):
 @pytest.mark.parametrize("api_key", ["key-b", ""])
 def test_wizard_save_with_new_url_routes_to_and_saves_the_new_endpoint(isolated_home, layout, api_key):
     from hermes_cli.web_server_config import _apply_model_assignment_sync
+    from hermes_cli.config import get_env_value
+    from hermes_cli.runtime_provider import resolve_runtime_provider
 
     _write(isolated_home, layout)
     result = _apply_model_assignment_sync("main", "custom", "model-b", "", NEW_URL, api_key)
@@ -63,7 +65,11 @@ def test_wizard_save_with_new_url_routes_to_and_saves_the_new_endpoint(isolated_
     model = cfg["model"]
     assert (model["provider"], model["default"], model["base_url"]) == ("custom", "model-b", NEW_URL)
     # The existing provider's credential never follows the request onto the new host.
-    assert model.get("api_key", "") == api_key
+    assert "api_key" not in model
+    if api_key:
+        assert get_env_value(model["key_env"]) == api_key
+    runtime = resolve_runtime_provider(requested="custom", explicit_base_url=NEW_URL)
+    assert (runtime["base_url"], runtime["api_key"]) == (NEW_URL, api_key or "no-key-required")
     # Both endpoints are listed afterwards: the new one saved, the old one kept.
     assert {OLD_URL, NEW_URL} <= _endpoint_urls(cfg)
 
@@ -118,6 +124,8 @@ def test_providers_custom_entry_never_lends_its_key_to_the_submitted_endpoint(is
     entry's host is never probed and its key is never written next to the new URL."""
     from hermes_cli import models_validate
     from hermes_cli.web_server_config import _apply_model_assignment_sync
+    from hermes_cli.config import get_env_value
+    from hermes_cli.runtime_provider import resolve_runtime_provider
 
     cfg = {"model": {"provider": "custom", "default": "model-a"},
            "providers": {"custom": {"base_url": COLLIDING_URL, "api_key": "key-a"}}}
@@ -134,7 +142,12 @@ def test_providers_custom_entry_never_lends_its_key_to_the_submitted_endpoint(is
     assert result["base_url"] == SUBMITTED_URL
     assert all(url == SUBMITTED_URL and key != "key-a" for url, key in probes), probes
     model = _read(isolated_home)["model"]
-    assert (model["base_url"], model.get("api_key", "")) == (SUBMITTED_URL, api_key)
+    assert model["base_url"] == SUBMITTED_URL
+    assert "api_key" not in model
+    if api_key:
+        assert get_env_value(model["key_env"]) == api_key
+    runtime = resolve_runtime_provider(requested="custom", explicit_base_url=SUBMITTED_URL)
+    assert (runtime["base_url"], runtime["api_key"]) == (SUBMITTED_URL, api_key or "no-key-required")
 
 
 def test_bare_custom_without_url_still_selects_the_providers_custom_entry(isolated_home):

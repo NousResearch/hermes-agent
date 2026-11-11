@@ -1,6 +1,6 @@
 name: exchangerebel
 repo: https://github.com/DataRebelHQ/hermes-plugin-exchangerebel
-sha: df884e11f41d4eda18544219d197d893591f1973
+sha: e5f0ca3b0ca738a277a5f848970ca2fbcc47ef45
 description: "Pay-per-call data and utility APIs via a remote MCP server (241 paid operations, $0.002–$50.00 per call, settled in SOL or USDC on Solana via x402) with a bundled workflow skill. Disclosure: connects to the operator's hosted MCP endpoint at exchangerebel.com; paid calls spend real funds and are approval-gated (server declared trust: untrusted); no local code, no credentials stored, no telemetry."
 maintainer: DataRebelHQ
 tier: community

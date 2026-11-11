@@ -25,6 +25,10 @@ capabilities:
     - workshop_install
     - workshop_test
     - workshop_lint
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - post_compaction
+    - subagent_start
   provides_middleware: []
   requires_env: []

@@ -1,27 +1,29 @@
 name: assetrizz
 title: Assetrizz
 repo: https://github.com/mojomast/assetrizz-hermes
-sha: "9afadf0159d70e0d63b073644db7ff860f0da1c9"
+sha: "e710b89c276b210969bebd67db4f1c855541586a"
 subdir: ""
 description: >-
   Skill id assetrizz:assetrizz-composer. Search the assetrizz 2D game-asset
   catalog (FTS over slugs, tags, descriptions, styles, and categories) and
   compose scenes from those assets. Tools: assetrizz_search and assetrizz_scene.
-  This plugin repo is about 16 MB including a 15 MB SHA-256-pinned, scannable
-  JSONL catalog (db/assets.jsonl). On first search the plugin builds a lean
-  SQLite + FTS5 index in the plugin data directory. The 14,641 PNGs (about
-  1.65 GB, 23 style packs) live in https://github.com/mojomast/assetrizz and
-  are not copied into the plugins folder. Asset mode is one of on_demand
-  (default: fetch a
-  single PNG from GitHub raw when you place, render, or preview it), local
-  (you download the full library or chosen style packs once into a directory
-  you pick), or offline (local files only, no network). Bulk library
-  downloads are user-initiated only — use the Download library button in the
-  Desktop pane (size estimate, progress, cancel) or
-  python -m assetrizz_plugin.cli; they are not a model tool. Fetches go only
-  to raw.githubusercontent.com/mojomast/assetrizz/v0.1.0/assets/… (library
-  tag v0.1.0, commit 05339c228f55ac95ad21b5c947db0c6e36207cd4), use the
-  Hermes SSRF guard, cap size, and verify SHA-256 from the catalog. Optional
+  assetrizz_scene op=compose compiles a compact signed spec into a scene
+  (four gameplay templates, and layer lint for collisions, HUD/playfield
+  overlap, and off-canvas). This plugin repo is about 16 MB including a 15 MB
+  SHA-256-pinned, scannable JSONL catalog (db/assets.jsonl). On first search
+  the plugin builds a lean SQLite + FTS5 index in the plugin data directory.
+  The 14,641 PNGs (about 1.65 GB, 23 style packs) live in
+  https://github.com/mojomast/assetrizz and are not copied into the plugins
+  folder. Asset mode is one of on_demand (default: fetch a single PNG from
+  GitHub raw when you place, render, or preview it), local (you download the
+  full library or chosen style packs once into a directory you pick), or
+  offline (local files only, no network). Bulk library downloads are
+  user-initiated only — use the Download library button in the Desktop pane
+  (size estimate, progress, cancel) or python -m assetrizz_plugin.cli; they
+  are not a model tool. Fetches go only to
+  raw.githubusercontent.com/mojomast/assetrizz/v0.1.0/assets/… (library tag
+  v0.1.0, commit 05339c228f55ac95ad21b5c947db0c6e36207cd4), use the Hermes
+  SSRF guard, cap size, and verify SHA-256 from the catalog. Optional
   library_path still prefers a complete library checkout when you have one.
   Rendered scenes write PNG and JSON under the plugin data directory and, if
   you set it, the Export directory (must not be a filesystem root; never
@@ -35,8 +37,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/mojomast/assetrizz-hermes#readme
-version: "0.1.1"
-image: https://raw.githubusercontent.com/mojomast/assetrizz-hermes/9afadf0159d70e0d63b073644db7ff860f0da1c9/docs/banner.jpg
+version: "0.2.0"
+image: https://raw.githubusercontent.com/mojomast/assetrizz-hermes/e710b89c276b210969bebd67db4f1c855541586a/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/assetrizz-hermes/e710b89c276b210969bebd67db4f1c855541586a/docs/example-scene.png
 readme: true
 platforms: []
 known_issues:

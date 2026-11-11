@@ -336,6 +336,40 @@ def _get_approval_timeout() -> int:
     return min(raw, safe_cap)
 
 
+def _get_approval_transport_timeout() -> int:
+    """Return the host-owned deadline for an explicitly selected transport.
+
+    ``security.approval.transport_timeout`` is an integer number of seconds. An
+    omitted or invalid value inherits the ordinary prompt timeout, while the
+    selected transport alone may opt into a longer wait. Invalid global timeout
+    values cannot leak a zero/negative deadline into this transport boundary.
+    """
+    try:
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
+        safe_cap = int(MAX_SAFE_TIMEOUT_S)
+    except (ImportError, TypeError, ValueError, OverflowError):
+        safe_cap = 300
+    fallback = _get_approval_timeout()
+    if type(fallback) is not int or not 1 <= fallback <= safe_cap:
+        fallback = min(300, safe_cap)
+    try:
+        from hermes_cli.config import load_config_readonly
+        approval = ((load_config_readonly() or {}).get("security") or {}).get("approval") or {}
+        raw = approval.get("transport_timeout")
+    except Exception:  # health: allow BLE001 -- config loader failures must fall back without leaking parser text
+        logger.warning("Failed to load security.approval.transport_timeout; using approvals.timeout")
+        return fallback
+    if raw is None:
+        return fallback
+    if type(raw) is not int or not 1 <= raw <= safe_cap:
+        logger.warning(
+            "security.approval.transport_timeout=%r is invalid; using approvals.timeout=%ss",
+            raw, fallback,
+        )
+        return fallback
+    return raw
+
+
 def format_approval_window(seconds: int) -> str:
     """The ONE human wording for an approval timeout window, shared by the CLI timeout notice,
     the tool result's ``user_summary`` and the gateway card copy so every surface agrees:

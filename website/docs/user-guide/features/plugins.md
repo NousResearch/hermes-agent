@@ -308,10 +308,13 @@ def register(ctx):
 ```
 
 `present` may be synchronous or async. Hermes runs it on a bounded worker and
-enforces the canonical `approvals.timeout` even if the plugin does not. The
-request is immutable and contains redacted display text, its host presentation
-class (`cli` or `gateway`), the host timeout, allowed choices, and an opaque
-request ID/digest.
+enforces a host-owned timeout even if the plugin does not. By default this is
+`approvals.timeout`; unattended operators may set the integer-seconds
+`security.approval.transport_timeout` to a longer platform-safe value without
+changing ordinary CLI/TUI/gateway/ACP prompt waits. Invalid, zero, negative, or
+oversized values safely inherit `approvals.timeout`. The request is immutable
+and contains redacted display text, its host presentation class (`cli` or
+`gateway`), the host timeout, allowed choices, and an opaque request ID/digest.
 Return the result of
 `request.respond(choice)`; unbound dictionaries and stale or changed request
 IDs/digests are rejected. A plugin cannot return a scope that the host did not
@@ -328,6 +331,7 @@ security:
   approval:
     transport: my-ui
     transport_fallback: deny     # default
+    transport_timeout: 3600      # selected transport only; default: approvals.timeout
 ```
 
 Transport exceptions, timeouts, unavailable registrations, invalid choices,

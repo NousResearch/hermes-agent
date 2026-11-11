@@ -1754,11 +1754,11 @@ DEFAULT_CONFIG = {
         # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
         # on prompts. The startup guard still warns every run; cost guards are unaffected.
         "allow_data_training_tiers_noninteractive": False,
-        # Human-approval presentation transport. "builtin" = CLI/TUI/gateway/ACP surfaces; a plugin
-        # transport is used only when named explicitly. Transport timeout/error/invalid response
-        # DENIES unless transport_fallback is "builtin". Presentation only: plugins cannot detect,
+        # Human-approval presentation transport: "builtin" uses CLI/TUI/gateway/ACP; a plugin is explicit.
+        # transport_timeout is integer seconds for the selected plugin only; None inherits approvals.timeout.
+        # Timeout/error/invalid response DENIES unless transport_fallback is "builtin". Plugins cannot detect,
         # suppress, or auto-approve commands outside a correlated human response.
-        "approval": {"transport": "builtin", "transport_fallback": "deny"},
+        "approval": {"transport": "builtin", "transport_fallback": "deny", "transport_timeout": None},
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
         # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
         # globs on the basename (e.g. "*.mdc").

@@ -301,22 +301,55 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 
     try:
         import tools.approval as _approval
-        from tools.approval_context import _fire_approval_hook, get_current_session_key
+        from tools.approval_context import (
+            _fire_approval_hook,
+            _is_gateway_approval_context,
+            get_current_session_key,
+        )
         from tools.approval_gateway_wait import _await_gateway_decision
-        from tools.approval_prompt import prompt_dangerous_approval
+        from tools.approval_prompt import (
+            _present_with_selected_transport,
+            _transport_choice,
+            prompt_dangerous_approval,
+        )
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
+    # An explicitly selected transport owns presentation before either built-in
+    # surface is considered. Policy remains host-owned: this request offers only
+    # once/deny, and no response is persisted by this gate.
+    session_key = get_current_session_key()
+    attempt = _present_with_selected_transport(
+        command=display,
+        description=description,
+        pattern_key="protected_instruction_file",
+        pattern_keys=["protected_instruction_file"],
+        session_key=session_key,
+        surface="gateway" if _is_gateway_approval_context() else "cli",
+        allow_session=False,
+        allow_permanent=False,
+    )
+    choice, transport_denied = _transport_choice(
+        attempt,
+        pattern_key="protected_instruction_file",
+        description=description,
+    )
+    if transport_denied is not None:
+        return transport_denied.get("message") or blocked.format(
+            why="the selected approval transport failed."
+        )
+
     # Gateway surface: block on the button round-trip when a notify callback
     # is registered for this session. One-operation only — no scope buttons.
-    session_key = get_current_session_key()
     try:
         with _approval._lock:
             notify_cb = _approval._gateway_notify_cbs.get(session_key)
     except Exception:
         notify_cb = None
 
-    if notify_cb is not None:
+    if choice is not None:
+        timed = choice == "timeout"
+    elif notify_cb is not None:
         approval_data = {
             "command": display,
             "pattern_key": "protected_instruction_file",

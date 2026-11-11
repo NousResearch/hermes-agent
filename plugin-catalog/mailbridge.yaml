@@ -3,7 +3,7 @@ title: Mailbridge
 repo: https://github.com/MadanChaollaPark/hermes-mailbridge
 sha: 3aa9d6a41c7e7bd6aeee865b421eb16434a7d8a8
 subdir: plugin
-description: Resumable legacy POP and EML migration to Gmail with source preservation, uncertain-write recovery, and verified coverage.
+description: "Resumable legacy POP and EML migration to Gmail with source preservation, uncertain-write recovery, and verified coverage. Disclosure — imports mail into the signed-in Google account (gmail.insert, gmail.readonly, gmail.labels) from POP accounts and EML folders using detached background workers that keep running after the tool call returns; each Gmail plan needs a one-time approval typed in a local terminal."
 maintainer: MadanChaollaPark
 tier: community
 category: automation

@@ -62,8 +62,43 @@ def build_fork_history(parent_agent: Any) -> list:
     return history
 
 
-def frame_forked_goal(user_message: Any) -> Any:
-    """Prefix a forked child's kickoff message (plain text or multimodal parts) with the fork notice."""
+_PARITY_ATTRS = ("model", "provider", "base_url", "api_mode", "reasoning_config")
+
+
+def adopt_parent_prefix(child: Any, parent_agent: Any, child_prompt: str) -> bool:
+    """Same-model fork: send the parent's exact system prompt and ``tools[]`` so the fork's request
+    shares the parent's cached prefix up to the hand-off (deepagents#7628). The subagent instructions
+    move into the task message (``_delegate_fork_instructions``); dispatch stays limited to the child's
+    own tool set, so advertising a blocked tool (delegate_task, memory, ...) never lets it run.
+    A routed child (other model, provider, endpoint or reasoning setting) keeps its own prompt."""
+    import copy
+
+    from agent.background_review import _FROZEN_TOOL_SNAPSHOT_GENERATION
+    from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+
+    parent_prompt, parent_tools = getattr(parent_agent, "_cached_system_prompt", None), getattr(parent_agent, "tools", None)
+    if not (isinstance(parent_prompt, str) and parent_prompt and isinstance(parent_tools, list)):
+        return False
+    if any(getattr(child, a, None) != getattr(parent_agent, a, None) for a in _PARITY_ATTRS):
+        return False
+    own_names = set(getattr(child, "valid_tool_names", None) or ())
+    child.tools = copy.deepcopy(parent_tools)
+    child.valid_tool_names = own_names & {t["function"]["name"] for t in child.tools if isinstance(t, dict) and t.get("function")}
+    # A between-turns MCP refresh or a compaction-boundary rebuild would republish the child's own tools[].
+    child._tool_snapshot_generation, child._skip_mcp_refresh = _FROZEN_TOOL_SNAPSHOT_GENERATION, True
+    child._cached_system_prompt = parent_prompt
+    child.ephemeral_system_prompt = getattr(parent_agent, "ephemeral_system_prompt", None)
+    child._delegate_fork_instructions = child_prompt
+    # Scope-keyed caches (OpenAI prompt_cache_key, Portal affinity) route by the parent's scope, not the child id.
+    if scope := resolve_prompt_cache_scope_safe(parent_agent):
+        child._inherited_cache_scope = scope
+    return True
+
+
+def frame_forked_goal(user_message: Any, instructions: Any = None) -> Any:
+    """Prefix a forked child's kickoff message (plain text or multimodal parts) with the fork notice and,
+    for a prefix-sharing fork, the subagent instructions its system prompt no longer carries."""
+    head = f"{instructions}\n\n{_FORK_NOTICE}" if isinstance(instructions, str) and instructions else _FORK_NOTICE
     if isinstance(user_message, list):
-        return [{"type": "text", "text": _FORK_NOTICE}, *user_message]
-    return f"{_FORK_NOTICE}\n\n{user_message}"
+        return [{"type": "text", "text": head}, *user_message]
+    return f"{head}\n\n{user_message}"

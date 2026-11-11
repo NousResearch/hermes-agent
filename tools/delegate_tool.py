@@ -344,8 +344,9 @@ def _build_child_agent(
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     if str(context_mode).strip().lower() == "fork":
         # Snapshot NOW, on the dispatching thread: a background child never sees later parent messages.
-        from tools.delegate_tool_fork import build_fork_history
+        from tools.delegate_tool_fork import adopt_parent_prefix, build_fork_history
         child._delegate_fork_history = build_fork_history(parent_agent)
+        adopt_parent_prefix(child, parent_agent, child_prompt)
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.

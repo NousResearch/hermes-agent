@@ -953,7 +953,7 @@ class _ChildRun:
                 if isinstance(fork_history, list):
                     from tools.delegate_tool_fork import frame_forked_goal
                     run_kwargs["conversation_history"] = fork_history
-                    run_kwargs["user_message"] = frame_forked_goal(user_message)
+                    run_kwargs["user_message"] = frame_forked_goal(user_message, getattr(child, "_delegate_fork_instructions", None))
                 return child.run_conversation(**run_kwargs)
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)

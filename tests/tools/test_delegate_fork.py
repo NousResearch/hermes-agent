@@ -52,6 +52,46 @@ class TestDelegateFork(unittest.TestCase):
         entry = _build_result_entry(child, result, 0, 1.0, _SchemaOutcome(None, None, [], 0))
         self.assertEqual([t["tool"] for t in entry["tool_trace"]], ["search_files"])
 
+    def test_same_model_fork_sends_the_parents_prefix_and_keeps_its_own_dispatch_set(self):
+        """deepagents#7628: a same-model fork's request starts with the parent's exact system prompt and tools[]
+        (shared prompt-cache prefix); the subagent instructions ride in the task message, and an advertised
+        parent-only tool (delegate_task) stays undispatchable. A routed fork keeps its own prompt."""
+        from tools.delegate_tool_fork import frame_forked_goal
+
+        def _tool(name):
+            return {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+
+        for routed in (False, True):
+            with self.subTest(routed=routed):
+                parent = _make_mock_parent()
+                parent._cached_system_prompt, parent.ephemeral_system_prompt = "PARENT SYSTEM", None
+                parent.reasoning_config = {"effort": "medium"}
+                parent.tools = [_tool("delegate_task"), _tool("read_file"), _tool("memory")]
+                parent._session_messages = [{"role": "user", "content": "hi"}]
+                child = MagicMock()
+                for attr in ("model", "provider", "base_url", "api_mode", "reasoning_config"):
+                    setattr(child, attr, getattr(parent, attr))
+                if routed:
+                    child.model = "other/model"
+                child._cached_system_prompt, child.ephemeral_system_prompt = None, "CHILD PROMPT"
+                child.tools, child.valid_tool_names = [_tool("read_file")], {"read_file"}
+                with patch("run_agent.AIAgent", return_value=child):
+                    _build_child_agent(
+                        task_index=0, goal="g", context=None, toolsets=None, model="test-model",
+                        max_iterations=5, parent_agent=parent, task_count=1, context_mode="fork",
+                    )
+                if routed:
+                    self.assertIsNone(child._cached_system_prompt)
+                    self.assertEqual(child.ephemeral_system_prompt, "CHILD PROMPT")
+                    continue
+                self.assertEqual(child._cached_system_prompt, "PARENT SYSTEM")
+                self.assertIsNone(child.ephemeral_system_prompt)
+                self.assertEqual(child.tools, parent.tools)
+                self.assertEqual(child.valid_tool_names, {"read_file"})
+                goal = frame_forked_goal("do X", child._delegate_fork_instructions)
+                self.assertTrue(goal.startswith("You are a focused subagent"))
+                self.assertTrue(goal.endswith("do X"))
+
     def test_context_mode_preserves_tool_error_for_malformed_tasks(self):
         parent = _make_mock_parent(depth=0)
 

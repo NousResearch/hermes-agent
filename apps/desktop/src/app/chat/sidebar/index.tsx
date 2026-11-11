@@ -427,6 +427,13 @@ export function ChatSidebar({
           return []
         }
 
+        // Filter out plugin nav items that were removed but may still
+        // appear from cached gateway contributions.
+        const HIDDEN_NAV_IDS = new Set(['welcome', 'visuel-setup'])
+        if (HIDDEN_NAV_IDS.has(c.id) || HIDDEN_NAV_IDS.has(data.path?.replace(/^\\//, '') || '')) {
+          return []
+        }
+
         const codicon = data.codicon || 'plug'
 
         return [

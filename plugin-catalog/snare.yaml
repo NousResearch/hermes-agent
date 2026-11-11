@@ -1,13 +1,13 @@
 name: snare
 repo: https://github.com/mornslight/hermes-snare
-sha: 3481b1f249a4ebd39ebbc151eb8a25ffdeecc2d0
+sha: 435f1de4faf3f27f33ee309a9ce0522388c344bf
 subdir: snare
 description: "Prompt injection tripwire with attack-chain forensics. Plants decoy credentials (PROD_AWS_ACCESS_KEY_ID, PROD_AWS_SECRET_ACCESS_KEY, PROD_DATABASE_URL) in the environment of every command the agent runs, never in the prompt. A tool call that tries to send one out (plain, URL-encoded, base64, hex, reversed, partial or nested) is blocked, and so is a command that reads a decoy variable or dumps the environment while using the network, including inside a local script the command runs. The alert names the page or file the injected instruction came from, quotes it, shows how the decoy was exposed and what the agent tried, then locks the session behind Hermes approvals until /snare reset. Disclosure: adds three fake variables to commands on the local terminal backend (names already set are skipped); stores owner-only files in its plugin-data folder: the decoys, and per incident a JSON line plus an HTML report holding the tool name, shortened arguments of the blocked call, destination URLs, the source URL or path, up to 280 characters of the injected text and the session id. Reads (never writes) local script files a terminal command executes, up to 64 KB, to check them. Keeps an in-memory list of recent tool sources per session. No prompt changes, network calls, shell commands, background processes, real credentials, telemetry or Python dependencies."
 maintainer: mornslight
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/mornslight/hermes-snare/tree/3481b1f249a4ebd39ebbc151eb8a25ffdeecc2d0/snare#readme
+docs_url: https://github.com/mornslight/hermes-snare/tree/435f1de4faf3f27f33ee309a9ce0522388c344bf/snare#readme
 version: "0.1.0"
 title: "snare: prompt injection tripwire"
 platforms: []

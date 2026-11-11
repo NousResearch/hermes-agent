@@ -1,0 +1,28 @@
+name: local-hands
+repo: https://github.com/noegng/local-hands
+sha: 62327c4174582e3e8ea2d0b1e8fc57d4f4a24842
+title: Local Hands
+version: "1.0.0"
+description: "Remote brain, local hands: Hermes runs on your server while terminal, read_file, write_file, patch, search_files and execute_code run on your own computers, through a one-file, stdlib-only daemon that dials out to the Hermes host over key-pinned TLS and asks you before acting (per conversation, per command, or never). Pair several machines and let the agent switch between them and the host with the hands tool; each keeps its own working directory. Answers #18715 and #1855 on the public terminal-backend surface. Disclosure — starts a long-running detached hub process on the Hermes host that listens on a TCP port (default 7717, self-signed TLS, so clients use ssl.CERT_NONE plus a SHA-256 public-key pin) and serves the daemon source hands.py over HTTPS on that port (no self-update); runs shell commands sent by the Hermes host on each paired machine under the user's account (not a sandbox); command output returns to Hermes and so to the model provider; writes TLS key and certificate, devices.json (token hashes only), audit.jsonl and hub.log under plugin-data/local-hands/, and ~/.config/local-hands/ on each machine; adds one short context line to a turn when the active machine changes; Hermes dangerous-command approvals stay on; no telemetry, no third-party service, no credentials read from files. Built with Claude under the direction of Noé Guenego (noegng), who is responsible for this submission."
+maintainer: noegng
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/noegng/local-hands#readme
+platforms: [linux, macos]
+image: https://raw.githubusercontent.com/noegng/local-hands/62327c4174582e3e8ea2d0b1e8fc57d4f4a24842/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/noegng/local-hands/62327c4174582e3e8ea2d0b1e8fc57d4f4a24842/docs/approval.png
+  - https://raw.githubusercontent.com/noegng/local-hands/62327c4174582e3e8ea2d0b1e8fc57d4f4a24842/docs/status.png
+known_issues:
+  - "The hands daemon runs on macOS, Linux and WSL (bash and Python 3.8+); not on native Windows."
+  - "The active machine belongs to the Hermes process, not to one conversation: a switch made in one chat applies to the other chats of the same gateway (each is told at its next turn)."
+  - "Environment variables and skill files are not sent to the machine; browser and computer_use tools still act where Hermes runs."
+  - "After a cd, Hermes may resolve relative write_file/patch paths against the machine's workspace rather than the new directory; absolute paths are exact."
+  - "Needs plugins.isolation in_process (the default): Hermes cannot hand a terminal environment across the plugin-host boundary."
+  - "Imports tools.environments.base (BaseEnvironment, EnvironmentConnectionError), the base class every terminal backend subclasses; hermes plugins validate reports it as a private-import warning."
+capabilities:
+  provides_tools: [hands]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

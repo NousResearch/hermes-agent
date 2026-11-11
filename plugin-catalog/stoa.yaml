@@ -17,7 +17,6 @@ screenshots:
   - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/649757a102baeb42c47381ba0adebb4213bf0a22/docs/dashboard-market-map.jpg
   - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/649757a102baeb42c47381ba0adebb4213bf0a22/docs/dashboard-market-read.jpg
   - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/649757a102baeb42c47381ba0adebb4213bf0a22/docs/dashboard-record.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/649757a102baeb42c47381ba0adebb4213bf0a22/docs/dashboard-light.jpg
 capabilities:
   provides_tools:
     - gtm_pipeline

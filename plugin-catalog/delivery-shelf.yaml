@@ -1,0 +1,34 @@
+name: delivery-shelf
+title: Delivery Shelf
+repo: https://github.com/mechkw/hermes-delivery-shelf
+sha: e9cbbf3193020ad4a1345636f46ea7bdd2c0b4aa
+description: Save delivered files together, preserve versions, and find finished work again in Hermes.
+maintainer: mechkw
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/mechkw/hermes-delivery-shelf/blob/e9cbbf3193020ad4a1345636f46ea7bdd2c0b4aa/docs/USAGE.md
+image: https://raw.githubusercontent.com/mechkw/hermes-delivery-shelf/e9cbbf3193020ad4a1345636f46ea7bdd2c0b4aa/docs/assets/hero.webp
+screenshots:
+  - https://raw.githubusercontent.com/mechkw/hermes-delivery-shelf/e9cbbf3193020ad4a1345636f46ea7bdd2c0b4aa/docs/assets/dark-together.png
+  - https://raw.githubusercontent.com/mechkw/hermes-delivery-shelf/e9cbbf3193020ad4a1345636f46ea7bdd2c0b4aa/docs/assets/dark-library.png
+readme: true
+platforms: []
+known_issues:
+  - "Contest candidate: broader product verification remains red; see repository issue #1 and docs/RELEASE_STATUS.md."
+  - "An interrupted save confirmation can report failure after persistence. Check Saved before retrying; repository issue #2."
+  - "Automatic Add can fail closed on isolated hosts without caller-cancellation support; use manual Add and explicit Save."
+capabilities:
+  provides_tools:
+    - delivery_shelf_register
+    - delivery_shelf_search
+    - delivery_shelf_update
+    - delivery_shelf_offer_update
+    - delivery_shelf_respond_update
+  provides_hooks:
+    - on_session_reset
+    - on_session_delete
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

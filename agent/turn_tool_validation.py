@@ -173,6 +173,7 @@ def validate_tool_calls(
             ))
 
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
+        # See _invalid_tool_name_error_content for the blank-name anti-priming rationale (#47967).
         _append_tool_error_results(
             messages, tool_calls,
             lambda tc: (

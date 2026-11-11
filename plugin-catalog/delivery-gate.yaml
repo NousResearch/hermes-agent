@@ -1,12 +1,7 @@
 name: delivery-gate
 repo: https://github.com/ToniAdreal/delivery-gate
 sha: 9665a67ba77bd41290faec61b0899bf3e8a353b7
-description: >-
-  Pre-delivery verification for Hermes Agent: runs the deterministic checks
-  a task spec declares (test commands, lint, repro scripts) and releases the
-  deliverable only when every required check passes, writing a replayable,
-  hash-chained evidence record per run. The verdict comes from the
-  deterministic checker, never from the model.
+description: "Pre-delivery verification for Hermes Agent: runs the deterministic checks a task spec declares (test commands, lint, repro scripts) and releases the deliverable only when every required check passes, writing a replayable, hash-chained evidence record per run. The verdict comes from the deterministic checker, never from the model. Disclosure — runs the shell commands a task spec declares (passed by the model or read from a `.json` spec file, possibly from a cloned repo) through Hermes' terminal tool, so dangerous-command approval and the configured terminal backend apply to each check; writes evidence records under `<workspace>/.delivery-gate/evidence/` (or the configured `evidence_dir`)."
 maintainer: ToniAdreal
 tier: community
 category: tools

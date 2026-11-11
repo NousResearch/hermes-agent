@@ -142,3 +142,26 @@ def test_write_text_still_saves_an_ordinary_file(client, tmp_path):
     assert response.json() == {"ok": True, "path": str(target), "byteSize": 3}
     assert target.read_text() == "new"
     assert os.listdir(project) == ["notes.md"]
+
+
+def test_write_text_judges_a_named_profile_save_by_that_profiles_protected_state(client, tmp_path, monkeypatch):
+    """``?profile=work`` saves under work's scope: its ``state.db`` and ``sessions/`` are protected
+    exactly as the launch profile's are, not just ``<root>/state.db``."""
+    root = tmp_path / ".hermes"
+    work = root / "profiles" / "work"
+    (work / "sessions").mkdir(parents=True)
+    (work / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    state_db = work / "state.db"
+    state_db.write_text("original")
+    transcript = work / "sessions" / "s1.jsonl"
+
+    assert _save(client, state_db, profile="work").status_code == 403
+    assert state_db.read_text() == "original"
+    assert _save(client, transcript, profile="work").status_code == 403
+    assert not transcript.exists()
+    notes = work / "notes.md"
+    saved = _save(client, notes, "kept", profile="work")
+    assert saved.status_code == 200, saved.text
+    assert notes.read_text() == "kept"

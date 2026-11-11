@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 load_env = late("load_env", "hermes_cli.config")
@@ -1171,8 +1172,11 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
     cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
     _refuse_sensitive_write(target, payload.path, Path(cwd))
-    # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too.
-    if get_write_denied_error(str(target)):
+    # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too,
+    # under the requested profile's scope so its own state.db / sessions/ count as protected.
+    with _config_profile_scope(profile):
+        denied = get_write_denied_error(str(target))
+    if denied:
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
         _hosted_fs_read_guard(target)

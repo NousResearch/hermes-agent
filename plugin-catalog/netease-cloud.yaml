@@ -1,0 +1,29 @@
+name: netease-cloud
+repo: https://github.com/BoosterCore/hermes-netease-cloud
+sha: 1410afc5e313a09be81736abbc2ca74933927c82
+version: "0.1.0"
+title: NetEase Cloud Music
+description: "NetEase Cloud Music (网易云音乐) mini player in the Hermes Desktop status bar, in the spirit of the built-in Radio plugin: a compact themed popover with Now Playing (cover + scrolling synced lyrics with the current line highlighted), search for songs and playlists, favorites (heart / Liked Music), browsing and in-panel playback of your own playlists, play/pause/skip/progress/volume with outline-style controls, loop modes (list loop, single loop, shuffle) and a mini control cluster on the status bar itself. Desktop-only UI (desktop/plugin.js on the plugin SDK surface) plus a local FastAPI backend (dashboard/plugin_api.py) that implements NetEase's weapi/eapi request signing (AES-CBC/ECB + RSA) with the Python standard library only — no build step, no extra Python dependencies. Disclosure — unofficial NetEase Cloud Music client: the backend calls only NetEase hosts (music.163.com, interface3.music.163.com, and the p*.music.163.com CDNs for covers and audio) using NetEase's own web/PC client identity (Chrome User-Agent, music.163.com Referer/Origin, eapi os=pc/appver headers, x-os/x-login-chain-id QR-login headers with a generated anonymous device cookie set); after you log in, your NetEase session cookie (MUSIC_U) is stored in the plugin's own data/cookie.json and sent only to NetEase hosts, and 'Log out' deletes it; while logged in it reports each played track to NetEase (feedback/webenergy play history) and the heart button likes/unlikes songs on your account; no other third-party services and no telemetry; QR login may be blocked by NetEase risk control, pasting the MUSIC_U cookie is the documented fallback; VIP songs stream through your own VIP session."
+maintainer: BoosterCore
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/BoosterCore/hermes-netease-cloud/blob/1410afc5e313a09be81736abbc2ca74933927c82/README.md
+platforms: [linux, macos, windows]
+image: https://raw.githubusercontent.com/BoosterCore/hermes-netease-cloud/1410afc5e313a09be81736abbc2ca74933927c82/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/BoosterCore/hermes-netease-cloud/1410afc5e313a09be81736abbc2ca74933927c82/docs/screenshots/01-now-playing.png
+  - https://raw.githubusercontent.com/BoosterCore/hermes-netease-cloud/1410afc5e313a09be81736abbc2ca74933927c82/docs/screenshots/02-lyrics.png
+  - https://raw.githubusercontent.com/BoosterCore/hermes-netease-cloud/1410afc5e313a09be81736abbc2ca74933927c82/docs/screenshots/03-search-songs.png
+  - https://raw.githubusercontent.com/BoosterCore/hermes-netease-cloud/1410afc5e313a09be81736abbc2ca74933927c82/docs/screenshots/04-search-playlists.png
+  - https://raw.githubusercontent.com/BoosterCore/hermes-netease-cloud/1410afc5e313a09be81736abbc2ca74933927c82/docs/screenshots/05-my-playlists.png
+  - https://raw.githubusercontent.com/BoosterCore/hermes-netease-cloud/1410afc5e313a09be81736abbc2ca74933927c82/docs/screenshots/06-liked-tracks.png
+known_issues:
+  - "QR login is often blocked by NetEase risk control (「检测到当前设备环境异常」); paste the MUSIC_U cookie on the 账号 tab instead (README has a 3-step Chinese guide)."
+  - "Playlists load the first 1000 tracks; the panel shows the real total (e.g. 共1859首·显示前1000)."
+  - "Audio quality follows your NetEase account (VIP → higher bitrate); the plugin requests exhigh and falls back to standard."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -554,8 +554,6 @@ gateway:
          /help, /usage. Les prompts normaux vont dans un topic.
       4. /new dans un topic réinitialise uniquement la session de ce topic.
       5. /topic <id> dans un topic y restaure une ancienne session.
-    system_topic_name: "Système"
-    system_topic_intro: "Topic système pour les commandes et l'état d'Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Impossible de déterminer l'ID du chat."
     mode_not_enabled: "Le mode topic multi-session n'est pas activé pour ce chat."
@@ -590,6 +588,7 @@ gateway:
     not_git_repo: "✗ Pas un dépôt git — impossible de mettre à jour."
     hermes_cmd_not_found: "✗ Impossible de localiser la commande `hermes`. Hermes est en cours d'exécution, mais la commande de mise à jour n'a pas pu trouver l'exécutable dans le PATH ni via l'interpréteur Python actuel. Essayez d'exécuter `hermes update` manuellement dans votre terminal."
     start_failed: "✗ Échec du démarrage de la mise à jour : {error}"
+    already_running: "⏳ Une mise à jour est déjà en cours ; seule la personne qui l'a lancée peut répondre à ses questions. Attendez qu'elle se termine, puis relancez /update."
     starting: "☤ Démarrage de la mise à jour Hermes… Je diffuserai la progression ici."
     reply_failed: "✗ Échec de l'envoi de la réponse au processus de mise à jour : {error}"
     reply_sent: "✓ `{label}` envoyé au processus de mise à jour."
@@ -718,6 +717,8 @@ gateway:
     action_always: "Toujours autoriser"
     action_deny: "Refuser"
     deadline: "Sans réponse de votre part dans {window}, elle ne sera PAS exécutée."
+    not_requester: "Seul {requester} peut répondre à cette demande d'approbation."
+    not_requester_admins_only: "Seul un administrateur ou un approbateur listé peut répondre à cette demande d'approbation."
     text_choice_once: "Répondez `{prefix}approve` pour l'exécuter une fois"
     text_choice_session: "`{prefix}approve session` pour autoriser ce motif jusqu'à la fin de cette session"
     text_choice_always: "`{prefix}approve always` pour l'autoriser définitivement"
@@ -731,6 +732,9 @@ gateway:
       {command}
       ```
       {reason_label} : {reason}
+    truncated_full_above: "Aperçu raccourci : la commande complète ({total} caractères) se trouve dans le message ci-dessus."
+    truncated_deny_only: "Aperçu raccourci ({total} caractères) et la commande complète n'a pas pu être affichée ici : seul Refuser est proposé. Vérifie-la dans la CLI ou l'app Desktop."
+    text_prompt_deny_only: "La demande de validation complète est trop longue pour cette plateforme : seul Refuser est proposé. Vérifie-la dans la CLI ou l'app Desktop."
 
   notify:
     media_kind:

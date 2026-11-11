@@ -1051,4 +1051,6 @@ registry.register(
     handler=_handle_image_generate, check_fn=check_image_generation_requirements, requires_env=[],
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨", dynamic_schema_overrides=_build_dynamic_image_schema,
+    # Advertised only for providers that support them, but always read by the handler.
+    compat_args=("image_url", "reference_image_urls", "upscale", *_CREATIVE_CONTROL_PARAMS),
 )

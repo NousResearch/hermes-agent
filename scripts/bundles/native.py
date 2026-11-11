@@ -16,12 +16,14 @@ from pm.install import _lockfile
 from pm.lock import Facts
 from pm.registry import get_package, walk
 from pm.store import current_target
+from pm.testenv import DEVELOPER_TOOLS
 
 def _bundle_package_names() -> list[str]:
     names = [
         n
         for n in _lockfile().names()
-        if not get_package(n).internal or n == "uv"
+        # Developer tools (just) are never part of a user install.
+        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS
     ]
     if "python" not in names:
         names.append("python")

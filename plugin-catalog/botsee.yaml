@@ -1,0 +1,20 @@
+name: botsee
+title: BotSee
+repo: https://github.com/sidekickjanet/hermes-product-plugins
+sha: f79c213703b600a48a1d4f949bbd82c113d117f0
+subdir: plugins/botsee
+version: "0.1.0"
+description: "AI-visibility research through BotSee's hosted Streamable HTTP MCP server (https://botsee.io/mcp), with a bounded workflow skill for reviewing existing analyses, competitor recommendations and cited sources, and planning audits. Portable Agent Plugins v1 package; no local server, OAuth bridge, hooks or self-updater. Disclosure — every tool call goes to BotSee's hosted MCP server at botsee.io with the user's own BotSee API key (MCP_BOTSEE_API_KEY, sent as a bearer header), and the tool set is served by that remote server at runtime and is not covered by the pinned sha; some BotSee tools spend account credits, generate billable content or top up the balance (including USDC payments), and the package marks the server untrusted so Hermes asks before every tool the server does not annotate as read-only and refuses those tools in cron and headless runs, which relies on BotSee's own read-only annotations; no spending cap is enforced."
+maintainer: sidekickjanet
+tier: community
+category: tools
+docs_url: https://github.com/sidekickjanet/hermes-product-plugins/tree/f79c213703b600a48a1d4f949bbd82c113d117f0/plugins/botsee
+requires_hermes: ">=0.22.5"
+image: https://raw.githubusercontent.com/sidekickjanet/hermes-product-plugins/f79c213703b600a48a1d4f949bbd82c113d117f0/plugins/botsee/assets/catalog-banner.svg
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

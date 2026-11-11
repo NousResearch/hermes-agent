@@ -1,4 +1,7 @@
-"""The slash worker inherits the parent agent's provider, not the config default (#57283).
+"""The slash worker inherits the parent agent's provider and base URL, not the config default.
+
+Regression for #57283 (provider) and #141953 (base URL; the child side is
+``test_slash_worker_real_cli_route.py``, against a real ``HermesCLI``).
 
 A Desktop/TUI MoA session pins the live agent to the virtual ``moa`` provider, but the
 persistent slash-worker subprocess was spawned with only ``--model``. HermesCLI re-resolves
@@ -57,9 +60,9 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
     worker_args = None
 
     class _RecordingWorker:
-        def __init__(self, session_key, model, profile_home=None, provider=None):
+        def __init__(self, session_key, model, profile_home=None, provider=None, base_url=None):
             nonlocal worker_args
-            worker_args = (session_key, model, profile_home, provider)
+            worker_args = (session_key, model, profile_home, provider, base_url)
             self.stderr_tail = []
 
         def run(self, command):
@@ -68,7 +71,7 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
         def close(self):
             pass
 
-    agent = SimpleNamespace(model="default", provider="moa")
+    agent = SimpleNamespace(model="default", provider="moa", base_url="https://chatgpt.com/backend-api/codex")
     session = {"session_key": "s-key", "agent": agent, "profile_home": None, "running": False}
 
     monkeypatch.setattr(server, "_sessions", {"sid": session})
@@ -83,7 +86,7 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
 
     assert "error" not in resp, resp
     assert worker_args is not None
-    assert worker_args[3] == "moa"
+    assert worker_args[3:] == ("moa", "https://chatgpt.com/backend-api/codex")
 
 
 def test_slash_worker_child_forwards_provider_to_hermes_cli(monkeypatch):

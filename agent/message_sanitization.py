@@ -791,25 +791,67 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     return bool(route.carriers & {RC, R})
 
 
-def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
-    """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
+def _orphaned_tool_calls(messages: list[Any], i: int) -> bool:
+    """True when assistant row *i* has a tool call whose result is not in the tool rows right after it:
+    the converter strips that ``tool_use`` and so invalidates the turn's signed thinking."""
+    from agent.anthropic_message_convert import _sanitize_tool_id
+
+    ids = {_sanitize_tool_id(tc.get("id") or "") for tc in messages[i].get("tool_calls") or [] if isinstance(tc, dict)}
+    if not ids:
+        return False
+    results: set = set()
+    for row in messages[i + 1:]:
+        if not (isinstance(row, dict) and row.get("role") == "tool"):
+            break
+        results.add(_sanitize_tool_id(row.get("tool_call_id") or ""))
+    return bool(ids - results)
+
+
+def _anthropic_thinking_fate(messages: list[Any]) -> list[str]:
+    """Per row, what ``convert_messages_to_anthropic`` leaves of its signed thinking: ``keep``; ``demote``
+    (an orphaned tool call killed the signature, so only the readable text ships); ``drop`` (a second
+    consecutive assistant row merged into the first loses its thinking, and an invalidated one demotes
+    the first). Mirrors ``_strip_orphaned_tool_blocks`` + ``_merge_consecutive_roles``."""
+    fate = ["keep"] * len(messages)
+    prev_role, group_head = None, None
+    for i, m in enumerate(messages):
+        role = m.get("role") if isinstance(m, dict) else None
+        if role in (None, "system"):
+            continue
+        if role == "assistant":
+            if _orphaned_tool_calls(messages, i):
+                fate[i] = "demote"
+            if prev_role == "assistant" and group_head is not None:
+                if fate[i] == "demote":
+                    fate[group_head] = "demote"
+                fate[i] = "drop"
+            else:
+                group_head = i
+        prev_role = "user" if role == "tool" else role
+    return fate
+
+
+def native_anthropic_row_costs(messages: list[Any]) -> list[tuple[Any, int]]:
+    """``(wire shadow, replayed-thinking tokens)`` for every row of *messages*, aligned with it.
 
     Canonical history may retain storage-only reasoning alongside signed replay carriers.
     Native conversion prefers ordered anthropic_content_blocks over reasoning_details and
     never sends reasoning itself. The generic message estimator therefore receives only
-    ordinary wire-shaped fields, while readable thinking is returned separately for the
-    explicit Anthropic accounting seam. Opaque signature/data bytes are never priced.
+    ordinary wire-shaped fields, while thinking is priced separately here. Signature/data bytes
+    are never priced as text: the server re-expands the FULL thinking from a signature, so a
+    signed carrier that survives conversion costs the turn's provider-reported thinking count
+    (``replayed_reasoning.signed_thinking_replay_tokens``), not its readable summary. Judged over
+    the whole list: whether a signature survives depends on the rows around it.
     """
-    if not isinstance(messages, list):
-        return messages, ()
-
     from agent.anthropic_message_convert import assistant_replay_carrier
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.replayed_reasoning import signed_thinking_replay_tokens
 
-    projected = []
-    replayed_thinking: list[str] = []
-    for message in messages:
+    fate = _anthropic_thinking_fate(messages)
+    rows: list[tuple[Any, int]] = []
+    for message, row_fate in zip(messages, fate):
         if not isinstance(message, dict) or message.get("role") != "assistant":
-            projected.append(message)
+            rows.append((message, 0))
             continue
 
         # Mirror _convert_assistant_message's actual inputs instead of starting
@@ -834,13 +876,34 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
         if carrier:
             shadow.pop("reasoning_content", None)
 
-        replayed_thinking.extend(
-            block["thinking"]
+        readable = sum(
+            estimate_tokens_rough(block["thinking"])
             for block in carrier
             if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
         )
-        projected.append(shadow)
-    return projected, tuple(replayed_thinking)
+        signed = any(
+            block.get("type") == "redacted_thinking" or (block.get("type") == "thinking" and block.get("signature"))
+            for block in carrier
+        )
+        if row_fate == "drop":
+            thinking = 0
+        elif signed and row_fate == "keep":
+            thinking = signed_thinking_replay_tokens(message, readable)
+        else:
+            thinking = readable
+        rows.append((shadow, thinking))
+    return rows
+
+
+def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[int, ...]]:
+    """Return the native Anthropic wire shadow plus each assistant turn's replayed-thinking token cost
+    (``native_anthropic_row_costs``)."""
+    if not isinstance(messages, list):
+        return messages, ()
+    rows = native_anthropic_row_costs(messages)
+    return [shadow for shadow, _ in rows], tuple(
+        thinking for (_, thinking), m in zip(rows, messages) if isinstance(m, dict) and m.get("role") == "assistant"
+    )
 
 
 def _replayable_reasoning_text(msg: dict) -> str | None:

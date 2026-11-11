@@ -568,11 +568,14 @@ class GatewayAuthorizationMixin:
         if adapter is None:
             return False
         extra = _adapter_config_extra(adapter)
-        # ``group_allow_from`` is a separate group list (Telegram); an adapter with a single user
-        # allowlist (Discord) declares ``allow_from_covers_groups`` so its groups read ``allow_from``.
-        groups_use_allow_from = getattr(adapter, "allow_from_covers_groups", False) is True
-        group_key = "allow_from" if groups_use_allow_from else "group_allow_from"
-        adapter_allow = extra.get(group_key if is_group else "allow_from")
+        # ``group_allow_from`` is a group-only list. An adapter whose ``allow_from`` is global (Telegram:
+        # "DMs + groups"; Discord: its one user list) declares ``allow_from_covers_groups``, so its groups
+        # read ``allow_from`` (plus ``group_allow_from`` only where the platform has a group user list, as
+        # the env path's _GROUP_USER_ENV); otherwise groups read ``group_allow_from`` alone.
+        keys = ("group_allow_from",) if is_group else ("allow_from",)
+        if is_group and getattr(adapter, "allow_from_covers_groups", False) is True:
+            keys = ("allow_from", "group_allow_from") if source.platform in _GROUP_USER_ENV else ("allow_from",)
+        adapter_allow = [entry for key in keys for entry in _coerce_allow_set(extra.get(key))]
         if not adapter_allow:
             # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
             # under multiplex only the default profile's list reaches the env (first-writer-wins

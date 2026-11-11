@@ -1,6 +1,6 @@
 name: on-air
 repo: https://github.com/HomunculusLabs/hermes-on-air
-sha: fe1627535534f771ff2f731f8baa3c64d057733f
+sha: d40b6ef97e34cd5bd89e8434cad2538a3c1080c3
 description: AI stream co-host with guarded chat, captions, optional voice, private
   rehearsal, and operator controls.
 maintainer: HomunculusLabs

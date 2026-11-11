@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import gateway.platforms.base as base
+from gateway.platforms import base
 from gateway.platforms.event import MessageType
 
 

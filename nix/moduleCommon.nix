@@ -256,14 +256,50 @@ let
       };
 
       # ── Declarative config ─────────────────────────────────────────────
+      configMode = mkOption {
+        type = types.enum [
+          "declarative"
+          "imperative"
+        ];
+        default = "declarative";
+        description = ''
+          Who owns config.yaml and .env.
+
+          `declarative`: Nix owns the keys that it sets. Each activation
+          writes them again, and Hermes refuses `hermes config set`,
+          `hermes setup` and the other commands that change the
+          configuration.
+
+          `imperative`: Hermes owns the files, and every command that
+          changes the configuration works. `settings`, `configFile`,
+          `mcpServers`, `environment` and `environmentFiles` become a base.
+          Activation applies the base with a three-way merge against the
+          base of the previous activation:
+
+          - A key that you did not change follows the Nix value. If Nix
+            stops setting it, activation removes it.
+          - A key that you changed keeps your value, also when the Nix
+            value changes later.
+          - A Nix key that is missing from the file comes back. Thus
+            `hermes config unset` returns a key to its Nix value at the next
+            activation, or at once with `hermes-nix-sync`.
+          - `plugins.enabled` and `plugins.disabled` merge as sets. The
+            plugins that you enable or disable stay that way, and plugins
+            that Nix adds still arrive.
+
+          `hermes update` stays refused, because Nix owns the package.
+        '';
+      };
+
       configFile = mkOption {
         type = types.nullOr types.path;
         default = null;
         description = ''
           The path to an existing config.yaml. If you set this option, it
-          replaces the `settings` option. The module installs the file
-          without a change and overwrites all runtime edits on each
-          activation.
+          replaces the `settings` option. In the declarative `configMode`
+          the module installs the file without a change and overwrites all
+          runtime edits on each activation. In the imperative `configMode`
+          the file is the base.
         '';
       };
 
@@ -274,10 +310,12 @@ let
           The Hermes configuration, as an attribute set. The module joins the
           definitions from all modules and writes the result to config.yaml.
 
-          The merge into the config.yaml on disk is also a deep merge. These
-          keys replace the keys on disk. The module keeps all other keys,
-          which includes the keys that `hermes config set` and the settings
-          panes of the TUI and the desktop app write at runtime.
+          The merge into the config.yaml on disk is also a deep merge. In the
+          declarative `configMode` these keys replace the keys on disk. The
+          module keeps all other keys, which includes the keys that
+          `hermes config set` and the settings panes of the TUI and the
+          desktop app write at runtime. In the imperative `configMode` these
+          keys are a base that a runtime change overrides (see `configMode`).
         '';
         example = literalExpression ''
           {
@@ -302,8 +340,12 @@ let
           $HERMES_HOME/.env. Hermes reads that file at each start, with
           load_hermes_dotenv().
 
-          Each activation writes .env again from the start. Thus a secret
-          file cannot go into .env two times.
+          In the declarative `configMode`, each activation writes .env again
+          from the start. Thus a secret file cannot go into .env two times.
+          In the imperative `configMode`, the values are a base that merges
+          into the .env of the user (see `configMode`). A file that is not
+          readable at activation leaves the keys that it gave before in
+          place.
         '';
         example = literalExpression ''[ config.sops.secrets."hermes/env".path ]'';
       };
@@ -734,7 +776,72 @@ let
       inherit generated;
       effective = if cfg.configFile != null then cfg.configFile else generated;
       mergeScript = pkgs.callPackage ./configMergeScript.nix { };
+      layerScript = mkLayerScript pkgs;
     };
+
+  # The three-way merge of the imperative configMode (nix/config_layer.py).
+  # It needs only ruamel, like configMergeScript.nix, and never imports
+  # Hermes, so activation does not depend on the package.
+  mkLayerScript =
+    pkgs:
+    pkgs.writeShellScript "hermes-config-layer" ''
+      exec ${pkgs.python3.withPackages (ps: [ ps.ruamel-yaml ])}/bin/python3 ${./config_layer.py} "$@"
+    '';
+
+  # The imperative merge for config.yaml and .env. Activation runs it, and
+  # so does `hermes-nix-sync` with run = "". Each file keeps its owner, and
+  # then gets the mode of its kind.
+  #
+  # The state directory .nix-base holds the base of the last merge. Its
+  # env.json holds secrets, so the directory and the files in it are 0700
+  # and 0600.
+  mkLayerCommands =
+    {
+      pkgs,
+      cfg,
+      hermesHome,
+      configWorkingDirectory,
+      run ? "",
+      modes,
+    }:
+    let
+      configFiles = mkConfigFiles {
+        inherit pkgs cfg;
+        workingDirectory = configWorkingDirectory;
+      };
+      state = "${hermesHome}/.nix-base";
+    in
+    ''
+      ${run}${configFiles.layerScript} config ${state} ${hermesHome}/config.yaml ${modes.config} ${configFiles.effective}
+      ${run}${configFiles.layerScript} env ${state} ${hermesHome}/.env ${modes.env} ${mkEnvBase {
+        inherit pkgs;
+        inherit (cfg) environment;
+      }} ${lib.escapeShellArgs cfg.environmentFiles}
+    '';
+
+  # `hermes-nix-sync`: the merge of the current generation, on demand. Use it
+  # after `hermes config unset` to get the Nix value back without a rebuild.
+  # A secret file that the caller cannot read keeps its keys as they are.
+  mkSyncCommand =
+    {
+      pkgs,
+      cfg,
+      hermesHome,
+      configWorkingDirectory,
+      modes,
+    }:
+    pkgs.writeShellScriptBin "hermes-nix-sync" ''
+      set -eu
+      ${mkLayerCommands {
+        inherit
+          pkgs
+          cfg
+          hermesHome
+          configWorkingDirectory
+          modes
+          ;
+      }}
+    '';
 
   # ── Documents ───────────────────────────────────────────────────────────
   # A key can contain subdirectories. The tree has the same shape, so the
@@ -765,13 +872,17 @@ let
   # the secrets from paths outside the store. This is one command, so it is
   # safe in a dry run. A second activation writes .env again and does not add
   # the same secrets a second time.
+  mkEnvBase =
+    { pkgs, environment }:
+    pkgs.writeText "hermes-env-base" (
+      lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "${k}=${v}") environment)
+      + lib.optionalString (environment != { }) "\n"
+    );
+
   mkEnvScript =
     { pkgs, environment }:
     let
-      base = pkgs.writeText "hermes-env-base" (
-        lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "${k}=${v}") environment)
-        + lib.optionalString (environment != { }) "\n"
-      );
+      base = mkEnvBase { inherit pkgs environment; };
     in
     pkgs.writeShellScript "hermes-env-merge" ''
       set -eu
@@ -873,28 +984,63 @@ let
         )
       }
 
-      # config.yaml: merge the Nix settings into the file on disk. Hermes
-      # writes this file at runtime. A read-only symlink to the Nix store
-      # breaks each save from the application. The Nix keys replace the keys
-      # on disk, and the module keeps all other keys.
       ${
-        if cfg.configFile != null then
-          "${inst} -m ${modes.config} -D ${configFiles.effective} ${hermesHome}/config.yaml"
+        if cfg.configMode == "imperative" then
+          ''
+            # config.yaml and .env belong to Hermes. The Nix values are a base,
+            # and a three-way merge applies them (see the configMode option).
+            ${mkLayerCommands {
+              inherit
+                pkgs
+                cfg
+                hermesHome
+                configWorkingDirectory
+                run
+                modes
+                ;
+            }}
+            ${run}chmod ${modes.config} ${hermesHome}/config.yaml
+            ${run}chmod ${modes.env} ${hermesHome}/.env 2>/dev/null || true
+            ${lib.optionalString (owner != null) ''
+              ${run}chown ${owner} ${hermesHome}/config.yaml
+              ${run}chown ${owner} ${hermesHome}/.env 2>/dev/null || true
+              ${run}chown -R ${owner} ${hermesHome}/.nix-base
+            ''}
+
+            # No marker: Hermes may change its configuration. HERMES_MANAGED=false
+            # on the services says the same thing to the processes.
+            ${run}rm -f ${hermesHome}/.managed
+          ''
         else
           ''
-            ${run}${configFiles.mergeScript} ${configFiles.generated} ${hermesHome}/config.yaml
-            ${run}chmod ${modes.config} ${hermesHome}/config.yaml
+            # config.yaml: merge the Nix settings into the file on disk. Hermes
+            # writes this file at runtime. A read-only symlink to the Nix store
+            # breaks each save from the application. The Nix keys replace the keys
+            # on disk, and the module keeps all other keys.
+            ${
+              if cfg.configFile != null then
+                "${inst} -m ${modes.config} -D ${configFiles.effective} ${hermesHome}/config.yaml"
+              else
+                ''
+                  ${run}${configFiles.mergeScript} ${configFiles.generated} ${hermesHome}/config.yaml
+                  ${run}chmod ${modes.config} ${hermesHome}/config.yaml
+                ''
+            }
+
+            # The managed-mode marker. It makes an interactive shell also refuse to
+            # change the configuration that Nix owns.
+            ${inst} -m ${modes.managed} ${pkgs.writeText "hermes-managed" managedSystem} ${hermesHome}/.managed
+
+            ${lib.optionalString (cfg.environment != { } || cfg.environmentFiles != [ ]) ''
+              ${run}${envScript} ${hermesHome}/.env ${modes.env} ${lib.escapeShellArgs cfg.environmentFiles}
+              ${lib.optionalString (owner != null) "${run}chown ${owner} ${hermesHome}/.env"}
+            ''}
+
+            # The record of the imperative mode. Without it, a later switch back
+            # to the imperative mode starts again from this generation.
+            ${run}rm -rf ${hermesHome}/.nix-base
           ''
       }
-
-      # The managed-mode marker. It makes an interactive shell also refuse to
-      # change the configuration that Nix owns.
-      ${inst} -m ${modes.managed} ${pkgs.writeText "hermes-managed" managedSystem} ${hermesHome}/.managed
-
-      ${lib.optionalString (cfg.environment != { } || cfg.environmentFiles != [ ]) ''
-        ${run}${envScript} ${hermesHome}/.env ${modes.env} ${lib.escapeShellArgs cfg.environmentFiles}
-        ${lib.optionalString (owner != null) "${run}chown ${owner} ${hermesHome}/.env"}
-      ''}
 
       ${lib.optionalString (cfg.authFile != null) (
         if cfg.authFileForceOverwrite then
@@ -1080,14 +1226,19 @@ let
   # variable to refuse a configuration change that it cannot keep, and to
   # name the correct rebuild command. The answer is different on each module,
   # so each module gives its own value.
+  #
+  # In the imperative configMode Hermes owns its configuration, so the value is
+  # "false". The CLI then permits each change, and the install stamp of the
+  # package still refuses `hermes update`.
   processEnvironment =
     {
       hermesHome,
       managedSystem ? "true",
+      configMode ? "declarative",
     }:
     {
       HERMES_HOME = hermesHome;
-      HERMES_MANAGED = managedSystem;
+      HERMES_MANAGED = if configMode == "imperative" then "false" else managedSystem;
     };
 
   processPath =
@@ -1191,8 +1342,12 @@ in
     mcpServersToConfig
     mkConfigFiles
     mkDocumentTree
+    mkEnvBase
     mkEnvScript
+    mkLayerCommands
+    mkLayerScript
     mkStateScript
+    mkSyncCommand
     pluginNameAssertions
     processEnvironment
     processPath

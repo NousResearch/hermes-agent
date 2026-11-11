@@ -595,6 +595,8 @@ Some MCP servers can request LLM completions from the agent:
 
 ## Managed Mode
 
+This section describes the default `configMode = "declarative"`. For full control from the CLI, see [Imperative Mode](#imperative-mode).
+
 When hermes runs via the NixOS module, the following CLI commands are **blocked** with a descriptive error pointing you to `configuration.nix`:
 
 | Blocked command | Why |
@@ -611,6 +613,49 @@ This prevents drift between what Nix declares and what's on disk. Detection uses
 2. **The `.managed` marker file** in `HERMES_HOME`. The activation script writes it, and an interactive shell reads it. Thus the CLI also blocks a command such as `docker exec -it hermes-agent hermes config set ...`.
 
 Both signals hold the name of the system that manages the install. Thus the refusal names the correct rebuild command. The NixOS module gives `sudo nixos-rebuild switch`. The Home Manager module gives `home-manager switch`.
+
+
+---
+
+## Imperative Mode
+
+With `configMode = "imperative"`, Hermes owns `config.yaml` and `.env`. Each command that changes them works: `hermes config set`, `hermes setup`, `hermes model` and `/model`, `hermes plugins install|enable|disable`, and the settings panes. Nix still declares a **base**. `settings`, `configFile`, `mcpServers`, `environment` and `environmentFiles` all feed the base.
+
+```nix
+services.hermes-agent = {
+  enable = true;
+  configMode = "imperative";
+  settings = {
+    model.default = "anthropic/claude-sonnet-4";
+    plugins.enabled = [ "hermes-lcm" ];
+  };
+  environmentFiles = [ config.sops.secrets."hermes-env".path ];
+};
+```
+
+Activation applies the base to the files on disk with a three-way merge. It compares three values for each key: the **new** Nix value, the **previous** Nix value (recorded in `$HERMES_HOME/.nix-base/`), and the value **on disk**:
+
+| On disk | Result |
+|---|---|
+| Same as the previous Nix value (you did not change it) | Follows the new Nix value. If Nix stops setting the key, activation removes it. |
+| Different from the previous Nix value (you changed it) | **Your value stays**, also when the Nix value changes later. Activation reports the override. |
+| Missing (for example after `hermes config unset`) | The Nix value comes back. |
+| A key that Nix never set | Untouched. |
+
+Other rules:
+
+- **Plugins.** `plugins.enabled` and `plugins.disabled` merge as sets. A plugin you enable or disable at runtime stays that way, and a plugin that Nix adds later still arrives.
+- **`.env`.** The same rules apply per variable. Your own variables and comments stay where they are. New Nix variables are appended under a `# Added by the Nix base` comment. If an `environmentFiles` entry cannot be read at activation, for example because a secret is not decrypted yet, its variables are left as they were.
+- **Return to the Nix value.** Run `hermes config unset <key>`. The Nix value comes back at the next activation, or at once with `hermes-nix-sync`. `programs.hermes-agent.enable` on Home Manager and `addToSystemPackages` on NixOS install `hermes-nix-sync`.
+- **Remove a key that Nix sets.** Set it to an explicit value instead. A deleted key comes back from Nix.
+
+Activation writes no `.managed` marker, and the services carry `HERMES_MANAGED=false`. These still hold:
+
+- `hermes update` is refused, because the package lives in the Nix store. Update through your flake.
+- Do not run `hermes gateway install` or `hermes gateway uninstall`. The module owns the service units, and a second unit would compete with them.
+- On NixOS, interactive users in the `hermes` group share `HERMES_HOME`. The module sets `HERMES_SKIP_CHMOD=1` on the units and, with `addToSystemPackages`, in the system environment. A save from either side then keeps the group modes (`config.yaml` 0660, `.env` 0640) and the service can still read it.
+
+When you switch from `declarative` to `imperative`, the first activation treats each key that equals its Nix value as Nix-owned. Every other key is yours. When you switch back to `declarative`, the Nix keys win again and activation deletes `.nix-base/`.
 
 ---
 
@@ -996,6 +1041,7 @@ nix build .#checks.x86_64-linux.cli-commands        # gateway/config subcommands
 nix build .#checks.x86_64-linux.managed-guard       # HERMES_MANAGED blocks mutation
 nix build .#checks.x86_64-linux.bundled-skills      # skills present in package
 nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves user keys
+nix build .#checks.x86_64-linux.config-layer        # imperative three-way merge
 ```
 
 <details>
@@ -1009,6 +1055,8 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `managed-guard` | `HERMES_MANAGED=true hermes config set ...` prints the NixOS error |
 | `bundled-skills` | Skills directory exists, contains SKILL.md files, `HERMES_BUNDLED_SKILLS` is set in wrapper |
 | `config-roundtrip` | 7 merge scenarios: fresh install, Nix override, user key preservation, mixed merge, MCP additive merge, nested deep merge, idempotency |
+| `config-layer` | Imperative mode: user overrides survive, untouched keys follow Nix, unset keys come back, plugin set merge, `.env` layering, idempotency |
+| `imperative-guard` | `HERMES_MANAGED=false hermes config set ...` writes, and `hermes update` is still refused |
 
 </details>
 
@@ -1035,6 +1083,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 |---|---|---|---|
 | `settings` | `attrs` (deep-merged) | `{}` | Declarative config rendered as `config.yaml`. Supports arbitrary nesting; multiple definitions are merged via `lib.recursiveUpdate` |
 | `configFile` | `null` or `path` | `null` | Path to an existing `config.yaml`. Overrides `settings` entirely if set |
+| `configMode` | `"declarative"` or `"imperative"` | `"declarative"` | Who owns `config.yaml` and `.env`. `imperative` makes the Nix config a base under runtime changes; see [Imperative Mode](#imperative-mode) |
 
 ### Secrets & Environment
 

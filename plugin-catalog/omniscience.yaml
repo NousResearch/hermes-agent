@@ -1,0 +1,34 @@
+name: omniscience
+repo: https://github.com/KeyArgo/hermes-omniscience
+sha: 38ea8c249698235836a0aa3f35c480f2d87c93fa
+title: Omniscience
+description: 'Local, read-only observability for Hermes Agent: a live graph of every session, turn, model request, tool call and subagent, plain-English failure briefings, and deterministic replay of a stored run. Disclosure: records sanitized metadata only (IDs, timings, model and provider names, token counts, statuses, error types, tool names, argument names and character counts) from observer hooks into a local SQLite database in the profile plugin-data directory; prompts, history, assistant text, tool argument values and results, request and response bodies, headers, environment values and credentials are never stored. The viewer is a separate process that opens the database read-only, binds 127.0.0.1, needs a per-launch key and has no write endpoints. No network calls, no LLM calls, no stored credentials, no self-updater.'
+maintainer: KeyArgo
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://github.com/KeyArgo/hermes-omniscience/blob/38ea8c249698235836a0aa3f35c480f2d87c93fa/docs/INSTALL.md
+screenshots:
+  - https://raw.githubusercontent.com/KeyArgo/hermes-omniscience/38ea8c249698235836a0aa3f35c480f2d87c93fa/docs/img/graph.png
+  - https://raw.githubusercontent.com/KeyArgo/hermes-omniscience/38ea8c249698235836a0aa3f35c480f2d87c93fa/docs/img/window-map.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_llm_call
+    - post_llm_call
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - post_tool_call
+    - on_session_delete
+    - subagent_start
+    - subagent_stop
+    - pre_auxiliary_call
+    - post_auxiliary_call
+    - on_skill_lifecycle
+  provides_middleware: []
+  requires_env: []

@@ -196,7 +196,8 @@ class _Api:
                 return {"status": self.commit_status, "body": {}}
             self.commits += 1
             self.status = "CommitStarted"
-            return {"status": 200, "body": {"status": "CommitStarted"}}
+            # The live API answers a started commit with 202 Accepted (v0.23.0 publication).
+            return {"status": 202, "body": {"status": "CommitStarted"}}
         raise AssertionError(request)
 
     def writes(self):

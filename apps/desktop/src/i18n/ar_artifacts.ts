@@ -156,7 +156,17 @@ export const arArtifacts = {
       loadFailedConsole: (code, message) => `فشل التحميل${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: 'تعذّر الوصول إلى صفحة المعاينة.',
       openTarget: url => `فتح ${url}`,
-      fallbackTitle: 'معاينة'
+      fallbackTitle: 'معاينة',
+      vaultFill: 'ملء بيانات دخول محفوظة',
+      vaultTitle: site => `بيانات الدخول المحفوظة لـ ${site}`,
+      vaultLoading: 'جارٍ تحميل بيانات الدخول المحفوظة…',
+      vaultEmpty: 'لا توجد بيانات دخول محفوظة لهذا الموقع',
+      vaultUnlock: name => `فتح قفل ${name}`,
+      vaultOpenSettings: 'فتح إعدادات خزنة بيانات الاعتماد',
+      vaultFilled: label => `تم ملء ${label}. راجع النموذج ثم سجّل الدخول.`,
+      vaultFillFailed: 'تعذّر ملء بيانات الدخول',
+      vaultLoadFailed: 'تعذّر تحميل بيانات الدخول المحفوظة',
+      vaultPageNotReady: 'لا تزال الصفحة قيد التحميل. أعد المحاولة عند اكتمالها.'
     }
   }
 } satisfies Pick<TranslationOverrides, 'artifacts' | 'artifactCard' | 'artifactPreview' | 'preview'>

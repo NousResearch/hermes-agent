@@ -1,0 +1,25 @@
+name: daily-edition
+repo: https://github.com/ousiaresearch/daily-edition
+sha: b53569f93157708fd7019e499a86fdf9a9117d3a
+description: "A personal newspaper inside Hermes Desktop: name interests, not subscriptions, and it compiles one dated front page — each story once, cross-posted stories merged with every publisher credited, consensus winning the lead, reprints withheld — with seven back issues, in-place reading, unread and saved state, and an optional editorial voice for headlines (off until you name a model endpoint; there is no vendor default). The same edition prints as a one-page broadsheet through a local CUPS queue, and the daily_edition tool or /edition can print it from chat or cron. Disclosure — compiling an edition sends your interest phrases to the news provider (Google News RSS by default) and opening a story fetches that article from its publisher, exposing your IP to them; pressing “Style as …” sends that edition's headlines and summaries to the endpoint you set in DAILY_EDITION_BASE_URL with the key in DAILY_EDITION_API_KEY, and nothing is sent while merely browsing; printing renders locally with the browser's background networking disabled and submits only to a local print queue; no telemetry is collected."
+maintainer: ousiaresearch
+tier: community
+category: desktop
+docs_url: https://github.com/ousiaresearch/daily-edition
+requires_hermes: ">=0.22.5"
+version: "0.4.8"
+title: "Daily Edition"
+image: https://raw.githubusercontent.com/ousiaresearch/daily-edition/b53569f93157708fd7019e499a86fdf9a9117d3a/docs/images/hero-card.jpg
+screenshots:
+- https://raw.githubusercontent.com/ousiaresearch/daily-edition/b53569f93157708fd7019e499a86fdf9a9117d3a/docs/images/edition-page.png
+platforms:
+- macos
+- linux
+- windows
+readme: true
+capabilities:
+  provides_tools:
+  - daily_edition
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

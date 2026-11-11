@@ -1,0 +1,21 @@
+name: hermes-sfx-forge
+title: Hermes SFX Forge
+repo: https://github.com/socraticblock/hermes-sfx-forge
+sha: 07960b832d42675e1f4a5a898544e6e4ff9aed75
+description: Offline seeded WAV sound-effects generation and QA. Writes WAV files, a manifest, and a retained lock file inside a configured workspace root. No network calls or subprocess execution. Runs in the Hermes plugin host. The CLI, but not the registered tools, accepts an explicit --root.
+maintainer: socraticblock
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - sfx_generate
+    - sfx_verify
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - macOS and Windows are not verified or supported by this release.
+  - Runs inside the Hermes plugin host process without a separate sandbox.

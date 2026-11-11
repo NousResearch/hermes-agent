@@ -550,6 +550,32 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
         applied["ui_meta"] = False
 
 
+def _profile_group_selection_context(profile_dir, target_model):
+    """The largest measured context among this profile's affected group members."""
+    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, persisted_anchor_tokens
+    from hermes_cli.model_selection_guards import SelectionContext
+    from hermes_state import SessionDB
+
+    path = profile_dir / "state.db"
+    if not path.is_file():
+        return None
+
+    largest = None
+    with SessionDB(path, read_only=True) as db:
+        sessions = db.list_sessions_rich(source="bot_room", limit=-1, include_hidden=True, compact_rows=True)
+        for session in sessions:
+            current_model = session["model"]
+            if current_model == target_model:
+                continue
+            sid = session["id"]
+            if not db.get_session_model_config_value(sid, USAGE_ANCHOR_MODEL_CONFIG_KEY):
+                continue
+            tokens = persisted_anchor_tokens(db, sid, db.get_messages_as_conversation(sid))
+            if tokens and (largest is None or tokens > (largest.context_tokens or 0)):
+                largest = SelectionContext(context_tokens=tokens, current_model=current_model)
+    return largest
+
+
 def _configure_model(profile_dir, params, applied):
     """Apply a ``model`` + ``provider`` pin, or return a confirm message and write NOTHING (client
     resends with ``confirm_expensive_model``). A failing guard = no warning (as _apply_model_switch)."""
@@ -566,7 +592,10 @@ def _configure_model(profile_dir, params, applied):
     # ``_apply_model_switch``.
     if not is_truthy_value(params.get("confirm_expensive_model", False)):
         warn = _lazy("hermes_cli.model_selection_guards", "combined_selection_warning")
-        confirm_message = _try(lambda: getattr(warn(model, provider=provider or None), "message", None), None)
+        context = _try(lambda: _profile_group_selection_context(profile_dir, model), None)
+        with _hermes_home_scope(profile_dir):
+            confirm_message = _try(
+                lambda: getattr(warn(model, provider=provider, selection_context=context), "message", None), None)
     if confirm_message is None:
         applied["model"] = _best_effort(lambda: _pin_profile_model(profile_dir, provider, model))
     return confirm_message

@@ -1,0 +1,18 @@
+name: hermes-music-studio
+repo: https://github.com/KeyArgo/hermes-music-studio
+sha: e0fa23a5f16092a040feb575bd878aab8f687c28
+title: Music Studio
+description: 'Describe a song and Hermes helps you make it: it drafts lyrics and style with you, renders nothing until you approve, then makes a real take locally on ACE-Step or through MiniMax via ComfyUI, and checks whether the take did what you asked. Disclosure: renders run in a detached local worker; the studio talks only to the render endpoints you configure (a local ACE-Step install or a ComfyUI URL), writes takes and drafts to its own workspace folder, and uses the model already configured in Hermes for drafting. No telemetry, no self-updater. Linux and macOS; Windows support follows in the next release.'
+maintainer: KeyArgo
+tier: community
+category: general
+
+version: "1.0.0"
+docs_url: https://github.com/KeyArgo/hermes-music-studio/blob/e0fa23a5f16092a040feb575bd878aab8f687c28/README.md
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - music_studio
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

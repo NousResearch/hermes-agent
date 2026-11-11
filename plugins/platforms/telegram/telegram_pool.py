@@ -24,9 +24,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# A retired generation whose requests never finish (a wedged long-poll, a response body nobody
-# closed) is closed anyway after this long; well past PTB's 20s read timeout plus a long-poll.
-RETIRE_GRACE_S = 90.0
+# A lease ends when its PTB call ends: PTB reads every response through ``client.request``, which
+# closes the body, and httpx closes it on cancellation too, so a stalled send is released by the
+# adapter's own deadline. This bound only catches a body nobody ever closes; it sits far past any
+# legitimate request (media uploads scale their budgets well beyond 300 s) so it never cuts one off.
+RETIRE_GRACE_S = 3600.0
 # Every Telegram pool together may use at most 1/_FD_SHARE of RLIMIT_NOFILE: two PTB clients, each
 # with one pool per path (sticky IPv4 literals + dual-stack hostname).
 _FD_SHARE = 4
@@ -63,7 +65,8 @@ def fd_bounded_limits(limits: httpx.Limits, paths: int) -> httpx.Limits:
         return limits
     logger.info("[Telegram] HTTP pool capped at %d connections per path (requested %d; RLIMIT_NOFILE %d, %d paths)",
                 cap, limits.max_connections, soft, paths)
-    return httpx.Limits(max_connections=cap, max_keepalive_connections=min(limits.max_keepalive_connections or cap, cap),
+    keepalive = limits.max_keepalive_connections
+    return httpx.Limits(max_connections=cap, max_keepalive_connections=cap if keepalive is None else min(keepalive, cap),
                         keepalive_expiry=limits.keepalive_expiry)
 
 

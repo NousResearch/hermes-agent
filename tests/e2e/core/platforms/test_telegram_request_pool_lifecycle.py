@@ -231,6 +231,88 @@ async def test_one_failed_connect_keeps_requests_in_flight_on_that_path(tmp_path
         edge.close()
 
 
+class _ConnectProxy:
+    """HTTP CONNECT proxy on 127.0.0.1 that tunnels every target to the edge."""
+
+    def __init__(self, edge: _Edge) -> None:
+        self._edge = edge
+        self._sock = socket.create_server(("127.0.0.1", 0))
+        self.url = f"http://127.0.0.1:{self._sock.getsockname()[1]}"
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                client, _ = self._sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._tunnel, args=(client,), daemon=True).start()
+
+    def _tunnel(self, client: socket.socket) -> None:
+        try:
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = client.recv(4096)
+                if not chunk:
+                    return
+                head += chunk
+            upstream = socket.create_connection(("127.0.0.1", self._edge.port))
+            client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            threading.Thread(target=self._pipe, args=(upstream, client), daemon=True).start()
+            self._pipe(client, upstream)
+        except OSError:
+            client.close()
+
+    @staticmethod
+    def _pipe(src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while chunk := src.recv(65536):
+                dst.sendall(chunk)
+        except OSError:
+            pass
+        finally:
+            for sock in (src, dst):
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        self._sock.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_tls_through_a_proxy_tunnel_frees_its_pool_slot(tmp_path, monkeypatch):
+    """A TLS handshake that fails inside a CONNECT tunnel left httpcore's tunnel connection ACTIVE
+    in the pool with no request owning it, so each one held a slot until "Pool timeout: all
+    connections occupied" (#69314). With a 2-connection pool, two such failures must not starve
+    the next send."""
+    server_ctx, client_ctx = _tls_pair(tmp_path)
+    edge = _Edge(server_ctx)
+    proxy = _ConnectProxy(edge)
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "2")
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", "2")
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "0")  # every send opens its own tunnel
+    general, updates = tnet.build_ptb_requests(HTTPXRequest, fallback_ips=[], proxy_url=proxy.url, verify=client_ctx)
+    bot = Bot("123:abc", request=general, get_updates_request=updates)
+    await bot.initialize()
+    try:
+        edge._reset_conn = edge.connections + 1
+        with pytest.raises(Exception, match="ConnectError|ReadError|RemoteProtocolError"):
+            await bot.send_message(5, "x")
+        edge._reset_conn = edge.connections + 1
+        with pytest.raises(Exception, match="ConnectError|ReadError|RemoteProtocolError"):
+            await bot.send_message(5, "x")
+        results = await asyncio.gather(*[bot.send_message(5, "y") for _ in range(2)], return_exceptions=True)
+        assert [r for r in results if isinstance(r, Exception)] == []
+    finally:
+        await bot.shutdown()
+        proxy.close()
+        edge.close()
+
+
 def test_pool_size_override_fits_the_process_descriptor_budget(monkeypatch):
     """HERMES_TELEGRAM_HTTP_POOL_SIZE=512 across 2 clients × (fallback IPs + hostname) pools must not
     promise more sockets than a quarter of RLIMIT_NOFILE (#82678); a small override is kept."""
@@ -252,6 +334,13 @@ def test_pool_size_override_fits_the_process_descriptor_budget(monkeypatch):
     assert paths <= 5, "the fallback-address count is unbounded"
     per_pool = [t._transport_kwargs["limits"].max_connections for t in transports]
     assert sum(per_pool) * paths <= max(soft // 4, 4 * 2 * paths)
+
+    # An operator's keepalive-off (HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE=0) survives the cap.
+    built.clear()
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "0")
+    tnet.build_ptb_requests(_Capture, fallback_ips=ips, proxy_url=None, verify=False)
+    assert built[0]["httpx_kwargs"]["transport"]._transport_kwargs["limits"].max_keepalive_connections == 0
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE")
 
     built.clear()
     monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "4")

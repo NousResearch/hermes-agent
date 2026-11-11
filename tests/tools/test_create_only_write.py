@@ -145,6 +145,24 @@ def test_execute_code_write_file_binds_its_advertised_positional_parameters():
     assert params["create_only"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def test_execute_code_write_file_sends_create_only_by_name_and_cross_profile_by_position():
+    from tools.code_execution_tool import generate_hermes_tools_module
+
+    namespace: dict = {"__name__": "hermes_tools"}
+    exec(compile(generate_hermes_tools_module(["write_file"], transport="file"), "hermes_tools.py", "exec"), namespace)
+    sent = []
+    namespace["_call"] = lambda tool, args: sent.append((tool, args)) or {}
+    write_file = namespace["write_file"]
+    write_file("p", "c", create_only=True)
+    write_file("p", "c", True)  # main's positional cross_profile slot
+    assert [args for _, args in sent] == [
+        {"path": "p", "content": "c", "cross_profile": False, "create_only": True},
+        {"path": "p", "content": "c", "cross_profile": True, "create_only": False},
+    ]
+    with pytest.raises(TypeError):
+        write_file("p", "c", False, True)
+
+
 def test_create_only_is_an_optional_boolean_defaulting_to_false():
     params = ft.WRITE_FILE_SCHEMA["parameters"]
     assert params["properties"]["create_only"]["type"] == "boolean"

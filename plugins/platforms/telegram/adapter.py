@@ -333,7 +333,7 @@ from plugins.platforms.telegram.telegram_markdown import (
     degrade_unrenderable_links, escape_rich_currency_dollars, normalize_rich_latex, to_markdown_v2)
 from plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
-from plugins.platforms.telegram.rich_parts import send_rich_parts
+from plugins.platforms.telegram.rich_parts import edit_rich_parts, send_rich_parts
 
 
 def _strip_mdv2(text: str) -> str:
@@ -3604,8 +3604,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # 4,096 overflow pre-flight because the rich text cap is 32,768 — a rich table that exceeds the
         # MarkdownV2 limit must not be split into legacy chunks. Falls back to the legacy edit path
         # (overflow split included) on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
-            rich_result = await self._try_edit_rich(chat_id, message_id, content, metadata=metadata)
+        if finalize:
+            rich_result = await edit_rich_parts(self, chat_id, message_id, content, metadata)
             if rich_result is not None:
                 return rich_result
         # Pre-flight: over-limit content is split-and-delivered on finalize; mid-stream we truncate instead

@@ -233,6 +233,56 @@ async def send_rich_parts(
         raw_response={"message_ids": [r.message_id for r in sent if r.message_id is not None]})
 
 
+async def edit_rich_parts(
+    adapter: Any, chat_id: str, message_id: str, content: str,
+    metadata: Optional[dict[str, Any]] = None,
+) -> Optional[SendResult]:
+    """Finalize an edit-based stream using rich messages even when its answer is oversized.
+
+    The first rich part replaces the existing preview; subsequent parts are fresh replies
+    chained to the previous message. Return the last id and continuation ids exactly as
+    ``_edit_overflow_split`` does, so the stream consumer retargets later edits correctly.
+    """
+    if adapter._rich_eligible(content):
+        return await adapter._try_edit_rich(chat_id, message_id, content, metadata=metadata)
+    if (
+        not adapter._needs_rich_rendering(content)
+        or not adapter._rich_delivery_enabled()
+        or getattr(adapter, "_rich_send_disabled", False)
+    ):
+        return None
+    parts = _fitting_parts(adapter, content)
+    if not parts or not all(adapter._rich_content_ok(part, check_size=False) for part in parts):
+        return None
+
+    first = await adapter._try_edit_rich(chat_id, message_id, parts[0], metadata=metadata)
+    if first is None or not first.success:
+        return first  # nothing new was sent: the legacy edit may still own the final
+
+    sent = [SendResult(success=True, message_id=str(message_id))]
+    for part in parts[1:]:
+        previous_id = sent[-1].message_id
+        outcome = await adapter._try_send_rich(chat_id, part, previous_id, metadata)
+        if outcome is None or not outcome.success or outcome.message_id is None:
+            if outcome is not None and outcome.success:
+                outcome = SendResult(success=False, error="rich_part_missing_message_id", retryable=False)
+            failure = _partial_failure(outcome, sent, len(parts))
+            # This is an edit, so the stream consumer needs the actually delivered
+            # prefix for a tail-only fallback. It must not resend the edited head.
+            prefix = _BLOCK_SEPARATOR.join(parts[:len(sent)])
+            if content.startswith(prefix):
+                failure.raw_response["delivered_prefix"] = prefix
+            return failure
+        sent.append(outcome)
+
+    return SendResult(
+        success=True,
+        message_id=sent[-1].message_id,
+        continuation_message_ids=tuple(str(r.message_id) for r in sent[1:]),
+        raw_response={"message_ids": [str(r.message_id) for r in sent]},
+    )
+
+
 def _fitting_parts(adapter: Any, content: str) -> Optional[list[str]]:
     """Parts whose SENT markdown fits the cap. Normalization grows a part a little (hard breaks,
     paragraph spacer rows, ``\\$`` escapes), so a split whose parts overflow is redone with a

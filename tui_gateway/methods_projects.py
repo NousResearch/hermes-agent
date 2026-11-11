@@ -369,8 +369,10 @@ def _project_tree_inputs(
     return sessions, projects, discovered, active_id
 
 
-# Per-build memo for `_dir_exists_cached`; cleared by every `_build_project_tree`.
+# Per-build memos for `_dir_exists_cached` / `_physical_path_cached`; cleared by every
+# `_build_project_tree`.
 _DIR_EXISTS_CACHE: dict[str, bool] = {}
+_PHYSICAL_PATH_CACHE: dict[str, str] = {}
 
 
 def _dir_exists_cached(path: str) -> bool:
@@ -381,12 +383,26 @@ def _dir_exists_cached(path: str) -> bool:
     return hit
 
 
+def _physical_path_cached(path: str) -> str:
+    """``os.path.realpath`` memoized per build: the tree's IDENTITY for a local absolute path,
+    so one folder reached through a symlinked parent is one repo row when git cannot unify the
+    spellings (non-git folder, probe unavailable). Relative paths pass through. Like
+    ``_dir_exists_cached`` and the junk checks, it answers for THIS host's filesystem, so a
+    remote backend's path resolves through whatever links this host has under that name.
+    POSIX hosts only (see ``_build_project_tree``)."""
+    hit = _PHYSICAL_PATH_CACHE.get(path)
+    if hit is None:
+        hit = _PHYSICAL_PATH_CACHE[path] = os.path.realpath(path) if os.path.isabs(path) else path
+    return hit
+
+
 def _build_project_tree(
     db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
     _DIR_EXISTS_CACHE.clear()
+    _PHYSICAL_PATH_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered)
     # build_tree also resolves declared project folders and discovered roots — warm them too.
@@ -396,7 +412,11 @@ def _build_project_tree(
     tree = project_tree.build_tree(
         projects, sessions, discovered, git_probe.resolve, preview_limit=preview_limit,
         hydrate=hydrate, is_junk_root=_is_repo_junk, is_junk_cwd=_is_session_cwd_junk,
-        exists=_dir_exists_cached)
+        exists=_dir_exists_cached,
+        # Not on Windows: ``ntpath.realpath`` also rewrites drive case and mapped drives, and
+        # before 3.13 grafts a drive onto a remote backend's POSIX path. None of that is a
+        # symlinked parent, so the tree there keeps comparing spellings.
+        canonical=_physical_path_cached if os.name == "posix" else None)
     return tree, active_id
 
 

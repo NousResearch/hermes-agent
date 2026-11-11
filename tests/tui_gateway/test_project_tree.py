@@ -394,6 +394,151 @@ def test_windows_unicode_normalization_and_case_share_one_identity():
     assert project["sessionCount"] == 1
 
 
+def _links(links):
+    """A ``canonical`` for symlinked parents: each ``{link: target}`` resolves to its target."""
+    return lambda path: next(
+        (target + path[len(link):] for link, target in links.items() if path.startswith(link)), path)
+
+
+def test_a_folder_reached_through_a_symlinked_parent_is_one_identity():
+    # A renamed home that left a compatibility link hands the same folder back under
+    # two spellings. git unifies them when it can; without a probe (non-git folder,
+    # git unavailable) each row is placed by its own spelling, so identity has to be
+    # the folder or the repo renders twice with its sessions split.
+    canonical = _links({"/old-home": "/home"})
+    explicit = _project("p_app", "App", ["/home/app"])
+    current, linked = _session("/home/notes"), _session("/old-home/notes")
+    claimed = _session("/old-home/app/src")
+
+    tree = pt.build_tree(
+        [explicit], [current, linked, claimed], [{"root": "/old-home/notes"}],
+        resolve=lambda _cwd: None, hydrate=True, canonical=canonical)
+
+    # One auto project for the folder: not a second one per spelling, and not a
+    # third from the discovered root.
+    (notes,) = [p for p in tree["projects"] if p.get("isAuto")]
+    assert notes["sessionCount"] == 2
+    (repo,) = notes["repos"]
+    assert {s["id"] for g in repo["groups"] for s in g["sessions"]} == {current["id"], linked["id"]}
+    # A declared folder owns a session whose cwd reaches it through the link.
+    assert next(p for p in tree["projects"] if p["id"] == "p_app")["sessionCount"] == 1
+
+
+def test_symlink_identity_emits_stable_ids_whatever_the_row_order():
+    # The renderer keys dismissal, pins and ordering off these ids, and rows arrive by
+    # recency. A folded row must not follow the most recent spelling (its ids would move
+    # each time the other one is used): it shows the physical spelling, with its lanes
+    # rooted on it, or the smallest spelling when no row carries the physical one. A
+    # folder that arrives under ONE spelling keeps it, link or not. A lane named after its
+    # folder is named after the spelling shown, so a link in the LAST segment cannot leave
+    # the label on one spelling and the path on the other.
+    canonical = _links(
+        {"/old-home": "/home", "/link-a": "/target", "/link-b": "/target", "/w/alias": "/w/real"})
+    sessions = [
+        _session("/old-home/notes", branch="feat", repo_root="/old-home/notes"),
+        _session("/home/notes", branch="main", repo_root="/home/notes"),
+        _session("/old-home/solo"),
+        _session("/link-b/twice"),
+        _session("/link-a/twice"),
+        _session("/w/alias"),
+        _session("/w/real"),
+    ]
+
+    for rows in (sessions, sessions[::-1]):
+        tree = pt.build_tree([], rows, [], resolve=lambda _cwd: None, hydrate=True, canonical=canonical)
+
+        by_id = {p["id"]: p for p in tree["projects"]}
+        assert set(by_id) == {"/home/notes", "/old-home/solo", "/link-a/twice", "/w/real"}
+        assert all(p["path"] == root and [r["id"] for r in p["repos"]] == [root] for root, p in by_id.items())
+        assert set(_lane_ids(by_id["/home/notes"])) == {"/home/notes::branch::main", "/home/notes::branch::feat"}
+        assert _lane_ids(by_id["/old-home/solo"]) == ["/old-home/solo::branch::main"]
+        assert _lane_ids(by_id["/link-a/twice"]) == ["/link-a/twice::branch::main"]
+        assert [(g["id"], g["label"]) for r in by_id["/w/real"]["repos"] for g in r["groups"]] == [
+            ("/w/real::branch::main", "real")]
+
+
+def test_a_link_pointing_out_of_a_declared_folder_keeps_its_owner():
+    # `/code/app/libs/shared` is a link to `/code/shared-lib` (a linked package). The cwd
+    # is still inside the declared folder as spelled, so the physical path may supply an
+    # owner where the spelling finds none but must not take this one away.
+    canonical = _links({"/code/app/libs/shared": "/code/shared-lib"})
+    explicit = _project("p_app", "App", ["/code/app"])
+    session = _session("/code/app/libs/shared/src")
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True, canonical=canonical)
+
+    assert next(p for p in tree["projects"] if p["id"] == "p_app")["sessionCount"] == 1
+
+
+def test_a_linked_folder_does_not_outrank_the_deeper_repo_root_owner():
+    # Ownership compares the cwd's folder with the repo root's by depth. A folder that sits
+    # behind a link (`/tmp` -> `/private/tmp`) is no deeper for it: the row still goes to
+    # the project that owns its repo root at the greater depth, as it does without a link.
+    canonical = _links({"/tmp": "/private/tmp"})
+    scratch = _project("p_scratch", "Scratch", ["/tmp/w"])
+    repo = _project("p_repo", "Repo", ["/Users/u/r"])
+    session = _session("/tmp/w/x")
+    resolve = _resolver({"/tmp/w/x": ("/Users/u/r", "/Users/u/r")})
+
+    tree = pt.build_tree([scratch, repo], [session], [], resolve, hydrate=True, canonical=canonical)
+
+    counts = {p["id"]: p["sessionCount"] for p in tree["projects"]}
+    assert (counts["p_scratch"], counts["p_repo"]) == (0, 1)
+
+
+def test_a_target_inside_a_declared_folder_as_spelled_keeps_that_match():
+    # A folder declared through a link can also be found by its target, but only for a cwd
+    # or repo root that is inside no declared folder as spelled. One that is keeps that
+    # match, wherever the link's target happens to sit, so these rows have the owner they
+    # have without `canonical`.
+    nested = (  # `/l` links to p_repo's folder, and p_sub declares a folder through it
+        {"/l": "/Users/u/r"},
+        [_project("p_sub", "Sub", ["/l/sub"]), _project("p_repo", "Repo", ["/Users/u/r"])],
+        {cwd: ("/Users/u/r", "/Users/u/r") for cwd in ("/l/sub/x", "/Users/u/r/sub/x")},
+        {"p_sub": [], "p_repo": ["/Users/u/r/sub/x", "/l/sub/x"]})
+    twice = (  # two projects declare one folder, each under one of its spellings
+        {"/tmp": "/private/tmp"},
+        [_project("p_link", "Link", ["/tmp/w"]), _project("p_real", "Real", ["/private/tmp/w"])],
+        {"/tmp/w/x": None, "/private/tmp/w/x": None},
+        {"p_link": ["/tmp/w/x"], "p_real": ["/private/tmp/w/x"]})
+
+    for links, projects, probes, expected in (nested, twice):
+        sessions = [_session(cwd) for cwd in probes]
+        cwd_of = {s["id"]: s["cwd"] for s in sessions}
+        for canonical in (None, _links(links)):
+            tree = pt.build_tree(
+                projects, sessions, [], _resolver(probes), hydrate=True, canonical=canonical)
+            owned = {p["id"]: sorted(cwd_of[sid] for sid in p["sessionIds"]) for p in tree["projects"]}
+            assert owned == expected
+
+
+def test_a_folder_declared_through_a_link_owns_the_rows_under_its_target():
+    # A project created before its parent folder was renamed still declares the old
+    # spelling, now a link. The rows arriving under the new spelling are its rows.
+    canonical = _links({"/old-home": "/home"})
+    explicit = _project("p_app", "App", ["/old-home/app"])
+    session = _session("/home/app/src")
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True, canonical=canonical)
+
+    assert next(p for p in tree["projects"] if p["id"] == "p_app")["sessionIds"] == [session["id"]]
+
+
+def test_a_row_reached_through_a_link_is_owned_like_its_physical_spelling():
+    # p_src declares a folder inside p_app's. A cwd under a link is inside no declared
+    # folder as spelled, so it is matched by its physical path and gets the deeper folder,
+    # as the same cwd does under the physical spelling: one folder, one project.
+    canonical = _links({"/old": "/home"})
+    projects = [_project("p_src", "Src", ["/home/app/src"]), _project("p_app", "App", ["/home/app"])]
+    probes = {cwd: ("/home/app", "/home/app") for cwd in ("/old/app/src/x", "/home/app/src/x")}
+
+    tree = pt.build_tree(
+        projects, [_session(cwd) for cwd in probes], [], _resolver(probes), hydrate=True,
+        canonical=canonical)
+
+    assert {p["id"]: p["sessionCount"] for p in tree["projects"]} == {"p_src": 2, "p_app": 0}
+
+
 def test_explicit_project_claims_sessions_and_beats_auto():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(

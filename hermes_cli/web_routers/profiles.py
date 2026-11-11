@@ -619,6 +619,9 @@ def _merge_profile_tree(
         # Same folder-identity notion the per-profile tree builder uses (``_path_key``):
         # shape-derived — Windows paths case-fold on any host, separators unify, NFC —
         # so the cross-profile merge agrees by construction with the trees it merges.
+        # Shape only: the builder also folds a symlinked parent (its injected ``canonical``),
+        # which this merge and the Desktop's ``mergeKey`` merge do not resolve, so two
+        # profiles that spell one folder through different links stay two groups here.
         from tui_gateway.project_tree import _path_key
         key = _path_key(project.get("path") or project["id"])
         # A per-profile read is merged again by its caller, which cannot compute this key.

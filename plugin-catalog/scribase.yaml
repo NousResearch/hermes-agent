@@ -1,16 +1,20 @@
 name: scribase
 repo: https://github.com/caelum0x/scribase-hermes-plugin
-sha: 77641be477430b83a082406cdf7c6dbb7037e6ca
-description: "Provision a hosted Postgres backend project on Scribase (api.scribase.com) and get back its connection string and API keys. Disclosure — calling scribase_create_project creates billable Scribase resources (a project and a Postgres environment) in the user's organization without a confirmation prompt, and returns the new environment's Postgres connection URI and anon/service-role/secret API keys into the conversation, where they reach the configured model provider and the session history; network only to api.scribase.com or the user-configured api_base_url, authenticated with SCRIBASE_API_KEY."
+sha: 3107933b11112b8b6d745d92316c89663628d033
+description: "Provision a hosted Postgres backend project on Scribase (api.scribase.com), lint a SQL migration against real migration-safety rules before running it, run read-only queries against the project's database, create/promote/discard a real copy-on-write Postgres branch for one agent task, and give the agent real persistent memory (store/recall/search/forget) backed by a Postgres table in its own project. Disclosure — scribase_create_project creates billable Scribase resources (a project and a Postgres environment) in the user's organization without a confirmation prompt, and returns the new environment's Postgres connection URI and anon/service-role/secret API keys into the conversation, where they reach the configured model provider and the session history; scribase_lint_migration always sends apply=false and never opens a database session; scribase_query only ever runs inside a server-enforced Postgres READ ONLY transaction and cannot write; scribase_branch_task's create action creates another billable environment with the same connection/API-key disclosure as scribase_create_project, its promote action is the only action in this plugin that can change an existing environment (applies a real schema merge, but only when the control plane's own merge plan is conflict-free, or when force=true and the organization has no MFA factor — the server itself rejects a forced merge on an MFA-protected organization), and its discard action permanently deletes the branch and its data; scribase_memory_task's store/forget actions write through the project's real write-mode SQL route (database/execute) to one dedicated, RLS-enabled table (hermes_agent_memories) it creates on first use — forget only ever deletes the single row whose id is passed in, never a whole scope or table — and every value it interpolates into SQL is hex-encoded (never raw-concatenated or passed through as model-supplied SQL), independently re-verified live against a real temporary Scribase project with an adversarial payload battery (stacked-query attempts, comment sequences, UNION probes, scope/memory_id injection, ILIKE breakout attempts) with no injection found. Network only to api.scribase.com or the user-configured api_base_url, authenticated with SCRIBASE_API_KEY."
 maintainer: caelum0x
 tier: community
 category: tools
 requires_hermes: ">=0.20.1"
 docs_url: "https://docs.scribase.com"
-version: "1.0.0"
+version: "1.3.0"
 capabilities:
   provides_tools:
     - scribase_create_project
+    - scribase_lint_migration
+    - scribase_query
+    - scribase_branch_task
+    - scribase_memory_task
   provides_hooks: []
   provides_middleware: []
   requires_env:

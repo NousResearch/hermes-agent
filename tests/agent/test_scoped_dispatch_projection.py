@@ -65,13 +65,17 @@ def test_terminal_legacy_notifications_and_wrong_tool_guard_survive_projection(m
     monkeypatch.setattr(terminal, "terminal_tool", lambda **kw: received.append(kw) or '{}')
 
     for legacy in ({"notify_on_complete": True}, {"watch_patterns": ["ready"]}):
-        result = json.loads(registry.dispatch(
-            "terminal", {"command": "echo ready", "background": True, "force": True, **legacy}))
+        raw = registry.dispatch(
+            "terminal", {"command": "echo ready", "background": True, "force": True, **legacy})
+        assert isinstance(raw, str)
+        result = json.loads(raw)
         assert "error" not in result
         assert all(received[-1][key] == value for key, value in legacy.items())
         assert "force" not in received[-1]
 
-    wrong_tool = json.loads(registry.dispatch("terminal", {"code": "print(1)"}))
+    raw = registry.dispatch("terminal", {"code": "print(1)"})
+    assert isinstance(raw, str)
+    wrong_tool = json.loads(raw)
     assert "Use execute_code" in wrong_tool["error"]
     assert len(received) == 2
 

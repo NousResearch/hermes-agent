@@ -16,7 +16,7 @@ from typing import Any, Callable, FrozenSet, Iterable, Optional
 
 # Read-only floor every allowed user keeps under gating, so a non-admin can still discover what
 # they can do. ``user_allowed_commands`` only adds to this set, never restricts it.
-_ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({"help", "whoami"})
+_ALWAYS_ALLOWED_FOR_USERS: frozenset[str] = frozenset({"help", "whoami"})
 
 _DM_CHAT_TYPES = frozenset({"dm", "direct", "private", ""})
 
@@ -32,8 +32,8 @@ class SlashAccessPolicy:
     """Resolved access policy for one (platform, scope) pair; scope is ``"dm"`` or ``"group"``."""
 
     enabled: bool  # gating active for this scope?
-    admin_user_ids: FrozenSet[str]
-    user_allowed_commands: FrozenSet[str]
+    admin_user_ids: frozenset[str]
+    user_allowed_commands: frozenset[str]
 
     def is_admin(self, user_id: Optional[str]) -> bool:
         # Gating disabled -> everyone is admin so callers can use is_admin/can_run uniformly.
@@ -41,11 +41,19 @@ class SlashAccessPolicy:
             return True
         return bool(user_id) and str(user_id) in self.admin_user_ids
 
+    @property
+    def user_runnable_commands(self) -> frozenset[str]:
+        """What a non-admin may run: ``user_allowed_commands``, plus ``deny`` for an ``approve``
+        holder (whoever may approve a pending approval may also refuse it). Excludes the
+        ``_ALWAYS_ALLOWED_FOR_USERS`` floor."""
+        allowed = self.user_allowed_commands
+        return allowed | {"deny"} if "approve" in allowed else allowed
+
     def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
         if self.is_admin(user_id):
             return True
         return bool(canonical_cmd) and (
-            canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in self.user_allowed_commands
+            canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS or canonical_cmd in self.user_runnable_commands
         )
 
 
@@ -58,7 +66,7 @@ _FAIL_CLOSED_POLICY = SlashAccessPolicy(
 )
 
 
-def _coerce_list(raw: Any, normalize: Callable[[str], str] = str) -> FrozenSet[str]:
+def _coerce_list(raw: Any, normalize: Callable[[str], str] = str) -> frozenset[str]:
     """Normalize a YAML-loaded value (None, list/tuple/set, comma string, or scalar) into a
     frozenset of stripped, non-empty strings, applying ``normalize`` to each."""
     if raw is None:
@@ -72,12 +80,12 @@ def _coerce_list(raw: Any, normalize: Callable[[str], str] = str) -> FrozenSet[s
     return frozenset(s for s in (normalize(str(it).strip()) for it in items) if s)
 
 
-def _coerce_id_list(raw: Any) -> FrozenSet[str]:
+def _coerce_id_list(raw: Any) -> frozenset[str]:
     """Normalize an admin/user id list into a frozenset of strings."""
     return _coerce_list(raw)
 
 
-def _coerce_command_list(raw: Any) -> FrozenSet[str]:
+def _coerce_command_list(raw: Any) -> frozenset[str]:
     """Command allowlist: strip leading slashes (``/help`` or ``help``) and lowercase to match
     how ``resolve_command()`` stores names."""
     return _coerce_list(raw, lambda s: s.lstrip("/").lower())
@@ -116,7 +124,14 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     extra = getattr(platform_config, "extra", None)
     if not isinstance(extra, dict):
         extra = platform_config if isinstance(platform_config, dict) else {}
-    chat_type = getattr(source, "chat_type", None)
+    return policy_for_chat_type(extra, getattr(source, "chat_type", None))
+
+
+def policy_for_chat_type(extra: Any, chat_type: Any) -> SlashAccessPolicy:
+    """The scope policy of one platform ``extra`` block for a chat of ``chat_type``: the single rule
+    every surface uses to pick DM vs group admins (slash commands, ``/approve``, approval buttons)."""
+    if not isinstance(extra, dict):
+        extra = {}
     normalized = str(chat_type).strip().lower() if chat_type is not None else ""
     if normalized:
         scope = "dm" if normalized in _DM_CHAT_TYPES else "group"
@@ -130,7 +145,7 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
 
 
-__all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_source"]
+__all__ = ["SlashAccessPolicy", "policy_for_chat_type", "policy_for_source", "policy_from_extra"]
 
 
 

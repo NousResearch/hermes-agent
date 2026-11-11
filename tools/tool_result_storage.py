@@ -8,9 +8,11 @@ else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shlex
+import sqlite3
 import tempfile
 import threading
 import time
@@ -22,6 +24,8 @@ PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
+# Fallback spillover age only (unreadable config); the real default is the session
+# retention window — see _spillover_retention_hours().
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 # The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
@@ -29,6 +33,8 @@ _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
 _ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
 _ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
+_TOOL_METADATA_TAG = "<tool-result-metadata>"
+_TOOL_METADATA_CLOSING_TAG = "</tool-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
@@ -42,11 +48,98 @@ def get_spillover_dir():
     return get_hermes_home() / SPILLOVER_SUBDIR
 
 
-def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int:
+def _spillover_retention_hours() -> int:
+    """Default spillover age = the session retention window (``sessions.retention_days``).
+    Spill files are archives the durable transcript points at, not a cache: a session resumed
+    days later must still find what the ``<persisted-output>`` pointer promises (#126351).
+    Falls back to the legacy 24h cache age when the config is unreadable."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
+        if not math.isfinite(days):  # YAML ``.inf`` / ``.nan`` parse as floats; int() would raise
+            return SPILLOVER_MAX_AGE_HOURS
+    except Exception:  # health: allow BLE001 -- any config read/parse failure means the legacy floor
+        return SPILLOVER_MAX_AGE_HOURS
+    # ``retention_days: 0`` is legal (ended sessions pruned at once) but session prune never
+    # touches OPEN sessions, while a zero-hour spill cutoff deletes the file the first spill
+    # just wrote (the pointer then names a missing path). Floor at the legacy cache age.
+    return max(SPILLOVER_MAX_AGE_HOURS, int(days * 24))
+
+
+# How a spill archive is named inside transcript text: every pointer form — the host path,
+# the ``~``-relative translation, the in-container mounted path — carries the ``spillover/<name>``
+# segment. Sandbox-fallback pointers (``…/hermes-results/<name>``) do not, so their host-side
+# original stays unreferenced and is reclaimed by the orphan sweep, never by ownership.
+# Either separator: Windows host paths are backslashed (JSON-escaped as ``\\`` inside structured content).
+_SPILLOVER_NAME_RE = re.compile(r"spillover(?:/|\\+)([A-Za-z0-9_.-]+)")
+# instr(), not LIKE: structured content is stored behind a NUL sentinel and LIKE stops at NUL.
+SPILLOVER_SQL_FILTER = "(instr(content, 'spillover') > 0 OR instr(api_content, 'spillover') > 0)"
+
+
+_ARCHIVE_PATH_RE = re.compile(r"(?:^|[/\\])(?:spillover|hermes-results)[/\\][^/\\]+$")
+
+
+def expired_archive_fields(path: str) -> dict:
+    """Extra read_file not-found fields for a persisted-tool-result path: the archive was pruned,
+    so the model gets "expired" instead of a generic miss it might take for a typo (#126351)."""
+    if not isinstance(path, str) or not _ARCHIVE_PATH_RE.search(path):
+        return {}
+    return {"expired": True, "hint": (
+            "This was a persisted tool result archive and it has expired (pruned with its "
+            "session or by the cache sweep); the full output is no longer recoverable. Inspect "
+            "the current state before re-running the original tool — the call that produced it "
+            "may already have taken effect.")}
+
+
+def spillover_names_in_text(*texts) -> set:
+    """Spillover archive basenames referenced by transcript message text (empty set on none)."""
+    names: set = set()
+    for text in texts:
+        if isinstance(text, str) and "spillover" in text:
+            names.update(_SPILLOVER_NAME_RE.findall(text))
+    return names
+
+
+def referenced_spillover_names(spill_dir) -> set | None:
+    """Basenames under *spill_dir* still referenced by any message in the home's ``state.db``.
+
+    ``set()`` when no database exists (no sessions → nothing references anything), ``None``
+    when the reference set is UNKNOWN (unreadable / truncated query) so callers fail closed
+    and keep the files; a plain read-only connection is enough, the write path owns the locks."""
+    db_path = spill_dir.parent.parent / "state.db"
+    if not db_path.exists():
+        return set()
+    try:
+        # as_uri(): a plain f"file:{path}" breaks on Windows drive letters
+        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            rows = conn.execute(
+                f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
+            ).fetchall()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return None
+    if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
+        return None
+    names: set = set()
+    for content, api_content in rows:
+        names |= spillover_names_in_text(content, api_content)
+    return names
+
+
+def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
     """Delete spillover files older than *max_age_hours*; returns count removed (same
-    contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly)."""
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
+    contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly).
+    A ``None`` age means the session retention window, not a cache TTL — an explicit
+    ``max_age_hours`` (tests, legacy callers) still wins. An expired file is deleted only
+    when no message in the home's state.db references it: the transcript's
+    ``<persisted-output>`` promise outlives the archive's mtime exactly as long as the
+    owning session does (#126351) — referenced archives leave with their session, via the
+    unlink SessionDB delete/prune performs, not with the age sweep."""
+    age_hours = _spillover_retention_hours() if max_age_hours is None else max_age_hours
+    cutoff = time.time() - (age_hours * 3600)
+    expired = []
     try:
         entries = list(get_spillover_dir().iterdir())
     except OSError:
@@ -54,8 +147,19 @@ def cleanup_spillover_cache(max_age_hours: int = SPILLOVER_MAX_AGE_HOURS) -> int
     for f in entries:
         try:
             if f.is_file() and f.stat().st_mtime < cutoff:
-                f.unlink()
-                removed += 1
+                expired.append(f)
+        except OSError:
+            pass
+    if not expired:
+        return 0
+    referenced = referenced_spillover_names(get_spillover_dir())
+    removed = 0
+    for f in expired:
+        if referenced is None or f.name in referenced:  # unknown set: fail closed, keep
+            continue
+        try:
+            f.unlink()
+            removed += 1
         except OSError:
             pass
     return removed
@@ -80,14 +184,12 @@ def _prune_spillover_once() -> None:
 
 def _is_host_side_env(env) -> bool:
     """True when this process should write the spill file directly: ``env=None`` (no sandbox
-    yet) or the local backend. Remote backends resolve ``read_file`` inside the sandbox."""
+    yet) or a backend whose files are the host's. Others resolve ``read_file`` inside the sandbox."""
     if env is None:
         return True
-    try:
-        from tools.environments.local import LocalEnvironment
-        return isinstance(env, LocalEnvironment)
-    except Exception:
-        return False
+    from tools.environments.base import env_uses_host_filesystem
+
+    return env_uses_host_filesystem(env)
 
 
 def _write_to_spillover(content: str, filename: str):
@@ -179,34 +281,59 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+def _tool_metadata_block(fields: dict) -> str:
+    metadata = json.dumps(fields, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    return f"{_TOOL_METADATA_TAG}\n{metadata}\n{_TOOL_METADATA_CLOSING_TAG}"
+
+
+def _pageable_tool_json(content: str, payload: dict) -> str:
+    strings = [(key, value) for key, value in payload.items() if isinstance(value, str)]
+    if not strings:
+        return content
+    key, text = strings[0]
+    for name, value in strings[1:]:
+        if len(value) > len(text):
+            key, text = name, value
+    if "\n" not in text or "\x00" in text or len(text) < len(content) / 2:
+        return content
+    header, trailer = {"text_field": key}, {}
+    for name, value in payload.items():
+        if name != key:
+            (trailer if isinstance(value, (dict, list)) else header)[name] = value
+    pageable = f"{_tool_metadata_block(header)}\n\n{text}"
+    return f"{pageable}\n\n{_tool_metadata_block(trailer)}\n" if trailer else pageable
+
+
 def _pageable_text(content: str) -> str:
-    """Rewrite an MCP handler result envelope into the text it wraps, else return *content*.
+    """Rewrite a JSON tool result into the text it wraps, else return *content*.
 
-    ``tools/mcp_tool_handlers.py::_render_call_tool_result`` hands the model a JSON string
-    (``{"result": <text>, ...}``) so structured metadata survives inline delivery. Persisting
-    that string verbatim put a multi-hundred-KB document on ONE line with escaped newlines, so
-    the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
-    not be used at all (#90426).
+    Persisting a JSON result verbatim put the whole document on ONE line with escaped newlines,
+    so the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
+    not be used (#90426 for MCP envelopes; built-in tools such as terminal, execute_code,
+    read_file and skill_view return JSON objects with the same problem).
 
-    Recognized by SHAPE, not by tool name: the envelope is the only JSON object in the codebase
-    whose keys are a subset of ``{"result", "structuredContent", "_meta"}`` with a non-empty
-    string ``result``. That keeps opaque JSON from any other tool verbatim, and it also covers
-    the aggregate path (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``, so a
-    ``mcp__``-prefix test would miss exactly the results it has to fix).
-
-    Sibling members are appended after the text in a delimited metadata block instead of being
-    dropped: they are the structured payloads ``_render_call_tool_result`` deliberately keeps
-    for the model (#115430), and the spill file is the only copy left once the envelope is
-    replaced by the preview. Anything unrecognized — unparseable JSON, a non-object, an unknown
-    key, a missing/empty/non-string ``result`` (e.g. a structuredContent-only result, which has
-    no pageable text) — is persisted verbatim, exactly as before.
+    Recognized by SHAPE, not by tool name: ``enforce_turn_budget`` persists under
+    ``_BUDGET_TOOL_NAME``, so a tool-name test would miss exactly the results it has to fix.
+    The MCP envelope (keys a subset of ``{"result", "structuredContent", "_meta"}``) unwraps
+    ``result`` and appends its sibling members after the text, because they are the structured
+    payloads ``_render_call_tool_result`` deliberately keeps for the model (#115430). Any other
+    JSON object unwraps its longest string only when that string is multi-line, NUL-free (a NUL
+    makes ``read_file`` treat the file as binary) and at least half the payload, so small or
+    opaque JSON stays verbatim. Its scalar keys (``status``, ``exit_code``, ``error``, notes,
+    paths) go in a metadata block BEFORE the text, so they stay in the inline preview; its lists
+    and dicts go in a second block AFTER it, so they cannot push the text out of the preview (a
+    ``skill_view`` result's ``linked_files`` and ``metadata`` filled all of it). Either way
+    nothing is dropped: the spill file is the only copy left once the result is replaced by the
+    preview.
     """
     try:
         payload = json.loads(content)
     except (TypeError, ValueError):
         return content
-    if not isinstance(payload, dict) or not payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
+    if not isinstance(payload, dict) or not payload:
         return content
+    if "result" not in payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
+        return _pageable_tool_json(content, payload)
     text = payload.get("result")
     if not isinstance(text, str) or not text:
         return content
@@ -273,7 +400,9 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         "Use the read_file tool with offset and limit to access specific sections of this output.\n"
         "Recovery: page through the saved file with read_file (offset/limit) or "
         "process it with execute_code — do NOT re-request the same data from the "
-        "remote API; the full result is already on disk.\n\n"
+        "remote API; the archive is kept while this session's transcript references "
+        "it. If it is missing, inspect the current state before retrying — the call "
+        "that produced it may already have taken effect.\n\n"
         f"Preview (first {len(preview)} chars):\n"
         + preview + ("\n..." if has_more else "")
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")
@@ -292,7 +421,7 @@ def extract_persisted_path(content: str) -> str | None:
 
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
-                              threshold: int | float | None = None) -> str:
+                              threshold: float | None = None) -> str:
     """Layer 2: persist an oversized result, return preview + path. ``threshold`` overrides
     ``config.resolve_threshold(tool_name)``; falls back to inline truncation when no write
     location succeeds."""

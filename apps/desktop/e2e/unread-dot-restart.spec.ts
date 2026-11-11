@@ -22,7 +22,7 @@
  *  5. Open session A → dot clears.
  *  6. Restart once more → the cleared state must persist too (no zombie dot).
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import { expect, type Page, test } from '@playwright/test'

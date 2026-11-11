@@ -1,0 +1,20 @@
+name: payops
+repo: https://github.com/BigWave45/payops-hermes-
+sha: 7712f084392769356bdb294c4b48bf99bf7faadb
+description: "Read-only Paystack transaction inspection and reconciliation for Hermes agents. Disclosure — read-only payments integration: sends the user's PAYSTACK_SECRET_KEY (read through Hermes's secret route) to api.paystack.co only, issuing GET requests for transactions and settlements; it cannot create charges, refunds or transfers. No other hosts, no files written, no telemetry."
+maintainer: BigWave45
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/BigWave45/payops-hermes-/blob/7712f084392769356bdb294c4b48bf99bf7faadb/README.md
+version: "0.2.1"
+readme: true
+capabilities:
+  provides_tools:
+    - payops_list_transactions
+    - payops_reconcile
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PAYSTACK_SECRET_KEY
+subdir: payops

@@ -78,6 +78,7 @@ class ConnectionTargetEnvField(Payload):
 
 class CatalogTier(WireEnum):
     official = "official"
+    verified = "verified"
     community = "community"
 
 
@@ -119,6 +120,23 @@ class CatalogServerError(Payload):
     error: str
 
 
+class ConnectionTargetLaunchKind(WireEnum):
+    remote = "remote"
+    stdio = "stdio"
+
+
+class ConnectionTargetLaunch(Payload):
+    """What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed
+    display text, never env values or headers."""
+
+    kind: ConnectionTargetLaunchKind
+    target: str
+    # stdio only: the names of the env vars the entry adds to the child (values never ride here).
+    env: list[str] | None = None
+    # stdio only: the configured working directory, when one is set.
+    cwd: str | None = None
+
+
 class ConnectionOperationTarget(Payload):
     """``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra``
     keys a leg records (``tools``, ``hint``) are typed here as they appear."""
@@ -135,9 +153,13 @@ class ConnectionOperationTarget(Payload):
     connect_url: str | None = None
     # The vendor account a managed mint created or observed; never the desktop transport's id.
     connection_id: str | None = None
+    # The name of the one hosted account this row connects or repairs.
+    alias: str | None = None
     attempt: str | None = None
     # Present only on an MCP install that is waiting for credentials.
     required_env: list[ConnectionTargetEnvField] | None = None
+    # MCP rows only: shown on the card before the user approves.
+    launch: ConnectionTargetLaunch | None = None
     tools: list[str] | None = None
     hint: str | None = None
     # Catalog rows (kind ``plugin`` / ``skill``) only; field set agreed in CATALOG-ROW-CONTRACT.md.
@@ -166,6 +188,12 @@ class ConnectionOperationTarget(Payload):
     already_installed: bool | None = None
 
 
+class ConnectionDisplay(Payload):
+    """``manage_connections`` action ``display``: the directory card, with these slugs pinned as Suggested."""
+
+    suggested: list[str]
+
+
 class ConnectionRequestPayload(Payload):
     """``ConnectionOperation.request_payload``: opens the card; also the ``pending_connection`` resume
     snapshot so a client that missed the event restores the card with the server's deadline."""
@@ -179,6 +207,8 @@ class ConnectionRequestPayload(Payload):
     targets: list[ConnectionOperationTarget]
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: str | None = None
+    # Present on a display operation, which has no targets.
+    display: ConnectionDisplay | None = None
 
 
 event("connection.request", ConnectionRequestPayload,
@@ -252,6 +282,8 @@ class ConnectionAnswer(Params):
 
     targets: list[ConnectionAnswerTarget] = Field(default_factory=list)
     settled_by: ConnectionSettleReason | None = None
+    # A display card answered by the user's words typed in the composer; it settles the card like Continue.
+    said: str | None = None
 
 
 class ConnectionRespondParams(ConnectionOperationParams):

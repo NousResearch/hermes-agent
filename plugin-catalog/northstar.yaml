@@ -1,0 +1,20 @@
+name: northstar
+title: Northstar
+description: "Read-only coherence auditing for Hermes Agent. Detects potential contradictions, duplicate directives, and stale references in instruction sources and skills, with supporting evidence. Disclosure — the audit tool reads your Hermes home instruction files, `config.yaml`, every installed skill, and instruction files in the current working directory, and returns matching lines as evidence to the model (a secret written inline in config that is duplicated across scanned files can appear in a result); read-only, no network calls."
+repo: https://github.com/mrcoxis-2002/hermes-northstar
+sha: 9e4976cb416c65c702698e8da67e24a023a2fc14
+maintainer: mrcoxis-2002
+tier: community
+category: tools
+version: "0.1.0"
+docs_url: https://github.com/mrcoxis-2002/hermes-northstar
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - northstar_audit
+    - northstar_status
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

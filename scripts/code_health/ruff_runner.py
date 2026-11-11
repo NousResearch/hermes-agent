@@ -2,6 +2,9 @@
 
 The pin lives in pyproject's ``dev`` dependency group (the version CI installs); a different
 local ruff is never used silently, because rule behaviour and CC counts drift between releases.
+
+``python -m scripts.code_health.ruff_runner ARGS...`` runs that pinned ruff with ARGS from the
+current directory (the ``just fix`` and pre-commit recipes).
 """
 
 from __future__ import annotations
@@ -103,3 +106,12 @@ def _record(results: dict[str, RuffFile], root: Path, diag: dict) -> None:
         entry.hits.append((code, row))
     else:
         entry.errors.append(f"line {row}: {diag.get('message', 'syntax error')}")
+
+
+def main(argv: list[str]) -> int:
+    repo = Path(__file__).resolve().parents[2]
+    return subprocess.run([*resolve_ruff(repo), *argv], timeout=600, check=False).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

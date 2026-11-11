@@ -36,11 +36,11 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   recommendedReason: {
     'product-default': '这台机器的默认模型，由其制造商选定。',
     'best-quality-resident': '在完全驻留 GPU 且保持全速的模型中质量最高。推荐会在质量与该硬件的预计速度之间权衡。',
-    'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。',
-    'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。'
+    'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。'
   } as Record<string, string>,
   noRecommendationTitle: '此设备暂无自动推荐模型',
-  noRecommendationDetail: '自动设置需要一个可完全放入显存或统一内存的精选模型。你仍可在下方自行选择，或浏览更多模型。',
+  noRecommendationDetail:
+    '自动设置需要一个可完全驻留显存或统一内存并保持全速的精选模型。你仍可在下方自行选择，或浏览更多模型。',
   noRecommendationAction: '浏览模型',
   downloaded: '已下载',
   downloadAction: size => `下载 · ${size}`,
@@ -58,6 +58,8 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: '引擎有可用更新',
   updateDetail: (next, current) =>
     `新的 llama.cpp 构建（${next}）可以安装——当前为 ${current}。下载期间模型仍可正常使用。`,
+  updateSameBuildDetail: tag =>
+    `Hermes 现在为 llama.cpp ${tag} 附带运行所需的文件。更新会重新下载引擎，下载期间模型仍可正常使用。`,
   updateAction: '更新引擎',
   updating: '正在更新引擎…',
   upToDateTitle: '引擎已是最新',

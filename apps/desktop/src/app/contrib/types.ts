@@ -61,6 +61,8 @@ export type ChatActions = Pick<
  * the latest closure.
  */
 export interface WiringActions extends SidebarActions, ChatActions {
+  /** Re-home a chat's workspace: the primary's, or `sessionId` (a focused tile's runtime id). */
+  changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
   followDefaultModel: () => void
   /** Imperative access to the live gateway for controller-owned callbacks.
    *  Rendered surfaces subscribe to the active `$gateway` atom directly. */

@@ -1,0 +1,22 @@
+name: agent-checkpoint
+repo: https://github.com/mbgulden/agent-checkpoint
+sha: a2bff52e6528260a27aea8de0e3032d3c3ce4887
+subdir: ""
+title: Agent Checkpoint
+description: "Durable progress checkpoints for long, budget-capped Hermes runs: at 50% of a run's budget the plugin tells the agent to persist everything found so far, and at 80% of the time budget / 90% of the turn budget it persists the checkpoint itself — a checkpoint file plus, in kanban runs, a task comment — evaluated at tool-call boundaries and by a per-session watchdog thread, with interval checkpoint coverage for uncapped runs. It guarantees a paper trail, not completion. Disclosures: no network calls; reads the kanban DB read-only for cap discovery; writes checkpoint files under $HERMES_HOME/agent-checkpoints/ and posts kanban task comments through the kanban_comment tool (dispatched via the plugin context; core sets the author and redacts the body, and the plugin names itself in the comment header); runs one daemon watchdog thread per session, exiting at session end; uses one private core import (hermes_cli.goals.load_goal) that draws a warning, never a failure, from hermes plugins validate; no credentials, no telemetry, no self-update. Disclosure — injects budget-checkpoint reminders into the prompt via pre_llm_call at 50% of a run's budget; at 80% time / 90% turns (and every uncapped_interval_seconds, default 1800, on runs with no cap) a per-session watchdog thread and the tool hooks write <run-id>.md under $HERMES_HOME/agent-checkpoints/ and, in kanban runs, post a task comment through the kanban_comment tool (core sets the author and redacts the body); reads the kanban DB read-only for the task's runtime cap; uses one private core import (hermes_cli.goals.load_goal); no network calls, credentials, telemetry or self-update."
+maintainer: mbgulden
+tier: community
+category: automation
+requires_hermes: ">=0.20.5"
+version: "0.3.0"
+docs_url: https://github.com/mbgulden/agent-checkpoint/blob/a2bff52e6528260a27aea8de0e3032d3c3ce4887/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

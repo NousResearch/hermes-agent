@@ -124,7 +124,7 @@ def _resolve_plugin_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
 # ``api_key`` / ``external_process`` arms stay on the facade (they share its credential
 # resolvers); the table maps the auth types whose arms are build-and-route one-liners
 # or live here as topical arms.
-REGISTRY_AUTHTYPE_ARMS: Dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
+REGISTRY_AUTHTYPE_ARMS: dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
     "vertex": _resolve_vertex_arm,
     "aws_sdk": _resolve_bedrock_arm,
     "oauth_minimax": _resolve_minimax_oauth_arm,

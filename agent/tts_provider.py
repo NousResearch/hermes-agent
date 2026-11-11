@@ -43,7 +43,7 @@ class TTSProvider(CatalogProviderBase):
     streams_pcm: bool = False
     stream_sample_rate: Optional[int] = None
 
-    def list_voices(self) -> List[Dict[str, Any]]:
+    def list_voices(self) -> list[dict[str, Any]]:
         """Voice catalog entries: ``{"id"}`` required; ``display`` / ``language``
         / ``gender`` / ``preview_url`` optional. Default: empty."""
         return []

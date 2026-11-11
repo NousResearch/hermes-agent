@@ -14,7 +14,8 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   needs as a child holding the fd (and start the daemon under it), so before a move the objects
   are fetched without the fd and with the user's helpers (:func:`_prefetch_for_move`); a lazy
   fetch the prefetch missed still runs, just without a helper. A killed fetch that leaves
-  ``*.lock`` ref files is recovered by the stale-lock rules (``gitlock.clear_stale_git_locks``).
+  ``*.lock`` ref files or ``shallow.lock`` is recovered by the stale-lock rules (``gitlock.release_dead_fetch_locks``
+  once its update is proven dead, ``gitlock.clear_stale_git_locks`` by age otherwise).
 * Windows has no fd inheritance: while this process holds (or joined) the checkout lock, every
   child started here is created SUSPENDED, assigned to the update's kill-on-close job and only
   then resumed, so it and everything it spawns die with the lock owner. The Node build goes
@@ -45,6 +46,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+import itertools
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +260,7 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
     parent-death signal for the rest); on Windows inside an update it is the same contract over
     :func:`popen`, so the child is job-bound before it runs."""
     if not (sys.platform == "win32" and _held() is not None):
-        return subprocess.run(list(argv), **_custody_kwargs(inherit_lock, kwargs))
+        return subprocess.run(list(argv), **_custody_kwargs(inherit_lock, kwargs))  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     input, timeout = kwargs.pop("input", None), kwargs.pop("timeout", None)
     check = kwargs.pop("check", False)
     if input is not None:
@@ -327,25 +329,26 @@ def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess
     mutator = is_local_mutator(argv[1:])
     if mutator:
         _prefetch_for_move(list(git_cmd), list(args), kwargs)
-    elif git_subcommand(argv[1:]) in _FD_LESS_REF_WRITERS and sys.platform != "win32" \
-            and _held() is not None and "preexec_fn" not in kwargs and _death_signal_preexec() is None:
-        return _run_owner_watched(argv, kwargs)
+    if sys.platform != "win32" and _held() is not None and "preexec_fn" not in kwargs \
+            and _death_signal_preexec() is None:
+        # No parent-death signal (macOS): the tree runner owns git AND the helpers it starts. A
+        # local mutator holds the lock fd and finishes its write if the owner dies, as on Linux.
+        return _run_owner_watched(argv, _custody_kwargs(mutator, kwargs), watch_owner=not mutator)
     return run(argv, inherit_lock=mutator, **kwargs)
 
 
-# git commands that write refs WITHOUT the lock fd (m3: their network half must not hold it). On
-# Linux the parent-death signal ends one whose owner died; where there is none (macOS) a watchdog
-# does (R3), or it would go on rewriting refs and leave live `*.lock` files under the next owner.
-_FD_LESS_REF_WRITERS = frozenset({"fetch"})
-
+# git without the lock fd (a fetch's network half must not hold it, m3) dies with its owner: on
+# Linux by the parent-death signal; where there is none (macOS) by this watchdog (R3), or a fetch
+# would go on rewriting refs and leave live `*.lock` files under the next owner.
 # The watchdog: stdin is a pipe only the owner writes. A byte = the child finished; EOF with no
-# byte = the owner died (the kernel closed its end), so SIGKILL the child, as PR_SET_PDEATHSIG
-# would. It holds no lock fd and runs in its own session (a terminal's ^C/hang-up is the owner's).
+# byte = the owner died (the kernel closed its end), so SIGKILL the child's whole process group
+# (git and the helpers it started: git-remote-https, index-pack, pack-objects), as
+# PR_SET_PDEATHSIG would for the child alone. It holds no lock fd and runs in its own session.
 _OWNER_WATCH = (
     "import os, signal, sys\n"
     "if not os.read(0, 1):\n"
     "    try:\n"
-    "        os.kill(int(sys.argv[1]), signal.SIGKILL)\n"  # windows-footgun: ok -- POSIX only (run_git gates win32 out)
+    "        os.killpg(int(sys.argv[1]), signal.SIGKILL)\n"  # windows-footgun: ok -- POSIX only (run_git gates win32 out)
     "    except OSError:\n"
     "        pass\n"
 )
@@ -360,6 +363,7 @@ def _owner_watch(pid: int):
     read_end, write_end = os.pipe()  # non-inheritable: no other child keeps the owner's end open
     try:
         watcher = subprocess.Popen([sys.executable, "-I", "-S", "-c", _OWNER_WATCH, str(pid)], stdin=read_end,
+                                   # detached-spawn: ok — the owner-death watchdog itself: it must outlive the owner to kill the fetch
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as exc:
         os.close(write_end)
@@ -378,20 +382,38 @@ def _owner_watch(pid: int):
     return dismiss
 
 
-def _run_owner_watched(argv: Sequence[str], kwargs: dict) -> subprocess.CompletedProcess:
-    """``subprocess.run`` for an fd-less ref writer, under :func:`_owner_watch` while it runs."""
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """SIGKILL ``proc``'s process group: the child leads it (``start_new_session``), and while it
+    is unreaped its pid, hence the group id, cannot be reused. Once reaped (``communicate`` reaps
+    on a Ctrl-C inside its wait window) the id may already name another session, so it is never
+    signalled; ``returncode`` is read, not ``poll()``ed, since polling would reap a live zombie
+    and skip the helpers a timed-out git leaves running."""
+    import os
+    import signal
+
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(OSError):  # already gone
+        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok -- POSIX only (run_git gates win32 out)
+
+
+def _run_owner_watched(argv: Sequence[str], kwargs: dict, *, watch_owner: bool = True) -> subprocess.CompletedProcess:
+    """``subprocess.run`` for updater git where no parent-death signal exists, under
+    :func:`_owner_watch` while it runs. git leads a session of its own, so a timeout, a cancel or
+    the owner's death ends its helpers with it, not git's pid alone (#144439)."""
     input, timeout = kwargs.pop("input", None), kwargs.pop("timeout", None)
     check = kwargs.pop("check", False)
     if input is not None:
         kwargs["stdin"] = subprocess.PIPE
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
-    with subprocess.Popen(list(argv), **kwargs) as proc:
-        dismiss = _owner_watch(proc.pid)
+    # detached-spawn: ok — awaited; _owner_watch kills a fetch's group on owner death, and a mutator must finish its write
+    with subprocess.Popen(list(argv), start_new_session=True, **kwargs) as proc:
+        dismiss = _owner_watch(proc.pid) if watch_owner else None
         try:
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            proc.kill()
+            _kill_tree(proc)
             try:
                 exc.stdout, exc.stderr = proc.communicate(timeout=_DRAIN_SECONDS)
             except subprocess.TimeoutExpired:
@@ -399,7 +421,7 @@ def _run_owner_watched(argv: Sequence[str], kwargs: dict) -> subprocess.Complete
                 proc.stdin = proc.stdout = proc.stderr = None
             raise
         except BaseException:
-            proc.kill()
+            _kill_tree(proc)
             raise
         finally:
             if dismiss is not None:
@@ -417,7 +439,7 @@ def _partial_clone(git_cmd: Sequence[str], kwargs: dict) -> bool:
     from hermes_cli.update_lock import _git_common_dir
 
     cwd = kwargs.get("cwd")
-    for flag, value in zip(git_cmd, git_cmd[1:]):
+    for flag, value in itertools.pairwise(git_cmd):
         if flag == "-C":
             cwd = Path(cwd or ".") / value
     common = _git_common_dir(Path(cwd or "."))
@@ -473,7 +495,7 @@ def _prefetch_for_move(git_cmd: list[str], args: list[str], kwargs: dict) -> Non
 # (argv[2]) — run_contained captures the child's stderr, so stderr alone is not seen (m1) — and
 # exits; the updater logs the notice, notes it in the receipt and raises CustodyRefused.
 # The command also runs in a kill-on-close job of the launcher's own, nested in the update job
-# (review C3): once the command exits, the launcher terminates that job — whatever npm / the
+# (review C3): once the command exits, the launcher terminates that job — whatever pnpm / the
 # builder started and left running — and waits until no process of it is left before it
 # returns, so the caller never releases the checkout while a build descendant still writes.
 # Only the command's tree: the update job also holds the update's other children. The Windows
@@ -600,7 +622,7 @@ def _join_launcher_python() -> str:
 
 
 # POSIX twin of the launcher (N13, review L1/L6). Node marks the donated lock fd close-on-exec,
-# so nothing node starts (npm, esbuild, sh) keeps the checkout locked: custody of them rests on
+# so nothing node starts (pnpm, esbuild, sh) keeps the checkout locked: custody of them rests on
 # this stdlib parent, which holds the fd until no descendant of the command is left.
 # * The command stays in the CALLER's process group: every group kill that stops a build (a
 #   Ctrl-C'd completion child's ``killpg``, Desktop's ``kill(-pid)``) reaches node and everything

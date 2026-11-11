@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -14,12 +16,14 @@ from pm.install import _lockfile
 from pm.lock import Facts
 from pm.registry import get_package, walk
 from pm.store import current_target
+from pm.testenv import DEVELOPER_TOOLS
 
 def _bundle_package_names() -> list[str]:
     names = [
         n
         for n in _lockfile().names()
-        if not get_package(n).internal or n == "uv"
+        # Developer tools (just) are never part of a user install.
+        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS
     ]
     if "python" not in names:
         names.append("python")
@@ -54,7 +58,7 @@ def _arch_guard(store_dir: Path) -> list[str]:
 
 from pm.uv_cache_prune import lock_package_names, prune_uv_cache_to_lock
 
-__all__ = ["prune_uv_cache_to_lock", "lock_package_names", "stage_uv_cache"]
+__all__ = ["lock_package_names", "prune_uv_cache_to_lock", "stage_uv_cache"]
 
 
 def stage_uv_cache(source: Path, destination: Path) -> None:
@@ -65,6 +69,12 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
     source — so they stay out. Built wheel ZIPs (including the copies uv keeps
     beside sdist metadata.msgpack shards) ship: without them an offline
     rebuild falls back to wanting the sdist download and fails closed.
+
+    On macOS and Linux, uv's wheel entries (``wheels-v*/pypi/<name>/<version>``,
+    a hash directory deeper for URL, git and named-index sources) are relative
+    symlinks into ``archive-v0/``, and they ship as links. Following them
+    stored every unpacked wheel a second time and gave the seeded machine
+    cache directories where uv renames its own links (#141891).
     """
     def ignore(directory: str, names: list[str]) -> set[str]:
         path = Path(directory)
@@ -78,7 +88,7 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
             return {"src"}
         return set()
 
-    shutil.copytree(source, destination, ignore=ignore)
+    shutil.copytree(source, destination, ignore=ignore, symlinks=True)
 
 
 def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = False,
@@ -126,7 +136,16 @@ def stage_native(args) -> int:
                    "--ref", args.ref or "HEAD", "--source", str(root)]
         for name, product in getattr(args, "frontends", {}).items():
             command += [f"--{name}", str(product)]
-        return subprocess.run(command, cwd=root, env=env).returncode
+        return subprocess.run(command, cwd=root, env=env, check=False).returncode
+
+
+@contextmanager
+def _phase(label: str):
+    """Name each staging phase and its duration: several run minutes without output."""
+    print(f"  {label}…", flush=True)
+    started = time.monotonic()
+    yield
+    print(f"  ✓ {label} ({time.monotonic() - started:.1f}s)", flush=True)
 
 
 def prune_staged_store(store_dir: Path, names: list[str]) -> None:
@@ -156,7 +175,7 @@ def prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         prepared_path(out).unlink(missing_ok=True)
         (out / "manifest.json").unlink(missing_ok=True)
         return _prepare_native(out=out, ref=ref, source=Path(source).resolve(),
-                               cache=Path(cache).resolve(), tools=tools, env=env)
+                               cache=Path(cache).absolute(), tools=tools, env=env)
 
 
 def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
@@ -168,11 +187,11 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     store_dir.mkdir(parents=True, exist_ok=True)
     repo_dir = out / "hermes-agent"
     from scripts.bundles.payload import INERT_SNAPSHOT_DIRS, snapshot
-    print(f"staging repo snapshot ({ref})…", flush=True)
     revision = subprocess.check_output(
         ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=source,
         text=True, encoding="utf-8").strip()
-    snapshot(source, revision, repo_dir, exclude=INERT_SNAPSHOT_DIRS)
+    with _phase(f"staging repo snapshot ({ref})"):
+        snapshot(source, revision, repo_dir, exclude=INERT_SNAPSHOT_DIRS)
     # PM's provider code reads its adjacent lock. Never combine that tool graph
     # with a revision selecting different pins.
     if (repo_dir / "pm/lock.json").read_bytes() != paths.lockfile_path().read_bytes():
@@ -185,10 +204,12 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     ]
     from pm import prepare_tools, stage_tools
 
-    prepare_tools(names, out=Path(tools) if tools is not None else store_dir,
-                  target=current_target(), cache=cache)
+    with _phase(f"preparing {len(names)} pinned tools"):
+        prepare_tools(names, out=Path(tools) if tools is not None else store_dir,
+                      target=current_target(), cache=cache)
     if tools is not None:
-        stage_tools(names, source_store=Path(tools), out=store_dir, target=current_target())
+        with _phase("copying verified tools into the payload store"):
+            stage_tools(names, source_store=Path(tools), out=store_dir, target=current_target())
 
     # Prune the staged store BEFORE the venv sync and packaging: drop the
     # fetch-<sha> download-cache archives (needed only at install time — dead
@@ -199,7 +220,8 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     # Only this build's store is ours to prune; machine-wide partials are not.
     # Cached facts may still name packages removed from the current selection.
     # Retain the dependency closure before using facts as the deletion roots.
-    prune_staged_store(store_dir, names)
+    with _phase("pruning the staged tool store"):
+        prune_staged_store(store_dir, names)
 
 
     facts = Facts(store_dir / "facts.json")
@@ -212,8 +234,8 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
 
     if python_bin is None:
         raise FileNotFoundError("staged Python executable is missing")
-    stage_pm_runtime(out, python_bin, repo_dir, cache=cache)
-    print("✓ pm-runtime (independent locked dependencies)", flush=True)
+    with _phase("pm-runtime (independent locked dependencies)"):
+        stage_pm_runtime(out, python_bin, repo_dir, cache=cache)
 
     # Build + sync INSIDE the staged repo: the editable project install
     # must point at the payload's own tree, not this checkout.
@@ -234,10 +256,17 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
 
     features = installed_extras(repo_dir, venv_dir, python_exe=python_bin)
     write_features(features, out)
+
+    # The payload venv was built from this exact lock and feature set. Publish
+    # that state so the first runtime sync can reuse the shipped environment
+    # instead of rebuilding it before any plugin dependencies are requested.
+    from pm.packages import Venv
+
+    facts.record_state("venv", Venv(repo_dir).expected_stamp(features, plugin_dirs=[]), features)
     print(f"✓ enabled-features.json ({len(features)} extras recorded)")
 
-    # Ship the full uv cache (build-only sdist sources and wheel ZIPs are
-    # already excluded by stage_uv_cache). Any per-install venv rebuild —
+    # Ship the full uv cache (build-only sdist sources are already excluded by
+    # stage_uv_cache). Any per-install venv rebuild —
     # plugin extras, feature changes — resolves entirely from the shipped
     # wheels with zero network access, on every profile of this install.
     payload_cache = out / "uv-cache"
@@ -251,6 +280,10 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         print(f"✓ uv-cache (lock-scoped: pruned {pruned} stale entries; offline rebuilds resolve from shipped wheels)", flush=True)
     else:
         raise InstallError("uv-cache", "runtime dependency cache is missing")
+    if current_target().startswith("win32-"):
+        from scripts.bundles.msix_names import drop_msix_reserved_names
+        for tree in drop_msix_reserved_names(out):
+            print(f"✓ msix: dropped {tree.as_posix()} (holds a package-reserved name, never read at runtime)")
 
     bad = _arch_guard(store_dir)
     for line in bad:
@@ -270,7 +303,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     relativize_links(out)
     from scripts.bundles.bytecode import bake_bytecode
     baked = bake_bytecode(out, python_bin)
-    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, read-only caches)")
+    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, owner-writable caches)")
     inputs = AgentInputs(
         project=repo_dir / "pyproject.toml", code=repo_dir, repo="hermes-agent",
         placement="contained", target=current_target(), python=python_bin,

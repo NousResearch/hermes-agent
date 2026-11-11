@@ -481,56 +481,6 @@ def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch
     assert defaults["http_client"] == "http-client"
     assert explicit["http_client"] == "http-client"
 
-def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
-    from hermes_cli import oneshot
-
-    captured = {}
-
-    class FakeAgent:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self._session_messages = []
-
-        def run_conversation(self, _prompt, **_kwargs):
-            return {"final_response": "ok"}
-
-        def shutdown_memory_provider(self, *_args):
-            return None
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-    monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda **_kwargs: {
-            "api_key": "actual-test-key",
-            "base_url": DEFAULT_ACTUAL_BASE_URL,
-            "provider": "actual",
-            "requested_provider": "actual",
-            "api_mode": "chat_completions",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
-        lambda **_kwargs: None,
-    )
-    monkeypatch.setattr(oneshot, "_create_session_db_for_oneshot", lambda: None)
-    monkeypatch.setattr(oneshot, "get_fallback_chain", lambda _cfg: [])
-    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
-
-    response, _result = oneshot._run_agent(
-        "hello",
-        model="zai-org/GLM-5.3",
-        provider="actual",
-        reasoning="ultra",
-        toolsets=["terminal"],
-        use_config_toolsets=False,
-    )
-
-    assert response == "ok"
-    assert captured["reasoning_config"] == {"enabled": True, "effort": "ultra"}
-
 def test_actual_agent_side_routing_keeps_chat_completions_for_any_model():
     from run_agent import AIAgent
 

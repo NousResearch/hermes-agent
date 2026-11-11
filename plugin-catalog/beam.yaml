@@ -1,0 +1,27 @@
+name: beam
+repo: https://github.com/Beam-Network/beam-hermes
+sha: d41448cb3f08bacbc368a4948ecbe310e5f6964c
+version: "0.1.1"
+title: Beam
+description: "Move data across cloud storage and exchange end-to-end encrypted messages, files and media between agents with Beam Network (Bittensor SN105)."
+maintainer: Beam-Network
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Beam-Network/beam-hermes#readme
+readme: true
+capabilities:
+  provides_tools:
+  - beam_account
+  - beam_transfer_estimate
+  - beam_transfer_start
+  - beam_transfer_status
+  - beam_transfer_list
+  - beam_transfer_cancel
+  - beam_rooms
+  - beam_room_listen
+  - beam_room_messages
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - BEAM_API_KEY

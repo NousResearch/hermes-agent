@@ -4,6 +4,9 @@ import type {
   MessagingPlatformUpdate,
   PairingResponse,
   PairingUser,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
   TelegramOnboardingApplyResponse,
   TelegramOnboardingStartResponse,
   TelegramOnboardingStatusResponse,
@@ -51,6 +54,42 @@ export function testMessagingPlatform(
     ...profileScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
+  })
+}
+
+// -- Team Gateway account links -----------------------------------------------
+// A relay-fronted instance reaches Telegram/Discord/Slack only through the shared bot; these mint
+// the one-time `/link <code>` that binds a chat account to this agent. The profile tag picks the
+// backend (a profile may point at another host); the relay itself serves that gateway's own profile.
+
+export function getRelayLinks(profile?: null | string): Promise<RelayLinksResponse> {
+  return hermesApi<RelayLinksResponse>({ ...profileScoped(profile), path: '/api/messaging/relay' })
+}
+
+export function requestRelayLink(platform: string, profile?: null | string): Promise<RelayLinkCode> {
+  return hermesApi<RelayLinkCode>({
+    ...profileScoped(profile),
+    path: `/api/messaging/relay/${encodeURIComponent(platform)}/link`,
+    method: 'POST'
+  })
+}
+
+export function getRelayLinkState(code: string, profile?: null | string): Promise<RelayLinkCodeState> {
+  return hermesApi<RelayLinkCodeState>({
+    ...profileScoped(profile),
+    path: `/api/messaging/relay/link/${encodeURIComponent(code)}`
+  })
+}
+
+export function unlinkRelayAccount(
+  platform: string,
+  platformUserId: string,
+  profile?: null | string
+): Promise<{ unlinked: boolean }> {
+  return hermesApi<{ unlinked: boolean }>({
+    ...profileScoped(profile),
+    path: `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+    method: 'DELETE'
   })
 }
 
@@ -169,10 +208,7 @@ export function enableWebhooks(profile?: null | string): Promise<WebhookEnableRe
   })
 }
 
-export function createWebhook(
-  body: WebhookCreatePayload,
-  profile?: null | string
-): Promise<WebhookCreateResponse> {
+export function createWebhook(body: WebhookCreatePayload, profile?: null | string): Promise<WebhookCreateResponse> {
   return hermesApi<WebhookCreateResponse>({
     ...profileScoped(profile),
     path: '/api/webhooks',

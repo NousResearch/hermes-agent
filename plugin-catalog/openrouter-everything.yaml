@@ -1,0 +1,24 @@
+name: openrouter-everything
+title: OpenRouter Everything
+repo: https://github.com/dadhalfdev/openrouter-everything
+sha: ec6974a96f9965e59d23bf1d5c5e4f2eb7333338
+description: "One OpenRouter key for Hermes web search and fetch, image and video generation, voice, decisions, extraction, reranking and embeddings, with per-task model selection and compatibility checks. Disclosure — sends prompts, documents, search queries, web-fetch URLs, audio and media to OpenRouter (openrouter.ai, or the OPENROUTER_BASE_URL relay the user configures) with the user's key, tagged with fixed HTTP-Referer: https://hermes-agent.nousresearch.com and X-Title: Hermes Agent (OpenRouter Everything) attribution headers; requests can incur charges. Reads local media the user or agent names (credential files and non-image content refused), writes generated media under Hermes' cache, and media URLs returned by the service may be downloaded from other hosts. `hermes openrouter-everything setup` saves OPENROUTER_API_KEY to the profile's .env through Hermes' own writer, and the setup command, the slash command and the agent-callable openrouter_everything_config tool (activate_all / set_model / reset_defaults) rewrite config.yaml to make OpenRouter Everything the web, image, video, TTS and STT provider (enabling STT and turning off gateway routing for those tools)."
+maintainer: dadhalfdev
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+docs_url: https://github.com/dadhalfdev/openrouter-everything#readme
+image: https://raw.githubusercontent.com/dadhalfdev/openrouter-everything/ec6974a96f9965e59d23bf1d5c5e4f2eb7333338/assets/openrouter-everything-banner.jpg
+readme: true
+capabilities:
+  provides_tools:
+    - openrouter_decide
+    - openrouter_extract_fields
+    - openrouter_rerank
+    - openrouter_embed
+    - openrouter_everything_config
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OPENROUTER_API_KEY

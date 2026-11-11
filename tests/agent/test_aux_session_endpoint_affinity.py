@@ -41,6 +41,20 @@ def test_rotation_survives_at_session_origin_and_for_independent_aux_pool():
     assert aux._recoverable_pool_provider("openai-api", independent, main_runtime=SESSION) == "openai-api"
 
 
+@pytest.mark.parametrize("provider,runtime_base,client_base,named", [
+    ("opencode-go", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1/", False),  # Zen beside Go
+    ("opencode-go", "https://opencode.ai/zen/go", "https://opencode.ai/zen/go/v1/", True),  # Anthropic-wire base
+    ("minimax", "https://api.minimax.io/anthropic", "https://api.minimax.io/v1", True),  # dual-surface rewrite
+    ("opencode-go", "https://proxy.example:8443/zen/go/v1", "https://proxy.example:9443/zen/go/v1", False),  # port
+    ("opencode-go", "https://proxy.example/zen/go/v1", "http://proxy.example/zen/go/v1", False),  # scheme
+])
+def test_naming_the_sender_needs_the_main_runtimes_origin_and_path_and_pool_rotation_only_its_host(
+        provider, runtime_base, client_base, named):
+    client, runtime = SimpleNamespace(base_url=client_base, api_key="sk-aux"), {"provider": provider, "base_url": runtime_base}
+    assert aux._recoverable_pool_provider("custom", client, runtime, same_path=True) == (provider if named else None)
+    assert aux._recoverable_pool_provider("custom", client, runtime) == provider
+
+
 def test_named_provider_defaults_compose_under_task_overrides(monkeypatch, tmp_path):
     """URL-only / key-only task overrides win field-by-field; the named entry fills only the blanks."""
     monkeypatch.setenv("NAMED_KEY", "named-key")

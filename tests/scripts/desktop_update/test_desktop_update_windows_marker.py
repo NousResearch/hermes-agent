@@ -96,7 +96,7 @@ def _run(home: Path, *args: str, install: Path | None = None, timeout: int = 120
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True)
+        subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, check=False)
         out, _ = proc.communicate()
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
     return proc.pid, proc.returncode, out
@@ -234,8 +234,11 @@ def test_dead_owner_marker_is_reclaimed_and_released(tmp_path: Path) -> None:
 
 @pytest.mark.platforms('windows')
 def test_desktop_that_never_exits_is_not_relaunched_over(
-    tmp_path: Path, sleeper: subprocess.Popen,
+    tmp_path: Path, sleeper: subprocess.Popen, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The verdict (refuse with 4, never relaunch) is the same at any ceiling; the production
+    # 150 s one alone pushed this file to the runner's 300 s per-file cap on a loaded runner.
+    monkeypatch.setenv('HERMES_UPDATE_DESKTOP_EXIT_SECONDS', '5')
     install = tmp_path / 'checkout'
     publish_fixture_launcher(install, CLI)
     home = tmp_path / 'home'; home.mkdir()
@@ -243,9 +246,10 @@ def test_desktop_that_never_exits_is_not_relaunched_over(
     (home / MARKER).write_bytes(f'{sleeper.pid}\n{int(time.time())}\nct:{_creation_time(sleeper.pid)}\n'.encode())
     relaunch = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'hostname.exe'
     _, code, out = _run(home, '-DesktopPid', str(sleeper.pid), '-RelaunchExe', str(relaunch),
-                        install=install, timeout=180)
+                        install=install)
     assert code == 4, out
     log = (home / 'logs/desktop-update-handoff.log').read_text(encoding='utf-8-sig')
+    assert 'did not exit within 5s' in log, log   # the override reached the script's wait
     assert 'relaunching desktop' not in log, log
 
 
@@ -260,6 +264,7 @@ def test_ui_profile_sweep_keeps_dirs_of_live_handoffs(tmp_path: Path, sleeper: s
         cwd=tmp_path, env={**os.environ, 'HERMES_HOME': str(home), 'TEMP': str(tmp_path),
                            'HERMES_SELFTEST_HOLD_SECONDS': '0'},
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert live.exists(), 'another live hand-off lost its browser profile'
@@ -360,6 +365,7 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline and subprocess.run(
                 ['tasklist', '/FI', f'PID eq {delegate}', '/NH'], capture_output=True, text=True,
+                check=False,
         ).stdout.find(str(delegate)) >= 0:
             time.sleep(0.2)
         while marker.exists():   # the custodian releases once the delegate is gone
@@ -371,5 +377,5 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
     finally:
         hold.touch()
         if script.poll() is None:
-            subprocess.run(['taskkill', '/T', '/F', '/PID', str(script.pid)], capture_output=True)
+            subprocess.run(['taskkill', '/T', '/F', '/PID', str(script.pid)], capture_output=True, check=False)
             script.wait()

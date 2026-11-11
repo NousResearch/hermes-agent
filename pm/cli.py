@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 from pathlib import Path
 
 from pm import termux_libs
@@ -89,24 +90,9 @@ def _locked_extras(root: Path) -> set[str]:
 
 def _new_opt_in_extras(root: Path, before: set[str]) -> list[str]:
     """Extras this relock introduced that the default [all] closure does not reach."""
-    import re
-    import tomllib
+    from pm.extras import droppable_extras
 
-    with (root / "pyproject.toml").open("rb") as f:
-        project = tomllib.load(f)["project"]
-    extras = project.get("optional-dependencies", {})
-    self_ref = re.compile(rf"\s*{re.escape(project['name'])}\s*\[([^\]]+)\]")
-    covered, pending = set(), ["all"]
-    while pending:
-        extra = pending.pop()
-        if extra in covered:
-            continue
-        covered.add(extra)
-        for requirement in extras.get(extra, ()):
-            match = self_ref.match(requirement)
-            if match:
-                pending.extend(part.strip() for part in match.group(1).split(","))
-    return sorted(set(extras) - before - covered)
+    return sorted(set(droppable_extras(root)) - before)
 
 
 @reuse_index_responses()
@@ -142,7 +128,7 @@ def _pin_tool(args) -> int:
     lockfile.set_pin(args.name, args.version, artifacts)
     lockfile.save()
     print(f"pinned {args.name} {args.version} ({len(artifacts)} targets)")
-    return 0
+    return _regenerate_bootstrap_pins(lockfile)
 
 
 def _fmt_bytes(n: int) -> str:
@@ -285,13 +271,28 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
         return "--without shapes the default closure; it does not take names, --extra, or --target"
     if without:
         from pm.defaults import default_package_names
+        from pm.extras import droppable_extras
 
-        allowed = default_package_names()
-        unknown = [name for name in without if name not in allowed]
+        unknown = _split_without(without)[2]
         if unknown:
-            return (f"--without accepts only optional default packages ({', '.join(allowed)}); "
+            return (f"--without accepts only optional default packages ({', '.join(default_package_names())}) "
+                    f"or extras outside [all] ({', '.join(droppable_extras(repo_root()))}); "
                     f"not {', '.join(unknown)}")
     return None
+
+
+def _split_without(names) -> tuple[list[str], list[str], list[str]]:
+    """Sort ``--without`` names into (default packages, droppable extras, unknown)."""
+    from pm.defaults import canonical_default_name, default_package_names
+    from pm.extras import droppable_extras
+
+    packages, extras = set(default_package_names()), set(droppable_extras(repo_root()))
+    split: tuple[list[str], list[str], list[str]] = ([], [], [])
+    for name in names:
+        package = canonical_default_name(name)
+        bucket = 0 if package in packages else 1 if name in extras else 2
+        split[bucket].append(package if bucket == 0 else name)
+    return split
 
 
 def _install_defaults(names: list[str], *, verify: bool) -> None:
@@ -318,7 +319,8 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
             # `hermes update` force-syncs on every run (update_cmd.py) and
             # the installers' old `--extra all` did. sync_venv unions, so
             # any lazy extras already recorded survive this; it only makes
-            # a fresh bootstrap match what the first update would do.
+            # a fresh bootstrap match what the first update would do. Before a selection is
+            # recorded, sync_venv carries the main-era venv's extras too (pm.carried_extras).
             sync_venv(extras or ["all"], explicit=True)
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
@@ -341,6 +343,10 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
 
 
 def cmd_install(args) -> int:
+    from pm.defaults import canonical_default_name
+
+    # Old install logs print `hermes pm install agent-browser` as the browser opt-back-in.
+    args.names = [canonical_default_name(name) for name in args.names or ()]
     cross_target = getattr(args, "target", None)
     # Source-install launchers require the store interpreter, even though
     # Python remains optional when provisioning individual tools.
@@ -357,10 +363,14 @@ def cmd_install(args) -> int:
     without = list(dict.fromkeys(getattr(args, "without", None) or ()))
     if without:
         from pm.defaults import record_declined
+        from pm.install import decline_extras
 
         # Persisted before anything installs: later bare installs and
-        # `hermes update` read the same record, so the opt-out sticks.
-        record_declined(add=without)
+        # `hermes update` read the same record, so the opt-out sticks. A
+        # dropped extra leaves the recorded selection at this install's sync.
+        declined_packages, declined_extras, _ = _split_without(without)
+        record_declined(add=declined_packages)
+        decline_extras(declined_extras)
     defaults: list[str] = []
     if not (args.names or extras):
         from pm.defaults import default_packages
@@ -376,7 +386,10 @@ def cmd_install(args) -> int:
     # sync the venv in one breath, so a native build (Windows ARM64 source
     # wheels) resolved compilers and git from the host PATH. Publish every
     # tool first and put it on PATH; sync only after that.
-    tool_names = names if args.names else tool_roots(names)
+    from pm.testenv import developer_tools
+
+    tool_names = [*(names if args.names else tool_roots(names)),
+                  *(developer_tools(_lockfile().names()) if test_environment is not None else ())]
     if _install_names(tool_names, target=cross_target, verify=not trust_recorded):
         return 1
     if args.names and not cross_target:
@@ -396,7 +409,7 @@ def cmd_install(args) -> int:
         return 0
     failed = _install_python_environments(extras, sync=bool(extras or not args.names),
                                           test_environment=test_environment)
-    # Defaults are optional and large (agent-browser + Chromium, cua-driver): fetch them
+    # Defaults are optional and large (Chromium, cua-driver): fetch them
     # only once the venv, and on Windows ARM64 its build tools, succeeded.
     if not failed:
         _install_defaults(defaults, verify=not trust_recorded)
@@ -420,7 +433,7 @@ def cmd_env(args) -> int:
 
 def cmd_doctor(args) -> int:
     from pm.install import _identity, _installed_location
-    from pm.store import tree_digest
+    from pm.store import digest_matches
 
     lockfile = _lockfile()
     facts = _facts()
@@ -459,14 +472,47 @@ def cmd_doctor(args) -> int:
             bad += 1
             continue
         recorded = fact.get("digest")
-        if recorded is not None and tree_digest(entry) != recorded:
+        if recorded is not None and not digest_matches(entry, recorded):
             # Doctor is the expensive-path tool: re-hash the realized
             # bytes. Boot checks stay O(1) json compares.
             print(f"✗ {name}: realized bytes do not match recorded digest")
             bad += 1
             continue
         print(f"✓ {name} {fact['version']}")
+    bad += _doctor_uv_cache(repair=getattr(args, "repair", False))
     return 1 if bad else 0
+
+
+def _doctor_uv_cache(*, repair: bool) -> int:
+    """Report (and with --repair, remove) uv cache entries an interrupted install corrupted.
+
+    Read-only by default like the rest of doctor. Installs already purge a
+    corrupt entry they trip over; this finds them before an install does.
+    """
+    from pm.environment import managed_environment
+    from pm.packages import uv_cache_path
+    from pm.uv_cache_health import corrupt_cached_packages
+
+    cache = uv_cache_path()
+    corrupt = sorted(corrupt_cached_packages(cache))
+    if not corrupt:
+        print(f"✓ uv cache: no corrupt entries in {cache}")
+        return 0
+    if not repair:
+        print(f"✗ uv cache: corrupt entries for {', '.join(corrupt)} in {cache}; "
+              "run `hermes pm doctor --repair` (installs also remove them when they hit one)")
+        return 1
+    try:
+        managed_environment(cache, cache=cache).purge_cached_packages(corrupt)
+    except InstallError as exc:
+        print(f"✗ uv cache: {exc}")
+        return 1
+    left = sorted(corrupt_cached_packages(cache))
+    if left:
+        print(f"✗ uv cache: still corrupt after cleaning: {', '.join(left)} in {cache}")
+        return 1
+    print(f"✓ uv cache: removed corrupt entries for {', '.join(corrupt)}; they are fetched again on next use")
+    return 0
 
 
 def _gc_store(store, facts) -> tuple[int, int]:
@@ -487,6 +533,9 @@ def _gc_store(store, facts) -> tuple[int, int]:
         return (0, 0)
     removed = 0
     with store.install_lock():
+        from pm.defaults import RETIRED_DEFAULTS
+
+        facts.forget(RETIRED_DEFAULTS)
         facts.reload()
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
@@ -521,8 +570,11 @@ def cmd_gc(args) -> int:
     from pm.runtime import collect_runtime_generations
     generations = collect_generations(repo_root())
     runtimes = collect_runtime_generations(install_state_dir(repo_root()) / "pm-runtime")
+    from pm.environments import installs_root
+    from pm.install_states import collect_orphan_install_states
+    orphans = collect_orphan_install_states(installs_root())
     print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations, "
-          f"{len(runtimes)} PM runtime generations")
+          f"{len(runtimes)} PM runtime generations, {len(orphans)} install state dir(s) of deleted checkouts")
     return 0
 
 
@@ -537,13 +589,14 @@ def _run_live(cmd: list[str], *, cwd, env, timeout: int = 3600) -> tuple[int, st
     return result.returncode, result.stderr
 
 
-def _resolve_updates(names: list[str], lockfile, only_target: str | None) -> tuple[list, list[str]]:
+def _resolve_updates(names: list[str], lockfile, only_target: str | None,
+                     skip_targets: frozenset[str] = frozenset()) -> tuple[list, list[str]]:
     """Resolve each package's latest; an upstream outage records a failure instead of aborting."""
     resolved = []
     failures = []
     for name in names:
         package = get_package(name)
-        targets = [t for t in ALL_TARGETS if package.missing_reason(t) is None]
+        targets = [t for t in ALL_TARGETS if package.missing_reason(t) is None and t not in skip_targets]
         if only_target:  # cross-target check: only the requested target matters
             targets = [t for t in targets if t == only_target]
         if not targets:
@@ -585,10 +638,25 @@ def _sync_venv_step() -> bool:
     return True
 
 
+def _regenerate_bootstrap_pins(lockfile) -> int:
+    """Splice the new uv and Windows git pins into this checkout's installers.
+
+    curl|sh and irm|iex bootstrap those tools before any checkout exists to read
+    the lock, so they carry the pins as generated fragments. A lock outside a
+    checkout (a test fixture) feeds no installer.
+    """
+    script = lockfile.path.parent.parent / "scripts" / "gen-bootstrap-pins.py"
+    if not script.is_file():
+        return 0
+    return subprocess.run([sys.executable, str(script)], timeout=60, check=False).returncode
+
+
 def _apply_pins(changed: list, lockfile) -> int:
     if not changed:
         print("pm update: nothing to update")
-        return 0
+        # A run that saved the lock but failed to write the fragments leaves the
+        # pins current, so the retry lands here: it must still repair them.
+        return _regenerate_bootstrap_pins(lockfile)
     pinned: list[str] = []
     failed: dict[str, str] = {}
     for d in changed:
@@ -599,15 +667,20 @@ def _apply_pins(changed: list, lockfile) -> int:
             # One broken pin — a package's resolution bug or one target's upstream
             # pool skew (rolling Termux pool 404 while nodejs.org is ahead) — must
             # not zero out the whole run. Pin the rest, report the failure (#125386).
-            print(f"✗ {d.name} pin failed: {e}")
-            failed[d.name] = f"{type(e).__name__}: {e}"
+            # str(HTTPError) omits the URL, and a bare "404" can't tell you which
+            # upstream (nodejs.org, Termux pool, mirror) is missing the file.
+            url = e.url if isinstance(e, urllib.error.HTTPError) else None
+            detail = f"{e} ({url})" if url else str(e)
+            print(f"✗ {d.name} pin failed: {detail}")
+            failed[d.name] = f"{type(e).__name__}: {detail}"
             continue
         lockfile.set_pin(d.name, d.version, artifacts)
         pinned.append(d.name)
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
     if pinned:
         lockfile.save()
-        rc = 1 if _install_names(pinned) or not _sync_venv_step() else 0
+        fragments = _regenerate_bootstrap_pins(lockfile)
+        rc = 1 if _install_names(pinned) or not _sync_venv_step() or fragments else 0
     else:
         print("pm update: every pin failed; lockfile untouched")
         rc = 1
@@ -635,38 +708,51 @@ def _refresh_uv_lock() -> int:
     return 0 if _sync_venv_step() else 1
 
 
-def _refresh_npm_lock() -> int:
+def _refresh_pnpm_lock() -> int:
+    from pm import pnpm_release_age
     from pm.install import env_for, installed_package
-    from pm.packages import npm_env
-    from pm.paths import writable_store_root
+    from pm.packages import pnpm_env
 
-    npm = installed_package("npm")
-    node = installed_package("node")
-    if npm is None or npm.binary is None or node is None or node.binary is None:
-        print("✗ npm or Node: not installed; run `hermes pm install`")
+    pnpm = installed_package("pnpm")
+    if pnpm is None or pnpm.binary is None:
+        print("✗ pnpm: not installed; run `hermes pm install`")
         return 1
-    env = npm_env(writable_store_root() / ".npm-cache", env_for("npm"))
-    code, tail = _run_live([str(npm.binary), "update"], cwd=str(repo_root()), env=env)
+    # Every workspace and the root, within the declared ranges: --no-save keeps the manifests'
+    # specifiers as written, and the release-age policy applies to every new pick.
+    command = [str(pnpm.binary), "update", "--recursive", "--lockfile-only", "--no-save"]
+    env = pnpm_env(env_for("pnpm"))
+    code, tail = _run_live(command, cwd=str(repo_root()), env=env)
     if code != 0:
-        print(f"✗ npm update failed:\n{tail}")
+        print(f"✗ pnpm update failed:\n{tail}")
+        # --no-save turns "only too-young versions match" into an error that names no package.
+        if pnpm_release_age.is_release_age_failure(tail):
+            picks = pnpm_release_age.immature_picks(str(pnpm.binary), repo_root(), env)
+            print(pnpm_release_age.exclude_hint(picks))
         return 1
-    print("✓ package-lock.json refreshed")
+    # pnpm's minimumReleaseAgeExcludePrune would fire on every install, user builds included, and
+    # rewrite the tracked pnpm-workspace.yaml there; the excludes the new lock no longer holds leave
+    # here instead, in the same commit as the lock change.
+    root = repo_root()
+    dropped = pnpm_release_age.prune_excludes(root / "pnpm-workspace.yaml", root / "pnpm-lock.yaml")
+    if dropped:
+        print(f"  dropped from minimumReleaseAgeExclude (no longer locked): {', '.join(dropped)}")
+    print("✓ pnpm-lock.yaml refreshed")
     return 0
 
 
 def cmd_update(args) -> int:
-    """`hermes pm update [names...] [--check] [--target T] [--uv] [--npm] [--termux]`.
+    """`hermes pm update [names...] [--check] [--target T] [--skip-target T] [--uv] [--pnpm] [--termux]`.
 
     Resolve each package's latest via its own latest_versions() hook,
     intersect across targets, and (real mode) re-pin the lockfile + install
     the changed ones. --check is dry-run: hits upstream indexes, writes
-    nothing. --uv / --npm also refresh uv.lock (+sync venv) / package-lock.
+    nothing. --uv / --pnpm also refresh uv.lock (+sync venv) / pnpm-lock.yaml.
     --termux is its own repair pass: it repins only the pool archives the
     rolling termux-main pool has retired under our pins.
     """
     if args.termux:
         ignored = [name for name, given in (("names", args.names), ("--target", args.target),
-                                            ("--uv", args.uv), ("--npm", args.npm)) if given]
+                                            ("--uv", args.uv), ("--pnpm", args.pnpm)) if given]
         if ignored:
             print(f"::warning::--termux repairs the termux pool pins only; ignoring {', '.join(ignored)}")
         return _termux_pass(check=args.check)
@@ -676,7 +762,7 @@ def cmd_update(args) -> int:
         print("::warning::--target is a CHECK-only cross-resolution flag; ignoring it for apply (the lockfile pins every target)")
         args.target = None
 
-    resolved, failures = _resolve_updates(names, lockfile, args.target)
+    resolved, failures = _resolve_updates(names, lockfile, args.target, frozenset(args.skip_target))
     changed = [d for d in resolved if d.changed]
     if not resolved:
         print("pm update: nothing to check (no resolvable packages)")
@@ -690,16 +776,16 @@ def cmd_update(args) -> int:
     if args.check:
         if args.uv:
             print("uv deps: would run `uv lock --upgrade` + venv sync")
-        if args.npm:
-            print("npm deps: would run `npm update`")
+        if args.pnpm:
+            print("pnpm deps: would run `pnpm update --recursive --lockfile-only --no-save`")
         return 1 if changed else 0
 
     if _apply_pins(changed, lockfile):
         return 1
     if args.uv and _refresh_uv_lock():
         return 1
-    if args.npm:
-        return _refresh_npm_lock()
+    if args.pnpm:
+        return _refresh_pnpm_lock()
     return 0
 
 
@@ -788,6 +874,72 @@ def cmd_repair(args) -> int:
     return 0
 
 
+def _extra_requirements(project: Path, extras: list[str]) -> list[str]:
+    """The pinned requirements of declared extras, self-references expanded.
+
+    Pins, not the whole lock, define the environment: an identity over uv.lock
+    would build a new generation on every Hermes update, and superseded side
+    generations are never reclaimed while a caller may still run from them.
+    """
+    import re
+    import tomllib
+
+    declared = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    name = declared["project"]["name"]
+    table = declared["project"].get("optional-dependencies", {})
+    requirements: list[str] = []
+    pending, seen = list(extras), set()
+    while pending:
+        extra = pending.pop()
+        if extra in seen:
+            continue
+        if extra not in table:
+            raise ValueError(f"{extra!r} is not an extra declared in {project / 'pyproject.toml'}")
+        seen.add(extra)
+        for requirement in table[extra]:
+            own = re.fullmatch(rf"{re.escape(name)}\[([^\]]+)\]", requirement.replace(" ", ""))
+            if own:
+                pending.extend(own.group(1).split(","))
+            else:
+                requirements.append(requirement)
+    return requirements
+
+
+def cmd_environment(args) -> int:
+    """Make a named side environment current and print its interpreter.
+
+    Shell callers (skills) cannot import PM: the terminal's `python` is rarely
+    Hermes's own. Concurrent callers serialize on PM's per-environment lock and
+    a rebuild lands in a new generation, so a running caller keeps its files.
+    """
+    import contextlib
+    import os
+
+    import pm
+
+    if bool(args.extra) == bool(args.requirement):
+        print("hermes pm environment: pass --extra or --requirement (not both)", file=sys.stderr)
+        return 2
+    # stdout carries only the interpreter path, for PY=$(hermes pm environment ...);
+    # progress from PM and its uv children goes to stderr at both levels.
+    sys.stdout.flush()
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            requirements = _extra_requirements(repo_root(), args.extra) if args.extra else args.requirement
+            python = pm.ensure_environment(args.name, requirements, explicit=True)
+    except (InstallError, ValueError) as exc:
+        print(f"hermes pm environment: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+    print(python)
+    return 0
+
+
 def cmd_bundle(args) -> int:
     from scripts.bundles.native import stage_native
     return stage_native(args)
@@ -822,8 +974,9 @@ def main(argv=None) -> int:
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
-                   help="leave an optional default package (agent-browser, cua-driver) out of this and every later "
-                        "default install and update; `hermes pm install NAME` opts back in (repeatable)")
+                   help="leave an optional default package (chromium, cua-driver) or a recorded extra outside "
+                        "[all] (matrix, ...) out of this and every later default install and update; "
+                        "`hermes pm install NAME` / `--extra NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument("--trust-recorded", action="store_true",
@@ -844,10 +997,23 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_env)
 
     p = sub.add_parser("doctor", help="check installed state against the lockfile")
+    p.add_argument("--repair", action="store_true",
+                   help="remove corrupt entries from PM's uv cache so they are fetched again")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("repair", help="rebuild the recorded dependency environment without changing its graph")
     p.set_defaults(func=cmd_repair)
+
+    p = sub.add_parser(
+        "environment", help="make a named side environment current and print its python",
+        description="Build or reuse HERMES_HOME/environments/NAME, an isolated venv that never "
+                    "touches Hermes's own: --extra installs the pins of a declared extra, "
+                    "--requirement an ad hoc bounded requirement (both repeatable). "
+                    "Prints only the interpreter path on stdout.")
+    p.add_argument("name")
+    p.add_argument("--extra", action="append", default=[], metavar="EXTRA")
+    p.add_argument("--requirement", action="append", default=[], metavar="REQ")
+    p.set_defaults(func=cmd_environment)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
     p.set_defaults(func=cmd_gc)
@@ -865,8 +1031,11 @@ def main(argv=None) -> int:
     p.add_argument("--check", action="store_true",
                    help="dry-run: print what would change, write nothing (exit 1 if updates exist)")
     p.add_argument("--target", help="resolve for a different target instead of this machine (e.g. win32-arm64)")
+    p.add_argument("--skip-target", action="append", default=[], choices=ALL_TARGETS, metavar="TARGET",
+                   help="leave TARGET's pins as they are, e.g. linux-arm64-bionic while the termux "
+                        "pool lags upstream (repeatable)")
     p.add_argument("--uv", action="store_true", help="also refresh uv.lock + venv (uv update + sync)")
-    p.add_argument("--npm", action="store_true", help="also refresh package-lock.json (npm update)")
+    p.add_argument("--pnpm", action="store_true", help="also refresh pnpm-lock.yaml (pnpm update)")
     p.add_argument("--termux", action="store_true",
                    help="repin the termux pool archives the pool has retired (the runtime-lib "
                         "table + the bionic lock rows); --check reports without writing")

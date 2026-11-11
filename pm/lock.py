@@ -286,6 +286,11 @@ class Facts:
             _write(self.path, {"schema": SCHEMA, "packages": retained})
         self._packages = retained
 
+    def forget(self, names) -> None:
+        """Drop the facts of packages pm no longer defines, so gc reclaims their entries."""
+        packages = _read(self.path, strict=True)["packages"]
+        self.retain(set(packages) - set(names))
+
     def entries_in_use(self) -> set[str]:
         return {f["entry"] for f in self._packages.values() if "entry" in f}
 

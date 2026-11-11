@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("tools.skill_manager_tool")
 
 
-def _refusal(message: str, **extra: Any) -> Dict[str, Any]:
+def _refusal(message: str, **extra: Any) -> dict[str, Any]:
     return {"success": False, "error": message, **extra}
 
 
@@ -48,7 +48,7 @@ class _BackgroundReviewReadMarks:
             return path in self._paths
 
 
-_background_review_read_paths: "_ctxvars.ContextVar[Optional[_BackgroundReviewReadMarks]]" = (
+_background_review_read_paths: _ctxvars.ContextVar[Optional[_BackgroundReviewReadMarks]] = (
     _ctxvars.ContextVar("background_review_read_paths", default=None))
 
 
@@ -161,7 +161,7 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
-def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[Dict[str, Any]]:
+def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[dict[str, Any]]:
     """Refuse autonomous deletes of anything but curator-owned sediment. Content writes are not
     gated by ownership: the review fork exists to improve every skill it learns from, and every
     write is ledgered and reversible, while an archive removes a skill the user relies on."""
@@ -209,7 +209,7 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[Dict
 
 
 def _background_review_read_before_write_guard(
-    name: str, target: Path, action: str, file_label: str) -> Optional[Dict[str, Any]]:
+    name: str, target: Path, action: str, file_label: str) -> Optional[dict[str, Any]]:
     """Require review forks to load the exact target before mutating it."""
     if not _is_background_review() or _background_review_has_read(target):
         return None
@@ -221,7 +221,41 @@ def _background_review_read_before_write_guard(
         _read_before_write_required=True)
 
 
-def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, Any]]:
+def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
+    """Refuse every mutating ``skill_manage`` action on a skill the user locked (``hermes curator
+    lock`` / the Desktop lock switch), whoever asks: foreground turns, the background review and the
+    curator pass alike. ``create`` is exempt (the collision check already refuses a name that resolves
+    anywhere). An unreadable sidecar fails CLOSED for the autonomous passes (silently relaxing a
+    lock is the failure this exists to prevent) and open for normal turns, so one corrupt file does
+    not freeze every skill edit. Keyed by directory name, so the bare, ``cat/name`` and
+    frontmatter-name forms all resolve to the same record."""
+    if action == "create" or not name:
+        return None
+    try:
+        from tools import skill_manager_tool as _smt
+        from tools import skill_usage
+        candidates = {name, Path(name).name}
+        if existing := _smt._find_skill(name):
+            candidates.add(existing["path"].name)
+        locked = next((c for c in candidates if skill_usage.is_locked(c)), None)
+    except Exception:
+        logger.warning("locked skill guard lookup failed for %s", name, exc_info=True)
+        if not _is_background_review():
+            return None  # a corrupt sidecar must not freeze every skill edit in normal turns
+        return _refusal(
+            f"Refusing {action} for skill '{name}': its lock state could not be verified because the "
+            f"skills/.usage.json sidecar is unreadable. Leave the skill alone and tell the user; they "
+            f"can repair the sidecar or run `hermes curator unlock {name}`.", _locked=True)
+    if locked:
+        from tools.skill_lock import skill_refusal
+        return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
+    return None
+
+def _background_review_preflight(action: str, name: str) -> Optional[dict[str, Any]]:
+    """Guards that run on the bare action/name before any handler, for the single-op AND the
+    batch path: the content lock (every mutating action) and the ownership delete guard."""
+    if (locked := _locked_guard(name, action)) is not None:
+        return locked
     if action != "delete":
         return None
     from tools import skill_manager_tool as _smt
@@ -230,7 +264,7 @@ def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, A
 
 
 def _curator_consolidation_delete_guard(
-    name: str, absorbed_into: Optional[str]) -> Optional[Dict[str, Any]]:
+    name: str, absorbed_into: Optional[str]) -> Optional[dict[str, Any]]:
     """Fail closed on unverified deletes during the curator consolidation pass. The fork's only
     legitimate delete is a consolidation declared via ``absorbed_into=<umbrella>`` (existence
     validated in ``_delete_skill``); the deterministic inactivity prune never calls skill_manage,

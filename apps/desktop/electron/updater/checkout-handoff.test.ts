@@ -184,9 +184,9 @@ it('a failed hand-off spawn keeps the app alive and reports the failure in plain
 // A legacy script (no protocol line) gets no bridge at all (SPEC 4b).
 it('a hand-off whose legacy script never takes the marker keeps the app alive and wrote no bridge', async (): Promise<void> => {
   const { root, deps } = handoffFixture(false)
-  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
-    (): updaterProcess.UpdaterChild => ({ unref: (): void => {} })
-  )
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation((): updaterProcess.UpdaterChild => ({
+    unref: (): void => {}
+  }))
 
   try {
     const result = await createCheckoutStrategy({ ...deps, handoffClaimTimeoutMs: 300 }).apply()
@@ -327,8 +327,6 @@ function mockProtocol2Spawn(home: string, script: 'adopts' | 'adopts-then-dies' 
 
   return runs
 }
-
-
 
 describe.skipIf(IS_WINDOWS)('protocol 2 hand-off', () => {
   it('bridges with a run id, passes --handoff-run, and acknowledges the live adopting script', async (): Promise<void> => {
@@ -521,23 +519,35 @@ it('the Windows protocol-2 hand-off passes -HandoffRun with the bridged run id',
   )
   const helper = vi.fn(async () => ({ kind: 'withdrawn' as const }))
   const runs: string[][] = []
+  const envs: NodeJS.ProcessEnv[] = []
   let bridge: string | null = null
-  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation((_command: string, args: string[]) => {
-    runs.push(args)
-    bridge = fs.readFileSync(markerPath(deps.hermesHome), 'utf8')
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
+    (_command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      runs.push(args)
+      envs.push(options.env ?? {})
+      bridge = fs.readFileSync(markerPath(deps.hermesHome), 'utf8')
 
-    return { unref: (): void => {} }
-  })
+      return { unref: (): void => {} }
+    }
+  )
+  // This Desktop was relaunched by the previous hand-off and inherited its run id.
+  vi.stubEnv('HERMES_UPDATE_CORRELATION_ID', 'desk-1-previous-run')
 
   try {
     await createCheckoutStrategy({ ...deps, isWindows: true, markerHelper: helper, handoffClaimTimeoutMs: 200 }).apply()
     const runId = argAfter(runs[0]!, '-HandoffRun')
     expect(runId).toMatch(/^desk-\d+-[0-9a-z]+-[0-9a-f]{4}$/)
     expect(parseUpdateMarker(bridge ?? '')?.run).toBe(runId)
+    // The update runs under THIS run's id, the one its close-holder consent is bound to.
+    expect(envs[0]!.HERMES_UPDATE_CORRELATION_ID).toBe(runId)
     expect(argAfter(runs[0]!, '-DesktopPid')).toBe(String(process.pid))
     // Nothing adopted it: the bridge is withdrawn through the helper, with the run.
-    expect(helper).toHaveBeenCalledWith('withdraw', expect.objectContaining({ runId, desktopPid: process.pid, isWindows: true }))
+    expect(helper).toHaveBeenCalledWith(
+      'withdraw',
+      expect.objectContaining({ runId, desktopPid: process.pid, isWindows: true })
+    )
   } finally {
+    vi.unstubAllEnvs()
     fs.rmSync(root, { recursive: true, force: true })
   }
 })

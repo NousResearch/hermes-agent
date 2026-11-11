@@ -272,7 +272,8 @@ def _retry_owed_migration(record: Path, identity: str, known: dict):
         if not outcome.get("ok") and not outcome.get("failed_step"):
             # The retry raised (a full disk, a lock): the step is still owed, so the next start
             # retries it too. Only a retry that succeeded clears it.
-            retried["migrate_config"] = {**owed, **outcome, "failed_step": owed["failed_step"]}
+            retried["migrate_config"] = {**outcome, "failed_step": owed["failed_step"],
+                                         "failed_warning": outcome.get("error") or owed.get("failed_warning")}
         _write_record(record, identity, {**known["results"], **retried})
         return retried
     finally:

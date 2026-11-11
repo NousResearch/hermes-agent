@@ -3284,6 +3284,17 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         print(color("  (Use --force to skip this notice.)", Colors.DIM))
 
 
+def _dropped_shadow_notes(user_config: dict, key: str, legacy_key, drop_legacy_disabled) -> list[str]:
+    """Drop what would shadow the key ``config set`` just wrote, one note per drop: a legacy
+    gateway-platforms duplicate, and a legacy MCP ``disabled`` that would keep the server off."""
+    notes = []
+    if legacy_key and _unset_nested(user_config, legacy_key):
+        notes.append(f"  (removed the shadowed {legacy_key} duplicate)")
+    if drop_legacy_disabled(_locate_nested(user_config, _split_key_path(key))):
+        notes.append("  (removed the legacy `disabled` key, which would keep the server off)")
+    return notes
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
     ``force`` writes a known key given under the wrong prefix (``gateway.discord.foo`` where
@@ -3364,10 +3375,9 @@ def set_config_value(key: str, value: str, force: bool = False):
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
-    if legacy_key and _unset_nested(user_config, legacy_key):
-        print(f"  (removed the shadowed {legacy_key} duplicate)")
     from tools.mcp_tool_common import drop_legacy_disabled_for_key
-    drop_legacy_disabled_for_key(_locate_nested(user_config, _split_key_path(key)))
+    for _note in _dropped_shadow_notes(user_config, key, legacy_key, drop_legacy_disabled_for_key):
+        print(_note)
     # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
     # state of the OLD provider, and the runtime honours them for whatever provider the block now
     # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync

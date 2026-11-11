@@ -183,7 +183,9 @@ def test_a_retry_that_raises_still_owes_the_step(tmp_path, monkeypatch):
         raise OSError("No space left on device")
 
     monkeypatch.setattr(post_update, "_backup_existing", full_disk)
-    assert boot()["migrate_config"]["ok"] is False
+    raised = boot()["migrate_config"]
+    assert raised["ok"] is False and raised["failed_step"] == 21
+    assert "No space left" in raised["failed_warning"], "doctor shows why THIS retry broke"
     monkeypatch.setattr(post_update, "_backup_existing", real_backup)
 
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))

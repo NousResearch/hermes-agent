@@ -151,3 +151,14 @@ def test_config_migrate_command_reports_a_stopped_pass(tmp_path, capsys):
     assert exited.value.code == 1
     assert "Configuration updated" not in out
     assert "v21 failed" in out
+
+
+def test_console_config_migrate_error_says_why(tmp_path):
+    """The web console drops a failing command's printed output, so the error itself carries the cause."""
+    import pytest
+    from hermes_cli.console_engine import ConsoleCommandError, _config_migrate
+
+    _write_config(tmp_path, {"_config_version": 20, "plugins": {"disabled": [["x"]]}})
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), pytest.raises(ConsoleCommandError) as err:
+        _config_migrate(None, [])
+    assert "v21 failed" in str(err.value) and "unhashable" in str(err.value)

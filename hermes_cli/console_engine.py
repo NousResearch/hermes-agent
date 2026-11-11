@@ -642,8 +642,7 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
     for warning in results.get("warnings") or []:
         print(f"Warning: {warning}")
     if results.get("failed_step") is not None:
-        raise ConsoleCommandError(f"config migrate: stopped at v{results['failed_step']}; "
-                                  "the steps before it are kept, the rest run again next time")
+        raise ConsoleCommandError(f"config migrate: {results['failed_warning']}")
     print("Configuration updated." if results.get("env_added") or results.get("config_added")
           else "Configuration is up to date.")
 

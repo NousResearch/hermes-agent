@@ -1,0 +1,40 @@
+name: coolifybruecke
+title: Coolifybrücke
+repo: https://github.com/studioluftbruecke/hermes-coolifybruecke
+sha: 2b02a05137f236e8f46c53c6f625cf841faf2d8a
+description: >-
+  See what needs you across your Coolify instance, deploy with your approval, and let Hermes
+  explain failed deploys. Disclosure: calls only your Coolify instance with the token you give it,
+  Coolify's public release feed, and your apps' git hosts for "branch ahead"; every agent action
+  asks first and unattended runs are refused; no telemetry.
+maintainer: studioluftbruecke
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://coolifybruecke.luftbruecke.studio
+version: "0.2.1"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-coolifybruecke/2b02a05137f236e8f46c53c6f625cf841faf2d8a/docs/screenshot-4.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Needs a Coolify API token with read and deploy, and Coolify's API (and ideally its MCP server) enabled under Settings, Advanced."
+  - "With Hermes on a server, install the plugin on the Desktop computer too, on the same version: Desktop loads the Coolifybrücke page from its own computer."
+capabilities:
+  provides_tools:
+    - coolify_capabilities
+    - coolify_overview
+    - coolify_deployments
+    - coolify_diagnose
+    - coolify_action
+    - coolify_cockpit
+    - coolify_notes
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

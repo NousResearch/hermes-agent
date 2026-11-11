@@ -3023,14 +3023,11 @@ def _drain_gateway_watch_events(completion_queue) -> list[dict]:
         except Exception:
             break
         evt_type = evt.get("type", "completion")
-        if not event_visible(evt):
-            requeue.append(evt)  # a hosted agent's: only its own scope may deliver it
-        elif evt_type in {
-            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
-            "heartbeat"}:
+        if not event_visible(evt) or evt_type == "async_delegation":
+            requeue.append(evt)  # hosted: only its own scope may deliver it; async_delegation: its own watcher does
+        elif evt_type in {"watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
+                          "heartbeat"}:
             watch_events.append(evt)
-        elif evt_type == "async_delegation":
-            requeue.append(evt)
         # else: process completion events are handled by the watcher task
     for evt in requeue:
         completion_queue.put(evt)

@@ -1,21 +1,21 @@
 name: talaria-bench
 repo: https://github.com/devorun/talaria-bench
-sha: 511006ebe6ec8156b080f98e24698ef8ffa84660
+sha: ca0b44dc53a741ef6a1578aebe42d62dda0df08f
 title: Talaria Bench
 maintainer: devorun
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-version: "1.0.0"
+version: "1.0.1"
 docs_url: https://github.com/devorun/talaria-bench#readme
 description: "A physics test bench for DIY servo robots: build your robot from a template and a few measurements, see it in 3D next to its photo, run a one-click MuJoCo arena (flat, ramps, bars, pushes, slippery floor) across randomized worlds with a report card that says why it fails, compare design variants or watch a changed version side by side in the Arena, and gate robot_play / robot_pose with an exact-motion preflight in simulation before a move may play on the real robot (ESP32 + PCA9685 firmware included, or a virtual robot). CPU only, no GPU, no CAD. Disclosure — the automatic return to home (before a move and on robot_stop) is speed-limited (at least 3 s) but not simulated on its own; runs benchmark and comparison jobs as background Python subprocesses with worker pools (up to N-1 cores each, at most 2 jobs at once); starts local virtual-robot HTTP servers on 127.0.0.1 (random port, no token) on demand, and `hermes talaria sim` listens on 127.0.0.1:8765 unless --host is given; sends plain HTTP only to the robot address you set (bypassing proxies; the robot token travels unencrypted on your LAN); reads a robot photo only from a path you give under your home or Hermes folder; writes robots, photos, moves, approvals, jobs, reports and caches under $HERMES_HOME/plugin-data/talaria-bench (the trace cache is not pruned). The optional robot token is a Hermes secret. No third-party services, shell commands, downloads or telemetry."
-image: https://raw.githubusercontent.com/devorun/talaria-bench/511006ebe6ec8156b080f98e24698ef8ffa84660/docs/img/banner.png
+image: https://raw.githubusercontent.com/devorun/talaria-bench/ca0b44dc53a741ef6a1578aebe42d62dda0df08f/docs/img/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/devorun/talaria-bench/511006ebe6ec8156b080f98e24698ef8ffa84660/docs/img/screens/dashboard-gallery.png
-  - https://raw.githubusercontent.com/devorun/talaria-bench/511006ebe6ec8156b080f98e24698ef8ffa84660/docs/img/screens/dashboard-robot-caduceus.png
-  - https://raw.githubusercontent.com/devorun/talaria-bench/511006ebe6ec8156b080f98e24698ef8ffa84660/docs/img/screens/dashboard-arena-spider8-ramp10.png
-  - https://raw.githubusercontent.com/devorun/talaria-bench/511006ebe6ec8156b080f98e24698ef8ffa84660/docs/img/screens/dashboard-report-spider8.png
-  - https://raw.githubusercontent.com/devorun/talaria-bench/511006ebe6ec8156b080f98e24698ef8ffa84660/docs/img/screens/dashboard-check-arms_up_both-blocked.png
+  - https://raw.githubusercontent.com/devorun/talaria-bench/ca0b44dc53a741ef6a1578aebe42d62dda0df08f/docs/img/screens/dashboard-gallery.png
+  - https://raw.githubusercontent.com/devorun/talaria-bench/ca0b44dc53a741ef6a1578aebe42d62dda0df08f/docs/img/screens/dashboard-robot-caduceus.png
+  - https://raw.githubusercontent.com/devorun/talaria-bench/ca0b44dc53a741ef6a1578aebe42d62dda0df08f/docs/img/screens/dashboard-arena-spider8-ramp10.png
+  - https://raw.githubusercontent.com/devorun/talaria-bench/ca0b44dc53a741ef6a1578aebe42d62dda0df08f/docs/img/screens/dashboard-report-spider8.png
+  - https://raw.githubusercontent.com/devorun/talaria-bench/ca0b44dc53a741ef6a1578aebe42d62dda0df08f/docs/img/screens/dashboard-check-arms_up_both-blocked.png
 platforms: [windows, macos, linux]
 capabilities:
   provides_tools:

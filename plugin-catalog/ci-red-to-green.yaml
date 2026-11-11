@@ -1,18 +1,18 @@
 name: ci-red-to-green
 repo: https://github.com/kinnuworks/ci-red-to-green
-sha: "a451cbd9dbd3212eac9c2b6bc619348a6a32110b"
+sha: "9537fefe58f9aac8f50194b58949a3a92b64e7db"
 title: CI Red to Green
 description: "When a watched GitHub Actions run goes red, Hermes tells you which tests failed and which commits came in since the last green run; reply fix and the agent fixes a clone, and a PR is offered only after the plugin's own reading of Hermes's terminal output shows each failing test PASSED at the last green commit (when there was one), FAILED twice before the change (a pass before it marks the test flaky and blocks the PR), PASSED three runs in a row after it, and no new full-suite failures. pytest and go test. The PR commit holds source files only (no tests, test config, CI files or gitignored files), and the plugin reports the PR's own CI result. Desktop pane, page, palette commands and notifications. Try /ci demo with no token: a real humanize bug on a bundled copy. Disclosure: polls the GitHub API for the watched repos every 30 s while a watch is on (one background thread, stops on /ci stop or restart), downloads failed job logs without forwarding the token to the log host, compares commits, and creates a branch, commit and pull request only when you pick Open PR, all with CI_RED_TO_GREEN_GITHUB_TOKEN read through Hermes's secret scope; the plugin runs no shell commands itself, while the agent clones the repo into plugin-data/ci-red-to-green/worktrees/ and runs its tests through Hermes's terminal tool, with the first command that runs repo code escalated to Hermes's approval prompt and git push from that folder blocked; stores watches, incidents and recorded test results in plugin-data/ci-red-to-green/; no telemetry."
 maintainer: kinnuworks
 tier: community
 category: automation
 screenshots:
-  - https://raw.githubusercontent.com/kinnuworks/ci-red-to-green/a451cbd9dbd3212eac9c2b6bc619348a6a32110b/docs/assets/desktop-pane-ready.png
-  - https://raw.githubusercontent.com/kinnuworks/ci-red-to-green/a451cbd9dbd3212eac9c2b6bc619348a6a32110b/docs/assets/desktop-pane-done.png
+  - https://raw.githubusercontent.com/kinnuworks/ci-red-to-green/9537fefe58f9aac8f50194b58949a3a92b64e7db/docs/assets/desktop-pane-ready.png
+  - https://raw.githubusercontent.com/kinnuworks/ci-red-to-green/9537fefe58f9aac8f50194b58949a3a92b64e7db/docs/assets/desktop-pane-done.png
 requires_hermes: ">=0.23.1"
 docs_url: https://kinnuworks.github.io/ci-red-to-green/
-version: "0.2.2"
-image: https://raw.githubusercontent.com/kinnuworks/ci-red-to-green/a451cbd9dbd3212eac9c2b6bc619348a6a32110b/docs/assets/banner.png
+version: "0.2.3"
+image: https://raw.githubusercontent.com/kinnuworks/ci-red-to-green/9537fefe58f9aac8f50194b58949a3a92b64e7db/docs/assets/banner.png
 platforms: [linux, macos]
 capabilities:
   provides_tools: []

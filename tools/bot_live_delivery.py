@@ -28,13 +28,29 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
+def _usable_state_db(home: Path) -> Path | None:
+    """``home/state.db`` when it holds a store, else None.
+
+    A 0-byte file is an interrupted initialisation, not an empty profile: SQLite opens it and
+    then every query fails with "no such table: sessions". Callers treat it as "no store" so
+    the fallback delivery path still sends the message (#153048)."""
+    db_path = home / 'state.db'
+    try:
+        if db_path.is_file() and db_path.stat().st_size > 0:
+            return db_path
+    except OSError:
+        return None
+    return None
+
+
 def _bot_chat_tip(home: Path) -> str | None:
     """Current Bot Chat tip id, or None when the profile has no store or no Bot Chat yet."""
     from hermes_state import SessionDB
 
-    if not (home / 'state.db').is_file():
+    db_path = _usable_state_db(home)
+    if db_path is None:
         return None
-    db = SessionDB(db_path=home / 'state.db', read_only=True)
+    db = SessionDB(db_path=db_path, read_only=True)
     try:
         row = db.get_session_by_title('Bot Chat')
         return db.get_compression_tip(row['id']) if row else None
@@ -54,7 +70,7 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
     discovery = discover_gateway_endpoint(home, timeout=5)
     if discovery.state != 'ready' or discovery.endpoint is None:
         raise ValueError('profile authority is not ready')
-    if not (home / 'state.db').is_file():
+    if _usable_state_db(home) is None:
         return None
     tip = _bot_chat_tip(home)
     return dict(profile_home=str(home), session_id=tip or '', canonical=True,

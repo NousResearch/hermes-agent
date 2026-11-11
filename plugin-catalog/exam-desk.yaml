@@ -2,18 +2,7 @@ name: exam-desk
 title: Exam Desk
 repo: https://github.com/darshak26/hermes-exam-desk
 sha: 72340210bb92c1f38831dbff271423785fda2f65
-description: >-
-  Practice exams inside Hermes Desktop. Add a paper by asking (Hermes finds an
-  official paper or drafts one to the same pattern), sit it on a server-side timer
-  in Assisted mode beside the chat or in Mock mode, get it scored per question with
-  negative marking and a section split, and review every miss into a one-click drill
-  paper. Disclosure: papers, attempts and evaluations are stored only in the plugin's
-  own data directory. Sourcing uses the agent's web tools and AI review uses the
-  agent's configured model, so both go to whatever services the user already
-  configured. The plugin makes no network calls of its own, runs no shell commands,
-  stores no credentials and has no self-updater. Assisted mode feeds the current
-  question to the chat model during a sitting; the answer key never leaves the
-  server until the attempt is submitted.
+description: "Practice exams inside Hermes Desktop. Add a paper by asking (Hermes finds an official paper or drafts one to the same pattern), sit it on a server-side timer in Assisted mode beside the chat or in Mock mode, get it scored per question with negative marking and a section split, and review every miss into a one-click drill paper. Disclosure — papers, attempts and evaluations are stored only in the plugin's own data directory. Sourcing uses the agent's web tools and AI review uses the agent's configured model, so both go to whatever services the user already configured. The plugin makes no network calls of its own except that the Desktop page loads any http(s) figure URLs a paper contains straight from those hosts when the paper is opened. It runs no shell commands of its own (its skills have the agent run the bundled pack validator/installer scripts), stores no credentials and has no self-updater. Assisted mode feeds the current question to the chat model during a sitting; the answer key never leaves the server until the attempt is submitted."
 maintainer: darshak26
 tier: community
 category: desktop

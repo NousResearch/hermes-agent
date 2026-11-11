@@ -1,0 +1,45 @@
+name: on-air
+repo: https://github.com/HomunculusLabs/hermes-on-air
+sha: fe1627535534f771ff2f731f8baa3c64d057733f
+description: AI stream co-host with guarded chat, captions, optional voice, private
+  rehearsal, and operator controls.
+maintainer: HomunculusLabs
+tier: community
+category: platform
+requires_hermes: '>=0.22.7'
+docs_url: https://github.com/HomunculusLabs/hermes-on-air#readme
+version: "0.1.0"
+title: On Air
+capabilities:
+  provides_tools:
+  - onair_setup_schema
+  - onair_setup_status
+  - onair_setup_plan
+  - onair_setup_progress
+  - onair_setup_cancel
+  - onair_preview_safety
+  - onair_stage_status
+  - onair_stage_plan
+  - onair_stage_control
+  - onair_stage_host_turn
+  - onair_stage_safety
+  - onair_show_plan
+  - onair_show_status
+  - onair_show_chat
+  - onair_show_safety
+  - onair_work_share
+  - onair_present_status
+  - onair_present_publish
+  - onair_present_control
+  - onair_obs_setup
+  - onair_obs_scene
+  - onair_window_share
+  - onair_broadcast
+  - onair_layout
+  provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - on_session_end
+  provides_middleware:
+  - llm_execution
+  requires_env: []

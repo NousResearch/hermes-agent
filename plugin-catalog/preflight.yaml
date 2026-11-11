@@ -1,6 +1,6 @@
 name: preflight
 repo: https://github.com/soyluisarca/hermes-preflight
-sha: 5e7c227a04bac5a7e1080db13b8dcb807c6dfc85
+sha: 1d9b19d02dac15faed16ec412f47a758ba4c234d
 description: "Dry-run gate con aprobación: corre cada comando en una copia desechable del workspace (reflink/copia), muestra el diff exacto y aplica solo lo que apruebas."
 maintainer: soyluisarca
 category: tools

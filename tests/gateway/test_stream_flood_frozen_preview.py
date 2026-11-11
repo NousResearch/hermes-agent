@@ -236,6 +236,21 @@ async def test_an_edit_that_would_truncate_leaves_the_normal_send():
     assert len([c for c in adapter.calls if c[0] == "edit"]) == 2  # no cut-short finishing edit was tried
 
 
+def test_slack_measures_the_formatted_text_its_edit_cuts():
+    """Slack escapes ``& < >`` before ``chat.update`` keeps one 39k chunk: a raw reply under the
+    limit that formats past it is never finished in place, where its tail would be lost."""
+    from gateway.config import PlatformConfig
+    from gateway.run_turn_final_reconcile import owns_reconcilable_preview
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    slack = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+    preview = SimpleNamespace(message_id="1700000000.000100", adapter=slack)
+    heavy = ("a & b < c > d " * 3000)[:38990]
+    assert len(heavy) < slack.MAX_MESSAGE_LENGTH < len(slack.format_message(heavy))
+    assert not owns_reconcilable_preview(preview, "C1", heavy)
+    assert owns_reconcilable_preview(preview, "C1", "a & b < c " * 100)
+
+
 @pytest.mark.asyncio
 async def test_a_replaced_turn_and_a_receiptless_edit_are_distinguishable():
     """The queued lane drops the reply only for a replaced turn; an edit with no receipt is not that."""

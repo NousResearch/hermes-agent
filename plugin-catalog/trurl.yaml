@@ -1,0 +1,32 @@
+name: trurl
+title: Trurl
+repo: https://github.com/oblomovunleashed/trurl-hermes
+sha: "8d8a70e67ff38f1d8b51ab64b2f28d72698242de"
+image: https://raw.githubusercontent.com/oblomovunleashed/trurl-hermes/8d8a70e67ff38f1d8b51ab64b2f28d72698242de/assets/trurl-constructor.png
+screenshots:
+  - https://raw.githubusercontent.com/oblomovunleashed/trurl-hermes/8d8a70e67ff38f1d8b51ab64b2f28d72698242de/assets/screenshots/03-atlas-interest-map.jpg
+  - https://raw.githubusercontent.com/oblomovunleashed/trurl-hermes/8d8a70e67ff38f1d8b51ab64b2f28d72698242de/assets/screenshots/01-atlas-connections.jpg
+  - https://raw.githubusercontent.com/oblomovunleashed/trurl-hermes/8d8a70e67ff38f1d8b51ab64b2f28d72698242de/assets/screenshots/02-atlas-source-inspection.jpg
+  - https://raw.githubusercontent.com/oblomovunleashed/trurl-hermes/8d8a70e67ff38f1d8b51ab64b2f28d72698242de/assets/screenshots/04-sunday-edition.jpg
+version: "0.3.1"
+description: "Private taste memory for Hermes with proactive hypotheses, sourced cross-theme discovery, compact context, Taste Atlas and Sunday editions."
+maintainer: oblomovunleashed
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/oblomovunleashed/trurl-hermes/blob/8d8a70e67ff38f1d8b51ab64b2f28d72698242de/README.md
+capabilities:
+  provides_tools:
+    - trurl_context
+    - trurl_taste
+    - trurl_brief
+    - trurl_hypotheses
+    - trurl_plan
+    - trurl_graph
+    - trurl_select
+    - trurl_feedback
+    - trurl_atlas
+    - trurl_schedule
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,21 @@
+name: apparent
+title: Apparent
+repo: https://github.com/tryapparent/apparent
+sha: cadd967b2052bfc772cda34904c0b5078b39670d
+subdir: hermes
+description: Read screen, voice and drawing recordings as timestamped instructions and visual evidence in Hermes.
+maintainer: simonvanlaak
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.3.1"
+docs_url: https://github.com/tryapparent/apparent/blob/cadd967b2052bfc772cda34904c0b5078b39670d/hermes/README.md
+platforms: [linux, macos]
+known_issues:
+  - Requires a separately installed Apparent CLI on the Hermes backend host; plugin installation does not install the recorder.
+  - This source pin provides recording inspection; it does not include a generated Desktop composer button. Use manual recording and paste.
+capabilities:
+  provides_tools: [apparent_inspect]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

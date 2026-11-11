@@ -632,6 +632,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # The split tail goes out now, so a commentary or tool boundary drained in
                     # this tick still lands after it instead of being dropped.
                     await self._push_update(tick)
+                    # /stop or /new may invalidate the turn while adapter I/O is awaited.
+                    # Never retry a refused final send for the dead generation.
+                    if not self._run_still_current():
+                        await self._abandon_native_stream()
+                        return
 
                 if tick.got_done:
                     await self._finalize_turn(tick)

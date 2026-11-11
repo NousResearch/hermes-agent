@@ -29,14 +29,17 @@ The YAML dialect and the .env tokenizer mirror ``hermes_yaml.roundtrip_yaml`` an
 from __future__ import annotations
 
 import argparse
+import fcntl
 import io
 import json
 import os
 import re
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -47,7 +50,7 @@ SET_MERGED = {("plugins", "enabled"), ("plugins", "disabled")}
 # Hermes migrates its own file now; the base's stamp only seeds a file that has none.
 UNMANAGED_ROOT_KEYS = {"_config_version"}
 ENV_HEADER = "# Added by the Nix base (services.hermes-agent.environment / environmentFiles)"
-CAS_ATTEMPTS = 3
+RENDER_ATTEMPTS = 3
 
 
 class _Yaml11Resolver(VersionedResolver):
@@ -150,15 +153,13 @@ def merge_mapping(c: dict, o: dict, n: dict, path: tuple[str, ...], report: Repo
             _merge_leaf(c, key, cv, ov, nv, dotted, report)
 
 
-def _write_atomic(path: Path, data: bytes, mode: int | None, expected: tuple | None) -> bool:
-    """Replace *path* with *data* unless it changed since it was read (compare-and-swap).
-    Keeps the owner, group and mode of the file it replaces."""
+def _write_atomic(path: Path, data: bytes, mode: int | None) -> None:
+    """Replace *path* with *data* through a temp file and a rename. Keeps the owner, group and mode
+    of the file it replaces; a new file gets *mode*."""
     try:
         st = path.stat()
     except FileNotFoundError:
         st = None
-    if _signature(st) != expected:
-        return False
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
@@ -175,7 +176,6 @@ def _write_atomic(path: Path, data: bytes, mode: int | None, expected: tuple | N
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return True
 
 
 def _signature(st: os.stat_result | None) -> tuple | None:
@@ -190,17 +190,62 @@ def _read_with_signature(path: Path) -> tuple[bytes | None, tuple | None]:
         return None, None
 
 
-def _apply_with_retry(path: Path, render: Callable[[bytes | None], bytes | None],
-                      mode: int | None) -> None:
-    """Read, render and compare-and-swap, retrying when Hermes writes the file meanwhile."""
-    for _ in range(CAS_ATTEMPTS):
+def _current_signature(path: Path) -> tuple | None:
+    try:
+        return _signature(path.stat())
+    except FileNotFoundError:
+        return None
+
+
+def _apply_unlocked(path: Path, render: Callable[[bytes | None], bytes | None], mode: int | None) -> None:
+    """Read, merge and replace a file that its other writers do not lock.
+
+    Hermes takes no cross-process lock when it saves config.yaml (its own processes can lose each
+    other's saves the same way), so there is nothing to synchronize with. This NARROWS the window
+    and does not close it: a save seen while the merge was rendered makes it start again from that
+    save, but a save that lands between the last check and the rename is overwritten. Activation is
+    rare and a save is a short read-modify-write, so the window is small, but it is not zero.
+    """
+    for _ in range(RENDER_ATTEMPTS):
         current, signature = _read_with_signature(path)
         rendered = render(current)
         if rendered is None or rendered == current:
             return
-        if _write_atomic(path, rendered, mode, signature):
+        if _current_signature(path) == signature:
+            _write_atomic(path, rendered, mode)
             return
     sys.exit(f"hermes-agent: {path} kept changing during activation; run activation again")
+
+
+@contextmanager
+def _env_lock(env_path: Path, timeout: float = 30.0) -> Iterator[None]:
+    """Hold the lock that Hermes's own .env writers hold (hermes_cli.config._env_write_lock):
+    an exclusive flock on ``<.env>.lock`` around the whole read-modify-write. A Hermes save then
+    runs entirely before or after the merge, so neither can lose the other's keys.
+
+    Hermes opens the lock file for append as the service user. If root creates it here, it must
+    belong to the owner of the directory, or each later Hermes save of .env would fail."""
+    lock_path = env_path.with_name(env_path.name + ".lock")
+    created = not lock_path.exists()
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o660)
+    try:
+        if created:
+            if os.geteuid() == 0:
+                home = env_path.parent.stat()
+                os.fchown(fd, home.st_uid, home.st_gid)
+            os.fchmod(fd, 0o660)  # the umask must not take the group's write bit away
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    sys.exit(f"hermes-agent: timed out waiting for {lock_path}; run activation again")
+                time.sleep(0.1)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the flock
 
 
 def _read_record(path: Path) -> Any:
@@ -246,7 +291,7 @@ def run_config(state: Path, config_path: Path, base_path: Path, mode: int) -> No
         yaml.dump(doc, out)
         return out.getvalue().encode("utf-8")
 
-    _apply_with_retry(config_path, render, mode)
+    _apply_unlocked(config_path, render, mode)
     _write_record(record, new)
     report.emit("config.yaml")
 
@@ -315,6 +360,18 @@ def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _replace_value(line: str, value: str) -> str:
+    """Swap only the value token of an assignment line: an ``export`` prefix, the spacing around
+    ``=``, a trailing ``# comment`` and the line ending all stay as the user wrote them."""
+    body = line.rstrip("\r\n")
+    ending = line[len(body):]
+    head, _, tail = body.partition("=")
+    stripped = tail.strip()
+    token = _strip_inline_comment(tail)  # the value as written, always a prefix of ``stripped``
+    lead = tail[: len(tail) - len(tail.lstrip())]
+    return f"{head}={lead}{_quote(value)}{stripped[len(token):]}{ending or chr(10)}"
+
+
 def merge_env(text: str, old: dict[str, str], new: dict[str, str], report: Report) -> str:
     lines = text.splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):
@@ -335,7 +392,7 @@ def merge_env(text: str, old: dict[str, str], new: dict[str, str], report: Repor
                 lines = [line for i, line in enumerate(lines) if i not in defining]
                 report.removed.append(key)
             elif cv != nv:
-                lines[defining[-1]] = f"{key}={_quote(nv)}\n"
+                lines[defining[-1]] = _replace_value(lines[defining[-1]], nv)
                 report.applied.append(key)
         elif nv is not MISSING and cv != nv:
             report.shadowed.append(key)
@@ -367,7 +424,11 @@ def run_env(state: Path, env_path: Path, mode: int, base_env: Path, env_files: l
         merged = merge_env(current.decode("utf-8-sig") if current else "", old, new, report)
         return None if current is None and not merged else merged.encode("utf-8")
 
-    _apply_with_retry(env_path, render, mode)
+    with _env_lock(env_path):
+        current = env_path.read_bytes() if env_path.exists() else None
+        rendered = render(current)
+        if rendered is not None and rendered != current:
+            _write_atomic(env_path, rendered, mode)
     if not (bootstrap and incomplete):  # a partial first record would orphan the unread keys
         _write_record(record, new)
     report.emit(".env")

@@ -288,6 +288,11 @@ let
             that Nix adds still arrive.
 
           `hermes update` stays refused, because Nix owns the package.
+
+          The merge of .env holds the lock that Hermes holds when it saves
+          .env, so the two cannot lose each other's changes. Hermes takes no
+          such lock on config.yaml. A save that lands in the moment of the
+          activation's own write to config.yaml can be lost.
         '';
       };
 

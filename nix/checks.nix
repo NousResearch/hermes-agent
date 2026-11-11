@@ -1500,11 +1500,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               with open(sys.argv[1], "w") as f:
                   yaml.dump(doc, f)
             '';
-            env1 = pkgs.writeText "env1" "HERMES_TEST=1\nNIX_ONLY=a\n";
-            env2 = pkgs.writeText "env2" "HERMES_TEST=2\nNEW_NIX=x y\n";
+            env1 = pkgs.writeText "env1" "HERMES_TEST=1\nNIX_ONLY=a\nNOTED=1\n";
+            env2 = pkgs.writeText "env2" "HERMES_TEST=2\nNEW_NIX=x y\nNOTED=2\n";
+            env3 = pkgs.writeText "env3" "HERMES_TEST=3\nNEW_NIX=x y\nNOTED=2\n";
             secrets = pkgs.writeText "secrets" "SECRET_KEY=\"s3 cret\"\n";
           in
-          pkgs.runCommand "hermes-config-layer" { nativeBuildInputs = [ pkgs.jq ]; } ''
+          pkgs.runCommand "hermes-config-layer" { nativeBuildInputs = [ pkgs.jq pkgs.util-linux ]; } ''
             set -eu
             export HOME=$(mktemp -d)
             H=$(mktemp -d)
@@ -1534,7 +1535,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             check '.plugins.disabled == ["p-nix-2"]' "a plugin the user disabled must stay disabled"
             echo "PASS: config.yaml"
 
-            printf '# my header\nHERMES_TEST=1\nNIX_ONLY=a\nSECRET_KEY="s3 cret"\n' > "$H/.env"
+            printf '# my header\nHERMES_TEST=1\nNIX_ONLY=a\nexport NOTED=1 # keep this note\nSECRET_KEY="s3 cret"\n' > "$H/.env"
             ${layer} env "$H/.nix-base" "$H/.env" 0600 ${env1} ${secrets}
             sed -i 's/^HERMES_TEST=1$/HERMES_TEST=user/; /^SECRET_KEY=/d' "$H/.env"
             echo "OPENAI_API_KEY=sk-user" >> "$H/.env"
@@ -1549,6 +1550,21 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
             ${layer} env "$H/.nix-base" "$H/.env" 0600 ${env2} /nonexistent/secrets
             grep -qx 'SECRET_KEY="s3 cret"' "$H/.env" || fail "an unreadable secret file must not drop its keys"
+            grep -qx 'export NOTED=2 # keep this note' "$H/.env" \
+              || fail "a Nix update must keep the export prefix and inline comment of the line"
+
+            # Hermes's .env writers hold an flock on .env.lock for the whole
+            # read-modify-write. The merge must wait for it, or a Hermes save
+            # that runs alongside it is lost.
+            flock "$H/.env.lock" sleep 2 &
+            HOLDER=$!
+            sleep 0.3
+            START=$(date +%s%N)
+            ${layer} env "$H/.nix-base" "$H/.env" 0600 ${env3} ${secrets}
+            WAITED=$(( ($(date +%s%N) - START) / 1000000 ))
+            wait $HOLDER
+            [ "$WAITED" -ge 1000 ] || fail "the .env merge did not wait for .env.lock (waited ''${WAITED}ms)"
+            grep -qx 'HERMES_TEST=user' "$H/.env" || fail ".env lost a user override under the lock"
             echo "PASS: .env"
 
             mkdir -p $out

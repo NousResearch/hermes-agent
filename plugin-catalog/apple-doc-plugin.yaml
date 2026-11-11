@@ -1,0 +1,33 @@
+name: apple-doc-plugin
+title: Apple Developer Documentation Studio
+repo: https://github.com/AndrewMason7/apple-doc-plugin
+sha: cb5e31bbad89065c9c7a6a58c06ead5886984a2e
+version: "1.1.0"
+description: "Offline-first Apple Developer Documentation suite for Hermes: 95,899 symbols across 30 Apple frameworks with sub-5ms SQLite FTS5 search, React/Web/Android-to-SwiftUI idiom RRF, automatic Swift compiler diagnostic grounding hook, @apple: context references, /apple-docs demo command, inline ::apple-doc cards, and an interactive Hermes Desktop Studio. Disclosure — reads its bundled data/apple-docs.db SQLite index in read-only mode, writes no files during normal Hermes operation, adds a short ::apple-doc directive guidance snippet to the system prompt, and intercepts failed swift/swiftc/xcodebuild terminal outputs via transform_terminal_output (offline, configurable via compiler_grounding); get_documentation and Desktop live symbol inspection fetch https://developer.apple.com/tutorials/data/documentation/<symbol>.json over HTTPS (5s timeout, 2 MiB cap, local SQLite fallback); spawns no subprocesses and needs no credentials by default (if prefer_node_bridge is enabled or dense vectors are hydrated, starts a local Node >=22 MCP subprocess and reads optional GEMINI_API_KEY strictly via Hermes secret_scope); no telemetry or self-updater."
+maintainer: AndrewMason7
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/AndrewMason7/apple-doc-plugin#readme
+readme: true
+image: https://raw.githubusercontent.com/AndrewMason7/apple-doc-plugin/cb5e31bbad89065c9c7a6a58c06ead5886984a2e/assets/banner.svg
+screenshots:
+  - https://raw.githubusercontent.com/AndrewMason7/apple-doc-plugin/cb5e31bbad89065c9c7a6a58c06ead5886984a2e/assets/screenshots/studio-explorer.svg
+  - https://raw.githubusercontent.com/AndrewMason7/apple-doc-plugin/cb5e31bbad89065c9c7a6a58c06ead5886984a2e/assets/screenshots/idiom-and-compiler-lab.svg
+  - https://raw.githubusercontent.com/AndrewMason7/apple-doc-plugin/cb5e31bbad89065c9c7a6a58c06ead5886984a2e/assets/screenshots/inline-directive-cards.svg
+platforms:
+  - macos
+  - linux
+  - windows
+capabilities:
+  provides_tools:
+    - search_symbols
+    - semantic_search
+    - get_documentation
+    - discover_technologies
+    - get_version
+    - index_info
+  provides_hooks:
+    - transform_terminal_output
+  provides_middleware: []
+  requires_env: []

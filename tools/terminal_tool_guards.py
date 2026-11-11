@@ -109,10 +109,11 @@ _SEGMENT_SPLIT_RE = re.compile(r"([;&|\n]+)")
 # fd redirects (`2>&1`, `&>log`) are not separators. The lookbehind keeps a long digit run from
 # being rescanned at every position.
 _FD_REDIRECT_RE = re.compile(r"(?<!\d)\d*[<>]&(?:\d+|-)?|&>>?")
-_NULL_REDIRECT_RE = re.compile(r"(?<!\d)\d*>>?\s*/dev/null(?![\w./-])")
+_NULL_REDIRECT_RE = re.compile(r"(?<!\d)\d*>>?\s*/dev/null(?![^\s)}])")
 # Past this many segments nothing is excused: the command keeps the plain anywhere match, which
 # bounds the cost of a pathological input.
 _MAX_EXCUSABLE_SEGMENTS = 2000
+_LOG_FOLLOWERS = frozenset({"tail", "docker", "podman", "kubectl", "journalctl"})
 _GIT_PLAIN_GLOBAL_OPTIONS = frozenset({"--no-pager", "-P", "-p", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs"})
 
 
@@ -257,7 +258,27 @@ def _is_data_command(word: str, args: list) -> bool:
     elif word not in _PACKAGE_TOOLS:
         runs_or_follows = _DATA_COMMAND_EXCEPTIONS.get(word)
         return word in _DATA_COMMANDS and not (runs_or_follows and runs_or_follows(args))
-    return next((arg for arg in args if not arg.startswith("-")), "") in _PACKAGE_DATA_SUBCOMMANDS
+    # The subcommand must come first: after an option, a "subcommand" may be that option's
+    # value (`npm --prefix install run dev`).
+    return "".join(args[:1]) in _PACKAGE_DATA_SUBCOMMANDS
+
+
+def _follows_logs(tokens: list) -> bool:
+    """A log follower anywhere in the segment, behind any wrapper (`command tail -f app.log`,
+    `docker compose logs -f`). It names no server, so it must be found by its own shape."""
+    seen = set()  # a name's first occurrence has every later one's arguments after it
+    for i, token in enumerate(tokens):
+        name = token.lstrip("({").rsplit("/", 1)[-1]
+        if name not in _LOG_FOLLOWERS or name in seen:
+            continue
+        seen.add(name)
+        rest = tokens[i + 1:]
+        if name == "tail":
+            if _DATA_COMMAND_EXCEPTIONS["tail"](rest):
+                return True
+        elif (name == "journalctl" or "logs" in rest) and _has_flag(rest, "f", ("--follow",)):
+            return True
+    return False
 
 
 def _returns_promptly(word: str, args: list) -> bool:
@@ -328,16 +349,6 @@ class _CommandSegments:
         return writes
 
     @functools.cached_property
-    def tail_follows_after(self) -> list:
-        """A data-only server mention must not excuse a later foreground log follower."""
-        follows = [False] * len(self.texts)
-        for index in range(len(self.texts) - 2, -1, -1):
-            next_seg = self.parsed[index + 1]
-            follows[index] = follows[index + 1] or bool(
-                next_seg is not None and next_seg[0] == "tail" and _DATA_COMMAND_EXCEPTIONS["tail"](next_seg[1]))
-        return follows
-
-    @functools.cached_property
     def harmless_after(self) -> list:
         """Per segment: every later segment is empty, a data command, or returns promptly."""
         harmless = [True] * len(self.texts)
@@ -358,7 +369,7 @@ class _CommandSegments:
             # It returns at once, which helps only if nothing after it holds the call open
             # (`up -d && docker compose logs -f`, `… && npm test`).
             return self.harmless_after[index]
-        if not self.is_data[index] or self.piped_to_runner[index] or self.tail_follows_after[index]:
+        if not self.is_data[index] or self.piped_to_runner[index]:
             return False
         # Text written to a file can be run by what follows (`echo npm run dev > x.sh; sh x.sh`).
         return not self.writes_a_file[index] or self.harmless_after[index]
@@ -370,6 +381,10 @@ def _starts_long_lived_server(unquoted: str) -> bool:
         return False
     command = _CommandSegments(unquoted)
     if len(command.texts) > _MAX_EXCUSABLE_SEGMENTS:
+        return True
+    # An excused mention must not carry a log follower through with it, whichever comes first
+    # (`grep uvicorn requirements.txt && tail -f app.log`, `vite build && docker compose logs -f`).
+    if any(_follows_logs(text.split()) for text in command.texts):
         return True
     return any(_names_a_server(text) and not command.excused(index) for index, text in enumerate(command.texts))
 

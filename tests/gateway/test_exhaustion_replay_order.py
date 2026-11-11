@@ -47,7 +47,7 @@ async def test_compacted_tool_evidence_blocks_exhaustion_replay(native_fifo, mon
     """
     native = native_fifo
     runner, authority, adapter = native.runner, native.authority, native.adapter
-    event, admission = await _admit(native, "book the appointment")
+    _event, admission = await _admit(native, "book the appointment")
     queued_after_reset = []
 
     async def turn(event, source, session_key, run_generation):
@@ -64,6 +64,37 @@ async def test_compacted_tool_evidence_blocks_exhaustion_replay(native_fifo, mon
         await runner._hmwa_compression_exhaustion_reset(
             result, "copy", entry, session_key, source, event=event,
         )
+        queued_after_reset.append(adapter._pending_messages.get(session_key))
+        return "copy"
+
+    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
+    await authority._drain(admission.ref)
+    assert queued_after_reset == [None], "a finished calendar action must not be replayed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep_user", [True, False], ids=["user-kept", "user-compacted-away"])
+async def test_compacted_assistant_tool_call_blocks_exhaustion_replay(native_fifo, monkeypatch, keep_user):
+    """The review's shape: [user, assistant(tool_calls), tool] after compression, history_offset=12.
+    With the user row compacted away the turn cannot be bounded, so it is not replayed either."""
+    native = native_fifo
+    runner, authority, adapter = native.runner, native.authority, native.adapter
+    _event, admission = await _admit(native, "book the appointment")
+    queued_after_reset = []
+
+    async def turn(event, source, session_key, run_generation):
+        entry = runner.session_store.lookup_by_session_key(session_key)
+        call = {"id": "c1", "type": "function", "function": {"name": "calendar_create", "arguments": "{}"}}
+        result = {
+            "failed": True, "compression_exhausted": True, "history_offset": 12,
+            "messages": [
+                *([{"role": "user", "content": event.text}] if keep_user else []),
+                {"role": "assistant", "content": "", "tool_calls": [call]},
+                {"role": "tool", "tool_call_id": "c1", "content": "appointment booked"},
+            ],
+        }
+        execution_result.get()["result"] = result
+        await runner._hmwa_compression_exhaustion_reset(result, "copy", entry, session_key, source, event=event)
         queued_after_reset.append(adapter._pending_messages.get(session_key))
         return "copy"
 

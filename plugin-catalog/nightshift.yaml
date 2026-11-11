@@ -1,0 +1,29 @@
+name: nightshift
+title: Nightshift
+repo: https://github.com/Pavilion-devs/nightshift
+sha: 8bbbd6e4163db347af5d4795134bfae22d036d4c
+subdir: nightshift
+description: "Hermes takes the night shift on your ML training runs: Nightshift watches a run's metrics (stdout, JSONL, CSV or TensorBoard), catches NaN, loss spikes, divergence, out-of-memory crashes and stalls, recovers the run within a playbook you approved (roll back to the last healthy checkpoint with a lower learning rate, or restart with half the batch), and pushes the chart to your phone. Desktop pane, dashboard tab, /nightshift, hermes nightshift and a morning-report blueprint. Zero runtime dependencies. Disclosure: the agent can only propose a run; after your explicit approval (/nightshift approve, hermes nightshift approve or the Approve button) it launches the approved command as a long-running background process and may stop or restart that process group, re-rendering only the approved command with only the parameters the playbook declares (lr, batch size, grad accumulation, checkpoint path), within an intervention budget. It signals only process groups it started (PID-reuse guarded), reads the run's log, metric and checkpoint paths, runs nvidia-smi when present, and stores run data under its plugin data folder. On a critical incident it may make capped LLM calls on your configured model with a redacted log tail, and send an alert through Hermes's own `hermes send` command to your messaging platform. No telemetry and no network calls of its own."
+maintainer: Pavilion-devs
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Pavilion-devs/nightshift/blob/8bbbd6e4163db347af5d4795134bfae22d036d4c/README.md
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Pavilion-devs/nightshift/8bbbd6e4163db347af5d4795134bfae22d036d4c/docs/img/alert-chart.png
+screenshots:
+  - https://raw.githubusercontent.com/Pavilion-devs/nightshift/8bbbd6e4163db347af5d4795134bfae22d036d4c/docs/img/dashboard.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - nightshift_launch
+    - nightshift_watch
+    - nightshift_status
+    - nightshift_run
+    - nightshift_report
+    - nightshift_ack
+  provides_hooks:
+    - pre_llm_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

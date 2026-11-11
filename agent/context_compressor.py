@@ -52,6 +52,7 @@ from agent.model_metadata import (
 )
 from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
+from agent.skill_utils import skill_manage_operations
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -1830,22 +1831,11 @@ def _sum_skill_manage(name, args, content, content_len, line_count):
     # The advertised call shape is an operations array; the legacy flat shape
     # (top-level action/name) is still accepted, so both must summarize to a
     # skill name instead of `name=?` — there is no top-level `name` arg here.
-    ops = args.get("operations")
-    if isinstance(ops, list) and ops:
-        rendered = []
-        for op in ops:
-            if not isinstance(op, dict):
-                continue
-            action = _str_arg(op, "action", "?")
-            op_name = _str_arg(op, "name", "?")
-            rendered.append(f"{action} {op_name}")
-        summary = f"[skill_manage] {'; '.join(rendered[:3])}"
-        if len(ops) > 3:
-            summary += f" (+{len(ops) - 3} more)"
-    else:
-        action = _str_arg(args, "action", "?")
-        op_name = _str_arg(args, "name", "?")
-        summary = f"[skill_manage] {action} {op_name}"
+    ops = skill_manage_operations(args)
+    rendered = [f"{_str_arg(op, 'action', '?')} {_str_arg(op, 'name', '?')}" for op in ops]
+    summary = f"[skill_manage] {'; '.join(rendered[:3])}"
+    if len(ops) > 3:
+        summary += f" (+{len(ops) - 3} more)"
     return f"{summary}{_result_failure_suffix(content)} ({content_len:,} chars)"
 
 

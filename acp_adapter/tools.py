@@ -11,6 +11,7 @@ import acp
 from acp.schema import ToolCallLocation, ToolCallProgress, ToolCallStart, ToolKind
 
 from agent.display import build_tool_preview
+from agent.skill_utils import skill_manage_operations
 
 logger = logging.getLogger(__name__)
 
@@ -315,13 +316,15 @@ def _format_skill_view_result(tool_name: str, data: Args, args: Args) -> Optiona
 
 @_structured()
 def _format_skill_manage_result(tool_name: str, data: Args, a: Args) -> Optional[str]:
-    action = _arg(a, "action", default="manage")
-    name = str(a.get("name") or data.get("name") or "skill").strip() or "skill"
-    file_path = str(a.get("file_path") or data.get("file_path") or "SKILL.md").strip() or "SKILL.md"
     status = "✅ Skill updated" if data.get("success") is not False else "✗ Skill update failed"
-    lines = [f"**{status}**", "", f"- **Action:** `{action}`", f"- **Skill:** `{name}`"]
-    if action != "delete":
-        lines.append(f"- **File:** `{file_path}`")
+    lines = [f"**{status}**", ""]
+    for op in skill_manage_operations(a):
+        action = _arg(op, "action", default="manage")
+        name = str(op.get("name") or data.get("name") or "skill").strip() or "skill"
+        file_path = str(op.get("file_path") or data.get("file_path") or "SKILL.md").strip() or "SKILL.md"
+        lines.extend([f"- **Action:** `{action}`", f"- **Skill:** `{name}`"])
+        if action != "delete":
+            lines.append(f"- **File:** `{file_path}`")
     if message := str(data.get("message") or data.get("error") or "").strip():
         lines.append(f"- **Result:** {message}")
     if (replacements := data.get("replacements") or data.get("replacement_count")) is not None:
@@ -708,7 +711,12 @@ def _start_todo(args: Args) -> str:
     return "\n".join(lines + _more(items, 8))
 
 
-def _start_skill_manage(args: Args) -> Any:
+def _start_skill_manage(args: Args) -> list[Any]:
+    """One content item per operation of the call."""
+    return [_start_skill_manage_op(op) for op in skill_manage_operations(args)]
+
+
+def _start_skill_manage_op(args: Args) -> Any:
     action = _arg(args, "action", default="manage")
     name = _arg(args, "name", default="?")
     file_path = _arg(args, "file_path", default="SKILL.md")
@@ -798,7 +806,8 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
         content = [acp.tool_diff_content(path=edit_diff.path, old_text=edit_diff.old_text, new_text=edit_diff.new_text)]
     elif tool_name in _START_CONTENT_BUILDERS:
         built = builder(arguments) if (builder := _START_CONTENT_BUILDERS[tool_name]) is not None else None
-        content = None if built is None else [_text(built) if isinstance(built, str) else built]
+        content = None if built is None else [_text(item) if isinstance(item, str) else item
+                                              for item in (built if isinstance(built, list) else [built])]
     elif tool_name in _POLISHED_TOOLS:
         content = [_text(_truncate_text(_args_json(arguments), limit=1200))]
     elif not arguments:

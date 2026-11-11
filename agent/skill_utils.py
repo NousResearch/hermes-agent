@@ -863,6 +863,13 @@ def is_skill_description_truncated_for_prompt(frontmatter: dict[str, Any]) -> bo
     return len(_normalize_skill_description(frontmatter)) > SKILL_PROMPT_DESC_LIMIT
 
 
+def skill_manage_operations(args: Any) -> list[dict[str, Any]]:
+    """The operations of one ``skill_manage`` call's arguments: each element of ``operations`` (the
+    advertised shape), or the legacy flat call (top-level ``action``/``name``) as its single operation."""
+    ops = args.get("operations")
+    return [op for op in ops if isinstance(op, dict)] if isinstance(ops, list) else [args]
+
+
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*; prunes
     EXCLUDED_SKILL_DIRS and support dirs of skill roots."""

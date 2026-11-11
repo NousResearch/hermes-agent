@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from utils import safe_json_loads
 from agent.i18n import t
 from agent.redact import redact_sensitive_text, sanitize_command_for_display
+from agent.skill_utils import skill_manage_operations
 from agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
@@ -356,7 +357,6 @@ _PRIMARY_ARGS = {
     "browser_click": "ref", "browser_type": "text", "image_generate": "prompt", "text_to_speech": "text",
     "vision_analyze": "question", "skill_view": "name", "skills_list": "category", "cronjob_manage": "action",
     "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
-    "skill_manage": "name",
 }
 _FALLBACK_PREVIEW_KEYS = ("query", "text", "command", "path", "name", "prompt", "code", "goal")
 
@@ -451,6 +451,14 @@ def _preview_skill_view(args: dict, max_len: int) -> str | None:
     return _tail_trunc(label, max_len) or None
 
 
+def _preview_skill_manage(args: dict, max_len: int) -> str | None:
+    """The first operation's skill name, with a ``" (N more)"`` suffix for the rest of the batch."""
+    ops = skill_manage_operations(args)
+    name = _oneline(str(ops[0].get("name") or "")) if ops else ""
+    more = f" ({t('cli.shared.n_more', count=len(ops) - 1)})" if len(ops) > 1 else ""
+    return _tail_trunc(name + more, max_len) if name else None
+
+
 def _preview_clarify(args: dict, max_len: int) -> str | None:
     questions = args.get("questions")
     first = questions[0] if isinstance(questions, list) and questions else None
@@ -476,7 +484,7 @@ _PREVIEW_BUILDERS = {
     "process_manage": _preview_process_manage, "todo_list": _preview_todo_list,
     "terminal": _preview_shell("command"), "execute_code": _preview_shell("code"),
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
-    "skill_view": _preview_skill_view, "clarify": _preview_clarify,
+    "skill_view": _preview_skill_view, "skill_manage": _preview_skill_manage, "clarify": _preview_clarify,
     "session_search": lambda args, _m: t("display.preview.session_search_recall", query=_clip(_oneline(args.get("query", "")), 25)),
     "tool_call": _preview_bridge_call("tool_call"),
     "tool_search": _preview_bridge_call("tool_search"),
@@ -649,7 +657,12 @@ def _display_diff_path(path: Path) -> str:
 
 
 def _resolve_skill_manage_paths(args: dict) -> list[Path]:
-    """Resolve skill_manage write targets to filesystem paths."""
+    """Resolve the write targets of every operation of a skill_manage call to filesystem paths."""
+    return list(dict.fromkeys(path for op in skill_manage_operations(args) for path in _resolve_skill_manage_op_paths(op)))
+
+
+def _resolve_skill_manage_op_paths(args: dict) -> list[Path]:
+    """Resolve one skill_manage operation's write targets to filesystem paths."""
     action = args.get("action")
     name = args.get("name")
     if not action or not name:

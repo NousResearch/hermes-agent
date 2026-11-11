@@ -611,6 +611,11 @@ class GatewayConfig:
     # Drop outbound "silence narration" (*(silent)*, 🔇, a bare ".") that ping-pongs in bot-to-bot
     # channels; a substrate guard that survives prompt drift.
     filter_silence_narration: bool = True
+    # Extra custom/MCP tools whose current-turn MEDIA:<path> results may be appended
+    # when the model omits them. Built-in producers stay enabled in gateway.run.
+    # Keep the list explicit: ordinary tool output can contain MEDIA examples that
+    # must not be sent as local files.
+    auto_append_media_tools: list[str] = field(default_factory=list)
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
@@ -669,6 +674,13 @@ class GatewayConfig:
 
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
+        raw_tools = self.auto_append_media_tools
+        if not isinstance(raw_tools, (list, tuple, set)):
+            self.auto_append_media_tools = []
+        else:
+            self.auto_append_media_tools = list(dict.fromkeys(
+                value.strip() for value in raw_tools if isinstance(value, str) and value.strip()
+            ))
 
     def get_connected_platforms(self) -> list[Platform]:
         """Enabled + configured platforms, sorted by value so the rendered "Connected
@@ -703,6 +715,7 @@ class GatewayConfig:
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
+            "auto_append_media_tools": list(self.auto_append_media_tools),
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -787,6 +800,7 @@ class GatewayConfig:
         return cls(
             platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
+            auto_append_media_tools=pick("auto_append_media_tools") or [],
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},

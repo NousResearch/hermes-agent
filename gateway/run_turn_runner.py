@@ -1232,6 +1232,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # history length, preserving the compression-safe behaviour of #160.
         media_tags, has_voice_directive = _collect_auto_append_media_tags(
             result.get("messages", []), history_offset=len(agent_history), history_media_paths=history_media_paths,
+            additional_producer_tools=set(getattr(self._runner.config, "auto_append_media_tools", []) or []),
         )
         if not media_tags:
             return final_response

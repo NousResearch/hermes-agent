@@ -1429,7 +1429,8 @@ from gateway.media_repair import tool_name_by_call_id as _tool_name_by_call_id
 
 def _collect_auto_append_media_tags(
     messages: list[dict[str, Any]], history_offset: int = 0,
-    history_media_paths: Optional[set] = None) -> tuple[list[str], bool]:
+    history_media_paths: Optional[set] = None,
+    additional_producer_tools: Optional[set] = None) -> tuple[list[str], bool]:
     """Collect real media tags from current-turn producer-tool results only.
 
     Producer allowlist: docs/logs/search results contain example MEDIA: strings that must never become
@@ -1445,6 +1446,7 @@ def _collect_auto_append_media_tags(
     producer-tool allowlist still applies on the fallback path.
     """
     history_media_paths = history_media_paths or set()
+    producer_tools = _AUTO_APPEND_MEDIA_TOOL_NAMES | (additional_producer_tools or set())
     new_messages = (messages[history_offset:]
                     if history_offset and len(messages) >= history_offset else messages)
 
@@ -1456,7 +1458,7 @@ def _collect_auto_append_media_tags(
         if msg.get("role") not in ("tool", "function"):
             continue
         call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+        if tool_name_by_call_id.get(call_id) not in producer_tools:
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)

@@ -1,7 +1,7 @@
 name: wiro
 title: Wiro AI
-repo: https://github.com/wiroai/hermes-wiro-provider
-sha: 9a85cf16051eaabd36648d3afe16a75be417d3c9
+repo: https://github.com/wiroai/Wiro-Hermes
+sha: ac9cd5f347edfb106c0370921322d9c4df6bd101
 subdir: wiro
 description: >-
   Wiro AI as a Hermes model provider (`--provider wiro`, or Wiro AI in `hermes model`): one
@@ -18,7 +18,7 @@ maintainer: wiroai
 tier: community
 category: models
 requires_hermes: ">=0.22.6"
-docs_url: https://github.com/wiroai/hermes-wiro-provider#readme
+docs_url: https://github.com/wiroai/Wiro-Hermes#readme
 version: "1.0.0"
 capabilities:
   provides_tools: []

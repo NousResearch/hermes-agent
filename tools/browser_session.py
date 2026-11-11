@@ -53,6 +53,7 @@ _session_last_activity: dict[str, float] = {}
 # OWNING profile's scope (#86402).
 _session_owner_homes: dict[str, str] = {}
 _cleanup_failures: dict[str, int] = {}  # consecutive janitor failures (#100738)
+_session_holds: dict[str, int] = {}  # calls running on each session now: the janitor never closes one in use
 _cleanup_lock = threading.Lock()  # protects every dict above
 _cleanup_thread: Optional[threading.Thread] = None
 _cleanup_running = False

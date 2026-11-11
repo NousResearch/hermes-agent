@@ -853,11 +853,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         finally:
             owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
 
-    if bot_desktop_browser:
-        from tools.browser_session import run_fenced
-        dispatched = run_fenced({"features": {"local": True}}, dispatch)
-    else:
-        dispatched = dispatch()
+    from tools.browser_session_lifecycle import hold_session
+    with hold_session(_backend_cache_key(task_id, session, sidecar=local_sidecar)):
+        if bot_desktop_browser:
+            from tools.browser_session import run_fenced
+            dispatched = run_fenced({"features": {"local": True}}, dispatch)
+        else:
+            dispatched = dispatch()
     _reload_if_republished(env, generation)
     _own_harness_daemon(env)
     if "proc" not in dispatched:

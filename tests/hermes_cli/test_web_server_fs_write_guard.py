@@ -117,6 +117,11 @@ def test_write_text_never_hands_a_credential_path_to_the_ssh_workspace(client, m
         " /srv/app/auth.json\n",
         "/srv/app/.env\t",
         "mcp-tokens/x.json ",
+        # ``..`` exposes whitespace a first normalization left inside a component.
+        "/srv/app/.env /x/..",
+        "/srv/app/.env\t/a/..",
+        "/srv/app/auth.json\n/b/..",
+        "/srv/app/config.yaml\x1f/q/..",
     ):
         assert _save(client, path, profile="remote-dev").status_code == 403, repr(path)
     assert sent == []

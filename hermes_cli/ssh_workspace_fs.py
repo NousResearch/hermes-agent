@@ -78,7 +78,12 @@ class SshWorkspaceFs:
             raw = posixpath.join(self._env._remote_home, raw[2:])
         elif not raw.startswith("/"):
             raw = posixpath.join(self._env.cwd, raw)
-        return posixpath.normpath(raw)
+        # Folding ``..`` can expose a component's trailing whitespace ('/a/.env /x/..'); strip to a
+        # fixed point so normalize is idempotent and a path judged once is the path written.
+        path = posixpath.normpath(raw)
+        while (stripped := path.strip()) != path:
+            path = posixpath.normpath(stripped)
+        return path
 
     def _execute(self, command: str, *, stdin_data: str | None = None, timeout: int | None = None) -> dict:
         with self._lock:
@@ -200,9 +205,9 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
             size = int(size_line.split(":", 1)[1])
         except (ValueError, UnicodeError, binascii.Error) as exc:
             raise SshWorkspaceFsError("EIO", "SSH filesystem returned invalid file metadata") from exc
-        # Callers vet this path, then read or stream it through _normalize; a name it rewrites
+        # Callers vet this path, then read or stream it through normalize; a name it rewrites
         # (``.env `` loses its trailing space) would be vetted as one file and served as another.
-        if self._normalize(resolved) != resolved:
+        if self.normalize(resolved) != resolved:
             raise SshWorkspaceFsError("EINVAL", "Invalid path")
         return resolved, size
 

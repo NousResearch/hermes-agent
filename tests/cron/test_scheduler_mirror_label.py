@@ -30,3 +30,22 @@ def test_mirror_label_attributes_and_closes_before_merged_user_reply():
     content = merged[0]["content"]
     end = content.index("[Cron delivery end: Morning Brief]")
     assert content.index("Market movers today") < end < content.index("what about tech stocks?")
+
+def test_mirror_label_keeps_multiline_job_name_inside_delimiters():
+    mirror = _cron_mirror_message(
+        {"id": "j1", "name": "Morning\nBrief"}, "Market movers today"
+    )
+    assert mirror.splitlines() == [
+        "[Cron delivery: Morning Brief] (your own scheduled message, already sent to the user)",
+        "Market movers today",
+        "[Cron delivery end: Morning Brief]",
+    ]
+
+    merged, repairs = _merge_consecutive_users([
+        {"role": "user", "content": mirror},
+        {"role": "user", "content": "what about tech stocks?"},
+    ])
+    assert repairs == 1
+    assert merged[0]["content"].endswith(
+        "[Cron delivery end: Morning Brief]\n\nwhat about tech stocks?"
+    )

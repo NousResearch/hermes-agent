@@ -188,7 +188,7 @@ def _cron_display_name(job: dict) -> str:
 
 
 def _cron_mirror_message(job: dict, text: str) -> str:
-    name = _cron_display_name(job)  # the label is the model's only cue: attribute the brief and close it (#118863)
+    name = " ".join(_cron_display_name(job).split())  # keep opener and closer on one line
     return f"[Cron delivery: {name}] (your own scheduled message, already sent to the user)\n{text}\n[Cron delivery end: {name}]"
 
 

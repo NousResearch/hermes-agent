@@ -109,6 +109,17 @@ _SEGMENT_SPLIT_RE = re.compile(r"([;&|\n]+)")
 # fd redirects (`2>&1`, `&>log`) are not separators. The lookbehind keeps a long digit run from
 # being rescanned at every position.
 _FD_REDIRECT_RE = re.compile(r"(?<!\d)\d*[<>]&(?:\d+|-)?|&>>?")
+_NULL_REDIRECT_RE = re.compile(r"(?<!\d)\d*>>?\s*/dev/null\b")
+# Past this many segments nothing is excused: the command keeps the plain anywhere match, which
+# bounds the cost of a pathological input.
+_MAX_EXCUSABLE_SEGMENTS = 200
+_GIT_PLAIN_GLOBAL_OPTIONS = frozenset({"--no-pager", "-p", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs"})
+
+
+def _blank_fd_redirect(match: re.Match) -> str:
+    """`2>&1` is no separator and writes nothing; `&>file` / `>&file` still write a file."""
+    text = match.group()
+    return " > " if text.startswith("&>") or text.endswith("&") else " "
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*=")
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 _PYTHON_RE = re.compile(r"(?:python[\d.]*|py)$")
@@ -150,9 +161,12 @@ def _git_runs_command(args: list) -> bool:
     are git's own (`-c alias.x=!cmd`); after it they belong to the subcommand (`switch -c name`)."""
     i = 0
     while i < len(args) and args[i].startswith("-"):
-        if args[i] == "-c":
+        if args[i] == "-C":
+            i += 2
+        elif args[i] in _GIT_PLAIN_GLOBAL_OPTIONS:
+            i += 1
+        else:  # `-c alias.x=!cmd`, or an option this walk cannot place
             return True
-        i += 2 if args[i] == "-C" else 1
     subcommand, rest = "".join(args[i:i + 1]), args[i + 1:]
     return (subcommand in ("bisect", "difftool", "mergetool", "filter-branch")
             or (subcommand == "submodule" and "foreach" in rest)
@@ -280,7 +294,7 @@ class _CommandSegments:
     command, built on first use, so a long command costs linear time."""
 
     def __init__(self, unquoted: str):
-        parts = _SEGMENT_SPLIT_RE.split(_FD_REDIRECT_RE.sub(" ", unquoted))
+        parts = _SEGMENT_SPLIT_RE.split(_FD_REDIRECT_RE.sub(_blank_fd_redirect, unquoted))
         self.texts, self.separators = parts[::2], parts[1::2]
 
     @functools.cached_property
@@ -306,7 +320,8 @@ class _CommandSegments:
     @functools.cached_property
     def writes_a_file(self) -> list:
         """Per segment: it, or a `tee` it is piped into, writes its text to a file."""
-        writes = [">" in text or (seg is not None and seg[0] == "tee") for text, seg in zip(self.texts, self.parsed)]
+        writes = [">" in _NULL_REDIRECT_RE.sub(" ", text) or (seg is not None and seg[0] == "tee")
+                  for text, seg in zip(self.texts, self.parsed)]
         for index in range(len(self.texts) - 2, -1, -1):
             writes[index] = writes[index] or (self._piped(index) and writes[index + 1])
         return writes
@@ -343,6 +358,8 @@ def _starts_long_lived_server(unquoted: str) -> bool:
     if not _names_a_server(unquoted):
         return False
     command = _CommandSegments(unquoted)
+    if len(command.texts) > _MAX_EXCUSABLE_SEGMENTS:
+        return True
     return any(_names_a_server(text) and not command.excused(index) for index, text in enumerate(command.texts))
 
 

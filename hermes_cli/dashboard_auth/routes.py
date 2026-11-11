@@ -44,7 +44,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
     render_login_html, render_native_provider_choice_html)
-from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
+from hermes_cli.dashboard_auth.refresh_singleflight import forget as forget_refresh, refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age, client_ip as _client_ip, is_safe_next_path)
 
@@ -519,6 +519,10 @@ async def auth_logout(request: Request):
             provider.revoke_session(refresh_token=rt)
         except Exception as e:
             _log.warning("dashboard-auth: revoke on %r failed: %s", provider.name, e)
+    if rt:
+        # After the revoke: a refresh that starts later is refused by the provider, an earlier one
+        # in flight is barred from caching, and a cached rotation of this login is dropped.
+        forget_refresh(rt)
     sess = getattr(request.state, "session", None)
     _audit(request, AuditEvent.LOGOUT, provider=(sess.provider if sess else "unknown"),
            user_id=(sess.user_id if sess else ""))

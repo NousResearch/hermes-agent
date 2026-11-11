@@ -72,3 +72,83 @@ def test_rotating_the_password_with_the_same_secret_ends_old_sessions(monkeypatc
         rotated.refresh_session(refresh_token=s.refresh_token)
     fresh = rotated.complete_password_login(username="admin", password="new-pw")
     assert rotated.verify_session(access_token=fresh.access_token) is not None
+
+
+def test_logout_outlasts_a_session_ttl_longer_than_the_refresh_ttl(monkeypatch):
+    now = [1_000_000_000.0]
+    monkeypatch.setattr(basic.time, "time", lambda: now[0])
+    day = 24 * 60 * 60
+    p = _provider(ttl_seconds=60 * day)
+    s = p.complete_password_login(username="admin", password="old-pw")
+    now[0] += day
+    p.revoke_session(refresh_token=s.refresh_token)
+
+    now[0] += 45 * day  # past the refresh TTL, inside the access token's lifetime
+    assert p.verify_session(access_token=s.access_token) is None
+
+
+def test_a_worker_sees_a_logout_whose_file_kept_the_old_mtime():
+    """Coarse-timestamp filesystems: a replacement can leave ``st_mtime`` unchanged."""
+    import os
+
+    worker_a = _provider()
+    worker_b = basic.BasicAuthProvider(username="admin", password_hash=worker_a._password_hash, secret=SECRET)
+    first = worker_a.complete_password_login(username="admin", password="old-pw")
+    s = worker_a.complete_password_login(username="admin", password="old-pw")
+    worker_b.revoke_session(refresh_token=first.refresh_token)
+    path = worker_b._revoked_path
+    before = path.stat()
+    assert worker_a.verify_session(access_token=s.access_token) is not None  # A has read the file
+
+    worker_b.revoke_session(refresh_token=s.refresh_token)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    assert worker_a.verify_session(access_token=s.access_token) is None
+    # A's own next logout must not write B's revocation away.
+    worker_a.revoke_session(refresh_token=worker_a.complete_password_login(
+        username="admin", password="old-pw").refresh_token)
+    assert worker_b.verify_session(access_token=s.access_token) is None
+
+
+@pytest.fixture
+def gated_basic():
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import web_server
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_cli.dashboard_auth import refresh_singleflight
+
+    provider = _provider()
+    clear_providers()
+    register_provider(provider)
+    state = web_server.app.state
+    prev = {k: getattr(state, k, None) for k in ("bound_host", "bound_port", "auth_required")}
+    state.bound_host, state.bound_port, state.auth_required = "fly-app.fly.dev", 443, True
+    yield provider, TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+    clear_providers()
+    with refresh_singleflight._guard:
+        refresh_singleflight._cache.clear()
+    for k, v in prev.items():
+        setattr(state, k, v)
+
+
+def test_logout_ends_a_refresh_the_gate_cached_just_before_it(gated_basic):
+    """A copied RT replayed within the refresh replay window must not get the cached rotation of a
+    login that has since signed out."""
+    provider, client = gated_basic
+    s = provider.complete_password_login(username="admin", password="old-pw")
+    copied = {"hermes_session_at": "lapsed", "hermes_session_rt": s.refresh_token,
+              "hermes_session_provider": "basic"}
+
+    def me():
+        client.cookies.clear()
+        client.cookies.update(copied)
+        return client.get("/api/auth/me")
+
+    assert me().status_code == 200  # the gate rotated the copied RT and cached the result
+    client.cookies.clear()
+    client.cookies.update(copied)
+    out = client.post("/auth/logout", headers={"Origin": "https://fly-app.fly.dev"}, follow_redirects=False)
+    assert out.status_code == 302, out.text
+
+    assert me().status_code == 401

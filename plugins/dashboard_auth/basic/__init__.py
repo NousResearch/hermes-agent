@@ -150,7 +150,6 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         self._ttl = max(60, int(ttl_seconds))
         self._revoked_path = get_hermes_home() / _REVOKED_PATH
         self._revoked: dict[str, int] = {}
-        self._revoked_mtime: Optional[float] = None
 
     # ---- password login ----------------------------------------------------
 
@@ -188,12 +187,12 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
             return
         now = int(time.time())
         self._load_revoked()
-        # Any token of this login was minted before now, so none outlives now + the refresh TTL.
+        # Any token of this login was minted before now, so none outlives now + its longest TTL
+        # (``session_ttl_seconds`` may exceed the refresh TTL).
         self._revoked = {sid: exp for sid, exp in self._revoked.items() if exp > now}
-        self._revoked[str(payload["sid"])] = now + _REFRESH_TTL_SECONDS
+        self._revoked[str(payload["sid"])] = now + max(self._ttl, _REFRESH_TTL_SECONDS)
         try:
             atomic_json_write(self._revoked_path, self._revoked, mode=0o600)
-            self._revoked_mtime = self._revoked_path.stat().st_mtime
         except OSError as exc:
             logger.warning("dashboard-auth-basic: could not persist the revoked session (%s); "
                            "it stays revoked until this process exits", exc)
@@ -201,16 +200,12 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
     # ---- internals ---------------------------------------------------------
 
     def _load_revoked(self) -> None:
-        """Re-read the revocation file when it changed (another process sharing the secret, or
-        this one before a restart, may have written it)."""
-        try:
-            mtime: Optional[float] = self._revoked_path.stat().st_mtime
-        except OSError:
-            mtime = None
-        if mtime != self._revoked_mtime:
-            stored = read_json_or_empty(self._revoked_path)
-            self._revoked.update({str(k): v for k, v in stored.items() if isinstance(v, int)})
-            self._revoked_mtime = mtime
+        """Merge the revocation file (another process sharing the secret, or this one before a
+        restart, may have written it). Read every time: a replacement can keep the old mtime on a
+        coarse-timestamp filesystem, and skipping it would also let this process's next write drop
+        that revocation. The file only holds unexpired logouts, so the read is small."""
+        stored = read_json_or_empty(self._revoked_path)
+        self._revoked.update({str(k): v for k, v in stored.items() if isinstance(v, int)})
 
     def _is_revoked(self, payload: dict) -> bool:
         sid = payload.get("sid")

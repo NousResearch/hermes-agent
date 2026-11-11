@@ -757,11 +757,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               cancelResumeScrollRef.current?.()
               cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 
-              if (previousSid && previousSid !== r.session_id) {
-                void closeSession(previousSid)
-              }
-
-              adoptAttachment(r, previousSid, previousSubscription, true)
+              // Resuming changes this view's attachment, but must not end the
+              // previous session. Its lifecycle remains an explicit user action.
+              adoptAttachment(r, previousSid, previousSubscription)
             })
             .catch((e: Error) => {
               if (flight !== attachmentFlight.current) {
@@ -777,7 +775,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     },
     [
       adoptAttachment,
-      closeSession,
       colsRef,
       discardStaleAttachment,
       finishAttachment,

@@ -104,7 +104,10 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         incident_acked=d.incident_acked,
         success=d.success,
     )
-    from cron.delivery_outcome import settle_quietly, settled_outcome
+    from cron.delivery_outcome import enqueue_delivery_failure, settle_quietly, settled_outcome
+    enqueue_delivery_failure(
+        job, execution_id, d.delivery_error, for_failure=not d.success,
+        direct=bool(job.get("no_agent")))
     if delivery_outcome == "queued":
         # A drain that already finished this send (cron/delivery_outcome.py) is the real outcome.
         delivery_outcome = settled_outcome(execution_id) or "queued"

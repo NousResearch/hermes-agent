@@ -1,0 +1,48 @@
+name: mtg-deck-studio
+repo: https://github.com/GillesGaelBERNARD/mtg-deck-studio
+sha: 26d4e4d82f5ccf7f68465219f6b31969b7337896
+subdir: plugin
+title: MTG Deck Studio
+description: >-
+  A Magic: The Gathering Commander deck table beside the chat. The AI reads the deck before it
+  speaks, searches Scryfall inside the colour identity, explains the card-to-card synergy graph
+  from Oracle text with the clauses behind every pair, writes a strategy guide from computed
+  evidence, keeps a sideboard of candidates it can promote or swap in, and runs 49 table
+  operations the player can also do by hand. Seven agent tools plus a bundled skill and a
+  Desktop pane with a sandboxed viewer. Disclosure — card data and images come from the public
+  Scryfall API and cards.scryfall.io (no key, no account, card names and filters only); the
+  plugin reads only the deck/CSV path the player picks at import and writes only inside its
+  profile-scoped data directory (decks, sideboards, exports, the name-index cache, scan photos),
+  which is never uploaded; two bundled MIT Python helpers run as subprocesses with the host
+  interpreter (strategy evidence pack, Moxfield text export — no shell, no network of their own);
+  the webcam opens only when the player presses Scan. No telemetry, no update checker, no stored
+  credentials.
+maintainer: GillesGaelBERNARD
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.3.0"
+docs_url: https://github.com/GillesGaelBERNARD/mtg-deck-studio#readme
+readme: true
+platforms: [windows]
+image: https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/table.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/effects.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/links.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/stats.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/strategy.png
+  - https://raw.githubusercontent.com/GillesGaelBERNARD/mtg-deck-studio/26d4e4d82f5ccf7f68465219f6b31969b7337896/assets/screenshots/sideboard.png
+capabilities:
+  provides_tools:
+    - mtg_deck_studio_state
+    - mtg_deck_studio_apply
+    - mtg_deck_studio_decks
+    - mtg_deck_studio_strategy
+    - mtg_deck_studio_search
+    - mtg_deck_studio_sideboard
+    - mtg_deck_studio_links
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

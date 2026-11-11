@@ -729,8 +729,8 @@ class TestOverlappingReadDedup(unittest.TestCase):
         self.assertIn("brand-new 1", again["content"])
 
     def test_seen_secret_line_keeps_a_whole_read_redacted_for_the_write_guard(self):
-        """Omitting a seen line is presentation only: a whole-file read whose page holds a
-        redacted secret still grants no overwrite baseline, so write_file is refused."""
+        """A whole-file read whose page holds a redacted secret omits no seen line and grants
+        no overwrite baseline, so write_file is refused."""
         with open(self._tmpfile, "w", encoding="utf-8", newline="\n") as f:
             f.write("token=SECRET\npublic two\npublic three\n")
 
@@ -740,13 +740,35 @@ class TestOverlappingReadDedup(unittest.TestCase):
         with patch("tools.file_tools.redact_sensitive_text", side_effect=fake_redact):
             self.assertIn("«redacted»", self._read(1, 1)["content"])
             whole = self._read(1, 3)
-        self.assertEqual(whole.get("omitted_lines"), "1")
+        self.assertNotIn("omitted_lines", whole)
         self.assertNotIn("SECRET", json.dumps(whole))
         written = json.loads(write_file_tool(self._tmpfile, "token=«redacted»\npublic two\npublic three\n",
                                              task_id="ov"))
         self.assertIn("Refusing to overwrite", written.get("error", ""), written)
         with open(self._tmpfile, encoding="utf-8") as f:
             self.assertIn("SECRET", f.read())
+
+    def test_redacted_page_is_returned_whole_as_without_seen_lines(self):
+        """A page that redaction changed omits nothing: after reading only the first line of a
+        multi-line redacted block, a read of the whole block returns the same redacted page as
+        a first read of it, never a remainder redacted on its own."""
+        block = "".join([
+            "-----BEGIN RSA PRIVATE KEY-----\n",
+            "AAAAnotarealkeyjustfixturetextAAAA\n",
+            "BBBBnotarealkeyjustfixturetextBBBB\n",
+            "-----END RSA PRIVATE KEY-----\n",
+        ])
+        with open(self._tmpfile, "w", encoding="utf-8", newline="\n") as f:
+            f.write(block)
+        with patch("agent.redact._REDACT_ENABLED", True):
+            fresh = self._read(1, 4)
+            _read_tracker.clear()
+            self._read(1, 1)
+            again = self._read(1, 4)
+        self.assertNotIn("notarealkey", json.dumps(fresh))
+        self.assertNotIn("omitted_lines", again)
+        self.assertEqual(again["content"], fresh["content"])
+        self.assertNotIn("notarealkey", json.dumps(again))
 
     def test_edit_makes_the_whole_window_readable_again(self):
         self._read(2158, 15)

@@ -546,20 +546,17 @@ def _withholdable_seen_spans(task_data: dict, resolved_str: str, exempt: bool, v
 
 
 def _withhold_seen_lines(task_data: dict, result, result_dict: dict, path: str, resolved_str: str,
-                         span: tuple, seen_spans: list, unredacted: str) -> str | None:
+                         span: tuple, seen_spans: list) -> str | None:
     """Drop already-returned lines from this read (see _omit_seen_lines) and note the omitted
     ranges on the result; returns the stub/BLOCK when no unseen line is left, else None.
-    Lines are dropped from the *unredacted* page (redaction may merge lines) and the kept ones
-    redacted again; with nothing to omit the already-redacted page stays as it is."""
-    page = {"content": unredacted}
-    omitted = _omit_seen_lines(page, span, seen_spans)
+    Only called for a page redaction left unchanged, so every kept line is shown verbatim."""
+    omitted = _omit_seen_lines(result_dict, span, seen_spans)
     if not omitted:
         return None
-    if not page["content"]:
+    if not result_dict["content"]:
         # Per-path key: shifting the window must not restart the escalation.
         return _dedup_stub_or_block(task_data, (resolved_str, "seen_lines"), path, overlapping=True)
-    result.content = result_dict["content"] = redact_sensitive_text(
-        page["content"], file_read=True, secret_file=_is_secret_file_arg(resolved_str))
+    result.content = result_dict["content"]
     ranges = ", ".join(f"{lo}-{hi}" if lo != hi else str(lo) for lo, hi in omitted)
     result_dict["omitted_lines"] = ranges
     result_dict["_note"] = (
@@ -798,17 +795,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # gets its unseen lines; see _withhold_seen_lines.
         seen_spans = _withholdable_seen_spans(task_data, resolved_str, programmatic or version_before is None,
                                               version_before, getattr(result, "_snapshot", None))
-        redacted, unredacted = False, result.content
+        redacted = False
         if result.content:
-            # Redacted coverage (the write-baseline input) is judged on the WHOLE page read,
-            # so omitting seen lines below cannot hide a redacted secret line from it.
+            unredacted = result.content
             result.content = redact_sensitive_text(
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
-        if returned_span and seen_spans:
+        # Redaction is judged on the WHOLE page; a page it changed is returned whole (no
+        # omission), so seen-line omission never changes what redaction hides.
+        if returned_span and seen_spans and not redacted:
             stub = _withhold_seen_lines(task_data, result, result_dict, path, resolved_str, returned_span,
-                                        seen_spans, unredacted)
+                                        seen_spans)
             if stub is not None:
                 return stub
 

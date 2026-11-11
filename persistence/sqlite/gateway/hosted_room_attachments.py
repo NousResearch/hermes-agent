@@ -1,7 +1,7 @@
 """``HostedRoomAttachmentRepository`` on SQLite: room attachment rows and their content-deduplicated blob files
 in the hosted-room tables of either file.
 
-Blob bytes are files under ``<dir of the file>/hosted-room-attachments/blobs/`` (``HostedFiles.attachment_root``). A blob is written or verified inside the write transaction that records it, so a committed row always names a verified file; released blobs are unlinked after the commit, and the orphan sweep renames ``.tmp-`` staging files, ``.prune-`` quarantine files and unreferenced ``blob_*`` files inside its own write and unlinks them after it. The first attachment verb on a file in a process first runs the file's setup: the attachment tables in their own ``BEGIN IMMEDIATE``, the reconciliation of commitments their durable events name, then the prune with its sweep. ``put`` prunes again before it stores, so an expired upload never holds quota. On a read-only handle the read verbs skip that setup and only read: a file without the attachment tables holds no attachment, a missing blob reads as on a writable handle, and tables older than this version are refused, never migrated. The quotas are the ``session_rules.hosted_attachments`` constants.
+Blob bytes are files under ``<dir of the file>/hosted-room-attachments/blobs/`` (``HostedFiles.attachment_root``). A blob is written or verified inside the write transaction that records it, so a committed row always names a verified file; released blobs are unlinked after the commit, and the orphan sweep renames ``.tmp-`` staging files, ``.prune-`` quarantine files and unreferenced ``blob_*`` files inside its own write and unlinks them after it. The first attachment verb on a file in a process first runs the file's setup: the attachment tables in their own ``BEGIN IMMEDIATE``, the reconciliation of commitments their durable events name, then the prune with its sweep. ``put`` prunes again before it stores, so an expired upload never holds quota. On a read-only handle the read verbs skip that setup and only read: a file without the attachment tables holds no attachment, a missing blob reads as on a writable handle, a commitment its durable event names is never read as expired (the reconciliation's rule, applied on the read), and tables older than this version are refused, never migrated. The quotas are the ``session_rules.hosted_attachments`` constants.
 """
 
 from __future__ import annotations
@@ -243,6 +243,7 @@ def _read_committed_row(
     normalized_event: str | None,
     viewer: bool,
     now: float,
+    reconciled: bool = True,
 ) -> sqlite3.Row:
     # A read-only handle never creates the tables, so a file without them holds no attachment.
     row = conn.execute(
@@ -251,7 +252,8 @@ def _read_committed_row(
     ).fetchone() if table_exists(conn, "hosted_room_attachments") else None
     if row is None or str(row["state"]) != "committed":
         raise AttachmentNotFoundError("attachment is not committed for this room")
-    if row["expires_at"] is not None and float(row["expires_at"]) <= now:
+    # A read-only handle never reconciles, so it applies the reconciliation's rule here.
+    if row["expires_at"] is not None and float(row["expires_at"]) <= now and (reconciled or not _named_by_owner_event(conn, row)):
         raise AttachmentNotFoundError("attachment has expired")
     if normalized_event is not None and str(row["event_id"] or "") != normalized_event:
         raise AttachmentNotFoundError("attachment is not owned by this room event")
@@ -313,6 +315,21 @@ def _owner_event(
         "SELECT payload_json FROM hosted_room_events WHERE room_id=? AND event_id=?",
         (room_id, event_id),
     ).fetchone()
+
+
+# ``_reconcile_room_events``'s rule for one row: its durable event payload names it, so the commitment is retained.
+def _named_by_owner_event(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    owner = _owner_event(conn, str(row["room_id"]), str(row["event_id"] or ""))
+    if owner is None:
+        return False
+    try:
+        payload = json.loads(str(owner["payload_json"]))
+        return str(row["attachment_id"]) in {
+            str(item.get("attachment_id") or "") for item in payload.get("attachments", []) if isinstance(item, Mapping)
+        }
+    # Malformed row: the reconciliation skips it too.
+    except (ValueError, TypeError, AttributeError, RecursionError):
+        return False
 
 
 def retain_message_attachments(
@@ -837,7 +854,7 @@ class SQLiteHostedRoomAttachmentRepository:
             return _read_committed_row(
                 conn, room_id=room_id, attachment_id=attachment_id,
                 recipient_member_id=recipient_member_id or "",
-                normalized_event=event_id, viewer=viewer, now=now,
+                normalized_event=event_id, viewer=viewer, now=now, reconciled=not self._store.read_only,
             )
         with translated():
             blob_root = self._read_root(placement, now)
@@ -860,7 +877,7 @@ class SQLiteHostedRoomAttachmentRepository:
             row = _read_committed_row(
                 conn, room_id=room_id, attachment_id=attachment_id,
                 recipient_member_id=recipient_member_id,
-                normalized_event=event_id, viewer=False, now=now,
+                normalized_event=event_id, viewer=False, now=now, reconciled=not self._store.read_only,
             )
             return _metadata(row)
         with translated():
@@ -877,7 +894,7 @@ class SQLiteHostedRoomAttachmentRepository:
             row = _read_committed_row(
                 conn, room_id=room_id, attachment_id=attachment_id,
                 recipient_member_id=recipient_member_id,
-                normalized_event=event_id, viewer=False, now=now,
+                normalized_event=event_id, viewer=False, now=now, reconciled=not self._store.read_only,
             )
             if offset >= int(row["size"]):
                 raise AttachmentError("attachment range starts past the end")
@@ -904,6 +921,7 @@ class SQLiteHostedRoomAttachmentRepository:
             "recipient_member_id": recipient_member_id or "",
             "normalized_event": event_id,
             "viewer": True,
+            "reconciled": not self._store.read_only,
         }
 
         # Each viewer read is one deferred read transaction: the room check and the row read see one snapshot.

@@ -1,0 +1,36 @@
+name: house-rules
+title: House Rules
+repo: https://github.com/AIverflow/hermes-house-rules
+sha: 54194a4c402a04cfcefe894c8dd3cbd1612e13ac
+version: "0.2.0"
+description: >-
+  House rules your agent can't forget. Refuses tool calls that match your rules (a command with flags such as
+  git push --force or rm -r, or a regex on a tool argument such as a .env path) or that leave the folders you
+  allow. The refusal tells the agent why and to ask you; you lift a rule for the current session with
+  /rules unlock <n>. /rule turns plain words into a rule draft as YAML and replays it on past tool calls; you
+  paste it into the profile config.yaml yourself, the plugin never writes it. Rules apply from the next session.
+  For an agent that forgets or ignores instructions; it is not a security boundary (scripts, aliases and
+  indirect effects are not seen).
+  Disclosure — no network call of its own, no subprocess, no credentials, no telemetry, no background task.
+  Hook pre_tool_call reads each tool call's name and arguments and refuses matches; a refusal notice (tool name
+  and reason, never the arguments) is posted to the conversation with ctx.post_message. /rule makes one LLM call
+  through ctx.llm.complete_structured with the user's words, and reads the profile's state.db read-only to replay
+  the draft (other profiles' state.db only if the user picks them). Reads its settings with ctx.get_config and the
+  profile config.yaml read-only. Writes nothing to disk.
+maintainer: AIverflow
+tier: community
+category: general
+docs_url: https://github.com/AIverflow/hermes-house-rules#readme
+readme: true
+known_issues:
+  - "Not a security boundary: aliases, scripts, variables and other programs with the same effect are not seen."
+  - "Rules are read once per session; config.yaml edits apply from the next session."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,18 @@
+name: iv-studio
+repo: https://github.com/hollisorg/hermes-iv-studio
+sha: f274b47f4099aa769b74fec909363d8d9959823b
+description: "Free, local video and pictures on your own NVIDIA GPU: makes IV Studio (MiniMax H3 + ComfyUI) a video_generate and image_generate backend, with sound and speech, trained characters by name, first-frame and reference pictures, and finishes up to about 2752x1536, plus iv_studio_status and iv_studio_result (long renders hand back a job id and carry on) and a bundled skill. Disclosure: starts the locally installed IV Studio app's own MCP server as a child process for each request (stops when it ends); reads finished files from the local ComfyUI on 127.0.0.1; downloads a picture only when you pass an http(s) URL; saves those under HERMES_HOME/plugin-data/iv-studio and copies results into Hermes's media cache; no credentials, no telemetry, no self-update."
+maintainer: hollisorg
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+docs_url: https://github.com/hollisorg/hermes-iv-studio#readme
+readme: true
+title: "IV Studio"
+platforms: []
+capabilities:
+  provides_tools: [iv_studio_status, iv_studio_result]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

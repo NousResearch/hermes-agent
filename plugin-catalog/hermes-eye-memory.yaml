@@ -2,7 +2,7 @@
 # Replace sha with the full 40-character commit SHA before opening the PR.
 name: hermes-eye-memory
 repo: https://github.com/isthatananya/hermes-eye-memory
-sha: "9baaefe7941a6c7f21919071676dfbe8aeb6a58b"
+sha: "55ba24729f83bb08d9f5348a4f0613f6162b4ba8"
 subdir: ""
 description: "Local visual memory for Hermes: index a photo library, search by meaning, build albums, cull duplicates, extract receipts, and recall what the camera saw."
 maintainer: isthatananya

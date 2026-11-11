@@ -1,0 +1,51 @@
+name: autonoma
+repo: https://github.com/JoeisEvil/autonoma
+sha: 56653cced2b4431db3c08dc680ccb5e139b6f125
+version: "0.1.0"
+description: >-
+  Earned autonomy: a trust score per kind of action (file edits, deletes, git push, network,
+  messages, spending, system) that rises with clean work and falls on denials, corrections and
+  failures. Below a class's threshold the call goes through Hermes's own approval prompt; at or
+  above, it runs without asking. Catches the agent routing around a block (shell redirects,
+  inline python/node code, `bash -c`), asks again for risky actions after the turn read outside
+  content, revokes "session"/"always" grants after a correction, writes handoff notes from the
+  tool log when a session ends unfinished, and adds a live dashboard tab. Disclosure — stores tool
+  names, action classes, hashed arguments, file paths, command verbs, host names and short error
+  excerpts for every tool call locally in <HERMES_HOME>/plugin-data/autonoma/data.db (90-day
+  retention, configurable); injects a handoff note into the first turn after an unfinished
+  session and a progress list after compaction; can raise Hermes approval prompts for actions
+  below their trust threshold or after outside content and, when hard_floor_enabled is on, block
+  a class for a number of turns after a correction; the dashboard tab's local routes read the
+  ledger and can reset, set or freeze scores; makes no network calls, no telemetry, reads no
+  credentials or env vars; optional corrections_llm (off by default) sends the previous assistant
+  message and current user message to the active model to confirm a correction.
+maintainer: JoeisEvil
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/JoeisEvil/autonoma#readme
+image: https://raw.githubusercontent.com/JoeisEvil/autonoma/56653cced2b4431db3c08dc680ccb5e139b6f125/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/JoeisEvil/autonoma/56653cced2b4431db3c08dc680ccb5e139b6f125/docs/dashboard.jpg
+  - https://raw.githubusercontent.com/JoeisEvil/autonoma/56653cced2b4431db3c08dc680ccb5e139b6f125/docs/approval-prompt.jpg
+  - https://raw.githubusercontent.com/JoeisEvil/autonoma/56653cced2b4431db3c08dc680ccb5e139b6f125/docs/workaround-caught.jpg
+  - https://raw.githubusercontent.com/JoeisEvil/autonoma/56653cced2b4431db3c08dc680ccb5e139b6f125/docs/outside-content.jpg
+  - https://raw.githubusercontent.com/JoeisEvil/autonoma/56653cced2b4431db3c08dc680ccb5e139b6f125/docs/handoff.jpg
+  - https://raw.githubusercontent.com/JoeisEvil/autonoma/56653cced2b4431db3c08dc680ccb5e139b6f125/docs/live-session.jpg
+known_issues:
+  - "trust-ladder also registers /trust; with both installed, use /autonoma trust for Autonoma's scores."
+capabilities:
+  provides_tools:
+    - autonoma_status
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - on_session_start
+    - on_session_end
+    - on_session_reset
+    - post_compaction
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

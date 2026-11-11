@@ -1,7 +1,7 @@
 name: why
 title: Why
 repo: https://github.com/salch-cred/why
-sha: c17aa6f29646f4a2f3e4a3c325485b6366f385fa
+sha: a6f3a0ce923a14d3c36249ae8618d69b00cc9401
 description: >-
   Ask why any line of agent-written code exists. Each time the agent writes or
   patches a file, Why records the lines it wrote and that turn's user request,
@@ -15,7 +15,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salch-cred/why
-version: "0.1.0"
+version: "0.1.1"
 
 capabilities:
   provides_tools: [why_line]

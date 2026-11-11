@@ -71,18 +71,18 @@ class GatewayRestartNoticeMixin:
             notify_path = _hermes_home / ".restart_notify.json"
             if not notify_path.exists():
                 return None
-            raw = notify_path.read_text(encoding="utf-8-sig")
-            if not replay:
-                self._restart_notice_claimed = raw
-            elif raw != self._restart_notice_claimed:
-                return None
-            if _notice_expired(notify_path):
-                logger.warning("Restart notification dropped: still undelivered after %d minutes",
-                               _RESTART_NOTICE_TTL_SECONDS // 60)
-                notify_path.unlink(missing_ok=True)
-                return None
             keep = True  # a send cancelled mid-flight (shutdown) is not proof of delivery: keep it
             try:
+                raw = notify_path.read_text(encoding="utf-8-sig")
+                if not replay:
+                    self._restart_notice_claimed = raw
+                elif raw != self._restart_notice_claimed:
+                    return None  # the next /restart's marker: not ours to answer or consume
+                if _notice_expired(notify_path):
+                    logger.warning("Restart notification dropped: still undelivered after %d minutes",
+                                   _RESTART_NOTICE_TTL_SECONDS // 60)
+                    keep = False
+                    return None
                 target, keep = await self._deliver_restart_notification(json.loads(raw))
                 return target
             except Exception:  # health: allow BLE001 -- moved boundary: a failed notice never breaks the boot pass

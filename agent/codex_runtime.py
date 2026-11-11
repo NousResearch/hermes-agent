@@ -12,6 +12,7 @@ import os
 import threading
 import time
 from contextlib import suppress
+from enum import StrEnum
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -870,6 +871,12 @@ def _output_text_of(item: Any) -> str:
     ).strip()
 
 
+class _TerminalFrame(StrEnum):
+    COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+    FAILED = "failed"
+
+
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
@@ -877,7 +884,9 @@ class _CodexResponseAssembler:
     items come from ``output_item.done``, or are synthesized from text deltas, or settled from function calls
     announced via ``output_item.added`` but never confirmed (some backends omit per-item done events on success)."""
 
-    has_tool_calls = first_delta_fired = saw_terminal = False
+    has_tool_calls = first_delta_fired = False
+    # The frame that ended the stream; only response.completed settles pending function calls.
+    terminal: _TerminalFrame | None = None
     next_output_sequence = 0
     active_message_phase: str | None = None
     # Reasoning summary parts carry no separator; a summary_index change is where the blank line belongs.
@@ -885,8 +894,6 @@ class _CodexResponseAssembler:
     terminal_status: str = "completed"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
     terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
-    # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
-    saw_response_completed = False
     # An assistant answer message item was announced (output_item.added, not commentary/analysis): its text deltas
     # are real answer text even when its done event never arrives. Bare output_text deltas carry no such proof.
     saw_answer_item_added = False
@@ -1052,7 +1059,7 @@ class _CodexResponseAssembler:
             self.commentary_text_deltas = []
 
     def _on_terminal(self, event: Any, event_type: str) -> bool:
-        self.saw_terminal = True
+        self.terminal = _TerminalFrame(event_type.removeprefix("response."))
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
@@ -1064,8 +1071,7 @@ class _CodexResponseAssembler:
                 self.terminal_incomplete_details = _event_field(resp_obj, "incomplete_details")
             elif event_type == "response.failed":
                 self.terminal_error = _event_field(resp_obj, "error")
-        self.saw_response_completed = self.saw_response_completed or event_type == "response.completed"
-        self.terminal_status = self.terminal_status or event_type.removeprefix("response.")
+        self.terminal_status = self.terminal_status or self.terminal.value
         return True
 
     # Exact-type handlers first, then substring-matched ones in priority order. ``error`` frames
@@ -1111,7 +1117,7 @@ class _CodexResponseAssembler:
     def result(self) -> SimpleNamespace:
         # Successful completion orders all output, even when no calls remain pending.
         # Done items stay authoritative; only successful streams settle missing done events.
-        output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
+        output: list[Any] = self._settled_output() if self.terminal is _TerminalFrame.COMPLETED else list(self.output_items)
         # Plain text deltas with no output at all: synthesize one message item. Beside tool calls and commentary
         # items, only an ANNOUNCED answer message whose done event never came is recovered, or the text said around
         # a call is dropped from the turn (#143893); bare output_text beside commentary stays narration (length).
@@ -1119,7 +1125,7 @@ class _CodexResponseAssembler:
         # below and retry, never end the turn on the cut-off sentence with the call silently lost.
         if self.text_deltas and (
                 (not output and not self.has_tool_calls)
-                or (self.saw_terminal and self.saw_answer_item_added and not any(
+                or (self.terminal is not None and self.saw_answer_item_added and not any(
                     _event_field(item, "type", "") == "message"
                     and _message_phase(item) not in ("commentary", "analysis") for item in output))):
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
@@ -1128,7 +1134,7 @@ class _CodexResponseAssembler:
                                if "function_call" in str(_event_field(item, "type", ""))), len(output))
             output.insert(first_call, message)
         # No terminal frame AND no usable content = truncated / rejected stream.
-        if not self.saw_terminal and not output:
+        if self.terminal is None and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,

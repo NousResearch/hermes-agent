@@ -349,6 +349,28 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 
 
+def test_submodule_filters_never_run_from_superproject_status(tmp_path):
+    """``status`` recurses into a checked-out submodule, and that nested git loads the submodule's
+    own ``.git/modules/<name>/config``: its clean filter must be neutralized too (openai/codex#60669)."""
+    from agent.coding_context import build_coding_workspace_block
+    from hermes_cli import worktree_gc
+    marker = (tmp_path / "FILTER").as_posix()
+    sub = _make_filter_repo(tmp_path, "README filter=evil\n", lambda r, m: "", marker)
+    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
+    sup = tmp_path / "super"
+    subprocess.run(["git", "init", "-q", str(sup)], check=True, env=_CLEAN_GIT_ENV)
+    subprocess.run(["git", "-C", str(sup), *ident, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                    str(sub), "mod"], check=True, env=_CLEAN_GIT_ENV, capture_output=True)
+    subprocess.run(["git", "-C", str(sup), *ident, "commit", "-qm", "sup"], check=True, env=_CLEAN_GIT_ENV)
+    with open(sup / ".git" / "modules" / "mod" / "config", "a") as fh:
+        fh.write(_evil_filter(marker))
+    os.utime(sup / "mod" / "README", (time.time() + 60, time.time() + 60))  # status must re-hash it
+
+    assert worktree_gc._git(["status", "--porcelain"], cwd=str(sup)).returncode == 0
+    assert "- Status:" in build_coding_workspace_block(sup)
+    assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
+
+
 def test_noninteractive_env_pins_fsmonitor_and_hooks():
     env = noninteractive_git_env({})
     values = {

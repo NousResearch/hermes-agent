@@ -1,6 +1,6 @@
 name: sieve
 repo: https://github.com/VGFreakXBL/hermes-sieve
-sha: 66b7deb5a5e12b06ad2dae6f0bca9d521f9fdd4c
+sha: 105fa2d38472171e9ca5b5d894d2fd0e7872d37b
 subdir: ""
 title: SIEVE
 description: 'User-owned notification boundary for Hermes Agent. Event classes route through tiers T0 to T5 under quiet hours. Routine alerts hold for a digest. Urgent ones escalate, and the message names both the requested tier and the arm that actually ran.'
@@ -16,6 +16,8 @@ known_issues:
   - 'T4 and T5 ring with the same tone. The device API takes a label and a time only, so T5 is top priority, not a siren.'
   - 'Closed-app wake is not available in the current official iOS beta. The phone arm needs the Hermes app open and synced to this profile.'
   - 'A messaging push is an ordinary notification. Focus can silence it, and it does not ring. It is a weaker interrupt than an alarm.'
+  - 'The desktop status poll and /sieve probe run tailscale status --json. A missing binary, a timeout, and the first reading are not an outage. That probe does not run when Desktop is closed or the Mac is asleep.'
+  - 'scripts/watch.py is an optional launchd job, not a host hook. A dead gateway cannot ring the phone. hermes send still carries the chat chain and does not need the gateway or a model.'
   - 'Gallery screenshots are not in this pin. They follow in a SHA bump.'
 capabilities:
   provides_tools:

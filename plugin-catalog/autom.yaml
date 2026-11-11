@@ -1,0 +1,19 @@
+name: autom
+title: Autom
+repo: https://github.com/automdev/hermes-plugin-autom
+sha: 2ff44160daa41f024c463b187ae8827216e0ffc0
+version: "1.0.0"
+description: "Live Google Search results for the built-in web_search tool, through the Autom SERP API. Search only; pair it with an extract backend for web_extract. Disclosure — sends each search query to api.autom.dev with your AUTOM_API_KEY, and calls can use Autom credits. Reads the key only through Hermes's secret scope. Registers no tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+maintainer: automdev
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/automdev/hermes-plugin-autom#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AUTOM_API_KEY

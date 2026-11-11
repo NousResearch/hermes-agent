@@ -13,17 +13,25 @@ from gateway.platforms.event import MessageEvent, MessageType, SessionSource
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _make_runner
 
 
-async def _deliver(monkeypatch, *, show_reasoning: bool, already_sent: bool, is_bot: bool = False):
+async def _deliver(monkeypatch, *, show_reasoning: bool, already_sent: bool, is_bot: bool = False,
+                   uncertain: bool = False, ledger=None):
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_load_gateway_config",
                         lambda: {"display": {"show_reasoning": show_reasoning}})
     adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    if ledger is not None:
+        async def _ledger(event, session_key, response, *, error=None, **_kw):
+            ledger.append(response)
+
+        adapter.ledger_attempted_final = _ledger
     runner = _make_runner(adapter)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", is_bot=is_bot)
     event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="1")
     result = {"final_response": "the answer is 42", "last_reasoning": "thinking hard about it",
               "already_sent": already_sent}
+    if uncertain:
+        result["delivery_uncertain"] = True
     response = runner._hmwa_prepend_reasoning(result, "the answer is 42", source, False)
 
     class _Entry:
@@ -61,3 +69,15 @@ async def test_a_bot_peer_gets_no_trailing_reasoning_message(monkeypatch):
 
     assert returned is None
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_uncertain_streamed_final_carries_its_reasoning_only_once(monkeypatch):
+    """The ledgered redelivery of an uncertain streamed final already holds the reasoning block."""
+    ledger: list[str] = []
+    adapter, returned = await _deliver(monkeypatch, show_reasoning=True, already_sent=True,
+                                       uncertain=True, ledger=ledger)
+
+    assert returned is None
+    assert adapter.sent == []
+    assert len(ledger) == 1 and "thinking hard about it" in ledger[0] and ledger[0].endswith("the answer is 42")

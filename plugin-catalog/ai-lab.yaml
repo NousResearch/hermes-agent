@@ -1,0 +1,34 @@
+name: ai-lab
+title: Hermes AI Lab
+repo: https://github.com/BZK-kais/hermes-ai-lab
+sha: b024e5645cf1651ee9b3717a9c24c4b1458d02c4
+description: Prepare experiments, compare local models and activate qualified configurations in Hermes.
+maintainer: BZK-kais
+tier: community
+category: models
+requires_hermes: ">=0.20.1"
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - ai_lab_status
+    - ai_lab_list_local_models
+    - ai_lab_hf_model_info
+    - ai_lab_probe_endpoint
+    - ai_lab_connections
+    - ai_lab_connection_probe
+    - ai_lab_operations
+    - ai_lab_plan
+    - ai_lab_run
+    - ai_lab_job
+    - ai_lab_provider_action
+    - ai_lab_dataset_validate
+    - ai_lab_artifact_inspect
+    - ai_lab_generate
+    - ai_lab_profile
+    - ai_lab_experiment
+    - ai_lab_analyze
+    - ai_lab_benchmark
+    - ai_lab_optimize
+    - ai_lab_onboarding
+    - ai_lab_mission
+    - ai_lab_registry

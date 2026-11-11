@@ -151,6 +151,22 @@ class TestLiveCatalog:
         model_id, _ = xai_mod._resolve_model()
         assert model_id == "grok-imagine-image-3.0"
 
+    def test_stale_credential_entries_are_evicted(self, monkeypatch):
+        import plugins.image_gen.xai as xai_mod
+
+        old_key = ("https://api.x.ai/v1", "old")
+        xai_mod._LIVE_CACHE_BY_CREDENTIAL = {old_key: ({"old": {}}, 0.0)}
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "get_hermes_home_override", lambda: "/tmp/profile")
+        monkeypatch.setattr(xai_mod, "resolve_xai_http_credentials", lambda: {"api_key": "new"})
+        monkeypatch.setattr(xai_mod, "_fetch_live_models", lambda creds: {"new": {}})
+        monkeypatch.setattr(xai_mod, "_LIVE_CACHE_TTL", 300.0)
+        monkeypatch.setattr(xai_mod.time, "monotonic", lambda: 1000.0)
+
+        assert xai_mod._live_models() == {"new": {}}
+        assert old_key not in xai_mod._LIVE_CACHE_BY_CREDENTIAL
+        assert len(xai_mod._LIVE_CACHE_BY_CREDENTIAL) == 1
+
     def test_live_failure_falls_back_to_static(self, monkeypatch):
         import plugins.image_gen.xai as xai_mod
 

@@ -18,6 +18,19 @@ from tests.waiting import async_wait_until
 KEY = "agent:main:telegram:group:-1001:12345"
 
 
+class _CountingPaused(set):
+    """``_typing_paused`` that counts the keep-alive's per-tick membership checks while ``armed``,
+    so the test waits on keep-alive iterations, not on wall-clock time."""
+
+    armed = False
+    checks = 0
+
+    def __contains__(self, item):
+        if self.armed:
+            self.checks += 1
+        return super().__contains__(item)
+
+
 class _Adapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -46,6 +59,7 @@ async def test_typing_stops_once_a_silent_turn_returns(monkeypatch, tmp_path, an
     adapter = _Adapter(PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM)
     adapter.gateway_runner = runner
     runner._delivery_adapter_for = lambda _source: adapter
+    adapter._typing_paused = paused = _CountingPaused(adapter._typing_paused)
     keep_typing = adapter._keep_typing
     adapter._keep_typing = lambda chat_id, **kw: keep_typing(chat_id, interval=0.05, **kw)  # fast ticks
     ticks, in_hook, release_hook, release_agent = [], asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -73,10 +87,8 @@ async def test_typing_stops_once_a_silent_turn_returns(monkeypatch, tmp_path, an
     await async_wait_until(lambda: ticks.count("agent") >= 2, what="typing while the agent works", timeout=10)
     release_agent.set()
     await async_wait_until(in_hook.is_set, what="the agent:end hook to start", timeout=10)
-    loop = asyncio.get_running_loop()
-    hook_deadline = loop.time() + 0.5  # ten keep-alive ticks
-    await async_wait_until(lambda: loop.time() >= hook_deadline or ticks.count("hook") >= 3,
-                           what="keep-alive ticks during the hook", timeout=10)
+    paused.armed = True  # the keep-alive gets three full iterations while the hook runs
+    await async_wait_until(lambda: paused.checks >= 3, what="keep-alive iterations during the hook", timeout=10)
     release_hook.set()
     await asyncio.wait_for(turn, 10)
 

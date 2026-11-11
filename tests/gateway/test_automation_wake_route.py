@@ -391,6 +391,24 @@ async def test_wake_crosses_an_intermediate_compression_tip(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_wake_does_not_borrow_a_legacy_unmarked_branch_parent(tmp_path, monkeypatch):
+    """Old /branch children lack _branched_from; their ended parent is not a reset predecessor."""
+    from gateway.session_automation import wake_route_envelope
+    from gateway.session_contract import SessionRef
+
+    _runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        root = metadata['gateway_session_id']
+        # The historic branch sequence closed the parent before creating the child.
+        authority.db.end_session(root, 'branched')
+        authority.db.create_session('legacy-branch-child', source='telegram', parent_session_id=root)
+        assert wake_route_envelope(
+            authority, SessionRef(authority.profile_id, 'legacy-branch-child')) is None
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_wake_does_not_follow_a_delegate_or_branch_parent(tmp_path, monkeypatch):
     """Only a reset predecessor is borrowed; delegate and ended branch edges are not."""
     from gateway.session_automation import wake_route_envelope

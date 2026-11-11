@@ -1,0 +1,21 @@
+name: hermes-presenter
+repo: https://github.com/violetSoftware/hermes-presenter-plugin
+sha: 5cd40f7bc02dac990a38df0f0bbee4db7d403c92
+subdir: plugin
+version: "0.1.2"
+title: Hermes Presenter
+description: Present a selected JSON slide deck with the calling local Hermes conversation as co-presenter.
+maintainer: violetSoftware
+tier: community
+category: voice
+platforms: [linux]
+readme: true
+known_issues:
+  - Requires separately installing companion engine 0.1.0 and its locked npm dependencies from this same pinned repository commit.
+  - Uses undocumented Hermes gateway transport imports; compatibility may break after Hermes updates.
+  - No minimum released Hermes version has been established.
+capabilities:
+  provides_tools: [presenter_start, presenter_status, presenter_stop]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [ELEVENLABS_API_KEY]

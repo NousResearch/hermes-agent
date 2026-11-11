@@ -84,7 +84,7 @@ def test_one_step_per_version():
 
 
 _LEGACY_IMAGE = "nikolaik/python-nodejs:python3.11-nodejs20"
-#: One config that triggers (nearly) every registered step, each run alone at ``version - 1``.
+#: One config that triggers every registered step but :data:`_NOT_TRIGGERED_HERE`, each run alone at ``version - 1``.
 _TRIGGER_EVERYTHING = {
     "custom_providers": [{"name": "a", "base_url": "http://h/v1"}, {"name": "b", "base_url": "http://i/v1"}],
     "stt": {"model": "base"},
@@ -134,7 +134,18 @@ def test_every_step_writes_config_yaml_at_most_once(tmp_path, monkeypatch):
         monkeypatch.setattr(config_migrations, "_persist_migration", real)
         writes[version] = count[0]
     assert {v: n for v, n in writes.items() if n > 1} == {}
-    assert writes[44] == writes[48] == 1, "the multi-key steps were triggered"
+    assert {v for v, n in writes.items() if n == 0} == set(_NOT_TRIGGERED_HERE), \
+        "a new step must be triggered by _TRIGGER_EVERYTHING (or listed with its reason)"
+
+
+#: Steps the shared document does not make write config.yaml, and why.
+_NOT_TRIGGERED_HERE = {
+    13: "writes .env only",
+    41: "writes SOUL.md files only",
+    21: "skips when plugins.enabled exists, which v38's trigger needs",
+    31: "matches verify_on_stop None/auto; v32's trigger is the literal true",
+    40: "matches ttl_hours 1; v25's trigger is 24",
+}
 
 
 def test_v48_lands_whole_so_the_retry_keeps_a_pin_the_user_restored(tmp_path, monkeypatch):

@@ -3633,13 +3633,16 @@ def _cmd_config_migrate(args):
     print()
     results = migrate_config(interactive=True, quiet=False)
     print()
-    if results["env_added"] or results["config_added"]:
+    stopped = results.get("failed_step") is not None
+    if (results["env_added"] or results["config_added"]) and not stopped:
         print(color("✓ Configuration updated!", Colors.GREEN))
     if results["warnings"]:
         print()
         for warning in results["warnings"]:
             print(color(f"  ⚠️  {warning}", Colors.YELLOW))
     print()
+    if stopped:
+        sys.exit(1)
 
 
 def _cmd_config_check(args):

@@ -141,7 +141,7 @@ def test_boot_keeps_the_steps_before_a_failing_one_and_retries_it_each_start(
     assert boot()["migrate_config"]["failed_step"] == 21, "same revision: retried on the next start"
     assert len(list(home.glob("config.yaml.bak-*"))) == 1, "a retry that changed nothing keeps no backup"
     _drift_config_version(Finding(), False, config_path)
-    assert "v21 failed" in capsys.readouterr().out
+    assert "unhashable type" in capsys.readouterr().out, "plain doctor says why the step failed"
 
     raw["plugins"]["disabled"] = []
     config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")

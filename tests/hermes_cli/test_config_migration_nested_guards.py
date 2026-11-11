@@ -131,3 +131,23 @@ def test_successful_migration_warning_still_stamps_latest_version(tmp_path):
     migrated = _read_config(tmp_path)
     assert "observability/nemo_relay" not in migrated.get("plugins", {}).get("enabled", [])
     assert migrated["_config_version"] == config_migrations.MIGRATIONS[-1][0]
+
+
+def test_config_migrate_command_reports_a_stopped_pass(tmp_path, capsys):
+    """`hermes config migrate` must not say "Configuration updated!" for a pass that stopped,
+    and exits 1 so scripts see it."""
+    import pytest
+    from hermes_cli.config import _cmd_config_migrate
+
+    # A new default key is listed in config_added, as on a real upgrade; then v21 raises.
+    _write_config(tmp_path, {"_config_version": 20, "plugins": {"disabled": [["x"]]}})
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
+            patch("hermes_cli.config.get_missing_env_vars", return_value=[]), \
+            patch("hermes_cli.config.get_missing_config_fields",
+                  return_value=[{"key": "display.zz_new", "default": 1}]), \
+            pytest.raises(SystemExit) as exited:
+        _cmd_config_migrate(None)
+    out = capsys.readouterr().out
+    assert exited.value.code == 1
+    assert "Configuration updated" not in out
+    assert "v21 failed" in out

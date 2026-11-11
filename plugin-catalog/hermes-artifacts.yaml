@@ -1,0 +1,21 @@
+name: hermes-artifacts
+title: Hermes Artifacts
+repo: https://github.com/MrSakal/hermes-artifacts
+sha: 3dde6be5d9f058cdf1517ed0f7816f211f0ce801
+subdir: plugin
+description: 'Claude-style artifacts for Hermes: docs, sheets, whiteboards, slide decks, dashboards, designs, 3D
+  models, films and design systems that Hermes makes and you edit in place, versioned, in a gallery and
+  sandboxed viewer inside Hermes Desktop. Sheets calculate, dashboards re-run stored MCP queries, and
+  everything exports locally (docx, xlsx, pptx, pdf, png, svg, mp4, glb).'
+maintainer: MrSakal
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.15.0"
+docs_url: https://github.com/MrSakal/hermes-artifacts#readme
+platforms: []
+capabilities:
+  provides_tools: [artifact_publish, artifact_guide, artifact_check, artifact_live_read, artifact_live_edit, artifact_list, artifact_read, artifact_open, artifact_inbox, artifact_delete, artifact_comments, artifact_reply, design_system_get, design_system_export]
+  provides_hooks: [pre_llm_call, on_session_end, post_compaction]
+  provides_middleware: []
+  requires_env: []

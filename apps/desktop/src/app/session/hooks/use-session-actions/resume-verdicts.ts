@@ -1,11 +1,24 @@
 // A "session genuinely doesn't exist" failure (deleted, or an id from a wiped /
-// rotated backend) — the REST transcript 404s with `Session not found`. Distinct
-// from a transient/wedged backend (ECONNREFUSED, timeout), which must still
-// retry rather than discard the id.
+// rotated backend) — distinct from a transient backend (ECONNREFUSED, timeout),
+// which must retry rather than discard the id.
+//
+// Gateway refusals carry no REST wording: a missing session arrives as
+// data.reason === 'not_found' (same convention as session-gone-latch) or as
+// 4007/4001 "session not found" (tui_gateway/methods_session.py:815, :1269).
+// A bare 4001/4007 code is not proof: 4007 also fronts the retryable
+// "session no longer live; retry resume" refusal
+// (tui_gateway/session_lifecycle.py:900).
 export function isSessionGoneError(err: unknown): boolean {
+  const data = err && typeof err === 'object' ? (err as { data?: unknown }).data : undefined
+  const reason = data && typeof data === 'object' ? (data as { reason?: unknown }).reason : undefined
+
+  if (reason === 'not_found') {
+    return true
+  }
+
   const message = err instanceof Error ? err.message : String(err ?? '')
 
-  return message.includes('404') || /session not found/i.test(message)
+  return message.includes('404') || /session not found/i.test(message) || /(^|\b)not_found(\b|$)/i.test(message)
 }
 
 /**

@@ -1,0 +1,19 @@
+name: sauce-vids
+repo: https://github.com/Davemafy/sauce-vids
+sha: 900e0151b1181dd851bc125a37e562b042a34004
+description: Capture real browser workflows and render SaaS demo footage with locally licensed visual assets under Hermes direction.
+maintainer: Davemafy
+tier: community
+category: tools
+version: "0.1.0"
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - sauce_capture
+    - sauce_render
+    - sauce_inspect
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SAUCE_ALLOWED_HOSTS

@@ -1,22 +1,12 @@
-"""Session-scoped discovery instructions for prompts and tool-result recovery."""
+"""Session-scoped recovery text for calls to tools reachable only through the Tool Search bridge.
+
+Nothing here touches the system prompt or tool schemas: the bridge's own ``tool_search``
+description already lists deferred tools and points at ``tool_describe``/``tool_call``.
+"""
 
 import json
 
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
-
-
-TOOL_DISCOVERY_GUIDANCE = (
-    "# Tool discovery\n"
-    "Your directly callable tools are only part of your available capabilities. Additional tools are available "
-    "through `tool_search`. When you need a capability absent from your direct tools, search before concluding "
-    "it is unavailable or implementing a substitute. For multi-step work, look for task-planning tools; "
-    "for background commands, look for process-management tools. Example: "
-    '`tool_search(queries=["track task progress", "poll background processes"])`. '
-    "Read a result's parameter schema with `tool_describe`, then invoke it through `tool_call`. "
-    "If you already know the deferred tool's exact name, skip search and describe it directly. "
-    "Describing a tool does not make it directly callable; continue using `tool_call` for it. "
-    "Reuse schemas already described in this conversation."
-)
 
 
 def session_deferred_tools(agent) -> frozenset[str]:

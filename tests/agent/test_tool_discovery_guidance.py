@@ -1,10 +1,12 @@
-"""Deferred capabilities stay discoverable without changing the tool schema snapshot."""
+"""Deferred tools stay reachable after a direct call, without changing the prompt or schemas."""
 
 import copy
 import json
 
 import pytest
 from openai.types.chat import ChatCompletion
+
+from agent.coding_context import _NO_TODO_SENTENCE, _TODO_SENTENCE
 
 
 def _agent(tmp_path, monkeypatch, config="", disabled=None):
@@ -75,9 +77,10 @@ def test_deferred_call_recovers_through_bridge_without_changing_prompt(tmp_path,
     assert {"todo_list", "process_manage"}.isdisjoint(agent.valid_tool_names)
     assert "tool_search" in agent.valid_tool_names
     prompt = agent._cached_system_prompt
-    assert "# Tool discovery" in prompt
-    assert "Track multi-step work" in prompt and "todo_list" in prompt
-    assert "tool_describe" in prompt and "tool_call" in prompt
+    # Recovery lives in the tool result only: no discovery block, no rewritten todo sentence.
+    assert "# Tool discovery" not in prompt
+    assert "tool_describe(names=" not in prompt
+    assert _NO_TODO_SENTENCE in prompt and _TODO_SENTENCE not in prompt
     # Every request keeps the same system prompt and schema; recovery is a tool result.
     assert len(requests) > 1
     for request in requests[1:]:
@@ -106,7 +109,7 @@ def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
     background_payload = json.loads(background)
     assert background_payload["session_id"]
     assert bool(background_payload.get("tool_discovery_hint")) == (mode != "eager")
-    assert ("# Tool discovery" in prompt) == (mode != "eager")
+    assert "# Tool discovery" not in prompt
     assert ("tool_describe" in background and "process_manage" in background) == (mode != "eager")
     if mode == "disabled":
         assert "todo_list" not in prompt
@@ -114,4 +117,5 @@ def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
         assert "does not exist" in error
         assert 'tool_describe(names=["todo_list"])' not in error
     else:
-        assert "Track multi-step work with `todo_list`" in prompt
+        # Same todo sentence main picks from the direct tool list (deferred = not direct).
+        assert (_TODO_SENTENCE in prompt) == (mode == "eager")

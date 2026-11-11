@@ -80,15 +80,10 @@ see the underlying tool, not the bridge. A deferred tool the model calls by
 its real name is rewritten into a `tool_call` first, so it runs through the
 same checks instead of failing as an unknown tool.
 
-When the bridge is present, the initial system prompt instructs the model
-to search for capabilities missing from its direct tools. Coding guidance
-routes task tracking through the bridge when `todo_list` is deferred, and
-background-command results explain how to reach deferred `process_manage`.
-A direct call to a deferred tool returns instructions to describe and invoke
-it through the bridge. Disabled tools are not advertised as available.
-These hints do not promote tools into the direct tool array or change the
-system prompt during a conversation. Described tools continue to use
-`tool_call`; their schemas can be reused from conversation history.
+A direct call to a deferred tool by its bare name is still rejected, but the
+error explains how to describe and invoke it through the bridge instead of
+saying the tool does not exist. Disabled tools are not advertised as
+available. The system prompt and the direct tool array are unchanged.
 
 ## When does it activate?
 

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import queue
+import re
 import secrets
 import shutil
 import socket
@@ -52,27 +53,32 @@ def _clip(text):
     return (text, False) if len(text) <= _CAPTURE_LIMIT else (text[:_CAPTURE_LIMIT], True)
 
 
-_MODULE_MTIMES = {}
-_STDLIB_DIR = os.path.dirname(os.__file__)
+_MODULE_RECORDS = {}
+_STDLIB_PREFIX = os.path.dirname(os.__file__) + os.sep
+_INSTALLED_MARKERS = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
 
 
 def _edited_modules(report):
-    """Record the source mtime of every imported project module; with *report*, name those
-    whose file changed since it was recorded (each change is named once)."""
+    """Record the source mtime and import spec of every imported project module; with
+    *report*, name those whose file changed while the same import stayed loaded (a reload or
+    re-import installs a new spec, so it is not named). Each change is named once."""
     edited = []
     for name, module in list(sys.modules.items()):
-        path = getattr(module, "__file__", None)
-        if (not isinstance(path, str) or not path.endswith(".py") or path.startswith(_STDLIB_DIR)
-                or "site-packages" in path or "dist-packages" in path):
-            continue
         try:
+            # Read the module dict directly: attribute access would trigger lazy loaders.
+            fields = object.__getattribute__(module, "__dict__")
+            path, spec = fields.get("__file__"), fields.get("__spec__")
+            if (not isinstance(name, str) or not isinstance(path, str) or not path.endswith(".py")
+                    or path.startswith(_STDLIB_PREFIX) or any(marker in path for marker in _INSTALLED_MARKERS)):
+                continue
             mtime = os.stat(path).st_mtime_ns
-        except OSError:
+        except Exception:  # anything may sit in sys.modules; the scan must never fail a cell
             continue
-        if report and _MODULE_MTIMES.get(name, mtime) != mtime:
+        seen = _MODULE_RECORDS.get(name)
+        if report and seen is not None and seen[0] != mtime and seen[1] is spec:
             edited.append(name)
-        if report or name not in _MODULE_MTIMES:
-            _MODULE_MTIMES[name] = mtime
+        if report or seen is None or seen[1] is not spec:
+            _MODULE_RECORDS[name] = (mtime, spec)
     return sorted(edited)
 
 
@@ -778,12 +784,21 @@ def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> tuple[st
         return "success", payload
 
 
+_MODULE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,199}")
+
+
 def stale_modules_warning(payload: dict[str, Any]) -> str:
     """Tell the model which modules this kernel imported before they were edited on disk."""
-    names = [str(name) for name in payload.get("stale_modules") or []]
+    reported = payload.get("stale_modules")
+    # The list comes from the cell process: keep only plain dotted module names.
+    names = [name for name in (reported if isinstance(reported, list) else [])
+             if isinstance(name, str) and _MODULE_NAME_RE.fullmatch(name)]
     if not names:
         return ""
-    shown = ", ".join(names[:8]) + (f" and {len(names) - 8} more" if len(names) > 8 else "")
+    from agent.redact import redact_sensitive_text
+    # Redacted like the cell's stdout: a module name is cell-chosen text.
+    shown = redact_sensitive_text(", ".join(names[:8]), code_file=True) + (
+        f" and {len(names) - 8} more" if len(names) > 8 else "")
     return (f"Edited on disk after this kernel imported it: {shown}. Unless this cell reloaded it, "
             "the cell ran the OLD code. Run importlib.reload(<module>) (and re-import any names "
             "taken from it), or call again with reset=true to start from fresh imports.")

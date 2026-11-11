@@ -4,7 +4,7 @@ import { createContext, memo, useCallback, useContext, useMemo, useRef, useState
 import { ChatEmptySlot } from '@/components/assistant-ui/chat-empty-slot'
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
-import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
+import { BackgroundResumeNotice, CenteredThreadSpinner, CompactingStatusRow } from '@/components/assistant-ui/thread/status'
 import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
 import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
 import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
@@ -179,9 +179,17 @@ export const Thread = memo(function Thread({
   // Stable element identity, for the same reason the component map above is
   // memoized: this is a prop of the memo'd ThreadMessageList, so a fresh
   // element every render defeats the bail-out and drags the whole transcript
-  // into the switch's render pass. It takes no props, so one element is
+  // into the switch's render pass. Both rows take no props, so one element is
   // always correct.
-  const loadingIndicator = useMemo(() => <BackgroundResumeNotice />, [])
+  const loadingIndicator = useMemo(
+    () => (
+      <>
+        <BackgroundResumeNotice />
+        <CompactingStatusRow />
+      </>
+    ),
+    []
+  )
 
   return (
     <ThreadEditContext.Provider value={editContext}>

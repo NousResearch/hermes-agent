@@ -2577,6 +2577,7 @@ export const ruOverrides = {
     startVoice: 'Начать голосовой разговор',
     openDirective: 'Открыть',
     queueMessage: 'Вставить сообщение в очередь',
+    compactingNotice: 'Контекст сжимается — отправленные сообщения будут поставлены в очередь',
     steer: 'Направить текущий запуск',
     redirect: 'Перенаправить текущий запуск',
     stop: 'Стоп',
@@ -3567,6 +3568,7 @@ export const ruOverrides = {
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',
+      compacting: 'Сжатие контекста диалога',
       resumeWhenBackgroundDone: count =>
         count === 1
           ? 'Продолжится, когда фоновая задача завершится'

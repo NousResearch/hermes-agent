@@ -3341,6 +3341,7 @@ export const en: Translations = {
     startVoice: 'Start voice conversation',
     openDirective: 'Open',
     queueMessage: 'Queue message',
+    compactingNotice: 'Compacting context — sent messages will queue',
     steer: 'Steer the current run',
     redirect: 'Redirect the current run',
     stop: 'Stop',
@@ -4465,6 +4466,7 @@ export const en: Translations = {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
+      compacting: 'Summarizing thread',
       loadingLocalModel: model => `Loading ${model} into memory`,
       processingPrompt: 'Processing prompt',
       resumeWhenBackgroundDone: count =>

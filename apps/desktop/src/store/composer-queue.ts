@@ -703,6 +703,13 @@ export const isQueueParked = (key: string | null | undefined): boolean => {
 /** Inputs to {@link shouldAutoDrain}. */
 export interface AutoDrainInput {
   isBusy: boolean
+  /**
+   * A standalone `/compress` is running on this session. It holds no live turn,
+   * so `isBusy` is false the whole time — but the gateway holds anything sent
+   * until the compression lands, so draining now is exactly the "your words
+   * went nowhere" the composer promised it would not do.
+   */
+  compacting?: boolean
   /** The user explicitly halted this session's queue (Stop / Esc). */
   parked?: boolean
   queueLength: number
@@ -724,9 +731,13 @@ export interface AutoDrainInput {
  * resumes, sends, edits, or deletes them. Interrupts that exist to reach the
  * queue faster (send-now-while-busy) never park, so they keep draining through
  * this same gate.
+ *
+ * `compacting` is the other: a standalone compression narrates a phase the
+ * gateway will not accept input during, so the queue waits it out and the
+ * settle edge that follows the `ready` frame drains it.
  */
-export const shouldAutoDrain = ({ isBusy, parked, queueLength }: AutoDrainInput): boolean =>
-  !isBusy && !parked && queueLength > 0
+export const shouldAutoDrain = ({ compacting, isBusy, parked, queueLength }: AutoDrainInput): boolean =>
+  !isBusy && !compacting && !parked && queueLength > 0
 
 /** Auto-drain attempts for one entry before we stop retrying and toast. The
  * entry stays queued for a manual send; a remount/reconnect resets the count. */

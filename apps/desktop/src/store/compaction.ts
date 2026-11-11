@@ -8,10 +8,37 @@ const hasSession = (sessions: Record<string, true>, key: string): boolean => Obj
 
 export const $compactingSessions = atom<Record<string, true>>({})
 
+/** Live detail for an in-flight compaction: when it started (the timer's
+ *  origin) and the gateway's latest progress text, when it carries any.
+ *  The text the backend streams (`compressing 42 messages (~120,000 tok)…`)
+ *  was discarded before — the status row had nothing but a fixed label. */
+export interface CompactionProgress {
+  since: number
+  text?: string
+}
+
+export const $compactionProgressById = atom<Record<string, CompactionProgress>>({})
+
 /** Is `sessionId` compacting? Per-session because a transcript may be a tile,
  *  and a tile must never wear the primary chat's compaction state. */
 export function sessionCompacting(sessionId: null | string) {
   return computed($compactingSessions, sessions => hasSession(sessions, keyFor(sessionId)))
+}
+
+/** Latest progress for `sessionId`'s compaction, or null between runs. */
+export function sessionCompactionProgress(sessionId: null | string) {
+  return computed($compactionProgressById, all => all[keyFor(sessionId)] ?? null)
+}
+
+/** Record the gateway's progress text for a compaction already in flight.
+ *  First call stamps `since`; later calls only replace the text, so the timer
+ *  measures the whole compaction, not the last status frame. */
+export function setSessionCompactionProgress(sessionId: string | null | undefined, text?: string): void {
+  const key = keyFor(sessionId)
+  const all = $compactionProgressById.get()
+  const existing = all[key]
+
+  $compactionProgressById.set({ ...all, [key]: { since: existing?.since ?? Date.now(), ...(text ? { text } : {}) } })
 }
 
 export function setSessionCompacting(sessionId: string | null | undefined, active: boolean): void {
@@ -35,6 +62,10 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
   const next = { ...sessions }
   delete next[key]
   $compactingSessions.set(next)
+
+  const progress = { ...$compactionProgressById.get() }
+  delete progress[key]
+  $compactionProgressById.set(progress)
 }
 
 // A manual /compress whose RPC answers `pending` (#97948) returns before the

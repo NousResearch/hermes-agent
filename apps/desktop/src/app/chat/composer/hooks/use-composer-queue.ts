@@ -79,6 +79,8 @@ interface UseComposerQueueArgs {
   attachments: ComposerAttachment[]
   busy: boolean
   clearDraft: () => void
+  /** A standalone `/compress` holds the session without a live turn. */
+  compacting?: boolean
   draftRef: RefObject<string>
   focusInput: () => void
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
@@ -114,6 +116,7 @@ export function useComposerQueue({
   attachments,
   busy,
   clearDraft,
+  compacting = false,
   draftRef,
   focusInput,
   loadIntoComposer,
@@ -404,7 +407,7 @@ export function useComposerQueue({
 
   // `submissionId` names the restored send this draft retries: the admission (or the local entry that
   // drains under its id) keeps it, so the owner never runs the interrupted original a second time.
-  const queueCurrentDraft = useCallback((submissionId?: string) => {
+  const queueCurrentDraft = useCallback((submissionId?: string, options?: { localOnly?: boolean }) => {
     const text = draftRef.current
 
     if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
@@ -436,7 +439,12 @@ export function useComposerQueue({
     // Canonical (gateway-owned) sessions admit busy input straight into the
     // durable gateway FIFO; the row comes back as a server-owned queue entry.
     // `fromQueue` submits skip the transport freeze, so send the frozen text.
-    if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
+    //
+    // `localOnly` opts out: a standalone compression holds the gateway's
+    // admission (the canonical prompt RPC stays pending until it lands), so
+    // admitting now would leave the words invisible for the whole compress.
+    // The caller keeps them in the local queue and the `ready` edge drains it.
+    if (!options?.localOnly && serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
       return Promise.resolve(
         onSubmit(frozen.frozenTransport ?? frozen.text, {
           attachments: cloneAttachments(attachments),
@@ -773,10 +781,10 @@ export function useComposerQueue({
       return
     }
 
-    if (shouldAutoDrain({ isBusy: busy, parked: queueParked, queueLength: queuedPrompts.length })) {
+    if (shouldAutoDrain({ compacting, isBusy: busy, parked: queueParked, queueLength: queuedPrompts.length })) {
       return autoDrainNext()
     }
-  }, [autoDrainNext, busy, drainRetryTick, queueParked, queuedPrompts.length, sessionsLoading])
+  }, [autoDrainNext, busy, compacting, drainRetryTick, queueParked, queuedPrompts.length, sessionsLoading])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.

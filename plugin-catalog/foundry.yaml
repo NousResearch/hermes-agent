@@ -15,7 +15,7 @@ readme: true
 platforms: []
 title: ""
 onboarding: false
-known_issues: ["Approval is disabled — no trusted human review channel yet (approve routes fail closed; Approve buttons disabled on web, Desktop, and static render)", "Live Scribe via ctx.llm VERIFIED on macOS Nov 10, 2026 (draft-003, generation 'llm'); live web dashboard load VERIFIED Nov 10, 11:15 PM (tabs render) and Nov 11 (all four tabs incl. Brand, per Amit); live Desktop load not yet run"]
+known_issues: ["Human approval is not yet implemented in this version — the Approve action is intentionally unavailable, nothing auto-posts", "Live Smith draft revision via ctx.llm VERIFIED on macOS Nov 10, 2026 (draft-003, generation 'llm'); live web dashboard load VERIFIED Nov 10, 11:15 PM (tabs render) and Nov 11 (all four tabs incl. Brand); live Desktop load not yet run"]
 capabilities:
   provides_tools:
     - foundry_start

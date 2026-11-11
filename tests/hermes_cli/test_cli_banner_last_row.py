@@ -6,9 +6,9 @@ blank rows below it. ``/clear`` inside the running CLI cleared and printed from 
 Both now start from the last row and arm the chrome floor, the CLI's stand-in for the cursor position
 report it leaves off on POSIX, so each print keeps the footer on the last rows.
 """
+import errno
 import io
 import os
-import sys
 from collections import deque
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -42,6 +42,7 @@ def _short_banner(**kwargs):
 @pytest.fixture
 def shell(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERM", "xterm-256color")  # Rich sends no clear to a dumb terminal
     monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: os.terminal_size((COLUMNS, ROWS)))
     from cli import HermesCLI
     from hermes_cli import cli_render
@@ -75,7 +76,7 @@ def test_the_startup_banner_starts_on_the_last_row(shell):
 
 def test_a_banner_outside_interactive_startup_starts_at_the_top(shell):
     """``--list-tools`` and ``/clear`` without the running CLI keep the banner where the clear left it:
-    a pipe would otherwise start with a screenful of blank lines."""
+    no footer sits below it to keep on the last rows."""
     from hermes_cli import cli_render
 
     _show_banner(shell)
@@ -84,15 +85,16 @@ def test_a_banner_outside_interactive_startup_starts_at_the_top(shell):
     assert cli_render._chrome_floor() is None
 
 
-@pytest.mark.parametrize("terminal", ["not a terminal", "TERM=dumb"])
+@pytest.mark.parametrize("terminal", ["not a terminal", "TERM=dumb", "quiet"])
 def test_a_banner_whose_clear_was_dropped_adds_no_blank_screen(shell, monkeypatch, terminal):
-    """Rich drops the clear when it writes to no terminal, or to a dumb one: the cursor was never
-    sent home, so no screenful of newlines follows, and the footer's rows stay unknown."""
+    """Rich drops the clear when it writes to no terminal, to a dumb one, or when quiet: the cursor
+    was never sent home, so no screenful of newlines follows, and the footer's rows stay unknown."""
     from hermes_cli import cli_render
 
     if terminal == "TERM=dumb":
         monkeypatch.setenv("TERM", "dumb")
-    shell.console = Console(file=io.StringIO(), force_terminal=terminal == "TERM=dumb", width=COLUMNS, height=ROWS)
+    shell.console = Console(file=io.StringIO(), force_terminal=terminal != "not a terminal", quiet=terminal == "quiet",
+                            width=COLUMNS, height=ROWS)
 
     _show_banner(shell, from_last_row=True)
 
@@ -118,27 +120,56 @@ def test_interactive_startup_prints_the_banner_from_the_last_row(shell):
     assert cli_render._chrome_floor() == cli_render._CHROME_FLOOR_AT_LAST_ROW
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX pty")
+class _HungUpTty(io.StringIO):
+    def write(self, text: str) -> int:
+        raise OSError(errno.EIO, "the terminal hung up")
+
+
+@pytest.mark.parametrize(("stream", "rows"), [(_HungUpTty(), ROWS), (io.StringIO(), 2)], ids=["hung up", "two rows"])
+def test_a_scroll_that_did_not_happen_says_so(monkeypatch, stream, rows):
+    from hermes_cli import cli_render
+
+    monkeypatch.setattr("shutil.get_terminal_size", lambda *_a: os.terminal_size((COLUMNS, rows)))
+
+    assert cli_render._scroll_to_last_row(stream) is False
+
+
+def test_a_banner_whose_rescroll_failed_leaves_the_footer_rows_unknown(shell, monkeypatch):
+    import cli as cli_mod
+    from hermes_cli import cli_render
+
+    monkeypatch.setattr(cli_mod, "_scroll_to_last_row", lambda _stream: False)
+    _show_banner(shell, from_last_row=True)
+
+    assert cli_render._chrome_floor() is None
+
+
+@pytest.mark.platforms("posix")  # a pty
 def test_the_startup_scroll_measures_the_terminal_it_writes_to(shell):
     """The fixture's ``shutil`` reports ``ROWS``, as a stale exported ``$LINES`` would: the scroll goes
     by the tty's own height, which prompt_toolkit paints by, or the prompt starts mid-screen."""
     import fcntl
+    import select
     import struct
     import termios
 
     from hermes_cli import cli_render
 
+    tty_rows = ROWS - 30
     leader, follower = os.openpty()
     try:
-        fcntl.ioctl(follower, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS - 30, COLUMNS, 0, 0))
+        fcntl.ioctl(follower, termios.TIOCSWINSZ, struct.pack("HHHH", tty_rows, COLUMNS, 0, 0))
         with os.fdopen(follower, "w", encoding="utf-8", closefd=False) as tty:
             assert cli_render._scroll_to_last_row(tty)
-            written = os.read(leader, 4096)  # before the close: macOS drops what is unread then
+            written = b""  # read before the close: macOS drops what is unread then
+            # A pty may hand a write over in parts: read until it has been quiet for two seconds.
+            while select.select([leader], [], [], 2)[0]:
+                written += os.read(leader, 4096)
     finally:
         os.close(follower)
         os.close(leader)
 
-    assert written.count(b"\n") == ROWS - 30 - 1
+    assert written.count(b"\n") == tty_rows - 1
 
 
 def _clear_inside_the_cli(shell, monkeypatch, output):

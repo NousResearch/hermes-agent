@@ -1,7 +1,7 @@
 name: vibeline
 repo: https://github.com/ListeningPost/vibeline
 sha: d5d0f425a64906ae1a50c1222314a5420da404d5
-description: Show agent work as rails in the TUI, web and CLI. One lane per agent, tool calls and acceptance-criteria results as marks.
+description: "Show agent work as rails in the TUI, web and CLI. One lane per agent, tool calls and acceptance-criteria results as marks. Disclosure — `hermes vibeline web` serves a local web UI (127.0.0.1 by default; a token is required for any non-loopback client) that shows every Hermes session transcript on this machine and can open terminals running `hermes --resume` and rewind sessions (soft-deleting later messages via core's `/rewind`); `--peer` URLs you add receive and forward these requests to other machines, and `--read-only` disables open/rewind."
 maintainer: ListeningPost
 tier: community
 category: tools

@@ -463,8 +463,7 @@ class ModelSwitchResult:
     # account and model, so their switch output is unchanged.
     usage_notice: str = ""
     provider_label: str = ""
-    resolved_via_alias: str = ""
-    reasoning_config: Optional[dict] = None
+    resolved_via_alias: str = ""; reasoning_config: Optional[dict] = None  # the alias's bundled effort
     capabilities: Optional[ModelCapabilities] = None
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
@@ -1229,7 +1228,7 @@ class _Switch:
     custom_providers: Optional[list]
     new_model: str = ""
     target_provider: str = ""
-    resolved_alias: str = ""
+    resolved_alias: str = ""; alias_reasoning: Optional[dict] = None
     alias_endpoint_applied: bool = False
     provider_label: str = ""
     api_key: str = ""
@@ -1630,10 +1629,11 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     else:
         _creds_for_current_provider(st)
 
-    # Direct alias override: use the alias's exact base_url if set.
+    # Direct alias override: its exact base_url, and its effort read now (another profile's switch may reload the cache).
     if st.resolved_alias:
         _ensure_direct_aliases()
         da = DIRECT_ALIASES.get(st.resolved_alias)
+        st.alias_reasoning = parse_reasoning_effort(getattr(da, "reasoning_effort", None))
         if da is not None and da.base_url:
             _apply_direct_alias_endpoint(st, da)
             st.alias_endpoint_applied = True
@@ -1788,7 +1788,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     except Exception:
         request_overrides = None
     return ModelSwitchResult(
-        reasoning_config=parse_reasoning_effort(getattr(DIRECT_ALIASES.get(st.resolved_alias), "reasoning_effort", None)),
+        reasoning_config=st.alias_reasoning,
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",

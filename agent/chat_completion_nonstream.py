@@ -1,7 +1,14 @@
 """Request-local worker lifecycle, watchdog polling, and wait status."""
 
+from enum import Enum
+
 from agent import chat_completion_helpers as h
 from agent import chat_completion_wait_notice as wn
+
+# CANCELLED: an interrupt force-closed THIS request; agent._interrupt_requested is cleared at turn
+# boundaries but this daemon worker can outlive the turn, so it must know (#6600). RETIRED: the codex
+# retirement token was withdrawn (watchdog kill, interrupt or worker exit), which wins over CANCELLED.
+_RequestPhase = Enum("_RequestPhase", "ACTIVE CANCELLED RETIRED")
 
 
 class _NonStreamRequest:
@@ -16,16 +23,12 @@ class _NonStreamRequest:
         self.api_kwargs = api_kwargs
         self.result = {"response": None, "error": None}
         self.clients = h._RequestClientRegistry(agent)
-        # Request-local cancel flag: agent._interrupt_requested is cleared at turn
-        # boundaries but this daemon worker can outlive the turn, so it must know THIS
-        # request was force-closed and not surface the transport error as a bug (#6600).
-        self.cancelled = False
+        self.phase = _RequestPhase.ACTIVE
         # Codex retirement token: the worker checks ``agent._active_codex_stream_request_token``
         # to know it still owns the turn; a watchdog kill clears it so a worker still
         # draining SSE raises instead of returning partial output as "completed"
-        # (run_codex_stream._request_is_current). ``codex_retired`` mirrors it locally.
+        # (run_codex_stream._request_is_current). RETIRED mirrors it locally.
         self.codex_token = object() if agent.api_mode == "codex_responses" else None
-        self.codex_retired = False
         self.wd = h._resolve_nonstream_watchdogs(agent, api_kwargs)
         self.codex_watchdog_state = (
             h.SimpleNamespace(
@@ -45,13 +48,13 @@ class _NonStreamRequest:
         self.thread = None
 
     def _install_codex_request_token(self) -> None:
-        if self.codex_token is not None and not self.codex_retired:  # retired before start: don't re-publish
+        if self.codex_token is not None and self.phase is not _RequestPhase.RETIRED:  # retired before start: don't re-publish
             self.agent._active_codex_stream_request_token = self.codex_token
 
     def _retire_codex_request_token(self) -> None:
         if self.codex_token is None:
             return
-        self.codex_retired = True
+        self.phase = _RequestPhase.RETIRED
         if getattr(self.agent, "_active_codex_stream_request_token", None) is self.codex_token:
             self.agent._active_codex_stream_request_token = None
 
@@ -80,12 +83,12 @@ class _NonStreamRequest:
             # thread raises InterruptedError (#6600). Retirement logs at info
             # (a watchdog discarded output the provider already sent — what an
             # operator debugging a truncated reply needs); cancellation at debug.
-            if self.codex_retired:
+            if self.phase is _RequestPhase.RETIRED:
                 h.logger.info("Codex worker caught %s after request retirement — "
                     "discarding the stale partial instead of surfacing it as a completed response. %s",
                     type(e).__name__, self.agent._client_log_context())
                 return
-            if self.cancelled:
+            if self.phase is _RequestPhase.CANCELLED:
                 h.logger.debug("Non-streaming worker caught %s after request "
                     "cancellation — exiting without surfacing a network error.", type(e).__name__)
                 return
@@ -263,7 +266,7 @@ class _NonStreamRequest:
         # error as a cancel (#6600). Never close the shared client (releasing a
         # TLS FD mid-SSL-BIO corrupted an unrelated SQLite DB, #67142). Then let
         # the worker unwind Relay scopes before raising (#81521).
-        self.cancelled = True
+        self.phase = _RequestPhase.CANCELLED
         h.logger.debug("Force-closing httpx client due to interrupt (not a network error).")
         self._abort_request("interrupt_abort")
         h._join_worker_for_relay_teardown(self.thread, label="Non-streaming")

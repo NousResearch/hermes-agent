@@ -938,4 +938,7 @@ from tools.registry import registry, tool_error
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
     handler=lambda args, **kw: _skill_manage_from(
-        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")))
+        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
+    # The flat single-op shape old transcripts replay, and the batch's top-level default name.
+    compat_args=("action", "name", "content", "category", "file_path", "file_content", "old_string",
+                 "new_string", "replace_all", "absorbed_into"))

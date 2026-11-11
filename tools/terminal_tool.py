@@ -1171,7 +1171,7 @@ _PROMOTED_NOTE = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process with notify_on_complete=true instead of being refused. Do NOT re-run it. "
     "Its completion (exit code + output tail) arrives as a notification; poll with "
-    "process(action=\"poll\", session_id=...) if you need it sooner."
+    "process_manage(action=\"poll\", session_id=...) if you need it sooner."
 )
 
 
@@ -1269,7 +1269,7 @@ def _plan_execution(
 _PROMOTED_NOTE_POLL_ONLY = (
     "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started as a "
     "tracked background process instead of being refused. Do NOT re-run it. This session cannot receive "
-    "completion notifications, so poll it with process(action=\"poll\", session_id=...) until it exits."
+    "completion notifications, so poll it with process_manage(action=\"poll\", session_id=...) until it exits."
 )
 
 
@@ -1442,7 +1442,7 @@ def _pre_exec_block(
 _PTY_DISABLED_REASON = (
     "PTY disabled for this command because it expects piped stdin/EOF "
     "(for example gh auth login --with-token). For local background "
-    "processes, call process(action='close') after writing so it receives "
+    "processes, call process_manage(action='close') after writing so it receives "
     "EOF."
 )
 
@@ -1704,7 +1704,7 @@ def _handle_terminal(args, **kw):
         if args.get("pty", False):
             return tool_error(
                 "pty requires background=true (a PTY session is interacted "
-                "with via process(action='write'/'submit'), which needs a "
+                "with via process_manage(action='write'/'submit'), which needs a "
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
             )
@@ -1751,4 +1751,6 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    # ``code`` is the wrong-tool guard (points at execute_code); the other two are the legacy notify interface.
+    compat_args=("code", "notify_on_complete", "watch_patterns"),
 )

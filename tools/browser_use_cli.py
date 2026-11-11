@@ -1040,4 +1040,5 @@ registry.register(
     check_fn=browser_exec_available,
     dynamic_schema_overrides=_dynamic_schema_overrides,
     emoji="🌐",
+    compat_args=("local",),  # advertised only when a local browser is on offer
 )

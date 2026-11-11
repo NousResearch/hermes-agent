@@ -23,3 +23,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEPLETED_LINE = "Status: access depleted — top up to restore"
+# Usage-window plans: allowances are shown as percent used.
+_WINDOW_TOP_TIER_USED_UP = "Monthly large-model usage is used up."
+_WINDOW_PAUSED_LINE = ("Status: included usage paused. Your subscription payment failed. Update your card to restore it. "
+                       "Until then, Unitalk uses your credits.")
+_WINDOW_PAUSED_OTHER_LINE = "Status: included usage paused. See Billing in the Portal. Until then, Unitalk uses your credits."

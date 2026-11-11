@@ -11,36 +11,40 @@ function blobToPng(blob: Blob): Promise<Blob> {
     image.onload = () => {
       URL.revokeObjectURL(objectUrl)
 
-      const isSvg = blob.type === 'image/svg+xml'
-      const width = image.naturalWidth || image.width || (isSvg ? 800 : 0)
-      const height = image.naturalHeight || image.height || (isSvg ? 600 : 0)
+      try {
+        const isSvg = blob.type === 'image/svg+xml'
+        const width = image.naturalWidth || image.width || (isSvg ? 800 : 0)
+        const height = image.naturalHeight || image.height || (isSvg ? 600 : 0)
 
-      if (!width || !height) {
-        reject(new Error('Image has no dimensions to copy'))
+        if (!width || !height) {
+          reject(new Error('Image has no dimensions to copy'))
 
-        return
-      }
-
-      const canvas = document.createElement('canvas')
-      canvas.width = width
-      canvas.height = height
-
-      const context = canvas.getContext('2d')
-
-      if (!context) {
-        reject(new Error('Canvas 2D context is unavailable'))
-
-        return
-      }
-
-      context.drawImage(image, 0, 0, width, height)
-      canvas.toBlob(png => {
-        if (png) {
-          resolve(png)
-        } else {
-          reject(new Error('Failed to encode image as PNG'))
+          return
         }
-      }, 'image/png')
+
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+
+        const context = canvas.getContext('2d')
+
+        if (!context) {
+          reject(new Error('Canvas 2D context is unavailable'))
+
+          return
+        }
+
+        context.drawImage(image, 0, 0, width, height)
+        canvas.toBlob(png => {
+          if (png) {
+            resolve(png)
+          } else {
+            reject(new Error('Failed to encode image as PNG'))
+          }
+        }, 'image/png')
+      } catch (error) {
+        reject(error)
+      }
     }
 
     image.onerror = () => {
@@ -90,7 +94,13 @@ export async function copyImageFromUrl(url: string): Promise<boolean> {
     // Pass the async fetch/conversion as a Promise inside ClipboardItem so
     // navigator.clipboard.write runs synchronously inside the click gesture
     // (required by Safari/WebKit user-activation checks).
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': fetchImageAsPngBlob(url) })])
+    const pngBlobPromise = fetchImageAsPngBlob(url)
+
+    // Observe rejections independently in case navigator.clipboard.write rejects
+    // before consuming the ClipboardItem promise.
+    void pngBlobPromise.catch(() => undefined)
+
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlobPromise })])
 
     return true
   } catch (error) {

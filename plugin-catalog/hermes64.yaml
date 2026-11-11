@@ -1,6 +1,6 @@
 name: hermes64
 repo: https://github.com/Qhantom-Labs/hermes64
-sha: b657d8ef7d8a36dbd4de2297a635bb983cad87bc
+sha: ddd9b325f2defa3cf6d4602d6e8d5b621f080b8f
 subdir: ""
 title: Hermes64
 description: Author and edit room-based N64-era-style 3D games with story checks, bot playtests and local exports.

@@ -36,18 +36,3 @@ def invalid_tool_name_error_content(agent, name: str) -> str:
     from agent.conversation_loop import _invalid_tool_name_error_content
 
     return _invalid_tool_name_error_content(name, agent.valid_tool_names)
-
-
-def process_discovery_hint(agent, tool_name: str, result) -> str:
-    """Background starts and yielded foreground commands both return a session_id."""
-    if tool_name != "terminal" or not isinstance(result, str):
-        return ""
-    try:
-        payload = json.loads(result)
-    except json.JSONDecodeError:
-        return ""
-    if not isinstance(payload, dict) or not payload.get("session_id") or payload.get("error"):
-        return ""
-    if "process_manage" not in session_deferred_tools(agent):
-        return ""
-    return "\n\n" + deferred_tool_hint("process_manage")

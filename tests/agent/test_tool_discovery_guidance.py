@@ -92,8 +92,17 @@ def test_deferred_call_recovers_through_bridge_without_changing_prompt(tmp_path,
     assert sorted(call_ids) == sorted(m["tool_call_id"] for m in messages if m["role"] == "tool")
 
 
+_FAKE_START = {"output": "Background process started", "session_id": "proc_fake", "pid": 1,
+               "exit_code": 0, "error": None, "notify_on_complete": True}
+
+
 @pytest.mark.parametrize("mode", ["deferred", "eager", "disabled"])
 def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
+    from tools import terminal_tool
+
+    # Never start a real process: the spawn returns main's background-start payload.
+    monkeypatch.setattr(terminal_tool, "spawn_background_process",
+                        lambda **_kw: json.dumps(_FAKE_START))
     config = "tools:\n  tool_search:\n    enabled: off\n" if mode == "eager" else ""
     agent = _agent(tmp_path, monkeypatch, config, ["todo"] if mode == "disabled" else None)
     result, _ = _run(agent, monkeypatch, [
@@ -106,11 +115,9 @@ def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
     assert result["completed"]
     prompt = agent._cached_system_prompt
     background = next(m["content"] for m in result["messages"] if m.get("tool_call_id") == "background")
-    background_payload = json.loads(background)
-    assert background_payload["session_id"]
-    assert bool(background_payload.get("tool_discovery_hint")) == (mode != "eager")
+    # Terminal results keep main's shape in every mode: no key added after the tool returns.
+    assert json.loads(background) == _FAKE_START
     assert "# Tool discovery" not in prompt
-    assert ("tool_describe" in background and "process_manage" in background) == (mode != "eager")
     if mode == "disabled":
         assert "todo_list" not in prompt
         error = next(m["content"] for m in result["messages"] if m.get("tool_call_id") == "missing")
@@ -119,3 +126,13 @@ def test_workflow_hints_follow_session_tool_scope(tmp_path, monkeypatch, mode):
     else:
         # Same todo sentence main picks from the direct tool list (deferred = not direct).
         assert (_TODO_SENTENCE in prompt) == (mode == "eager")
+
+
+def test_process_manage_notes_carry_the_bridge_hint():
+    from tools.terminal_tool_background import (
+        _AUTO_BACKGROUND_NOTE, _PROCESS_MANAGE_BRIDGE_HINT, _SUBAGENT_NOTIFY_NOTE,
+    )
+
+    for note in (_AUTO_BACKGROUND_NOTE, _SUBAGENT_NOTIFY_NOTE):
+        assert note.endswith(_PROCESS_MANAGE_BRIDGE_HINT)
+        assert "tool_call" in note

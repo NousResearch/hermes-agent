@@ -48,6 +48,7 @@ FALSE_POSITIVES = [
     "tail -n 50 logs/uvicorn.log",
     "command -v nodemon",
     "/usr/bin/grep -rn uvicorn .",
+    "(cd web && ls node_modules/vite)",
     "docker compose logs --tail 50 web",
     # bounded invocations of a server binary
     "vite build",
@@ -150,6 +151,7 @@ TRUE_POSITIVES = [
     "sudo -p echo uvicorn app:app",
     "echo npm run dev | sh",
     "./echo npm run dev",
+    "case $1 in\n  test ) npm run dev ;;\nesac",
     "docker compose run web npm run dev up -d",
     "docker compose up -d && docker compose --profile dev logs -f",
     "ssh -p 2222 host uvicorn app:app",

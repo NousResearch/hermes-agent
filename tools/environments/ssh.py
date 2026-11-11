@@ -113,14 +113,18 @@ class SSHEnvironment(BaseEnvironment):
             socket_key = f"{socket_key}:probe:{self._session_id}"
         _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
-        _ensure_ssh_available()
-        self._establish_connection()
+        self._sync_manager = None  # cleanup() reads it; set before anything below can raise
+        try:
+            _ensure_ssh_available()
+            self._establish_connection()
+        except BaseException:
+            if self._owns_control_dir:  # no instance survives to clean up this private fallback
+                shutil.rmtree(self.control_dir, ignore_errors=True)
+            raise
         if probe_only:
-            self._sync_manager = None
             return
         self._remote_home_detected = False
         self._remote_home = self._detect_remote_home()
-        self._sync_manager = None
         if sync_files:
             self._ensure_remote_dirs()
             self._sync_manager = FileSyncManager(

@@ -42,8 +42,16 @@ def test_every_candidate_leaves_room_for_the_openssh_listener(tmp_path, monkeypa
     assert len(os.fsencode(listener)) <= 103
 
 
-def _control_dir():
-    return ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True).control_dir
+@pytest.fixture
+def make_env():
+    """Keep each env alive until teardown: a dropped fallback env's ``__del__`` removes its dir."""
+    envs = []
+    def make():
+        envs.append(ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True))
+        return envs[-1]
+    yield make
+    for env in envs:
+        env.cleanup()
 
 
 def _mode(path):
@@ -53,7 +61,7 @@ def _mode(path):
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("planted", ["symlink", "foreign_owner", "plain_file"])
 def test_squatted_name_is_refused_and_backend_still_gets_a_private_dir(
-        shared_root, tmp_path, monkeypatch, planted):
+        shared_root, tmp_path, monkeypatch, make_env, planted):
     victim = tmp_path / "victim"
     victim.mkdir()
     if planted == "foreign_owner":
@@ -70,7 +78,7 @@ def test_squatted_name_is_refused_and_backend_still_gets_a_private_dir(
             path.mkdir()
             path.chmod(0o777)
 
-    control_dir = _control_dir()
+    control_dir = make_env().control_dir
 
     assert control_dir not in squatted and control_dir.parent == shared_root
     assert stat.S_ISDIR(os.lstat(control_dir).st_mode) and _mode(control_dir) == 0o700
@@ -94,22 +102,37 @@ def test_cleanup_removes_only_a_fallback_dir_it_created(shared_root):
 
 
 @pytest.mark.platforms("posix")
-def test_own_dir_left_open_by_an_older_version_is_tightened(shared_root):
+def test_failed_connection_does_not_leave_a_fallback_dir_behind(shared_root, monkeypatch):
+    for name in ("hermes-ssh", f"hermes-ssh-{os.getuid()}"):  # windows-footgun: ok — posix-only test
+        (shared_root / name).write_text("x", encoding="utf-8")  # squat both names: forces mkdtemp
+    def refuse(self):
+        raise ssh_mod.EnvironmentConnectionError("unreachable")
+    monkeypatch.setattr(ssh_mod.SSHEnvironment, "_establish_connection", refuse)
+
+    with pytest.raises(ssh_mod.EnvironmentConnectionError):
+        ssh_mod.SSHEnvironment(host="h", user="u")
+
+    assert sorted(p.name for p in shared_root.iterdir()) == sorted(
+        ("hermes-ssh", f"hermes-ssh-{os.getuid()}"))  # windows-footgun: ok
+
+
+@pytest.mark.platforms("posix")
+def test_own_dir_left_open_by_an_older_version_is_tightened(shared_root, make_env):
     ours = shared_root / f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — posix-only test
     ours.mkdir()
     ours.chmod(0o777)
 
-    assert _control_dir() == ours
+    assert make_env().control_dir == ours
     assert _mode(ours) == 0o700
 
 
 @pytest.mark.platforms("posix")
-def test_private_xdg_runtime_dir_is_preferred_over_the_shared_root(shared_root, tmp_path, monkeypatch):
+def test_private_xdg_runtime_dir_is_preferred_over_the_shared_root(shared_root, tmp_path, monkeypatch, make_env):
     xdg = tmp_path / "run-user"
     xdg.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
 
-    control_dir = _control_dir()
+    control_dir = make_env().control_dir
 
     assert control_dir == xdg / "hermes-ssh"
     assert _mode(control_dir) == 0o700

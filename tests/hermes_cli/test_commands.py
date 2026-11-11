@@ -422,8 +422,9 @@ class TestSubcommandCompletion:
             def close(self):
                 pass
         class FakeReader:
-            def list_sessions_rich(self, limit=25):
-                return fake_sessions
+            def list_sessions_rich(self, limit=25, search_query=None, **_):
+                needle = (search_query or "").lower()
+                return [x for x in fake_sessions if needle in x["title"].lower() or needle in x["id"]]
 
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: type("P", (), {"exists": lambda self: True, "__truediv__": lambda self, x: self})())
         monkeypatch.setattr("hermes_state.SessionDB", lambda db_path, read_only=True: FakeDB())

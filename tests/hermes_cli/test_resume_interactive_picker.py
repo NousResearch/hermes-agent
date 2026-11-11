@@ -236,10 +236,13 @@ class TestSessionsCompletions:
     @pytest.fixture(autouse=True)
     def fake_store(self, monkeypatch):
         sessions = [
-            {"id": "s1", "title": "Build Discord Bot", "last_active": 100, "message_count": 5},
-            {"id": "s2", "title": "Fix", "last_active": 200, "message_count": 2},
+            {"id": "s1", "title": "Build Discord Bot", "last_active": 100, "message_count": 5,
+             "git_repo_root": "/work/hermes"},
+            {"id": "s2", "title": "Fix", "last_active": 200, "message_count": 2, "cwd": "/work/other"},
             {"id": "s3", "title": "", "preview": "hello world", "last_active": 300, "message_count": 1},
         ]
+        self.list_calls = []
+        calls = self.list_calls
 
         class FakeDB:
             def session_lifecycle_statuses(self, ids):
@@ -249,8 +252,12 @@ class TestSessionsCompletions:
                 pass
 
         class FakeReader:
-            def list_sessions_rich(self, limit=25):
-                return sessions
+            """Applies the same title/id search the real SessionDB runs in SQL."""
+
+            def list_sessions_rich(self, **kwargs):
+                calls.append(kwargs)
+                needle = kwargs.get("search_query", "")
+                return [s for s in sessions if needle in s["title"].lower() or needle in s["id"]]
 
         path = type("P", (), {"exists": lambda self: True, "__truediv__": lambda self, x: self})()
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: path)
@@ -279,9 +286,31 @@ class TestSessionsCompletions:
 
         assert by_display["hello world"] == "s3"
 
-    def test_filter_matches_title_and_id(self):
+    def test_typed_text_is_searched_in_the_store_not_in_the_newest_page(self):
         assert [c.text for c in self._complete("/sessions discord")] == ['"Build Discord Bot"']
-        assert [c.text for c in self._complete("/sessions s2")] == ["Fix"]
+        assert self.list_calls[-1]["search_query"] == "discord"
+        assert self.list_calls[-1]["order_by_last_active"] is True
+
+    def test_id_prefix_is_searched(self):
+        assert [c.text for c in self._complete("/resume s2")] == ["Fix"]
 
     def test_already_quoted_query_does_not_double_quote(self):
-        assert [c.text for c in self._complete('/sessions "Build')] == ["Build Discord Bot"]
+        assert [c.text for c in self._complete('/sessions "build')] == ["Build Discord Bot"]
+        assert self.list_calls[-1]["search_query"] == "build"
+
+    @pytest.mark.parametrize("workspace", ["hermes", "/work/herm", "OTHER"])
+    def test_workspace_flag_matches_basename_or_path_substring(self, workspace):
+        texts = [c.text for c in self._complete(f"/resume --workspace {workspace}")]
+
+        assert texts == (['"Build Discord Bot"'] if workspace != "OTHER" else ["Fix"])
+
+    def test_workspace_flag_combines_with_the_query(self):
+        assert [c.text for c in self._complete("/sessions --workspace hermes discord")] == ['"Build Discord Bot"']
+        assert self._complete("/sessions --workspace other discord") == []
+        assert self.list_calls[-1]["search_query"] == "discord"
+
+    def test_workspace_flag_scans_past_the_default_page(self):
+        self._complete("/resume --workspace hermes")
+        self._complete("/resume ")
+
+        assert self.list_calls[0]["limit"] > self.list_calls[1]["limit"]

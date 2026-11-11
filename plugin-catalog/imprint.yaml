@@ -1,0 +1,36 @@
+name: imprint
+repo: https://github.com/Frazzlesprite/hermes-imprint
+sha: "f8409be7061a6e9a758f606eb0370f6fbce4c51a"
+subdir: ""
+description: Compile a week of Hermes activity into a cited, typeset book with an executive summary.
+maintainer: Frazzlesprite
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/compile.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/cover.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/chapter.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/colophon.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/executive.png
+  - https://raw.githubusercontent.com/Frazzlesprite/hermes-imprint/f8409be7061a6e9a758f606eb0370f6fbce4c51a/docs/shots/appendix.png
+capabilities:
+  provides_tools:
+    - imprint_compile
+    - imprint_preview
+    - imprint_status
+    - imprint_burn
+    - imprint_import
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_api_request
+    - pre_approval_request
+    - post_approval_response
+    - subagent_start
+    - subagent_stop
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

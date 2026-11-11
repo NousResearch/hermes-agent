@@ -1,0 +1,19 @@
+name: hermes-multiplayer
+title: Hermes Multiplayer
+description: >-
+  Multiplayer Hermes. Channels, DMs, threads and a shared team room where you,
+  up to four teammates, and each of your Hermes agents work in one place. No
+  server to host — or one small relay when teammates can't reach each other.
+repo: https://github.com/tyleramberry/herd
+sha: f2cc8ace6c41da8c80b059423678783294de031e
+tier: community
+category: desktop
+maintainer: tyleramberry
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/tyleramberry/herd#readme
+capabilities:
+  provides_tools: [herd_list_channels, herd_post, herd_read_channel, herd_set_status]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

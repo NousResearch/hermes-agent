@@ -182,3 +182,36 @@ async def test_final_edit_overflow_is_capped():
     assert len(sent) == cap - 1
     _assert_notice(*sent[-1])
     assert len(result.continuation_message_ids) == cap - 1
+
+
+
+@pytest.mark.asyncio
+async def test_a_capped_streamed_final_is_not_sent_again_by_the_gateway():
+    """The gateway cancels a consumer still delivering a huge final after its flush window, and the
+    cancel path's capped overflow edit IS the turn's delivery. It never matches the full final, and a
+    mismatch made the stale-finalize path send the same capped chunks a second time (16, not 8)."""
+    import asyncio
+    import contextlib
+
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+    from tests.waiting import async_wait_until
+
+    sent: list = []
+    adapter = _adapter(sent)
+    final = "<<head>> " + _huge_content()
+    consumer = GatewayStreamConsumer(adapter, "4242", config=StreamConsumerConfig(
+        cursor=" ▉", edit_interval=30.0, buffer_threshold=10**9))
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(final[:200])
+    await async_wait_until(lambda: sent, what="the first preview")
+    # The consumer had drained only part of the final when the flush window ran out.
+    consumer._accumulated = consumer._stream_ledger = final[:100_000]
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert len(sent) == adapter.MAX_SPLIT_MESSAGES  # the preview, then 6 continuations and the notice
+    assert "Response truncated" in sent[-1][0]
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches(final) is True
+    assert consumer.delivered_final_matches("another answer " + final) is False

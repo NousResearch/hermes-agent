@@ -1,6 +1,6 @@
 name: hermes-reliability
 repo: https://github.com/MadBonzz/hermes-reliability
-sha: 215d08d68243f67862d8215df73cfd39e569151c
+sha: 4db5b6b5f1a12c505b89efbf5dcc3b41ae0e829b
 title: Reliability Lab
 description: >-
   Architecture-aware reliability testing for agent repositories: discover real usage datasets, generate
@@ -17,7 +17,7 @@ requires_hermes: ">=0.21.5"
 version: "0.2.0"
 docs_url: https://github.com/MadBonzz/hermes-reliability#readme
 screenshots:
-  - https://raw.githubusercontent.com/MadBonzz/hermes-reliability/215d08d68243f67862d8215df73cfd39e569151c/docs/screenshots/regression-dashboard.png
+  - https://raw.githubusercontent.com/MadBonzz/hermes-reliability/4db5b6b5f1a12c505b89efbf5dcc3b41ae0e829b/docs/screenshots/regression-dashboard.png
 platforms:
   - linux
 known_issues:

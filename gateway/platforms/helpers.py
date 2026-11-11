@@ -4,15 +4,17 @@ compilation, and fence-aware markdown chunking."""
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, MutableMapping, Optional
+from typing import Any, Iterator, MutableMapping, Optional
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -204,6 +206,14 @@ def clarify_text_with_choices(head: str, choices, *, limit: int, max_label_cols:
     room = max(limit - 2 - len_fn(head), limit // 2)
     listed = numbered_clarify_choices(choices, max_label_cols=0, escape=escape, max_chars=room, len_fn=len_fn)
     return f"{_clip_text(head, max(0, limit - 2 - len_fn(listed)), len_fn)}\n\n{listed}", True
+
+
+def prompt_id_counter() -> Iterator[int]:
+    """Ids for buttons a chat keeps after a restart (approval cards, confirmations, pickers).
+
+    Starts at a random point instead of 1: an old card still visible after a restart would
+    otherwise carry the same id as the first new card and answer it."""
+    return itertools.count(secrets.randbelow(10**12) + 1)
 
 
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:

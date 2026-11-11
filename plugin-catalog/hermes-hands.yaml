@@ -1,0 +1,50 @@
+name: hermes-hands
+title: Hermes Hands
+repo: https://github.com/Ridwannurudeen/hermes-hands-plugin
+sha: "7e078a50d3a09066aa3e95c3c1a86a9ec221996b"
+subdir: hermes-hands
+description: >-
+  Run Hermes terminal and file tools on a paired Windows or Linux computer while Hermes stays on a
+  Linux or WSL gateway. The device agent connects out over HTTPS, signs with Ed25519 keys pinned at
+  pairing, and fails closed when it is offline, revoked or unreachable. Optional witness mode is
+  started by the person at the computer: local consent, every command shown on their screen before
+  it runs, a consent question for each screenshot, a stop key, a 30 minute limit and signed
+  receipts. In a witness session every tool call that reaches the device needs the helper's
+  approval, and shell composition, scripts, common startup persistence and other tools are blocked.
+  Disclosure: runs shell commands and file operations on the device as its logged in user (not a
+  sandbox); a compromised gateway or helper account can still command paired devices; the device
+  agent is a separate Python package (hermes-hands), installed with pipx from this repository at the
+  v0.2.0 tag, that keeps its private key in the OS keyring or an owner only file; command text, which can hold sensitive arguments, is kept in local receipts;
+  screenshots are cached on the gateway and go to the configured vision model and chat platform;
+  the checkup probes 1.1.1.1, 8.8.8.8 and 9.9.9.9 on port 443 and resolves example.com; optional H
+  help puts device text into a user-role model turn; no telemetry.
+maintainer: Ridwan Nurudeen
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Ridwannurudeen/hermes-hands-plugin/tree/7e078a50d3a09066aa3e95c3c1a86a9ec221996b/hermes-hands#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/Ridwannurudeen/hermes-hands-plugin/7e078a50d3a09066aa3e95c3c1a86a9ec221996b/hermes-hands/assets/banner.png
+platforms:
+  - linux
+known_issues:
+  - Tested on Hermes 0.23.0 only. Some Hermes internals are imported because no public seam exists yet; a later Hermes release can break them.
+  - The gateway runs on Linux or WSL. Native Windows gateways and macOS devices are not supported.
+  - Screenshots need a desktop session on the device; a headless Linux machine has no screen to capture. In witness mode each screenshot also needs the person's yes.
+  - Witness mode needs an interactive terminal. It cannot run as a service or under pythonw.
+  - In a witness session, yolo mode, approvals turned off, or any other pre_tool_call hook or tool_execution middleware blocks every device tool. Such hooks come from another plugin (bundled security-guidance and disk-cleanup register one), an allowed pre_tool_call shell hook under hooks in config.yaml, or a hooks.outbound webhook whose events include pre_tool_call. For the session, run hermes plugins disable <name>, or remove the pre_tool_call hook or webhook event (hermes hooks list shows them), and restart Hermes, or turn approvals back on.
+  - Session and Always on a witness approval do not carry over to the next step. Always leaves an unused command_allowlist entry that the owner can delete.
+  - An approval text longer than 300 characters is refused, not shortened. Short ~/ paths keep requests under the limit.
+  - Device help text is quoted and capped at 200 characters but enters a user-role model turn, so it is a prompt-injection surface.
+  - Common startup persistence (startup folders, autostart, LaunchAgents, shell profiles, cron, Run keys, scheduled tasks) is blocked only in witness sessions. Other logon methods, such as sc create, are not blocked and reach the helper's approval.
+  - On Linux, a process that moves to a new session or process group can outlive a stop or revoke. If the small watcher process the agent starts for each job group has died or stalled for more than a second, a process started late by a background command can also outlive Stop. Windows scheduled task logon startup and Linux screenshots were not tested live.
+capabilities:
+  provides_tools:
+    - hands_screenshot
+    - hands_devices
+    - hands_checkup
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware:
+    - tool_execution
+  requires_env: []

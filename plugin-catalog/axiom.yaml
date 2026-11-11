@@ -1,0 +1,11 @@
+name: axiom
+repo: https://github.com/arjunbagga-xyz/hermes-axiom
+sha: ca2f26aa44647f1e7c053c97b04634304194e49c
+title: Axiom
+description: Continuous neural-symbolic conservation-law verifier and SMT certificate
+  generator using Z3 and dReal.
+maintainer: arjunbagga-xyz
+tier: community
+category: tools
+version: 0.1.0
+docs_url: https://github.com/arjunbagga-xyz/hermes-axiom#readme

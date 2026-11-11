@@ -5,7 +5,7 @@ description: "Dynamic 4-axis mood engine (energy, warmth, patience, focus) with 
 maintainer: NiceStackApple
 tier: community
 category: general
-requires_hermes: ">=0.20.0"
+requires_hermes: ">=0.20.1"
 docs_url: https://github.com/NiceStackApple/hermes-mood-engine#readme
 version: "1.1.0"
 capabilities:

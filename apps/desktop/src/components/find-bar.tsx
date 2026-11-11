@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { appViewForPath, isOverlayView } from '@/app/routes'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
@@ -354,16 +355,7 @@ export function FindBar() {
         </button>
       </Tip>
 
-      <button
-        aria-label={t.common.close}
-        className="flex h-7 w-7 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
-        onClick={closeFindBar}
-        type="button"
-      >
-        <svg height="12" viewBox="0 0 12 12" width="12">
-          <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" />
-        </svg>
-      </button>
+      <SurfaceCloseButton onClick={closeFindBar} />
     </div>
   )
 }

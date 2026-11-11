@@ -3,8 +3,7 @@ import './butterbar.css'
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, useEffect, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { useI18n } from '@/i18n'
 import { $butterbarItems, type ButterbarItem, dismissButterbar, isButterbarCloseable } from '@/store/butterbar'
 
@@ -106,15 +105,10 @@ function ButterbarClose({ item }: { item: ButterbarItem }) {
   const { t } = useI18n()
 
   return (
-    <Button
+    <SurfaceCloseButton
       aria-label={t.common.close}
-      className="-mr-1 size-5 text-(--bb-fg) hover:bg-(--bb-hover) hover:text-(--bb-link)"
+      className="text-(--bb-fg) hover:bg-(--bb-hover) hover:text-(--bb-link)"
       onClick={() => dismissButterbar(item)}
-      size="icon-xs"
-      type="button"
-      variant="ghost"
-    >
-      <Codicon name="close" size="0.75rem" />
-    </Button>
+    />
   )
 }

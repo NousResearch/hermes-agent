@@ -1,10 +1,8 @@
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
-import { Button } from '@/components/ui/button'
 import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
-import { useI18n } from '@/i18n'
-import { X } from '@/lib/icons'
+import { SurfaceCloseButton, SurfaceCloseHeader } from '@/components/ui/surface-close'
 import { cn } from '@/lib/utils'
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -55,38 +53,22 @@ const DIALOG_BANNER_TONES: Record<DialogBannerTone, string> = {
   info: 'bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_30%)] text-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_60%)] dark:bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_20%)] dark:text-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_60%)]'
 }
 
-// Radix focuses the first focusable element inside Dialog.Content on open. In
-// most dialogs that's a real input and the default autofocus is exactly what
-// we want, so it's opt-in rather than a shared default here. In dialogs with
-// no input (e.g. the updates overlay's idle/error views), the first focusable
-// element ends up being the close button, and since Tip shows on focus as well
-// as hover, that autofocus makes the "Close" tip appear immediately with no
-// pointer ever near the button. Dialogs like that should pass this in
-// explicitly as `onOpenAutoFocus={preventCloseButtonAutoFocus}`. Note it leaves
-// focus wherever it was — outside the dialog — so a dialog that answers keys
-// (Enter to confirm) must focus something of its own instead.
+// Opt in only for dialogs without an input; otherwise Radix's autofocus is useful.
 export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
-// The dialog's top-right X. Radix Close routes through the modal's
-// onOpenChange, same path as Escape. Exported for bespoke Radix shells (the
-// boot-failure overlay) that can't use DialogContent but want the same X.
+// Radix owns dismissal; the shared header reserves the entire close row.
 function DialogCloseButton() {
-  const { t } = useI18n()
-
   return (
-    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-      <Button
-        aria-label={t.common.close}
-        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-        size="icon-xs"
-        variant="ghost"
-      >
-        <X className="size-4" />
-        <span className="sr-only">{t.common.close}</span>
-      </Button>
-    </DialogPrimitive.Close>
+    <SurfaceCloseHeader
+      className="order-first"
+      close={
+        <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+          <SurfaceCloseButton />
+        </DialogPrimitive.Close>
+      }
+    />
   )
 }
 
@@ -128,18 +110,8 @@ function DialogContent({
 }) {
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
-  // Publish the dialog's content node so popovers (Select / Popover /
-  // DropdownMenu) opened inside it portal INTO the dialog instead of
-  // document.body. That keeps them as DOM descendants — focus never leaves the
-  // dialog, so dismissing a dropdown (or clicking another field) no longer
-  // trips the Dialog's outside-interaction/focus-out close. See
-  // dialog-portal-context.ts. State (not just a ref) so consumers re-render once
-  // the node mounts.
+  // Popovers portal into the dialog so focus stays inside when they dismiss.
   const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
-
-  // Opened from inside another dialog (e.g. an image lightbox over a detail
-  // modal): both layers step above the parent so its scrim dims the parent too.
-  // Shared z tokens alone would slot this backdrop under the parent's content.
   const nested = React.useContext(DialogPortalContainerContext) !== null
 
   const overlay = (
@@ -147,33 +119,19 @@ function DialogContent({
   )
 
   const layerClass = nested && 'z-[calc(var(--z-modal)+2)]'
-
-  // No default here — Radix's normal autofocus (first focusable element, often
-  // an input) is what most dialogs want. Dialogs with no input should pass
-  // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
-
-  // No tip on the X — the glyph is the label (DialogCloseButton keeps aria-label / sr-only).
   const closeButton = showCloseButton ? <DialogCloseButton /> : null
 
-  // With a banner, the border can't live on the scroll/clip box (it would draw a
-  // line around the banner too). The white body keeps its own bottom radius and
-  // sits over the tinted footer; the outer shell only clips the banner to the
-  // dialog's rounded bottom edge.
+  // With a banner the border lives on the body, not around the tinted footer.
   if (banner) {
     return (
       <DialogPortal>
         {overlay}
         <DialogPrimitive.Content
           className={cn(
-            // The same split as the plain variant. The shell must not clip,
-            // because it crops the popovers that portal into it. The banner
-            // below has its own `overflow-hidden`, which rounds its corners.
             'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             widthClass,
             layerClass,
             className,
-            // Callers often pass `gap-*` for the no-banner grid layout — suppress
-            // it here so the banner can tuck under the body's rounded bottom edge.
             'gap-0'
           )}
           data-slot="dialog-content"
@@ -182,21 +140,19 @@ function DialogContent({
           {...props}
         >
           <DialogPortalContainerContext.Provider value={contentNode}>
-            {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
-            <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
+            <div className="relative z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
               <div
                 className={cn(
-                  'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto p-4',
+                  'grid max-h-[calc(85vh-5rem)] min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto p-4',
                   bodyClassName
                 )}
               >
                 {children}
               </div>
+              {closeButton}
             </div>
             <div
               className={cn(
-                // Overlap by one corner radius so the white bottom lobes read clearly
-                // over the tint instead of meeting it on a straight seam.
                 'relative z-0 -mt-[var(--radius-xl)] overflow-hidden rounded-b-xl px-4 pb-2.5 pt-[calc(var(--radius-xl)+0.625rem)] text-center text-[length:var(--conversation-tool-font-size)] leading-relaxed shadow-[inset_0_7px_7px_-4px_rgb(0_0_0/0.28)]',
                 DIALOG_BANNER_TONES[bannerTone]
               )}
@@ -206,7 +162,6 @@ function DialogContent({
               {banner}
             </div>
             {chrome}
-            {closeButton}
           </DialogPortalContainerContext.Provider>
         </DialogPrimitive.Content>
       </DialogPortal>
@@ -218,12 +173,7 @@ function DialogContent({
       {overlay}
       <DialogPrimitive.Content
         className={cn(
-          // The SHELL: position, size, and skin. It has no overflow of its own,
-          // and that is deliberate. It is the portal container for the popovers
-          // that open inside the dialog (see DialogPortalContainerContext), and
-          // a clipping ancestor crops them. The body box below owns the scroll,
-          // so a tall dialog scrolls and a Select or Popover can still paint
-          // past the edge of that box.
+          // The shell cannot clip: it also hosts portaled popovers. Only the body scrolls.
           'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           widthClass,
           layerClass,
@@ -235,16 +185,9 @@ function DialogContent({
         {...props}
       >
         <DialogPortalContainerContext.Provider value={contentNode}>
-          {/* The BODY: layout and scroll. `min-h-0` lets this box shrink inside
-              the max-height of the shell. The overflow then scrolls here
-              instead of pushing the shell past the viewport. The explicit
-              `minmax(0,1fr)` column keeps the implicit grid track from sizing
-              to unbreakable content (a long URL in a nowrap <code>), which
-              otherwise widens the track past the dialog and grows a horizontal
-              scrollbar that clips the content instead of truncating it. */}
           <div
             className={cn(
-              'grid min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto rounded-[inherit] p-4',
+              'grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto rounded-[inherit] p-4',
               bodyClassName
             )}
           >
@@ -261,7 +204,7 @@ function DialogContent({
 function DialogHeader({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
-      className={cn('flex flex-col gap-1 text-center sm:text-left', className)}
+      className={cn('flex flex-col gap-1 text-center sm:text-start', className)}
       data-slot="dialog-header"
       {...props}
     />
@@ -284,9 +227,7 @@ function DialogTitle({
   children,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Title> & {
-  // Pass an icon (from `@/lib/icons`) to get the canonical dialog-header glyph: a plain
-  // primary-tinted icon inline with the title (no bg chip / ring). This is the
-  // single source of truth for dialog header icons — don't hand-roll wrappers.
+  // Canonical dialog-header glyph, plain and primary-tinted.
   icon?: React.ComponentType<{ className?: string }>
 }) {
   return (

@@ -9,7 +9,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { OVERLAY_TOP_CLEARANCE, OverlayView } from './overlay-view'
+import { OverlayView } from './overlay-view'
 
 // Overlay "panel" primitive — the centered, capped card + framed chrome lifted
 // straight from the trace / agents overlay so every non-settings overlay (cron,
@@ -47,9 +47,7 @@ export function Panel({
   return (
     <OverlayView
       closeLabel={closeLabel}
-      // Header title rides up next to the floating close button — see
-      // OVERLAY_TOP_CLEARANCE, the shared clearance every overlay column uses.
-      contentClassName={cn('flex h-full min-h-0 flex-col px-4 pb-4 sm:px-5', OVERLAY_TOP_CLEARANCE, contentClassName)}
+      contentClassName={cn('flex min-h-0 flex-col px-4 pb-4 sm:px-5', contentClassName)}
       onClose={onClose}
       rootClassName={cn('flex h-full w-full flex-col', className)}
     >
@@ -67,11 +65,7 @@ interface PanelHeaderProps {
 
 export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
   return (
-    // The overlay's close (X) is absolutely positioned at right-3 and costs no
-    // layout space, so header actions would otherwise slide right up against it.
-    // Reserve clearance (button footprint from the card edge + a small gap) on
-    // the right whenever actions are present.
-    <header className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
+    <header className="mb-3 flex shrink-0 flex-wrap items-start justify-between gap-3">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
@@ -189,7 +183,7 @@ export function PanelListRow({
       data-panel-row={rowKey}
     >
       <RowButton
-        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 pr-1 text-left"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md ps-2 pe-1 text-start"
         onClick={onSelect}
       >
         {lead ??
@@ -200,13 +194,13 @@ export function PanelListRow({
           ) : null)}
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/85">{title}</span>
       </RowButton>
-      {meta ? <span className="shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
+      {meta ? <span className="shrink-0 pe-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
       {menuItems ? (
-        <div className="shrink-0 pr-1">
+        <div className="shrink-0 pe-1">
           <PanelRowMenu items={menuItems} label={menuLabel} />
         </div>
       ) : menu ? (
-        <div className="shrink-0 pr-1">{menu}</div>
+        <div className="shrink-0 pe-1">{menu}</div>
       ) : null}
     </div>
   )
@@ -279,7 +273,7 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
 export function PanelDetail({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain', className)}>
-      <div className="space-y-4 pb-6 pl-1 pr-2">{children}</div>
+      <div className="space-y-4 pb-6 ps-1 pe-2">{children}</div>
     </div>
   )
 }

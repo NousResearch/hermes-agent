@@ -147,16 +147,16 @@ renderer and Electron's first window paint.
 
 ## Stroke & color tokens
 
-| Token | Use |
-| --- | --- |
-| `--ui-stroke-primary…quaternary` | hairlines, in descending strength |
-| `--ui-stroke-tertiary` | the default in-panel divider / list hairline — and every bordered surface in the transcript |
-| `--stroke-nous` | the overlay hairline (pairs with `shadow-nous`) |
-| `--ui-text-primary / -secondary / -tertiary` | text hierarchy |
-| `--ui-bg-quaternary` | soft control fill (secondary button) |
-| `--ui-widget-surface-background` | fill for inline chat widgets (`WIDGET_SHELL_CLASS`) |
-| `--chrome-action-hover` | hover fill for quiet controls |
-| `--theme-primary`, `--ui-accent` | brand/accent |
+| Token                                        | Use                                                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `--ui-stroke-primary…quaternary`             | hairlines, in descending strength                                                           |
+| `--ui-stroke-tertiary`                       | the default in-panel divider / list hairline — and every bordered surface in the transcript |
+| `--stroke-nous`                              | the overlay hairline (pairs with `shadow-nous`)                                             |
+| `--ui-text-primary / -secondary / -tertiary` | text hierarchy                                                                              |
+| `--ui-bg-quaternary`                         | soft control fill (secondary button)                                                        |
+| `--ui-widget-surface-background`             | fill for inline chat widgets (`WIDGET_SHELL_CLASS`)                                         |
+| `--chrome-action-hover`                      | hover fill for quiet controls                                                               |
+| `--theme-primary`, `--ui-accent`             | brand/accent                                                                                |
 
 Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The two tiles in
 `BrandMark` (white in light mode, `#0d1117` in dark) are the sanctioned literals
@@ -231,6 +231,50 @@ Notes:
 - Polymorph with `asChild` when the button must render as a link/Slot.
 
 ## Badges — one component
+## Shared surface chrome
+
+Shared toast content uses logical padding/margins; its explicitly named
+`bottom-right` placement remains physical. Split buttons join at logical edges
+and reuse the localized alternate-action label, without per-screen RTL overrides.
+Select indicators use logical end positioning;
+popover arrow rotations and centered dialog transforms remain physical geometry.
+
+### Surface dismissal — reserved inline-end slot
+
+`SurfaceCloseButton` (`src/components/ui/surface-close.tsx`) is the single
+surface-dismiss glyph and hit target (24px, localized accessible label, no tip).
+This is separate from the tab-specific `PaneTab` contract. Overlay, dialog,
+sheet, drawer, dismissible popover, toast and panel-header closes must compose
+this primitive, never draw their own X or absolutely position it over content.
+
+`SurfaceCloseHeader` reserves an in-flow `minmax(0,1fr) auto` header row above
+the scrolling body. The last grid slot is inline-end: left in RTL, right in
+LTR. Header search/badges/actions wrap in the first slot and cannot occupy the
+close slot. Even unbroken action labels are bounded and wrap in that track.
+`OverlayView`, `DialogContent`, `SheetContent`, onboarding and
+bespoke boot recovery chrome share it. Do not add per-screen close padding,
+physical corner offsets, negative margins, or floating search-pill patches.
+Compact command/session searches and toast/panel rows may use their existing
+in-flow trailing flex/grid slot, with a shrinkable content track and a
+non-shrinking close target. Radix still owns focus, Escape and dismissal.
+Dialogs without a dismiss X (mandatory prompts/explicit cancel flows) retain
+that behavior. `showCloseButton={false}` is not a positioning workaround.
+
+Geometry check: from `apps/desktop`, run
+`pnpm exec node --test scripts/overlay-geometry.mjs` (installed Playwright
+Chromium, or `GEOMETRY_BROWSER` pointing to a Chromium executable). It renders
+production primitives and compiled Desktop CSS at 400/720/960/1440px in both
+directions, checks the inline-end close slot and interactive-element rectangle
+intersections, and writes measurements to the configured temporary directory.
+It uses Chromium's CLI, not CDP, and does not touch the running app.
+
+`OverlaySplitLayout`/`OverlayMain` must shrink within their grid track in either
+direction. `SettingsContent` owns bounded prose wrapping (`overflow-wrap:
+anywhere`), including unbroken model/provider IDs and URLs. Never hide prose
+overflow with a per-page clip or physical margin correction. The geometry
+fixture also asserts prose stays in its column without horizontal overflow,
+and both provider/model controls retain a measurable, contained hit target.
+
 
 `src/components/ui/badge.tsx`. Variants: `default` (tinted primary), `muted`,
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
@@ -630,3 +674,10 @@ The detailed state contract lives in the scoped
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
 - [ ] Touched a primitive, token, or variant? Its named-contract entry in this
       file is updated in the same change.
+- The shared `Zoomable` viewer reuses common/desktop catalog labels for its
+  trigger and toolbar; callers supply only content-specific labels.
+- Bundled layout names come from `zones.presetNames` at shared registration and
+  refresh on locale changes; user/plugin names remain untouched. Messaging and
+  the gateway popover share `platformStatusLabel` and the messaging state catalog.
+- Arabic catalogs retain Hermes, Terminal/Terminals, Tokens, Webhooks, MCP, API,
+  GPU, RAM, SSH, JSON, GPT-Live and Nous in English; المهارات and الذاكرة stay Arabic.

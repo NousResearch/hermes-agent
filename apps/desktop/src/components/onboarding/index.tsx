@@ -4,9 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
+import { SurfaceCloseButton, SurfaceCloseHeader } from '@/components/ui/surface-close'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
@@ -440,18 +440,10 @@ export function DesktopOnboardingOverlay({
             : 'translate-y-0 scale-100 opacity-100 blur-0'
         )}
       >
-        {showPicker || !ready ? <Header /> : null}
         {onboarding.manual ? (
-          <Button
-            aria-label={t.common.close}
-            className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-            onClick={() => closeManualOnboarding()}
-            size="icon-sm"
-            variant="ghost"
-          >
-            <Codicon name="close" size="1rem" />
-          </Button>
+          <SurfaceCloseHeader close={<SurfaceCloseButton onClick={() => closeManualOnboarding()} />} />
         ) : null}
+        {showPicker || !ready ? <Header /> : null}
         <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready && showPicker && !freeTierIntro && !onboarding.manual ? <FreeTierSetupNotice ctx={ctx} /> : null}

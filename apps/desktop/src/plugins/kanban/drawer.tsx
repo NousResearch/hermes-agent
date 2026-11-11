@@ -972,7 +972,6 @@ export function TaskDrawer({
         aria-describedby={undefined}
         bodyClassName="flex max-h-[min(84vh,54rem)] flex-col gap-0 overflow-hidden p-0"
         className="w-[min(62rem,94vw)] max-w-none"
-        showCloseButton={false}
       >
         <header className="flex flex-col gap-2 px-5 pt-4 pb-3">
           <div className="flex items-center gap-2">
@@ -1028,9 +1027,6 @@ export function TaskDrawer({
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
-              <Button aria-label={k.close} onClick={onClose} size="icon-xs" variant="ghost">
-                <Codicon name="close" />
-              </Button>
             </div>
           </div>
           <DialogTitle className="leading-snug" data-selectable-text="true">

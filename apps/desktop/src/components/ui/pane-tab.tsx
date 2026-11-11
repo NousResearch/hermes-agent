@@ -13,16 +13,14 @@ export const PANE_TAB_STRIP_LINE_LEFT = 'shadow-[inset_1px_0_0_var(--ui-stroke-t
 export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke-tertiary)]'
 
 // Surface tokens become transparent under glass; the body owns the tint.
-// The close-button fade masks the label, so it needs no second surface fill.
 const TAB =
   'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag] focus-visible:z-10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--ui-accent)'
 
 // Full height: with the strip's rule removed there is no last-pixel row to
 // leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
-const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
+const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-s not-first:border-s-(--ui-stroke-quaternary)'
 
-// A closeable tab's floor keeps short labels left of the close button.
-// A floor, not padding — a tab already wider than it pays nothing.
+// Keep a title runway even at the smallest closeable width.
 const TAB_CLOSEABLE = 'min-w-13'
 
 const TAB_VERTICAL =
@@ -53,8 +51,8 @@ interface PaneTabProps extends React.ComponentProps<'div'> {
   dirty?: boolean
   /** Keyboard activation is separate from pointerdown so drag/tap routing stays intact. */
   onActivate?: () => void
-  /** Close verb. Horizontal tabs reveal a hover ✕ over the label's masked
-   *  right edge; Delete, middle-click and ⌘-click also close.
+  /** Close verb. Horizontal tabs reserve an inline-start hover/focus ✕ slot;
+   *  Delete, middle-click and ⌘-click also close.
    *  Vertical rails omit the chip ✕ but keep those gestures.
    *  Omit `onClose` to make a tab uncloseable. */
   onClose?: () => void
@@ -184,8 +182,35 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       {...props}
       data-slot="pane-tab"
     >
+      {onClose && !vertical && (
+        <button
+          aria-label={translateNow('common.close')}
+          className="ms-1 me-1 grid size-6 shrink-0 cursor-pointer place-items-center bg-transparent text-(--ui-text-tertiary) opacity-0 transition-opacity hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--ui-accent) group-hover/tab:opacity-100 group-focus-within/tab:opacity-100"
+          data-slot="pane-tab-close"
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            onClose()
+          }}
+          onPointerDown={event => {
+            // Claim a plain left press so the shell can't also activate or
+            // drag the tab. Middle/⌘ presses bubble on purpose — the tab's
+            // own close gestures already route them.
+            if (event.button === 0 && !isMetaClose(event)) {
+              event.stopPropagation()
+            }
+          }}
+          tabIndex={-1}
+          type="button"
+        >
+          <Codicon name="close" size="0.6875rem" />
+        </button>
+      )}
       <div
-        className={cn('pane-tab-content flex h-full min-w-0 max-w-full flex-1 items-center', vertical && 'contents')}
+        className={cn(
+          'pane-tab-content flex h-full min-w-0 max-w-full flex-1 items-center gap-1 overflow-hidden px-2',
+          vertical && 'contents'
+        )}
       >
         {children}
       </div>
@@ -193,38 +218,12 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         <span
           aria-hidden
           className={cn(
-            'pointer-events-none absolute grid size-4 place-items-center group-hover/tab:group-data-[closeable]/tab:opacity-0',
-            vertical ? 'bottom-1.5 left-1/2 -translate-x-1/2' : 'right-1.5 top-1/2 -translate-y-1/2'
+            'pointer-events-none grid size-4 shrink-0 place-items-center',
+            vertical ? 'absolute bottom-1.5 left-1/2 -translate-x-1/2' : 'me-1.5'
           )}
+          data-slot="pane-tab-dirty"
         >
           <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
-        </span>
-      )}
-      {onClose && !vertical && (
-        // Mask the content beneath the close button instead of painting over it.
-        // Geometry stays fixed; the same fade works on solid and glass surfaces.
-        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">
-          <button
-            aria-label={translateNow('common.close')}
-            className="grid w-(--pane-tab-close-width) cursor-pointer place-items-center bg-transparent text-(--ui-text-tertiary) outline-none hover:text-foreground"
-            onClick={event => {
-              event.preventDefault()
-              event.stopPropagation()
-              onClose()
-            }}
-            onPointerDown={event => {
-              // Claim a plain left press so the shell can't also activate or
-              // drag the tab. Middle/⌘ presses bubble on purpose — the tab's
-              // own close gestures already route them.
-              if (event.button === 0 && !isMetaClose(event)) {
-                event.stopPropagation()
-              }
-            }}
-            tabIndex={-1}
-            type="button"
-          >
-            <Codicon name="close" size="0.6875rem" />
-          </button>
         </span>
       )}
     </div>
@@ -237,9 +236,8 @@ interface PaneTabLabelProps extends React.ComponentProps<'button'> {
   as?: 'button' | 'span'
 }
 
-/** Truncating label inside a `PaneTab`. `className` merges into the text span
- *  (e.g. `normal-case tracking-normal` for filenames). On a closeable tab the
- *  text clips instead of ellipsizing, so the hover mask can fade its right edge. */
+/** Isolate title direction so ellipsis follows the title, not the UI locale.
+ *  Preserve authored case on closeable, fixed and vertical tabs alike. */
 export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(function PaneTabLabel(
   { as = 'span', className, children, ...props },
   ref
@@ -248,18 +246,16 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
 
   return (
     <Comp
-      className="flex h-full min-w-0 max-w-full items-center overflow-hidden px-2 text-left outline-none group-data-[vertical]/tab:h-auto group-data-[vertical]/tab:w-full group-data-[vertical]/tab:justify-center group-data-[vertical]/tab:py-2"
+      className="flex h-full min-w-0 max-w-full items-center overflow-hidden text-start outline-none group-data-[vertical]/tab:h-auto group-data-[vertical]/tab:w-full group-data-[vertical]/tab:justify-center group-data-[vertical]/tab:px-2 group-data-[vertical]/tab:py-2"
       ref={ref}
       {...props}
     >
-      <span
-        className={cn(
-          'block min-w-0 truncate font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
-          className
-        )}
+      <bdi
+        className={cn('block min-w-0 truncate font-medium normal-case tracking-normal text-start', className)}
+        dir="auto"
       >
         {children}
-      </span>
+      </bdi>
     </Comp>
   )
 })
@@ -269,7 +265,7 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
   children: React.ReactNode
   /** Ref on the scroller itself, for `useActiveTabVisible`. */
   listRef?: React.Ref<HTMLDivElement>
-  /** Non-scrolling trailing chrome pinned to the right (the minimize chevron). */
+  /** Non-scrolling trailing chrome pinned to inline-end (the minimize chevron). */
   trailing?: React.ReactNode
   /** Top-edge panel header shares the native window-control band. */
   titlebar?: boolean
@@ -303,13 +299,13 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
     >
       <div
         aria-orientation="horizontal"
-        className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-w-0 flex-1 gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         ref={listRef}
         role="tablist"
       >
         {children}
       </div>
-      {trailing}
+      {trailing && <div className="flex shrink-0 items-center gap-1 px-1">{trailing}</div>}
     </div>
   )
 })

@@ -20,6 +20,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
@@ -292,9 +293,7 @@ export function PreviewBrowserBar({
       {/* The last glyph is the way OUT: a Browser that filled the layout has
           no strip ✕ in reach, and the only other close is asking the agent
           (#92500). Same verb the tab carries — the pane routes it. */}
-      {onClose && (
-        <PaneStripGlyph icon={<Codicon name="close" size="0.8125rem" />} label={t.common.close} onSelect={onClose} />
-      )}
+      {onClose && <SurfaceCloseButton onClick={onClose} />}
     </div>
   )
 }

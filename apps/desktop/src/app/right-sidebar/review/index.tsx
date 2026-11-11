@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DiffCount } from '@/components/ui/diff-count'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
@@ -137,9 +138,7 @@ export function ReviewPane() {
               <Codicon name="refresh" size="0.8125rem" spinning={loading} />
             </Button>
           </Tip>
-          <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
-            <Codicon name="close" size="0.8125rem" />
-          </Button>
+          <SurfaceCloseButton aria-label={c.close} onClick={closeReview} />
         </RightSidebarSectionHeader>
       )}
 
@@ -188,15 +187,7 @@ export function ReviewPane() {
                 </Button>
               </Tip>
             )}
-            <Button
-              aria-label={c.close}
-              className={ACTION_BTN}
-              onClick={clearReviewSelection}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name="close" size="0.8rem" />
-            </Button>
+            <SurfaceCloseButton aria-label={c.close} onClick={clearReviewSelection} />
           </div>
           <div className="min-h-0 flex-1 overflow-auto px-1 pb-1">
             {diffLoading ? (

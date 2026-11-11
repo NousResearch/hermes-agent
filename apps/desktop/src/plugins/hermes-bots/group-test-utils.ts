@@ -456,6 +456,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
   const { Textarea } = await import('@/components/ui/textarea')
+  const { SurfaceCloseButton } = await import('@/components/ui/surface-close')
   const { cn } = await import('@/lib/utils')
   const { randomUuid } = await import('@hermes/shared')
   const { LruCache } = await import('@/lib/lru-cache')
@@ -466,6 +467,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
 
   return {
     Textarea,
+    SurfaceCloseButton,
     ContextMenu,
     ContextMenuContent,
     ContextMenuItem,

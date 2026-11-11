@@ -7,7 +7,7 @@ import { useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { LAYOUTS_AREA } from '@/components/pane-shell/tree/presets'
-import { Codicon } from '@/components/ui/codicon'
+import { SurfaceCloseButton } from '@/components/ui/surface-close'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { connectorText, recordOf } from '@/lib/connector-tools'
@@ -148,14 +148,7 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
     <div className={cn(SHELL_CLASS, 'grid gap-2')} data-theme-picker={picker}>
       <div className="flex items-center justify-between gap-2">
         <span className={CARD_LABEL_CLASS}>{copy[picker]}</span>
-        <button
-          aria-label={copy.noPick}
-          className="grid size-6 place-items-center rounded-md text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          onClick={() => cancelThemePick(sessionId)}
-          type="button"
-        >
-          <Codicon name="close" size="0.8rem" />
-        </button>
+        <SurfaceCloseButton aria-label={copy.noPick} onClick={() => cancelThemePick(sessionId)} />
       </div>
       {picker === 'accent' ? (
         <AccentPickerCard

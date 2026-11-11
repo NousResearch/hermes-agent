@@ -157,7 +157,7 @@ describe('Zoomable overlay fit', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
     expect(content.style.transform).not.toBe(`translate(0px, 0px) scale(${936 / 4758})`)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reset zoom' }))
     expect(content.style.transform).toBe(`translate(0px, 0px) scale(${936 / 4758})`)
 
     // After reset the view is the fitted one again, so a later geometry

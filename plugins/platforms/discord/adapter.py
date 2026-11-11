@@ -1159,6 +1159,7 @@ from plugins.platforms.discord.adapter_config_readers import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild,
     _resolve_exec_approval_admin_gate)
 from plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
+from plugins.platforms.discord.adapter_component_auth import opener_refusal
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -6347,8 +6348,11 @@ def _define_discord_view_classes() -> None:
             if not self._check_auth(interaction):
                 await interaction.response.send_message(unauth_msg, ephemeral=True)
                 return False
-            if refusal and (requester := refusal(getattr(interaction.user, "id", ""))):
-                await interaction.response.send_message(refusal_text(requester), ephemeral=True)
+            denial = opener_refusal(self, interaction)
+            if denial is None and refusal and (requester := refusal(getattr(interaction.user, "id", ""))):
+                denial = refusal_text(requester)
+            if denial is not None:  # someone else's card or prompt: it stays open for its owner
+                await interaction.response.send_message(denial, ephemeral=True)
                 return False
             return True
 
@@ -6464,6 +6468,8 @@ def _define_discord_view_classes() -> None:
     class UpdatePromptView(_HermesView):
         """Yes/No buttons for ``hermes update`` prompts; the answer is written to
         ``.update_response`` for the detached update process to pick up."""
+
+        is_update_prompt = True  # opener_refusal binds it to the /update sender
 
         def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
@@ -6716,8 +6722,7 @@ def _define_discord_view_classes() -> None:
             self.add_item(select)
 
         async def _on_select(self, interaction: discord.Interaction):
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(_unauthorized(), ephemeral=True)
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_unauthorized()):
                 return
             if self.resolved:
                 await interaction.response.defer()

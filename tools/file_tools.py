@@ -1294,19 +1294,19 @@ _MACOS_SEARCH_NOTE = (" On macOS, broad searches above the user home automatical
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents." + _MACOS_SEARCH_NOTE + "\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents." + _MACOS_SEARCH_NOTE,
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
-            "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
-            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
-            "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
-            "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
-            "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
-            "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File-search order: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree; ignored for content", "default": "discovery"},
-            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "pattern": {"type": "string", "description": "Regex for content search; glob (e.g. '*.py', '*config*') for file search."},
+            "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside files, 'files' finds files by name.", "default": "content"},
+            "path": {"type": "string", "description": "Directory or file to search in.", "default": "."},
+            "file_glob": {"type": "string", "description": "Content search only: filter files by pattern (e.g. '*.py')."},
+            "limit": {"type": "integer", "description": "Maximum number of results.", "default": 50},
+            "offset": {"type": "integer", "description": "Skip first N results for pagination.", "default": 0},
+            "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File search only: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree.", "default": "discovery"},
+            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Content search only: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file.", "default": "content"},
+            "context": {"type": "integer", "description": "Content search only: lines of context before and after each match.", "default": 0}
         },
         "required": ["pattern"]
     }
@@ -1379,8 +1379,14 @@ def _handle_search_files(args, **kw):
     path = args.get("path", ".")
     if path is None or (isinstance(path, str) and not path.strip()):
         path = "."
+    pattern = args.get("pattern") or ""
+    if target != "files" and not pattern:
+        # Every line matches an empty pattern: the model gets the whole tree back as "results".
+        # Whitespace is a real search (a tab, trailing spaces), so only emptiness is refused.
+        return tool_error("search_files is missing required argument(s): pattern. The tool was NOT invoked. "
+                          "A content search needs text or a regex to look for; to list files use target='files'.")
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=path,
+        pattern=pattern, target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
         order=args.get("order", "discovery"), task_id=tid)
@@ -1408,7 +1414,8 @@ def _read_file_schema_overrides():
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000, dynamic_schema_overrides=_read_file_schema_overrides)
-registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
+registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000,
+                  compat_args=("cross_profile",), self_checked_args=("path", "content"))
 def _patch_schema_overrides():
     """Layer the V4A patch mode onto the base replace-only schema for
     OpenAI-family mains (see PATCH_SCHEMA comment). Config/context probe
@@ -1431,5 +1438,7 @@ def _patch_schema_overrides():
         return {}
 
 
-registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides)
-registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides,
+                  compat_args=("mode", "patch", "cross_profile"))
+registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000,
+                  self_checked_args=("pattern",))  # a files listing takes none; the handler refuses a content search without one

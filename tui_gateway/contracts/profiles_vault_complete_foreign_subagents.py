@@ -202,6 +202,11 @@ class ProfilesCreateParams(ProfileParams):
     provider: str | None = None
     share_auth: bool | str | None = None
     mirror_credentials: bool | str | None = None
+    # ``hermes profile create`` through the gateway: ``--clone`` (copy the caller's profile),
+    # ``--sync-imports``, and ``report`` (return the receipt the CLI prints).
+    clone_config: bool | str | None = None
+    sync_imports: bool | str | None = None
+    report: bool | str | None = None
 
 
 class ProfileMirrored(Result):
@@ -222,6 +227,26 @@ class ProfilesCreateResult(Result):
     model_set: bool = False
     mirrored: ProfileMirrored
     warnings: list[str] = []  # best-effort steps that did not fully apply (create still succeeded)
+    receipt: ProfileCreateReceipt | None = None  # with ``report``: what ``hermes profile create`` prints
+
+
+class ProfileCreateReceipt(Result):
+    """``hermes_cli.profile_provision_gateway.receipt``: read where the profile was made."""
+
+    path: str
+    display_path: str = ""
+    launch_label: str = ""
+    source_label: str = ""
+    skills_seeded: dict[str, JsonValue] | None = None
+    alias_path: str | None = None
+    alias_collision: str | None = None
+    mirrored: ProfileMirrored
+    warnings: list[str] = []
+    cloned_plugins: list[str] = []
+    memory_provider: str | None = None
+    channels_left_behind: list[str] = []
+    shared_channels: list[str] = []
+    served_now: bool | None = None
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,

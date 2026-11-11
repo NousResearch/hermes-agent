@@ -30417,6 +30417,133 @@
         "title": "ProfileCanonicalSession",
         "type": "object"
       },
+      "ProfileCreateReceipt": {
+        "additionalProperties": false,
+        "description": "``hermes_cli.profile_provision_gateway.receipt``: read where the profile was made.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "display_path": {
+            "default": "",
+            "title": "Display Path",
+            "type": "string"
+          },
+          "launch_label": {
+            "default": "",
+            "title": "Launch Label",
+            "type": "string"
+          },
+          "source_label": {
+            "default": "",
+            "title": "Source Label",
+            "type": "string"
+          },
+          "skills_seeded": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skills Seeded"
+          },
+          "alias_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias Path"
+          },
+          "alias_collision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias Collision"
+          },
+          "mirrored": {
+            "$ref": "#/components/schemas/ProfileMirrored"
+          },
+          "warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "cloned_plugins": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Cloned Plugins",
+            "type": "array"
+          },
+          "memory_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Provider"
+          },
+          "channels_left_behind": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels Left Behind",
+            "type": "array"
+          },
+          "shared_channels": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Channels",
+            "type": "array"
+          },
+          "served_now": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Served Now"
+          }
+        },
+        "required": [
+          "path",
+          "mirrored"
+        ],
+        "title": "ProfileCreateReceipt",
+        "type": "object"
+      },
       "ProfileMirrored": {
         "additionalProperties": false,
         "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` when the new profile has no\nauth.json of its own and reads the default root's.",
@@ -31255,6 +31382,51 @@
             ],
             "default": null,
             "title": "Mirror Credentials"
+          },
+          "clone_config": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clone Config"
+          },
+          "sync_imports": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sync Imports"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Report"
           }
         },
         "required": [
@@ -31299,6 +31471,17 @@
             },
             "title": "Warnings",
             "type": "array"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCreateReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

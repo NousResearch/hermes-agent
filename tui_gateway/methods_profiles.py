@@ -302,33 +302,47 @@ def _(rid, params: dict) -> dict:
     ``clone_from`` (omitted = fresh + bundled skills, or with ``clone_all`` a full copy of the active profile), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``no_alias``, ``share_auth`` / ``mirror_credentials`` (both default true, the
-    bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless)."""
+    bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless).
+    ``hermes profile create`` also sends ``clone_config`` (``--clone``: copy the caller's profile),
+    ``sync_imports`` and ``report`` (add the receipt it prints, read here).
+
+    On ``/api/ws`` it runs in the connection's profile (``ws_legacy_fallback.dispatch_legacy`` binds the
+    ticket's), so ``--clone`` and the copied keys/model come from the profile the terminal is on. A
+    refused create answers 4062 with ``data.type`` / ``data.message`` so a client re-raises it."""
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")
     from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision_gateway import error_data, receipt
     clone_from = str(params.get("clone_from") or "").strip() or None
     clone_all = is_truthy_value(params.get("clone_all", False))
+    clone_config = is_truthy_value(params.get("clone_config", False)) or (bool(clone_from) and not clone_all)
     soul = params.get("soul")
     soul = soul if isinstance(soul, str) and soul.strip() else None
     model, provider = _model_provider_params(params)
+    request = ProfileCreateRequest(
+        name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
+        no_skills=is_truthy_value(params.get("no_skills", False)),
+        description=str(params.get("description") or "").strip() or None,
+        clone_channels=is_truthy_value(params.get("clone_channels", False)), soul=soul,
+        sync_imports=is_truthy_value(params.get("sync_imports", False)),
+        alias=not is_truthy_value(params.get("no_alias", False)),
+        mirror_credentials=is_truthy_value(params.get("mirror_credentials"), True),
+        share_auth=is_truthy_value(params.get("share_auth"), True),
+        model=model, provider=provider)
     try:
-        result = provision_profile(ProfileCreateRequest(
-            name=name, clone_from=clone_from, clone_all=clone_all,
-            clone_config=bool(clone_from) and not clone_all,
-            no_skills=is_truthy_value(params.get("no_skills", False)),
-            description=str(params.get("description") or "").strip() or None,
-            clone_channels=is_truthy_value(params.get("clone_channels", False)), soul=soul,
-            alias=not is_truthy_value(params.get("no_alias", False)),
-            mirror_credentials=is_truthy_value(params.get("mirror_credentials"), True),
-            share_auth=is_truthy_value(params.get("share_auth"), True),
-            model=model, provider=provider))
+        result = provision_profile(request)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
-        return _err(rid, 4062, str(e))
+        data = error_data(e)
+        return _err(rid, 4062, data["message"], data=data)
     except Exception as e:
-        return _err(rid, 5062, str(e))
-    return _ok(rid, {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
-                     "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings})
+        data = error_data(e)
+        return _err(rid, 5062, data["message"], data=data)
+    out = {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
+           "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings}
+    if is_truthy_value(params.get("report", False)):
+        out["receipt"] = receipt(request, result)
+    return _ok(rid, out)
 
 
 @_profile_handler("profiles.describe", 5063)

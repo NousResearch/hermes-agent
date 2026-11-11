@@ -21,12 +21,12 @@ export const enCatalog: CatalogTranslations = {
   screenshots: 'Screenshots',
   listView: 'List view',
   cardView: 'Card view',
-  installTitle: (name: string) => `Install “${name}”?`,
+  installTitle: (name: string) => `Install "${name}"?`,
   installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
   installTo: 'Install to',
   thisComputer: 'This computer',
   installing: 'Installing…',
-  installComplete: (name: string) => `“${name}” installed`,
+  installComplete: (name: string) => `"${name}" installed`,
   destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
   install: 'Install',
   installed: 'Installed',
@@ -68,7 +68,7 @@ export const enCatalog: CatalogTranslations = {
   slideOf: (index: number, count: number) => `${index} of ${count}`,
   tierLabels: { official: 'Official', verified: 'Verified', community: 'Community' },
   tiers: {
-    official: { title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },
+    official: { title: 'Official Plugins', blurb: 'Built and maintained by Unitalk.' },
     verified: { title: 'Verified Plugins', blurb: 'From the company behind the integration, verified by Nous.' }
   },
   moreToExplore: 'More to explore',
@@ -79,7 +79,7 @@ export const enCatalog: CatalogTranslations = {
     heading: 'Developer Mode',
     title: 'Build for Unitalk',
     pitch: 'Built a tool, connector, plugin, or Mod?',
-    pitchFollowUp: 'Want to but don’t know how?',
+    pitchFollowUp: 'Want to but don\u2019t know how?',
     submit: 'Submit Mod',
     docs: 'Developer Docs'
   },

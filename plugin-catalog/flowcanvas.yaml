@@ -1,0 +1,29 @@
+name: flowcanvas
+title: Arachne Flow
+repo: https://github.com/EmotionalThrifty/arachne-flow
+sha: "46db25db1a7ef13e2adbf12777b7c06941df0895"
+description: "Visual workflow canvas for Hermes Desktop: wire Hermes tools, MCP tools and LLM calls into typed graphs with conditions, bounded loops, JSON/list transforms, per-step caching and media previews (image, audio, video and an in-place 3D model viewer). Build with Hermes edits a graph from a description; seven agent tools and /flow list, build, run and inspect the same saved flows; twelve starter templates and user-saved templates. Disclosure — tool nodes execute through ctx.dispatch_tool on a background thread with Hermes' own tools, credentials and approvals (commands held for manual approval are denied or time out on the canvas and under cron); shell, file-writing, browser, session-mutating and known code-running MCP tools are blocked by name by default, an explicit allow_tools setting can unblock them, and other MCP tools are not blocked; provider, LLM and media-generation calls can cost money, and Build with Hermes sends the prompt, node catalog and current flow to the active model before any run; local files the user selects or drops are copied into the plugin data folder and passed to the tools they are wired to, possibly to remote providers as data URLs; media URLs in tool output are downloaded with Hermes' SSRF-safe client (every redirect hop checked, 200 MB cap); user regexes in If/Switch run in an isolated Python subprocess killed after 0.5 s; the Send message node uses Hermes' official messaging bridge only after a per-recipient consent bound to flow, node and target plus a separate file consent, never caches or retries, and reports timeouts as unconfirmed; a local HMAC key (messaging-secret) signs that consent; flows, runs, uploads and cache live under $HERMES_HOME/plugin-data/flowcanvas/; the Desktop UI uses only @hermes/plugin-sdk except one argument-free window.hermesDesktop.openWindow() call for the optional second window (no SDK verb exists; the button is hidden when the bridge is absent); no stored provider credentials, no telemetry, no self-update."
+maintainer: EmotionalThrifty
+tier: community
+category: desktop
+requires_hermes: ">=0.22"
+version: "1.0.0"
+docs_url: https://github.com/EmotionalThrifty/arachne-flow#readme
+# image: optional 2:1 picture; the README banner is 3:1, so none is set.
+screenshots:
+  - https://raw.githubusercontent.com/EmotionalThrifty/arachne-flow/46db25db1a7ef13e2adbf12777b7c06941df0895/docs/screenshots/workflow-image-cache.png
+  - https://raw.githubusercontent.com/EmotionalThrifty/arachne-flow/46db25db1a7ef13e2adbf12777b7c06941df0895/docs/screenshots/3d-viewer.png
+  - https://raw.githubusercontent.com/EmotionalThrifty/arachne-flow/46db25db1a7ef13e2adbf12777b7c06941df0895/docs/screenshots/build-with-hermes.png
+platforms: []
+capabilities:
+  provides_tools:
+    - flow_list
+    - flow_get
+    - flow_node_types
+    - flow_apply
+    - flow_run
+    - flow_status
+    - flow_template_save
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

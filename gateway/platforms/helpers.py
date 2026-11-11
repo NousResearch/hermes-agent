@@ -645,22 +645,32 @@ def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
     return out
 
 
-def _is_table_line(line: str) -> bool:
-    return line.strip().startswith('|') or bool(TABLE_SEPARATOR_RE.match(line))
-
-
 def _table_header_above(lines: list[str], i: int) -> int:
-    """Index of the header row of the pipe table containing ``lines[i]``, else -1."""
-    while i >= 1 and _is_table_line(lines[i]):
-        if TABLE_SEPARATOR_RE.match(lines[i]) and lines[i - 1].strip().startswith('|'):
+    """Index of the header row of the pipe table containing ``lines[i]``, else -1. Same rules as
+    :func:`convert_table_to_bullets`: a header with a ``|`` over a separator row, then rows with a
+    ``|`` (outer pipes optional)."""
+    while i >= 1 and is_table_row(lines[i]):
+        if TABLE_SEPARATOR_RE.match(lines[i]) and is_table_row(lines[i - 1]):
             return i - 1
         i -= 1
     return -1
 
 
 def _split_inside_table(head: str, tail: str) -> bool:
-    return (_is_table_line(head.rstrip('\n').rsplit('\n', 1)[-1])
-            and tail.lstrip().startswith('|'))
+    return (is_table_row(head.rstrip('\n').rsplit('\n', 1)[-1])
+            and is_table_row(tail.lstrip().split('\n', 1)[0]))
+
+
+def table_row_start(text: str, split_at: int) -> int:
+    """The newline before the table row a mid-line *split_at* falls in, so a row that fits a fresh
+    chunk is never cut inside a cell; *split_at* unchanged when the line is not a table row (or is
+    the first line, which only an oversized row reaches)."""
+    newline = text.rfind('\n', 0, split_at)
+    if newline < 1 or text[split_at:split_at + 1] in ('\n', ''):
+        return split_at
+    line_end = text.find('\n', split_at)
+    lines = text[:line_end if line_end >= 0 else len(text)].split('\n')
+    return newline if _table_header_above(lines, len(lines) - 1) >= 0 else split_at
 
 
 def table_rollback_point(text: str, split_at: int, fits) -> int:
@@ -678,7 +688,7 @@ def table_rollback_point(text: str, split_at: int, fits) -> int:
         return start
     end = start
     for line in text[start:].split('\n'):
-        if not _is_table_line(line):
+        if not is_table_row(line):
             break
         end += len(line) + 1
     return start if fits(text[start:end].rstrip('\n')) else split_at

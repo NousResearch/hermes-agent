@@ -2,7 +2,8 @@
 
 from typing import Callable, Optional
 
-from gateway.platforms.helpers import fence_state_after, table_header_to_repeat, table_rollback_point
+from gateway.platforms.helpers import (
+    fence_state_after, table_header_to_repeat, table_rollback_point, table_row_start)
 
 
 def _open_link_bracket(text: str) -> int:
@@ -45,7 +46,7 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
     _len = len_fn or len
     if _len(content) <= max_length:
         return [content]
-    INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \\(XXX/XXX\\)"
+    INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \(XXX/XXX\)"
     FENCE_CLOSE = "\n```"
     chunks: list[str] = []
     remaining = content
@@ -112,6 +113,7 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
         # whole table fits a fresh chunk; a larger table splits between rows and the next
         # chunk repeats its header (``carry_header``). Fenced pipes are not tables.
         if not fence_state_after(remaining[:split_at], carry_lang is not None, carry_lang or "")[0]:
+            split_at = table_row_start(remaining, split_at)
             split_at = table_rollback_point(
                 remaining, split_at, lambda t: _len(t) <= max_length - INDICATOR_RESERVE)
         chunk_body = remaining[:split_at]

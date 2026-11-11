@@ -38,3 +38,23 @@ def test_split_never_strands_a_header_without_its_rows():
             for chunk in BasePlatformAdapter.truncate_message(content, max_length):
                 last = _body(chunk).rstrip().split("\n")[-1]
                 assert last not in HEADER.split("\n"), (pad, max_length, chunk[-80:])
+
+
+def test_long_row_and_pipeless_table_split_between_rows_with_header():
+    """A row that fits a fresh chunk is never cut inside a cell, even when the last newline sits
+    before half the budget; tables without outer pipes repeat their header like piped ones."""
+    short = "\n".join(f"| s{i} | v |" for i in range(30))
+    long_row = "| long | " + " ".join(["cell"] * 320) + " |"
+    content = "Intro\n\n" + HEADER + "\n" + short + "\n" + long_row + "\n| tail | end |"
+    chunks = BasePlatformAdapter.truncate_message(content, 2000)
+    assert any(long_row in _body(c).split("\n") for c in chunks), [c[-60:] for c in chunks]
+
+    pipeless_header = "name | value\n--- | ---"
+    rows = [f"row{i} | {'y' * 40}" for i in range(120)]
+    chunks = BasePlatformAdapter.truncate_message("Results:\n\n" + pipeless_header + "\n" + "\n".join(rows), 2000)
+    assert len(chunks) > 2 and all(len(c) <= 2000 for c in chunks)
+    for chunk in chunks:
+        lines = _body(chunk).split("\n")
+        first_row = next(i for i, line in enumerate(lines) if line.startswith("row"))
+        assert lines[first_row - 2:first_row] == pipeless_header.split("\n"), chunk[:120]
+    assert [line for c in chunks for line in _body(c).split("\n") if line.startswith("row")] == rows

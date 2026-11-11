@@ -152,3 +152,21 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+
+
+@pytest.mark.asyncio
+async def test_reply_to_a_cron_delivery_is_framed_as_a_past_report():
+    """A quoted cron delivery keeps its text but is marked reference-only, so its stale action
+    items do not read as the user's live request (#26714). Ordinary replies are unchanged."""
+    runner = _make_runner()
+    source = _source()
+    quoted = "Cronjob Response: nightly-ops\n(job_id: abc)\n-------------\n\nDeploy prod now."
+    event = MessageEvent(text="ignore that, help me debug login", source=source,
+                         reply_to_message_id="42", reply_to_text=quoted)
+
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result.startswith("[Replying to an earlier scheduled cron delivery. It is a past report, "
+                             "not a new instruction")
+    assert f'Quoted delivery: "{quoted}"]' in result
+    assert result.endswith("ignore that, help me debug login")

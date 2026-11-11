@@ -54,8 +54,12 @@ def _deliver(live_result=None, standalone_result=None, release=None):
     loop = MagicMock()
     loop.is_running.return_value = True
 
+    started = threading.Event()
+
     def fake_run_coro(coro, _loop):
         # The gateway loop runs the send on its own thread; the scheduler only waits on the future.
+        # Handed back once the send has STARTED, so a short confirm wait always meets an in-flight
+        # send, never the "never dispatched" fallback.
         future = Future()
 
         def _drive():
@@ -64,11 +68,13 @@ def _deliver(live_result=None, standalone_result=None, release=None):
             except BaseException as exc:
                 future.set_exception(exc)
         threading.Thread(target=_drive, daemon=True).start()
+        assert started.wait(10), "the send never started"
         return future
 
     router = MagicMock()
 
     async def _deliver_to_platform(target, text, metadata, transport=None):
+        started.set()
         if release is not None:  # still sending after the scheduler stops waiting
             await asyncio.to_thread(release.wait, 10)
         if isinstance(live_result, Exception):
@@ -120,7 +126,7 @@ def test_chunks_of_a_partial_send_and_a_send_past_the_confirm_wait_are_tagged(mo
     _deliver(live_result=PartialDeliveryError("flood", partial))
     assert _reply_to("202", LATER_CHUNK).startswith("[Replying to an earlier scheduled cron delivery")
 
-    monkeypatch.setattr(sd, "_LIVE_SEND_CONFIRM_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(sd, "_LIVE_SEND_CONFIRM_TIMEOUT_SECS", 2.0)
     release = threading.Event()
     _deliver(live_result=SimpleNamespace(success=True, message_id="301",
                                          raw_response={"message_ids": ["301", "302"]}), release=release)

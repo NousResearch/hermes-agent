@@ -215,8 +215,10 @@ def worker_route(policy, construct):
     if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
             and not (frozen.get('model') or {}).get('api_mode')):
         api_mode = None
+    # The pool is what refreshes or rotates a pooled OAuth key once it expires mid-turn; without
+    # it a Kanban run dies on the first 401 at the token's expiry (in-process parity).
     return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
-            'api_mode': api_mode}
+            'api_mode': api_mode, 'credential_pool': runtime.get('credential_pool')}
 
 
 def checkpoint_agent_kwargs(config):

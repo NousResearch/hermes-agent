@@ -1,13 +1,12 @@
 name: verifiable-math-kernel
 repo: https://github.com/pCwOrM/hermes-verifiable-math
-sha: e1bca17352620f66f40b1b365c03bb9795673bf3
-version: "1.0.2"
+sha: a5a16ecef75e845310236f9ff47d9476b6750c11
+version: "1.0.3"
 description: >-
-  Deterministic symbolic computation, certified integer factorization,
-  elliptic curve invariant analysis, and formal Lean 4 proof auditing for
-  Hermes Agent. When Lean 4 is installed on PATH, lean4_proof_audit optionally
-  validates proof syntax via local `lean --stdin` (with unsafe/IO directives
-  blocked).
+  Deterministic symbolic computation, integer factorization with Baillie-PSW
+  probable-prime testing, elliptic curve invariants, and formal Lean 4 proof
+  auditing for Hermes Agent. When Lean 4 is installed on PATH and enable_lean_cli
+  is enabled, lean4_proof_audit can verify proofs via isolated execution.
 maintainer: pCwOrM
 tier: community
 category: tools

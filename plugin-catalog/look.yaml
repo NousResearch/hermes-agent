@@ -5,7 +5,7 @@ repo: https://github.com/SilentHacks/look
 sha: "7c01a94aa651adedaf27e5216598c6deef293050"
 version: "0.1.0"
 requires_hermes: ">=0.23.1"
-description: "Ask about pages and use guarded Chrome actions. Apple Silicon macOS beta with broad debugger access and optional local voice and eyes."
+description: "Ask about pages and use guarded Chrome actions. Apple Silicon macOS beta with broad debugger access and optional local voice and eyes. Disclosure — Look runs its own Chrome profile (~/.cache/look/chrome-profile) on a loopback DevTools port and sends your questions and captured page evidence to your configured model. Model-requested navigation and link clicks refuse private, loopback and metadata hosts only before navigating (redirects and DNS rebinding are not contained; the owner setting allow_private_network turns the check off). `/look actions allow-all` skips Look's own action review for the bound conversation. When TYPESAFE_API_KEY is set (early_highlight is on by default), your spoken question and pointer structure, plus page text if highlight_include_page_text is on, go to api.typesafe.ai. Setup downloads checksum-pinned NVIDIA NeMo-Speech native libraries, Hugging Face speech models and MediaPipe WASM into ~/Library/Caches/Look and ~/.cache/look."
 maintainer: SilentHacks
 tier: community
 category: web

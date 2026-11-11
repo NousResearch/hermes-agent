@@ -1,4 +1,4 @@
-"""Browser page backend ABC: a browser that owns its pages outside Hermes's CDP session.
+"""Browser page backend ABC: a browser that owns its pages outside Unitalk's CDP session.
 
 ``browser_vault`` inspects and fills the page the agent is driving. For ``browser_exec`` that page sits
 behind the task's CDP supervisor. A plugin browser with its own transport (Camofox's REST server) has

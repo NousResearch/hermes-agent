@@ -1,1 +1,18 @@
 name: helper
+title: Helper
+repo: https://github.com/benhens/hermes-helper
+sha: 7629e8d23ef96eb789304b9192b977c857f6ea75
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+description: "Desktop page for people who are new to Hermes: a Dashboard with nine set-up cards (what each thing is, the steps from the Hermes docs, a button to its place in Hermes) and Helper, a small character with its own conversation window that answers questions about Hermes in plain words, from lines checked against the Hermes docs. Disclosure — reads, through Hermes's read-only Desktop calls, whether a model is ready and its name, the list of profiles and each profile's skills, and in Helper's set-up conversation the main profile's SOUL.md text and the list of scheduled jobs; never reads .env, auth.json or config files. When its fixed rules are not sure of an answer it sends the typed message, the last few lines of the Helper conversation and chunks of the Hermes docs to the person's own configured model (llm.oneshot), which spends their model credit; no tools run and nothing is saved to their chats. Keeps a name, a few answers, the Done marks and the last 50 lines of the Helper conversation as plain text in Desktop plugin storage, shared by all profiles on the computer and not removed on uninstall. Only when the person presses its buttons, 'Do it for me' runs Hermes's own importer (hermes import-agent <agent> --dry-run, then hermes import-agent <agent> --yes) and, if the importer is missing and the person agrees, hermes plugins install agent-importers --enable; no other command can run and the model cannot write one. No network calls of its own, no telemetry, no self-update. Desktop-only (desktop/plugin.js, no __init__.py): no agent tools, hooks, middleware or env vars."
+maintainer: benhens
+tier: community
+category: desktop
+docs_url: https://github.com/benhens/hermes-helper#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+

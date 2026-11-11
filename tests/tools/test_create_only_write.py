@@ -51,3 +51,30 @@ def test_concurrent_create_only_publishes_one_complete_file(ops, tmp_path):
     assert target.read_bytes() == candidates[winners[0]].encode()
     assert all(result.status == "already_exists" for result in results if result.error)
     assert not list(target.parent.glob(".hermes-create-*"))
+
+
+@pytest.fixture
+def remote_ops(ops, monkeypatch):
+    """A backend that is not the host: create_only cannot use the agent's interpreter."""
+    monkeypatch.setattr(ops, "_lsp_local_only", lambda: False)
+    return ops
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("python", ["hermes-missing-python3", None])
+def test_remote_create_only_with_and_without_python3(remote_ops, tmp_path, monkeypatch, python):
+    import sys
+
+    monkeypatch.setattr(remote_ops, "_python_interpreter_cmd", lambda: python or sys.executable)
+    target = tmp_path / "nested" / "new.txt"
+    payload = "a\r\nb é"
+    result = remote_ops.write_file(str(target), payload, create_only=True)
+    assert result.error is None and result.verified is True, result
+    assert target.read_bytes() == payload.encode()
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "absent")
+    for entry in (target, dangling, tmp_path / "nested"):
+        refused = remote_ops.write_file(str(entry), "replacement", create_only=True)
+        assert refused.status == "already_exists", refused
+    assert target.read_bytes() == payload.encode() and not (tmp_path / "absent").exists()
+    assert not list(tmp_path.rglob(".hermes-create-*"))

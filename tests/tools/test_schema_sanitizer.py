@@ -660,3 +660,21 @@ def test_declared_properties_are_not_reopened():
     assert "additionalProperties" not in params["none"]
     assert "additionalProperties" not in params["some"]
     assert params["bad_key"]["additionalProperties"] is True
+
+
+def test_mcp_freeform_param_stays_open_through_both_stages():
+    """MCP schemas are normalized (which adds ``properties: {}``) before this sanitizer runs;
+    the free-form marker must survive that first stage too, nullable unions included."""
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    normalized = _normalize_mcp_input_schema({"type": "object", "properties": {
+        "filters": {"type": "object", "description": "free-form filter dict"},
+        "maybe": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+        "sealed": {"type": "object", "additionalProperties": False},
+        "shaped": {"type": "object", "properties": {}},
+    }})
+    params = sanitize_tool_schemas([_tool("mcp_srv_t", normalized)])[0]["function"]["parameters"]
+    props = params["properties"]
+    assert props["filters"]["additionalProperties"] is True
+    assert props["maybe"]["additionalProperties"] is True
+    assert props["sealed"]["additionalProperties"] is False
+    assert "additionalProperties" not in props["shaped"]

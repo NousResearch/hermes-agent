@@ -1,8 +1,8 @@
 name: hermes-vnc
 repo: https://github.com/YAN-XBT/hermes-vnc
-sha: 2b9dd0e9c90c22f7a0fb0303719dbf8cdf726e03
+sha: 1f5a5a1cd8bd637f469edd241810ab1cf2cd5da4
 title: Hermes VNC
-version: "0.1.1"
+version: "0.1.2"
 description: "Computer-use backend that drives any machine reachable over VNC (RFB): the stock computer_use tool captures the remote screen and moves that machine's mouse and keyboard, so the agent can work on a second computer, a lab box or a cloud desktop with no Hermes process running on it. Select it with computer_use.backend: hermes-vnc and point computer_use.vnc.host at the target. VNC carries pixels only, so the backend runs in the screenshot lane: capture returns a PNG and no accessibility elements, and element-addressed actions (list_apps, focus_app, set_value, click-by-element) report unsupported_action instead of guessing. Disclosure — connects only to the VNC server you configure (host and port) and sends it screenshots and input; the one credential is the VNC password, read from the variable named by password_env through Hermes's secret scope and never written or logged; no shell, no files read or written, no telemetry; one daemon thread runs Twisted's reactor, started on first connect and deliberately never stopped because the reactor is process-wide and cannot be restarted; one pinned dependency (vncdotool>=1.2,<2)."
 maintainer: YAN-XBT
 tier: community
@@ -13,7 +13,7 @@ platforms:
   - linux
   - macos
   - windows
-image: https://raw.githubusercontent.com/YAN-XBT/hermes-vnc/2b9dd0e9c90c22f7a0fb0303719dbf8cdf726e03/assets/banner.jpg
+image: https://raw.githubusercontent.com/YAN-XBT/hermes-vnc/1f5a5a1cd8bd637f469edd241810ab1cf2cd5da4/assets/banner.jpg
 known_issues:
   - "Needs a VNC server on the machine you want to drive (TightVNC, UltraVNC, TigerVNC, x11vnc, macOS Screen Sharing, or a cloud VM's VNC endpoint). Nothing is installed on the target beyond that."
   - "Pixels only: RFB has no accessibility tree, so every action is by coordinate and list_apps, focus_app and set_value answer unsupported_action."

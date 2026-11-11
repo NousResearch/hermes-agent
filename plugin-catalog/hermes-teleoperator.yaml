@@ -1,8 +1,8 @@
 name: hermes-teleoperator
 title: Hermes Teleoperator
 repo: https://github.com/Tsurgcom/hermes-teleoperator
-sha: 3a7ccfd0a109ed8bfe194912c8ffd02e6be34e50
-version: 1.1.2
+sha: 4dfb08eb0bba00f7c2036613290a9e6da5650d8d
+version: 1.2.0
 description: >-
   Keep one conversation on the gateway while switching shell, files, skills and
   explicitly permitted MCP tools between machines over SSH. The standalone Rust
@@ -12,11 +12,11 @@ maintainer: Tsurgcom
 tier: community
 category: tools
 requires_hermes: ">=0.21.3"
-docs_url: https://github.com/Tsurgcom/hermes-teleoperator/blob/3a7ccfd0a109ed8bfe194912c8ffd02e6be34e50/README.md
-image: https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/3a7ccfd0a109ed8bfe194912c8ffd02e6be34e50/assets/marketplace-banner.png
+docs_url: https://github.com/Tsurgcom/hermes-teleoperator/blob/4dfb08eb0bba00f7c2036613290a9e6da5650d8d/README.md
+image: https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/4dfb08eb0bba00f7c2036613290a9e6da5650d8d/assets/marketplace-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/3a7ccfd0a109ed8bfe194912c8ffd02e6be34e50/assets/architecture.svg
-  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/3a7ccfd0a109ed8bfe194912c8ffd02e6be34e50/assets/switching.svg
+  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/4dfb08eb0bba00f7c2036613290a9e6da5650d8d/assets/architecture.svg
+  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/4dfb08eb0bba00f7c2036613290a9e6da5650d8d/assets/switching.svg
 readme: true
 platforms:
   - linux
@@ -24,8 +24,8 @@ known_issues:
   - "Windows is unsupported. Linux is the only catalog-claimed platform; macOS binaries exist but are not execution-tested in CI."
   - "Gateway and receiver versions must match exactly. SSH keys and verified known-host entries must already be configured."
   - "Receiver runs with the SSH user's authority. Gateway applies Hermes' dangerous-command and human-approval gates before routing, but other plugins' pre_tool_call hooks and the agent's tool guardrails cannot see routed calls until Hermes provides a pre-execution seam (hermes-agent#152963). Browser, memory, cron and delegation do not migrate."
-  - "Remote MCP is explicit-allowlist stdio only; sampling, elicitation and interactive callbacks are rejected. Small-file transfers are limited to 8 MiB."
-  - "Gateway-local transfers require a configured transfer_dir; deleting a gateway-local source with move=true additionally requires allow_local_delete: true."
+  - "Remote MCP is explicit-allowlist stdio only; sampling, elicitation and interactive callbacks are rejected. Remote content search is blocked; filename search remains available. Small-file transfers are limited to 8 MiB."
+  - "Transfers require human approval scoped to the exact source, destination and move setting. Gateway-local transfers require a configured transfer_dir; deleting a gateway-local source additionally requires allow_local_delete: true."
   - "Receiver downloads are verified against per-asset SHA256 digests committed in the plugin source for the exact release tag; SHA256SUMS is cross-checked but is not the trust root. Release assets carry GitHub build-provenance attestations. SSH key authorization remains a manual administrator action."
 capabilities:
   provides_tools:

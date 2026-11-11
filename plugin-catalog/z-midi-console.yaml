@@ -1,0 +1,39 @@
+# plugin-catalog/z-midi-console.yaml — DRAFT for PR (re-pinned to final polished HEAD).
+# If the fresh EDIT-mode screenshot lands as a new commit, re-pin sha + image
+# URLs to that commit before opening the PR (rule 4).
+name: z-midi-console
+repo: https://github.com/zorroukk/z-midi-console
+sha: aae9c17b0957efed41da32438deb0d6034b82445
+subdir: ""
+description: Universal MIDI control-surface builder — any USB/MIDI synth as live on-screen controls in Hermes Desktop, MIDI-learn bindings, multi-synth deck, spectrum analyzers, software mod matrix, .mid export, seven agent tools. Zero Python dependencies.
+maintainer: zorroukk
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: ""
+version: "0.1.0"
+image: https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/01-surface.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/02-editor.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/04-chat.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/05-matrix.png
+readme: true
+platforms: []          # loads everywhere; MIDI engine is Windows (honest 'none' elsewhere)
+title: "Z's MIDI Console"
+onboarding: false
+known_issues:
+  - "Windows is the only fully supported platform (winmm MIDI backend); on macOS/Linux the plugin loads and reports backend: none."
+  - "Desktop audio / microphone analyzers read the optional companion audio-strip plugin's published state; with it absent or opted out, MIDI-sourced analyzers still work and audio lanes show an honest unavailable note."
+capabilities:
+  provides_tools:
+    - midi_devices
+    - midi_status
+    - midi_send
+    - midi_control
+    - midi_profile
+    - midi_matrix
+    - midi_recorder
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

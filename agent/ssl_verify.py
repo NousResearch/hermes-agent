@@ -76,7 +76,7 @@ def _stat_identity(path: Optional[str]) -> Optional[tuple]:
         st = os.stat(path)
     except OSError:
         return None
-    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev)
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev, st.st_ctime_ns)
 
 
 def _openssl_trust_signature(fallback_candidates: Iterable[str] = ()) -> tuple:

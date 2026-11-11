@@ -446,11 +446,12 @@ class PlatformRegistry:
             entries[entry.name] = entry
             logger.debug("Registered platform adapter: %s (%s)", entry.name, entry.source)
 
-    def forget_failed_loads(self) -> None:
-        """Drop every failed-load record: a force reload re-decides which plugins exist, and a plugin
-        disabled or removed since its import failed must stop holding back YAML cleanup."""
+    def forget_failed_loads(self, scope: Optional[str]) -> None:
+        """Drop *scope*'s failed-load records: a force reload re-decides which of that profile's plugins
+        exist, and one disabled or removed since its import failed must stop holding back YAML cleanup.
+        Other profiles' records stay: their plugins were not reloaded."""
         with self._lock:
-            self._failed_loads.clear()
+            self._failed_loads = {key for key in self._failed_loads if key[0] != scope}
 
     def unregister(self, name: str, *, scope: Optional[str] = None) -> bool:
         """Remove a platform entry. Returns True if it existed."""

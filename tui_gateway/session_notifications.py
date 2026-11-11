@@ -436,6 +436,40 @@ _KANBAN_EVENT_FORMATTERS = {
 }
 
 
+class _PassiveKanbanText(str):
+    """A passive transition displayed as status, not submitted as a separate turn."""
+
+
+# status-event targets that need nobody: the card is merely (re)queued, picked up or parked for review.
+_PASSIVE_KANBAN_STATUSES = frozenset({"ready", "todo", "running", "scheduled", "review"})
+
+
+def _kanban_event_is_passive(ev) -> bool:
+    return (getattr(ev, "kind", "") == "status"
+            and str((getattr(ev, "payload", None) or {}).get("status") or "") in _PASSIVE_KANBAN_STATUSES)
+
+
+def _kanban_turn_settings(session: dict) -> dict:
+    """``kanban.chat_notifications`` for the owning profile: ``passive_status`` (requeue transitions are
+    status-line only, folded into the next real turn), ``batch_window_seconds`` (wait for quiet before
+    running a turn) and ``batch_max_wait_seconds`` (never hold a real event longer than this)."""
+    # Defaults follow the poll cadence: wait one more poll for stragglers (10s live), never more than 12 (60s).
+    out = {"passive_status": True, "batch_window_seconds": 2 * _KANBAN_POLL_SECONDS,
+           "batch_max_wait_seconds": 12 * _KANBAN_POLL_SECONDS}
+    try:
+        with _session_profile_runtime_scope(session):
+            raw = ((_load_cfg().get("kanban") or {}).get("chat_notifications") or {})
+    except Exception:
+        return out
+    if isinstance(raw, dict):
+        if isinstance(raw.get("passive_status"), bool):
+            out["passive_status"] = raw["passive_status"]
+        for key in ("batch_window_seconds", "batch_max_wait_seconds"):
+            with contextlib.suppress(TypeError, ValueError):
+                out[key] = max(0.0, float(raw.get(key, out[key])))
+    return out
+
+
 def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
     """Single-line notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same
     as on Telegram). None for silent kinds."""
@@ -529,7 +563,9 @@ def _kb_poll_board(_kb, slug: str, session_key: str, stray: tuple = (), unreclai
             from gateway.warning_notifications import DiagnosticText
             for ev in events:
                 text = _format_kanban_event_text(sub, task, ev, slug)
-                if text:
+                if text and _kanban_event_is_passive(ev):
+                    texts.append(_PassiveKanbanText(text))
+                elif text:
                     texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
@@ -588,9 +624,28 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         from gateway.warning_notifications import DiagnosticText, render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
                             platform="tui", diagnostic=isinstance(text, DiagnosticText))
+    settings = _kanban_turn_settings(session) if (texts or session.get("_kanban_pending")) else None
     if texts:
-        session.setdefault("_kanban_pending", []).extend(texts)
-    if not session.get("_kanban_pending") or not _notif_claim_turn(session):
+        passive_on = settings["passive_status"]
+        wake = [text for text in texts if not (passive_on and isinstance(text, _PassiveKanbanText))]
+        if passive_on and len(wake) < len(texts):
+            folded = session.setdefault("_kanban_passive", [])
+            folded.extend(str(text) for text in texts if isinstance(text, _PassiveKanbanText))
+            del folded[:-20]  # context for the next real turn, not a backlog
+        if wake:
+            now = time.time()
+            if not session.get("_kanban_pending"):
+                session["_kanban_pending_first"] = now
+            session["_kanban_pending_last"] = now
+            session.setdefault("_kanban_pending", []).extend(str(t) if isinstance(t, _PassiveKanbanText) else t
+                                                             for t in wake)
+    if not session.get("_kanban_pending"):
+        return
+    # Batch a burst (several cards finishing together) into one turn: wait for quiet, but not forever.
+    now = time.time()
+    quiet = now - float(session.get("_kanban_pending_last") or 0) >= settings["batch_window_seconds"]
+    overdue = now - float(session.get("_kanban_pending_first") or 0) >= settings["batch_max_wait_seconds"]
+    if not (quiet or overdue) or not _notif_claim_turn(session):
         return
     with session["history_lock"]:
         pending = session.get("_kanban_pending") or []
@@ -599,6 +654,9 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         diagnostic = split and isinstance(pending[0], DiagnosticText)
         batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
         session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
+        session["_kanban_pending_first"] = time.time() if session["_kanban_pending"] else 0
+        if not diagnostic and session.get("_kanban_passive"):
+            batch = list(session.pop("_kanban_passive")) + batch  # folded requeue transitions, oldest first
     with contextlib.suppress(Exception):
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
                       "kanban notification dispatch failed",

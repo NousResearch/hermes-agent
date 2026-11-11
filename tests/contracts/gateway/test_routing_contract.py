@@ -325,6 +325,26 @@ def test_bind_moves_an_existing_topic_to_a_new_session(backend, scope_a):
     assert store_a.routing.get_topic_binding_for_session(session_id="s-old").thread_id == "t9"
 
 
+def test_move_session_moves_a_binding_within_its_profile_and_never_across_profiles(backend, scope_a):
+    store_a = backend.open(scope_a)
+    _sessions(backend, scope_a, "s1")
+    bind = {"user_id": "u", "session_key": "k", "session_id": "s1"}
+    store_a.routing.bind_topic(**bind, chat_id="c", thread_id="t1")
+    # CONTRACT: with move_session, a session bound to another topic of the same profile moves there; the old
+    # topic's binding is dropped in the same write.
+    assert store_a.routing.bind_topic(**bind, chat_id="c", thread_id="t2", move_session=True) is True
+    assert store_a.routing.get_topic_binding(chat_id="c", thread_id="t1") is None
+    assert store_a.routing.bind_topic(**bind, chat_id="c2", thread_id="t3", move_session=True) is True
+    assert store_a.routing.get_topic_binding(chat_id="c", thread_id="t2") is None
+    moved = store_a.routing.get_topic_binding_for_session(session_id="s1")
+    assert (moved.chat_id, moved.thread_id) == ("c2", "t3")
+    # CONTRACT: never across profiles: a session bound in another profile still raises, and nothing changes.
+    with pytest.raises(TopicAlreadyLinked, match="session is already linked to another Telegram topic"):
+        store_a.routing.bind_topic(**bind, chat_id="c", thread_id="t1", profile_name="work", move_session=True)
+    assert store_a.routing.get_topic_binding_for_session(session_id="s1") == moved
+    assert store_a.routing.get_topic_binding(chat_id="c", thread_id="t1", profile_name="work") is None
+
+
 def test_an_expected_session_id_rebinds_only_a_topic_still_naming_it(backend, scope_a):
     store_a = backend.open(scope_a)
     _sessions(backend, scope_a, "s-old", "s-other", "s-new")

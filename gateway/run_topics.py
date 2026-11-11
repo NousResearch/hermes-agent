@@ -267,7 +267,7 @@ class GatewayTopicThreadsMixin:
             if not self._is_telegram_topic_lane(source):
                 return True
             session_db = self._sync_session_db() if move else None
-            left = session_db.get_telegram_topic_binding_by_session(session_id=session_entry.session_id) if (
+            left = session_db.routing.get_topic_binding_for_session(session_id=session_entry.session_id) if (
                 session_db is not None) else None
             try:
                 self._record_telegram_topic_binding(source, session_entry, move_session=move)
@@ -276,7 +276,7 @@ class GatewayTopicThreadsMixin:
             except Exception:
                 logger.warning("telegram topic binding refresh failed (%s)", reason, exc_info=True)
                 return True
-            left_key = str((left or {}).get("session_key") or "")
+            left_key = str(getattr(left, "session_key", "") or "")
             if left_key and left_key != session_entry.session_key and self.session_store.release_route(
                     left_key, session_entry.session_id) and released is not None:
                 released.append(left_key)
@@ -302,12 +302,13 @@ class GatewayTopicThreadsMixin:
         """``row``'s session id once a Telegram handoff may take it: a session bound to another
         profile's topic is refused before a fresh topic is created, which would stay empty."""
         session_id = row["id"]
-        if self._session_db is None or str(row.get("handoff_platform") or "").strip().lower() != "telegram":
+        store = self.persistence
+        if store is None or str(row.get("handoff_platform") or "").strip().lower() != "telegram":
             return session_id
         from gateway.session_route_recovery import conversation_head
         _authority, _local_owner, head = await conversation_head(self, session_id)
-        bound = await self._session_db.get_telegram_topic_binding_by_session(session_id=head)
-        if bound and str(bound.get("profile_name") or "default") != (profile_name or "default"):
+        bound = await store.aio.routing.get_topic_binding_for_session(session_id=head)
+        if bound and str(bound.profile_name or "default") != (profile_name or "default"):
             raise RuntimeError(t("gateway.topic.already_linked"))
         return session_id
 

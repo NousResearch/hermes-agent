@@ -1,28 +1,30 @@
 name: doorman
 title: Doorman
 repo: https://github.com/TwoRobotsinaTrenchcoat/Hermes-Doorman
-sha: 2659b2e12fa844c702bad33479d11df398d16ba1
+sha: b954ca3e95166910ceddfb8bff4906ae2df148fa
 description: >-
   Wake-on-LAN doorman for sleeping inference backends. When an API request targets a
   host from a config-driven host map that is asleep, Doorman broadcasts a UDP magic
   packet, waits a bounded time for the inference port to accept a connection, then
   holds a per-request keep-alive (one packet per interval) for the life of the request,
   released on completion or on a terminal error; hosts that answer are left alone and no
-  packet is sent. Pure Python, no dependencies, config re-read per hook fire. Disclosure
+  packet is sent. If the turn is cancelled (/stop), a lifecycle hook releases every live
+  hold so the host is not woken for a request nobody is waiting on. Pure Python, no
+  dependencies, config re-read per hook fire. Disclosure
   — sends UDP magic packets and TCP connect probes to the local hosts listed in its own
   `provider_wol:` block in config.yaml only, never to third parties; the keep-alive
   runs on one background daemon thread per plugin instance, with holds bounded by a
-  leak cap (default 7200s) and torn down on completion; no
+  leak cap (default 7200s) and torn down on completion or turn cancellation; no
   telemetry, no shell commands, no credentials or secrets, no self-updating code.
 maintainer: TwoRobotsinaTrenchcoat
 tier: community
 category: automation
 requires_hermes: ">=0.22"
 docs_url: https://github.com/TwoRobotsinaTrenchcoat/Hermes-Doorman#readme
-version: "0.2.1"
+version: "0.2.2"
 platforms: []
 capabilities:
   provides_tools: []
-  provides_hooks: [pre_api_request, pre_auxiliary_call, post_api_request, post_auxiliary_call, api_request_error]
+  provides_hooks: [pre_api_request, pre_auxiliary_call, post_api_request, post_auxiliary_call, api_request_error, agent_loop_stopped]
   provides_middleware: []
   requires_env: []

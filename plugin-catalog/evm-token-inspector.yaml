@@ -1,0 +1,26 @@
+name: evm-token-inspector
+repo: https://github.com/sawi57003-ops/evm-token-inspector
+sha: df5d0720127991cad9978037ff39d570ae56c96b
+description: >-
+  Inspect any EVM token contract before interacting with it: name, symbol,
+  decimals, total supply, owner/renounced status, EIP-1967 proxy detection,
+  and the DEX V2 pair plus liquidity reserves — one tool, evm_token_check,
+  on BSC, Ethereum, Base and Arbitrum. Read-only; public JSON-RPC only, no
+  API key, no signing, no credentials. Disclosure — the tool POSTs to public
+  RPC endpoints (bsc-dataseed, publicnode, drpc, blastapi, mainnet.base.org,
+  arb1.arbitrum.io) with the contract address; it does not detect honeypots
+  or hidden taxes, it reports the on-chain facts (owner, proxy, pair,
+  reserves) so the agent and user can judge. It is not financial advice.
+maintainer: sawi57003-ops
+tier: community
+category: tools
+docs_url: https://github.com/sawi57003-ops/evm-token-inspector#readme
+version: "1.0.0"
+requires_hermes: ">=0.21.3"
+platforms: []
+capabilities:
+  provides_tools:
+    - evm_token_check
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

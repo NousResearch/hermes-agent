@@ -1,0 +1,21 @@
+name: hermes-custodian
+title: Hermes Custodian
+repo: https://github.com/Cam-AcitveIce/hermes-custodian
+sha: bfdc567d510bfd8fbcdd9e716d00dd3b3654414e
+description: "Local, read-only security-posture monitor for the machine a Hermes agent runs on (Linux, macOS, native Windows): scoped file and permission baselines, evidence-backed findings and a change history, a first-run terminal setup, an optional background monitor and an on-demand authenticated loopback dashboard. Registers four read-only tools (custodian_status, custodian_findings, custodian_changes, custodian_scan). Disclosure \u2014 reads: regular files and metadata under paths the user approves in setup; Hermes profile config metadata (model, provider, plugin and MCP-server names) only after explicit consent; credential files (.env, auth stores, keys), memory, chat history and SOUL are never opened (metadata only) and only .py/.md files are content-hashed; symlinks and reparse points are not followed. Runs: a foreground or per-user background monitor (systemd user service, LaunchAgent or Task Scheduler task) only when the user starts or installs it; fixed argument-array subprocesses with timeouts and no shell (systemctl and apt list --upgradable; launchctl and softwareupdate -l; schtasks and a fixed PowerShell Windows Update query); update detection installs nothing; a Linux-only root security-update plan/apply is a separate terminal command with typed confirmation that the AI tools and dashboard cannot reach. Network: no telemetry and no model calls; the dashboard binds 127.0.0.1 only behind a username/password session (scrypt, signed cookie, exact Host and Origin checks); native OS update queries may contact the OS vendor's update service. Stores: paths, fingerprints, findings and the hashed dashboard login in a private per-user state directory; never credential contents. No self-updater, no approval or confirmation arguments for the AI, no root shell. Not an antivirus or EDR: same-user software can change its configuration. Native tests pass on Linux, macOS and Windows with Python 3.11-3.14 at the pinned commit."
+maintainer: Cam-AcitveIce
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/Cam-AcitveIce/hermes-custodian/blob/bfdc567d510bfd8fbcdd9e716d00dd3b3654414e/README.md
+version: "0.1.0"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - custodian_status
+    - custodian_findings
+    - custodian_changes
+    - custodian_scan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

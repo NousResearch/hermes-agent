@@ -1452,6 +1452,11 @@ class SearchMixin:
             diagnostics, payload = _split_tool_diagnostics(result.stdout or "")
             if payload.strip() or not diagnostics.strip():
                 return None
+            # find's own usage errors name no operand (``find: <path>: <reason>``).
+            usage = [line for line in diagnostics.splitlines()
+                     if line.startswith("find: ") and ": " not in line[len("find: "):]]
+            if usage:
+                return usage[0].strip()
             try:  # fail open: only grep's own exit 2 with its message is conclusive
                 probe = self._exec(" ".join([*grep_parts, "/dev/null", "2>&1", ">/dev/null"]), timeout=5)
             except Exception:

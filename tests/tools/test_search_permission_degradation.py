@@ -569,3 +569,12 @@ def test_pruned_grep_validation_exit_2_is_a_search_error(tmp_path):
         tmp_path, ExecuteResult(stdout="grep: Unmatched ( or \\(", exit_code=2))
     result = ops.search("needle", path=str(root), target="content")
     assert result.error == "Search failed: grep: Unmatched ( or \\(", result
+
+
+@pytest.mark.platforms("posix")
+def test_pruned_grep_find_usage_error_is_a_search_error(tmp_path):
+    """find's own refusal (no operand, nothing searched) is not reported as zero matches."""
+    message = "find: Only one instance of {} is supported with -exec ... +"
+    ops, root = _pruned_grep_ops(tmp_path, find_output=message + "\n")
+    result = ops.search("needle", path=str(root), target="content")
+    assert result.error == f"Search failed: {message}", result

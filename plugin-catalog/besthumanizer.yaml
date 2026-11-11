@@ -1,0 +1,29 @@
+name: besthumanizer
+title: BestHumanizer
+repo: https://github.com/shagghiesuperstar/hermes-besthumanizer
+sha: de54228e2bd5c1dd1585a1e326de3b5f6cd1bdb5
+version: "0.1.0"
+description: |
+  Humanize and measure text: rewrite AI-sounding prose, score any passage for machine-likeness, and score a public X account's recent posts. Three tools over a hosted MCP endpoint, plus one hook that puts a verdict on outbound text without changing it.
+
+  - `score_text` — 0-100 human-probability, the patterns that fired, and where they fired. Deterministic: same text, same number, every time. Free, debits nothing.
+  - `humanize_text` — tell removal plus a constrained model pass. Returns the rewrite with before and after scores, and never returns text that scores lower than the input.
+  - `score_x_account` — median, spread and worst posts for a public X account's recent original posts, with a paste-ready comment.
+  - One `transform_tool_result` hook scores text on post/send-shaped tool calls and appends a one-line verdict. It annotates the result; it never rewrites or blocks it.
+
+  Disclosures
+  - Every tool call is a JSON-RPC request to the hosted MCP endpoint at https://besthumanizer.app/mcp, authenticated with BESTHUMANIZER_API_KEY. The passage you score or rewrite is sent to that server.
+  - `humanize_text` debits its input word count from the account's monthly allowance; `score_text` and `score_x_account` debit nothing. The plugin ships no local scoring code and makes no other network calls.
+  - `score_x_account` reads a public X account's timeline through the same server; no X account is connected on the user's behalf.
+  - The hook runs on post/send-shaped tool results only, adds one network call per annotated result, and is silent when the API key is absent.
+maintainer: shagghiesuperstar
+tier: community
+category: tools
+docs_url: https://github.com/shagghiesuperstar/hermes-besthumanizer#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [humanize_text, score_text, score_x_account]
+  provides_hooks: [transform_tool_result]
+  provides_middleware: []
+  requires_env: [BESTHUMANIZER_API_KEY]

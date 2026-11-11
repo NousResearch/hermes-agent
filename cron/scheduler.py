@@ -2208,39 +2208,6 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def _end_suppressed_cron_session(db, job: dict, job_id: str, job_name: str, cron_session_id: str) -> None:
-    """End the session row a gateway-owned admission committed when an early gate skips the agent.
-
-    Gateway-owned cron fires commit their ``local-*`` session row at admission, BEFORE
-    ``run_job``'s gates run. When an early return then skips the agent (monitor no-change
-    suppression, wakeAgent=false, blocked/empty payload, config refusal, or a failed store
-    acquisition), the finally block never had a store of its own to finalize and the row
-    stayed started with zero messages forever — a monitor job on a short interval
-    accumulated hundreds of never-active rows per day. Write through the OWNER's existing
-    handle (never acquire a second borrow, never close or release the lent store) under the
-    bounded proxy, title the row, and end it as ``cron_suppressed`` so session prune can
-    reclaim it. Best-effort: cleanup must never change the run's result nor hold the
-    dispatch guard (same bound/quiet contract as ``_finalize_cron_session``)."""
-    if db is None:
-        return
-    _session_db = _BoundedCronSessionDB(db, job_id)
-    try:
-        _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
-        _set_cron_session_title(_session_db, cron_session_id,
-                                f"{_title_base} · {safe_strftime(_hermes_now(), '%b %d %H:%M')}")
-    except (Exception, KeyboardInterrupt) as e:
-        logger.debug("Job '%s': failed to title suppressed cron session: %s", job_id, e, exc_info=True)
-    with contextlib.suppress(Exception, KeyboardInterrupt):
-        _workdir = _resolve_job_workdir(job, job_id)
-        if _workdir:
-            with contextlib.suppress(Exception, KeyboardInterrupt):
-                _session_db.update_session_cwd(cron_session_id, _workdir)
-    try:
-        _session_db.end_session(cron_session_id, "cron_suppressed")
-    except (Exception, KeyboardInterrupt) as e:
-        logger.debug("Job '%s': failed to end suppressed cron session: %s", job_id, e, exc_info=True)
-
-
 def _normalize_newlines(text: str) -> str:
     """CRLF/CR -> LF, matching what text-mode reads of the archive return."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
@@ -2599,29 +2566,23 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
-    if early is not None:
-        # A gate skipped the agent. On a gateway-owned fire the admission already committed
-        # this run's session row and the finally below never saw a store — end the row here
-        # or every suppressed tick (monitor no-change, wake gate, blocked payload) lingers
-        # never-active forever.
-        if owner_execution is not None:
-            _end_suppressed_cron_session(owner_execution[0].db, job, job_id, job_name, owner_execution[1])
-        return early
-    from run_agent import AIAgent
-
     _cron_session_id = (owner_execution[1] if owner_execution is not None else
                         f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")
-    logger.info("Running job '%s' (ID: %s)", job_name, job_id)
-    logger.info("Prompt: %s", prompt[:100])
-
     agent = None
     model = ""
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
-    scope = _CronRunScope(job, job_id, execution_id)
+    scope = None
     try:
+        early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+        if early is not None:
+            return early
+        from run_agent import AIAgent
+
+        logger.info("Running job '%s' (ID: %s)", job_name, job_id)
+        logger.info("Prompt: %s", prompt[:100])
+        scope = _CronRunScope(job, job_id, execution_id)
         scope.enter()
         if scope.workdir:
             logger.info("Job '%s': using task-scoped workdir %s", job_id, scope.workdir)
@@ -2667,6 +2628,10 @@ def run_job(
         return True, output, final_response, None
 
     except (Exception, ConfigBackendUnavailable) as e:  # the plane being down fails THIS fire only
+        if scope is None:
+            # Preparation exceptions historically propagate to the owner, rather than becoming
+            # a scheduler result. The finally still owns the admission row's end attempt.
+            raise
         error_msg = f"{type(e).__name__}: {e!s}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         # Cowork-style unreachable-model re-run (cron/unreachable_retry.py): flag failures where
@@ -2695,32 +2660,9 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
-        from cron.scheduler_detached_worker import defer_teardown_to_running_worker
-        _worker_teardown_deferred = defer_teardown_to_running_worker(
-            _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id,
-            workdir=scope.workdir)
-        scope.exit()
-        if _session_db and not _worker_teardown_deferred:
-            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
-                                   workdir=scope.workdir)
-        elif _session_db is None and owner_execution is not None and not _worker_teardown_deferred:
-            # Raised/blocked before the store opened (or store acquisition failed): the
-            # admission row exists and nothing else will end it. Write through the owner's
-            # lent handle — never re-acquire a borrow here.
-            _end_suppressed_cron_session(owner_execution[0].db, job, job_id, job_name, _cron_session_id)
-        # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
-        # teardown, hand the live agent back: delivery needs a live async client.
-        # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held
-        # by this ephemeral cron agent. Without this, a gateway that ticks cron every N minutes leaks fds
-        # per job until it hits EMFILE (#10200 / "too many open files"). When the caller opted to defer
-        # teardown (passed a list), hand the live agent back instead of closing it here — delivery must run
-        # against a live async client, and the caller tears down afterwards (#58720).
-        if not _worker_teardown_deferred:
-            if defer_agent_teardown is not None:
-                if agent is not None:
-                    defer_agent_teardown.append(agent)
-            else:
-                _teardown_cron_agent(agent, job_id)
+        from cron.scheduler_session_cleanup import finish_cron_run
+        finish_cron_run(job, job_name, _cron_session_id, owner_execution, scope, _session_db,
+                        agent, _worker_state.get("future"), defer_agent_teardown)
 
 
 def _teardown_cron_agent(

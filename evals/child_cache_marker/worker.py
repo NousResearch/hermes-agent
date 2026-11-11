@@ -1,8 +1,8 @@
 """Real-loop check: three real subagent-shaped AIAgents, run one after another, on one tree.
 
   RL_TREE=<tree> RL_URL=... RL_KEY=... python worker.py <arm> <out.jsonl> <rep>
-Each child is built the way tools/delegate_tool.py builds one (platform="subagent", no context files,
-no memory, the per-task prompt from _build_child_system_prompt as the ephemeral system prompt) and does
+Each child is a subagent-shaped AIAgent (platform="subagent", no context files, no memory) whose
+ephemeral system prompt is a per-session tail that differs between A/C and B, and does
 a small real task with real tools in a temp HERMES_HOME. Per-call usage is taken from the agent's own
 usage accounting.
 """
@@ -40,9 +40,16 @@ sys.path.insert(0, TREE)
 
 import agent.turn_response_check as trc
 from run_agent import AIAgent
-from tools.delegate_tool_progress import _build_child_system_prompt
 
 calls = []
+
+
+def task_tail(context):
+    """A per-session tail appended to the system prompt at request time (a task brief, a personality)."""
+    return ("You are a focused subagent working on a specific delegated task.\n\nCONTEXT:\n" + context
+            + "\n\n# Project Context\n\n" + open(os.path.join(ws, "AGENTS.md")).read()
+            + "\n\nComplete this task using the tools available to you. When finished, provide a clear, concise summary.")
+
 _orig = trc.record_response_usage
 
 
@@ -66,7 +73,7 @@ for name, context, fname, want in CHILDREN:
     child = AIAgent(base_url=URL, api_key=KEY, provider="custom", model=MODEL, quiet_mode=True, platform="subagent",
                     skip_context_files=True, skip_memory=True, skip_background_review=True,
                     enabled_toolsets=["terminal", "file", "skills"], max_iterations=8,
-                    ephemeral_system_prompt=_build_child_system_prompt("x", context, workspace_path=ws))
+                    ephemeral_system_prompt=task_tail(context))
     assert child._use_prompt_caching and not child._use_native_cache_layout, "caching route not active"
     t0 = time.time()
     res = child.run_conversation(user_message=f"Use the terminal to list this directory, then read {fname}.txt and reply with the number in it.")

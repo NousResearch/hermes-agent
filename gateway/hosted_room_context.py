@@ -50,14 +50,14 @@ def room_context(
 
 
 def groups_state_result(
-        db_path: DbPath, room: Mapping[str, Any], service: Any) -> dict[str, Any]:
+        store: Persistence, room: Mapping[str, Any], service: Any, *, placement: HostedPlacement) -> dict[str, Any]:
     """``groups.state``'s answer for a room both backends read the same way: the room, and for a live room
     its context and (with a room service) its driver status. ``change_events``: this process's change
     watcher pushes ``groups.changed`` when the room moves (``change_watcher._groups_sig``), so a client's
     poll is only a backstop. A forwarding backend strips it: the owner's pushes don't reach its clients."""
     result: dict[str, Any] = {"room": room, "change_events": True}
     if room.get("disbanded_at") is None:
-        result["context"] = room_context(db_path, room_id=room["room_id"])
+        result["context"] = room_context(store, placement=placement, room_id=room["room_id"])
         if service is not None:
             result["driver_status"] = service.status(str(room["room_id"]))
     return result

@@ -101,7 +101,6 @@ import {
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
-import { $portalPreferred } from '@/store/shell-variant'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
@@ -557,8 +556,6 @@ async function awaitProfileActivation(
 }
 
 export const host = {
-  /** Read-only sidebar preference; plugins can hide alternate navigation while it is enabled. */
-  simplifiedAgentMode: readonlyAtom<boolean>($portalPreferred),
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),

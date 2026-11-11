@@ -17,13 +17,17 @@ export const $shellChoice = persistentAtom<boolean | null>('hermes.desktop.agent
 })
 
 /** The user's redesign preference (on unless rolled back). Window-independent: read it for
- *  behaviour every window must agree on — setup flow, session scope, metrics, the plugin SDK. */
+ *  behaviour every window must agree on — `shell-policy.ts` names each such behaviour. */
 export const $portalPreferred = computed($shellChoice, choice => choice !== false)
 
+/** Whether THIS window renders the portal shell for a stored choice. The chromeless HUD and
+ *  popped-out Browser keep the classic look in every mode; their layouts were never redesigned. */
+export const rendersPortalShell = (choice: boolean | null): boolean =>
+  choice !== false && !isHudWindow() && !isBrowserWindow()
+
 /** Whether THIS window renders the redesigned (portal) shell — the one presentation read, mirrored
- *  to `<html data-shell="portal">` for CSS. The chromeless HUD and popped-out Browser keep the
- *  classic look in every mode; their layouts were never redesigned. */
-export const $portalShell = computed($portalPreferred, preferred => preferred && !isHudWindow() && !isBrowserWindow())
+ *  to `<html data-shell="portal">` for CSS. */
+export const $portalShell = computed($shellChoice, rendersPortalShell)
 
 export function usePortalShell(): boolean {
   return useStore($portalShell)

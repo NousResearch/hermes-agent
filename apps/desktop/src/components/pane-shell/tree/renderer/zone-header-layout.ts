@@ -1,5 +1,5 @@
-import { TITLEBAR_HEIGHT, TOUCH_TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
-import { useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
+import { TOUCH_TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { useTitlebarHeight, useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
 
 import { isSessionStripPane } from '../store'
 
@@ -38,6 +38,7 @@ export function useZoneHeaderLayout({
   topEdge
 }: ZoneHeaderLayoutInput): ZoneHeaderLayout {
   const touchTitlebar = useTouchTitlebar()
+  const titlebarHeight = useTitlebarHeight()
   const compactTabs = touchTitlebar && narrow && shown.some(isSessionStripPane)
   // The compact picker needs a full touch row: the titlebar's fit threshold
   // also has to accommodate the drag handle and the separate new-tab target.
@@ -49,6 +50,6 @@ export function useZoneHeaderLayout({
     tabStripHeight: compactTabs ? TOUCH_TITLEBAR_HEIGHT : TAB_STRIP_HEIGHT,
     tabsBelowControls,
     tabsInTitlebar: topEdge && !tabsBelowControls,
-    titlebarHeight: touchTitlebar ? TOUCH_TITLEBAR_HEIGHT : TITLEBAR_HEIGHT
+    titlebarHeight
   }
 }

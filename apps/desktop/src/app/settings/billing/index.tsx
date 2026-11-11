@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
 import { BarChart3, CreditCard, ExternalLink, Package, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useRouteEnumParam } from '../../hooks/use-route-enum-param'
 import {
@@ -20,12 +21,14 @@ import {
   SettingsContent,
   SettingsSection
 } from '../primitives'
+import { SettingsCard, SettingsGroup, SettingsOverview, SettingsPageDescription } from '../settings-card'
+import { useSettingsPagesCopy } from '../settings-pages-copy'
 
 import { RowValue } from './account-row-value'
 import { BillingApiProvider } from './api'
 import { AutoReloadRow } from './auto-reload-row'
 import { clampAmount, formatMoney } from './billing-amounts'
-import { CurrentPlanCard } from './current-plan-card'
+import { CurrentPlanCard, CurrentPlanRow } from './current-plan-card'
 import { type BillingDevFixtureName, billingDevFixtures } from './dev-fixtures'
 import { StepUpInlineAction } from './inline-feedback'
 import { KeepGoingOnCreditsRow } from './keep-going-on-credits-row'
@@ -37,6 +40,7 @@ import {
   type BillingAccountRowView,
   type BillingNoticeView,
   type BillingUsageRowView,
+  type BillingView,
   deriveBillingView,
   useBillingState,
   useSubscriptionState
@@ -73,11 +77,12 @@ function SummaryCard({ label, value, tone }: { label: string; tone?: 'muted' | '
   )
 }
 
-function NoticeCard({ notice }: { notice: BillingNoticeView }) {
+/** `inStack`: the redesign's page stack owns the spacing below the notice. */
+function NoticeCard({ inStack = false, notice }: { inStack?: boolean; notice: BillingNoticeView }) {
   const warn = notice.tone === 'warn'
 
   return (
-    <div className={cn('mb-6 rounded-xl p-4', warn ? 'bg-(--ui-yellow)/10' : 'bg-(--ui-bg-quaternary)')}>
+    <div className={cn('rounded-xl p-4', !inStack && 'mb-6', warn ? 'bg-(--ui-yellow)/10' : 'bg-(--ui-bg-quaternary)')}>
       <div
         className={cn(
           'text-[length:var(--conversation-text-font-size)] font-medium',
@@ -495,6 +500,8 @@ function BillingSettingsContent({
 }) {
   const { t } = useI18n()
   const b = t.settings.billing
+  const redesign = usePortalShell()
+  const pages = useSettingsPagesCopy()
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
@@ -536,6 +543,21 @@ function BillingSettingsContent({
       <SettingsContent>
         <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
         <BillingPlansView onBack={() => setSubView('overview')} tiers={view.tiers} />
+      </SettingsContent>
+    )
+  }
+
+  if (redesign) {
+    return (
+      <SettingsContent>
+        <SettingsPageDescription>{pages.intro.account}</SettingsPageDescription>
+        <BillingHeader fixtureName={fixtureName} onFixtureChange={onFixtureChange} />
+        <RedesignBillingOverview
+          accountRows={accountRows}
+          billing={billing}
+          onViewPlans={() => setSubView('plans')}
+          view={view}
+        />
       </SettingsContent>
     )
   }
@@ -596,6 +618,59 @@ function BillingSettingsContent({
         ) : null
       }
     </SettingsContent>
+  )
+}
+
+interface RedesignBillingOverviewProps {
+  accountRows: BillingAccountRowView[]
+  billing?: BillingStateResponse
+  view: BillingView
+  onViewPlans: () => void
+}
+
+/** Account & Plan (856:1835): one "Plan & credits" card — plan, balance, money controls, payment
+ *  method — then usage. Same rows and actions as classic; the summary tiles become rows, minus the
+ *  plan and auto-refill tiles whose own rows already say it. */
+function RedesignBillingOverview({ accountRows, billing, view, onViewPlans }: RedesignBillingOverviewProps) {
+  const { t } = useI18n()
+  const b = t.settings.billing
+  const pages = useSettingsPagesCopy()
+
+  const summary = view.summary.filter(
+    item => !(view.plan && item.label === b.summary.plan) && !(view.refillRow && item.label === b.summary.autoRefill)
+  )
+
+  return (
+    <SettingsOverview>
+      {view.notice && <NoticeCard inStack notice={view.notice} />}
+      <SettingsGroup title={pages.account.planCredits}>
+        <SettingsCard>
+          {view.plan && <CurrentPlanRow onViewPlans={onViewPlans} plan={view.plan} />}
+          {summary.map(item => (
+            <ListRow
+              action={<span className={cn('billing-summary-value', item.tone && `is-${item.tone}`)}>{item.value}</span>}
+              key={item.label}
+              title={item.label}
+            />
+          ))}
+          {accountRows.map(row => (
+            <AccountRow billing={billing} key={row.id} row={row} />
+          ))}
+          {view.paymentRow && <AccountRow billing={billing} row={view.paymentRow} />}
+          {billing?.keep_going_on_credits != null && <KeepGoingOnCreditsRow enabled={billing.keep_going_on_credits} />}
+        </SettingsCard>
+        {view.planFootnote && <p className="billing-footnote">{view.planFootnote}</p>}
+      </SettingsGroup>
+      {view.usageRows.length > 0 && (
+        <SettingsGroup meta={view.usagePlanName} title={b.sections.usage}>
+          <SettingsCard className="billing-usage-card">
+            {view.usageRows.map(row => (
+              <UsageRow key={row.id} row={row} />
+            ))}
+          </SettingsCard>
+        </SettingsGroup>
+      )}
+    </SettingsOverview>
   )
 }
 

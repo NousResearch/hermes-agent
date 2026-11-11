@@ -17,7 +17,6 @@ import {
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { cn } from '@/lib/utils'
 import { recordIaAction } from '@/store/ia-metrics'
 import type { IA_ACTIONS } from '@/store/ia-metrics-contract'
 import { $interfaceMode, INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
@@ -111,12 +110,12 @@ export function SimplifiedSettingsMenu({ active, onNavigate }: SimplifiedSetting
         }
       }}
     >
-      <Tip label={t.commandCenter.settings}>
+      <Tip label={t.commandCenter.settings} placement="left-rail">
         <DropdownMenuTrigger asChild>
           <Button
             aria-current={active ? 'page' : undefined}
             aria-label={t.commandCenter.settings}
-            className={cn(active && 'bg-(--chrome-action-hover) text-(--ui-text-primary)')}
+            className="portal-chrome-button"
             size="icon"
             variant="ghost"
           >
@@ -131,7 +130,10 @@ export function SimplifiedSettingsMenu({ active, onNavigate }: SimplifiedSetting
         </DropdownMenuItem>
         {portal && (
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger><Codicon name="layout" />{t.interfaceMode.title}</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>
+              <Codicon name="layout" />
+              {t.interfaceMode.title}
+            </DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               <DropdownMenuRadioGroup value={mode}>
                 {INTERFACE_MODES.map(id => (

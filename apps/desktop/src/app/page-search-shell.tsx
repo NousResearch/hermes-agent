@@ -21,6 +21,8 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   children: ReactNode
   /** Full-page V2 heading. Embedded surfaces omit it. */
   pageTitle?: string
+  /** The redesign's one-line description under the heading (919:9095). */
+  pageDescription?: string
   tabs?: PageShellTab[]
   activeTab?: string
   onTabChange?: (id: string) => void
@@ -65,6 +67,7 @@ export function PageSearchShell({
   children,
   className,
   pageTitle,
+  pageDescription,
   tabs,
   activeTab,
   onTabChange,
@@ -91,6 +94,7 @@ export function PageSearchShell({
       variant={redesigned ? 'box' : 'underline'}
     />
   )
+
   const tabStrip = hasTabs ? (
     <ShellTabs activeTab={activeTab} align={redesigned ? 'start' : tabsAlign} onTabChange={onTabChange} tabs={tabs!} />
   ) : null
@@ -100,7 +104,7 @@ export function PageSearchShell({
       {...props}
       className={cn(
         'flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
-        redesigned && '[--page-content-inset:1.5rem] [--page-content-max-width:1228px]',
+        redesigned && 'page-redesigned',
         className
       )}
       data-page-surface={redesigned || undefined}
@@ -122,7 +126,13 @@ export function PageSearchShell({
       */}
       <div className="shrink-0">
         {redesigned ? (
-          <PageHeader actions={searchTrailingAction} search={search} tabs={tabStrip} title={pageTitle!} />
+          <PageHeader
+            actions={searchTrailingAction}
+            description={pageDescription}
+            search={search}
+            tabs={tabStrip}
+            title={pageTitle!}
+          />
         ) : (
           <ClassicPageHeader
             actions={searchTrailingAction}
@@ -134,40 +144,45 @@ export function PageSearchShell({
         )}
         {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}
       </div>
-      <div className="page-search-body min-h-0 flex-1 overflow-hidden bg-(--ui-chat-surface-background)">{children}</div>
+      <div className="page-search-body min-h-0 flex-1 overflow-hidden bg-(--ui-chat-surface-background)">
+        {children}
+      </div>
     </section>
   )
 }
 
 function PageHeader({
   title,
+  description,
   tabs,
   search,
   actions
 }: {
   title: string
+  description?: string
   tabs: ReactNode
   search: ReactNode
   actions: ReactNode
 }) {
   return (
-    <header className="mx-auto w-full max-w-(--page-content-max-width) px-6 pb-4 pt-[calc(var(--titlebar-height)+1.5rem)]">
-      <h1 className="mb-5 text-3xl leading-tight font-medium tracking-tight text-foreground">{title}</h1>
-      <div className="flex flex-wrap items-center gap-3">
-        {tabs && (
-          <div className="min-w-0 flex-1 basis-48" data-tour="page-tabs">
-            {tabs}
-          </div>
-        )}
+    <header className="page-header">
+      <div className="page-header-title">
+        <div className="page-header-heading">
+          <h1>{title}</h1>
+          {description && <p className="page-header-description">{description}</p>}
+        </div>
         {(search || actions) && (
-          <div
-            className={cn('ml-auto flex min-w-0 items-center justify-end gap-3', search && 'max-w-sm flex-1 basis-64')}
-          >
+          <div className={cn('page-header-actions', search && 'max-w-sm flex-1 basis-64')}>
             {search}
             {actions}
           </div>
         )}
       </div>
+      {tabs && (
+        <div className="page-header-tabs" data-tour="page-tabs">
+          {tabs}
+        </div>
+      )}
     </header>
   )
 }
@@ -185,7 +200,10 @@ function ClassicPageHeader({
   search: ReactNode
   actions: ReactNode
 }) {
-  if (!tabs && searchHidden) {return null}
+  if (!tabs && searchHidden) {
+    return null
+  }
+
   return (
     <div
       className={cn(

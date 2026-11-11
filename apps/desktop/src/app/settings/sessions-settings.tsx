@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import {
@@ -34,7 +33,15 @@ import { listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import {
+  SettingsCard,
+  SettingsDisclosure,
+  SettingsGroup,
+  SettingsOverview,
+  SettingsPageDescription
+} from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { settingsPagesCopy } from './settings-pages-copy'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -68,10 +75,10 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
 }
 
 function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const pages = settingsPagesCopy(locale)
   const s = t.settings.sessions
   const redesign = usePortalShell()
-  const ArchiveContainer = redesign ? 'details' : 'div'
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -162,86 +169,93 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
   return (
     <SettingsContent>
-      <div className={redesign ? 'global-settings-overview' : 'contents'}>
+      <SettingsPageDescription>{pages.intro.sessions}</SettingsPageDescription>
+      <SettingsOverview>
         {includeDefaultDirectory && !redesign && <DefaultProjectDirSetting />}
 
-        <div className={redesign ? 'global-settings-card' : undefined}>
-          <AutoArchiveSetting />
-        </div>
+        <SettingsGroup title={pages.archive}>
+          <SettingsCard classicClassName="">
+            <AutoArchiveSetting />
+          </SettingsCard>
 
-        <ArchiveContainer className={redesign ? 'global-settings-disclosure group' : undefined}>
-          {redesign ? (
-            <summary>
-              <span>{s.archivedTitle}</span>
-              <DisclosureCaret className="group-open:rotate-90" open={false} />
-            </summary>
-          ) : (
-            <SectionHeading
-              icon={Archive}
-              meta={sessions.length ? String(sessions.length) : undefined}
-              title={s.archivedTitle}
-            />
-          )}
-          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {s.archivedIntro}
-          </p>
+          <SettingsDisclosure
+            classicHeading={
+              <SectionHeading
+                icon={Archive}
+                meta={sessions.length ? String(sessions.length) : undefined}
+                title={s.archivedTitle}
+              />
+            }
+            count={sessions.length}
+            title={s.archivedTitle}
+          >
+            <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {s.archivedIntro}
+            </p>
 
-          {sessions.length === 0 ? (
-            <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
-          ) : (
-            <div className="grid gap-1">
-              {sessions.map(session => {
-                const label = pathLeaf(session.cwd)
-                const busy = busyId === session.id
+            {sessions.length === 0 ? (
+              <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
+            ) : (
+              <div className="grid gap-1">
+                {sessions.map(session => {
+                  const label = pathLeaf(session.cwd)
+                  const busy = busyId === session.id
 
-                return (
-                  <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
-                    <ListRow
-                      action={
-                        <div className="flex items-center gap-1.5">
-                          <Button
-                            disabled={busy}
-                            onClick={() => void unarchive(session)}
-                            size="sm"
-                            type="button"
-                            variant="textStrong"
-                          >
-                            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                            <span>{s.unarchive}</span>
-                          </Button>
-                          <Tip label={s.deletePermanently}>
+                  return (
+                    <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+                      <ListRow
+                        action={
+                          <div className="flex items-center gap-1.5">
                             <Button
-                              aria-label={s.deletePermanently}
-                              className="text-muted-foreground hover:text-destructive"
                               disabled={busy}
-                              onClick={() => void remove(session)}
-                              size="icon"
+                              onClick={() => void unarchive(session)}
+                              size="sm"
                               type="button"
-                              variant="ghost"
+                              variant="textStrong"
                             >
-                              <Trash2 className="size-3.5" />
+                              {busy ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <ArchiveOff className="size-3.5" />
+                              )}
+                              <span>{s.unarchive}</span>
                             </Button>
-                          </Tip>
-                        </div>
-                      }
-                      description={session.preview || undefined}
-                      hint={
-                        label ? `${label} · ${s.messages(session.message_count)}` : s.messages(session.message_count)
-                      }
-                      title={sessionTitle(session)}
-                    />
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </ArchiveContainer>
+                            <Tip label={s.deletePermanently}>
+                              <Button
+                                aria-label={s.deletePermanently}
+                                className="text-muted-foreground hover:text-destructive"
+                                disabled={busy}
+                                onClick={() => void remove(session)}
+                                size="icon"
+                                type="button"
+                                variant="ghost"
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            </Tip>
+                          </div>
+                        }
+                        description={session.preview || undefined}
+                        hint={
+                          label ? `${label} · ${s.messages(session.message_count)}` : s.messages(session.message_count)
+                        }
+                        title={sessionTitle(session)}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </SettingsDisclosure>
+        </SettingsGroup>
         {includeDefaultDirectory && redesign && (
-          <div className="global-settings-card">
-            <DefaultProjectDirSetting compact />
-          </div>
+          <SettingsGroup title={pages.newSessions}>
+            <SettingsCard>
+              <DefaultProjectDirSetting compact />
+            </SettingsCard>
+          </SettingsGroup>
         )}
-      </div>
+      </SettingsOverview>
     </SettingsContent>
   )
 }

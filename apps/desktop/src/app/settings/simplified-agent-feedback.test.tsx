@@ -23,9 +23,11 @@ function renderSettings(subpage = 'general') {
       </QueryClientProvider>
     </MemoryRouter>
   )
+
   if (subpage === 'general') {
     fireEvent.click(view.container.querySelector('details > summary')!)
   }
+
   return view
 }
 

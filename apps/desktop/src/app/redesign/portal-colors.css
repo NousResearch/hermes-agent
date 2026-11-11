@@ -40,62 +40,66 @@
   --portal-selection-background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
 }
 
-:root[data-shell='portal'] [data-slot='global-nav'] button:not([aria-current]) {
-  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
-  color: var(--ui-text-quaternary);
+/* Shell surfaces (Figma `Background` › `Content`): rails and the titlebar band show the window
+   canvas; the sidebar and stage are panels laid over it. Every value derives from the skin's
+   chrome and ink, so each skin keeps its character while the redesign keeps Figma's stack:
+   dark panels are black .90 / .96 + ink .05 over the canvas, light panels lift toward white.
+   Window glass owns these surfaces itself (styles.css), so the stack stands down there. */
+:root[data-shell='portal']:not([data-hermes-glass]) {
+  /* A skin may name its own canvas (themes/portal.ts); otherwise chrome with 5% ink. */
+  --portal-window-background: var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)));
+  --portal-sidebar-background: color-mix(in srgb, #fff 30%, var(--portal-window-background));
+  /* The sidebar panel itself: translucent where the design lets the wing show through it. */
+  --portal-sidebar-panel-background: var(--portal-sidebar-background);
+  --portal-stage-background: color-mix(in srgb, #fff 90%, var(--portal-window-background));
+  --portal-panel-divider: var(--ui-stroke-tertiary);
+  /* Settings / agent / capability pages sit on the canvas itself (Overview 856:2809). */
+  --portal-page-canvas: var(--portal-window-background);
+  --portal-page-background: var(--portal-stage-background);
+  --portal-page-sidebar-background: var(--portal-sidebar-background);
+  --ui-sidebar-surface-background: var(--portal-sidebar-background);
+  --ui-chat-surface-background: var(--portal-stage-background);
+  --ui-editor-surface-background: var(--portal-stage-background);
 }
 
-:root[data-shell='portal'] [data-slot='global-nav'] button:not([aria-current]):hover {
-  background-color: var(--ui-bg-primary);
-  color: var(--ui-text-secondary);
+:root.dark[data-shell='portal']:not([data-hermes-glass]) {
+  --portal-window-background: var(--portal-skin-window, var(--ui-bg-chrome));
+  --portal-sidebar-background: color-mix(
+    in srgb,
+    var(--ui-base) 5%,
+    color-mix(in srgb, #000 90%, var(--portal-window-background))
+  );
+  /* Same composite as one translucent fill: black .90 then ink .05 = (ink 5.5% on black) @ .905. */
+  --portal-sidebar-panel-background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--ui-base) 5.5%, #000) 90.5%,
+    transparent
+  );
+  --portal-stage-background: color-mix(
+    in srgb,
+    var(--ui-base) 5%,
+    color-mix(in srgb, #000 96%, var(--portal-window-background))
+  );
+  --portal-page-canvas: var(--ui-bg-chrome);
+  --portal-page-background: var(--portal-page-canvas);
+  --portal-page-sidebar-background: color-mix(in srgb, var(--ui-base) 1.5%, transparent);
 }
 
-:root[data-shell='portal'] [data-slot='global-nav'] button[aria-current='page'] {
-  background-color: var(--portal-selection-background);
-  color: var(--ui-text-primary);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+/* Pages — overlays (Settings, Agents, …) and the workspace's own pages (Capabilities, Library, …)
+   — share one frame: square, full bleed beside the rail, nav and body laid on the page canvas
+   (Overview 856:2740 / 856:2809 / 919:9263) rather than on chat panels. */
+:root[data-shell='portal']:not([data-hermes-glass])
+  :is([data-overlay-surface][data-page-surface], [data-tree-group][data-zone-page]) {
+  --ui-chat-surface-background: var(--portal-page-background);
+  --ui-editor-surface-background: var(--portal-page-background);
+  --ui-sidebar-surface-background: var(--portal-page-sidebar-background);
 }
 
-:root[data-shell='portal'] [data-slot='switch'] {
-  border-color: transparent;
-  box-shadow: none;
+:root[data-shell='portal']:not([data-hermes-glass]) [data-overlay-surface][data-page-surface] {
+  background-color: var(--portal-page-canvas);
 }
 
-:root[data-shell='portal'] [data-slot='switch'][data-state='unchecked'] {
-  background: color-mix(in srgb, var(--ui-base) 10%, transparent);
-}
-
-:root[data-shell='portal'] [data-slot='switch'][data-state='checked']:not(:disabled) {
-  background: var(--portal-brand-fill);
-}
-
-:root[data-shell='portal'] [data-slot='switch-thumb'][data-state='checked'] {
-  background: var(--portal-on-brand);
-}
-
-/* Flat floating surfaces: menus, popovers and dialogs sit on the theme's elevated fill without
-   shadow or backdrop blur. Body-portalled, so gated on the root alone. */
-:root[data-shell='portal']
-  :is(
-    [data-slot='dropdown-menu-content'],
-    [data-slot='dropdown-menu-sub-content'],
-    [data-slot='context-menu-content'],
-    [data-slot='context-menu-sub-content'],
-    [data-slot='select-content'],
-    [data-slot='popover-content']:not([data-variant='accent']),
-    .hermes-floating-surface
-  ) {
-  --popover-surface: var(--ui-bg-elevated);
-  background-color: var(--ui-bg-elevated);
-  backdrop-filter: none;
-  box-shadow: none;
-}
-
-:root[data-shell='portal'] :is([data-slot='popover-arrow'], [data-slot='dialog-overlay']) {
-  backdrop-filter: none;
-}
-
-:root[data-shell='portal'] [data-slot='dialog-content'] {
-  background-color: var(--ui-bg-elevated);
-  box-shadow: none;
+:root[data-shell='portal']:not([data-hermes-glass])
+  :is([data-slot='page-toolbar'], [data-tree-group][data-zone-page] > [data-panel-header]) {
+  background-color: var(--portal-page-canvas);
 }

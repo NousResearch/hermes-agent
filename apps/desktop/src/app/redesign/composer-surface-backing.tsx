@@ -1,4 +1,4 @@
-import './portal-composer-edge.css'
+import './portal-composer.css'
 
 import { composerInputBacking } from '@/components/chat/composer-dock'
 import { usePortalShell } from '@/store/shell-variant'

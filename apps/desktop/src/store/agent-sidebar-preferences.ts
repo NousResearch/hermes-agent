@@ -33,6 +33,22 @@ export const $hiddenSidebarAgentsExpanded = persistentAtom(
   Codecs.bool
 )
 
+/** Redesign-only Agents section disclosure. Global: one window presentation preference, never shared
+ *  with classic's section atoms, so collapsing in one shell leaves the other untouched. */
+export const $portalAgentsSectionOpen = persistentAtom(
+  'hermes.desktop.portalSidebar.agentsOpen.global.v1',
+  true,
+  Codecs.bool
+)
+
+/** Redesign-only Pinned section disclosure, scoped like `$portalAgentsSectionOpen`: classic's
+ *  Pinned section keeps its own (session-only) `$sidebarPinsOpen`. */
+export const $portalPinnedSectionOpen = persistentAtom(
+  'hermes.desktop.portalSidebar.pinnedOpen.global.v1',
+  true,
+  Codecs.bool
+)
+
 export function setSidebarAgentHidden(owner: AgentSidebarOwner, hidden: boolean): void {
   const key = agentSidebarKey(owner)
   const current = $hiddenSidebarAgents.get()

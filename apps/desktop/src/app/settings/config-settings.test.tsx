@@ -310,6 +310,7 @@ it.each([false, true])(
         </QueryClientProvider>
       </MemoryRouter>
     )
+
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
@@ -345,34 +346,31 @@ it.each([false, true])(
   }
 )
 
-it('keeps compact Limits destinations distinct when moving between runtime, terminal and output', async () => {
+it('shows the whole agent Runtime & Limits page and leaves desktop and tool-key settings to their own pages', async () => {
   $shellChoice.set(true)
   getHermesConfigRecord.mockResolvedValue({
     agent: { max_turns: 42 },
     terminal: { timeout: 17 },
-    tool_output: { max_bytes: 1234 }
+    tool_output: { max_bytes: 1234 },
+    updates: { non_interactive_local_changes: 'stash' }
   })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const input = createRef<HTMLInputElement>()
-  const editor = (subpage: string) => (
+
+  render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <SettingsOwnerContext.Provider value={{ connectionId: 'local', profile: 'research' }}>
-          <ConfigSettings activeSectionId="advanced" agentLayout importInputRef={input} subpage={subpage} />
+          <ConfigSettings activeSectionId="advanced" agentLayout importInputRef={input} />
         </SettingsOwnerContext.Provider>
       </QueryClientProvider>
     </MemoryRouter>
   )
-  const view = render(editor('runtime'))
+
+  // Runtime, terminal and output limits share one page (Figma 895:22651)…
   expect(await screen.findByDisplayValue('42')).toBeTruthy()
-  expect(screen.queryByDisplayValue('17')).toBeNull()
-  expect(screen.queryByDisplayValue('1234')).toBeNull()
-  view.rerender(editor('terminal'))
-  expect(await screen.findByDisplayValue('17')).toBeTruthy()
-  expect(screen.queryByDisplayValue('42')).toBeNull()
-  expect(screen.queryByDisplayValue('1234')).toBeNull()
-  view.rerender(editor('output'))
-  expect(await screen.findByDisplayValue('1234')).toBeTruthy()
-  expect(screen.queryByDisplayValue('42')).toBeNull()
-  expect(screen.queryByDisplayValue('17')).toBeNull()
+  expect(screen.getByDisplayValue('17')).toBeTruthy()
+  expect(screen.getByDisplayValue('1234')).toBeTruthy()
+  // …while device-level update policy stays in global Settings.
+  expect(document.getElementById('setting-field-updates.non_interactive_local_changes')).toBeNull()
 })

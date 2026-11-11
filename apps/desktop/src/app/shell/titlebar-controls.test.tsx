@@ -9,7 +9,13 @@ import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-st
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
-import { $fileBrowserOpen, $leftSideOpen, CHAT_SIDEBAR_PANE_ID, FILE_BROWSER_PANE_ID } from '@/store/layout'
+import {
+  $fileBrowserOpen,
+  $leftSideOpen,
+  CHAT_SIDEBAR_PANE_ID,
+  FILE_BROWSER_PANE_ID,
+  setSidebarOpen
+} from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $shellChoice } from '@/store/shell-variant'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
@@ -323,7 +329,6 @@ describe('titlebar app-action cluster', () => {
   })
 })
 
-
 it('keeps settings only in the global rail when simplified mode is enabled', () => {
   $shellChoice.set(false)
   renderControls('/')
@@ -334,4 +339,17 @@ it('keeps settings only in the global rail when simplified mode is enabled', () 
   expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
   cleanup()
   $shellChoice.set(null)
+})
+
+it('offers the redesign band only the way back to a hidden sidebar, which carries its own collapse', () => {
+  $shellChoice.set(null)
+  setSidebarOpen(true)
+  renderControls('/')
+  expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
+
+  act(() => setSidebarOpen(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Show sidebar' }))
+  expect($leftSideOpen.get()).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
+  cleanup()
 })

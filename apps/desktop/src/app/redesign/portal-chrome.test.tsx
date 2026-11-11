@@ -56,11 +56,12 @@ it('opens the viewed tile’s agent settings, never the ambient agent', () => {
   $sessions.set([makeSessionInfo({ id: 'remote-chat', connection_id: 'remote', profile: 'research' })])
   render(
     <MemoryRouter>
-      <PortalConversationHeader paneId="session-tile:remote-chat" title="Research notes" />
+      <PortalConversationHeader paneId="session-tile:remote-chat" />
       <Location />
     </MemoryRouter>
   )
-  expect(screen.getByRole('heading', { name: 'Research notes' })).toBeTruthy()
+  // The session title belongs to the titlebar pill; the stage row never repeats it.
+  expect(screen.queryByRole('heading')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
   expect(screen.getByRole('status').textContent).toBe('?agentProfile=research&connection=remote')
 })
@@ -69,7 +70,7 @@ it('fails closed for unknown session owners, and resolves cron owners after load
   $selectedStoredSessionId.set('scheduled-chat')
   render(
     <MemoryRouter>
-      <PortalConversationHeader paneId="workspace" title="Scheduled report" />
+      <PortalConversationHeader paneId="workspace" />
       <Location />
     </MemoryRouter>
   )
@@ -85,7 +86,7 @@ it('keeps a profile-only primary conversation on its source when another machine
   $selectedStoredSessionId.set('primary-chat')
   render(
     <MemoryRouter>
-      <PortalConversationHeader paneId="workspace" title="Primary conversation" />
+      <PortalConversationHeader paneId="workspace" />
       <Location />
     </MemoryRouter>
   )
@@ -174,7 +175,7 @@ it('keeps an unlisted tile’s explicit owner alias when opening its settings', 
   ])
   render(
     <MemoryRouter>
-      <PortalConversationHeader paneId="session-tile:hidden-chat" title="Unlisted" />
+      <PortalConversationHeader paneId="session-tile:hidden-chat" />
       <Location />
     </MemoryRouter>
   )

@@ -1,14 +1,22 @@
+import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { $shellChoice } from '@/store/shell-variant'
 
 import {
   MACOS_TAHOE_DARWIN_MAJOR,
+  PORTAL_TITLEBAR_HEIGHT,
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_EDGE_INSET,
+  TITLEBAR_HEIGHT,
   TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE,
+  titlebarBandHeight,
   titlebarControlsPosition,
   titlebarControlsYNudge,
-  titlebarToolsRightCss
+  titlebarToolsRightCss,
+  TOUCH_TITLEBAR_HEIGHT
 } from './titlebar'
+import { useTitlebarHeight } from './use-touch-titlebar'
 
 describe('titlebarControlsPosition', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -63,5 +71,24 @@ describe('titlebarToolsRightCss', () => {
 
   it('matches the left edge inset on macOS fullscreen', () => {
     expect(titlebarToolsRightCss(0, { darwinMajor: 25, isFullscreen: true })).toBe(`${TITLEBAR_EDGE_INSET}px`)
+  })
+})
+
+describe('titlebarBandHeight', () => {
+  it('gives the redesign its 60px header and keeps classic compact (touch: 44px)', () => {
+    expect(titlebarBandHeight({ portal: true, touch: false })).toBe(PORTAL_TITLEBAR_HEIGHT)
+    expect(titlebarBandHeight({ portal: true, touch: true })).toBe(PORTAL_TITLEBAR_HEIGHT)
+    expect(titlebarBandHeight({ portal: false, touch: false })).toBe(TITLEBAR_HEIGHT)
+    expect(titlebarBandHeight({ portal: false, touch: true })).toBe(TOUCH_TITLEBAR_HEIGHT)
+  })
+
+  it('follows a live shell flip in the window band', () => {
+    const { result } = renderHook(() => useTitlebarHeight())
+
+    expect(result.current).toBe(PORTAL_TITLEBAR_HEIGHT)
+    act(() => $shellChoice.set(false))
+    expect(result.current).toBe(TITLEBAR_HEIGHT)
+    act(() => $shellChoice.set(null))
+    expect(result.current).toBe(PORTAL_TITLEBAR_HEIGHT)
   })
 })

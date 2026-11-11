@@ -155,15 +155,16 @@ export function PortalGatewayMenuPanel({
 
   return (
     <div className="space-y-3 p-3 text-xs">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="min-w-0 truncate text-sm font-medium" title={gatewayName}>
+      <div className="flex min-h-[2.125rem] items-center justify-between gap-2">
+        <h2 className="min-w-0 truncate text-[0.8125rem] font-semibold" title={gatewayName}>
           {gatewayName}
         </h2>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           {/* An open transport can still be wedged; recovery must remain reachable. */}
           <Tip label={copy.reconnectGateway}>
             <Button
               aria-label={copy.reconnectGateway}
+              className={GATEWAY_ICON_BUTTON}
               disabled={reconnecting}
               onClick={reconnect}
               size="icon-compact"
@@ -175,15 +176,22 @@ export function PortalGatewayMenuPanel({
           {advanced && (
             <>
               <Tip label={copy.openSystem}>
-                <Button aria-label={copy.openSystem} onClick={openSystem} size="icon-compact" variant="ghost">
+                <Button
+                  aria-label={copy.openSystem}
+                  className={GATEWAY_ICON_BUTTON}
+                  onClick={openSystem}
+                  size="icon-compact"
+                  variant="outline"
+                >
                   <LayoutDashboard />
                 </Button>
               </Tip>
               {/* Keep the disruptive restart visibly distinct from connection recovery. */}
-              <span aria-hidden className="mx-1 h-4 w-px bg-border/70" />
+              <span aria-hidden className="h-4 w-px bg-[color-mix(in_srgb,var(--ui-base)_15%,transparent)]" />
               <Tip label={t.commandCenter.restartGateway}>
                 <Button
                   aria-label={t.commandCenter.restartGateway}
+                  className={GATEWAY_ICON_BUTTON}
                   onClick={restart}
                   size="icon-compact"
                   variant="destructiveOutline"
@@ -198,16 +206,13 @@ export function PortalGatewayMenuPanel({
 
       <GatewayReadiness gatewayState={gatewayState} inferenceStatus={inferenceStatus} />
       {platforms.length > 0 && (
-        <section className="space-y-2">
+        <section className="space-y-1.5">
           <SectionLabel>{copy.messagingPlatforms}</SectionLabel>
-          <ul className="space-y-1">
+          <ul className={cn(GATEWAY_CARD, 'space-y-0.5')}>
             {platforms.map(([name, platform]) => (
-              <li
-                className="flex items-center justify-between gap-2 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3"
-                key={name}
-              >
-                <span className="truncate capitalize">{name}</span>
-                <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+              <li className="flex min-h-6 items-center justify-between gap-2" key={name}>
+                <span className="truncate font-medium capitalize">{name}</span>
+                <span className="flex shrink-0 items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
                   <StatusDot tone={platformStatusTone({ state: platform.state })} />
                   {prettyState(platform.state)}
                 </span>
@@ -219,17 +224,17 @@ export function PortalGatewayMenuPanel({
       {advanced ? (
         <div className="flex items-center justify-between gap-2">
           <SectionLabel>{copy.recentActivity}</SectionLabel>
-          <Button onClick={openSystem} size="xs" variant="text">
+          <Button className="text-(--portal-brand-ink)" onClick={openSystem} size="xs" variant="text">
             {copy.viewAllLogs}
           </Button>
         </div>
       ) : (
         <Button
           aria-expanded={activityOpen}
-          className="w-full justify-between border-dashed"
+          className="min-h-[2.125rem] w-full justify-between rounded-[6px] border border-dashed border-[color-mix(in_srgb,var(--ui-base)_12%,transparent)] bg-[color-mix(in_srgb,var(--ui-base)_2%,transparent)] px-2.5 hover:bg-[color-mix(in_srgb,var(--ui-base)_5%,transparent)]"
           onClick={() => setActivityOpen(value => !value)}
           size="sm"
-          variant="outline"
+          variant="ghost"
         >
           {copy.recentActivity}
           <Codicon className="text-muted-foreground" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
@@ -270,7 +275,7 @@ function GatewayReadiness({
 
   return (
     <>
-      <dl className="space-y-2 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3">
+      <dl className={cn(GATEWAY_CARD, 'space-y-1')}>
         <StatusRow
           good={gatewayOpen}
           label={copy.connectionLabel}
@@ -291,10 +296,13 @@ function GatewayReadiness({
 
 function StatusRow({ label, good, waiting, value }: { label: string; good: boolean; waiting: boolean; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <dt className="text-muted-foreground">{label}</dt>
+    <div className="flex min-h-5 items-center justify-between gap-3">
+      <dt className="text-[0.6875rem] text-(--ui-text-tertiary)">{label}</dt>
       <dd
-        className={cn('flex items-center gap-1.5 text-right', good ? 'text-(--ui-success)' : 'text-muted-foreground')}
+        className={cn(
+          'flex items-center gap-2 text-right font-medium',
+          good ? 'text-(--ui-success)' : 'text-(--ui-text-secondary)'
+        )}
       >
         <StatusDot
           className={good ? 'bg-(--ui-success)' : undefined}
@@ -324,7 +332,10 @@ function RecentGatewayActivity() {
         </p>
       )}
       {lines.length > 0 ? (
-        <LogView className="max-h-44" ref={scrollRef}>
+        <LogView
+          className="max-h-44 rounded-[6px] border-[color-mix(in_srgb,var(--ui-base)_8%,transparent)] text-[0.625rem] leading-normal"
+          ref={scrollRef}
+        >
           {lines.map(trimLogLine).join('\n')}
         </LogView>
       ) : (
@@ -336,8 +347,14 @@ function RecentGatewayActivity() {
   )
 }
 
+// Gateway popover geometry (616:1685): 28px r6 icon controls and r6 inset cards on 4% fill.
+const GATEWAY_ICON_BUTTON = 'rounded-[6px]'
+
+const GATEWAY_CARD =
+  'rounded-[6px] border border-[color-mix(in_srgb,var(--ui-base)_8%,transparent)] bg-[color-mix(in_srgb,var(--ui-base)_4%,transparent)] px-2.5 py-2'
+
 function SectionLabel({ children }: { children: string }) {
   return (
-    <div className="text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">{children}</div>
+    <div className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--portal-brand-ink)">{children}</div>
   )
 }

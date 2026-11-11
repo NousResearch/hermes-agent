@@ -3,10 +3,9 @@ import { type ReactNode, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { SETTINGS_ROUTE } from '@/app/routes'
-import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { $sidebarAgentScroll } from '@/store/agent-sidebar-preferences'
+import { $portalAgentsSectionOpen, $sidebarAgentScroll } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
@@ -17,6 +16,7 @@ import { $gatewayState } from '@/store/session'
 import { setSettingsScope } from '@/store/settings-scope'
 
 import { PortalAgentGroups } from './portal/portal-agent-groups'
+import { PortalSectionHeader } from './portal/portal-section-header'
 import { useFleetRoster } from './use-fleet-roster'
 import type { SimplifiedAgent, useSimplifiedAgents } from './use-simplified-agents'
 
@@ -173,18 +173,30 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
   const { t } = useI18n()
   const { openAgent, pending } = useOpenAgent(props.agents.owner)
   const scroll = useAgentScroll(props)
+  const open = useStore($portalAgentsSectionOpen)
   useFleetRoster(true)
 
   return (
     <section
       aria-label={t.simplifiedAgents.agents}
-      className="flex min-h-24 flex-[2_1_0%] flex-col gap-1"
+      className="portal-section"
+      data-open={open}
       data-slot="agent-section"
     >
-      <SidebarPanelLabel className="shrink-0 px-2 py-2 [&>span:first-child]:mx-1" data-slot="sidebar-section-label">
-        {t.simplifiedAgents.agents}
-      </SidebarPanelLabel>
-      <PortalAgentGroups {...props} onOpenAgent={agent => void openAgent(agent)} pending={pending} scrollRef={scroll} />
+      <PortalSectionHeader
+        label={t.simplifiedAgents.agents}
+        onToggle={() => $portalAgentsSectionOpen.set(!open)}
+        open={open}
+      />
+      {/* Hidden, not unmounted: the scroller owns restored position and reveal listeners. */}
+      <div className="portal-section-body" hidden={!open}>
+        <PortalAgentGroups
+          {...props}
+          onOpenAgent={agent => void openAgent(agent)}
+          pending={pending}
+          scrollRef={scroll}
+        />
+      </div>
     </section>
   )
 }

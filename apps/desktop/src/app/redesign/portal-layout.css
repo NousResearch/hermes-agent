@@ -24,18 +24,6 @@
   padding-inline: clamp(1rem, 4vw, 3rem);
 }
 
-:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] {
-  padding: 1.125rem 1.25rem 1rem;
-  gap: 0;
-}
-
-:root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'] [aria-current='page'] {
-  background: var(--portal-neutral-selection-background);
-  border-color: transparent;
-  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
-  border-radius: 8px;
-}
-
 .page-nav-title {
   margin: 0 0 1.875rem;
   color: var(--ui-text-primary);
@@ -43,10 +31,7 @@
   letter-spacing: -0.01em;
 }
 
-:root[data-shell='portal']
-  [data-page-surface]
-  [data-slot='page-heading']:not(:has(nav:not(.hidden)))
-  > div:last-child {
+:root[data-shell='portal'] [data-page-surface] [data-slot='page-heading']:not(:has(nav:not(.hidden))) > div:last-child {
   margin-top: 0;
 }
 

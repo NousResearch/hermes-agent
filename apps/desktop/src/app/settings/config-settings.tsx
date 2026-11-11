@@ -36,6 +36,7 @@ import { usePortalShell } from '@/store/shell-variant'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { useAgentSettingsEditorCopy } from '../agent-settings/settings-copy'
+import { useAgentSettingsLayoutCopy } from '../agent-settings/settings-layout-copy'
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
@@ -47,6 +48,7 @@ import { configSubpageForField } from './config-subpages'
 import { DELEGATION_ROUTE_COMPANION_KEY, DelegationRouteRow } from './delegation-route-row'
 import { DelegationRoutingSlot } from './delegation/routing-section'
 import { SubagentModelGate } from './delegation/subagent-model-gate'
+import { FallbackModelsField } from './fallback-models-field'
 import {
   clearsEnabledToolsets,
   configFieldValue,
@@ -67,7 +69,9 @@ import { PortalSafetySettings } from './portal-safety-fields'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { SettingsCard, SettingsGroup } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { useSettingsPagesCopy } from './settings-pages-copy'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -187,6 +191,15 @@ function ConfigLoading({
   return <SettingsSkeleton sections={[{ rows: 6 }]} />
 }
 
+// Runtime & Limits (Figma 895:22651) is one agent page over the runtime, terminal and output parts of
+// the advanced config; desktop prefs and tool keys stay on their own pages.
+const AGENT_LIMIT_PAGES = new Set(['runtime', 'terminal', 'output'])
+
+/** Which fields an agent settings page shows: its whole section, except the shared advanced one. */
+function agentPageShowsField(sectionId: string, key: string): boolean {
+  return sectionId !== 'advanced' || AGENT_LIMIT_PAGES.has(configSubpageForField('advanced', key) ?? '')
+}
+
 function ConfigSettingsInner({
   activeSectionId,
   subpage,
@@ -198,21 +211,14 @@ function ConfigSettingsInner({
   scopeProfile
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
+  const pages = useSettingsPagesCopy()
   const owner = useSettingsOwner()
-  const compactAgent = usePortalShell() && agentLayout
+  const redesign = usePortalShell()
+  const compactAgent = redesign && agentLayout
   const agentCopy = useAgentSettingsEditorCopy()
+  const agentRows = useAgentSettingsLayoutCopy().rows
   const requestScope = owner ?? scopeProfile
   const c = t.settings.config
-  const keepAwakeMode = useStore($keepAwakeMode)
-
-  const keepAwakeOptions = [
-    { id: 'off', label: c.keepAwakeOff },
-    { id: 'while-working', label: c.keepAwakeWhileWorking },
-    { id: 'always', label: c.keepAwakeAlways }
-  ] as const satisfies readonly { id: KeepAwakeMode; label: string }[]
-
-  const disableF12 = useStore($disableF12)
-  const alwaysExternalLinks = useStore($alwaysExternalLinks)
   const retainedDraft = useContext(ConfigSettingsDraftContext)
   const localDraft = useRef<ConfigSettingsDraft | null>(null)
   const draft = retainedDraft ?? localDraft
@@ -245,9 +251,11 @@ function ConfigSettingsInner({
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
+
   const [saveVersion, setSaveVersion] = useState(() =>
     draft.current && draft.current.version > draft.current.savedVersion ? draft.current.version : 0
   )
+
   const mounted = useRef(true)
   useLayoutEffect(() => {
     mounted.current = true
@@ -425,12 +433,10 @@ function ConfigSettingsInner({
     return sectionFieldEntries(schema, config)
   }, [schema, config])
 
-  const fields = (sectionFields.get(activeSectionId) ?? []).filter(
-    ([key]) =>
-      (compactAgent && activeSectionId !== 'advanced') ||
-      agentModel ||
-      subpage === undefined ||
-      configSubpageForField(activeSectionId, key) === subpage
+  const fields = (sectionFields.get(activeSectionId) ?? []).filter(([key]) =>
+    compactAgent
+      ? agentPageShowsField(activeSectionId, key)
+      : agentModel || subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
   )
 
   const { showModelSettings, showDesktopSettings, showAttachments, portalSafety, showSharedMetrics } =
@@ -524,20 +530,19 @@ function ConfigSettingsInner({
             advancedOpen={agentModel && Boolean(subpage && !['main', 'fallbacks'].includes(subpage))}
             agentLayout={agentModel}
             mainFooter={
-              agentModel && config
-                ? fields
-                    .filter(([key]) => key === 'fallback_providers')
-                    .map(([key, field]) => (
-                      <div id={`setting-field-${key}`} key={key}>
-                        <ConfigField
-                          onChange={value => updateConfig(setConfigField(config, key, value))}
-                          schema={field}
-                          schemaKey={key}
-                          value={configFieldValue(config, key)}
-                        />
-                      </div>
-                    ))
-                : undefined
+              agentModel && config ? (
+                <SettingsGroup
+                  description={pages.model.fallbacksDesc}
+                  id="setting-field-fallback_providers"
+                  title={pages.model.fallbacks}
+                >
+                  <FallbackModelsField
+                    onChange={value => updateConfig(setConfigField(config, 'fallback_providers', value))}
+                    value={configFieldValue(config, 'fallback_providers')}
+                    variant="card"
+                  />
+                </SettingsGroup>
+              ) : undefined
             }
             onMainModelChanged={onMainModelChanged}
             scopeProfile={scopeProfile}
@@ -608,13 +613,18 @@ function ConfigSettingsInner({
             ) : undefined
           }
           descriptionOverride={
-            compactAgent && key === 'voice.voice_chat_mode' ? agentCopy.voiceModeDescription : undefined
+            compactAgent && key === 'voice.voice_chat_mode'
+              ? agentCopy.voiceModeDescription
+              : compactAgent
+                ? agentRows[key]?.[1]
+                : undefined
           }
           enumOptions={
             key === 'tts.elevenlabs.voice_id'
               ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
               : enumOptionsFor(key, getNested(config, key), config)
           }
+          labelOverride={compactAgent ? agentRows[key]?.[0] : undefined}
           onChange={value => updateConfig(setConfigField(config, key, value))}
           optionLabels={
             key === 'tts.elevenlabs.voice_id'
@@ -639,45 +649,25 @@ function ConfigSettingsInner({
     </div>
   )
 
+  const memoryLayers = (
+    <MemoryLayersSlot
+      builtin={{
+        memory: getNested(config, 'memory.memory_enabled') !== false,
+        user: getNested(config, 'memory.user_profile_enabled') !== false
+      }}
+      profile={scopeProfile}
+      provider={asText(getNested(config, 'memory.provider'))}
+      sectionId={activeSectionId}
+      subpage={subpage}
+    />
+  )
+
   return renderPage(
     <>
       {/* Device-local desktop prefs (not config.yaml) — they live here since
           keeping the machine awake and the global Quick Entry chord are both
           power-user, this-computer-only knobs. */}
-      {showDesktopSettings && (
-        <>
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={mode => {
-                  triggerHaptic('selection')
-                  setKeepAwakeMode(mode)
-                }}
-                options={keepAwakeOptions}
-                value={keepAwakeMode}
-              />
-            }
-            description={c.keepAwakeDesc}
-            id={settingElementId(SETTING_IDS.advanced.keepAwake)}
-            title={c.keepAwakeTitle}
-          />
-          <ToggleRow
-            checked={disableF12}
-            description={c.disableF12Desc}
-            id={settingElementId(SETTING_IDS.advanced.disableF12)}
-            label={c.disableF12Title}
-            onChange={setDisableF12}
-          />
-          <ToggleRow
-            checked={alwaysExternalLinks}
-            description={c.alwaysExternalLinksDesc}
-            label={c.alwaysExternalLinksTitle}
-            onChange={setAlwaysExternalLinks}
-          />
-          <QuickEntrySettings />
-          <OnboardingSettings />
-        </>
-      )}
+      {showDesktopSettings && <DesktopDeviceSettings />}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
@@ -685,16 +675,7 @@ function ConfigSettingsInner({
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}
-      <MemoryLayersSlot
-        builtin={{
-          memory: getNested(config, 'memory.memory_enabled') !== false,
-          user: getNested(config, 'memory.user_profile_enabled') !== false
-        }}
-        profile={scopeProfile}
-        provider={asText(getNested(config, 'memory.provider'))}
-        sectionId={activeSectionId}
-        subpage={subpage}
-      />
+      {!(compactAgent && activeSectionId === 'memory') && memoryLayers}
       {/* Routing picks the strategy and owns its routes; the subagent model row below is the
           Default strategy's route and goes inert while another strategy decides. */}
       <DelegationRoutingSlot
@@ -709,12 +690,73 @@ function ConfigSettingsInner({
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : compactAgent ? (
-        <AgentConfigFields fields={visibleFields} renderField={renderField} sectionId={activeSectionId} />
+        <AgentConfigFields
+          // The provider status card is reference, not a primary control: it files under Advanced.
+          advancedExtra={activeSectionId === 'memory' ? memoryLayers : undefined}
+          fields={visibleFields}
+          renderField={renderField}
+          sectionId={activeSectionId}
+        />
       ) : (
-        <div className="grid gap-1">{visibleFields.map(renderField)}</div>
+        // The redesign files a page's rows on one card (856:3439); classic keeps the plain list.
+        <SettingsCard classicClassName="grid gap-1">{visibleFields.map(renderField)}</SettingsCard>
       )}
     </>
   )
+}
+
+/** Device-local desktop prefs (not config.yaml): keeping the machine awake, F12, external links,
+ *  the Quick Entry chord and re-running onboarding. The redesign files them on one card. */
+function DesktopDeviceSettings() {
+  const { t } = useI18n()
+  const c = t.settings.config
+  const redesign = usePortalShell()
+  const keepAwakeMode = useStore($keepAwakeMode)
+  const disableF12 = useStore($disableF12)
+  const alwaysExternalLinks = useStore($alwaysExternalLinks)
+
+  const keepAwakeOptions = [
+    { id: 'off', label: c.keepAwakeOff },
+    { id: 'while-working', label: c.keepAwakeWhileWorking },
+    { id: 'always', label: c.keepAwakeAlways }
+  ] as const satisfies readonly { id: KeepAwakeMode; label: string }[]
+
+  const rows = (
+    <>
+      <ListRow
+        action={
+          <SegmentedControl
+            onChange={mode => {
+              triggerHaptic('selection')
+              setKeepAwakeMode(mode)
+            }}
+            options={keepAwakeOptions}
+            value={keepAwakeMode}
+          />
+        }
+        description={c.keepAwakeDesc}
+        id={settingElementId(SETTING_IDS.advanced.keepAwake)}
+        title={c.keepAwakeTitle}
+      />
+      <ToggleRow
+        checked={disableF12}
+        description={c.disableF12Desc}
+        id={settingElementId(SETTING_IDS.advanced.disableF12)}
+        label={c.disableF12Title}
+        onChange={setDisableF12}
+      />
+      <ToggleRow
+        checked={alwaysExternalLinks}
+        description={c.alwaysExternalLinksDesc}
+        label={c.alwaysExternalLinksTitle}
+        onChange={setAlwaysExternalLinks}
+      />
+      <QuickEntrySettings />
+      <OnboardingSettings />
+    </>
+  )
+
+  return redesign ? <SettingsCard>{rows}</SettingsCard> : rows
 }
 
 /** Free-form MB cap for Desktop's data-URL attach/preview path (main-process). */

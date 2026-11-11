@@ -570,9 +570,13 @@ function AgentChannels({ messaging, onOpen, children }: AgentChannelsProps) {
           <SettingRow
             detail={
               platform.state === 'connected' ? (
-                c.connected
+                <span className="agent-channel-status" data-tone="connected">
+                  {c.connected}
+                </span>
               ) : platform.configured && platform.enabled && ['bad', 'warn'].includes(platformStatusTone(platform)) ? (
-                <span className="agent-channel-disconnected">● {c.disconnected}</span>
+                <span className="agent-channel-status" data-tone="disconnected">
+                  {c.disconnected}
+                </span>
               ) : platform.configured ? (
                 c.configured
               ) : (

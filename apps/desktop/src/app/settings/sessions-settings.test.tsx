@@ -9,7 +9,10 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { SessionsSettings } from './sessions-settings'
 
-vi.mock('@/i18n', () => ({ useI18n: () => ({ t: en }) }))
+vi.mock('@/i18n', () => ({
+  isBundledLocale: (locale: string) => locale === 'en',
+  useI18n: () => ({ locale: 'en', t: en })
+}))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),

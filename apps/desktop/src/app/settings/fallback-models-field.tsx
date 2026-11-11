@@ -13,6 +13,7 @@ import { $customModels, withCustomModels } from '@/store/custom-models'
 import { CONTROL_TEXT } from './constants'
 import { ModelSelect } from './model-select'
 import { useSettingsOwner } from './profile-scope'
+import { SettingsAddRow, SettingsCard } from './settings-card'
 
 // An entry is `{provider, model}` plus whatever routing the user hand-wrote
 // (`base_url`, `api_key`, `key_env`, `api_mode`, ...). The editor only edits
@@ -72,10 +73,13 @@ function entriesEqual(a: FallbackEntry[], b: FallbackEntry[]): boolean {
  */
 export function FallbackModelsField({
   value,
-  onChange
+  onChange,
+  variant = 'inline'
 }: {
   value: unknown
   onChange: (next: FallbackEntry[]) => void
+  /** `card`: the agent Model page's numbered list card ending in "+ Add fallback" (895:10560). */
+  variant?: 'card' | 'inline'
 }) {
   const { t } = useI18n()
   const m = t.settings.model
@@ -123,48 +127,62 @@ export function FallbackModelsField({
   const updateRow = (index: number, patch: Partial<FallbackEntry>) =>
     commit(rows.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)))
 
+  const renderRow = (entry: FallbackEntry, index: number) => {
+    const providerRow = providers.find(provider => provider.slug === entry.provider)
+
+    return (
+      <div className="flex flex-wrap items-center gap-2" key={index}>
+        <span className="w-4 shrink-0 text-center font-mono text-[0.7rem] text-muted-foreground">{index + 1}</span>
+        <Select onValueChange={provider => updateRow(index, { provider, model: '' })} value={entry.provider}>
+          <SelectTrigger className={cn('min-w-36', CONTROL_TEXT)}>
+            <SelectValue placeholder={m.provider} />
+          </SelectTrigger>
+          <SelectContent>
+            {providers.map(provider => (
+              <SelectItem key={provider.slug} value={provider.slug}>
+                {provider.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <ModelSelect
+          className="min-w-52 flex-1"
+          models={providerRow?.models ?? []}
+          onValueChange={model => updateRow(index, { model })}
+          provider={providerRow}
+          providerSlug={entry.provider}
+          value={entry.model}
+        />
+        <Button
+          aria-label={t.common.remove}
+          onClick={() => commit(rows.filter((_, i) => i !== index))}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <X className="size-3.5" />
+        </Button>
+      </div>
+    )
+  }
+
+  const addRow = () => commit([...rows, { provider: '', model: '' }])
+
+  if (variant === 'card') {
+    return (
+      <SettingsCard className="fallback-models-card">
+        {rows.length === 0 && <p className="global-settings-empty-row">{m.fallbackEmpty}</p>}
+        {rows.map(renderRow)}
+        <SettingsAddRow onClick={addRow}>{m.fallbackAdd}</SettingsAddRow>
+      </SettingsCard>
+    )
+  }
+
   return (
     <div className="grid w-full gap-1.5">
       {rows.length === 0 && <p className="text-xs text-muted-foreground">{m.fallbackEmpty}</p>}
-      {rows.map((entry, index) => {
-        const providerRow = providers.find(provider => provider.slug === entry.provider)
-
-        return (
-          <div className="flex flex-wrap items-center gap-2" key={index}>
-            <span className="w-4 shrink-0 text-center font-mono text-[0.7rem] text-muted-foreground">{index + 1}</span>
-            <Select onValueChange={provider => updateRow(index, { provider, model: '' })} value={entry.provider}>
-              <SelectTrigger className={cn('min-w-36', CONTROL_TEXT)}>
-                <SelectValue placeholder={m.provider} />
-              </SelectTrigger>
-              <SelectContent>
-                {providers.map(provider => (
-                  <SelectItem key={provider.slug} value={provider.slug}>
-                    {provider.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <ModelSelect
-              className="min-w-52 flex-1"
-              models={providerRow?.models ?? []}
-              onValueChange={model => updateRow(index, { model })}
-              provider={providerRow}
-              providerSlug={entry.provider}
-              value={entry.model}
-            />
-            <Button
-              aria-label={t.common.remove}
-              onClick={() => commit(rows.filter((_, i) => i !== index))}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <X className="size-3.5" />
-            </Button>
-          </div>
-        )
-      })}
+      {rows.map(renderRow)}
       <div>
-        <Button onClick={() => commit([...rows, { provider: '', model: '' }])} size="sm" variant="textStrong">
+        <Button onClick={addRow} size="sm" variant="textStrong">
           <Plus className="size-3.5" />
           {m.fallbackAdd}
         </Button>

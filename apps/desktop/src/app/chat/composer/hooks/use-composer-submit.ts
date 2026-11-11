@@ -24,7 +24,7 @@ import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
-import { $portalPreferred } from '@/store/shell-variant'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -68,6 +68,8 @@ interface UseComposerSubmitArgs {
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
+  /** This composer's own pre-session send was just given its new session's scope. */
+  onSessionCreated?: (scope: string) => void
   /** `submissionId`: the restored send this draft retries, so the owner deduplicates it. */
   queueCurrentDraft: (submissionId?: string) => boolean | Promise<boolean>
   queueEdit: QueueEditState | null
@@ -109,6 +111,7 @@ export function useComposerSubmit({
   onSteer,
   onSteerHidden,
   onSubmit,
+  onSessionCreated,
   queueCurrentDraft,
   queueEdit,
   queuedPrompts,
@@ -156,6 +159,7 @@ export function useComposerSubmit({
             onComposerScopeAssigned: (scope: string) => {
               restoreScope = scope
               outgoing?.move(scope)
+              onSessionCreated?.(scope)
             }
           }
         : {}
@@ -440,7 +444,7 @@ export function useComposerSubmit({
       return 'answered'
     }
 
-    const classicSetup = !$portalPreferred.get()
+    const classicSetup = !$setupGuideOnboarding.get()
     const yielded = classicSetup && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
 
     if (hasClarifyRequest(sessionId)) {
@@ -463,7 +467,7 @@ export function useComposerSubmit({
   // Slash commands come after setup. Every send action asks here first, so the words stay put and one
   // note (re-shown, never stacked) says why.
   const refusedDuringSetup = (text: string): boolean => {
-    if ($portalPreferred.get() || !isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
+    if ($setupGuideOnboarding.get() || !isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
       return false
     }
 

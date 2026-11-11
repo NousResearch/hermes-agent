@@ -12,7 +12,7 @@ import { useStore } from '@nanostores/react'
 import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef } from 'react'
 
 import { HUD_SURFACE } from '@/app/floating-hud'
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { titlebarHeightNow } from '@/app/shell/use-touch-titlebar'
 import { useOnboardingChatActive } from '@/components/onboarding/first-run/assembly'
 import { Codicon } from '@/components/ui/codicon'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
@@ -58,7 +58,7 @@ const $positions = modeLayout.atom<Record<string, StoredRect>>(
 const viewportNow = (): FloatingViewport => ({
   width: window.innerWidth,
   height: window.innerHeight,
-  top: TITLEBAR_HEIGHT
+  top: titlebarHeightNow()
 })
 
 function FloatingPane({ pane }: { pane: Contribution }) {

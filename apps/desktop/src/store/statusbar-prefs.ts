@@ -1,6 +1,10 @@
+import { computed } from 'nanostores'
+
+import { declareKeybindAvailability } from '@/lib/keybinds/actions'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { readKey } from '@/lib/storage'
 import { modeBound } from '@/store/interface-mode'
+import { $portalShell } from '@/store/shell-variant'
 
 // v1 (`hermes.desktop.statusbarHidden`) was seeded with the approval pill
 // hidden, so every existing store carries an `approval-mode` the user never
@@ -24,8 +28,23 @@ export const $statusbarVisible = modeBound('statusbarVisible', $statusbarVisible
   $statusbarVisiblePref.set(value)
 )
 
+/** Whether this window's shell has a statusbar strip at all. The redesign has none: its rail and
+ *  System popover carry the bar's items. Every way to toggle the bar (⌘⇧S, ⌘K, menus) offers it
+ *  only here, so an invisible toggle can never hide the classic bar for a later rollback. */
+export const $statusbarStripAvailable = computed($portalShell, portal => !portal)
+
+/** The strip is on screen: the shell has one and the (mode-resolved) preference shows it. */
+export const $statusbarShown = computed(
+  [$statusbarStripAvailable, $statusbarVisible],
+  (available, visible) => available && visible
+)
+
+declareKeybindAvailability('view.toggleStatusbar', () => $statusbarStripAvailable.get())
+
 export function toggleStatusbarVisible() {
-  $statusbarVisible.set(!$statusbarVisible.get())
+  if ($statusbarStripAvailable.get()) {
+    $statusbarVisible.set(!$statusbarVisible.get())
+  }
 }
 
 // Items the bar hides until the user turns them on from its context menu. The

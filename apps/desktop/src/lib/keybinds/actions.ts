@@ -219,6 +219,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
   // gap in their View family) and Hermes has no chord dispatcher, so this
   // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
+  // Offered only where the shell has a strip (store/statusbar-prefs.ts declares it).
   { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
   // ⌥⌘T — "t" for tabs, reaching past ⇧ because ⌘⇧T is reopen-closed-tab
   // everywhere. Ships BOUND, unlike VS Code's settings-only tab-bar switch:
@@ -347,8 +348,9 @@ export function contributedKeybinds(
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))
 }
 
-/** Built-ins + contributed, one metadata list (panel, bindings, conflicts). */
-export function allKeybindActions(contributions?: readonly Contribution[]): KeybindActionMeta[] {
+/** Built-ins + contributed, offered here or not: one metadata list for bindings, dispatch and
+ *  conflicts, which must not change when a shell flip makes an action unavailable. */
+export function keybindActionCatalog(contributions?: readonly Contribution[]): KeybindActionMeta[] {
   return [
     ...KEYBIND_ACTIONS,
     ...contributedKeybinds(contributions).map(k => ({
@@ -360,8 +362,22 @@ export function allKeybindActions(contributions?: readonly Contribution[]): Keyb
   ]
 }
 
+const availability = new Map<string, () => boolean>()
+
+/** A shell-dependent command declares when it does anything in this window. The store that owns
+ *  that policy declares it, so this table stays free of app state. An unavailable action keeps
+ *  its bindings (a shell flip brings its context back) but leaves the shortcut map. */
+export function declareKeybindAvailability(id: string, available: () => boolean): void {
+  availability.set(id, available)
+}
+
+/** The actions this window offers right now: what the shortcut map lists. */
+export function allKeybindActions(contributions?: readonly Contribution[]): KeybindActionMeta[] {
+  return keybindActionCatalog(contributions).filter(action => availability.get(action.id)?.() ?? true)
+}
+
 export function keybindAction(id: string): KeybindActionMeta | undefined {
-  return ACTION_BY_ID.get(id) ?? allKeybindActions().find(action => action.id === id)
+  return ACTION_BY_ID.get(id) ?? keybindActionCatalog().find(action => action.id === id)
 }
 
 /** True when `combo` carries a modifier beyond Shift (mod, ctrl, or alt). */
@@ -387,7 +403,7 @@ export function contributedKeybindHandler(id: string): (() => void) | undefined 
 export type KeybindBindings = Record<string, string[]>
 
 export function defaultBindings(): KeybindBindings {
-  return Object.fromEntries(allKeybindActions().map(action => [action.id, [...action.defaults]]))
+  return Object.fromEntries(keybindActionCatalog().map(action => [action.id, [...action.defaults]]))
 }
 
 // Fixed, non-rebindable shortcuts surfaced read-only in the panel so the map is

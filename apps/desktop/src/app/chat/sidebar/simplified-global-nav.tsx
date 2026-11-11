@@ -11,7 +11,6 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
-import { usePortalShell } from '@/store/shell-variant'
 
 import {
   appViewForPath,
@@ -29,13 +28,24 @@ import { SimplifiedSettingsMenu } from './simplified-settings-menu'
 import { useIaNavigationMetrics } from './use-ia-navigation-metrics'
 import { useSimplifiedPluginPages } from './use-simplified-plugin-pages'
 
-export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item: SidebarNavItem) => void; footer?: ReactNode }) {
-  const portal = usePortalShell()
+interface SimplifiedGlobalNavProps {
+  onNavigate: (item: SidebarNavItem) => void
+  footer?: ReactNode
+}
+
+/** The redesign's 60px global rail (Figma 906:19409): destinations on top, status and settings at
+ *  the bottom, all as 30px chrome buttons. Only the redesigned shell mounts it. */
+export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavProps) {
   const { t } = useI18n()
   const { pathname, search } = useLocation()
   const sessionId = useStore($focusedStoredSessionId)
   const focusedSessionIsTile = useStore($focusedSessionIsTile)
-  const routeView = pathname === SETTINGS_ROUTE && new URLSearchParams(search).get('agentProfile') ? 'profiles' : appViewForPath(pathname)
+
+  const routeView =
+    pathname === SETTINGS_ROUTE && new URLSearchParams(search).get('agentProfile')
+      ? 'profiles'
+      : appViewForPath(pathname)
+
   const view = focusedSessionIsTile ? 'chat' : routeView
   const pluginPages = useSimplifiedPluginPages()
   useIaNavigationMetrics(view)
@@ -76,16 +86,17 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
     ...destinations.map(({ icon, ...item }) => ({
       ...item,
       id: icon,
+      // Figma's robot is the one 18px glyph in a column of 16px ones.
       icon: (props: { className?: string }) =>
-        portal && icon === 'robot'
-          ? (
-              <span
-                aria-hidden
-                className={cn('size-5 bg-current', props.className)}
-                style={{ mask: `url("${figmaRobot}") center / contain no-repeat` }}
-              />
-            )
-          : <Codicon name={icon} {...props} />
+        icon === 'robot' ? (
+          <span
+            aria-hidden
+            className={cn('size-4.5 bg-current', props.className)}
+            style={{ mask: `url("${figmaRobot}") center / contain no-repeat` }}
+          />
+        ) : (
+          <Codicon name={icon} {...props} />
+        )
     })),
     ...pluginPages.map(page => ({
       ...page,
@@ -97,16 +108,16 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
   return (
     <nav
       aria-label={t.updates.appName}
-      className="mt-(--titlebar-height) flex min-h-0 w-(--global-nav-width) shrink-0 flex-col items-center gap-1 border-r border-(--sidebar-edge-border) pb-2 pt-2"
+      className="portal-rail mt-(--titlebar-height) w-(--global-nav-width) shrink-0"
       data-slot="global-nav"
     >
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+      <div className="portal-rail-group min-h-0 flex-1 overflow-y-auto">
         {items.map(item => {
           const button = (
             <Button
               aria-current={item.active ? 'page' : undefined}
               aria-label={item.label}
-              className={cn(item.active && 'bg-(--chrome-action-hover) text-(--ui-text-primary)')}
+              className="portal-chrome-button"
               onClick={() => {
                 recordIaAction(`ia.rail.${item.area}`)
                 onNavigate(item)
@@ -120,7 +131,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
 
           if (!('settingsRoute' in item) || !item.settingsRoute) {
             return (
-              <Tip key={item.id} label={item.label}>
+              <Tip key={item.id} label={item.label} placement="left-rail">
                 {button}
               </Tip>
             )
@@ -130,7 +141,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
 
           return (
             <ContextMenu key={item.id}>
-              <Tip label={item.label}>
+              <Tip label={item.label} placement="left-rail">
                 <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
               </Tip>
               <ContextMenuContent aria-label={item.label}>
@@ -143,8 +154,10 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
           )
         })}
       </div>
-      {portal && footer}
-      <SimplifiedSettingsMenu active={view === 'settings'} onNavigate={onNavigate} />
+      <div className="portal-rail-group">
+        {footer}
+        <SimplifiedSettingsMenu active={view === 'settings'} onNavigate={onNavigate} />
+      </div>
     </nav>
   )
 }

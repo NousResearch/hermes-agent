@@ -6,6 +6,7 @@ import { en } from '@/i18n/en'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import type * as SessionStore from '@/store/session'
 import { $connection } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 import type * as UpdatesStore from '@/store/updates'
 import {
   $backendUpdateStatus,
@@ -13,6 +14,7 @@ import {
   $updateStatus,
   checkBackendUpdates,
   checkUpdates,
+  openUpdateOverlayFor,
   refreshDesktopVersion,
   setUpdateChannel,
   startActiveUpdate,
@@ -20,6 +22,7 @@ import {
 } from '@/store/updates'
 
 import { AboutSettings } from './about-settings'
+import { settingsPagesCopy } from './settings-pages-copy'
 
 vi.mock('@/store/session', async (importOriginal): Promise<Record<string, unknown>> => {
   const actual = await importOriginal<typeof SessionStore>()
@@ -76,6 +79,8 @@ function connection(mode: 'local' | 'remote'): HermesConnection {
 
 describe('AboutSettings', (): void => {
   beforeEach((): void => {
+    // The classic page; the redesign's Version rows are covered below.
+    $shellChoice.set(false)
     vi.clearAllMocks()
     $connection.set(connection('local'))
     $desktopVersion.set({
@@ -92,6 +97,7 @@ describe('AboutSettings', (): void => {
 
   afterEach((): void => {
     cleanup()
+    $shellChoice.set(null)
   })
 
   it('shows shared version details and refreshes each remote gateway independently', (): void => {
@@ -209,5 +215,43 @@ describe('AboutSettings', (): void => {
       expect(checkBackendUpdates).toHaveBeenCalledWith({ force: true })
     })
     expect(checkUpdates).toHaveBeenCalledTimes(1)
+  })
+
+  describe('in the redesign', (): void => {
+    const pages = settingsPagesCopy('en')
+
+    beforeEach((): void => {
+      $shellChoice.set(true)
+    })
+
+    afterEach((): void => {
+      $shellChoice.set(null)
+    })
+
+    it('folds each target into a Version row: the app opens What’s new, the gateway checks itself', async () => {
+      $connection.set(connection('remote'))
+      render(<AboutSettings />)
+
+      expect(screen.getByRole('heading', { name: pages.version })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: pages.about.whatsNew }))
+      expect(openUpdateOverlayFor).toHaveBeenCalledWith('client')
+
+      // A remote gateway carries the only re-check; the app row leaves it to that row.
+      const checks = screen.getAllByRole('button', { name: pages.about.checkForUpdates })
+      expect(checks).toHaveLength(1)
+      fireEvent.click(checks[0])
+      await waitFor((): void => {
+        expect(checkBackendUpdates).toHaveBeenCalledWith({ force: true })
+      })
+      expect(checkUpdates).not.toHaveBeenCalled()
+    })
+
+    it('offers Update now on the row whose target has one waiting', (): void => {
+      $updateStatus.set({ supported: true, behind: 2 })
+      render(<AboutSettings />)
+
+      fireEvent.click(screen.getByRole('button', { name: en.updates.updateNow }))
+      expect(startActiveUpdate).toHaveBeenCalledWith('client')
+    })
   })
 })

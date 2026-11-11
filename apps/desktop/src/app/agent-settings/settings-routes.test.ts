@@ -49,6 +49,7 @@ describe('agent settings routes', () => {
         `?agentProfile=research&connection=remote-a&panel=settings&tab=agent:${section}&field=target`
       )
     )
+
     expect(query.get('agentProfile')).toBe('research')
     expect(query.get('connection')).toBe('remote-a')
     expect(query.get('field')).toBe('target')
@@ -63,6 +64,7 @@ describe('agent settings routes', () => {
         '?agentProfile=research&connection=remote-a&panel=settings&tab=agent:limits&page=terminal'
       )
     )
+
     expect(query.get('page')).toBe('terminal')
     const legacy = '?agentProfile=research&connection=remote-a&tab=config:model&page=auxiliary'
     expect(classicAgentSettingsSearch(legacy)).toBe(legacy)

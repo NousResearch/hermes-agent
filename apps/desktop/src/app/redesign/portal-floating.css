@@ -1,0 +1,193 @@
+/* Floating surfaces in the redesign: dropdown/context menus, selects, popovers, pickers, the command
+   palette, dialogs and tooltips. Every one of them is body-portalled, so rules gate on the root alone.
+   Figma (Overview 878:*, IA quick win 616:* / 623:*) draws them on the solid floating fill (#0d0d1e on
+   dark, the theme's --ui-bg-elevated), a hairline stroke, small radii and one soft drop shadow. No
+   backdrop blur anywhere. Light has no Figma frame: the same stroke over a lighter shadow keeps the
+   surface separated from #f2f2f2 pages without looking heavy. */
+:root[data-shell='portal'] {
+  --portal-floating-surface: var(--ui-bg-elevated);
+  --portal-floating-stroke: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  --portal-floating-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  --portal-floating-separator: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  --portal-floating-item-hover: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  --portal-floating-item-ink: color-mix(in srgb, var(--ui-base) 90%, transparent);
+  /* Menus (row/filter menus 878:6044) are r4; popovers and dialogs (616:1685) are r8. Explicit px:
+     the root's --radius-scalar would otherwise land between Figma's steps. */
+  --portal-menu-radius: 4px;
+  --portal-popover-radius: 8px;
+  --portal-dialog-radius: 8px;
+}
+
+:root[data-shell='portal']:not(.dark) {
+  --portal-floating-stroke: color-mix(in srgb, var(--ui-base) 12%, transparent);
+  --portal-floating-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.08);
+  --portal-floating-item-hover: color-mix(in srgb, var(--ui-base) 5%, transparent);
+}
+
+/* ── Surfaces ─────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content'],
+    [data-slot='popover-content']:not([data-variant='accent']),
+    .hermes-floating-surface
+  ) {
+  --popover-surface: var(--portal-floating-surface);
+  border-color: var(--portal-floating-stroke);
+  background-color: var(--portal-floating-surface);
+  box-shadow: var(--portal-floating-shadow);
+  backdrop-filter: none;
+}
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content']
+  ) {
+  border-radius: var(--portal-menu-radius);
+  padding: 4px;
+}
+
+:root[data-shell='portal'] :is([data-slot='popover-content'], .hermes-floating-surface) {
+  border-radius: var(--portal-popover-radius);
+}
+
+/* ── Menu rows (Radix items take real focus; cmdk rows mark data-selected) ── */
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-item'],
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='dropdown-menu-radio-item'],
+    [data-slot='dropdown-menu-sub-trigger'],
+    [data-slot='context-menu-item'],
+    [data-slot='select-item'],
+    [data-slot='command-item']
+  ) {
+  min-height: 2rem;
+  gap: 0.625rem;
+  border-radius: 3px;
+  padding-inline: 0.625rem;
+  color: var(--portal-floating-item-ink);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-item'],
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='dropdown-menu-radio-item'],
+    [data-slot='dropdown-menu-sub-trigger'],
+    [data-slot='context-menu-item'],
+    [data-slot='select-item']
+  ):is([data-highlighted], [data-state='open']),
+:root[data-shell='portal'] [data-slot='command-item'][data-selected='true'] {
+  background-color: var(--portal-floating-item-hover);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-item'], [data-slot='context-menu-item'])[data-variant='destructive'] {
+  color: var(--color-destructive);
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-item'], [data-slot='context-menu-item'])[data-variant='destructive'][data-highlighted] {
+  background-color: color-mix(in srgb, var(--color-destructive) 12%, transparent);
+  color: var(--color-destructive);
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-label'], [data-slot='select-label'], [data-slot='command-group'] [cmdk-group-heading]) {
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-separator'], [data-slot='select-separator'], [data-slot='command-separator']) {
+  margin-block: 4px;
+  background-color: var(--portal-floating-separator);
+}
+
+:root[data-shell='portal'] [data-slot='dropdown-menu-shortcut'] {
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+}
+
+/* ── Command palette (HUD) ────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .hermes-floating-surface [data-slot='command-input-wrapper'] {
+  border-bottom-color: var(--portal-floating-separator);
+}
+
+/* ── Dialogs ──────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-slot='dialog-overlay'] {
+  background-color: rgb(0 0 0 / 0.45);
+  backdrop-filter: none;
+}
+
+:root[data-shell='portal']:not(.dark) [data-slot='dialog-overlay'] {
+  background-color: rgb(0 0 0 / 0.2);
+}
+
+:root[data-shell='portal'] [data-slot='dialog-content'] {
+  border-color: var(--portal-floating-stroke);
+  border-radius: var(--portal-dialog-radius);
+  background-color: var(--portal-floating-surface);
+  box-shadow: var(--portal-floating-shadow);
+}
+
+:root[data-shell='portal'] [data-slot='dialog-description'] {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-slot='dialog-footer'] {
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+:root[data-shell='portal'] [data-slot='popover-arrow'] {
+  backdrop-filter: none;
+}
+
+/* Tooltips keep their inverted bubble; only the radius is pinned, since the root scalar shrinks it. */
+:root[data-shell='portal'] [data-slot='tooltip-content'] {
+  border-radius: 4px;
+}
+
+/* ── Toasts ───────────────────────────────────────────────────────────────── */
+
+/* Notification cards take the floating fill, stroke and shadow (no blur), r8 like popovers; the
+   "+N more · Clear all" strip under the top stack sits on the same surface so it never floats bare
+   over page content. */
+:root[data-shell='portal'] :is(.hermes-toast-surface, .hermes-toast-controls) {
+  border-color: var(--portal-floating-stroke);
+  background-color: var(--portal-floating-surface);
+  box-shadow: var(--portal-floating-shadow);
+  backdrop-filter: none;
+}
+
+:root[data-shell='portal'] .hermes-toast-surface {
+  border-radius: var(--portal-popover-radius);
+}
+
+:root[data-shell='portal'] .hermes-toast-controls {
+  border: 1px solid var(--portal-floating-stroke);
+  border-radius: var(--portal-menu-radius);
+}

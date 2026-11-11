@@ -22,6 +22,9 @@ import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// The app-side binding that decides whether the shell hosts the Bots pane.
+// eslint-disable-next-line no-restricted-imports
+import { bindBotsPaneToShell } from '@/app/contrib/bots-pane-shell'
 // The app provider the plugin's tab label renders under; a plugin test may reach it.
 // eslint-disable-next-line no-restricted-imports
 import { I18nProvider } from '@/i18n'
@@ -348,7 +351,8 @@ describe('a desktop without host.paneVisibility', () => {
 })
 
 
-it('removes only the Bots sidebar tab while simplified agents is enabled and restores it when disabled', () => {
+it('removes only the Bots sidebar tab while the redesign is on and restores it when rolled back', () => {
+  const unbind = bindBotsPaneToShell()
   setPortalPreferred(false)
   paneStores()
   const harness = recordingContext()
@@ -359,5 +363,6 @@ it('removes only the Bots sidebar tab while simplified agents is enabled and res
   setPortalPreferred(false)
   expect(harness.find('pane')).toMatchObject({ data: { dock: { pane: 'sessions', pos: 'center', enforce: true } } })
   harness.dispose()
+  unbind()
   $shellChoice.set(null)
 })

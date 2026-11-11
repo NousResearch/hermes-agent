@@ -3,7 +3,7 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
-@import './app/chat/landing.css';
+@import './app/chat/stage.css';
 
 /* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
    unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */

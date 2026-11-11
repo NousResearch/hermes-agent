@@ -1,10 +1,10 @@
 import './portal-sidebar.css'
 
-import { type ComponentProps, useEffect, useRef } from 'react'
+import { IconArrowBarToLeft } from '@tabler/icons-react'
+import { type ComponentProps, type KeyboardEvent, useEffect, useRef } from 'react'
 
 import wing from '@/assets/catalog-wing.svg'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
@@ -23,6 +23,34 @@ import { useAgentSidebar } from '../use-agent-sidebar'
 
 import { PortalGroupChats } from './portal-group-chats'
 import { PortalPinnedEmpty } from './portal-pinned-empty'
+
+const ROW_STEP: Record<string, (index: number, count: number) => number> = {
+  ArrowDown: (index, count) => Math.min(index + 1, count - 1),
+  ArrowUp: index => Math.max(index - 1, 0),
+  Home: () => 0,
+  End: (_, count) => count - 1
+}
+
+/** Arrow keys walk the visible rows (sections, machines, agents, chats); Tab still reaches row actions. */
+function moveRowFocus(event: KeyboardEvent<HTMLElement>) {
+  const step = ROW_STEP[event.key]
+  const target = event.target as HTMLElement
+
+  if (!step || target.dataset.slot !== 'row-button') {
+    return
+  }
+
+  const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-slot="row-button"]')].filter(
+    row => !row.closest('[hidden]')
+  )
+
+  const next = rows[step(rows.indexOf(target), rows.length)]
+
+  if (next && next !== target) {
+    event.preventDefault()
+    next.focus()
+  }
+}
 
 export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const {
@@ -45,6 +73,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
     pinned,
     hasMore
   } = useAgentSidebar(props)
+
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -65,8 +94,14 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           <span className="portal-sidebar-byline">// Nous Research</span>
         </div>
         <Tip label={t.titlebar.hideSidebar}>
-          <Button aria-label={t.titlebar.hideSidebar} onClick={toggleSidebarOpen} size="icon-xs" variant="ghost">
-            <Codicon name="layout-sidebar-left-off" />
+          <Button
+            aria-label={t.titlebar.hideSidebar}
+            className="portal-sidebar-collapse"
+            onClick={toggleSidebarOpen}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <IconArrowBarToLeft aria-hidden />
           </Button>
         </Tip>
       </header>
@@ -100,7 +135,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
             {t.errors.genericFailure}
           </p>
         )}
-        <div className="portal-sidebar-sections">
+        <div className="portal-sidebar-sections" onKeyDown={moveRowFocus}>
           <SimplifiedPinnedSessions
             {...shared}
             emptyState={
@@ -132,9 +167,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           </p>
         )}
         {!loading && !search.pending && !search.failed && rows.length === 0 && (
-          <p className="py-3 text-xs text-(--ui-text-tertiary)">
-            {query ? t.sidebar.noMatch(query) : t.sidebar.noSessions}
-          </p>
+          <p className="portal-sidebar-empty">{query ? t.sidebar.noMatch(query) : t.sidebar.noSessions}</p>
         )}
         {hasMore && <SidebarLoadMoreRow loading={loading || loadingMore} onClick={() => void loadMore()} step={0} />}
         {error && <SidebarLoadErrorState onRetry={() => void props.onRetrySessions()} />}

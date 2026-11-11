@@ -1,7 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { $registryVersion } from '@/contrib/registry'
-import { allKeybindActions, defaultBindings, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
+import { defaultBindings, keybindAction, keybindActionCatalog, type KeybindBindings } from '@/lib/keybinds/actions'
 import { followBrowserWindowKind } from '@/lib/keybinds/app-window'
 import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { persistStore } from '@/lib/persist-store'
@@ -69,7 +69,7 @@ function persistBindings(bindings: KeybindBindings, options: WriteOptions): void
   const defaults = defaultBindings()
   const diff: KeybindBindings = {}
 
-  for (const action of allKeybindActions()) {
+  for (const action of keybindActionCatalog()) {
     const current = bindings[action.id] ?? []
 
     if (explicitIds.has(action.id) || !arraysEqual(current, defaults[action.id] ?? [])) {
@@ -130,7 +130,7 @@ export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.ge
 export const $comboIndex = computed([$bindings, $registryVersion], bindings => {
   const index = new Map<string, string[]>()
 
-  for (const action of allKeybindActions()) {
+  for (const action of keybindActionCatalog()) {
     for (const combo of bindingsFor(action.id, bindings)) {
       const key = canonicalizeCombo(combo)
       const ids = index.get(key)
@@ -189,7 +189,7 @@ export function resetAllBindings(): void {
 // so that pair is not reported from either side. Combos compare the way
 // dispatch keys them, so `mod+tab` meets an app window's `ctrl+tab`.
 export function conflictsFor(actionId: string, combo: string, bindings = $bindings.get()): string[] {
-  const actions = allKeybindActions()
+  const actions = keybindActionCatalog()
   const self = actions.findIndex(action => action.id === actionId)
   const key = canonicalizeCombo(combo)
   // Two shipped defaults spelled differently (`ctrl+1` vs `mod+1`) overlap by

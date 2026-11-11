@@ -9,3 +9,98 @@
     flex-shrink: 0;
   }
 }
+
+/* Redesigned page frame (Capabilities 919:9281): a 980px column, H1 row with trailing actions,
+   then 14px Medium tabs with counts over a 2px brand underline and a hairline rule.
+   Only the redesign renders these classes. */
+.page-redesigned {
+  --page-content-inset: 1.5rem;
+  --page-content-max-width: calc(61.25rem + 2 * var(--page-content-inset));
+}
+
+.page-header {
+  display: grid;
+  gap: 1.5rem;
+  width: 100%;
+  max-width: var(--page-content-max-width);
+  margin-inline: auto;
+  padding: calc(var(--titlebar-height) + 1.125rem) var(--page-content-inset) 1.5rem;
+}
+
+.page-header-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+}
+
+.page-header-heading {
+  min-width: 0;
+}
+
+/* 919:9095: 13px tertiary, 6px under the H1, two lines at most on the 640px column. */
+.page-header-description {
+  max-width: 32rem;
+  margin-top: 0.375rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.page-header-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.page-header-tabs {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ui-base) 5%, transparent);
+}
+
+.page-header-tabs > div {
+  gap: 1.5rem;
+}
+
+.page-header-tabs button[data-active] {
+  height: 2rem;
+  gap: 0.375rem;
+  padding: 0 0 0.5rem;
+  border-bottom: 2px solid transparent;
+  color: var(--ui-text-tertiary);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.page-header-tabs button[data-active] > span {
+  text-decoration: none;
+}
+
+.page-header-tabs button[data-active]:hover {
+  color: var(--ui-text-primary);
+}
+
+.page-header-tabs button[data-active='true'] {
+  border-bottom-color: var(--portal-brand-fill);
+  color: var(--ui-text-primary);
+}
+
+:root.dark .page-header-tabs button[data-active='true'] {
+  border-bottom-color: var(--portal-brand-ink);
+}
+
+.page-header-tabs button[data-active]:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* Tab counts (919:9286): 11px, quieter than the label. */
+.page-header-tabs button[data-active] > span:last-child:not(:first-child) {
+  color: var(--ui-text-quaternary);
+  font-size: 0.6875rem;
+  letter-spacing: 0.01em;
+}

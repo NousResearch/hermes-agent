@@ -36,6 +36,8 @@ import { usePortalShell } from '@/store/shell-variant'
 import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { ScreenshotSettings } from './screenshot-settings'
+import { SettingsCard, SettingsDisclosure, SettingsGroup, SettingsOverview } from './settings-card'
+import { useSettingsPagesCopy } from './settings-pages-copy'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 interface KeybindSettingsProps {
@@ -66,8 +68,8 @@ export function KeybindSettings({ subpage }: KeybindSettingsProps = {}) {
 
 function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean }) {
   const { t } = useI18n()
+  const pages = useSettingsPagesCopy()
   const redesign = usePortalShell()
-  const ShortcutContainer = redesign ? 'details' : 'div'
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const bindings = useStore($bindings)
   const k = t.keybinds
@@ -134,22 +136,24 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
 
   return (
     <SettingsContent>
-      <div className={redesign ? 'global-settings-overview' : 'contents'}>
+      <SettingsOverview>
         <div className="flex items-center justify-between gap-3 pb-3">
           <div className="min-w-0">
             {!hasBreadcrumb && <h2 className="text-sm font-semibold text-foreground">{k.title}</h2>}
-            <p className="mt-0.5 text-[0.72rem] text-muted-foreground">
+            <p className="mt-0.5 text-[0.72rem] text-muted-foreground" data-slot="page-description">
               {k.subtitle(openCombo ? formatCombo(openCombo) : '')}
             </p>
           </div>
-          <button
-            className="flex shrink-0 items-center gap-1 rounded-md text-[0.72rem] text-muted-foreground hover:text-foreground"
-            onClick={resetAllBindings}
-            type="button"
-          >
-            <Codicon name="discard" size="0.8125rem" />
-            {k.resetAll}
-          </button>
+          {!redesign && (
+            <button
+              className="flex shrink-0 items-center gap-1 rounded-md text-[0.72rem] text-muted-foreground hover:text-foreground"
+              onClick={resetAllBindings}
+              type="button"
+            >
+              <Codicon name="discard" size="0.8125rem" />
+              {k.resetAll}
+            </button>
+          )}
         </div>
 
         {includeScreenshot &&
@@ -157,76 +161,96 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
             <ScreenshotSettings />
           )}
 
-        {primaryActions.length > 0 && (
-          <div className="global-settings-card global-shortcut-primary">
-            {primaryActions.map(action => (
-              <KeybindRow action={action} key={action.id} />
-            ))}
+        <SettingsGroup title={pages.keybinds.bindings}>
+          {primaryActions.length > 0 && (
+            <SettingsCard className="global-shortcut-primary">
+              {primaryActions.map(action => (
+                <KeybindRow action={action} key={action.id} />
+              ))}
+            </SettingsCard>
+          )}
+          <SettingsDisclosure
+            count={actionList.length}
+            description={redesign ? pages.keybinds.allDesc : undefined}
+            title={redesign ? pages.keybinds.all : k.title}
+          >
+            <div className="pb-3">
+              <SearchField
+                aria-label={k.search}
+                containerClassName="w-full"
+                onChange={setQuery}
+                placeholder={k.search}
+                value={query}
+              />
+            </div>
+
+            {isSearching ? (
+              <div className="px-2 py-1.5">
+                {filteredActions?.length === 0 && filteredReadonly?.length === 0 ? (
+                  <p className="px-2.5 py-4 text-center text-[0.82rem] text-muted-foreground">—</p>
+                ) : (
+                  <>
+                    {filteredActions?.map(action => (
+                      <KeybindRow action={action} key={action.id} />
+                    ))}
+                    {filteredReadonly?.map(shortcut => (
+                      <ReadonlyRow key={shortcut.id} shortcut={shortcut} />
+                    ))}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="px-2 py-1.5">
+                {KEYBIND_CATEGORIES.map(category => {
+                  const actions = actionList.filter(
+                    action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
+                  )
+
+                  const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
+
+                  if (actions.length === 0 && readonly.length === 0) {
+                    return null
+                  }
+
+                  const sectionOpen = !collapsed.has(category)
+
+                  return (
+                    <section key={category}>
+                      <CategoryHeader
+                        label={k.categories[category] ?? category}
+                        onToggle={() => toggleCategory(category)}
+                        open={sectionOpen}
+                      />
+                      {sectionOpen && actions.map(action => <KeybindRow action={action} key={action.id} />)}
+                      {sectionOpen && readonly.map(shortcut => <ReadonlyRow key={shortcut.id} shortcut={shortcut} />)}
+                    </section>
+                  )
+                })}
+              </div>
+            )}
+          </SettingsDisclosure>
+        </SettingsGroup>
+        {/* The desktop gestures Figma does not draw (HUD, screenshot) fold under Advanced so the page
+            is one destination; classic keeps them as their own subpages. */}
+        {redesign && (
+          <SettingsDisclosure
+            count={2}
+            description={`${t.settings.subpages.hudGesture} · ${t.settings.subpages.screenCapture}`}
+            title={t.settings.sections.advanced}
+          >
+            <HudModifierSettings />
+            <ScreenshotSettings />
+          </SettingsDisclosure>
+        )}
+        {/* Figma 856:4318 puts the reset under the bindings, as a quiet footer link. */}
+        {redesign && (
+          <div className="global-settings-footer">
+            <Button onClick={resetAllBindings} size="inline" variant="textStrong">
+              {pages.keybinds.reset}
+            </Button>
           </div>
         )}
-        <ShortcutContainer className={redesign ? 'global-settings-disclosure group' : undefined}>
-          {redesign && (
-            <summary>
-              <span>{k.title}</span>
-              <DisclosureCaret className="group-open:rotate-90" open={false} />
-            </summary>
-          )}
-          <div className="pb-3">
-            <SearchField
-              aria-label={k.search}
-              containerClassName="w-full"
-              onChange={setQuery}
-              placeholder={k.search}
-              value={query}
-            />
-          </div>
-
-          {isSearching ? (
-            <div className="px-2 py-1.5">
-              {filteredActions?.length === 0 && filteredReadonly?.length === 0 ? (
-                <p className="px-2.5 py-4 text-center text-[0.82rem] text-muted-foreground">—</p>
-              ) : (
-                <>
-                  {filteredActions?.map(action => (
-                    <KeybindRow action={action} key={action.id} />
-                  ))}
-                  {filteredReadonly?.map(shortcut => (
-                    <ReadonlyRow key={shortcut.id} shortcut={shortcut} />
-                  ))}
-                </>
-              )}
-            </div>
-          ) : (
-            <div className="px-2 py-1.5">
-              {KEYBIND_CATEGORIES.map(category => {
-                const actions = actionList.filter(
-                  action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
-                )
-
-                const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
-
-                if (actions.length === 0 && readonly.length === 0) {
-                  return null
-                }
-
-                const sectionOpen = !collapsed.has(category)
-
-                return (
-                  <section key={category}>
-                    <CategoryHeader
-                      label={k.categories[category] ?? category}
-                      onToggle={() => toggleCategory(category)}
-                      open={sectionOpen}
-                    />
-                    {sectionOpen && actions.map(action => <KeybindRow action={action} key={action.id} />)}
-                    {sectionOpen && readonly.map(shortcut => <ReadonlyRow key={shortcut.id} shortcut={shortcut} />)}
-                  </section>
-                )
-              })}
-            </div>
-          )}
-        </ShortcutContainer>
-      </div>
+      </SettingsOverview>
     </SettingsContent>
   )
 }

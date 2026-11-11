@@ -36,7 +36,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
-import { $portalPreferred } from './shell-variant'
+import { $sessionListSpansProfiles } from './shell-policy'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
@@ -977,7 +977,7 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 
 // Browsing every agent must not change the owner of project or settings operations.
 export const $sessionListProfileScope = computed(
-  [$showAllProfiles, $activeGatewayProfile, $portalPreferred],
+  [$showAllProfiles, $activeGatewayProfile, $sessionListSpansProfiles],
   (showAll, gateway, simplified) => (showAll || simplified ? ALL_PROFILES : normalizeProfileKey(gateway))
 )
 

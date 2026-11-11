@@ -32,7 +32,8 @@
     [data-slot='context-menu-sub-content'],
     [data-slot='select-content'],
     [data-slot='popover-content'],
-    [data-slot='tooltip-content']
+    [data-slot='tooltip-content'],
+    .hermes-floating-surface
   ) {
   font-family: var(--portal-font-body);
 }
@@ -50,12 +51,4 @@
   font-size: 1.875rem;
   font-weight: 300;
   line-height: 1.1;
-}
-
-.portal-sidebar .portal-sidebar-wordmark {
-  font-family: var(--portal-font-display);
-  font-size: 1.875rem;
-  font-weight: 400;
-  text-transform: uppercase;
-  letter-spacing: -0.01em;
 }

@@ -49,6 +49,7 @@ function AgentSettingsRoute({ connectionId, profile, ...props }: AgentSettingsRo
     connectionId: resolveOwnerNow({ connectionId, profile }).connectionId ?? $activeConnectionId.get() ?? undefined,
     profile
   }))
+
   const configDraft = useRef<ConfigSettingsDraft | null>(null)
   const instructionsDraft = useState(EMPTY_AGENT_INSTRUCTIONS_DRAFT)
 

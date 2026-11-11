@@ -40,7 +40,9 @@ const tone: Record<NotificationKind, { icon: IconComponent; iconClass: string; v
   success: { icon: CheckCircle2, iconClass: 'text-primary', variant: 'success' }
 }
 
-const STACK_SURFACE = 'pointer-events-auto border border-(--stroke-nous) bg-popover/95 shadow-nous backdrop-blur-md'
+// `hermes-toast-surface` is a hook for the redesign's floating language (portal-floating.css).
+const STACK_SURFACE =
+  'hermes-toast-surface pointer-events-auto border border-(--stroke-nous) bg-popover/95 shadow-nous backdrop-blur-md'
 
 function partitionNotifications(notifications: AppNotification[]) {
   const defaultStack: AppNotification[] = []
@@ -137,7 +139,7 @@ function TopCenterStack({
     >
       <NotificationDeck expanded={expanded} notifications={notifications} />
       {older.length > 0 && (
-        <div className="pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
+        <div className="hermes-toast-controls pointer-events-auto flex min-h-8 items-center justify-between px-3 text-xs">
           <Button className="-ml-2" onClick={onToggleExpanded} size="xs" type="button" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>
@@ -188,7 +190,7 @@ function BottomRightStack({
       role="region"
     >
       {older.length > 0 && (
-        <div className="pointer-events-auto flex items-center justify-between px-2 text-xs">
+        <div className="hermes-toast-controls pointer-events-auto flex items-center justify-between px-2 text-xs">
           <Button onClick={() => setExpanded(value => !value)} size="xs" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(older.length)}
           </Button>

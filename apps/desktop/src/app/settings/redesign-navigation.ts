@@ -9,28 +9,18 @@ function flattenSubpages(links: OverlayNavLink[]): OverlayNavLink[] {
   ])
 }
 
-/** Rearrange destinations only: callbacks retain their existing route and scope. */
-export function redesignSettingsNavigation(groups: OverlayNavGroup[]): OverlayNavGroup[] {
+/** Names the redesign gives existing destinations; routes and owners stay untouched. */
+export type RedesignNavigationLabels = Partial<Record<string, string>>
+
+/** Rearrange destinations only: callbacks retain their existing route and scope. The order is the
+ *  Figma rail (856:1834); everything not drawn there (provider accounts and keys, per-agent config
+ *  sections, plugins) stays reachable under Advanced. */
+export function redesignSettingsNavigation(
+  groups: OverlayNavGroup[],
+  labels: RedesignNavigationLabels = {}
+): OverlayNavGroup[] {
   const remaining = new Map(groups.map(group => [group.id, group]))
   const result: OverlayNavGroup[] = []
-  const providers = remaining.get('providers')
-  const account = providers?.children?.find(child => child.id === 'pview:accounts')
-
-  if (providers && account) {
-    const billing = remaining.get('billing')
-    result.push({
-      ...account,
-      active: account.active || Boolean(billing?.active),
-      children: billing ? [billing] : undefined
-    })
-    remaining.delete('billing')
-    remaining.set('providers', {
-      ...providers,
-      active: providers.active && !account.active,
-      children: providers.children?.filter(child => child !== account),
-      onSelect: providers.children?.find(child => child.id === 'pview:keys')?.onSelect ?? providers.onSelect
-    })
-  }
 
   function append(id: string, related: string[] = []) {
     const primary = remaining.get(id)
@@ -55,11 +45,11 @@ export function redesignSettingsNavigation(groups: OverlayNavGroup[]): OverlayNa
       ...primary,
       active: primary.active || children.some(child => child.active),
       children: children.length ? children : undefined,
-      gapBefore: false
+      gapBefore: false,
+      label: labels[id] ?? primary.label
     })
   }
 
-  // Billing remains a top-level destination only when there is no account page.
   append('billing')
   append('config:appearance')
   append('notifications')
@@ -70,6 +60,7 @@ export function redesignSettingsNavigation(groups: OverlayNavGroup[]): OverlayNa
 
   const advanced = remaining.get('config:advanced')
   remaining.delete('config:advanced')
+
   if (advanced) {
     const children = [
       ...(advanced.children ?? []),
@@ -78,6 +69,7 @@ export function redesignSettingsNavigation(groups: OverlayNavGroup[]): OverlayNa
         children: flattenSubpages(group.children ?? [])
       }))
     ]
+
     result.push({
       ...advanced,
       active: advanced.active || children.some(child => child.active),
@@ -97,29 +89,57 @@ const REDESIGN_LANDING_PAGES: Partial<Record<SettingsView, string>> = {
   notifications: 'alerts',
   keybinds: 'shortcuts',
   sessions: 'archived',
-  about: 'updates'
+  about: 'updates',
+  gateway: 'connection'
+}
+
+/** Pages the redesign draws as one destination: the landing renders every subpage's content, so the
+ *  rail lists none of them (related pages filed under the group, like Web access, stay). */
+const REDESIGN_SINGLE_PAGES: ReadonlySet<string> = new Set([
+  'notifications',
+  'keybinds',
+  'sessions',
+  'about',
+  'gateway'
+])
+
+function withoutOwnSubpages(group: OverlayNavGroup): OverlayNavGroup {
+  const children = group.children?.filter(child => !child.id.startsWith(`${group.id}:`))
+
+  return { ...group, children: children?.length ? children : undefined }
 }
 
 export function settingsNavigationPresentation(
   groups: OverlayNavGroup[],
   redesign: boolean,
   view: SettingsView,
-  subpage: string | undefined
+  subpage: string | undefined,
+  labels: RedesignNavigationLabels = {}
 ) {
   const activeGroup = groups.find(group => group.active)
   const activeChild = activeGroup?.children?.find(child => child.active)
+
   if (!redesign) {
     return { groups, headerGroup: activeGroup, headerChild: activeChild }
   }
 
   const appearanceLanding = view === 'config:appearance' && subpage === 'general'
-  const overviewLanding = REDESIGN_LANDING_PAGES[view] === subpage
-  const accountLanding = activeChild?.id === 'pview:accounts'
+  // Billing tracks its sub-view in `bview`, not `page`: its overview is the Account & Plan landing.
+  const overviewLanding = REDESIGN_LANDING_PAGES[view] === subpage || activeChild?.id === 'bview:overview'
+
+  const redesigned = redesignSettingsNavigation(groups, labels).map(group =>
+    (group.id === 'config:appearance' && appearanceLanding) || (group.id === 'billing' && group.children?.length === 1)
+      ? { ...group, children: undefined }
+      : REDESIGN_SINGLE_PAGES.has(group.id)
+        ? withoutOwnSubpages(group)
+        : group
+  )
+
+  const headerGroup = redesigned.find(group => group.id === activeGroup?.id) ?? activeGroup
+
   return {
-    groups: redesignSettingsNavigation(groups).map(group =>
-      group.id === 'config:appearance' && appearanceLanding ? { ...group, children: undefined } : group
-    ),
-    headerGroup: accountLanding ? activeChild : activeGroup,
-    headerChild: overviewLanding || accountLanding ? undefined : activeChild
+    groups: redesigned,
+    headerGroup,
+    headerChild: overviewLanding ? undefined : activeChild
   }
 }

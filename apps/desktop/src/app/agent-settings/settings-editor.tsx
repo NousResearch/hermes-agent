@@ -11,12 +11,12 @@ import { CapabilitiesView } from '../capabilities'
 import { MessagingView } from '../messaging'
 import { BrowserRealProfilePanel } from '../settings/browser-real-profile-panel'
 import { ConfigSettings } from '../settings/config-settings'
-import { CONFIG_SUBPAGES } from '../settings/config-subpages'
 import { KeysSettings } from '../settings/keys-settings'
 import { PluginSettingsPane, usePluginSettingsRoute } from '../settings/plugin-settings'
 import { SettingsBreadcrumbContext } from '../settings/primitives'
 import { SettingsOwnerContext } from '../settings/profile-scope'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from '../settings/providers-settings'
+import { SettingsDisclosure } from '../settings/settings-card'
 import type { SettingsPageProps } from '../settings/types'
 import { VaultSettings } from '../settings/vault-settings'
 
@@ -24,6 +24,7 @@ import { useAgentSettingsCopy } from './copy'
 import type { AgentSettingsOwner } from './data'
 import { useAgentSettingsEditorCopy } from './settings-copy'
 import { AgentGeneralSettings, AgentInstructionsSettings } from './settings-general'
+import { useAgentSettingsLayoutCopy } from './settings-layout-copy'
 import {
   AGENT_SETTINGS_GROUPS,
   agentSettingsSearch,
@@ -68,6 +69,7 @@ function AgentSettingsEditorContent({
   const { t } = useI18n()
   const c = useAgentSettingsEditorCopy()
   const a = useAgentSettingsCopy()
+  const layout = useAgentSettingsLayoutCopy()
   const location = useLocation()
   const navigate = useNavigate()
   const params = new URLSearchParams(location.search)
@@ -107,6 +109,7 @@ function AgentSettingsEditorContent({
     if (bodyRef.current && !preserveScroll) {
       bodyRef.current.scrollTop = 0
     }
+
     navigate({ pathname: location.pathname, search: agentSettingsSearch(location.search, next) }, { replace: true })
   }
 
@@ -114,14 +117,13 @@ function AgentSettingsEditorContent({
     if (bodyRef.current) {
       bodyRef.current.scrollTop = 0
     }
+
     const next = new URLSearchParams(location.search)
     next.set(key, value)
     navigate({ pathname: location.pathname, search: `?${next}` }, { replace: true })
   }
 
   const configSection = resolveConfigSection(section)
-
-  const runtimePage = page ?? 'runtime'
 
   return (
     <div className="agent-settings-editor">
@@ -130,22 +132,6 @@ function AgentSettingsEditorContent({
         <AgentSettingsHeading labels={labels} section={section} />
         {section === 'general' && <AgentGeneralSettings onProfileRenamed={onProfileRenamed} owner={owner} />}
         {section === 'instructions' && <AgentInstructionsSettings owner={owner} />}
-        {section === 'limits' && (
-          <div className="agent-settings-subpages">
-            {CONFIG_SUBPAGES.advanced
-              .filter(item => ['runtime', 'terminal', 'output'].includes(item.id))
-              .map(item => (
-                <Button
-                  aria-pressed={runtimePage === item.id}
-                  key={item.id}
-                  onClick={() => openPage('page', item.id)}
-                  variant="secondary"
-                >
-                  {t.settings.subpages[item.labelKey]}
-                </Button>
-              ))}
-          </div>
-        )}
         {configSection && (
           <ConfigSettings
             activeSectionId={configSection}
@@ -154,7 +140,7 @@ function AgentSettingsEditorContent({
             importInputRef={importInputRef}
             onConfigSaved={onConfigSaved}
             onMainModelChanged={onMainModelChanged}
-            subpage={section === 'limits' ? runtimePage : section === 'model' ? page : undefined}
+            subpage={section === 'model' ? page : undefined}
           />
         )}
         {section && ['tools', 'tools-advanced', 'skills', 'connectors', 'plugins'].includes(section) && (
@@ -181,15 +167,20 @@ function AgentSettingsEditorContent({
         {section === 'schedules' && <AgentSchedulesSettings owner={owner} />}
         {section === 'browser' && (
           <>
-            <BrowserRealProfilePanel profile={owner} />
-            <ConfigSettings
-              activeSectionId="browser"
-              importInputRef={importInputRef}
-              onConfigSaved={onConfigSaved}
-              subpage="network"
-            />
-            <h3>{t.settings.nav.vault}</h3>
             <VaultSettings subpage={tab === 'vault' ? page : undefined} />
+            <SettingsDisclosure
+              description={layout.summaries.browser}
+              open={tab === 'config:browser' && Boolean(page)}
+              title={t.settings.sections.advanced}
+            >
+              <BrowserRealProfilePanel profile={owner} />
+              <ConfigSettings
+                activeSectionId="browser"
+                importInputRef={importInputRef}
+                onConfigSaved={onConfigSaved}
+                subpage="network"
+              />
+            </SettingsDisclosure>
           </>
         )}
         {section === 'providers' && (
@@ -252,6 +243,7 @@ function AgentCapabilitiesSettings({
   children
 }: AgentCapabilitiesSettingsProps) {
   const { t } = useI18n()
+  const layout = useAgentSettingsLayoutCopy()
   const tools = section === 'tools' || section === 'tools-advanced'
 
   return (
@@ -265,14 +257,21 @@ function AgentCapabilitiesSettings({
       />
       {tools && (
         <div className="agent-settings-advanced">
+          {/* The route owns this disclosure (tab=agent:tools-advanced), so it is a button, not <details>. */}
           <button
             aria-expanded={section === 'tools-advanced'}
             className="agent-settings-advanced-toggle"
             onClick={onOpenAdvanced}
             type="button"
           >
-            <span>{t.settings.sections.advanced}</span>
-            <Codicon name={section === 'tools-advanced' ? 'chevron-up' : 'chevron-down'} />
+            <span className="global-settings-disclosure-text">
+              <span className="global-settings-disclosure-title">{t.settings.sections.advanced}</span>
+              <span className="global-settings-disclosure-description">{layout.summaries.tools}</span>
+            </span>
+            <Codicon
+              className="global-settings-disclosure-caret"
+              name={section === 'tools-advanced' ? 'chevron-up' : 'chevron-down'}
+            />
           </button>
           {section === 'tools-advanced' && <div>{children}</div>}
         </div>
@@ -287,6 +286,9 @@ interface AgentProviderSettingsProps extends SettingsPageProps {
   onViewChange: (view: ProviderView) => void
 }
 
+// Providers & Keys (Figma 895:21016): accounts, then API keys, then custom endpoints under Advanced.
+const PROVIDER_SECTIONS = ['accounts', 'keys'] as const
+
 function AgentProviderSettings({
   params,
   onClose,
@@ -296,39 +298,52 @@ function AgentProviderSettings({
 }: AgentProviderSettingsProps) {
   const { t } = useI18n()
   const c = useAgentSettingsEditorCopy()
-  const providerView = params.get('pview') ?? 'keys'
-  const validProvider = providerView !== 'local' && PROVIDER_VIEWS.includes(providerView as ProviderView)
+  const layout = useAgentSettingsLayoutCopy()
+  const requested = params.get('pview')
+  const known = !requested || PROVIDER_VIEWS.includes(requested as ProviderView)
+
+  const titles: Record<(typeof PROVIDER_SECTIONS)[number], string> = {
+    accounts: t.settings.nav.providerAccounts,
+    keys: t.settings.nav.providerApiKeys
+  }
+
+  // Every view is on this page, so a cross-link ("Have an API key instead?") moves to its section;
+  // local models keep their own global page.
+  const showView = (view: ProviderView) =>
+    view === 'local'
+      ? onViewChange(view)
+      : document.getElementById(`agent-providers-${view}`)?.scrollIntoView({ block: 'start' })
+
+  const providers = (view: ProviderView) => (
+    <ProvidersSettings
+      onClose={onClose}
+      onConfigSaved={onConfigSaved}
+      onMainModelChanged={onMainModelChanged}
+      onViewChange={showView}
+      view={view}
+    />
+  )
+
+  if (!known) {
+    return <p role="alert">{c.invalid}</p>
+  }
 
   return (
     <>
-      <div className="agent-settings-subpages">
-        {(['keys', 'accounts', 'custom-endpoints'] as const).map(view => (
-          <Button
-            aria-pressed={providerView === view}
-            key={view}
-            onClick={() => onViewChange(view)}
-            variant="secondary"
-          >
-            {view === 'keys'
-              ? t.settings.nav.providerApiKeys
-              : view === 'accounts'
-                ? t.settings.nav.providerAccounts
-                : t.settings.nav.providerCustomEndpoints}
-          </Button>
-        ))}
-      </div>
-      {validProvider ? (
-        <ProvidersSettings
-          onClose={onClose}
-          onConfigSaved={onConfigSaved}
-          onMainModelChanged={onMainModelChanged}
-          onViewChange={onViewChange}
-          view={providerView as ProviderView}
-        />
-      ) : (
-        <p role="alert">{c.invalid}</p>
-      )}
-      {providerView === 'local' && (
+      {PROVIDER_SECTIONS.map(view => (
+        <section className="agent-settings-group" id={`agent-providers-${view}`} key={view}>
+          <h3>{titles[view]}</h3>
+          {providers(view)}
+        </section>
+      ))}
+      <SettingsDisclosure
+        description={layout.summaries.providers}
+        open={requested === 'custom-endpoints'}
+        title={t.settings.sections.advanced}
+      >
+        {providers('custom-endpoints')}
+      </SettingsDisclosure>
+      {requested === 'local' && (
         <Button onClick={() => onViewChange('local')}>{t.settings.nav.providerLocalModels}</Button>
       )}
     </>

@@ -17,9 +17,9 @@ export function PortalStatusMenu({ children }: { children: (close: () => void) =
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
-      <Tip label={label}>
+      <Tip label={label} placement="left-rail">
         <PopoverTrigger asChild>
-          <Button aria-label={label} size="icon" variant="ghost">
+          <Button aria-label={label} className="portal-chrome-button" size="icon" variant="ghost">
             <Codicon name="pulse" />
           </Button>
         </PopoverTrigger>

@@ -137,6 +137,21 @@ describe('theme repaint subscriptions', () => {
     expect(repaint).toHaveBeenCalledOnce()
   })
 
+  it('ignores geometry under authored CSS that never reads it (a palette-only skin like Portal)', async () => {
+    const style = window.document.createElement('style')
+    style.id = 'hermes-desktop-custom-css'
+    style.textContent = ':root { --ui-bg-chrome: var(--theme-background-seed); }'
+    window.document.head.append(style)
+    const repaint = vi.fn()
+    disposers.push(onThemeRepaint(repaint))
+    root.style.setProperty('--workspace-left', '41px')
+    await flush()
+    expect(repaint).not.toHaveBeenCalled()
+    root.style.setProperty('--theme-primary', '#102030')
+    await flush()
+    expect(repaint).toHaveBeenCalledOnce()
+  })
+
   it('reads the provider paint after mount, skin/mode/font/accent changes, and same-palette customCSS edits', async () => {
     let setTheme!: (name: string) => void
     let setDarkMode!: () => void

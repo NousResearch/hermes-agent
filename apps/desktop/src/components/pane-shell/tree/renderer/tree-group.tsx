@@ -23,7 +23,6 @@ import {
 } from 'react'
 
 import { ShellMenuItems } from '@/app/context-menu/shell-menu-items'
-import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { TITLEBAR_DRAG_HANDLE_WIDTH } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -104,7 +103,9 @@ import { PaneBody } from './pane-body'
 import { usePanelTitlebar } from './panel-titlebar'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
+import { zoneFrameAttrs, zoneFrameStyle } from './zone-frame'
 import { useZoneHeaderLayout } from './zone-header-layout'
+import { useZoneHeader } from './zone-header-provider'
 
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
  *  all) plus the strip's own chrome toggles. Same items and icons as a session
@@ -394,7 +395,9 @@ export function TreeGroup({
   node,
   parentAxis,
   railSide = 'left',
-  topEdge = false
+  topEdge = false,
+  leftEdge = false,
+  rightEdge = false
 }: {
   node: GroupNode
   parentAxis?: 'column' | 'row'
@@ -427,6 +430,7 @@ export function TreeGroup({
   const editMode = useStore($layoutEditMode)
   const revealsHidden = useStore($layoutEditRevealsHidden)
   const wcOverlap = useWindowControlsOverlap(ref, !topEdge)
+  const edges = { left: leftEdge, right: rightEdge, top: topEdge }
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
@@ -546,7 +550,7 @@ export function TreeGroup({
 
   // Portal replaces chat-only tabs with conversation chrome. Other zones
   // retain the shared strip resolver and their persisted visibility choices.
-  const { stripVisible, conversationHeader } = usePortalZoneHeader(node, {
+  const { stripVisible, conversationHeader } = useZoneHeader(node, {
     active: activeId,
     isCollapsePane,
     paneFor,
@@ -655,10 +659,7 @@ export function TreeGroup({
     <div
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
       data-tree-group={node.id}
-      data-window-top={topEdge || undefined}
-      // Advertises the visible tab strip so panes can drop their own
-      // self-naming labels (see [data-pane-self-label] in styles.css).
-      data-zone-header={headerVisible || undefined}
+      {...zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty })}
       // The zone menu opens from the strip, the rail, the edit veil and the
       // body. Only the strip can name a chip, so resolve the target HERE for
       // every one of them — otherwise a right-click off the strip reused the
@@ -668,13 +669,7 @@ export function TreeGroup({
         setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
       }}
       ref={ref}
-      style={
-        wcOverlap
-          ? { paddingTop: wcOverlap.y + wcOverlap.height }
-          : topEdge && verticalCollapse
-            ? { paddingTop: titlebarHeight }
-            : undefined
-      }
+      style={zoneFrameStyle({ titlebarHeight, topEdge, verticalCollapse, wcOverlap })}
     >
       {wcOverlap && (
         <div
@@ -979,6 +974,8 @@ export function TreeGroup({
               key={paneId}
               paneId={paneId}
               visible={paneId === activeId && !node.minimized}
+              windowEnd={topEdge && rightEdge}
+              windowStart={topEdge && leftEdge}
             />
           ))}
           {isEmpty ? (

@@ -1,7 +1,8 @@
-import { TITLEBAR_HEIGHT, TOUCH_TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { titlebarBandHeight } from '@/app/shell/titlebar'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { hostHas } from '@/lib/host-capabilities'
 import { TOUCH_POINTER_QUERY } from '@/lib/touch-interaction'
+import { $portalShell, usePortalShell } from '@/store/shell-variant'
 
 /** Browser touch chrome needs a 44px band, not Electron's compact 34px band. */
 export function useTouchTitlebar(): boolean {
@@ -10,6 +11,15 @@ export function useTouchTitlebar(): boolean {
   return hostHas('touchSizedControls') && touch
 }
 
+/** This window's titlebar band (see titlebarBandHeight). */
 export function useTitlebarHeight(): number {
-  return useTouchTitlebar() ? TOUCH_TITLEBAR_HEIGHT : TITLEBAR_HEIGHT
+  const portal = usePortalShell()
+  const touch = useTouchTitlebar()
+
+  return titlebarBandHeight({ portal, touch })
+}
+
+/** The band outside React (geometry read at event time). */
+export function titlebarHeightNow(): number {
+  return titlebarBandHeight({ portal: $portalShell.get(), touch: false })
 }

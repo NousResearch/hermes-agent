@@ -23,10 +23,18 @@ interface SimplifiedBotChatRowProps {
   agent: SimplifiedAgent
   appearance?: 'card' | 'hidden'
   summary?: ReactNode
+  /** Overrides the profile colour where the row sits on a coloured selection fill. */
+  avatarColor?: string
   onOpen?: () => void
 }
 
-export function SimplifiedBotChatRow({ agent, appearance = 'card', summary, onOpen }: SimplifiedBotChatRowProps) {
+export function SimplifiedBotChatRow({
+  agent,
+  appearance = 'card',
+  summary,
+  avatarColor,
+  onOpen
+}: SimplifiedBotChatRowProps) {
   const opened = useStore($openBotChat)
   const pending = useStore($pendingBotOpen)
   const focused = useStore($focusedStoredSessionId)
@@ -61,7 +69,7 @@ export function SimplifiedBotChatRow({ agent, appearance = 'card', summary, onOp
       <RowButton
         aria-busy={loading || undefined}
         aria-current={selected ? 'page' : undefined}
-        className="portal-agent-chat flex min-w-0 flex-1 items-center text-left focus-visible:outline-2 focus-visible:outline-ring"
+        className="portal-agent-chat"
         data-appearance={appearance}
         disabled={loading}
         onClick={() => {
@@ -76,18 +84,22 @@ export function SimplifiedBotChatRow({ agent, appearance = 'card', summary, onOp
       >
         {appearance !== 'hidden' &&
           (loading ? (
-            <span className="portal-agent-avatar grid shrink-0 place-items-center">
+            <span className="portal-agent-avatar">
               <Codicon className="animate-spin" name="loading" />
             </span>
           ) : (
-            <FigmaAgentIcon className="portal-agent-avatar" color={resolveProfileColor(agent.profile, colors)} />
+            <FigmaAgentIcon
+              className="portal-agent-avatar"
+              color={avatarColor ?? resolveProfileColor(agent.profile, colors)}
+              variant="subtle"
+            />
           ))}
-        <span className="min-w-0 flex-1">
+        <span className="portal-agent-text">
           <OverflowTip label={appearance === 'hidden' ? undefined : agent.label}>
-            <span className="block truncate">{agent.label}</span>
+            <span className="portal-agent-name">{agent.label}</span>
           </OverflowTip>
           {(summary || (appearance === 'card' && description)) && (
-            <span className="portal-agent-subtitle block truncate">{summary || description}</span>
+            <span className="portal-agent-subtitle">{summary || description}</span>
           )}
         </span>
       </RowButton>

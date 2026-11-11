@@ -1,5 +1,6 @@
 import './ui/page.css'
 
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -12,6 +13,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $capabilitiesManagedPerAgent } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -24,6 +26,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { syncCatalogArcs } from './catalog/catalog-arc'
 import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { ConnectorsTab } from './connectors/connectors-tab'
+import { useCapabilitiesPageDescription } from './page-copy'
 import { PluginsTab } from './plugins/plugins-tab'
 import { type CapabilityScope, CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
 import { SKILLS_QUERY_KEY, useSkillsQuery } from './skills/skills-data'
@@ -73,10 +76,9 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
-  const redesignEnabled = usePortalShell()
-  const agentRedesign = redesignEnabled && Boolean(fixedProfile)
-  const agentControls = !redesignEnabled || Boolean(fixedProfile)
-  const redesigned = redesignEnabled && !embedded
+  const presentation = capabilitiesPresentation(usePortalShell(), embedded, Boolean(fixedProfile))
+  const pageDescription = useCapabilitiesPageDescription()
+  const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
@@ -133,7 +135,7 @@ export function CapabilitiesView({
     connectors: () => (
       <ConnectorsTab
         agentControls={agentControls}
-        agentLayout={agentRedesign}
+        agentLayout={presentation.agentLayout}
         gateway={scope.crossBackend ? null : gateway}
         key={`connectors-${scope.key}`}
         profile={scope.profile}
@@ -149,7 +151,7 @@ export function CapabilitiesView({
       ) : (
         <PluginsTab
           agentControls={agentControls}
-          agentLayout={agentRedesign}
+          agentLayout={presentation.agentLayout}
           key={`plugins-${scope.key}`}
           onQueryChange={setQuery}
           profile={scope.profile}
@@ -161,7 +163,7 @@ export function CapabilitiesView({
     skills: () => (
       <SkillsTab
         agentControls={agentControls}
-        agentLayout={agentRedesign}
+        agentLayout={presentation.agentLayout}
         installedError={skillsError}
         installedPending={!skills || skillsFailed}
         key={`skills-${scope.key}`}
@@ -173,7 +175,7 @@ export function CapabilitiesView({
       />
     ),
     toolsets: () =>
-      agentRedesign ? (
+      presentation.agentLayout ? (
         <AgentToolsets
           key={`toolsets-${scope.key}`}
           onQueryChange={setQuery}
@@ -197,12 +199,13 @@ export function CapabilitiesView({
     <PageSearchShell
       {...props}
       activeTab={mode}
-      data-capabilities-v2={redesigned || undefined}
+      data-capabilities-v2={presentation.pageFrame || undefined}
       onTabChange={id => setMode(id as CapabilityMode)}
-      pageTitle={embedded || agentRedesign ? undefined : t.sidebar.nav.capabilities}
+      pageDescription={presentation.pageTitle ? pageDescription : undefined}
+      pageTitle={presentation.pageTitle ? t.sidebar.nav.capabilities : undefined}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
-      searchTrailingAction={!redesignEnabled && mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
+      searchTrailingAction={presentation.headerScope && mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
       tabs={
         fixedMode
           ? []
@@ -237,6 +240,27 @@ export function CapabilitiesView({
       </div>
     </PageSearchShell>
   )
+}
+
+interface CapabilitiesPresentation {
+  /** The redesigned page frame (catalog hero art, v2 card layout). */
+  pageFrame: boolean
+  /** A routed page with its own H1 rather than a surface embedded in another page. */
+  pageTitle: boolean
+  /** One agent's enablement editor (agent settings, Bot Mode) rather than the inventory. */
+  agentLayout: boolean
+  /** Classic keeps the scope selector beside the header search. */
+  headerScope: boolean
+}
+
+/** One place derives how this view presents itself from the shell, embedding and pinning. */
+function capabilitiesPresentation(redesign: boolean, embedded: boolean, pinned: boolean): CapabilitiesPresentation {
+  return {
+    pageFrame: redesign && !embedded,
+    pageTitle: !embedded && !(redesign && pinned),
+    agentLayout: redesign && pinned,
+    headerScope: !redesign
+  }
 }
 
 // Feature-detection flag for plugins (Bot Mode): TRUE means this build's
@@ -322,7 +346,10 @@ function CapabilityInventoryScope({
   const { t } = useI18n()
 
   return (
-    <div className="flex flex-wrap items-center gap-3 border-b border-(--ui-stroke-tertiary) px-5 py-3">
+    <div
+      className="flex flex-wrap items-center gap-3 border-b border-(--ui-stroke-tertiary) px-5 py-3"
+      data-slot="capability-scope"
+    >
       <div className="min-w-0 flex-1 text-xs text-(--ui-text-tertiary)">
         <p>{t.skills.inventoryScopeHint}</p>
         <p className="mt-1">

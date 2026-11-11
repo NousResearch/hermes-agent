@@ -1,6 +1,6 @@
 import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
+import { type ComponentProps, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
@@ -37,8 +37,9 @@ import { $unreadSessionCount } from '@/store/session-dot-state'
 import { usePortalShell } from '@/store/shell-variant'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
-import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
+import { $workspaceIsPage, appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
+import { PortalSessionTab } from './portal-session-tab'
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
   TITLEBAR_ICON_BADGE_SCALE,
@@ -47,6 +48,7 @@ import {
   titlebarToolClusterClass
 } from './titlebar'
 import { TitlebarIcon } from './titlebar-icon'
+import { useTitlebarHeight } from './use-touch-titlebar'
 
 export interface TitlebarTool extends Tiered {
   id: string
@@ -184,6 +186,35 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   }
 }
 
+/** The redesigned sidebar carries its own collapse button (Figma 906:19685), so the band offers
+ *  only the way back while it is hidden; pages have no sidebar to bring back. A narrow window
+ *  keeps it: there the sidebar is an overlay this button reveals. ⌘B works in every state. */
+function useBandSidebarToolHidden(portal: boolean, sidebarOpen: boolean): boolean {
+  const workspacePage = useStore($workspaceIsPage)
+  const narrow = useStore($narrowViewport)
+
+  return portal && !narrow && (sidebarOpen || workspacePage)
+}
+
+/** The redesign centres its 30px chrome buttons in its 60px band; native controls are centred
+ *  there too, so the pre-Tahoe optical nudge stands down. The leading cluster also starts past
+ *  the 60px rail column (Figma's 20px breadcrumb inset), still clearing macOS traffic lights.
+ *  Classic keeps the stylesheet's placement. */
+function usePortalClusterStyles(portal: boolean): { clusterStyle?: CSSProperties; leftClusterStyle?: CSSProperties } {
+  const titlebarHeight = useTitlebarHeight()
+
+  if (!portal) {
+    return {}
+  }
+
+  const clusterStyle = {
+    '--titlebar-controls-top': `calc((${titlebarHeight}px - var(--titlebar-control-height)) / 2)`,
+    '--titlebar-controls-y-nudge': '0px'
+  } as CSSProperties
+
+  return { clusterStyle, leftClusterStyle: { ...clusterStyle, left: 'max(5rem, var(--titlebar-controls-left))' } }
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const portal = usePortalShell()
   const { t } = useI18n()
@@ -216,6 +247,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const { left: leftEdge, right: rightEdge } = useSidebarEdges()
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
+  const sidebarToolHidden = useBandSidebarToolHidden(portal, leftEdge.open)
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
@@ -223,6 +255,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     badge: panesFlipped ? undefined : unreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
+    hidden: sidebarToolHidden,
     expanded: leftEdge.expanded,
     label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
     onSelect: () => {
@@ -314,6 +347,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   ]
 
   const view = appViewForPath(location.pathname)
+  const { clusterStyle, leftClusterStyle } = usePortalClusterStyles(portal)
 
   // Route changes can replace measured clusters without resizing the panels.
   useEffect(() => {
@@ -344,15 +378,16 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     // Both markers are required even when a page contributes to only one side.
     return (
       <>
-        <div className={leftClusterClass} data-titlebar-cluster="left">
+        <div className={leftClusterClass} data-titlebar-cluster="left" style={leftClusterStyle}>
           {pageTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+            <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
           ))}
           <Slot area="titleBar.left" />
         </div>
         <div
           className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
           data-titlebar-cluster="right"
+          style={clusterStyle}
         >
           <Slot area="titleBar.right" />
         </div>
@@ -370,13 +405,27 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   return (
     <>
-      <div aria-label={t.shell.windowControls} className={leftClusterClass} data-titlebar-cluster="left">
+      <div
+        aria-label={t.shell.windowControls}
+        className={leftClusterClass}
+        data-titlebar-cluster="left"
+        style={leftClusterStyle}
+      >
         {visibleLeftTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
         ))}
         <Slot area="titleBar.left" />
         <Slot area="titleBar.center" />
       </div>
+
+      {portal && (
+        <div
+          className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}
+          style={clusterStyle}
+        >
+          <PortalSessionTab />
+        </div>
+      )}
 
       {visiblePaneTools.length > 0 && (
         <div
@@ -385,9 +434,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
             titlebarToolClusterClass,
             'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
           )}
+          style={clusterStyle}
         >
           {visiblePaneTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+            <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
           ))}
         </div>
       )}
@@ -396,12 +446,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
         data-titlebar-cluster="right"
+        style={clusterStyle}
       >
         {visibleSystemTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
         ))}
         {visibleRightFixedTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
         ))}
         <Slot area="titleBar.right" />
       </div>
@@ -409,11 +460,22 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   )
 }
 
-function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
-  // Titlebar actions never show an active background — state reads from the
-  // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
-  // for a11y.
-  const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
+interface TitlebarToolButtonProps {
+  navigate: ReturnType<typeof useNavigate>
+  /** The redesign draws every titlebar tool as a 30px chrome button. */
+  portal: boolean
+  tool: TitlebarTool
+}
+
+function TitlebarToolButton({ navigate, portal, tool }: TitlebarToolButtonProps) {
+  // Classic titlebar actions never show an active background — state reads
+  // from the icon itself (e.g. the mute/unmute glyph). aria-pressed still
+  // carries it for a11y.
+  const className = cn(
+    portal ? 'portal-chrome-button' : [titlebarButtonClass, 'bg-transparent'],
+    'select-none',
+    tool.className
+  )
 
   const tooltipLabel = tool.actionId ? (
     <TipKeybindLabel actionId={tool.actionId} text={tool.title ?? tool.label} />

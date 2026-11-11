@@ -224,14 +224,43 @@ Voice groups Conversation, Listening, and Speaking; the mode selector exposes
 only backend-supported values, while detailed provider/pricing help stays under
 Advanced. Schema/config availability still determines which provider fields exist.
 
-Page toolbars occupy the native titlebar band with an opaque surface so open
-chat/tool tabs cannot bleed through; controls remain outside the drag region.
+Page toolbars occupy the native titlebar band on the window canvas so open
+chat/tool tabs cannot bleed through; Back is a 30px chrome button and controls
+remain outside the drag region.
+
+The redesigned shell is a window canvas with panels laid on it
+(`app/redesign/portal-shell.css`, tokens in `portal-colors.css`). The titlebar
+band and the 60px rails show the canvas (the skin's chrome; light mixes 5% ink
+in). Zones touching the window top become panels starting below the band; only
+the row's outer top corners round at 9px, and neighbours share a 5% hairline.
+Dark panels are Figma's black .90 (sidebar) / .96 (stage) + 5% ink over the
+canvas; light panels lift toward white (30% / 90%). Pages (Settings, Agents)
+lay their nav and body on the canvas itself. The wing artwork is painted once,
+on the canvas, and reads only through translucent panels
+(`--portal-sidebar-panel-background`); a page card repaints it, registered to
+the viewport. Window glass keeps owning these surfaces. Titlebar, rail and pane
+header buttons are 30px r3 chrome buttons: 2% ink fill, quaternary glyph,
+hover 5%, pressed 10%, the open destination or shown pane in brand selection
+with a 1px brand ring. The titlebar band is a shell property: 60px in the
+redesign (Figma's header; content starts at y 60), 34px classic (44px browser
+touch). Electron reads the shell choice from the shared UI preferences before
+creating a window and re-seats the macOS traffic lights (centred, in the rail
+column) and the Windows/Linux caption overlay when it flips
+(`electron/window-chrome.ts`); the popped-out Browser keeps the classic band.
+The band carries the leading cluster past the rail, the open session's title
+pill with "+" at the stage's leading edge, and the panel toggles at the end.
+Workspace pages (Capabilities, Library, …) share the overlay pages' square,
+full-bleed frame. Without an explicit skin pick, the redesign paints the
+Hermes Portal skin and classic paints Nous (`defaultSkinName`); flipping the
+shell never writes a pick.
 
 Redesigned surfaces use neutral foreground-derived fills and strokes, not
 accent-tinted greys. Global settings cards use 5% fill and 5% borders with 8px
 corners; agent settings cards use 2% fill, 5% borders, and 4px corners.
 Settings-navigation selection uses neutral 5% fill and a 0.5px neutral
-5% inset stroke with 8px corners. Brand-blue selection remains on the global
+5% inset stroke with 6px corners; sub-pages reveal under the active row, without
+per-row carets. Settings pages compose `SettingsOverview` / `SettingsCard` /
+`SettingsDisclosure` (`settings-card.tsx`), which fall back to the classic wrapper. Brand-blue selection remains on the global
 rail. Agent-management navigation tiles stay translucent; agent rows and the
 overview header use the Figma robot with the real owner's color.
 The global rail tracks the owning agent even inside its settings editor.
@@ -239,16 +268,19 @@ Shared rail/sidebar geometry lives at the document root while the redesign is
 enabled. Sibling route overlays reserve the rail with logical inline offsets
 in both LTR and RTL layouts.
 Checked switches use the brand-blue track and light thumb across settings
-and the capability catalog; unchecked tracks are neutral 10% fills.
+and the capability catalog; unchecked tracks are neutral 14% fills.
 
-Session rows remain transparent on hover and selection. Their trailing status
-dot yields its exact position to the action ellipsis on hover, keyboard focus,
-or an open menu; the timestamp does not disappear or move. Agent actions align
-with that same trailing column. Touch exposes the action directly.
+Redesigned sidebar rows follow Figma's 38px pitch: a leading 5px pixel dot only
+for live status (unread, running, needs input), the title, and a right-aligned
+meta label. Hover uses a 4% neutral fill and the selected chat a 5% fill with a
+0.5px stroke, both 6px corners. The meta label yields to the action ellipsis on
+hover, keyboard focus, or an open menu; touch keeps both visible. Arrow keys,
+Home and End walk the visible rows; right-click opens the row menu.
 The global Agents icon uses the Figma robot silhouette tinted by `currentColor`,
 sharing its peers' inactive, hover, and selected tones in both light and dark themes.
-The Hermes Portal theme uses the current Figma navy canvas (`#07071a`) and
-floating surface (`#0d0d1e`) without generic neutral blending. Foreground-derived
+The Hermes Portal theme uses the Figma pages' navy canvas (`#07071a`) and
+floating surface (`#0d0d1e`) without generic neutral blending; the chat panels
+over it follow the shell's neutral stack. Foreground-derived
 card fills remain subtle; custom theme choices and classic styling stay available.
 
 The **Redesigned interface** preference gates the setup guide, catalog/agent
@@ -263,30 +295,41 @@ popped-out Browser windows stay classic in both modes. `$portalPreferred`, the
 window-independent preference, is only for behaviour every window must agree on
 (setup flow, metrics, session scope, the plugin SDK). Brand fills
 (`--portal-brand-fill`, `--portal-on-brand`) are the same in every theme and mode;
-thin rings and blue text use `--portal-brand-ink`, which lightens on dark. Flat
-menus, popovers and dialogs (no shadow or backdrop blur) are part of the redesign,
-not of the Hermes Portal theme, which carries palette and typography only.
+thin rings and blue text use `--portal-brand-ink`, which lightens on dark. Floating
+surfaces (`app/redesign/portal-floating.css`) are part of the redesign, not of the
+Hermes Portal theme, which carries palette and typography only: solid elevated fill,
+hairline stroke, r4 menus / r8 popovers and dialogs, Figma's single drop shadow
+(lighter in light mode), no backdrop blur. Shared primitives take the Figma page
+control scale (36px, r3) inside pages and dialogs via `portal-controls.css`.
 Turning it off restores classic onboarding and all classic agent rows without
 migrating conversations or destroying the redesign's saved visibility.
 Chat chrome leaves the keyboard tab order when covered by a route overlay, without
 remounting the draft-owning host. The session-search shortcut reopens and focuses
 the redesigned sidebar. Global settings keep seven primary destinations; extra
 configuration remains under Advanced, with active deep links revealed.
-An unqualified Settings entry opens Accounts in the redesign rather than a
-legacy Model page tucked under Advanced; explicit destinations and the classic
-default remain unchanged.
+An unqualified Settings entry opens Account & Plan (billing) in the redesign rather
+than a legacy Model page tucked under Advanced; explicit destinations and the classic
+default remain unchanged. The redesigned rail follows Figma 823:15804 ("does this
+change anything for another agent?" → global, else Agent settings): Account & Plan,
+Appearance, Notifications, Keyboard Shortcuts, Gateways & Machines, Sessions & History,
+About & Updates, Advanced (device-level and remaining global pages), and an Agent
+settings card. Provider accounts and keys live under Agent › Providers & Keys.
 
 Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
-following the user-selected **Variation 1: Flattened gateway/host** (`147:7470`):
-full-width conversation with side insets up to 64px (shrinking for narrow panes),
-left-aligned assistant prose capped at 661px, 40px turn gaps, and 20px output gaps.
-User bubbles hug their text at the right edge without a 380px cap, with 8px corners,
-16px horizontal/14px vertical insets, 10% fill, and a 30% inside border. Base text
-is 14px with 19px assistant leading and 17px prompt leading before user scaling.
-Retain the current branded body font, timestamp preference, and working message
-actions; enabled prompt timestamps sit above the bubble. Collapsed tool runs,
-including single-tool runs, use the dashed summary frame. The composer's static
-2px spectrum edge replaces animation; its native base text is 14px before the
+following the Figma conversation (`491:40346`): one centred column shared with the
+docked composer (640px, `--portal-conversation-*` in `app/chat/stage.css`), prose
+20px inside it, 30px turn gaps and 20px output gaps. User bubbles hug their text at
+the right edge up to 380px, with 6px corners, 6/10px insets and a 5% (light 2%)
+fill and no border; their time and restore actions sit beside the bubble. Base text
+is 13px at 1.6 leading before user scaling. A pinned prompt keeps 12px of clearance
+below its bubble so clipped reply lines never touch it. Retain the current branded
+body font, timestamp preference, and working message actions; enabled timestamps
+use caption ink and sit above the bubble. Collapsed tool runs, including
+single-tool runs, use the dashed [2,4] summary frame with a status dot. The stage's
+hero photo is luminosity-blended at Figma's crop behind the landing and fades to a
+trace behind a conversation. The composer has no ring: its static 2px spectrum edge
+is full strength while it holds focus and dims when focus leaves; its native base
+text is 14px before the
 user's scale, retaining the browser minimum. Floating dialogs inherit redesigned padding, display typography, and
 brand-blue primary actions and the shell's corner radius through root-scoped
 rules; their classic defaults remain unchanged. Route overlays and body-portalled dialogs are siblings of the
@@ -319,8 +362,8 @@ foreground UI. Changing scope revokes the old metrics binding immediately;
 events during rebinding are discarded, never replayed under later consent.
 
 The redesigned composer is 480 × 148 on an empty landing. In a populated native
-conversation it keeps the 148px base height and aligns with both transcript edges,
-with model/effort above the input and attachment, microphone, and labeled Send
+conversation it keeps the 148px base height, spans the shared 640px column and
+docks 30px above the stage floor, with model/effort as quiet right-aligned text above the input and attachment, microphone, and labeled Send
 controls below. Browser touch targets keep their larger accessibility sizing.
 Gateway menus distinguish connection from inference
 readiness. Simple mode keeps reconnect and lazy recent activity; Advanced adds

@@ -21,6 +21,7 @@ import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 import { usePortalShell } from '@/store/shell-variant'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
@@ -93,6 +94,9 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   const portal = usePortalShell()
   const { t } = useI18n()
   const advanced = useStore($showsAdvancedChrome)
+  // The mode-resolved bar visibility: in Simple it is up exactly when the bar carries something
+  // that must stay reachable (the free tier's Sign in, onboarding progress).
+  const statusbarVisible = useStore($statusbarVisible)
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
@@ -143,7 +147,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
           onOpenSystem={() => actions.openCommandCenterSection('system')}
           statusSnapshot={statusSnapshot}
         />
-        {advanced && (
+        {(advanced || statusbarVisible) && (
           <details className="px-3 pb-3">
             <summary className="cursor-pointer text-xs text-muted-foreground">
               {t.commandCenter.sections.system}

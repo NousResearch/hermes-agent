@@ -82,18 +82,19 @@ it('hides sessions on global pages, including after an attempted pane reveal, wi
   expect($sidebarOpen.get()).toBe(true)
 })
 
+// Each shell keeps its own arrangement (lib/layout-persistence.ts): a tab hidden in classic is
+// classic's, the redesign never inherits it, and switching back hands it back untouched.
 it('restores classic page visibility when v2 is disabled while preserving explicit tab hides', () => {
   mount('/capabilities')
   act(() => $shellChoice.set(false))
   expect(screen.queryByRole('navigation')).toBeNull()
   expect($hiddenTreePanes.get().has('sessions')).toBe(false)
-  act(() => {
-    $hiddenStripTabs.set(new Set(['sessions']))
-    $shellChoice.set(true)
-  })
+  act(() => $hiddenStripTabs.set(new Set(['sessions'])))
+  act(() => $shellChoice.set(true))
   fireEvent.click(screen.getByRole('button', { name: 'Chats' }))
-  expect($hiddenTreePanes.get().has('sessions')).toBe(true)
+  expect($hiddenTreePanes.get().has('sessions')).toBe(false)
   act(() => $shellChoice.set(false))
+  expect($hiddenStripTabs.get().has('sessions')).toBe(true)
   expect($hiddenTreePanes.get().has('sessions')).toBe(true)
 })
 

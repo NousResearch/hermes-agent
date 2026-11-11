@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, ReactNode, SetStateAction } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -45,6 +44,7 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { useAgentSettingsLayoutCopy } from '../agent-settings/settings-layout-copy'
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
@@ -61,6 +61,7 @@ import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { useSettingsOwner } from './profile-scope'
+import { SettingsDisclosure } from './settings-card'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -1678,14 +1679,12 @@ function ModelAdvanced({
   open?: boolean
   title: string
 }) {
+  const summary = useAgentSettingsLayoutCopy().summaries.model
+
   return enabled ? (
-    <details className="agent-config-advanced agent-settings-advanced group" open={open || undefined}>
-      <summary>
-        <span>{title}</span>
-        <DisclosureCaret className="group-open:rotate-90" open={false} />
-      </summary>
+    <SettingsDisclosure description={summary} open={open} title={title}>
       <div className="grid gap-6">{children}</div>
-    </details>
+    </SettingsDisclosure>
   ) : (
     <>{children}</>
   )

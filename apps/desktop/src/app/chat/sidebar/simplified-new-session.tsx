@@ -1,20 +1,21 @@
 import { useStore } from '@nanostores/react'
+import { IconMessage } from '@tabler/icons-react'
 import { Select as SelectPrimitive } from 'radix-ui'
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
+import { KbdCombo } from '@/components/ui/kbd'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
-import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
-import { resolveProfileColor } from '@/lib/profile-color'
+import { ChevronDown } from '@/lib/icons'
 import { recordAction } from '@/store/desktop-metrics'
 import { recordIaAction } from '@/store/ia-metrics'
-import { $activeGatewayProfile, $profileColors, $profiles } from '@/store/profile'
+import { $bindings, bindingsFor } from '@/store/keybinds'
+import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
@@ -26,13 +27,26 @@ import { useNewSessionCopy } from './simplified-new-session-copy'
 import { rankNewSessionAgents, startSimplifiedAgentSession } from './simplified-new-session-model'
 import { useSimplifiedAgents } from './use-simplified-agents'
 
+/** Figma's three-letter agent chip ("DEF", "OPS"): identity without a saturated avatar. */
+function AgentTag({ label }: { label: string }) {
+  const tag = label
+    .replace(/[^\p{L}\p{N}]/gu, '')
+    .slice(0, 3)
+    .toLocaleUpperCase()
+
+  return (
+    <span aria-hidden className="new-session-tag">
+      {tag || '·'}
+    </span>
+  )
+}
+
 export function SimplifiedNewSession({ sessions, onFallback }: { sessions: SessionInfo[]; onFallback: () => void }) {
   const { t } = useI18n()
   const c = useNewSessionCopy()
   const { agents, owner } = useSimplifiedAgents([])
   const profile = useStore($activeGatewayProfile)
   const profiles = useStore($profiles)
-  const colors = useStore($profileColors)
   const focusedSessionId = useStore($focusedStoredSessionId)
   const tiles = useStore($sessionTiles)
 
@@ -43,7 +57,8 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
   const viewedRoute = typeof viewedOwner === 'string' ? { connectionId: owner, profile: viewedOwner } : viewedOwner
   const viewedProfile = viewedRoute?.profile ?? profile
   const viewedConnection = viewedRoute?.connectionId ?? owner
-  const shortcut = useKeybindHint('session.new')
+  const bindings = useStore($bindings)
+  const shortcut = bindingsFor('session.new', bindings)[0]
   const [open, setOpen] = useState(false)
   const splitButton = useRef<HTMLDivElement>(null)
   const [pickerWidth, setPickerWidth] = useState<number>()
@@ -114,27 +129,20 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
   useEffect(() => claimSimplifiedNewSession(() => onCommand()), [])
 
   return (
-    <div className="@container/new-session flex min-h-9.5 w-full items-stretch" data-slot="new-session-split" ref={splitButton}>
+    <div className="portal-new-session" data-slot="new-session-split" ref={splitButton}>
       <Button
         aria-label={t.sidebar.nav['new-session']}
-        className={agents.length > 1 ? 'min-w-0 flex-1 justify-start rounded-r-none' : 'w-full justify-start'}
+        className="portal-new-session-main"
         onClick={() => {
           recordAction('session.new', 'click')
           recordIaAction('ia.new_session.sidebar')
           request()
         }}
+        variant="ghost"
       >
-        <Codicon name="add" />
-        <span className="truncate">{t.sidebar.nav['new-session']}</span>
-        {shortcut && (
-          <span
-            aria-hidden
-            className="ml-auto hidden shrink-0 rounded bg-primary-foreground/15 px-1 py-0.5 text-[0.625rem] @min-[15rem]/new-session:inline-flex"
-            data-slot="new-session-shortcut"
-          >
-            {shortcut}
-          </span>
-        )}
+        <IconMessage aria-hidden className="portal-new-session-icon" />
+        <span className="portal-new-session-label">{t.sidebar.nav['new-session']}</span>
+        {shortcut && <KbdCombo aria-hidden className="portal-kbd" combo={shortcut} data-slot="new-session-shortcut" />}
       </Button>
       {agents.length > 1 && (
         <Select
@@ -150,56 +158,39 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
             <SelectPrimitive.Trigger asChild>
               <Button
                 aria-label={`${c.newSessionIn}: ${targetLabel}`}
-                className="rounded-l-none border-l border-primary-foreground/20 data-[state=open]:bg-primary/85"
+                className="portal-new-session-picker"
+                variant="ghost"
               >
-                {blank ? (
-                  <Codicon name="circle-outline" />
-                ) : (
-                  selected && (
-                    <span className="rounded-sm bg-background p-0.5" data-slot="new-session-avatar">
-                      <FigmaAgentIcon color={resolveProfileColor(selected.profile, colors)} />
-                    </span>
-                  )
-                )}
-                <Codicon name={open ? 'chevron-up' : 'chevron-down'} size={12} />
+                {blank ? <Codicon name="circle-outline" /> : selected && <AgentTag label={selected.label} />}
+                <ChevronDown aria-hidden className="portal-section-chevron" />
               </Button>
             </SelectPrimitive.Trigger>
           </Tip>
-          <SelectContent align="end" className="new-session-picker w-72 max-w-[calc(100vw-1rem)]" style={{ width: pickerWidth }}>
+          <SelectContent align="end" className="new-session-picker" style={{ width: pickerWidth }}>
             <SelectGroup>
-              <SelectLabel>{c.newSessionIn}</SelectLabel>
+              <SelectLabel className="new-session-picker-label">{c.newSessionIn}</SelectLabel>
               {ranked.map(agent => (
                 <SelectItem
                   aria-label={`${agent.label} · ${agent.gateway}`}
                   aria-labelledby={undefined}
-                  className="min-h-11 [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1 data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground"
+                  className="new-session-option"
                   key={agent.id}
                   textValue={agent.label}
                   value={agent.id}
                 >
-                  <span className="flex items-center gap-2">
-                    <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate">{agent.label}</span>
-                      <span className="truncate text-xs text-(--ui-text-tertiary)">{agent.gateway}</span>
-                    </span>
-                  </span>
+                  <AgentTag label={agent.label} />
+                  <span className="new-session-option-name">{agent.label}</span>
+                  <span className="new-session-option-meta">{agent.gateway}</span>
                 </SelectItem>
               ))}
               <SelectSeparator />
-              <SelectItem
-                className="min-h-11 [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1 data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground"
-                textValue={c.blank}
-                value="blank"
-              >
-                <span className="flex items-center gap-2">
-                  <span aria-hidden className="grid size-6 shrink-0 place-items-center" data-slot="new-session-option-avatar">
-                    <Codicon name="circle-outline" />
-                  </span>
-                  <span className="flex min-w-0 flex-col">
-                    <span>{c.blank}</span>
-                    <span className="text-xs text-(--ui-text-tertiary)">{c.blankHint}</span>
-                  </span>
+              <SelectItem className="new-session-option" textValue={c.blank} value="blank">
+                <span aria-hidden className="new-session-option-tile">
+                  <Codicon name="circle-outline" />
+                </span>
+                <span className="new-session-option-name">
+                  {c.blank}
+                  <span className="new-session-option-hint">{c.blankHint}</span>
                 </span>
               </SelectItem>
             </SelectGroup>

@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { type CSSProperties, useMemo, useState } from 'react'
 
 import { getLatestSessionMessages, getSession } from '@/api/sessions'
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { titlebarHeightNow } from '@/app/shell/use-touch-titlebar'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -161,7 +161,7 @@ export function HistoryPreview({
         bodyClassName="agent-history-preview-body"
         className="agent-history-preview translate-x-0 translate-y-0"
         showCloseButton={!busy}
-        style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
+        style={{ '--titlebar-height': `${titlebarHeightNow()}px` } as CSSProperties}
       >
         <DialogHeader>
           <DialogDescription>{c.readOnly}</DialogDescription>

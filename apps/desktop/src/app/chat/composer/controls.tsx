@@ -238,7 +238,7 @@ function ComposerPrimaryAction({
         {showStop ? (
           <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
         ) : (
-          <Codicon name="arrow-up" size="0.875rem" />
+          <Codicon name={redesigned ? 'newline' : 'arrow-up'} size={redesigned ? '1rem' : '0.875rem'} />
         )}
       </Button>
     </Tip>
@@ -263,6 +263,7 @@ export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelR
       <span className="min-w-0 flex-1" />
       <ModelPill disabled={disabled} model={model} />
       <ReasoningPill disabled={disabled} model={model} />
+      <Codicon aria-hidden className="shrink-0 text-(--ui-text-secondary)" name="zap" size="0.875rem" />
     </div>
   )
 }

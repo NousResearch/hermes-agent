@@ -1,6 +1,33 @@
-/* The normal agent sidebar; classic rollback keeps its own styling. */
+/* Redesigned navigation sidebar (Figma 906:19684). Every class here exists only when the redesign
+   renders it, so element selectors stay ungated; body-portalled surfaces gate on the root. */
 :root[data-shell='portal'] {
   --sessions-pane-width: 20rem;
+  /* Rows bleed past the 20px text inset so hover and selection fills hold the leading dot. */
+  --portal-sidebar-inset: 1.25rem;
+  --portal-sidebar-bleed: 0.5rem;
+  --portal-sidebar-row: 2rem;
+  /* Row + gap = Figma's 38px pitch; label-to-row spacing keeps its 20px gap between 18px text lines. */
+  --portal-sidebar-row-gap: 0.375rem;
+  --portal-sidebar-section-gap: 0.8125rem;
+  --portal-sidebar-hover: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  --portal-sidebar-press: color-mix(in srgb, var(--ui-base) 7%, transparent);
+  --portal-sidebar-card: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-sidebar-label: var(--ui-text-tertiary);
+  --portal-sidebar-meta: var(--ui-text-quaternary);
+  --portal-sidebar-ring: var(--portal-brand-ink);
+  /* secondary/green and secondary/orange, darkened on light canvases for 4.5:1 labels. */
+  --portal-sidebar-green: color-mix(in srgb, #00f279 50%, #000);
+  --portal-sidebar-orange: color-mix(in srgb, #f27900 70%, #000);
+  --portal-sidebar-agent-selected: var(--portal-brand-fill);
+  --portal-sidebar-agent-selected-ink: var(--portal-on-brand);
+}
+
+:root.dark[data-shell='portal'] {
+  --portal-sidebar-label: var(--ui-text-quaternary);
+  --portal-sidebar-green: color-mix(in srgb, #00f279 75%, transparent);
+  --portal-sidebar-orange: color-mix(in srgb, #f27900 85%, transparent);
+  --portal-sidebar-agent-selected: color-mix(in srgb, var(--portal-brand-fill) 10%, transparent);
+  --portal-sidebar-agent-selected-ink: var(--ui-text-primary);
 }
 
 .portal-sidebar {
@@ -10,34 +37,38 @@
   min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--sidebar-edge-border);
-  border-bottom: 3px solid var(--portal-brand-fill);
-  border-radius: 9px 9px 0 0;
-  background: var(--ui-sidebar-surface-background);
+  /* Translucent shell token: the window wing shows through, as in Figma 906. The zone clips the
+     outer corner, so the seam with the stage stays square. */
+  background: var(--portal-sidebar-panel-background);
   color: var(--ui-text-primary);
   font-size: 0.8125rem;
+  line-height: 1.4;
 }
+
+/* ── Brand block: 60px badge, wordmark column, 30px collapse button ─────────────────────────── */
 
 .portal-sidebar-brand {
   display: flex;
   flex-shrink: 0;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem 1.5rem;
+  align-items: flex-start;
+  gap: 0.8125rem;
+  padding: 1.375rem var(--portal-sidebar-inset) 1.25rem;
 }
 
 .portal-sidebar-badge {
   display: grid;
   place-items: center;
-  width: 2.5rem;
-  height: 3.5rem;
+  width: 2.6875rem;
+  height: 3.75rem;
   flex-shrink: 0;
-  border-radius: 0.375rem;
+  overflow: hidden;
+  border-radius: 6px;
   background: var(--portal-brand-fill);
 }
 
 .portal-sidebar-badge img {
-  width: 1.5rem;
-  height: 2.75rem;
+  width: 1.625rem;
+  height: 3.25rem;
   transform: rotate(15deg);
 }
 
@@ -47,32 +78,59 @@
   min-width: 0;
   flex-direction: column;
   gap: 0.375rem;
+  padding-block: 0.3125rem;
 }
 
+/* Oswald stands in for Rules Compressed Medium 36: Light with tight tracking is the closest
+   mass it allows at Figma's 28px cap height. */
 .portal-sidebar-wordmark {
-  font-size: 1.5rem;
+  font-family: var(--portal-font-display);
+  font-size: 2.1875rem;
+  font-weight: 300;
   line-height: 1.2;
-  letter-spacing: -0.04em;
+  letter-spacing: -0.03em;
+  text-box: trim-both cap alphabetic;
 }
 
 .portal-sidebar-byline {
-  color: var(--ui-text-tertiary);
+  color: var(--ui-text-secondary);
   font-size: 0.8125rem;
-  line-height: 1.4;
   letter-spacing: 0.01em;
+  white-space: nowrap;
 }
+
+.portal-sidebar .portal-sidebar-collapse {
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  color: var(--ui-text-tertiary);
+}
+
+.portal-sidebar-collapse svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.portal-sidebar .portal-sidebar-collapse:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+/* ── Content column ─────────────────────────────────────────────────────────────────────────── */
 
 .portal-sidebar-content {
   min-width: 0;
-  gap: 0.75rem;
-  padding: 0 1.25rem 1rem;
-  overflow-y: auto;
+  gap: 0.625rem;
+  padding: 0.625rem calc(var(--portal-sidebar-inset) - var(--portal-sidebar-bleed)) 0;
+  overflow: hidden;
 }
 
-.portal-sidebar-search {
-  margin: 0;
-  padding-inline: 0.5rem;
-  color: var(--ui-text-tertiary);
+/* Blocks that are not rows sit on the 20px text inset. */
+.portal-sidebar-content
+  > :is([data-slot='new-session-split'], .portal-sidebar-search, .portal-sidebar-empty, p, [role='alert']),
+.portal-sidebar [data-slot='pinned-empty'] {
+  margin-inline: var(--portal-sidebar-bleed);
 }
 
 .portal-sidebar-sections {
@@ -80,149 +138,804 @@
   flex: 1;
   min-height: 12rem;
   flex-direction: column;
-  gap: 1rem;
+  gap: var(--portal-sidebar-section-gap);
+  padding-top: var(--portal-sidebar-row-gap);
 }
 
-.portal-sidebar [data-slot='new-session-split'] > button {
-  background: color-mix(in srgb, var(--ui-text-primary) 5%, transparent);
-  color: var(--ui-text-primary);
+.portal-sidebar-empty {
+  padding-block: 0.75rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.75rem;
+}
+
+/* Shared focus treatment: a thin brand ring inside the control's own radius. */
+.portal-sidebar :is(button, [data-slot='row-button'], input):focus-visible {
+  outline: 1.5px solid var(--portal-sidebar-ring);
+  outline-offset: -1.5px;
+  box-shadow: none;
+}
+
+/* ── New session (Figma 906:19710: 40px, r6, message icon, label, keycaps) ──────────────────── */
+
+.portal-new-session {
+  display: flex;
   min-height: 2.5rem;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--portal-sidebar-card);
+  container-type: inline-size;
+}
+
+.portal-sidebar .portal-new-session > button {
+  height: auto;
+  line-height: 1.4;
   border-radius: 0;
-  gap: 0.5rem;
+  background: transparent;
+  color: var(--ui-text-primary);
   font-size: 0.8125rem;
   font-weight: 400;
 }
 
-.portal-sidebar [data-slot='new-session-split'] > button:first-child {
-  border-radius: 0.375rem 0 0 0.375rem;
-  padding-inline: 0.75rem 0.5rem;
+.portal-sidebar .portal-new-session > button:hover {
+  background: var(--portal-sidebar-hover);
 }
 
-.portal-sidebar [data-slot='new-session-split'] > button:last-of-type {
-  border-top-right-radius: 0.375rem;
-  border-bottom-right-radius: 0.375rem;
+.portal-sidebar .portal-new-session > button:active,
+.portal-sidebar .portal-new-session > button[data-state='open'] {
+  background: var(--portal-sidebar-press);
 }
 
-.portal-sidebar [data-slot='new-session-split'] > button:is(:hover, [data-state='open']) {
-  background: var(--chrome-action-hover);
+.portal-sidebar .portal-new-session-main {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+  gap: 0.625rem;
+  padding: 0.625rem;
 }
 
-.portal-sidebar [data-slot='new-session-split']:has([aria-expanded='true']) {
-  border-radius: 0.5rem;
-  outline: 2px solid var(--dt-ring);
+.portal-sidebar .portal-new-session-main .portal-new-session-icon {
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
-.portal-sidebar [data-slot='new-session-split'] > button[role='combobox'] {
-  width: 3.75rem;
-  padding-inline: 0.5rem;
-  gap: 0.375rem;
-  border-color: color-mix(in srgb, var(--ui-text-primary) 10%, transparent);
+.portal-new-session-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
 }
 
-.portal-sidebar [data-slot='new-session-shortcut'] {
-  background: color-mix(in srgb, var(--ui-text-primary) 5%, transparent);
-  padding-inline: 0.375rem;
+.portal-kbd {
+  gap: 0.25rem;
+}
+
+.portal-sidebar .portal-kbd [data-slot='kbd'] {
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding-inline: 0.25rem;
+  border: 0.5px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border-radius: 3px;
+  background: var(--portal-sidebar-card);
+  box-shadow: none;
+  color: var(--ui-text-secondary);
+  font-family: inherit;
   font-size: 0.6875rem;
-  line-height: 1rem;
+  text-transform: uppercase;
 }
 
-.portal-sidebar [data-slot='new-session-avatar'] {
-  padding: 0;
-  border-radius: 0.375rem;
+@container (max-width: 15rem) {
+  .portal-kbd {
+    display: none;
+  }
 }
 
-.portal-sidebar [data-slot='new-session-avatar'] > span {
+.portal-sidebar .portal-new-session-picker {
+  gap: 0.25rem;
+  padding-inline: 0.625rem 0.5rem;
+  border-inline-start: 1px solid var(--portal-sidebar-card);
+}
+
+.portal-new-session-picker .portal-section-chevron {
+  color: var(--ui-text-tertiary);
+}
+
+.portal-new-session-picker[data-state='open'] .portal-section-chevron {
+  transform: rotate(180deg);
+}
+
+/* Figma's agent chip (623:1612): identity in three letters instead of a saturated avatar. */
+.new-session-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 0.9375rem;
+  padding-inline: 0.3125rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+/* Picker rows; the floating surface itself belongs to the shared menu styling. */
+:root[data-shell='portal'] .new-session-picker {
+  min-width: 15rem;
+}
+
+:root[data-shell='portal'] .new-session-picker-label {
+  padding-inline: 0.5rem;
+  color: var(--portal-brand-ink);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal'] .new-session-option {
+  min-height: 2.625rem;
+  /* Clears the checked indicator pinned to the item's end. */
+  padding-inline-end: 1.75rem;
+  gap: 0.625rem;
+  font-size: 0.75rem;
+}
+
+:root[data-shell='portal'] .new-session-option > span:last-child {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.new-session-option-name {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-session-option-meta,
+.new-session-option-hint {
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-session-option-meta {
+  max-width: 40%;
+  flex-shrink: 0;
+}
+
+.new-session-option-tile {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
   width: 1.5rem;
   height: 1.5rem;
-  border-radius: inherit;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 6%, transparent);
 }
 
-/* The select is portaled to body; scope it to the mounted Portal sidebar. */
-:root[data-shell='portal'] .new-session-picker {
-  border-radius: 0.625rem;
+/* ── Search: a quiet row, not a form field ──────────────────────────────────────────────────── */
+
+.portal-sidebar .portal-sidebar-search {
+  min-height: var(--portal-sidebar-row);
+  gap: 0.5rem;
+  padding-inline: 0.625rem 0.25rem;
+  border: 0;
+  border-radius: 6px;
+  color: var(--portal-sidebar-label);
+  opacity: 1;
 }
 
-:root[data-shell='portal'] .new-session-picker [data-slot='select-label'] {
-  padding-block: 0;
-  height: 0;
-  overflow: hidden;
+.portal-sidebar .portal-sidebar-search:hover {
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
 }
 
-:root[data-shell='portal'] .new-session-picker [data-slot='select-item'] {
-  border-radius: 0.4375rem;
+.portal-sidebar .portal-sidebar-search:focus-within {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-secondary);
+}
+
+.portal-sidebar .portal-sidebar-search > svg {
+  color: inherit;
+}
+
+.portal-sidebar .portal-sidebar-search input {
   font-size: 0.8125rem;
+  line-height: 1.4;
 }
 
-:root[data-shell='portal'] .new-session-picker [data-slot='select-item'][data-state='checked'] {
-  background: color-mix(in srgb, var(--dt-primary) 15%, var(--dt-popover));
+.portal-sidebar .portal-sidebar-search input::placeholder {
+  color: var(--portal-sidebar-label);
 }
 
-:root[data-shell='portal'] .new-session-picker [data-slot='select-item'] > span:first-child {
-  color: var(--dt-primary);
+.portal-sidebar .portal-sidebar-search input:focus-visible {
+  outline: none;
 }
 
-:root[data-shell='portal'] .new-session-picker [data-slot='new-session-option-avatar'] {
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 0.4375rem;
+.portal-sidebar .portal-sidebar-search:has(input:focus-visible) {
+  box-shadow: inset 0 0 0 1px var(--portal-sidebar-ring);
 }
 
-:root[data-shell='portal'] .new-session-picker [data-slot='select-item'] .text-xs {
-  font-size: 0.6875rem;
+/* ── Sections: 28px label, chevron, trailing action ─────────────────────────────────────────── */
+
+.portal-section {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--portal-sidebar-section-gap);
 }
 
-.portal-sidebar [data-slot='sidebar-section-label'] {
-  padding: 0.625rem 0.5rem;
-  color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
+.portal-sidebar [data-slot='pinned-section'][data-open='true'] {
+  flex: 0 1 auto;
+  max-height: 45%;
 }
 
-.portal-sidebar [data-slot='sidebar-section-label'] > span:first-child {
+.portal-sidebar [data-slot='agent-section'][data-open='true'] {
+  flex: 1 1 0%;
+  min-height: 6rem;
+}
+
+.portal-section-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.portal-section-body[hidden] {
   display: none;
 }
 
-.portal-sidebar [data-slot='pinned-section'] [data-slot='sidebar-section-label'] {
-  flex: none;
+.portal-section-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-end;
+  gap: 0.25rem;
+  min-height: 1.75rem;
+  padding-inline: calc(var(--portal-sidebar-bleed) + 0.625rem) var(--portal-sidebar-bleed);
 }
+
+.portal-section-title {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 1.75rem;
+  align-items: flex-end;
+  gap: 0.25rem;
+  margin-inline-end: auto;
+  border-radius: 3px;
+  color: var(--portal-sidebar-label);
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+}
+
+button.portal-section-title:hover {
+  color: var(--ui-text-secondary);
+}
+
+.portal-section-chevron {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  margin-bottom: 0.0625rem;
+}
+
+.portal-section-title[aria-expanded='false'] .portal-section-chevron {
+  transform: rotate(-90deg);
+}
+
+.portal-section-title[aria-expanded='false']:dir(rtl) .portal-section-chevron {
+  transform: rotate(90deg);
+}
+
+.portal-sidebar .portal-section-action {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 3px;
+  color: var(--portal-sidebar-label);
+}
+
+.portal-section-action svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.portal-sidebar .portal-section-action:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+.portal-sidebar .portal-section-scroll {
+  --scroll-fade-size: min(4rem, 25%);
+
+  min-height: 0;
+  flex: 0 1 auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ui-base) 15%, transparent) transparent;
+}
+
+.portal-sidebar [data-slot='agent-section'] .portal-section-scroll {
+  flex: 1 1 auto;
+  padding-bottom: 1.25rem;
+}
+
+/* ── Rows: sessions, group chats and machines share one geometry ───────────────────────────── */
+
+.portal-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+}
+
+.portal-session-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.portal-session-row,
+.portal-machine-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--portal-sidebar-row);
+  align-items: center;
+  gap: 0.375rem;
+  padding-inline: calc(var(--portal-sidebar-bleed) + 0.6875rem) calc(var(--portal-sidebar-bleed) + 0.625rem);
+  border-radius: 6px;
+  color: var(--ui-text-primary);
+  text-align: start;
+}
+
+.portal-sidebar [data-slot='group-chats-section'] .portal-section-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+}
+
+.portal-session-row:hover,
+.portal-machine-row:hover,
+.portal-session-item:is([data-state='open'], :has(.portal-row-action[data-state='open'])) > .portal-session-row {
+  background: var(--portal-sidebar-hover);
+}
+
+.portal-session-row:active,
+.portal-machine-row:active {
+  background: var(--portal-sidebar-press);
+}
+
+.portal-session-row[aria-current='page'] {
+  background: var(--portal-neutral-selection-background);
+  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
+  color: var(--ui-text-primary);
+}
+
+.portal-session-title,
+.portal-machine-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-session-meta,
+.portal-machine-status {
+  display: flex;
+  flex-shrink: 0;
+  max-width: 40%;
+  align-items: center;
+  gap: 0.25rem;
+  overflow: hidden;
+  color: var(--portal-sidebar-meta);
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-session-meta > span:not(.portal-session-pin) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.portal-session-pin {
+  display: inline-flex;
+}
+
+.portal-session-pin svg {
+  width: 0.6875rem;
+  height: 0.6875rem;
+}
+
+.portal-group-icon {
+  flex-shrink: 0;
+  color: var(--ui-text-tertiary);
+}
+
+/* The leading 5px "notif" slot (906:19732): chamfered pixel dot, painted only for live status. */
+.portal-row-mark,
+.portal-status-dot {
+  position: absolute;
+  inset-inline-start: var(--portal-sidebar-bleed);
+  top: 50%;
+  display: grid;
+  width: 0.3125rem;
+  height: 0.3125rem;
+  place-items: center;
+  transform: translateY(-50%);
+}
+
+.portal-row-mark > span,
+.portal-row-mark > span > span {
+  width: 100%;
+  height: 100%;
+}
+
+.portal-row-mark > span > span,
+.portal-status-dot {
+  clip-path: polygon(
+    20% 0,
+    80% 0,
+    80% 20%,
+    100% 20%,
+    100% 80%,
+    80% 80%,
+    80% 100%,
+    20% 100%,
+    20% 80%,
+    0 80%,
+    0 20%,
+    20% 20%
+  );
+  border-radius: 0;
+}
+
+.portal-row-mark[data-state='unread'] > span > span {
+  background: var(--portal-brand-ink);
+}
+
+.portal-row-mark[data-state='working'] > span > span {
+  background: var(--portal-sidebar-green);
+}
+
+.portal-row-mark[data-state='needs-input'] > span > span {
+  background: var(--portal-sidebar-orange);
+}
+
+/* Trailing actions take the meta label's place on hover, keyboard focus or an open menu. */
+.portal-sidebar .portal-row-action {
+  position: absolute;
+  inset-inline-end: calc(var(--portal-sidebar-bleed) + 0.375rem);
+  top: 50%;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 3px;
+  color: var(--ui-text-tertiary);
+  opacity: 0;
+  transform: translateY(-50%);
+}
+
+.portal-row-action svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.portal-sidebar .portal-row-action:hover,
+.portal-sidebar .portal-row-action[data-state='open'] {
+  background: var(--portal-sidebar-press);
+  color: var(--ui-text-primary);
+}
+
+.portal-session-item:is(:hover, :focus-within, [data-state='open'], :has(.portal-row-action[data-state='open']))
+  > .portal-row-action {
+  opacity: 1;
+}
+
+.portal-session-item[data-actions]:is(
+    :hover,
+    :focus-within,
+    [data-state='open'],
+    :has(.portal-row-action[data-state='open'])
+  )
+  .portal-session-meta {
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .portal-sidebar .portal-row-action {
+    opacity: 1;
+  }
+
+  .portal-session-item[data-actions] .portal-session-row {
+    padding-inline-end: calc(var(--portal-sidebar-bleed) + 2.25rem);
+  }
+
+  .portal-session-item[data-actions] .portal-session-meta {
+    opacity: 1;
+  }
+}
+
+/* ── Machines (906:19769): flat rows; expanded ones draw the status guide line ─────────────── */
 
 .portal-sidebar [data-slot='gateway-group'] {
-  display: flow-root;
-  border-radius: 0.375rem;
+  --portal-machine-tone: var(--portal-sidebar-meta);
+
+  position: relative;
 }
 
-.portal-sidebar [data-slot='gateway-group']:has(> .portal-machine-agents) {
-  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+.portal-sidebar [data-slot='gateway-group'] + [data-slot='gateway-group'] {
+  margin-top: var(--portal-sidebar-row-gap);
 }
 
-.portal-sidebar [data-slot='gateway-heading'] {
-  min-height: 2.5rem;
-  padding-inline: 0.625rem;
-  border-radius: 0.375rem;
-  background: transparent;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
+.portal-sidebar [data-slot='gateway-group']:has(> [data-tone='online']) {
+  --portal-machine-tone: var(--portal-sidebar-green);
 }
 
-.portal-sidebar [data-slot='gateway-heading'][aria-current='true'] {
-  background: color-mix(in srgb, var(--ui-base) 7%, transparent);
+.portal-sidebar [data-slot='gateway-group']:has(> [data-tone='pending']) {
+  --portal-machine-tone: var(--portal-sidebar-orange);
 }
 
-.portal-sidebar [data-slot='gateway-group']:has(> .portal-machine-agents) > [data-slot='gateway-heading'] {
-  border-bottom-right-radius: 0;
-  border-bottom-left-radius: 0;
+.portal-status-dot {
+  background: var(--portal-machine-tone);
+  opacity: 0.8;
 }
 
-.portal-sidebar [data-slot='gateway-heading'] > button {
-  width: 1rem;
+[data-tone='offline'] .portal-status-dot {
+  background: var(--ui-text-quaternary);
 }
 
-.portal-sidebar [data-slot='gateway-heading'] > span:last-child {
-  font-size: 0.625rem;
+.portal-machine-status {
+  color: var(--portal-machine-tone);
 }
 
+/* Guide line (491:42009): from the status dot down the nested agents, fading in toward the end. */
+.portal-sidebar [data-slot='gateway-group'][data-open='true']::before {
+  position: absolute;
+  inset-inline-start: calc(var(--portal-sidebar-bleed) + 2px);
+  top: calc(var(--portal-sidebar-row) / 2);
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--portal-machine-tone) 15%, transparent) 13%,
+    color-mix(in srgb, var(--portal-machine-tone) 30%, transparent)
+  );
+  content: '';
+}
+
+.portal-machine-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-block: 0.1875rem 0.5rem;
+  margin-inline: calc(var(--portal-sidebar-bleed) + 0.625rem) var(--portal-sidebar-bleed);
+}
+
+/* ── Agent cards (491:42009 › Project card): 32px tile, name + subtitle, kebab ────────────── */
+
+.portal-sidebar [data-slot='agent-heading'] {
+  display: flex;
+  min-height: 3.1875rem;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 6px;
+  background: var(--portal-sidebar-card);
+}
+
+.portal-sidebar [data-slot='agent-heading']:hover {
+  background: var(--portal-sidebar-press);
+}
+
+.portal-sidebar [data-slot='agent-heading'][data-active-agent] {
+  background: var(--portal-sidebar-agent-selected);
+  color: var(--portal-sidebar-agent-selected-ink);
+}
+
+/* Hover darkens/lightens the selection fill with an overlay, so it reads on solid Light blue too. */
+.portal-sidebar [data-slot='agent-heading'][data-active-agent]:hover {
+  background:
+    linear-gradient(color-mix(in srgb, var(--ui-base) 10%, transparent)), var(--portal-sidebar-agent-selected);
+}
+
+.portal-sidebar [data-slot='agent-heading']:has(.portal-agent-chat:focus-visible) {
+  outline: 1.5px solid var(--portal-sidebar-ring);
+  outline-offset: -1.5px;
+}
+
+.portal-sidebar [data-slot='agent-heading'] .portal-agent-chat:focus-visible {
+  outline: none;
+}
+
+.portal-agent-chat {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 0.625rem;
+  color: inherit;
+  text-align: start;
+}
+
+.portal-agent-avatar {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 3px;
+}
+
+.portal-agent-avatar img {
+  padding: 0.375rem;
+}
+
+.portal-agent-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.portal-agent-name,
+.portal-agent-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-agent-subtitle {
+  color: var(--ui-text-tertiary);
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+}
+
+/* On the selection fill the robot follows the card ink (white on Light's solid brand card). */
+[data-active-agent] .portal-agent-avatar img {
+  filter: brightness(0) invert(1);
+}
+
+:root.dark[data-shell='portal'] [data-active-agent] .portal-agent-avatar img {
+  filter: none;
+}
+
+[data-active-agent] .portal-agent-subtitle {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+}
+
+.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  border-radius: 3px;
+  color: color-mix(in srgb, currentColor 55%, transparent);
+}
+
+.portal-sidebar [data-slot='agent-heading'] :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+  color: inherit;
+  opacity: 0.55;
+}
+
+.portal-sidebar
+  [data-slot='agent-heading']
+  :is(.portal-agent-collapse, .portal-agent-menu-trigger):is(:hover, [data-state='open'], :focus-visible) {
+  background: var(--portal-sidebar-press);
+  opacity: 1;
+}
+
+:is(.portal-agent-collapse, .portal-agent-menu-trigger) svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* The disclosure is quiet while open and stays visible once collapsed. */
+.portal-sidebar [data-slot='agent-heading'] .portal-agent-collapse[aria-expanded='true'] {
+  opacity: 0;
+}
+
+.portal-sidebar [data-slot='agent-heading']:is(:hover, :focus-within) .portal-agent-collapse[aria-expanded='true'] {
+  opacity: 0.55;
+}
+
+.portal-agent-collapse[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+
+.portal-agent-collapse[aria-expanded='false']:dir(rtl) svg {
+  transform: rotate(90deg);
+}
+
+@media (hover: none) {
+  .portal-sidebar [data-slot='agent-heading'] .portal-agent-collapse[aria-expanded='true'] {
+    opacity: 0.55;
+  }
+}
+
+/* 0.8 keeps the selected card's icon buttons at >= 3:1 against Light's solid brand fill. */
+.portal-sidebar [data-slot='agent-heading'][data-active-agent] .portal-agent-menu-trigger,
+.portal-sidebar [data-slot='agent-heading'][data-active-agent] .portal-agent-collapse[aria-expanded='false'],
+.portal-sidebar
+  [data-slot='agent-heading'][data-active-agent]:is(:hover, :focus-within)
+  .portal-agent-collapse[aria-expanded='true'] {
+  opacity: 0.8;
+}
+
+/* Nested chats (28px pitch): secondary ink, the selected one primary. */
+.portal-agent-sessions {
+  margin-top: 0.375rem;
+}
+
+.portal-agent-sessions:not(:has([data-session-key])) {
+  display: none;
+}
+
+.portal-agent-sessions .portal-session-list {
+  gap: 0.125rem;
+}
+
+.portal-agent-sessions .portal-session-row {
+  min-height: 1.625rem;
+  padding-inline: 0.75rem 0.625rem;
+  color: var(--ui-text-secondary);
+}
+
+.portal-agent-sessions .portal-session-row:is(:hover, [aria-current='page'], :focus-visible) {
+  color: var(--ui-text-primary);
+}
+
+.portal-agent-sessions .portal-row-mark {
+  inset-inline-start: 0.1875rem;
+}
+
+.portal-agent-sessions .portal-row-action {
+  inset-inline-end: 0.25rem;
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+@media (hover: none) {
+  .portal-agent-sessions .portal-session-item[data-actions] .portal-session-row {
+    padding-inline-end: 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .portal-sidebar
+    :is(
+      .portal-session-row,
+      .portal-machine-row,
+      [data-slot='agent-heading'],
+      .portal-row-action,
+      .portal-session-meta,
+      .portal-section-chevron,
+      .portal-agent-collapse,
+      .portal-agent-collapse svg,
+      .portal-new-session > button
+    ) {
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      opacity 120ms ease,
+      transform 160ms ease;
+  }
+}
+
+/* Agent settings reuses this dot for the owning machine's connection. */
 .portal-machine-state {
   display: block;
   width: 0.375rem;
@@ -235,195 +948,11 @@
   background: var(--ui-success);
 }
 
-.portal-machine-agents {
-  padding-block: 0.4375rem 0.625rem;
-}
-
-.portal-sidebar [data-slot='agent-group'] {
-  /* Keep the separate collapse control inside the machine card. */
-  padding-inline-start: 1rem;
-}
-
-.portal-sidebar [data-slot='agent-group'] + [data-slot='agent-group'] {
-  margin-top: 0.4375rem;
-}
-
-.portal-sidebar [data-slot='agent-heading'] {
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-height: 2.8125rem;
-}
-
-.portal-sidebar [data-slot='agent-heading'][data-active-agent] > .portal-agent-chat,
-.portal-agent-chat:is(:hover, :focus-visible) {
-  color: var(--ui-text-primary);
-}
-
-.portal-agent-chat {
-  min-height: 2.8125rem;
-  gap: 0.5rem;
-  padding: 0.5rem 0.625rem;
-  background: transparent;
-  font-size: 0.8125rem;
-  line-height: 1rem;
-  font-weight: 500;
-  color: var(--ui-text-secondary);
-}
-
-.portal-agent-avatar {
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: 0.25rem;
-}
-
-.portal-agent-subtitle {
-  margin-top: 0.0625rem;
-  color: var(--ui-text-tertiary);
-  font-size: 0.625rem;
-  line-height: 0.75rem;
-  font-weight: 400;
-}
-
-.portal-agent-menu-trigger {
-  color: var(--ui-text-tertiary);
-  flex-shrink: 0;
-  width: 1.5rem;
-  height: 1.5rem;
-  margin-inline-end: 0.125rem;
-  opacity: 0;
-}
-
-.portal-sidebar [data-slot='agent-heading']:is(:hover, :has(:focus-visible)) > .portal-agent-menu-trigger,
-.portal-agent-menu-trigger[data-state='open'] {
-  opacity: 1;
-}
-
-.portal-agent-menu-trigger[data-state='open'] {
-  background: var(--chrome-action-hover);
-  box-shadow: inset 0 0 0 1px var(--ui-stroke-secondary);
-}
-
-.portal-agent-collapse {
-  position: absolute;
-  inset-inline-start: -1rem;
-  top: 50%;
-  transform: translateY(-50%);
-  opacity: 0;
-}
-
-.portal-sidebar [data-slot='agent-heading']:is(:hover, :has(:focus-visible)) > .portal-agent-collapse,
-.portal-agent-collapse[aria-expanded='false'] {
-  opacity: 1;
-}
-
-.portal-sidebar [data-slot='gateway-group'] + [data-slot='gateway-group'] {
-  margin-top: 0.75rem;
-}
-
-.portal-agent-sessions {
-  margin-inline-start: 1.25rem;
-  border-inline-start: 1px solid color-mix(in srgb, var(--ui-base) 20%, transparent);
-  padding-inline-start: calc(1.125rem - 1px);
-}
-
-.portal-agent-sessions > div {
-  gap: 0;
-}
-
-.portal-agent-sessions:not(:has([data-session-key])) {
-  display: none;
-}
-
-.portal-agent-sessions [data-session-key] {
-  /* Extend the hit target past the guide without moving the indented title. */
-  margin-inline-start: -2.375rem;
-  border-radius: 0.375rem;
-}
-
-.portal-sidebar .portal-agent-sessions [data-session-key] > button {
-  min-height: 1.9375rem;
-  background: transparent;
-  font-size: 0.75rem;
-  line-height: 0.9375rem;
-}
-
-.portal-agent-sessions
-  [data-session-key]:is(:hover, :has(:focus-visible), :has([data-state='open']))
-  [data-slot='session-title'] {
-  color: var(--ui-text-primary);
-}
-
-.portal-agent-sessions [data-session-key] > button:first-child {
-  padding-inline: 2.375rem 0.625rem;
-}
-
-.portal-agent-sessions [data-session-key] > button:not(:first-child) {
-  inset-inline-end: 0.125rem;
-  width: 1.5rem;
-  opacity: 0;
-}
-
-.portal-agent-sessions
-  [data-session-key]:has([aria-haspopup='menu']):is(:hover, :has(:focus-visible), :has([data-state='open']))
-  [data-slot='session-status'] {
-  opacity: 0;
-}
-
-.portal-agent-sessions
-  [data-session-key]:is(:hover, :has(:focus-visible), :has([data-state='open']))
-  > button:not(:first-child),
-.portal-agent-sessions [data-slot='session-meta'] > span {
-  opacity: 1;
-}
-
-@media (hover: none) {
-  .portal-agent-collapse,
-  .portal-agent-menu-trigger,
-  .portal-agent-sessions [data-session-key] > button:not(:first-child) {
-    opacity: 1;
-  }
-  .portal-agent-sessions [data-session-key]:has([aria-haspopup='menu']) [data-slot='session-status'] {
-    opacity: 0;
-  }
-}
-
-.portal-agent-sessions [data-slot='session-status'] {
-  order: 3;
-  width: 0.5rem;
-}
-
-.portal-agent-sessions [data-slot='session-meta'] {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.portal-agent-sessions [data-slot='session-meta'] > span:empty {
-  display: none;
-}
-
-.portal-sidebar [data-session-key] > button {
-  font-size: 0.8125rem;
-  color: var(--ui-text-secondary);
-}
-
-.portal-sidebar [data-session-key] > button[aria-current='page'] {
-  color: var(--ui-text-primary);
-}
+/* ── Agent menu (body-portalled) ────────────────────────────────────────────────────────────── */
 
 .portal-agent-menu {
   width: 18rem;
   max-width: calc(100vw - 1rem);
-  padding: 0.5rem;
-  border-radius: 0.625rem;
-}
-
-.portal-agent-menu [data-slot='dropdown-menu-item'] {
-  min-height: 2.75rem;
-  gap: 0.75rem;
-  border-radius: 0.375rem;
-  padding-inline: 0.75rem;
-  font-size: 0.875rem;
 }
 
 .portal-agent-menu-icon,
@@ -451,10 +980,10 @@
   max-width: calc(100vw - 1rem);
   padding: 1rem;
   border: 1px solid var(--ui-stroke-secondary);
-  border-radius: 0.625rem;
+  border-radius: 8px;
   background: var(--ui-bg-elevated);
   color: var(--ui-text-secondary);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 400;
   line-height: 1.5;
 }
@@ -493,31 +1022,37 @@
   border-top: 1px solid var(--ui-stroke-tertiary);
   padding-top: 0.75rem;
   color: var(--ui-text-tertiary);
-  font-size: 0.8125rem;
 }
+
+/* ── Hidden agents tray ─────────────────────────────────────────────────────────────────────── */
 
 .portal-hidden-agents {
   flex-shrink: 0;
   max-height: 50%;
   overflow-y: auto;
-  margin-top: 1.25rem;
   border-top: 1px solid var(--ui-stroke-tertiary);
-  padding-top: 0.75rem;
+  padding-block: 0.5rem;
+  scrollbar-width: thin;
 }
 
 .portal-hidden-heading {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--ui-bg-sidebar);
   display: flex;
-  align-items: center;
   width: 100%;
-  min-height: 2.5rem;
-  gap: 0.75rem;
-  padding: 0.375rem 0.5rem;
-  color: var(--ui-text-tertiary);
-  font-size: 0.875rem;
+  min-height: var(--portal-sidebar-row);
+  align-items: center;
+  gap: 0.5rem;
+  padding-inline: calc(var(--portal-sidebar-bleed) + 0.625rem);
+  border-radius: 6px;
+  background: var(--portal-sidebar-background);
+  color: var(--portal-sidebar-label);
+}
+
+.portal-hidden-heading:hover,
+.portal-hidden-heading[aria-expanded='true'] {
+  color: var(--ui-text-secondary);
 }
 
 .portal-hidden-heading > svg {
@@ -526,93 +1061,106 @@
   flex-shrink: 0;
 }
 
-.portal-hidden-heading[aria-expanded='true'] {
-  color: var(--ui-text-secondary);
-}
-
 .portal-hidden-count {
-  color: var(--ui-text-tertiary);
+  color: var(--portal-sidebar-meta);
   font-size: 0.75rem;
 }
 
 .portal-hidden-rows {
-  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--portal-sidebar-row-gap);
+  margin-top: var(--portal-sidebar-row-gap);
 }
 
 .portal-hidden-row {
   position: relative;
   display: flex;
-  align-items: center;
   min-height: 2.5rem;
+  align-items: center;
   gap: 0.5rem;
-  padding-inline: 1.75rem 0.5rem;
-  border-radius: 0.5rem;
+  padding-inline: calc(var(--portal-sidebar-bleed) + 0.6875rem) var(--portal-sidebar-bleed);
+  border-radius: 6px;
+}
+
+.portal-hidden-row:hover {
+  background: var(--portal-sidebar-hover);
 }
 
 .portal-hidden-row .portal-agent-chat {
   min-height: 2.5rem;
-  padding: 0.5rem 0;
   color: var(--ui-text-secondary);
-}
-
-.portal-hidden-row[data-attention] {
-  min-height: 3.75rem;
-}
-
-.portal-hidden-row:is([data-attention='approval'], [data-attention='input'], [data-attention='failed']) {
-  background: color-mix(in srgb, var(--color-orange-400) 9%, transparent);
 }
 
 .portal-hidden-row[data-attention] .portal-agent-chat {
   color: var(--ui-text-primary);
 }
 
+.portal-hidden-row:is([data-attention='approval'], [data-attention='input'], [data-attention='failed']) {
+  background: color-mix(in srgb, var(--portal-sidebar-orange) 9%, transparent);
+}
+
 .portal-hidden-row:is([data-attention='approval'], [data-attention='input'], [data-attention='failed'])
   .portal-agent-subtitle {
-  color: var(--ui-warning, var(--color-orange-400));
+  color: var(--portal-sidebar-orange);
 }
 
 .portal-hidden-dot {
   display: block;
   flex-shrink: 0;
-  width: 0.4375rem;
-  height: 0.4375rem;
-  border-radius: 50%;
-  background: var(--ui-warning, var(--color-orange-400));
+  width: 0.3125rem;
+  height: 0.3125rem;
+  clip-path: polygon(
+    20% 0,
+    80% 0,
+    80% 20%,
+    100% 20%,
+    100% 80%,
+    80% 80%,
+    80% 100%,
+    20% 100%,
+    20% 80%,
+    0 80%,
+    0 20%,
+    20% 20%
+  );
+  background: var(--portal-sidebar-orange);
 }
 
 .portal-hidden-dot[data-attention='running'] {
-  background: var(--portal-brand-fill);
+  background: var(--portal-sidebar-green);
 }
 
 .portal-hidden-dot[data-attention='unread'] {
-  background: var(--ui-success);
+  background: var(--portal-brand-ink);
 }
 
-.portal-hidden-show {
-  min-height: 1.875rem;
-  border: 1px solid var(--ui-stroke-secondary);
-  border-radius: 0.25rem;
-  background: var(--ui-bg-elevated);
+.portal-sidebar .portal-hidden-show {
+  min-height: 1.5rem;
+  border: 0.5px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border-radius: 3px;
+  background: var(--portal-sidebar-card);
+  box-shadow: none;
+  font-weight: 400;
 }
 
-.portal-hidden-show:hover {
-  background: var(--ui-control-active-background);
+.portal-sidebar .portal-hidden-show:hover {
+  background: var(--portal-sidebar-press);
 }
 
 .portal-hidden-row[data-attention] .portal-hidden-show {
   position: absolute;
-  inset-inline-end: 0.5rem;
+  inset-inline-end: var(--portal-sidebar-bleed);
   opacity: 0;
   pointer-events: none;
 }
 
-.portal-hidden-row[data-attention]:is(:hover, :has(:focus-visible)) .portal-hidden-show {
+.portal-hidden-row[data-attention]:is(:hover, :focus-within) .portal-hidden-show {
   opacity: 1;
   pointer-events: auto;
 }
 
-.portal-hidden-row[data-attention]:is(:hover, :has(:focus-visible)) > .portal-hidden-dot {
+.portal-hidden-row[data-attention]:is(:hover, :focus-within) > .portal-hidden-dot {
   opacity: 0;
 }
 
@@ -624,39 +1172,17 @@
   }
 }
 
-@media (max-height: 40rem) {
-  .portal-sidebar-brand {
-    padding-block: 0.5rem 0.75rem;
-  }
-
-  .portal-sidebar-badge {
-    height: 2.5rem;
-  }
-  .portal-sidebar-badge img {
-    height: 2rem;
-  }
-}
-
-/* Content-sized pins; the cap only matters once their list needs to scroll. */
-.portal-sidebar [data-slot='pinned-section'] {
-  flex: 0 1 auto;
-  min-height: 2.5rem;
-  max-height: 45%;
-}
-
-.portal-sidebar [data-slot='agent-section'] {
-  flex: 1 1 0%;
-}
+/* ── Empty pins ─────────────────────────────────────────────────────────────────────────────── */
 
 .portal-pinned-empty {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.625rem;
   padding: 0.5rem 0.625rem;
-  border: 1px dashed var(--sidebar-edge-border);
-  border-radius: 0.25rem;
+  border: 1px dashed color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border-radius: 6px;
   color: var(--ui-text-secondary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   line-height: 1.4;
 }
 
@@ -664,9 +1190,23 @@
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 1.9375rem;
-  height: 1.9375rem;
-  border-radius: 0.25rem;
-  background: color-mix(in srgb, var(--portal-brand-fill) 15%, transparent);
-  color: var(--dt-primary);
+  width: 2rem;
+  height: 2rem;
+  border-radius: 3px;
+  background: var(--portal-sidebar-card);
+  color: var(--ui-text-secondary);
+}
+
+@media (max-height: 40rem) {
+  .portal-sidebar-brand {
+    padding-block: 0.625rem;
+  }
+
+  .portal-sidebar-badge {
+    height: 2.5rem;
+  }
+
+  .portal-sidebar-badge img {
+    height: 2rem;
+  }
 }

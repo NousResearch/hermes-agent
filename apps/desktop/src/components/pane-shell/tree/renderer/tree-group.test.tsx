@@ -358,6 +358,27 @@ describe('TreeGroup', () => {
   // no Close anywhere on screen. The BODY must serve the same right-click zone
   // menu the strip carries, so Close/Minimize stay reachable from the pane's
   // own content.
+  // The redesigned shell rounds only a panel row's OUTER corners, so a zone
+  // must name exactly the window edges it touches, plus the pane it shows.
+  it('marks only the window edges the zone touches', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { height: '12rem' },
+      id: 'terminal',
+      render: () => <div>Terminal</div>,
+      title: 'Terminal'
+    })
+
+    render(<TreeGroup leftEdge node={terminalGroup(false)} parentAxis="row" topEdge />)
+
+    const zone = globalThis.document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')!
+
+    expect(zone.dataset.windowTop).toBe('true')
+    expect(zone.dataset.windowStart).toBe('true')
+    expect(zone.dataset.windowEnd).toBeUndefined()
+    expect(zone.dataset.zonePane).toBe('terminal')
+  })
+
   it('opens the zone menu from ordinary pane body content', () => {
     disposePane = registry.register({
       area: 'panes',

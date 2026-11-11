@@ -25,36 +25,41 @@
   align-content: start;
   gap: 2px;
 }
+/* Sub-nav (895:9593): 10px uppercase group labels, 32px items with 13px +1% labels at .8. */
 .agent-settings-nav-group h2 {
-  margin: 0 10px 6px;
+  margin: 0 0.625rem 0.375rem;
   color: var(--ui-text-tertiary);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 400;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
   text-transform: uppercase;
 }
 .agent-settings-nav-group button {
   width: 100%;
-  min-height: 32px;
-  padding: 6px 10px;
+  min-height: 2rem;
+  padding: 0.375rem 0.625rem;
   border-radius: 3px;
-  color: var(--ui-text-secondary);
-  font-size: 13px;
-  line-height: 18px;
+  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
   text-align: start;
 }
 .agent-settings-nav-group button:hover {
-  background: var(--chrome-action-hover);
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  color: var(--ui-text-primary);
 }
 .agent-settings-nav-group button[aria-current] {
   background: var(--portal-neutral-selection-background);
   box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
   color: var(--ui-text-primary);
+  font-weight: 500;
 }
 .agent-settings-nav-group button:focus-visible,
 .agent-settings-advanced-toggle:focus-visible {
-  outline: 2px solid var(--theme-primary);
-  outline-offset: 2px;
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: -2px;
 }
 .agent-settings-body {
   display: grid;
@@ -67,17 +72,21 @@
 }
 .agent-settings-body > header h2 {
   font-family: var(--portal-font-display);
-  font-size: 30px;
+  font-size: 1.875rem;
   font-weight: 300;
-  line-height: 33px;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
 }
 .agent-settings-body > header p {
   margin-top: 6px;
   color: var(--ui-text-tertiary);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 0.8125rem;
+  line-height: 1.4;
 }
+/* Embedded editors size to their content: a grid item with min-height 0 would shrink under the
+   body's scroll height and paint over the next section. */
 .agent-settings-body [data-slot='settings-content'] {
+  min-height: auto;
   overflow: visible;
 }
 .agent-settings-body [data-slot='settings-content'] > div {
@@ -85,18 +94,22 @@
   overflow: visible;
   padding: 0;
 }
-.agent-settings-card,
-.agent-settings-advanced {
+.agent-settings-card {
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 4px;
   background: var(--ui-bg-card);
+}
+/* Tools › Advanced (895:13886): the shared Advanced disclosure look, opened by route. */
+.agent-settings-advanced {
+  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
 }
 .agent-settings-card > [class~='@container'] {
   padding-inline: 16px;
 }
 .agent-settings-main-model > .grid,
-.agent-settings-body [data-slot='settings-content'] > div > .grid:not([data-slot='portal-safety-settings']),
-.agent-settings-body #setting-field-fallback_providers {
+.agent-settings-body [data-slot='settings-content'] > div > .grid:not([data-slot='portal-safety-settings']) {
   padding: 12px 16px;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 4px;
@@ -107,30 +120,65 @@
   font-size: 15px;
   font-weight: 500;
 }
-.agent-settings-path {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  overflow-wrap: anywhere;
-  padding: 0 16px 16px;
-  color: var(--ui-text-tertiary);
-  font-size: 13px;
+/* Agent pages draw r4 cards (895:9666); the shared list cards follow them here. */
+.agent-settings-body .global-settings-card {
+  border-radius: 4px;
 }
-.agent-settings-path > span {
+/* Titled settings groups (895:9666) and their 64px rows with a text column plus controls. */
+.agent-settings-group {
+  display: grid;
+  gap: 0.75rem;
+}
+.agent-settings-group > h3 {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.1;
+}
+.agent-settings-group [data-slot='settings-row'] {
+  padding-inline: 1rem;
+}
+.agent-settings-group [data-slot='settings-row'] + [data-slot='settings-row'] {
+  border-top: 1px solid color-mix(in srgb, var(--ui-base) 3%, transparent);
+}
+.agent-settings-group [data-slot='settings-row'] > div {
+  min-height: 4rem;
+  column-gap: 1.25rem;
+}
+.agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:first-child {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.agent-settings-group [data-slot='settings-row'] > div > div:first-child > div:nth-child(2) {
+  margin-top: 2px;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.agent-settings-group [data-slot='settings-row'] .font-mono {
+  color: var(--ui-text-tertiary);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.agent-settings-value {
   min-width: 0;
-  flex: 1;
+  overflow: hidden;
+  color: var(--ui-text-secondary);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-settings-advanced-toggle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 0.75rem;
   width: 100%;
-  min-height: 68px;
-  padding: 20px 16px;
+  min-height: 4.375rem;
+  padding: 0.875rem 1rem;
+  border-radius: 3px;
   cursor: pointer;
-  font-size: 14px;
+  text-align: start;
+}
+.agent-settings-advanced-toggle:hover {
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
 }
 .agent-settings-advanced > div {
   display: grid;
@@ -143,7 +191,6 @@
   border: 0;
   background: none;
 }
-.agent-settings-actions,
 .agent-settings-subpages {
   display: flex;
   flex-wrap: wrap;
@@ -181,7 +228,7 @@
   overflow: hidden;
   color: var(--ui-text-tertiary);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -235,4 +282,24 @@
     padding-bottom: 0;
     gap: 16px;
   }
+}
+/* Color swatches (895:9675): 24px circles, the selected one ringed in near-white ink. */
+.agent-color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agent-color-swatches > button {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+}
+.agent-color-swatches > button[aria-pressed='true'] {
+  box-shadow:
+    0 0 0 2px var(--ui-chat-surface-background),
+    0 0 0 3.5px color-mix(in srgb, var(--ui-base) 98%, transparent);
+}
+.agent-color-swatches > button:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 3px;
 }

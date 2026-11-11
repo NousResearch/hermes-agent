@@ -56,7 +56,7 @@ export function PortalAgentMenu({ agent, hidden, pending, onOpen }: PortalAgentM
         <Button
           aria-label={`${c.actions}: ${agent.label} · ${agent.gateway}`}
           className="portal-agent-menu-trigger"
-          size="icon"
+          size="icon-xs"
           variant="ghost"
         >
           <MoreVertical aria-hidden />

@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
@@ -7,7 +8,7 @@ import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { $onboardingChatOpener, startOnboarding } from '@/store/onboarding-run'
 import { startOnboarding as startSetupGuide } from '@/store/setup-guide'
-import { usePortalShell } from '@/store/shell-variant'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 import { ListRow } from './primitives'
 
@@ -15,7 +16,7 @@ import { ListRow } from './primitives'
 export function OnboardingSettings() {
   const { t } = useI18n()
   const copy = t.firstRun.rerun
-  const redesign = usePortalShell()
+  const setupGuide = useStore($setupGuideOnboarding)
   const { requestGateway } = useGatewayRequest()
   const [starting, setStarting] = useState(false)
 
@@ -25,7 +26,7 @@ export function OnboardingSettings() {
     try {
       const open = $onboardingChatOpener.get()
 
-      const started = redesign
+      const started = setupGuide
         ? await startSetupGuide(requestGateway)
         : open !== null && (await startOnboarding(requestGateway, open, { intro: firstRunIntro(), rerun: true }))
 
@@ -46,7 +47,7 @@ export function OnboardingSettings() {
           {copy.action}
         </Button>
       }
-      description={redesign ? t.firstRun.guide.intro : copy.description}
+      description={setupGuide ? t.firstRun.guide.intro : copy.description}
       title={copy.title}
     />
   )

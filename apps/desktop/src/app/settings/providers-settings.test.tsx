@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
+import { $shellChoice } from '@/store/shell-variant'
 import type { EnvVarInfo, OAuthProvider, ProfileInfo } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
@@ -81,6 +82,8 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
 }
 
 beforeEach(() => {
+  // The classic page; the redesign's key list is covered in its own test.
+  $shellChoice.set(false)
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
@@ -93,6 +96,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   $confirmRequest.set(null)
   vi.restoreAllMocks()
   vi.clearAllMocks()
@@ -424,6 +428,27 @@ describe('ProvidersSettings', () => {
     // A non-matching query shows the empty-state copy.
     await act(async () => {
       fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
+    })
+    expect(await screen.findByText('No providers match your search.')).toBeTruthy()
+  })
+
+  it('lists only providers with a key in the redesign; Add key opens the searchable rest', async () => {
+    $shellChoice.set(true)
+    getEnvVars.mockResolvedValue({
+      ACME_API_KEY: keyVar({ is_set: true, provider: 'acme', provider_label: 'Acme', redacted_value: '...1234' }),
+      ZEBRA_API_KEY: keyVar({ provider: 'zebra', provider_label: 'Zebra' })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    await screen.findByText('Acme')
+    expect(screen.queryByText('Zebra')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
+    expect(await screen.findByText('Zebra')).toBeTruthy()
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText('Search providers…'), { target: { value: 'nonesuch-xyz' } })
     })
     expect(await screen.findByText('No providers match your search.')).toBeTruthy()
   })

@@ -4,9 +4,12 @@ const LEGACY_VISIBLE_KEY = 'hermes.desktop.statusbarVisible'
 
 const loadStore = () => import('./statusbar-prefs')
 
+const SHELL_KEY = 'hermes.desktop.agentShell.v1'
+
 describe('statusbar whole-bar visibility', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    window.localStorage.setItem(SHELL_KEY, 'false')
     vi.resetModules()
   })
 
@@ -28,6 +31,32 @@ describe('statusbar whole-bar visibility', () => {
     const reloaded = await loadStore()
 
     expect(reloaded.$statusbarVisible.get()).toBe(false)
+  })
+
+  it('has no strip in the redesign, so no toggle there can change the classic preference', async () => {
+    const store = await loadStore()
+    const { setPortalPreferred } = await import('./shell-variant')
+    expect(store.$statusbarShown.get()).toBe(true)
+
+    setPortalPreferred(true)
+    expect(store.$statusbarStripAvailable.get()).toBe(false)
+    expect(store.$statusbarShown.get()).toBe(false)
+    store.toggleStatusbarVisible()
+    expect(store.$statusbarVisible.get()).toBe(true)
+
+    setPortalPreferred(false)
+    expect(store.$statusbarShown.get()).toBe(true)
+    store.toggleStatusbarVisible()
+    expect(store.$statusbarShown.get()).toBe(false)
+  })
+
+  it('keeps the Simple-mode policy: the bar rests hidden unless the free tier Sign in needs it', async () => {
+    const store = await loadStore()
+    const mode = await import('./interface-mode')
+    mode.setInterfaceMode('simple')
+    expect(store.$statusbarShown.get()).toBe(false)
+    mode.setModeContext({ freeTierSignInOpen: true })
+    expect(store.$statusbarShown.get()).toBe(true)
   })
 })
 

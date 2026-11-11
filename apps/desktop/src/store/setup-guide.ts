@@ -10,7 +10,7 @@ import { clearFreeTierIntro, dismissFirstRunOnboarding } from './onboarding'
 import { $setupGuidePhase as $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, ONBOARDING_DECIDE_OFFER_MS, setOnboardingSurfaceActive } from './onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from './onboarding-scope'
-import { $portalPreferred } from './shell-variant'
+import { $setupGuideOnboarding } from './shell-policy'
 
 export type OnboardingRequest = <T = unknown>(
   method: string,
@@ -32,12 +32,12 @@ export const $guideRecovery = atom<{
   retry: () => Promise<unknown>
 } | null>(null)
 let generation = 0
-$portalPreferred.listen(() => {
+$setupGuideOnboarding.listen(() => {
   generation += 1
 })
 
 computed(
-  [$onboardingPhase, $portalPreferred, $guideRecovery],
+  [$onboardingPhase, $setupGuideOnboarding, $guideRecovery],
   (phase, redesign, recovery) => redesign && (phase === 'shown' || recovery !== null)
 ).subscribe(active => setOnboardingSurfaceActive('setup-guide', active))
 
@@ -95,7 +95,7 @@ export async function startOnboarding(request: OnboardingRequest, scope = captur
   try {
     await pinned('onboarding.state')
 
-    if (current !== generation || !$portalPreferred.get()) {
+    if (current !== generation || !$setupGuideOnboarding.get()) {
       return false
     }
 
@@ -105,7 +105,7 @@ export async function startOnboarding(request: OnboardingRequest, scope = captur
       restart: true
     })
 
-    if (current !== generation || !$portalPreferred.get() || !state.run) {
+    if (current !== generation || !$setupGuideOnboarding.get() || !state.run) {
       return false
     }
 
@@ -115,7 +115,7 @@ export async function startOnboarding(request: OnboardingRequest, scope = captur
 
     return true
   } catch (error) {
-    if (current === generation && $portalPreferred.get()) {
+    if (current === generation && $setupGuideOnboarding.get()) {
       offerRecovery(error, scope, () => startOnboarding(request, scope))
     }
 
@@ -124,7 +124,7 @@ export async function startOnboarding(request: OnboardingRequest, scope = captur
 }
 
 export function suspendOnboarding(): void {
-  if ($portalPreferred.get() && $onboardingPhase.get() === 'shown') {
+  if ($setupGuideOnboarding.get() && $onboardingPhase.get() === 'shown') {
     $guideSuspended.set(true)
   }
 }
@@ -144,7 +144,7 @@ export async function saveGuideStep(step: GuideStep): Promise<void> {
   const current = ++generation
   const state = await request<OnboardingRunStateResult>('onboarding.set_run', { run: true, step })
 
-  if (current !== generation || !$portalPreferred.get()) {
+  if (current !== generation || !$setupGuideOnboarding.get()) {
     return
   }
 
@@ -175,7 +175,7 @@ export async function finishOnboarding(outcome: 'done' | 'skipped'): Promise<boo
   const current = ++generation
   await request('onboarding.set_run', { run: false, mark_profile_offered: true })
 
-  if (current !== generation || !$portalPreferred.get()) {
+  if (current !== generation || !$setupGuideOnboarding.get()) {
     return false
   }
 
@@ -187,7 +187,7 @@ export async function finishOnboarding(outcome: 'done' | 'skipped'): Promise<boo
 export async function reconcileOnboarding(): Promise<void> {
   const request = $guideRequest.get()
 
-  if (!request || !$portalPreferred.get() || $onboardingPhase.get() !== 'shown') {
+  if (!request || !$setupGuideOnboarding.get() || $onboardingPhase.get() !== 'shown') {
     return
   }
 
@@ -246,7 +246,7 @@ async function readAndStart(request: OnboardingRequest, scope = captureOnboardin
       0
     )
 
-    if (released || current !== generation || !$portalPreferred.get()) {
+    if (released || current !== generation || !$setupGuideOnboarding.get()) {
       return
     }
 
@@ -269,11 +269,11 @@ async function readAndStart(request: OnboardingRequest, scope = captureOnboardin
     // Only a fresh guide needs the initial durable latch.
     const saved = state.started ? state : await pinned<OnboardingRunStateResult>('onboarding.set_run', { run: true })
 
-    if (!released && current === generation && $portalPreferred.get() && saved.run) {
+    if (!released && current === generation && $setupGuideOnboarding.get() && saved.run) {
       show(saved, pinned, scope)
     }
   } catch (error) {
-    if (!released && current === generation && $portalPreferred.get()) {
+    if (!released && current === generation && $setupGuideOnboarding.get()) {
       offerRecovery(error, scope, () => readAndStart(request, scope))
     }
   } finally {

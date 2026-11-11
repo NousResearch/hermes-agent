@@ -1,25 +1,44 @@
-/* Opacity lives in the SVG (following the parent color-scheme), so transparent
-   native glass surfaces cannot expose the full-strength wing. */
-:root[data-shell='portal'] :is(
-  .portal-sidebar,
-  [data-slot='composer-bounds'],
-  [data-page-surface],
-  [data-page-surface] [data-glass-raised],
-  [data-page-surface] [data-tour='overlay-nav']
-) {
-  background-image: url('../../assets/portal-wing.svg');
-  background-position: center;
-  background-size: 95vw auto;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
+/* The wing (Figma `Background` › Group 1, 906:19398). Geometry: a 1208.7px square at
+   (34.6, -182.3) in the 1280×880 frame — horizontally centered, its center at 48% of the window
+   height, scaled with the window width. The SVG carries Figma's full-strength stack (blue .8 +
+   color-dodge fringes); a veil of the surface's own color laid over the art sets its strength. */
+:root[data-shell='portal']:not([data-hermes-glass]) {
+  --portal-wing-size: 94.43vw;
+  --portal-wing-position: calc(50vw - var(--portal-wing-size) / 2) calc(48vh - var(--portal-wing-size) / 2);
+  /* Light draws the wing as blue .05 (491:46161); panels hide it everywhere but the bare canvas. */
+  --portal-wing-opacity: 0.0625;
+  /* Pages lay their nav and body straight over the canvas (856:2643): a faint wing behind both. */
+  --portal-page-wing-opacity: 0;
 }
 
-/* Figma's light rail (606:13784) is opaque. */
-:root[data-shell='portal']:not(.dark) :is(.portal-sidebar, [data-page-surface] [data-tour='overlay-nav']) {
-  background-image: none;
+:root.dark[data-shell='portal']:not([data-hermes-glass]) {
+  --portal-wing-opacity: 1;
+  --portal-page-wing-opacity: 0.05;
 }
 
-/* The new-chat pane already has its own landing illustration. */
-:root[data-shell='portal'] [data-chat-landing='true'] [data-slot='composer-bounds'] {
-  background-image: none;
+/* Painted ONCE on the window canvas; it shows only where the panels over it are translucent (the
+   dark sidebar). The shell root spans the window and never scrolls, so a plain background lands
+   the art at window coordinates. */
+:root[data-shell='portal']:not([data-hermes-glass]) [data-contrib-shell] {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--portal-window-background) calc((1 - var(--portal-wing-opacity)) * 100%), transparent)
+    ),
+    url('../../assets/portal-wing.svg') var(--portal-wing-position) / var(--portal-wing-size) no-repeat,
+    var(--portal-window-background);
+}
+
+/* A page (an overlay card, or a workspace page's panel layer) repaints the page canvas with the
+   art on its own non-scrolling layer, attached to the viewport to stay registered with the
+   window's art. */
+:root[data-shell='portal']:not([data-hermes-glass]) [data-overlay-surface][data-page-surface] [data-glass-raised],
+:root[data-shell='portal']:not([data-hermes-glass])
+  [data-tree-group][data-window-top][data-zone-page]
+  > [data-panel-header]::before {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--portal-page-background) calc((1 - var(--portal-page-wing-opacity)) * 100%), transparent)
+    ),
+    url('../../assets/portal-wing.svg') var(--portal-wing-position) / var(--portal-wing-size) no-repeat fixed,
+    var(--portal-page-background);
 }

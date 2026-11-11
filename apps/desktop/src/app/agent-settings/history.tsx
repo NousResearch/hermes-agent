@@ -273,6 +273,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           <Button
             disabled={busy}
             onClick={() => void mutate(selectedRows, { pinned: true }).catch(setError)}
+            size="sm"
             variant="secondary"
           >
             <Codicon name="pin" />
@@ -281,15 +282,16 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           <Button
             disabled={busy}
             onClick={() => void mutate(selectedRows, { archived: true, pinned: false }).catch(setError)}
+            size="sm"
             variant="secondary"
           >
             <Codicon name="archive" />
             {c.archive}
           </Button>
-          <Button disabled={busy} onClick={() => setDeleting(selectedRows)} variant="destructive">
+          <Button disabled={busy} onClick={() => setDeleting(selectedRows)} size="sm" variant="destructive">
             {c.delete}
           </Button>
-          <Button disabled={busy} onClick={() => setSelected(new Set())} variant="ghost">
+          <Button disabled={busy} onClick={() => setSelected(new Set())} size="sm" variant="ghost">
             {t.common.clear}
           </Button>
         </div>
@@ -469,7 +471,7 @@ function HistoryFilterPopover({
           {active > 0 && <span className="agent-history-filter-count text-primary-foreground">{active}</span>}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="agent-history-filter-popover">
+      <PopoverContent align="end" className="agent-history-filter-popover" variant="menu">
         <fieldset className="agent-history-filter-options">
           <legend>{c.source}</legend>
           {(['chat', 'schedule', 'telegram', 'discord'] as const).map(source => (
@@ -519,7 +521,7 @@ function HistoryFilterPopover({
           <Button onClick={() => onChange(DEFAULT_HISTORY_FILTERS)} variant="ghost">
             {c.reset}
           </Button>
-          <Button onClick={() => setOpen(false)} variant="secondary">
+          <Button onClick={() => setOpen(false)} variant="outline">
             {c.done}
           </Button>
         </footer>

@@ -2,11 +2,11 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode, RefObject } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { FadeScroll } from '@/components/ui/fade-scroll'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { ChevronDown } from '@/lib/icons'
 import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
 import { recordIaAction } from '@/store/ia-metrics'
@@ -45,6 +45,9 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
   children: ReactNode
 }
 
+const agentKey = (agent: SimplifiedAgent) =>
+  agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
+
 function AgentCard({ agent, selected, open, hidden, onToggle, onOpenAgent, pending, children }: AgentCardProps) {
   const { t } = useI18n()
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
@@ -57,8 +60,10 @@ function AgentCard({ agent, selected, open, hidden, onToggle, onOpenAgent, pendi
       role="group"
     >
       <div data-active-agent={selected ? '' : undefined} data-slot="agent-heading">
-        <SimplifiedBotChatRow agent={agent} />
-        <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
+        <SimplifiedBotChatRow
+          agent={agent}
+          avatarColor={selected ? 'var(--portal-sidebar-agent-selected-ink)' : undefined}
+        />
         <Tip label={toggleLabel}>
           <Button
             aria-expanded={open}
@@ -66,17 +71,15 @@ function AgentCard({ agent, selected, open, hidden, onToggle, onOpenAgent, pendi
             className="portal-agent-collapse"
             onClick={() => {
               recordIaAction(open ? 'ia.section.agent_collapsed' : 'ia.section.agent_expanded')
-              onToggle(
-                agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile }),
-                open
-              )
+              onToggle(agentKey(agent), open)
             }}
             size="icon-xs"
-            variant="grip"
+            variant="ghost"
           >
-            <Codicon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+            <ChevronDown aria-hidden />
           </Button>
         </Tip>
+        <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
       </div>
       {open && children}
     </div>
@@ -105,8 +108,7 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
 
   const activeAgentKey = agentSidebarKey({ connectionId: viewedConnection, profile: viewedProfile })
 
-  const isHidden = (agent: SimplifiedAgent) =>
-    hidden.has(agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile }))
+  const isHidden = (agent: SimplifiedAgent) => hidden.has(agentKey(agent))
 
   const hiddenAgents = agents.filter(isHidden)
   const groups = new Map<string | null, SimplifiedAgent[]>()
@@ -124,7 +126,7 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
 
   return (
     <>
-      <FadeScroll className="min-h-0 flex-1" fade="min(2.5rem, 25%)" maxHeight="none" ref={props.scrollRef}>
+      <FadeScroll className="portal-section-scroll" maxHeight="none" ref={props.scrollRef}>
         {[...groups].map(([connectionId, group]) => {
           if (query && !group.length) {
             return null
@@ -133,13 +135,13 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
           const gatewayId = JSON.stringify(['gateway', connectionId])
           const open = Boolean(query) || (props.expanded[gatewayId] ?? true)
           const selected = connectionId === (activeConnection ?? owner)
-          const fallbackLabel = agents.find(agent => agent.connectionId === connectionId)!.gateway
+          const label = agents.find(agent => agent.connectionId === connectionId)!.gateway
 
           return (
-            <div data-slot="gateway-group" key={gatewayId}>
+            <div data-open={open && group.length > 0} data-slot="gateway-group" key={gatewayId}>
               <SimplifiedGatewayHeader
                 connectionId={connectionId}
-                fallbackLabel={fallbackLabel}
+                label={label}
                 onToggle={() => props.onToggle(gatewayId, open)}
                 open={open}
                 selected={selected}
@@ -153,23 +155,9 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                       key={agent.id}
                       onOpenAgent={props.onOpenAgent}
                       onToggle={props.onToggle}
-                      open={
-                        Boolean(query) ||
-                        (props.expanded[
-                          agentSidebarKey({
-                            connectionId: agent.connectionId,
-                            profile: agent.targetProfile || agent.profile
-                          })
-                        ] ??
-                          true)
-                      }
+                      open={Boolean(query) || (props.expanded[agentKey(agent)] ?? true)}
                       pending={props.pending}
-                      selected={
-                        agentSidebarKey({
-                          connectionId: agent.connectionId,
-                          profile: agent.targetProfile || agent.profile
-                        }) === activeAgentKey
-                      }
+                      selected={agentKey(agent) === activeAgentKey}
                     >
                       {props.renderSessions(sessionsByAgent.get(agent.id) ?? [], agent)}
                     </AgentCard>

@@ -52,7 +52,7 @@ export function TerminalRail() {
     <div
       className={cn(
         'group/rail relative z-40 flex shrink-0 items-center border-(--ui-stroke-quaternary) bg-(--ui-terminal-surface-background)',
-        redesigned ? 'h-9 w-full gap-1 border-b px-1' : 'h-full w-9 flex-col border-l'
+        redesigned ? 'h-10 w-full gap-1 border-b px-2.5' : 'h-full w-9 flex-col border-l'
       )}
       // The rail sits at the pane's outer edge, under the collapsed sidebars'
       // hover-reveal triggers; mark it so those triggers go pointer-transparent
@@ -62,7 +62,7 @@ export function TerminalRail() {
     >
       <ul
         aria-label={t.rightSidebar.terminalsAria}
-        aria-orientation={redesigned ? "horizontal" : "vertical"}
+        aria-orientation={redesigned ? 'horizontal' : 'vertical'}
         className={cn(
           'flex min-h-0 min-w-0 flex-1 items-center gap-0.5 self-stretch overscroll-contain py-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
           redesigned ? 'overflow-x-auto overflow-y-hidden' : 'flex-col overflow-y-auto overflow-x-hidden'
@@ -84,14 +84,14 @@ export function TerminalRail() {
       </ul>
 
       <div className={cn('flex shrink-0 items-center', !redesigned && 'flex-col pb-1.5')}>
-        <Tip label={t.rightSidebar.terminalHide} placement={redesigned ? "toolbar" : "right-rail"}>
+        <Tip label={t.rightSidebar.terminalHide} placement={redesigned ? 'toolbar' : 'right-rail'}>
           <button
             aria-label={t.rightSidebar.terminalHide}
             className={cn(
               RAIL_ACTION,
               !redesigned && 'opacity-0 transition-opacity focus-visible:opacity-100 group-hover/rail:opacity-100'
             )}
-            onClick={() => redesigned ? toggleTerminalPane() : setTerminalTakeover(false)}
+            onClick={() => (redesigned ? toggleTerminalPane() : setTerminalTakeover(false))}
             type="button"
           >
             <Codicon name={redesigned ? 'close' : 'chevron-down'} size="0.8125rem" />
@@ -124,23 +124,30 @@ function TerminalRailItem({ active, canCloseOthers, horizontal, index, term, tog
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <li className={cn('relative flex justify-center [-webkit-app-region:no-drag]', horizontal ? 'shrink-0' : 'w-full')}>
-          {active && (
+        <li
+          className={cn(
+            'relative flex justify-center [-webkit-app-region:no-drag]',
+            horizontal ? 'shrink-0' : 'w-full'
+          )}
+        >
+          {/* The vertical rail marks its active tab with an edge bar; the redesign's
+              horizontal pills read from their fill alone. */}
+          {active && !horizontal && (
             <span
               aria-hidden="true"
-              className={cn('absolute bg-(--ui-stroke-primary)', horizontal ? 'inset-x-1 bottom-0 h-0.5' : 'inset-y-0.5 right-0 w-0.5 rounded-l-sm')}
+              className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
             />
           )}
           <Tip
             label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />}
-            placement={horizontal ? "toolbar" : "right-rail"}
+            placement={horizontal ? 'toolbar' : 'right-rail'}
           >
             <button
               aria-label={label}
               aria-selected={active}
               className={cn(
-                'relative flex h-7 items-center justify-center rounded-md transition-colors',
-                horizontal ? 'max-w-40 gap-1.5 px-2 text-xs' : 'w-7',
+                'relative flex h-7 items-center justify-center transition-colors',
+                horizontal ? 'max-w-40 gap-1.5 rounded-[3px] px-2.5 text-[0.8125rem]' : 'w-7 rounded-md',
                 active
                   ? 'bg-(--chrome-action-hover) text-foreground'
                   : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -169,14 +176,18 @@ function TerminalRailItem({ active, canCloseOthers, horizontal, index, term, tog
         </ContextMenuItem>
         <ContextMenuItem onSelect={closeAllTerminals}>{t.rightSidebar.terminalCloseAll}</ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => horizontal ? toggleTerminalPane() : setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => (horizontal ? toggleTerminalPane() : setTerminalTakeover(false))}>
+          {t.rightSidebar.terminalHide}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )
 }
 
 function TerminalHostBadge({ host }: { host: TerminalHost }) {
-  if (!host) {return null}
+  if (!host) {
+    return null
+  }
 
   return (
     <span

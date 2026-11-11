@@ -350,9 +350,203 @@ const duplicate = {
   ar: 'تكرار'
 } satisfies Record<BundledLocale, string>
 
+interface GeneralCopy {
+  identity: string
+  nameDescription: string
+  profile: string
+  folder: string
+  folderDescription: string
+  manage: string
+  duplicateDescription: string
+  deleteTitle: string
+  deleteDescription: string
+  color: string
+  colorDescription: string
+  colorSwatch: string
+  envKeys: string
+  envKeysDescription: string
+  editKeys: string
+  defaultAgent: string
+  defaultAgentDescription: string
+}
+
+const general = {
+  en: {
+    identity: 'Identity',
+    nameDescription: 'Shown in the agent list and chat headers.',
+    profile: 'Profile',
+    folder: 'Profile folder',
+    folderDescription: 'Where this agent’s config, SOUL.md and memory live.',
+    manage: 'Manage',
+    duplicateDescription: 'Start a new agent from a copy of this one.',
+    deleteTitle: 'Delete agent',
+    deleteDescription: 'Permanently removes this agent and its settings.',
+    color: 'Color',
+    colorDescription: 'Tints this agent in the list.',
+    colorSwatch: 'Color',
+    envKeys: 'Environment keys',
+    envKeysDescription: 'Variables and API keys in this agent’s .env file.',
+    editKeys: 'Edit keys',
+    defaultAgent: 'Default agent',
+    defaultAgentDescription: 'Used for new chats when you don’t pick an agent.'
+  },
+  fr: {
+    identity: 'Identité',
+    nameDescription: 'Affiché dans la liste des agents et en tête des discussions.',
+    profile: 'Profil',
+    folder: 'Dossier du profil',
+    folderDescription: 'Emplacement de la configuration, de SOUL.md et de la mémoire de cet agent.',
+    manage: 'Gérer',
+    duplicateDescription: 'Créer un nouvel agent à partir d’une copie de celui-ci.',
+    deleteTitle: 'Supprimer l’agent',
+    deleteDescription: 'Supprime définitivement cet agent et ses réglages.',
+    color: 'Couleur',
+    colorDescription: 'Teinte cet agent dans la liste.',
+    colorSwatch: 'Couleur',
+    envKeys: 'Variables d’environnement',
+    envKeysDescription: 'Variables et clés API du fichier .env de cet agent.',
+    editKeys: 'Modifier les clés',
+    defaultAgent: 'Agent par défaut',
+    defaultAgentDescription: 'Utilisé pour les nouvelles discussions quand vous ne choisissez pas d’agent.'
+  },
+  de: {
+    identity: 'Identität',
+    nameDescription: 'Wird in der Agentenliste und in Chat-Kopfzeilen angezeigt.',
+    profile: 'Profil',
+    folder: 'Profilordner',
+    folderDescription: 'Hier liegen Konfiguration, SOUL.md und Gedächtnis dieses Agenten.',
+    manage: 'Verwalten',
+    duplicateDescription: 'Einen neuen Agenten als Kopie dieses Agenten anlegen.',
+    deleteTitle: 'Agent löschen',
+    deleteDescription: 'Entfernt diesen Agenten und seine Einstellungen dauerhaft.',
+    color: 'Farbe',
+    colorDescription: 'Färbt diesen Agenten in der Liste.',
+    colorSwatch: 'Farbe',
+    envKeys: 'Umgebungsvariablen',
+    envKeysDescription: 'Variablen und API-Schlüssel in der .env-Datei dieses Agenten.',
+    editKeys: 'Schlüssel bearbeiten',
+    defaultAgent: 'Standardagent',
+    defaultAgentDescription: 'Wird für neue Chats verwendet, wenn du keinen Agenten wählst.'
+  },
+  es: {
+    identity: 'Identidad',
+    nameDescription: 'Se muestra en la lista de agentes y en los encabezados de chat.',
+    profile: 'Perfil',
+    folder: 'Carpeta del perfil',
+    folderDescription: 'Donde viven la configuración, SOUL.md y la memoria de este agente.',
+    manage: 'Gestionar',
+    duplicateDescription: 'Crea un agente nuevo a partir de una copia de este.',
+    deleteTitle: 'Eliminar agente',
+    deleteDescription: 'Elimina de forma permanente este agente y su configuración.',
+    color: 'Color',
+    colorDescription: 'Tiñe este agente en la lista.',
+    colorSwatch: 'Color',
+    envKeys: 'Variables de entorno',
+    envKeysDescription: 'Variables y claves API del archivo .env de este agente.',
+    editKeys: 'Editar claves',
+    defaultAgent: 'Agente predeterminado',
+    defaultAgentDescription: 'Se usa en los chats nuevos cuando no eliges un agente.'
+  },
+  ja: {
+    identity: 'ID',
+    nameDescription: 'エージェント一覧とチャットのヘッダーに表示されます。',
+    profile: 'プロフィール',
+    folder: 'プロフィールフォルダー',
+    folderDescription: 'このエージェントの設定、SOUL.md、メモリーの保存場所です。',
+    manage: '管理',
+    duplicateDescription: 'このエージェントのコピーから新しいエージェントを作成します。',
+    deleteTitle: 'エージェントを削除',
+    deleteDescription: 'このエージェントと設定を完全に削除します。',
+    color: '色',
+    colorDescription: '一覧でこのエージェントに付ける色です。',
+    colorSwatch: '色',
+    envKeys: '環境変数',
+    envKeysDescription: 'このエージェントの .env ファイルにある変数と API キーです。',
+    editKeys: 'キーを編集',
+    defaultAgent: '既定のエージェント',
+    defaultAgentDescription: 'エージェントを選ばずに始めた新しいチャットで使います。'
+  },
+  zh: {
+    identity: '身份',
+    nameDescription: '显示在智能体列表和聊天标题中。',
+    profile: '配置文件',
+    folder: '配置文件夹',
+    folderDescription: '此智能体的配置、SOUL.md 和记忆所在位置。',
+    manage: '管理',
+    duplicateDescription: '以此智能体的副本创建新的智能体。',
+    deleteTitle: '删除智能体',
+    deleteDescription: '永久删除此智能体及其设置。',
+    color: '颜色',
+    colorDescription: '在列表中为此智能体着色。',
+    colorSwatch: '颜色',
+    envKeys: '环境变量',
+    envKeysDescription: '此智能体 .env 文件中的变量和 API 密钥。',
+    editKeys: '编辑密钥',
+    defaultAgent: '默认智能体',
+    defaultAgentDescription: '新建聊天未选择智能体时使用。'
+  },
+  'zh-hant': {
+    identity: '身分',
+    nameDescription: '顯示在智慧體清單與聊天標題中。',
+    profile: '設定檔',
+    folder: '設定檔資料夾',
+    folderDescription: '此智慧體的設定、SOUL.md 與記憶所在位置。',
+    manage: '管理',
+    duplicateDescription: '以此智慧體的副本建立新的智慧體。',
+    deleteTitle: '刪除智慧體',
+    deleteDescription: '永久刪除此智慧體及其設定。',
+    color: '顏色',
+    colorDescription: '在清單中為此智慧體著色。',
+    colorSwatch: '顏色',
+    envKeys: '環境變數',
+    envKeysDescription: '此智慧體 .env 檔案中的變數與 API 金鑰。',
+    editKeys: '編輯金鑰',
+    defaultAgent: '預設智慧體',
+    defaultAgentDescription: '新聊天未選擇智慧體時使用。'
+  },
+  ru: {
+    identity: 'Идентификация',
+    nameDescription: 'Отображается в списке агентов и в заголовках чатов.',
+    profile: 'Профиль',
+    folder: 'Папка профиля',
+    folderDescription: 'Здесь хранятся настройки, SOUL.md и память этого агента.',
+    manage: 'Управление',
+    duplicateDescription: 'Создать нового агента на основе копии этого.',
+    deleteTitle: 'Удалить агента',
+    deleteDescription: 'Безвозвратно удаляет этого агента и его настройки.',
+    color: 'Цвет',
+    colorDescription: 'Цвет этого агента в списке.',
+    colorSwatch: 'Цвет',
+    envKeys: 'Переменные окружения',
+    envKeysDescription: 'Переменные и API-ключи в файле .env этого агента.',
+    editKeys: 'Изменить ключи',
+    defaultAgent: 'Агент по умолчанию',
+    defaultAgentDescription: 'Используется в новых чатах, если агент не выбран.'
+  },
+  ar: {
+    identity: 'الهوية',
+    nameDescription: 'يظهر في قائمة الوكلاء وفي عناوين المحادثات.',
+    profile: 'الملف الشخصي',
+    folder: 'مجلد الملف الشخصي',
+    folderDescription: 'مكان إعدادات هذا الوكيل وملف SOUL.md وذاكرته.',
+    manage: 'الإدارة',
+    duplicateDescription: 'أنشئ وكيلًا جديدًا من نسخة من هذا الوكيل.',
+    deleteTitle: 'حذف الوكيل',
+    deleteDescription: 'يزيل هذا الوكيل وإعداداته نهائيًا.',
+    color: 'اللون',
+    colorDescription: 'يلوّن هذا الوكيل في القائمة.',
+    colorSwatch: 'اللون',
+    envKeys: 'متغيرات البيئة',
+    envKeysDescription: 'المتغيرات ومفاتيح API في ملف ‎.env لهذا الوكيل.',
+    editKeys: 'تعديل المفاتيح',
+    defaultAgent: 'الوكيل الافتراضي',
+    defaultAgentDescription: 'يُستخدم في المحادثات الجديدة عندما لا تختار وكيلًا.'
+  }
+} satisfies Record<BundledLocale, GeneralCopy>
+
 export function useAgentSettingsEditorCopy() {
   const { locale } = useI18n()
   const bundled = isBundledLocale(locale) ? locale : 'en'
 
-  return { ...copy[bundled], duplicate: duplicate[bundled] }
+  return { ...copy[bundled], duplicate: duplicate[bundled], generalPage: general[bundled] }
 }

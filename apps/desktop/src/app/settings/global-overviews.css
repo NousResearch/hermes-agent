@@ -1,9 +1,14 @@
+/* Redesigned global settings pages (Figma 856:*). Every class here is rendered only by the redesign's
+   SettingsOverview / SettingsCard / SettingsDisclosure (settings-card.tsx), so no root gate is needed. */
 .global-settings-overview {
   display: grid;
-  gap: 36px;
+  gap: 2.25rem;
 }
 
+/* ── Grouped rows card (856:3439): 5% fill, 5% stroke, r8, 64px rows with hairline dividers ── */
+
 .global-settings-card {
+  overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 8px;
   background: var(--ui-bg-card);
@@ -13,86 +18,427 @@
   margin-bottom: 0;
 }
 
+/* Rows sit on the card's 16px inset; inside a disclosure they align with its title (738:4900). */
 .global-settings-card [data-slot='settings-row'] {
-  padding-inline: 16px;
+  padding-inline: 1rem;
 }
 
-.global-settings-card [data-slot='settings-row'] > div {
-  min-height: 64px;
-  gap: 12px 24px;
+.global-settings-disclosure-body [data-slot='settings-row'] {
+  padding-inline: 0;
 }
 
-.global-settings-card [data-slot='settings-row'] + [data-slot='settings-row'] {
+.global-settings-disclosure-body .global-settings-card [data-slot='settings-row'] {
+  padding-inline: 1rem;
+}
+
+:is(.global-settings-card, .global-settings-disclosure-body) [data-slot='settings-row'] > div {
+  min-height: 4rem;
+  gap: 0.75rem 1.5rem;
+  padding-block: 0.75rem;
+}
+
+:is(.global-settings-card, .global-settings-disclosure-body)
+  [data-slot='settings-row']
+  > div
+  > div:first-child
+  > div:first-child {
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+:is(.global-settings-card, .global-settings-disclosure-body)
+  [data-slot='settings-row']
+  > div
+  > div:first-child
+  > div:nth-child(2) {
+  margin-top: 2px;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.global-settings-card [data-slot='settings-row'] + [data-slot='settings-row'],
+.global-settings-card > div + div {
   border-top: 1px solid var(--ui-stroke-tertiary);
 }
 
+@container (min-width: 32rem) {
+  :is(.global-settings-card, .global-settings-disclosure-body) [data-slot='settings-row']:not([data-wide]) > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  :is(.global-settings-card, .global-settings-disclosure-body)
+    [data-slot='settings-row']:not([data-wide])
+    > div
+    > div:last-child:not(:first-child) {
+    justify-self: end;
+  }
+}
+
+/* Section head (856:3409): 15 Medium title, 12px to its card, optional right-aligned meta. */
+.global-settings-section {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.global-settings-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.global-settings-section-head h3 {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.global-settings-section-head > span {
+  color: var(--ui-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+/* ── Advanced disclosure (856:3467): 3% fill, 10% stroke, r4, count badge + chevron ── */
+
 .global-settings-disclosure {
-  border: 1px solid var(--ui-stroke-secondary);
+  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
   border-radius: 4px;
   background: color-mix(in srgb, var(--ui-base) 3%, transparent);
 }
 
 .global-settings-disclosure > summary {
   display: flex;
-  min-height: 68px;
+  min-height: 4.375rem;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border-radius: 3px;
   list-style: none;
-  font-size: 14px;
-  font-weight: 600;
+  cursor: pointer;
 }
 
 .global-settings-disclosure > summary::-webkit-details-marker {
   display: none;
 }
 
-.global-settings-disclosure > :not(summary) {
-  margin-inline: 16px;
+.global-settings-disclosure > summary:hover {
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
 }
 
-.global-settings-disclosure > :last-child:not(summary) {
-  margin-bottom: 16px;
+.global-settings-disclosure > summary:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
 }
 
-.global-shortcut-primary > div {
-  min-height: 64px;
-  padding-inline: 16px;
+.global-settings-disclosure-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
 }
 
-.global-about-overview .global-settings-card > div {
-  border: 0;
+.global-settings-disclosure-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.global-settings-disclosure-description {
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.global-settings-disclosure-count {
+  min-width: 1.375rem;
+  padding: 0 0.375rem;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 0.875rem;
+  text-align: center;
+}
+
+.global-settings-disclosure-caret {
+  flex-shrink: 0;
+  color: var(--ui-text-secondary);
+  transition: transform 150ms ease-out;
+}
+
+.global-settings-disclosure[open] .global-settings-disclosure-caret {
+  transform: rotate(180deg);
+}
+
+.global-settings-disclosure-body {
+  display: grid;
+  gap: 1rem;
+  padding: 0 1rem 1rem;
+}
+
+.global-settings-disclosure-body [data-slot='settings-row'] + [data-slot='settings-row'] {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+/* A disclosure body that holds whole rows lets them run to the card's edges. */
+.global-settings-disclosure-body > .global-settings-card {
+  margin-inline: -1rem;
+  border-inline: 0;
   border-radius: 0;
   background: transparent;
 }
 
-.global-about-overview .global-settings-card > div + div {
+@media (prefers-reduced-motion: reduce) {
+  .global-settings-disclosure-caret {
+    transition: none;
+  }
+}
+
+/* Page footer (856:3477): a hairline, then a right-aligned quiet link. */
+.global-settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 1rem;
   border-top: 1px solid var(--ui-stroke-tertiary);
 }
 
-@container (min-width: 32rem) {
-  .global-settings-card [data-slot='settings-row'] > div {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-  }
+/* ── Page-specific ─────────────────────────────────────────────────────────── */
 
-  .global-settings-card [data-slot='settings-row'] > div > div:last-child:not(:first-child) {
-    justify-self: end;
-  }
+.global-shortcut-primary > div {
+  min-height: 4rem;
+  padding-inline: 1rem;
 }
 
-.global-about-version > div {
+/* Settings rail → Agent settings (856:2764): a 5% card with icon, label, description and chevron. */
+.settings-agent-link {
+  display: flex;
+  width: 100%;
   align-items: flex-start;
-  padding: 12px 16px;
-  text-align: left;
+  gap: 0.625rem;
+  padding: 0.75rem 0.625rem;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 8px;
+  background: var(--ui-bg-card);
+  color: var(--ui-text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  text-align: start;
 }
 
-.global-about-version > div > :first-child {
-  display: none;
+.settings-agent-link:hover {
+  background: color-mix(in srgb, var(--ui-base) 8%, transparent);
 }
 
-.global-about-version h2 {
-  font-size: 14px;
+.settings-agent-link:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
+}
+
+.settings-agent-link-icon {
+  margin-top: 1px;
+  opacity: 0.6;
+}
+
+.settings-agent-link-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+  letter-spacing: 0.01em;
+}
+
+.settings-agent-link-text > span + span {
+  color: var(--ui-text-tertiary);
+}
+
+.settings-agent-link > .codicon:last-child {
+  align-self: center;
+  color: var(--ui-text-quaternary);
+}
+
+/* Heading description (895:17703): 13px tertiary, 2px under the title, full width. */
+.global-settings-section-description {
+  flex-basis: 100%;
+  margin-top: -0.375rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+/* A list card with nothing in it yet: one quiet line on the card's 16px inset. */
+.global-settings-empty-row {
+  padding: 0.875rem 1rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+/* "+ Add …" closing row of a list card (856:5142): 48px, 14px label, hover tint, hairline above. */
+.global-settings-add-row {
+  display: flex;
+  width: 100%;
+  min-height: 3rem;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0 1rem;
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  text-align: start;
+}
+
+.global-settings-card > * + .global-settings-add-row {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+.global-settings-add-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+}
+
+.global-settings-add-row:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: -2px;
+}
+
+.global-settings-add-row:disabled {
+  opacity: 0.5;
+}
+
+.global-settings-add-row > .codicon {
+  color: var(--ui-text-secondary);
+}
+
+/* Gateways & Machines (856:5142) */
+
+.gateway-connection-editor {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+/* Connection-mode cards (856:5142): four 186px r8 cards, an icon tile where Figma draws a spot
+   illustration, 14 Medium title, 13 tertiary description; the active mode takes the brand selection. */
+.gateway-mode-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.8125rem;
+}
+
+.gateway-mode-card {
+  display: flex;
+  min-height: 11.625rem;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 8px;
+  background: var(--ui-bg-card);
+  color: var(--ui-text-primary);
+  text-align: start;
+}
+
+.gateway-mode-card-art {
+  display: grid;
+  height: 4.5rem;
+  margin-bottom: 0.625rem;
+  place-items: center;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  color: var(--ui-text-secondary);
+}
+
+.gateway-mode-card-art > svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.gateway-mode-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.875rem;
   font-weight: 500;
-  line-height: 20px;
+  line-height: 1.4;
+}
+
+.gateway-mode-card-description {
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.gateway-mode-card:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-base) 8%, transparent);
+}
+
+.gateway-mode-card[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--portal-brand-fill) 60%, transparent);
+  background: var(--portal-selection-background);
+}
+
+.gateway-mode-card:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
+}
+
+.gateway-mode-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Account & Plan (856:1835): usage rows keep classic's label | gauge | value columns at card width. */
+.billing-usage-card > div > div {
+  min-height: 4rem;
+  grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  padding-inline: 1rem;
+}
+
+.billing-usage-card > div > div > :last-child {
+  text-align: end;
+}
+
+.billing-summary-value {
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.billing-summary-value.is-primary {
+  color: var(--ui-green);
+}
+
+.billing-summary-value.is-muted {
+  color: var(--ui-text-tertiary);
+}
+
+.billing-footnote {
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+/* Agent › Model fallbacks (895:10560): numbered rows of provider + model selects on the card inset. */
+.fallback-models-card > div:not(.global-settings-add-row) {
+  min-height: 3.5rem;
+  padding: 0.625rem 1rem;
+}
+
+/* Key lists (895:21016 API keys, 895:23456 tool keys): credential rows sit flush in the list card,
+   divided by hairlines, label beside its field at the card's 640px width. */
+:is(.provider-keys-card, .credential-keys-card) > div:not(.global-settings-add-row) > div,
+.provider-keys-card > button:first-child {
+  border-radius: 0;
+  padding-inline: 1rem;
+}
+
+@container (min-width: 32rem) {
+  :is(.provider-keys-card, .credential-keys-card) > div > div > div:first-child {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);
+  }
 }

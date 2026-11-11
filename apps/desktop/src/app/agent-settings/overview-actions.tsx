@@ -14,10 +14,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { writeClipboardText } from '@/lib/clipboard'
-import { hostHas } from '@/lib/host-capabilities'
 import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
-import { $defaultProfileRoute, setDefaultProfile } from '@/store/default-profile'
 import { $fleetRoster, refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshProfiles } from '@/store/profile'
@@ -25,10 +23,10 @@ import type { ProfileInfo } from '@/types/hermes'
 
 import { useHiddenAgentCopy } from '../chat/sidebar/hidden-agent-copy'
 import { CreateProfileDialog } from '../profiles/create-profile-dialog'
-import { settingsScopeLabel } from '../settings/profile-scope'
 
 import { useAgentSettingsCopy } from './copy'
 import type { AgentSettingsOwner } from './data'
+import { useDefaultAgent } from './default-agent'
 import { useOverviewActionsCopy } from './overview-actions-copy'
 
 interface AgentOverviewActionsProps {
@@ -42,10 +40,9 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
   const shared = useHiddenAgentCopy()
   const overview = useAgentSettingsCopy()
   const hiddenAgents = useStore($hiddenSidebarAgents)
-  const defaultRoute = useStore($defaultProfileRoute)
   const roster = useStore($fleetRoster)
   const [duplicate, setDuplicate] = useState<{ owner: AgentSettingsOwner; profiles: ProfileInfo[] } | null>(null)
-  const [savingDefault, setSavingDefault] = useState(false)
+  const { canSetDefault, isDefault, makeDefault, saving: savingDefault } = useDefaultAgent(owner, profile)
   const route = { connectionId: owner.connectionId ?? null, profile: owner.profile }
 
   const sidebarOwner = {
@@ -56,28 +53,6 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
   }
 
   const hidden = hiddenAgents.includes(agentSidebarKey(sidebarOwner))
-  const isDefault = defaultRoute?.connectionId === route.connectionId && defaultRoute.profile === route.profile
-
-  const canSetDefault =
-    Boolean(window.hermesDesktop?.profile?.setDefault) &&
-    (!hostHas('servingOriginConnection') || !route.connectionId || route.connectionId === LOCAL_CONNECTION_ID)
-
-  async function makeDefault() {
-    setSavingDefault(true)
-
-    try {
-      await setDefaultProfile(route)
-      notify({
-        kind: 'success',
-        title: t.profiles.defaultSet(profile ? settingsScopeLabel(profile) : owner.profile),
-        message: t.profiles.defaultDescription
-      })
-    } catch (error) {
-      notifyError(error, t.profiles.failedSetDefault)
-    } finally {
-      setSavingDefault(false)
-    }
-  }
 
   async function copyPath() {
     if (!profile?.path) {

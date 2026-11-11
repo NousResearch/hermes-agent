@@ -1,28 +1,43 @@
 import { useStore } from '@nanostores/react'
+import { useId } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Tip } from '@/components/ui/tooltip'
+import { RowButton } from '@/components/ui/row-button'
 import { useI18n } from '@/i18n'
 import { isBrowserHostedDesktop } from '@/lib/platform'
-import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $gatewayState } from '@/store/session'
 
+type MachineState = 'open' | 'connecting' | 'idle' | 'closed' | 'error'
+
+/** Figma's three machine tones: green online, orange in transition, grey offline. */
+const TONE: Record<MachineState, 'online' | 'pending' | 'offline'> = {
+  open: 'online',
+  connecting: 'pending',
+  idle: 'pending',
+  closed: 'offline',
+  error: 'offline'
+}
+
+interface SimplifiedGatewayHeaderProps {
+  connectionId: string | null
+  /** The machine's display label, already resolved by `useSimplifiedAgents`. */
+  label: string
+  selected: boolean
+  open: boolean
+  onToggle: () => void
+}
+
+/** A flat machine row (status dot, name, status) that discloses the machine's agents. */
 export function SimplifiedGatewayHeader({
   connectionId,
-  fallbackLabel,
+  label,
   selected,
   open,
   onToggle
-}: {
-  connectionId: string | null
-  fallbackLabel: string
-  selected: boolean
-  open: boolean
-  onToggle?: () => void
-}) {
+}: SimplifiedGatewayHeaderProps) {
   const { t } = useI18n()
+  const statusId = useId()
   const registry = useStore($connectionsRegistry)
   const roster = useStore($fleetRoster)
   const gatewayState = useStore($gatewayState)
@@ -34,12 +49,8 @@ export function SimplifiedGatewayHeader({
       ? new URL(registered.url).host
       : registered?.host || (selected && isBrowserHostedDesktop() ? window.location.host : '')
 
-  const label = registered?.label || (address === fallbackLabel ? t.settings.gateway.webappHostTitle : fallbackLabel)
-
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${label}`
-
-  const state = selected ? gatewayState : source ? (source.reachable ? 'open' : 'closed') : 'idle'
-  const connected = state === 'open'
+  const state: MachineState = selected ? gatewayState : source ? (source.reachable ? 'open' : 'closed') : 'idle'
 
   const status = {
     open: t.shell.gatewayMenu.connected,
@@ -53,38 +64,24 @@ export function SimplifiedGatewayHeader({
     <div
       aria-current={selected ? 'true' : undefined}
       aria-label={label}
-      className={cn(
-        'flex min-h-8.5 items-center gap-2 rounded-sm px-2 py-1.5 text-xs',
-        selected && 'bg-(--chrome-action-hover)'
-      )}
-      data-connected={connected}
       data-slot="gateway-heading"
+      data-tone={TONE[state]}
       role="group"
     >
-      {onToggle && (
-        <Tip label={toggleLabel}>
-          <Button aria-expanded={open} aria-label={toggleLabel} onClick={onToggle} size="icon-xs" variant="grip">
-            <span aria-label={status} className="portal-machine-state" data-connected={connected} role="img" />
-          </Button>
-        </Tip>
-      )}
-      {!onToggle && <span aria-label={status} className="portal-machine-state" data-connected={connected} role="img" />}
-      <span className="min-w-0 flex-1">
-        <span
-          className="block truncate font-medium text-(--ui-text-primary)"
-          title={address ? `${label} · ${address}` : label}
-        >
-          {label}
-        </span>
-      </span>
-      <span
-        className={cn(
-          'flex shrink-0 items-center gap-1 text-[0.6875rem]',
-          connected ? 'text-green-600 dark:text-green-400' : 'text-(--ui-text-tertiary)'
-        )}
+      <RowButton
+        aria-describedby={statusId}
+        aria-expanded={open}
+        aria-label={toggleLabel}
+        className="portal-machine-row"
+        onClick={onToggle}
+        title={address ? `${label} · ${address}` : label}
       >
-        {connected ? registered?.org || status : status}
-      </span>
+        <span aria-hidden className="portal-status-dot" />
+        <span className="portal-machine-name">{label}</span>
+        <span className="portal-machine-status" id={statusId}>
+          {state === 'open' ? registered?.org || status : status}
+        </span>
+      </RowButton>
     </div>
   )
 }

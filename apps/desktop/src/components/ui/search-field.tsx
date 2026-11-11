@@ -86,6 +86,8 @@ export function SearchField({
             ),
         containerClassName
       )}
+      data-slot="search-field"
+      data-variant={variant}
     >
       <Search className={cn('pointer-events-none shrink-0 text-muted-foreground/70', boxed ? 'size-4' : 'size-3.5')} />
       {leadingContent}

@@ -463,6 +463,16 @@ export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 /** Skin used when nothing is persisted or the persisted name is retired. */
 export const DEFAULT_SKIN_NAME = 'nous'
 
+/** The redesigned shell's out-of-the-box skin: its Figma palette. */
+export const PORTAL_SKIN_NAME = 'portal'
+
+/** The skin a window paints without an explicit pick. The default follows the
+ *  shell, so flipping the redesign repaints an unchosen skin and leaves a chosen
+ *  one alone; nothing is persisted by the flip itself. */
+export function defaultSkinName(portalShell: boolean): string {
+  return portalShell ? PORTAL_SKIN_NAME : DEFAULT_SKIN_NAME
+}
+
 /** Names that no longer resolve to a skin of their own. A stored pick of one
  *  falls back to DEFAULT_SKIN_NAME, and a cached backend theme under one is
  *  dropped (the reverted #130015 build cached the CLI `default` skin as a

@@ -4,7 +4,6 @@ import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useId, useRef } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
-import { Codicon } from '@/components/ui/codicon'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -15,6 +14,7 @@ import { getBaseColors, useTheme } from '@/themes/context'
 
 import { appearanceOverviewCopy } from './appearance-overview-copy'
 import { ListRow, SettingsContent, ToggleRow } from './primitives'
+import { SettingsCard, SettingsDisclosure } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
@@ -40,7 +40,12 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
 
   // Saved general-setting links must reveal their target before highlighting it.
   useEffect(() => {
-    if (pendingSetting && pendingSetting !== ids.language && pendingSetting !== ids.chatTextScale && advancedRef.current) {
+    if (
+      pendingSetting &&
+      pendingSetting !== ids.language &&
+      pendingSetting !== ids.chatTextScale &&
+      advancedRef.current
+    ) {
       advancedRef.current.open = true
     }
   }, [pendingSetting])
@@ -48,7 +53,9 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
   return (
     <SettingsContent>
       <div className="appearance-overview" data-slot="appearance-overview">
-        <p className="appearance-overview-intro">{copy.intro}</p>
+        <p className="appearance-overview-intro" data-slot="page-description">
+          {copy.intro}
+        </p>
 
         <fieldset className="appearance-mode-section">
           <legend>{t.settings.appearance.themeTitle}</legend>
@@ -71,7 +78,14 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
                 <span
                   aria-hidden="true"
                   className="appearance-mode-preview"
-                  style={{ background: value === 'system' ? `linear-gradient(to right, ${light} 50%, ${dark} 50%)` : value === 'light' ? light : dark }}
+                  style={{
+                    background:
+                      value === 'system'
+                        ? `linear-gradient(to right, ${light} 50%, ${dark} 50%)`
+                        : value === 'light'
+                          ? light
+                          : dark
+                  }}
                 />
                 <span className="appearance-mode-label">
                   {t.settings.modeOptions[value].label}
@@ -83,12 +97,12 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
           </div>
         </fieldset>
 
-        <section aria-label={copy.reading}>
-          <div className="appearance-reading-heading">
+        <section aria-label={copy.reading} className="global-settings-section">
+          <div className="global-settings-section-head">
             <h3>{copy.reading}</h3>
-            <span aria-label={`${copy.size}: ${chatTextScale}%`} className="appearance-overview-description">{chatTextScale}%</span>
+            <span aria-label={`${copy.size}: ${chatTextScale}%`}>{chatTextScale}%</span>
           </div>
-          <div className="appearance-reading-rows">
+          <SettingsCard>
             <ListRow
               action={
                 <SegmentedControl
@@ -123,19 +137,16 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
                 setToursEnabled(enabled)
               }}
             />
-          </div>
+          </SettingsCard>
         </section>
 
-        <details className="appearance-advanced group" ref={advancedRef}>
-          <summary>
-            <span>
-              <span>{t.settings.sections.advanced}</span>
-              <span className="appearance-overview-description">{copy.advancedDescription}</span>
-            </span>
-            <Codicon className="group-open:rotate-180" name="chevron-down" />
-          </summary>
-          <div className="appearance-advanced-content">{advanced}</div>
-        </details>
+        <SettingsDisclosure
+          description={copy.advancedDescription}
+          ref={advancedRef}
+          title={t.settings.sections.advanced}
+        >
+          {advanced}
+        </SettingsDisclosure>
       </div>
     </SettingsContent>
   )

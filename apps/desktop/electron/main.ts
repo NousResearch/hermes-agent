@@ -601,7 +601,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { uiPreferencesRoot } from './ui-preferences'
+import { tryReadUiPreferences, uiPreferencesPath, uiPreferencesRoot } from './ui-preferences'
 import { registerMachineUiPreferences } from './ui-preferences-ipc'
 import {
   UPDATE_HANDOFF_DWELL_MS,
@@ -671,6 +671,8 @@ import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
+import { portalShellPreferred, type WindowChromeKind } from './window-chrome'
+import { createWindowChromeBands } from './window-chrome-bands'
 import { bindWindowChromeEvents } from './window-chrome-events'
 import { appliedPrimaryWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
@@ -1396,13 +1398,17 @@ const BOOT_FAKE_STEP_MS = (() => {
 
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
-const TITLEBAR_HEIGHT = 34
-const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
-const WINDOW_BUTTON_POSITION = {
-  x: 12,
-  y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
-}
+// Native chrome follows the band the renderer draws, from the shell choice in the shared UI
+// preferences read before the first window exists, so it is created at the right height.
+const windowChrome = createWindowChromeBands<BrowserWindow>({
+  isMac: IS_MAC,
+  portal: portalShellPreferred(tryReadUiPreferences(uiPreferencesPath(uiPreferencesRoot(HERMES_HOME)))?.values),
+  relayout: win => {
+    applyTitleBarOverlay(win, getTitleBarOverlayOptions(win))
+    sendWindowStateChanged(undefined, win)
+  }
+})
 
 // Right-edge window-control reservation lives in titlebar-overlay-width.ts
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
@@ -1632,11 +1638,11 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 // Electron's own overlay drifts its hit-region under RAIL, so the renderer
 // paints its own min/max/close (wslg-window-controls.tsx) over the
 // hermes:window-control IPC channel. See titleBarOverlayOptions.
-function getTitleBarOverlayOptions(win?) {
+function getTitleBarOverlayOptions(win?, kind: WindowChromeKind = windowChrome.kindOf(win)) {
   return titleBarOverlayOptions({
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
     darwinMajor: DARWIN_MAJOR,
-    titlebarHeight: TITLEBAR_HEIGHT,
+    titlebarHeight: windowChrome.titlebarHeightFor(kind),
     color: TITLEBAR_OVERLAY_COLOR,
     foreground:
       rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
@@ -6031,7 +6037,7 @@ function getWindowButtonPosition(win = mainWindow) {
     return null
   }
 
-  return win?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
+  return win?.getWindowButtonPosition?.() || windowChrome.buttonPositionFor(windowChrome.kindOf(win))
 }
 
 function getNativeOverlayWidth() {
@@ -12058,7 +12064,7 @@ function spawnSecondaryWindow({
     title: 'Hermes',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('chat') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     // Don't show until the renderer's first themed paint is ready. macOS
@@ -12077,9 +12083,7 @@ function spawnSecondaryWindow({
   minimizeToTray.registerWindow(win)
   translucencyBackedWindows.add(win)
 
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
+  windowChrome.track(win, 'chat')
 
   wireWindowReveal(win)
 
@@ -12162,19 +12166,16 @@ function spawnBrowserWindow(tabId) {
     minHeight: BROWSER_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
     titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    titleBarOverlay: getTitleBarOverlayOptions(undefined, 'browser'),
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('browser') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     show: false,
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
+  windowChrome.track(win, 'browser')
   translucencyBackedWindows.add(win)
-
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
 
   wireWindowReveal(win)
 
@@ -12275,7 +12276,7 @@ function createInstanceWindow(
     title: 'Hermes',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('chat') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     show: false,
@@ -12290,9 +12291,7 @@ function createInstanceWindow(
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(win)
 
-  if (IS_MAC) {
-    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-  }
+  windowChrome.track(win, 'chat')
 
   wireWindowReveal(win)
 
@@ -13366,7 +13365,7 @@ function createWindow() {
     // macOS it just reserves a content inset alongside the traffic lights.
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    trafficLightPosition: IS_MAC ? windowChrome.buttonPositionFor('chat') : undefined,
     ...chatWindowSurfaceOptions(),
     icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
@@ -13396,9 +13395,9 @@ function createWindow() {
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(mainWindow)
 
-  if (IS_MAC) {
-    mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  windowChrome.track(mainWindow, 'chat')
 
+  if (IS_MAC) {
     // Packaged builds keep the bundle icon so macOS can style it (#73195).
     if (icon && shouldOverrideDockIcon({ platform: process.platform, isPackaged: app.isPackaged })) {
       // The window icon is full-bleed for Linux; the Dock wants the mac grid.
@@ -16823,7 +16822,7 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
 // Pre-paint payloads the preload reads synchronously: the local skin, and this
 // machine's shared UI preferences (#145213) — see local-skin.ts, ui-preferences.ts.
 registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?.profile, primaryProfileKey)
-registerMachineUiPreferences(HERMES_HOME)
+registerMachineUiPreferences(HERMES_HOME, snapshot => windowChrome.applyPreferences(snapshot.values))
 // Another writer (the Webapp) changed the shared list: same teardown as a local save/remove.
 gatewayConnectionsStore.watch({
   onRegistry: (changes, { after, before }) => {

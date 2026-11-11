@@ -25,6 +25,8 @@ interface ConfigFieldProps {
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
   descriptionOverride?: string
+  /** Page-specific title (agent settings name rows as the Figma page draws them). */
+  labelOverride?: string
   segmented?: boolean
 }
 
@@ -52,12 +54,14 @@ export function ConfigField({
   onChange,
   descriptionExtra,
   descriptionOverride,
+  labelOverride,
   segmented = false
 }: ConfigFieldProps) {
   const { t } = useI18n()
   const c = t.settings.config
 
   const label =
+    labelOverride ??
     fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
     fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
     prettyName(schemaKey.split('.').pop() ?? schemaKey)
@@ -305,6 +309,7 @@ function EnumControl({ schemaKey, value, options, optionLabels, onChange, segmen
   const c = t.settings.config
   const selected = String(value ?? '') || EMPTY_SELECT_VALUE
   const change = (next: string) => onChange(next === EMPTY_SELECT_VALUE ? '' : next)
+
   const label = (option: string) =>
     option
       ? (optionLabels?.[option] ?? prettyName(option))

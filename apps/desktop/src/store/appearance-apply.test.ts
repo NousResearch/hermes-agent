@@ -10,6 +10,7 @@ import { $pendingModeApply } from '@/themes/request'
 import { applyAppearance } from './appearance-apply'
 import { $interfaceMode, setInterfaceMode } from './interface-mode'
 import { $paneStates } from './panes'
+import { $shellChoice } from './shell-variant'
 
 describe('applyAppearance', () => {
   beforeAll(() => {
@@ -19,16 +20,22 @@ describe('applyAppearance', () => {
   afterEach(() => {
     $pendingSkinApply.set(null)
     $pendingModeApply.set(null)
+    $shellChoice.set(null)
   })
 
-  it('applies every value and reports the ids the agent reads', () => {
+  // An unpicked skin resolves to the shell's own default, so the accent is saved on that skin.
+  it.each([
+    { shell: 'classic', choice: false, saved: 'nous-accent-8a2be2' },
+    { shell: 'redesign', choice: null, saved: 'portal-accent-8a2be2' }
+  ])('applies every value and reports the ids the agent reads ($shell)', ({ choice, saved }) => {
+    $shellChoice.set(choice)
     setInterfaceMode('simple')
 
     expect(applyAppearance({ accent: 'violet', layout: 'terminal-deck', mode: 'dark' })).toEqual({
       applied: { accent: 'violet', layout: 'terminal-deck', mode: 'dark' },
       success: true
     })
-    expect($pendingSkinApply.get()).toBe('nous-accent-8a2be2')
+    expect($pendingSkinApply.get()).toBe(saved)
     expect($pendingModeApply.get()).toBe('dark')
     expect($activePresetId.get()).toBe('terminal-deck')
     expect($interfaceMode.get()).toBe('advanced')

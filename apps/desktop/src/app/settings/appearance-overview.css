@@ -1,23 +1,21 @@
+/* Redesign-only Appearance landing (856:2641). Shared cards, sections and the Advanced disclosure
+   come from global-overviews.css; this file owns the intro and the theme-mode cards. */
 .appearance-overview {
   display: grid;
-  gap: 36px;
+  gap: 2.25rem;
   min-width: 0;
   font-family: var(--portal-font-body);
   container-type: inline-size;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 0.875rem;
+  line-height: 1.4;
 }
 
 .appearance-overview-intro,
 .appearance-overview-description {
   color: var(--ui-text-tertiary);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 0.8125rem;
+  line-height: 1.4;
   font-weight: 400;
-}
-
-.appearance-overview-intro {
-  margin-bottom: 0;
 }
 
 .appearance-mode-section {
@@ -26,29 +24,34 @@
 
 .appearance-mode-section legend {
   margin-bottom: 2px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.1;
   font-weight: 500;
 }
 
+/* Theme mode cards (856:3413): 188px tall, r8, 5% fill + stroke; selected = brand tint + ring. */
 .appearance-mode-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 12px;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
 }
 
 .appearance-mode-card {
   display: flex;
   min-width: 0;
-  min-height: 188px;
+  min-height: 11.75rem;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: 0.5rem;
+  padding: 0.75rem;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 8px;
   background: var(--ui-bg-card);
   cursor: pointer;
+}
+
+.appearance-mode-card:hover {
+  background: color-mix(in srgb, var(--ui-base) 7%, transparent);
 }
 
 .appearance-mode-card:has(input:checked) {
@@ -57,15 +60,20 @@
   background: color-mix(in srgb, var(--portal-brand-fill) 19%, transparent);
 }
 
+:root:not(.dark) .appearance-mode-card:has(input:checked) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--portal-brand-ink) 45%, transparent);
+  background: color-mix(in srgb, var(--portal-brand-fill) 7%, transparent);
+}
+
 .appearance-mode-card:has(input:focus-visible) {
-  outline: 2px solid var(--theme-primary);
-  outline-offset: 3px;
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 2px;
 }
 
 .appearance-mode-preview {
   display: block;
-  height: 72px;
-  flex: 0 0 72px;
+  height: 4.5rem;
+  flex: 0 0 4.5rem;
   border: 1px solid var(--ui-stroke-secondary);
   border-radius: 2px;
 }
@@ -79,115 +87,17 @@
   font-weight: 500;
 }
 
+/* DEFAULT chip (856:3431): green tint, uppercase, tracked. */
 .appearance-mode-default {
-  color: var(--ui-green);
-  background: color-mix(in srgb, var(--ui-green) 12%, transparent);
-  font-size: 9px;
-  line-height: 13px;
-  text-transform: uppercase;
-}
-
-.appearance-reading-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.appearance-reading-heading h3 {
-  font-size: 15px;
-  line-height: 1.1;
-  font-weight: 500;
-}
-
-.appearance-reading-rows {
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 8px;
-  background: var(--ui-bg-card);
-}
-
-.appearance-advanced {
-  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
-}
-
-.appearance-reading-rows > div {
-  padding-inline: 16px;
-}
-
-.appearance-reading-rows > div + div {
-  border-top: 1px solid var(--ui-stroke-tertiary);
-}
-
-.appearance-reading-rows > div > div {
-  min-height: 64px;
-  padding-block: 12px;
-}
-
-.appearance-reading-rows [data-slot='segmented-control'] {
-  min-height: 36px;
-  padding: 3px;
-  border: 1px solid var(--ui-stroke-secondary);
+  padding: 0 0.1875rem;
   border-radius: 2px;
-  background: var(--ui-bg-quaternary);
-}
-
-.appearance-reading-rows button[aria-pressed] {
-  font-size: 14px;
-  line-height: 20px;
-}
-
-.appearance-reading-rows button[aria-pressed='true'] {
-  background: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
-}
-
-.appearance-reading-rows > div > div > div:first-child > div:first-child {
-  font-size: 14px;
-  line-height: 20px;
+  color: var(--ui-green);
+  background: color-mix(in srgb, var(--ui-green) 14%, transparent);
+  font-size: 0.5625rem;
   font-weight: 500;
-}
-
-.appearance-reading-rows > div > div > div:first-child > div:nth-child(2) {
-  margin-top: 2px;
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.appearance-advanced > summary {
-  display: flex;
-  min-height: 68px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  list-style: none;
-  cursor: pointer;
-}
-
-.appearance-advanced > summary::-webkit-details-marker {
-  display: none;
-}
-
-.appearance-advanced > summary:focus-visible {
-  outline: 2px solid var(--theme-primary);
-  outline-offset: 3px;
-}
-
-.appearance-advanced > summary > span:first-child {
-  display: grid;
-  gap: 2px;
-}
-
-.appearance-advanced > summary > span:first-child > span:first-child {
-  font-weight: 600;
-}
-
-.appearance-advanced-content {
-  padding: 0 16px 16px;
+  letter-spacing: 0.04em;
+  line-height: 0.8125rem;
+  text-transform: uppercase;
 }
 
 @container (max-width: 28rem) {
@@ -200,13 +110,27 @@
   }
 }
 
-@container (min-width: 32rem) {
-  .appearance-reading-rows > div > div {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-  }
+/* Advanced groups (829:2712): a quiet group label over hairline-divided rows. */
+.appearance-advanced-groups {
+  display: grid;
+  gap: 1.5rem;
+  padding-top: 0.25rem;
+}
 
-  .appearance-reading-rows > div > div > div:last-child {
-    justify-self: end;
-  }
+.appearance-advanced-group-title {
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--ui-stroke-tertiary);
+  color: var(--ui-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.appearance-advanced-groups [data-slot='settings-row'] + [data-slot='settings-row'],
+.appearance-advanced-groups section > div > * + * {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+.appearance-advanced-groups [data-slot='settings-row'] {
+  padding-inline: 0;
 }

@@ -408,6 +408,15 @@ export function ChatBar({
     isSteerableText
   })
 
+  // Resting / reconnecting / starting placeholder text, re-rolled only on a real
+  // conversation change.
+  const { placeholder, sessionCreated } = useComposerPlaceholder({
+    disabled,
+    reconnecting,
+    scope: activeQueueSessionKey,
+    sessionId
+  })
+
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
   const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
@@ -431,6 +440,7 @@ export function ChatBar({
     onCancel: haltRun,
     onSteer,
     onSteerHidden,
+    onSessionCreated: sessionCreated,
     onSubmit,
     queueCurrentDraft,
     queueEdit,
@@ -441,10 +451,6 @@ export function ChatBar({
     rememberDraftRetry,
     takeDraftRetry
   })
-
-  // Resting / reconnecting / starting placeholder text, re-rolled only on a real
-  // conversation change.
-  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes
@@ -1465,6 +1471,7 @@ export function ChatBar({
                         'flex items-start gap-(--composer-control-gap) self-start [grid-area:menu]',
                         !redesigned && 'translate-y-[3px]'
                       )}
+                      data-slot="composer-leading-actions"
                     >
                       {contextMenu}
                       <ContribSlot area={COMPOSER_AREAS.leading} />
@@ -1475,7 +1482,10 @@ export function ChatBar({
                       `ml-auto`: in the stacked layout the auto margin absorbs the
                       row's free space and pins a contributed action to the row
                       start, detached from the cluster (#116332). */}
-                    <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
+                    <div
+                      className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]"
+                      data-slot="composer-trailing-actions"
+                    >
                       <ContribSlot area={COMPOSER_AREAS.actions} />
                       {controls}
                     </div>

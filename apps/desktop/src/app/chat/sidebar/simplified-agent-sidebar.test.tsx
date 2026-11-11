@@ -15,6 +15,8 @@ import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import {
   $hiddenSidebarAgents,
   $hiddenSidebarAgentsExpanded,
+  $portalAgentsSectionOpen,
+  $portalPinnedSectionOpen,
   $sidebarAgentExpanded,
   $sidebarAgentScroll,
   agentSidebarKey,
@@ -141,6 +143,8 @@ describe('Portal sidebar', () => {
     $pinnedSessionIds.set([])
     $sidebarPinsOpen.set(true)
     $sidebarRecentsOpen.set(true)
+    $portalAgentsSectionOpen.set(true)
+    $portalPinnedSectionOpen.set(true)
     navigate.mockClear()
     resume.mockClear()
   })
@@ -846,4 +850,67 @@ describe('Portal sidebar', () => {
       expect(scroller.scrollTop).toBe(expected)
     }
   )
+
+  it('marks only chats with live status, so settled rows carry no dot', () => {
+    $sessions.set([
+      makeSessionInfo({ id: 'pinned', title: 'Pinned plan', profile: 'research', pinned: true, unread: true }),
+      makeSessionInfo({ id: 'regular', title: 'Regular chat', profile: 'default' })
+    ])
+    mount()
+
+    const row = (group: RegExp, title: string) =>
+      within(screen.getByRole('group', { name: group }))
+        .getByText(title)
+        .closest<HTMLElement>('[data-session-key]')!
+
+    expect(within(row(/^Research ·/, 'Pinned plan')).getByRole('status', { name: 'Finished — unread' })).toBeTruthy()
+    expect(within(row(/^default ·/, 'Regular chat')).queryByRole('status')).toBeNull()
+  })
+
+  it('walks sidebar rows with arrow, Home and End keys', () => {
+    mount()
+    const pinned = screen.getByRole('button', { name: 'Pinned', expanded: true })
+    pinned.focus()
+
+    fireEvent.keyDown(pinned, { key: 'ArrowDown' })
+    expect(window.document.activeElement?.textContent).toContain('Pinned plan')
+    fireEvent.keyDown(window.document.activeElement!, { key: 'ArrowUp' })
+    expect(window.document.activeElement).toBe(pinned)
+    fireEvent.keyDown(pinned, { key: 'End' })
+    expect(window.document.activeElement).not.toBe(pinned)
+    fireEvent.keyDown(window.document.activeElement!, { key: 'Home' })
+    expect(window.document.activeElement).toBe(pinned)
+  })
+
+  it('collapses the Agents section on its own preference, leaving classic sections untouched', () => {
+    const view = mount()
+    const toggle = screen.getByRole('button', { name: 'Agents', expanded: true })
+
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('group', { name: /^Research ·/ })).toBeNull()
+    expect($portalAgentsSectionOpen.get()).toBe(false)
+    expect($sidebarRecentsOpen.get()).toBe(true)
+
+    view.unmount()
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Agents', expanded: false }))
+    expect(screen.getByRole('group', { name: /^Research ·/ })).toBeTruthy()
+  })
+
+  it('collapses the Pinned section on its own preference, leaving classic Pinned untouched', () => {
+    const view = mount()
+
+    const pinnedList = () => within(screen.getByRole('region', { name: 'Pinned' })).queryByText('Pinned plan')
+
+    expect(pinnedList()).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Pinned', expanded: true }))
+    expect(pinnedList()).toBeNull()
+    expect($portalPinnedSectionOpen.get()).toBe(false)
+    expect($sidebarPinsOpen.get()).toBe(true)
+
+    view.unmount()
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Pinned', expanded: false }))
+    expect(pinnedList()).toBeTruthy()
+  })
 })

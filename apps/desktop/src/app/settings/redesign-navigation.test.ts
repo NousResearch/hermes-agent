@@ -43,7 +43,7 @@ it('retains every destination, including conditional and unknown future settings
 
   for (const link of rearranged) {
     link.onSelect()
-    const original = link.id === 'providers' ? key : flatten(source).find(item => item.id === link.id)!
+    const original = flatten(source).find(item => item.id === link.id)!
     expect(original.onSelect).toHaveBeenCalled()
   }
 
@@ -59,8 +59,9 @@ it('highlights exactly the category containing the active child', () => {
 
   expect(result.find(link => link.id === 'notifications')?.active).toBe(true)
   expect(result.find(link => link.id === 'config:appearance')?.active).toBe(false)
-  expect(result.find(link => link.id === 'providers')?.active).toBe(false)
-  expect(result.find(link => link.id === 'pview:accounts')?.active).toBe(true)
+  // Provider accounts are per-agent; they stay under their own group instead of leading the rail.
+  expect(result.find(link => link.id === 'pview:accounts')).toBeUndefined()
+  expect(result.find(link => link.id === 'providers')?.active).toBe(true)
 })
 
 it('keeps primary settings compact and exposes every advanced route within the three-level rail', () => {
@@ -77,8 +78,9 @@ it('keeps primary settings compact and exposes every advanced route within the t
     group('config:voice', [group('voice:speaking')], true),
     group('plugins', [group('plugin:example', [group('plugin:example:details')])])
   ])
+
   expect(result.map(item => item.id)).toEqual([
-    'pview:accounts',
+    'billing',
     'config:appearance',
     'notifications',
     'keybinds',
@@ -87,7 +89,6 @@ it('keeps primary settings compact and exposes every advanced route within the t
     'about',
     'config:advanced'
   ])
-  expect(result[0].children?.[0].id).toBe('billing')
   const advanced = result.find(item => item.id === 'config:advanced')!
   expect(advanced.active).toBe(true)
   expect(advanced.children?.find(item => item.id === 'plugins')?.children?.map(item => item.id)).toEqual([
@@ -107,20 +108,52 @@ it('preserves classic navigation and subpage headings while simplifying redesign
   expect(classic.headerChild).toBe(shortcuts)
 
   const redesigned = settingsNavigationPresentation(source, true, 'keybinds', 'shortcuts')
-  expect(redesigned.headerGroup).toBe(keyboard)
+  expect(redesigned.headerGroup?.id).toBe('keybinds')
   expect(redesigned.headerChild).toBeUndefined()
 })
 
-it('titles the promoted account destination without losing advanced subpage headings', () => {
-  const account = group('pview:accounts', undefined, true)
-  const provider = group('providers', [account], true)
-  expect(settingsNavigationPresentation([provider], true, 'providers', undefined).headerGroup).toBe(account)
+it('names destinations per the redesign while keeping advanced subpage headings', () => {
+  const billing = group('billing', undefined, true)
+
+  const presentation = settingsNavigationPresentation([billing], true, 'billing', undefined, {
+    billing: 'Account & Plan'
+  })
+
+  expect(presentation.groups[0].label).toBe('Account & Plan')
+  expect(presentation.headerGroup?.label).toBe('Account & Plan')
+  expect(settingsNavigationPresentation([billing], false, 'billing', undefined, { billing: 'x' }).headerGroup).toBe(
+    billing
+  )
 
   const speaking = group('speaking', undefined, true)
   const voice = group('config:voice', [speaking], true)
   const source = [voice, group('config:advanced')]
-  const presentation = settingsNavigationPresentation(source, true, 'config:voice', 'speaking')
-  expect(presentation.headerGroup).toBe(voice)
-  expect(presentation.headerChild).toBe(speaking)
-  expect(presentation.groups.find(item => item.id === 'config:advanced')?.active).toBe(true)
+  const presentation2 = settingsNavigationPresentation(source, true, 'config:voice', 'speaking')
+  expect(presentation2.headerGroup).toBe(voice)
+  expect(presentation2.headerChild).toBe(speaking)
+  expect(presentation2.groups.find(item => item.id === 'config:advanced')?.active).toBe(true)
+})
+
+it('lands Account & Plan on the billing overview without a lone sub-page row or breadcrumb', () => {
+  const overview = group('bview:overview', undefined, true)
+  const billing = group('billing', [overview], true)
+  const presentation = settingsNavigationPresentation([billing], true, 'billing', undefined)
+  expect(presentation.groups[0].children).toBeUndefined()
+  expect(presentation.headerChild).toBeUndefined()
+})
+
+it('draws one-page destinations without their own subpage rows but keeps related pages filed under them', () => {
+  const connection = group('gateway:connection', undefined, true)
+  const webAccess = group('web-access')
+  const gateway = group('gateway', [connection], true)
+  const about = group('about', [group('about:updates', undefined, true), group('about:uninstall')], true)
+
+  const redesigned = settingsNavigationPresentation([gateway, webAccess, about], true, 'gateway', 'connection')
+  const gatewayRow = redesigned.groups.find(item => item.id === 'gateway')
+  expect(gatewayRow?.children?.map(child => child.id)).toEqual(['web-access'])
+  expect(redesigned.groups.find(item => item.id === 'about')?.children).toBeUndefined()
+  expect(redesigned.headerChild).toBeUndefined()
+
+  const classic = settingsNavigationPresentation([gateway, webAccess, about], false, 'gateway', 'connection')
+  expect(classic.groups.find(item => item.id === 'about')?.children).toHaveLength(2)
 })

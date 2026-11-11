@@ -37,6 +37,7 @@ import {
   $selectedRosterKey,
   focusedMentionProfile
 } from './bot-state'
+import { $botsPaneHosted } from './bots-pane-host'
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
 import { bindProfileSync, RoutinesPane } from './cron'
@@ -517,8 +518,8 @@ export default {
 
     let disposeBotsPane: (() => void) | undefined
 
-    const stopSidebarMode = host.simplifiedAgentMode?.subscribe(simple => {
-      if (simple) {
+    const stopPaneHost = $botsPaneHosted.subscribe(hosted => {
+      if (!hosted) {
         disposeBotsPane?.()
         disposeBotsPane = undefined
       } else if (!disposeBotsPane) {
@@ -526,9 +527,8 @@ export default {
       }
     })
 
-    if (!host.simplifiedAgentMode) {disposeBotsPane = registerBotsPane()}
     ctx.onDispose?.(() => {
-      stopSidebarMode?.()
+      stopPaneHost()
       disposeBotsPane?.()
     })
 

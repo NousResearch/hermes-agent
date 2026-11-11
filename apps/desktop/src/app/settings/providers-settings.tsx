@@ -27,15 +27,18 @@ import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { usePortalShell } from '@/store/shell-variant'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
-import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
+import { isKeyVar, type KeyRowProps, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
+import { SettingsAddRow, SettingsCard, SettingsOverview } from './settings-card'
+import { useSettingsPagesCopy } from './settings-pages-copy'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
@@ -392,6 +395,7 @@ export function ProvidersSettings({
   view
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
+  const redesign = usePortalShell()
   const scopeProfile = useStore($settingsRequestProfile)
   const requestScope = useSettingsOwner() ?? scopeProfile
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
@@ -541,6 +545,20 @@ export function ProvidersSettings({
 
   const keyGroups = buildProviderKeyGroups(vars)
 
+  if (showApiKeys && redesign) {
+    return (
+      <RedesignProviderKeys
+        keyGroups={keyGroups}
+        onLocalEndpoint={() => startManualLocalEndpoint(null, requestScope)}
+        onQueryChange={setKeyQuery}
+        onToggle={name => setOpenProvider(prev => (prev === name ? null : name))}
+        openProvider={openProvider}
+        query={keyQuery}
+        rowProps={rowProps}
+      />
+    )
+  }
+
   if (showApiKeys) {
     const q = normalize(keyQuery)
 
@@ -615,6 +633,90 @@ export function ProvidersSettings({
         profile={requestScope}
         providers={oauthProviders}
       />
+    </SettingsContent>
+  )
+}
+
+function matchesKeyQuery(group: ProviderKeyGroup, q: string): boolean {
+  const haystack = [group.name, group.description ?? '', group.primary[0], ...group.advanced.map(([k]) => k)]
+
+  return haystack.some(s => s.toLowerCase().includes(q))
+}
+
+interface RedesignProviderKeysProps {
+  keyGroups: ProviderKeyGroup[]
+  openProvider: null | string
+  query: string
+  rowProps: KeyRowProps
+  onLocalEndpoint: () => void
+  onQueryChange: (query: string) => void
+  onToggle: (name: string) => void
+}
+
+/** API keys in the redesign (895:21016): the providers that have a key, as one card ending in
+ *  "+ Add key", which opens the searchable list of every other provider (and the custom endpoint). */
+function RedesignProviderKeys({
+  keyGroups,
+  openProvider,
+  query,
+  rowProps,
+  onLocalEndpoint,
+  onQueryChange,
+  onToggle
+}: RedesignProviderKeysProps) {
+  const { t } = useI18n()
+  const pages = useSettingsPagesCopy()
+  const [adding, setAdding] = useState(false)
+  const set = keyGroups.filter(group => group.hasAnySet)
+  const q = normalize(query)
+  const others = keyGroups.filter(group => !group.hasAnySet && (!q || matchesKeyQuery(group, q)))
+  // A deep link (?key=) or search hit on a provider without a key opens the list it lives in.
+  const showOthers = adding || keyGroups.some(group => !group.hasAnySet && group.name === openProvider)
+
+  const rows = (groups: ProviderKeyGroup[]) =>
+    groups.map(group => (
+      <div className="scroll-mt-6" id={providerKeyElementId(group.name)} key={group.name}>
+        <ProviderKeyRows
+          expanded={openProvider === group.name}
+          group={group}
+          onExpand={() => openProvider !== group.name && onToggle(group.name)}
+          onToggle={() => onToggle(group.name)}
+          rowProps={rowProps}
+        />
+      </div>
+    ))
+
+  return (
+    <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
+      <SettingsOverview>
+        <SettingsCard className="provider-keys-card">
+          {set.length === 0 && <p className="global-settings-empty-row">{t.settings.providers.noProviderKeys}</p>}
+          {rows(set)}
+          <SettingsAddRow aria-expanded={showOthers} onClick={() => setAdding(!showOthers)}>
+            {pages.providers.addKey}
+          </SettingsAddRow>
+        </SettingsCard>
+        {showOthers && (
+          <div className="grid gap-3">
+            <SearchField
+              aria-label={t.settings.providers.searchKeys}
+              containerClassName="w-full"
+              onChange={onQueryChange}
+              placeholder={t.settings.providers.searchKeys}
+              value={query}
+            />
+            <SettingsCard className="provider-keys-card">
+              <LocalEndpointRow onOpen={onLocalEndpoint} />
+              {others.length > 0 ? (
+                rows(others)
+              ) : (
+                <p className="global-settings-empty-row">{t.settings.providers.noKeysMatch}</p>
+              )}
+            </SettingsCard>
+          </div>
+        )}
+      </SettingsOverview>
     </SettingsContent>
   )
 }

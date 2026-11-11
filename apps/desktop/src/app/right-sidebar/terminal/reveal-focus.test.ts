@@ -41,6 +41,16 @@ let unmountKeybinds: (() => void) | undefined
 // cold transform under the parallel ui run, which blew the 30s hook timeout in
 // CI. Wire the terminal slice here through the same production functions and
 // the same palette row the controller registers.
+// The arrangement is scoped per shell, so a test that flips the shell seeds the scope it lands in.
+function seedLayout() {
+  $layoutTree.set(
+    split('column', [
+      group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+      group(['terminal'], { active: 'terminal', id: 'grp-terminal' })
+    ])
+  )
+}
+
 beforeAll(() => {
   registry.registerMany([
     {
@@ -59,12 +69,7 @@ beforeAll(() => {
     },
     terminalPaletteToggle
   ])
-  $layoutTree.set(
-    split('column', [
-      group(['workspace'], { active: 'workspace', id: 'grp-main' }),
-      group(['terminal'], { active: 'terminal', id: 'grp-terminal' })
-    ])
-  )
+  seedLayout()
   bindToolPaneCollapse(
     'terminal',
     $terminalTakeover,
@@ -340,6 +345,7 @@ it.each([false, true])('hides the closed terminal rail only in the redesign (%s)
   installRaf()
   $interfaceMode.set('advanced')
   $shellChoice.set(redesigned)
+  seedLayout()
   const terminal = { id: 'retained-shell', kind: 'user' as const, title: 'Shell', cwd: '/tmp', auto: true }
   $terminals.set([terminal])
   $activeTerminalId.set(terminal.id)

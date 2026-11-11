@@ -2,6 +2,10 @@ import '../redesign/portal-artwork.css'
 import '../redesign/portal-typography.css'
 import '../redesign/portal-layout.css'
 import '../redesign/portal-colors.css'
+import '../redesign/portal-shell.css'
+import '../redesign/portal-controls.css'
+import '../redesign/portal-floating.css'
+import '../redesign/portal-pages.css'
 
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
@@ -10,12 +14,14 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import { usePortalZoneHeader } from '@/app/redesign/portal-conversation-header'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
+import { provideZoneHeader } from '@/components/pane-shell/tree/renderer/zone-header-provider'
 import {
   $layoutTree,
   bindPaneVisibility,
@@ -99,8 +105,7 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
-import { usePortalShell } from '@/store/shell-variant'
-import { $statusbarVisible } from '@/store/statusbar-prefs'
+import { $statusbarShown, $statusbarStripAvailable, $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
@@ -125,6 +130,7 @@ import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
 import { Butterbar } from '../shell/butterbar'
 import { TermsButterbar } from '../shell/terms-butterbar'
 
+import { bindBotsPaneToShell } from './bots-pane-shell'
 import { DeveloperRail } from './developer-rail'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
@@ -372,17 +378,6 @@ registry.registerMany([
       run: resetLayoutTree
     } satisfies PaletteContribution
   },
-  // Hiding the bar removes the surface that would otherwise offer it back, so
-  // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
-  paletteToggle({
-    id: 'view.toggleStatusbar',
-    label: 'Toggle status bar',
-    action: 'view.toggleStatusbar',
-    icon: PanelBottom,
-    keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
-    get: () => $statusbarVisible.get(),
-    set: enabled => $statusbarVisible.set(enabled)
-  }),
   paletteToggle({
     id: 'view.toggleProfileRail',
     label: 'Toggle profile rail',
@@ -456,6 +451,29 @@ registry.registerMany([
 registerLayoutPresets()
 
 declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
+
+bindBotsPaneToShell()
+
+// Hiding the bar removes the surface that would otherwise offer it back, so ⌘K is the guaranteed
+// door in (alongside the rebindable ⌘⇧S) — offered only while the shell has a strip to toggle.
+let disposeStatusbarToggle: (() => void) | undefined
+
+$statusbarStripAvailable.subscribe(available => {
+  disposeStatusbarToggle?.()
+  disposeStatusbarToggle = available
+    ? registry.register(
+        paletteToggle({
+          id: 'view.toggleStatusbar',
+          label: 'Toggle status bar',
+          action: 'view.toggleStatusbar',
+          icon: PanelBottom,
+          keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
+          get: () => $statusbarVisible.get(),
+          set: enabled => $statusbarVisible.set(enabled)
+        })
+      )
+    : undefined
+})
 
 // Bundled plugins load AFTER core, so a same-id contribution from a plugin
 // deliberately overrides the core default (last writer wins). Third-party
@@ -786,13 +804,14 @@ registerPaneOpener('sessions', () => {
 registerPaneCloser('files', () =>
   paneRootSide('files') === fileBrowserSide() ? setFileBrowserOpen(false) : dismissTreePane('files')
 )
+// The redesign's conversation header stands in for chat-only tab strips in every zone.
+provideZoneHeader(usePortalZoneHeader)
 
 // ---------------------------------------------------------------------------
 
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
-  const portal = usePortalShell()
-  const statusbarVisible = useStore($statusbarVisible) && !portal
+  const statusbarVisible = useStore($statusbarShown)
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around

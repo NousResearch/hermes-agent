@@ -38,6 +38,7 @@ import {
 import { $setupGuidePhase } from '@/store/onboarding-phase'
 import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $guideRecovery, $guideSuspended, suspendOnboarding } from '@/store/setup-guide'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 import type { OAuthProvider } from '@/types/hermes'
 
@@ -214,7 +215,7 @@ export function DesktopOnboardingOverlay({
   const guidePhase = useStore($setupGuidePhase)
   const guideSuspended = useStore($guideSuspended)
   const guideRecovery = useStore($guideRecovery)
-  const redesign = usePortalShell()
+  const setupGuide = useStore($setupGuideOnboarding)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   useStore($gateway)
@@ -365,7 +366,7 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
 
-  if (redesign && !onboarding.manual && (guidePhase === 'shown' || guideRecovery)) {
+  if (setupGuide && !onboarding.manual && (guidePhase === 'shown' || guideRecovery)) {
     return guideRecovery || guideSuspended ? <SetupGuideOffer /> : <SetupGuide ctx={ctx} />
   }
 

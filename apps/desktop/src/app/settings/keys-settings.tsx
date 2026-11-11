@@ -9,6 +9,7 @@ import { useEnvCredentials } from './env-credentials'
 import { asText } from './helpers'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
+import { SettingsCard } from './settings-card'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Sub-views surfaced as sidebar subnav under Tools & Keys (see settings/index.tsx).
@@ -85,7 +86,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
     <SettingsContent>
       <SettingsProfileScope className="mb-5" />
       {entries.length > 0 ? (
-        <div className="grid gap-2">
+        <SettingsCard classicClassName="grid gap-2" className="credential-keys-card">
           {entries.map(([key, info]) => {
             const label = credentialRowLabel(key, info)
 
@@ -104,7 +105,7 @@ export function KeysSettings({ view }: KeysSettingsProps) {
               </div>
             )
           })}
-        </div>
+        </SettingsCard>
       ) : (
         <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
           {t.settings.keys.empty}

@@ -50,7 +50,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import { usePortalShell } from '@/store/shell-variant'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
@@ -75,7 +75,7 @@ import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
-import { ChatLandingArt, useChatLanding } from './landing'
+import { ChatStageArt, useChatLanding } from './landing'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -526,12 +526,12 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
-  const redesign = usePortalShell()
-  const classicPrimary = !redesign && isPrimary && isMainWindow()
+  const setupGuide = useStore($setupGuideOnboarding)
+  const classicPrimary = !setupGuide && isPrimary && isMainWindow()
   const introHoldsThread = useStore($introHoldsThread) && classicPrimary
 
   const guideStarted =
-    useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended') && !redesign
+    useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended') && !setupGuide
 
   const activeSessionId = useStore(view.$runtimeId)
 
@@ -802,7 +802,7 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
-          <ChatLandingArt visible={landing.centered} />
+          <ChatStageArt landing={landing.centered} />
           <Thread
             clampToComposer={showChatBar}
             cwd={currentCwd}

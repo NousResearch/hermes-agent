@@ -1,14 +1,9 @@
+/* Agent › Settings › Messaging (895:17703); rendered only by the redesign's AgentMessaging. */
 .agent-messaging {
   display: grid;
   min-width: 0;
   align-content: start;
   gap: 16px;
-}
-
-.agent-messaging-channels {
-  border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
 }
 
 .agent-messaging-row {
@@ -18,4 +13,25 @@
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
+}
+
+.agent-messaging-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.agent-messaging-detail {
+  margin-top: 2px;
+  color: var(--ui-text-tertiary);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.agent-messaging-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  line-height: 1.4;
 }

@@ -88,6 +88,7 @@ import {
 } from '@/store/session'
 import { decideOnboarding as decideSetupGuide } from '@/store/setup-guide'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
@@ -111,6 +112,7 @@ import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
+import { PortalFreeTierSignIn } from '../redesign/portal-free-tier-sign-in'
 import { PortalStatusMenu } from '../redesign/portal-status-menu'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
@@ -223,24 +225,24 @@ function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): vo
 
 // Both modes own their decision promise; a live toggle re-reads without deleting a classic chat.
 function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResume, gatewayOpen: boolean): void {
-  const redesign = usePortalShell()
+  const setupGuide = useStore($setupGuideOnboarding)
   const lastMode = useRef<boolean | null>(null)
   // eslint-disable-next-line no-restricted-syntax -- previous processed mode detects transitions; never read as current state
   useEffect(() => {
     if (!isMainWindow()) {
       markOnboardingDecided()
     } else if (gatewayOpen) {
-      const switched = lastMode.current !== null && lastMode.current !== redesign
-      lastMode.current = redesign
+      const switched = lastMode.current !== null && lastMode.current !== setupGuide
+      lastMode.current = setupGuide
 
-      if (redesign) {
+      if (setupGuide) {
         leaveIntro()
         void decideSetupGuide(request, switched)
       } else {
         void decideOnboarding(request, open, { intro: firstRunIntro(), freshLaunch: !switched }, switched)
       }
     }
-  }, [gatewayOpen, open, request, redesign])
+  }, [gatewayOpen, open, request, setupGuide])
 
   useEffect(() => {
     if (!isMainWindow()) {
@@ -276,7 +278,12 @@ function useStatusbarSurfaces(
       statusbarNode: renderStatusbar(),
       globalNavNode: (
         <SimplifiedNavigationSurface
-          footer={<PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>}
+          footer={
+            <>
+              <PortalFreeTierSignIn />
+              <PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>
+            </>
+          }
           onNavigate={item => actions.onNavigate(item)}
         />
       )

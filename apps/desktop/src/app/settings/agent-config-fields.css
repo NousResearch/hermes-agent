@@ -1,55 +1,24 @@
+/* Agent settings pages (Figma 895:*): titled cards of primary rows, then one Advanced disclosure. */
 .agent-config-fields {
   display: grid;
-  gap: 32px;
+  gap: 2rem;
 }
 
 .agent-config-fields:not(:first-child) {
-  margin-top: 32px;
+  margin-top: 2rem;
 }
 
 .agent-config-fields > section > h3 {
-  margin-bottom: 12px;
-  font-size: 15px;
+  margin-bottom: 0.75rem;
+  font-size: 0.9375rem;
   font-weight: 500;
-  line-height: 17px;
+  line-height: 1.1;
 }
 
 .agent-config-card > div {
-  padding-inline: 16px;
+  padding-inline: 1rem;
 }
 
-.agent-config-card [data-slot='segmented-control'] {
-  border-radius: 2px;
-  box-shadow: inset 0 0 0 0.5px var(--ui-stroke-secondary);
-}
-
-.agent-config-card [data-slot='segmented-control'] button {
-  min-height: 28px;
-  border-radius: 1px;
-  font-size: 14px;
-  line-height: 20px;
-}
-
-.agent-config-card [data-slot='segmented-control'] button[aria-pressed='true'] {
-  background: var(--portal-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
-}
-
-.agent-config-advanced > summary {
-  display: flex;
-  min-height: 68px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  list-style: none;
-}
-
-.agent-config-advanced > summary::-webkit-details-marker {
-  display: none;
-}
-
-.agent-config-advanced > summary:focus-visible {
-  outline: 2px solid var(--theme-primary);
-  outline-offset: 3px;
+.agent-config-card > div + div {
+  border-top: 1px solid color-mix(in srgb, var(--ui-base) 3%, transparent);
 }

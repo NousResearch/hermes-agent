@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { cn } from '@/lib/utils'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $rightRailActiveTabId, setFileBrowserOpen } from '@/store/layout'
 import { $visiblePreviewTabs, browserTabFor, toggleBrowserTab } from '@/store/preview'
@@ -87,42 +86,44 @@ function DeveloperTools() {
   return (
     <nav
       aria-label={t.rightSidebar.panelsAria}
-      className="relative z-40 mt-(--titlebar-height) flex w-[3.75rem] shrink-0 flex-col items-center gap-1 overflow-y-auto border-l border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) py-2"
+      className="portal-rail relative z-40 mt-(--titlebar-height) w-(--global-nav-width) shrink-0"
       data-slot="developer-rail"
       style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}
     >
-      {tools.map(tool => (
-        <Tip
-          key={tool.action}
-          label={<TipKeybindLabel actionId={tool.action} text={tool.label} />}
-          placement="right-rail"
-        >
-          <Button
-            aria-label={tool.label}
-            aria-pressed={tool.active}
-            className={cn(tool.active && 'bg-(--chrome-action-hover) text-(--ui-text-primary)')}
-            onClick={() => {
-              if (tool.active && hideDeveloperToolPanel(tool.paneId)) {
-                return
-              }
-
-              tool.run()
-
-              // Existing browser tabs move now; newly registered tabs use their dock hint.
-              const paneId =
-                tool.action === 'view.showBrowser'
-                  ? `${PREVIEW_TILE_PREFIX}:${browserTabFor($visiblePreviewTabs.get(), $rightRailActiveTabId.get())?.id ?? ''}`
-                  : tool.paneId
-
-              prepareDeveloperToolPanel(paneId)
-            }}
-            size="icon"
-            variant="ghost"
+      <div className="portal-rail-group min-h-0 overflow-y-auto">
+        {tools.map(tool => (
+          <Tip
+            key={tool.action}
+            label={<TipKeybindLabel actionId={tool.action} text={tool.label} />}
+            placement="right-rail"
           >
-            <Codicon name={tool.icon} />
-          </Button>
-        </Tip>
-      ))}
+            <Button
+              aria-label={tool.label}
+              aria-pressed={tool.active}
+              className="portal-chrome-button"
+              onClick={() => {
+                if (tool.active && hideDeveloperToolPanel(tool.paneId)) {
+                  return
+                }
+
+                tool.run()
+
+                // Existing browser tabs move now; newly registered tabs use their dock hint.
+                const paneId =
+                  tool.action === 'view.showBrowser'
+                    ? `${PREVIEW_TILE_PREFIX}:${browserTabFor($visiblePreviewTabs.get(), $rightRailActiveTabId.get())?.id ?? ''}`
+                    : tool.paneId
+
+                prepareDeveloperToolPanel(paneId)
+              }}
+              size="icon"
+              variant="ghost"
+            >
+              <Codicon name={tool.icon} />
+            </Button>
+          </Tip>
+        ))}
+      </div>
     </nav>
   )
 }

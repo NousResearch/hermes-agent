@@ -8,6 +8,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
@@ -16,6 +17,7 @@ import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
 import { openFolderAsProject } from '@/store/projects'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -99,6 +101,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
           ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
+      data-slot="files-pane"
     >
       <FilesystemTab
         canCollapse={canCollapse}
@@ -163,6 +166,7 @@ function FilesystemTab({
 }: FilesystemTabProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
+  const portal = usePortalShell()
 
   // No working directory (a bare/detached chat) → no tree, but keep a way back
   // into a folder (#53004): the projects paradigm removed the old folder picker,
@@ -185,8 +189,9 @@ function FilesystemTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <div className="flex min-w-0 flex-1">
-          <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
+        <div className="flex min-w-0 flex-1 flex-col" data-slot="pane-title">
+          <SidebarPanelLabel title={cwd}>{cwdName}</SidebarPanelLabel>
+          {portal && <PanePath path={cwd} />}
         </div>
         <Tip label={showIgnored ? r.hideIgnored : r.showIgnored}>
           <Button
@@ -249,9 +254,27 @@ function FilesystemTab({
   )
 }
 
+/** The pane's full path under its title, home collapsed to `~`. A long path gives way in the middle
+ *  so its leaf (the folder you are in) stays readable. */
+function PanePath({ path }: { path: string }) {
+  const shown = displayPath(path)
+  const cut = shown.lastIndexOf('/') + 1
+
+  return (
+    <span className="flex min-w-0" data-slot="pane-subtitle" title={path}>
+      <span className="min-w-0 truncate">{shown.slice(0, cut)}</span>
+      <span className="shrink-0">{shown.slice(cut)}</span>
+    </span>
+  )
+}
+
 export function RightSidebarSectionHeader({ children, className, ...props }: ComponentProps<'div'>) {
   return (
-    <div className={cn('group/project-header flex h-7 shrink-0 items-center px-2.5', className)} {...props}>
+    <div
+      className={cn('group/project-header flex h-7 shrink-0 items-center px-2.5', className)}
+      data-slot="pane-section-header"
+      {...props}
+    >
       {children}
     </div>
   )

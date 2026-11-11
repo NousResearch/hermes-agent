@@ -16,7 +16,8 @@
 .catalog-filtered-results,
 .catalog-discovery {
   width: 100%;
-  max-width: 1228px;
+  /* The redesigned page frame narrows the column (page-search-shell.css); classic keeps 1228px. */
+  max-width: var(--page-content-max-width, 1228px);
   margin-inline: auto;
   padding-inline: 24px;
 }

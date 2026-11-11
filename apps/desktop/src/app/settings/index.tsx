@@ -46,8 +46,10 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import { SETTINGS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
+import { AgentSettingsLink } from './agent-settings-link'
 import { AppearanceSettings } from './appearance-settings'
 import { BILLING_VIEWS, BillingSettings, type BillingSubView } from './billing'
 import { deriveBillingView, useBillingState, useSubscriptionState } from './billing/use-billing-state'
@@ -68,6 +70,7 @@ import {
 import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { settingsNavigationPresentation } from './redesign-navigation'
+import { redesignNavigationCopy } from './redesign-navigation-copy'
 import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
@@ -165,9 +168,20 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const simplified = usePortalShell()
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const redesignCopy = redesignNavigationCopy(locale)
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
+
+  const openAgentSettings = () => {
+    const query = new URLSearchParams({ agentProfile: scopeProfile, panel: 'settings' })
+
+    if (activeConnectionId) {
+      query.set('connection', activeConnectionId)
+    }
+
+    navigate(`${SETTINGS_ROUTE}?${query}`)
+  }
 
   // MCP moved out of Settings into Capabilities. Keep old `/settings?tab=mcp`
   // deep links working — `useRouteEnumParam` would silently coerce the unknown
@@ -184,7 +198,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const [activeView] = useRouteEnumParam(
     'tab',
     SETTINGS_VIEWS,
-    (simplified ? 'providers' : 'config:model') as SettingsViewId
+    (simplified ? 'billing' : 'config:model') as SettingsViewId
   )
 
   useEffect(() => recordFeatureUse(settingsArea(activeView)), [activeView])
@@ -543,7 +557,12 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     groups: displayedGroups,
     headerGroup,
     headerChild
-  } = settingsNavigationPresentation(navGroups, simplified, activeView, subpage)
+  } = settingsNavigationPresentation(navGroups, simplified, activeView, subpage, {
+    billing: redesignCopy.accountPlan,
+    gateway: redesignCopy.gateways,
+    sessions: redesignCopy.sessions,
+    about: redesignCopy.about
+  })
 
   const navFooter = (
     <>
@@ -623,6 +642,15 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         <OverlayNav
           footer={navFooter}
           groups={displayedGroups}
+          related={
+            simplified && (
+              <AgentSettingsLink
+                description={redesignCopy.agentSettingsDescription}
+                label={redesignCopy.agentSettings}
+                onOpen={openAgentSettings}
+              />
+            )
+          }
           title={simplified ? t.commandCenter.settings : undefined}
         />
 

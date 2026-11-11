@@ -64,10 +64,17 @@ export const portalTheme: DesktopTheme = {
   },
   // Palette surfaces only; brand marks and the flat-overlay look belong to the redesigned shell
   // (app/redesign/portal-colors.css), so they follow the shell rather than this skin.
+  // `--portal-skin-window` is the redesigned shell's chat canvas in Figma's composite (906:19397:
+  // dark #0d0d16, light #ededed); pages keep the navy background above (856:2809). Nothing
+  // outside the redesign reads it.
   customCSS: `
     :root {
       --ui-bg-chrome: var(--theme-background-seed);
       --ui-bg-elevated: var(--theme-elevated-seed);
+      --portal-skin-window: #ededed;
+    }
+    :root.dark {
+      --portal-skin-window: #0d0d16;
     }
   `
 }

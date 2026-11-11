@@ -32,7 +32,7 @@ import { ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
 import { requestForOwnedSession } from './session-states'
 import { dropSetupBeat } from './setup-beat'
-import { $portalPreferred } from './shell-variant'
+import { $setupGuideOnboarding } from './shell-policy'
 
 export type OnboardingRequest = <T = unknown>(
   method: string,
@@ -67,7 +67,7 @@ export const $onboardingSettleFrom = atom<null | number>(null)
 // stays there, because the chats the run leaves behind live there.
 const ONBOARDING_PROFILE = 'default'
 let modeGeneration = 0
-$portalPreferred.listen(() => {
+$setupGuideOnboarding.listen(() => {
   modeGeneration += 1
 })
 
@@ -76,7 +76,7 @@ const $onboardingChatSeen = atom(false)
 
 /** A run is starting (its chat not on screen yet), or its chat is the one on screen. */
 const $onboardingOnScreen = computed(
-  [$onboardingPhase, $onboardingSession, $selectedStoredSessionId, $onboardingChatSeen, $portalPreferred],
+  [$onboardingPhase, $onboardingSession, $selectedStoredSessionId, $onboardingChatSeen, $setupGuideOnboarding],
   (phase, session, selected, seen, redesign) =>
     !redesign && phase === 'shown' && (!session || !seen || session.storedId === selected)
 )
@@ -136,7 +136,7 @@ export async function startOnboarding(
 ): Promise<boolean> {
   const currentMode = modeGeneration
 
-  if ($portalPreferred.get()) {
+  if ($setupGuideOnboarding.get()) {
     return false
   }
   // A rerun withdraws the old run's card; its skipped_all must not match this window's session.
@@ -148,7 +148,7 @@ export async function startOnboarding(
   let skipped = false
 
   intro?.starting(() => {
-    if (currentMode !== modeGeneration || $portalPreferred.get()) {
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
       return
     }
     skipped = true
@@ -161,7 +161,7 @@ export async function startOnboarding(
   try {
     await ensureProfile(ONBOARDING_PROFILE)
 
-    if (currentMode !== modeGeneration || $portalPreferred.get()) {
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
       return false
     }
     const connectionId = activeGatewayConnectionId()
@@ -180,7 +180,7 @@ export async function startOnboarding(
     // The request stays alive past the way out: its answer names the run the skip ends.
     const started = await request<OnboardingStartResult>('onboarding.start', params, intro ? NO_DEADLINE : undefined)
 
-    if (currentMode !== modeGeneration || $portalPreferred.get()) {
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
       return false
     }
 
@@ -195,7 +195,7 @@ export async function startOnboarding(
     // The chat is on screen before the run names it, so the presence never sees a gap.
     await resume(started.stored_session_id, true)
 
-    if (currentMode !== modeGeneration || $portalPreferred.get()) {
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
       return false
     }
     $onboardingSession.set({
@@ -213,7 +213,7 @@ export async function startOnboarding(
 
     return true
   } catch (error) {
-    if (currentMode !== modeGeneration || $portalPreferred.get()) {
+    if (currentMode !== modeGeneration || $setupGuideOnboarding.get()) {
       return false
     }
     console.warn('[onboarding] could not start', error)
@@ -291,11 +291,11 @@ async function readAndStart(
     const state = await request<OnboardingRunStateResult>('onboarding.state', params, NO_DEADLINE)
     disarm()
 
-    if (!released && currentMode === modeGeneration && !$portalPreferred.get() && state.run && state.eligible) {
+    if (!released && currentMode === modeGeneration && !$setupGuideOnboarding.get() && state.run && state.eligible) {
       await startOnboarding(request, resume, { ...options, freshLaunch: options?.freshLaunch ?? true })
     }
 
-    if (currentMode === modeGeneration && !$portalPreferred.get() && !state.run) {
+    if (currentMode === modeGeneration && !$setupGuideOnboarding.get() && !state.run) {
       endOnboarding('done')
     }
   } catch (error) {

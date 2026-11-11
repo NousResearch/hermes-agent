@@ -1,0 +1,387 @@
+/* Shared primitives in the redesign (pages.md §4 "Shared button and control scale"): buttons, text
+   fields, select triggers, segmented controls, switches, checkboxes, chips and kbd keys. Components
+   stay single-sourced in components/ui; this file only restyles them under the root gate. Controls
+   in pages and floating surfaces take the Figma 36px page scale; chrome elsewhere keeps its density. */
+:root[data-shell='portal'] {
+  --portal-control-radius: 3px;
+  --portal-control-fill: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-control-fill-hover: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  --portal-control-fill-pressed: color-mix(in srgb, var(--ui-base) 11%, transparent);
+  --portal-control-stroke: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  --portal-field-fill: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  --portal-field-stroke: color-mix(in srgb, var(--ui-base) 14%, transparent);
+  --portal-select-fill: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  --portal-select-stroke: color-mix(in srgb, var(--ui-base) 28%, transparent);
+  --portal-focus-ring: 0 0 0 2px var(--portal-brand-ink);
+}
+
+/* Light paints the same alphas over #f2f2f2; strokes need one step more to stay visible. */
+:root[data-shell='portal']:not(.dark) {
+  --portal-control-fill: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  --portal-control-fill-hover: color-mix(in srgb, var(--ui-base) 6%, transparent);
+  --portal-control-fill-pressed: color-mix(in srgb, var(--ui-base) 9%, transparent);
+  --portal-control-stroke: color-mix(in srgb, var(--ui-base) 14%, transparent);
+  --portal-field-fill: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-field-stroke: color-mix(in srgb, var(--ui-base) 18%, transparent);
+  --portal-select-fill: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  --portal-select-stroke: color-mix(in srgb, var(--ui-base) 28%, transparent);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+/* Matched by Button's own data-size/data-variant: wrapped in a Tip, menu or popover trigger, Radix
+   overwrites its data-slot, so data-slot='button' would miss half of them. */
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant]:not([data-variant='grip']) {
+  border-radius: var(--portal-control-radius);
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant]:focus-visible {
+  box-shadow: var(--portal-focus-ring);
+  outline: none;
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  ) {
+  background-color: var(--portal-control-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  ):hover {
+  background-color: var(--portal-control-fill-hover);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  ):active {
+  background-color: var(--portal-control-fill-pressed);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  )[aria-pressed='true'] {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 22%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  )[aria-pressed='true']:focus-visible,
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='secondary'],
+    :is(button, a)[data-size][data-variant][data-variant='outline']
+  ):focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--portal-control-stroke),
+    var(--portal-focus-ring);
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='default']:hover {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 86%, var(--ui-base));
+}
+
+:root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='default']:active {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 80%, black);
+}
+
+/* Destructive (Figma "Delete agent", 895:*): a red-tinted outline, never a solid red slab. */
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='destructive'],
+    :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']
+  ) {
+  background-color: color-mix(in srgb, var(--color-destructive) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-destructive) 45%, transparent);
+  color: var(--color-destructive);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='destructive'],
+    :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']
+  ):hover {
+  background-color: color-mix(in srgb, var(--color-destructive) 18%, transparent);
+}
+
+:root[data-shell='portal']
+  :is(
+    :is(button, a)[data-size][data-variant][data-variant='destructive'],
+    :is(button, a)[data-size][data-variant][data-variant='destructiveOutline']
+  ):focus-visible {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-destructive) 45%, transparent),
+    0 0 0 2px var(--color-destructive);
+}
+
+/* Page and dialog scale: 36px boxes with 14px Medium labels (pages.md §4). */
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant]:is([data-size='default'], [data-size='lg']):not(
+    [data-slot='page-toolbar'] *
+  ):not([data-variant='link'], [data-variant='text'], [data-variant='textStrong'], [data-variant='ghost']) {
+  min-height: 2.25rem;
+  padding-block: 0;
+  padding-inline: 1rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant]:is([data-size='default'], [data-size='lg']):has(> svg, > .codicon):not(
+    [data-slot='page-toolbar'] *
+  ):not([data-variant='link'], [data-variant='text'], [data-variant='textStrong'], [data-variant='ghost']) {
+  padding-inline: 0.75rem 1rem;
+  gap: 0.5rem;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant][data-size='icon'] {
+  background-color: var(--portal-control-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant][data-size='icon']:hover {
+  background-color: var(--portal-control-fill-hover);
+}
+
+/* ── Text fields and select triggers ──────────────────────────────────────── */
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group'], [data-slot='textarea']) {
+  border-color: var(--portal-field-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group']) {
+  min-height: 2.25rem;
+  padding-inline: 0.75rem;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input'], [data-slot='input-group'], [data-slot='textarea'])::placeholder {
+  color: var(--ui-text-quaternary);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is([data-slot='input']:not([class~='border-0']), [data-slot='input-group'], [data-slot='textarea']):hover {
+  border-color: color-mix(in srgb, var(--ui-base) 22%, transparent);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(
+    [data-slot='input']:not([class~='border-0']),
+    [data-slot='input-group'],
+    [data-slot='textarea'],
+    [data-slot='select-trigger']
+  ):is(:focus-visible, :focus-within, [data-state='open']) {
+  border-color: var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+}
+
+:root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='select-trigger'] {
+  min-height: 2.25rem;
+  gap: 0.625rem;
+  padding-inline: 1rem 0.75rem;
+  border-color: var(--portal-select-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-select-fill);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] :is([data-page-surface], [data-slot='dialog-content']) [data-slot='select-trigger']:hover {
+  border-color: color-mix(in srgb, var(--ui-base) 40%, transparent);
+}
+
+/* ── Segmented control (856:3444) ─────────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] {
+  min-height: 2.25rem;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-field-stroke);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button {
+  min-height: 1.75rem;
+  padding-inline: 0.75rem;
+  border-radius: 2px;
+  color: var(--ui-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='segmented-control']
+  > button:hover:not([aria-pressed='true']) {
+  background-color: var(--portal-control-fill);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button[aria-pressed='true'] {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 25%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']:not(.dark)
+  [data-page-surface]
+  [data-slot='segmented-control']
+  > button[aria-pressed='true'] {
+  background-color: color-mix(in srgb, var(--portal-brand-fill) 12%, transparent);
+}
+
+:root[data-shell='portal'] [data-page-surface] [data-slot='segmented-control'] > button:focus-visible {
+  outline: 2px solid var(--portal-brand-ink);
+  outline-offset: 1px;
+}
+
+/* ── Switch (856:3465): 36×20 brand track, 16px light knob ────────────────── */
+
+:root[data-shell='portal'] [data-slot='switch'] {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-shell='portal'] [data-slot='switch'][data-state='unchecked'] {
+  background: color-mix(in srgb, var(--ui-base) 14%, transparent);
+}
+
+:root[data-shell='portal'] [data-slot='switch'][data-state='unchecked']:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-base) 20%, transparent);
+}
+
+:root[data-shell='portal'] [data-slot='switch'][data-state='checked']:not(:disabled) {
+  background: var(--portal-brand-fill);
+}
+
+:root[data-shell='portal'] [data-slot='switch']:focus-visible {
+  box-shadow: var(--portal-focus-ring);
+}
+
+:root[data-shell='portal'] [data-slot='switch-thumb'] {
+  box-shadow: none;
+}
+
+:root[data-shell='portal'] [data-slot='switch-thumb'][data-state='checked'] {
+  background: var(--portal-on-brand);
+}
+
+/* ── Checkbox (878:5039): 16px, r3, 28% stroke; checked = brand fill ──────── */
+
+:root[data-shell='portal'] :is([data-slot='checkbox'], [data-slot='checkbox-mark']) {
+  border-color: var(--portal-select-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  box-shadow: none;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='checkbox'], [data-slot='checkbox-mark']):is([data-state='checked'], [data-state='indeterminate']) {
+  border-color: var(--portal-brand-fill);
+  background-color: var(--portal-brand-fill);
+  color: var(--portal-on-brand);
+}
+
+:root[data-shell='portal'] [data-slot='checkbox']:hover:not(:disabled, [data-state='checked']) {
+  border-color: color-mix(in srgb, var(--ui-base) 45%, transparent);
+}
+
+:root[data-shell='portal'] [data-slot='checkbox']:focus-visible {
+  box-shadow: var(--portal-focus-ring);
+}
+
+/* ── Badges and kbd keys ──────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] [data-slot='badge'] {
+  border-radius: 2px;
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], .hermes-floating-surface, [data-slot='dialog-content'])
+  [data-slot='kbd'] {
+  border-color: var(--portal-control-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  box-shadow: none;
+  color: var(--ui-text-secondary);
+}
+
+/* A settings row's picker button (language, model) is a select in the design (856:3456). */
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='settings-row']
+  :is(button, a)[data-size][data-variant][data-variant='outline'][aria-haspopup='dialog'] {
+  min-height: 2.25rem;
+  gap: 0.625rem;
+  padding-inline: 1rem 0.75rem;
+  background-color: var(--portal-select-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-select-stroke);
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* Boxed search (877:5952): a 36px text field, not a pill. */
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box'] {
+  min-height: 2.25rem;
+  padding-block: 0;
+  padding-inline: 0.75rem;
+  border-color: var(--portal-field-stroke);
+  border-radius: var(--portal-control-radius);
+  background-color: var(--portal-field-fill);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box']:hover {
+  border-color: color-mix(in srgb, var(--ui-base) 22%, transparent);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box']:focus-within {
+  border-color: var(--portal-brand-ink);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
+}
+
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='search-field'][data-variant='box']
+  input {
+  font-size: 0.875rem;
+}

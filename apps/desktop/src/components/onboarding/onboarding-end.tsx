@@ -20,7 +20,7 @@ import { readConnectedLocalSetupEligibility, readLocalSetupEligibility } from '@
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { requestRoute } from '@/store/recovery-requests'
 import { $onboardingSettleFrom as $guideSettleFrom } from '@/store/setup-guide'
-import { usePortalShell } from '@/store/shell-variant'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import type { LocalCatalogModel } from '@/types/hermes'
 
 function settleStart(settleFrom: null | number): null | number {
@@ -39,10 +39,10 @@ function settleStart(settleFrom: null | number): null | number {
  */
 export function OnboardingEnd() {
   const { t } = useI18n()
-  const redesign = usePortalShell()
+  const setupGuide = useStore($setupGuideOnboarding)
   const classicSettle = useStore($onboardingSettleFrom)
   const guideSettle = useStore($guideSettleFrom)
-  const settleFrom = redesign ? guideSettle : classicSettle
+  const settleFrom = setupGuide ? guideSettle : classicSettle
   const [offer, setOffer] = useState<LocalCatalogModel | null>(null)
 
   useEffect(() => {

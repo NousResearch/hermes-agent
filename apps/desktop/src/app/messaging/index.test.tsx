@@ -590,7 +590,9 @@ describe('MessagingView Telegram quick setup', () => {
 it('opens owner-pinned channel controls from the redesigned list and restores the classic editor', async () => {
   const owner = { connectionId: 'remote-a', profile: 'work' }
   $shellChoice.set(true)
-  getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ enabled: true, state: 'connected' })] })
+  getMessagingPlatforms.mockResolvedValue({
+    platforms: [platform({ configured: true, enabled: true, state: 'connected' })]
+  })
   render(
     <MemoryRouter>
       <SettingsOwnerContext.Provider value={owner}>
@@ -598,11 +600,38 @@ it('opens owner-pinned channel controls from the redesigned list and restores th
       </SettingsOwnerContext.Provider>
     </MemoryRouter>
   )
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage: Microsoft Teams' }))
   expect(screen.getByRole('dialog', { name: 'Microsoft Teams' })).toBeTruthy()
   fireEvent.click(screen.getByRole('switch', { name: 'Disable Microsoft Teams' }))
   await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalledWith('teams', { enabled: false }, owner))
   act(() => $shellChoice.set(false))
   expect(screen.queryByRole('dialog', { name: 'Microsoft Teams' })).toBeNull()
   expect(screen.getByRole('switch', { name: /Microsoft Teams/ })).toBeTruthy()
+})
+
+it('lists only set-up channels in the redesign and offers the rest under Add channel', async () => {
+  $shellChoice.set(true)
+  getMessagingPlatforms.mockResolvedValue({
+    platforms: [
+      platform({ configured: true, enabled: true, id: 'discord', name: 'Discord', state: 'fatal' }),
+      platform()
+    ]
+  })
+  render(
+    <MemoryRouter>
+      <SettingsOwnerContext.Provider value={{ connectionId: 'local', profile: 'work' }}>
+        <MessagingView />
+      </SettingsOwnerContext.Provider>
+    </MemoryRouter>
+  )
+
+  // A failed channel leads with Reconnect; an unconfigured one is not a row.
+  expect(await screen.findByRole('button', { name: 'Reconnect: Discord' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /Microsoft Teams/ })).toBeNull()
+
+  const add = screen.getByRole('button', { name: 'Add channel' })
+  fireEvent.pointerDown(add, { button: 0, ctrlKey: false })
+  fireEvent.click(await screen.findByRole('menuitem', { name: /Microsoft Teams/ }))
+  expect(await screen.findByRole('dialog', { name: 'Microsoft Teams' })).toBeTruthy()
+  act(() => $shellChoice.set(null))
 })

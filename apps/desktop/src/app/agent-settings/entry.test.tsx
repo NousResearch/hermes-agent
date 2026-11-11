@@ -115,6 +115,7 @@ const api = vi.fn(async ({ path, method }: Request): Promise<unknown> => {
 
   return {}
 })
+
 const defaultApi = api.getMockImplementation()!
 
 const originalDesktop = window.hermesDesktop
@@ -240,7 +241,7 @@ it('starts a newly selected settings section at the top without moving its navig
 
 it('expands tool configuration in place without scrolling away from its disclosure', async () => {
   mount('/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:tools')
-  const advanced = await screen.findByRole('button', { name: 'Advanced' })
+  const advanced = await screen.findByRole('button', { name: /^Advanced/ })
   const body = advanced.closest('section')!
 
   body.scrollTop = 240

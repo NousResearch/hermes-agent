@@ -1,0 +1,35 @@
+name: hermes-make-it-smart
+repo: https://github.com/tesla963/hermes-make-it-smart
+sha: 847ee01cfe45bc13f1e653f9c272da771845e655
+description: >-
+  Canonical catalog over every Hermes profile. Reads the local state.db files, gives each
+  session the "NNN [Subject] MMM [Tag] [Tag] Description · Verb" name, and exposes faceted
+  filters (subject, maker, context, intention, theme, year, project) as a native Desktop
+  page. Includes a Pending view that attributes every memory/skill approval request to the
+  session that produced it, and a Testing tab that simulates the rename, writes a mandatory
+  backup, commits through the host's session.title API and offers one-click revert.
+  Disclosure — reads session titles and message excerpts from the local Hermes databases on
+  the user's machine; nothing is sent over the network; the only write is a session title,
+  and only when the user presses Commit.
+maintainer: tesla963
+tier: community
+category: productivity
+docs_url: https://github.com/tesla963/hermes-make-it-smart#readme
+version: "0.25.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - cellar_search
+    - cellar_session
+    - cellar_stats
+    - cellar_series
+    - cellar_rename
+    - cellar_tag
+    - cellar_bateria
+    - cellar_index
+    - cellar_verify
+    - cellar_export
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,11 @@
+name: tether
+repo: https://github.com/Yashop965/tether
+sha: 37f1a20da40d2a3c7b1e723856aa5ca68ca5f4dd
+subdir: "plugin"
+version: "1.5.3"
+description: "Your phone as a remote trackpad, laser-tilt pointer, and local voice terminal for the Hermes host."
+maintainer: Yashop965
+tier: community
+capabilities:
+  provides_tools:
+    - tether_status

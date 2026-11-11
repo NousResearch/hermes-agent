@@ -354,9 +354,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     if str(thread_id or "").strip() and not str(thread_id).strip().lstrip("-").isdigit():
         # ``<chat>:<topic name>`` parses for every caller, but only the live gateway's cron router
         # resolves a name (ensure_dm_topic): the Bot API has no topic lookup by name (#80483).
-        return _error(f"Telegram topic '{thread_id}' is a name, not a thread id: a direct send cannot "
-                      "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
-                      "through a cron job while the gateway is running.")
+        return {**_error(f"Telegram topic '{thread_id}' is a name, not a thread id: a direct send cannot "
+                         "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
+                         "through a cron job while the gateway is running."), "retryable": True}
+    last_msg = None
     try:
         from plugins.platforms.telegram.telegram_outbound import (
             is_visually_empty, notification_kwargs, resolve_notifications_mode, send_album_standalone,
@@ -375,11 +376,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                          **notification_kwargs(resolve_notifications_mode(), notify)}
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
-        last_msg, warnings, _tg_caption = None, [], None
+        warnings, _tg_caption = [], None
         if message and not media_files:
             rich = await send_rich_standalone(bot, {**(extra or {}), "disable_link_previews": disable_link_previews},
                                               chat_id, message, thread_id=thread_id, notify=notify)
             if rich is not None:
+                # A rich failure is never marked ``retryable`` (nothing sent): the adapter's result
+                # does not say whether the request left, and a lost answer may be in the chat.
                 return (_success(chat_id, message_id=rich.message_id) if rich.success
                         else _error(f"Telegram send failed: {rich.error}"))
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
@@ -437,12 +440,15 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                                           if last_msg.message_id is not None else {}))
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
-                f"{install_hint('telegram')}"}
+                f"{install_hint('telegram')}", "retryable": True}
     except Exception as e:
-        from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
-        # A lost answer (timeout, reset after the write) may already be in the chat: callers that
-        # would replay a failed send (cron's reconnect queue) must not.
-        return {**_error(f"Telegram send failed: {e}"), **({"delivery_uncertain": True} if may_have_delivered(e) else {})}
+        from plugins.platforms.telegram import telegram_send_errors as kinds
+        kind = kinds.send_error_kind(e)
+        # ``retryable`` = nothing is in the chat: no chunk landed and this request never left or
+        # was refused. Only that may be replayed (cron's reconnect queue); a lost answer, or a
+        # failure after an earlier chunk landed, would post the report twice.
+        nothing_sent = last_msg is None and kind in (kinds.REFUSED, kinds.FLOOD, kinds.UNSENT)
+        return {**_error(f"Telegram send failed: {e}"), **({"retryable": True} if nothing_sent else {})}
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,

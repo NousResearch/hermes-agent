@@ -317,8 +317,8 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
-    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
-    yaml_env_setter as _yaml_env_setter
+    extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, request_never_left,
+    send_error, yaml_env_setter as _yaml_env_setter
 )
 
 
@@ -6981,15 +6981,15 @@ async def _standalone_send(
         from agent.secret_scope import get_secret
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
-        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
+        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set", nothing_sent=True)
     from gateway.platforms.base import describe_proxy_error, resolve_proxy_url, proxy_kwargs_for_aiohttp
     _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+    last_data = None
     try:
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         auth_headers = {"Authorization": f"Bot {token}"}
         json_headers = {**auth_headers, "Content-Type": "application/json"}
         media_files = media_files or []
-        last_data = None
         warnings = []
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
@@ -7106,7 +7106,8 @@ async def _standalone_send(
         # Include the exception type: str(TimeoutError()) is empty. The text may echo the proxy URL.
         shown = describe_proxy_error(e, _proxy)
         logger.error("Discord standalone send failed%s", f": {shown}" if shown else "", exc_info=not shown)
-        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}")
+        return send_error(f"Discord send failed: {shown or f'{type(e).__name__}: {e}'}",
+                          nothing_sent=last_data is None and request_never_left(e))
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

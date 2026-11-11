@@ -50,6 +50,10 @@ def _standalone_send(
     def _failed(e) -> tuple[None, str]:
         msg = f"delivery to {t.where} failed: {e}"
         logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
+        # An exception escaping the sender says nothing about what already went out, unless it
+        # proves the request never left.
+        from gateway.platforms._shared import request_never_left
+        t.standalone_in_flight = t.standalone_in_flight or not request_never_left(e)
         return None, msg
 
     def _in_flight(seconds: float) -> tuple[None, str]:
@@ -106,10 +110,10 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
     adapter that rejected it: the post-reconnect sweep / retry timer redelivers it (#125363).
     Retryable = the reconnect-only ``send_path_degraded`` string, or any rejection the adapter
     itself marked retryable (``SendResult.retryable`` carried on ``DeliverySendError``) — e.g.
-    Telegram's "Not connected" while the bot client rebuilds. Only reached after standalone
-    failed definitively (a timeout returns "may still be in flight" and is NOT queued), so
-    nothing was sent and a replay cannot duplicate. The ledger carries text only; dropped
-    attachments are reported."""
+    Telegram's "Not connected" while the bot client rebuilds. Only reached when the standalone
+    lane proved nothing was sent (a sender dict's explicit ``retryable``, or a failure before the
+    sender ran); a timeout, a lost answer or a partial send is NOT queued, so a replay cannot
+    duplicate. The ledger carries text only; dropped attachments are reported."""
     try:
         from gateway.delivery_ledger import (
             compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed, record_obligation)

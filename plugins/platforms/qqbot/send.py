@@ -9,6 +9,7 @@ import logging
 import os
 import time
 
+from gateway.platforms._shared import request_never_left
 from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from tools.send_message_senders import _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success
 
@@ -175,9 +176,10 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
     appid = extra.get("app_id") or get_scoped_secret("QQ_APP_ID", "")
     secret = pconfig.token or extra.get("client_secret") or get_scoped_secret("QQ_CLIENT_SECRET", "")
     if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
+        return {**_error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured."), "retryable": True}
 
     media_files = media_files or []
+    sent_any = False
     # Longer timeout when uploading; text-only stays snappy.
     client_timeout = FILE_UPLOAD_TIMEOUT if media_files else 15.0
 
@@ -185,11 +187,13 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
         async with httpx.AsyncClient(timeout=client_timeout) as client:
             token_resp = await client.post("https://bots.qq.com/app/getAppAccessToken",
                                            json={"appId": str(appid), "clientSecret": str(secret)})
+            # No message request has gone out before the access token is in hand.
             if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
+                return {**_error(f"QQBot token request failed: {token_resp.status_code}"), "retryable": True}
             access_token = token_resp.json().get("access_token")
             if not access_token:
-                return _error("QQBot: no access_token in response")
+                return {**_error("QQBot: no access_token in response"), "retryable": True}
+            sent_any = True  # from here a failure may follow a delivered text or media bubble
 
             headers = {"Authorization": f"QQBot {access_token}", "Content-Type": "application/json"}
 
@@ -246,4 +250,8 @@ async def send_qqbot(pconfig, chat_id, message, media_files=None, caption=None, 
             return await _qqbot_send_text_message(client, headers, chat_id, message or "")
     except Exception as e:
         logger.debug("QQBot standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction('https://bots.qq.com', 'https://api.sgroup.qq.com'))))
-        return _error(f"QQBot send failed: {shown or e}")
+        # ``retryable`` (nothing sent) only before any message request, or for a text send that never
+        # connected (its endpoints stop at the first 2xx, so earlier ones only refused). A read
+        # timeout after the POST, or any media-path failure after a bubble, may be in the chat.
+        nothing_sent = not sent_any or (request_never_left(e) and not media_files)
+        return {**_error(f"QQBot send failed: {shown or e}"), **({"retryable": True} if nothing_sent else {})}

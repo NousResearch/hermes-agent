@@ -9,12 +9,7 @@ screenshots:
   - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/01-gallery.png"
   - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/02-studio.png"
   - "https://raw.githubusercontent.com/ranggaoscar/ideacut/67a6f701d4c939c6de052ba4b3ae8a3e04b5bb3a/assets/brand/screenshots/03-export.png"
-description: >-
-  Turns a chat brief into an editable, art-directed video: seven agent tools capture and record a
-  public page, write typed scenes, revise them and export H.264 MP4 locally with
-  Chromium and FFmpeg. Capture goes through a loopback validating proxy that refuses
-  private/loopback/metadata targets. Optional narration is sent to the user's
-  configured TTS provider; the live preview is silent.
+description: "Turns a chat brief into an editable, art-directed video: seven agent tools capture and record a public page, write typed scenes, revise them and export H.264 MP4 locally with Chromium and FFmpeg. Capture goes through a loopback validating proxy that refuses private/loopback/metadata targets. Optional narration is sent to the user's configured TTS provider; the live preview is silent. Disclosure — ideacut_capture and ideacut_record open model-chosen public web pages in your installed Chrome/Edge (headless) and can scroll, click and type into them (forms included); every connection goes through a loopback-only proxy that refuses private, loopback and cloud-metadata addresses. Scene images, clips and music may be any local file path the agent names and are copied into the plugin's data folder. Rendering runs your system FFmpeg/ffprobe. Voice-over (off by default) sends each scene's narration text to your configured Hermes TTS provider (directly via edge-tts when that provider is Edge)."
 maintainer: "ROCK"
 tier: community
 category: desktop

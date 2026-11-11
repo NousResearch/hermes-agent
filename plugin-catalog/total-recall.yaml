@@ -1,0 +1,41 @@
+name: total-recall
+title: Total Recall
+repo: https://github.com/dax8it/total-recall
+sha: fb5f332dfa150f882c5b27b4d71fbdd485b2657c
+subdir: ""
+version: "1.3.0"
+# License: MIT, as declared in LICENSE and plugin.yaml at the pinned commit.
+description: "Local-first continuity memory with an append-only ledger, signed checkpoints, verified rehydration, and source-cited recall."
+maintainer: dax8it
+tier: community
+category: memory
+docs_url: https://github.com/dax8it/total-recall/blob/fb5f332dfa150f882c5b27b4d71fbdd485b2657c/README.md
+readme: true
+capabilities:
+  provides_tools:
+    - total_recall_search
+    - total_recall_status
+    - total_recall_checkpoint
+    - total_recall_verify
+    - total_recall_trust_verify
+    - total_recall_learning_review
+    - total_recall_rehydrate
+    - total_recall_incidents
+    - total_recall_source_ingest
+    - total_recall_knowledge_query
+    - total_recall_knowledge_freshness
+    - total_recall_knowledge_status
+    - total_recall_knowledge_synthesis_status
+    - total_recall_knowledge_compiled_truth
+    - total_recall_knowledge_graph_inspect
+    - total_recall_knowledge_graph_timeline
+    - total_recall_federation_query
+    - total_recall_loop_inbox
+    - total_recall_loop_start
+    - total_recall_loop_note
+    - total_recall_loop_verify
+    - total_recall_loop_complete
+    - total_recall_handoff_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

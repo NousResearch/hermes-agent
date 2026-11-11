@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ {kind} 첨부 파일({file_name})을 전달하지 못했어요."
     delivery_failed_retry: "⚠️ 여러 번 시도했지만 메시지 전달에 실패했어요. 요청은 처리됐지만 응답을 보낼 수 없었으니 다시 시도해 주세요."
     plain_fallback_prefix: "(응답 서식 지정에 실패해 일반 텍스트로 표시해요:)\n\n{content}"
-    turn_error_no_details: "자세한 정보 없음"
-    turn_error_detailed: "죄송해요, 오류가 발생했어요 ({error_type}).\n{error_detail}\n다시 시도하거나 /reset으로 새 세션을 시작하세요."
     turn_error: "죄송해요, 오류가 발생했어요."
     context_injection_refused: "컨텍스트 주입이 거부되었어요."
     no_home_channel: "📬 {platform}에 홈 채널이 설정되어 있지 않아요. 홈 채널은 Hermes가 크론 작업 결과와 플랫폼 간 메시지를 전달하는 곳이에요.\n\n이 채팅을 홈 채널로 만들려면 {sethome_cmd}을(를) 입력하고, 건너뛰려면 무시하세요."

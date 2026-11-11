@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Kon nie die {kind}-aanhegsel aflewer nie ({file_name})."
     delivery_failed_retry: "⚠️ Boodskapaflewering het na verskeie pogings misluk. Probeer asseblief weer — jou versoek is verwerk, maar die antwoord kon nie gestuur word nie."
     plain_fallback_prefix: "(Antwoordformatering het misluk, gewone teks:)\n\n{content}"
-    turn_error_no_details: "geen besonderhede beskikbaar nie"
-    turn_error_detailed: "Jammer, ek het 'n fout ondervind ({error_type}).\n{error_detail}\nProbeer weer of gebruik /reset om 'n vars sessie te begin."
     turn_error: "Jammer, ek het 'n fout ondervind."
     context_injection_refused: "Konteksinspuiting geweier."
     no_home_channel: "📬 Geen tuiste-kanaal is vir {platform} gestel nie. 'n Tuiste-kanaal is waar Hermes cron-taakresultate en kruisplatform-boodskappe aflewer.\n\nTik {sethome_cmd} om hierdie klets jou tuiste-kanaal te maak, of ignoreer dit om oor te slaan."

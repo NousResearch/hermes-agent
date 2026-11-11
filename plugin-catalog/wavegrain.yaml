@@ -1,6 +1,6 @@
 name: wavegrain
 repo: https://github.com/wavegrain/wavegrain-mcp
-sha: 37ab25fcad0d19b2b6af64be029aa9b7e3c639a5
+sha: d5fbe25c4d47a46f85afcae137acf6d763f79647
 description: >-
   Curated TikTok slideshows and Instagram carousels for your brand on autopilot, through
   the hosted Wavegrain Streamable HTTP MCP server plus one workflow skill. Portable Agent

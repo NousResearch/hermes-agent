@@ -1,6 +1,14 @@
-# Unitalk Desktop ☤
+<p align="center">
+  <a href="https://unitalk.ai">
+    <img src="assets/logo.png" alt="Unitalk Logo" width="120" height="120">
+  </a>
+</p>
 
-**The AI Collaborator that grows with your enterprise. Powered by Hermes.**
+<h1 align="center">Unitalk Desktop ☤</h1>
+
+<p align="center">
+  <b>The AI Collaborator that grows with your enterprise. Powered by Hermes.</b>
+</p>
 
 <p align="center">
   <a href="https://unitalk.ai"><img src="https://img.shields.io/badge/Unitalk-unitalk.ai-0066FF?style=for-the-badge" alt="Website"></a>

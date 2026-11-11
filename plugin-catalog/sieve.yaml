@@ -18,7 +18,7 @@ known_issues:
   - 'Closed-app wake is not available in the current official iOS beta. The phone arm needs the Hermes app open and synced to this profile.'
   - 'A messaging push is an ordinary notification. Focus can silence it, and it does not ring. It is a weaker interrupt than an alarm.'
   - 'The desktop status poll and /sieve probe run tailscale status --json. A missing binary, a timeout, and the first reading are not an outage. That probe does not run when Desktop is closed or the Mac is asleep.'
-  - 'scripts/watch.py is an optional launchd job, not a host hook. A dead gateway cannot ring the phone. hermes send still carries the chat chain and does not need the gateway or a model.'
+  - 'The Tailscale/gateway watchdog (scripts/watch.py) is opt-in and does not start itself. Load it once from a terminal with launchctl bootstrap. It cannot see an outage while the Mac is asleep.'
   - 'The Desktop pane cannot write the phone. Desktop chat may refuse /sieve with permission_denied before the plugin starts. Run /sieve doctor in Discord or Telegram. That result is kept and shown on the pane.'
   - 'Gallery screenshots are not in this pin. They follow in a SHA bump.'
 capabilities:

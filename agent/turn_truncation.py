@@ -387,6 +387,34 @@ def _model_output_limit(agent: Any) -> Optional[int]:
     return _get_anthropic_max_output(getattr(agent, "model", None) or "")
 
 
+def observed_output_tokens(agent: Any, response: Any) -> Optional[int]:
+    """Output tokens the truncated response actually produced, when the transport reported usage.
+
+    Normalised across wires (chat-completions ``completion_tokens``, Responses ``output_tokens``,
+    Anthropic Messages) by ``normalize_usage``. With no configured cap the provider applied its own
+    default, so this number IS the ceiling that truncated the response — seed the ladder from it.
+    """
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return None
+    tokens = normalize_usage(
+        usage, provider=getattr(agent, "provider", None), api_mode=getattr(agent, "api_mode", None)
+    ).output_tokens
+    return int(tokens) if tokens and tokens > 0 else None
+
+
+def continuation_base(agent: Any, requested_cap: Optional[int], response: Any) -> Optional[int]:
+    """``base`` for a truncation retry: the configured cap, else the cap the failed request sent,
+    else the output the truncated response already produced, else None (the ladder's 4096 default).
+
+    The observed term is last so a configured or sent cap keeps deciding the ladder (a retry must
+    never go below the failed request's cap, #72770). Without it, a first request that carried no
+    cap and hit the server's own default retried at half the budget the response had already spent
+    (#153136) — the same seeding the Codex incomplete path has always done.
+    """
+    return agent.max_tokens or requested_cap or observed_output_tokens(agent, response)
+
+
 def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: Optional[int] = None) -> int:
     """Output budget for truncation retry ``n`` (1-based): ``base·2ⁿ``, never below the
     failed request's cap, at most ``max(32768, 2×cap)``, and never above the model's
@@ -417,8 +445,9 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
         else:
             agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
+        cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
         agent._ephemeral_max_output_tokens = boosted_output_cap(
-            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), n
+            agent, cap, n, base=continuation_base(agent, cap, st.response)
         )
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
@@ -674,12 +703,8 @@ def continue_codex_incomplete(
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
             agent._ephemeral_reasoning_off = True
-            # No configured cap means the provider's own ceiling was hit: the observed
-            # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
-            usage = getattr(response, "usage", None)
-            observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
             agent._ephemeral_max_output_tokens = boosted_output_cap(
-                agent, None, n, base=agent.max_tokens or int(observed or 0) or 4096
+                agent, None, n, base=continuation_base(agent, None, response)
             )
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)", diagnostic=True)

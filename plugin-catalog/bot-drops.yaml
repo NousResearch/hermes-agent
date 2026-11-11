@@ -1,0 +1,44 @@
+name: bot-drops
+title: Bot Drops
+repo: https://github.com/brainarts-lab/bot-drops
+sha: 2b2d9f7e698bdef76507491ffef48f7bd18be699
+version: "0.5.1"
+description: >-
+  Share a Hermes bot as a link and a card, and adopt bots other people share as new
+  profiles. A preview shows the bot's card, what it needs and what was left out before
+  anything is installed; adopting runs Hermes' own profile install on the exact reviewed
+  commit and never changes existing profiles. Sharing packages the personality and the
+  author's own text skills, renders a link card and a story image locally, and publishes
+  them as a new public GitHub repository with a GitHub Pages bot page. Disclosure — a
+  preview clones a public GitHub or GitLab repository over HTTPS with size, time and file
+  limits; publishing runs git and the user's own gh login, only after an explicit
+  confirmation in the plugin screen. Reads the chosen profile, and its .env and auth.json
+  solely to keep their values out of the package. Keys, settings, memory, chats, plugins
+  and MCP servers are never shared. Shared pages and cards carry a "by BrainArts" credit
+  link that the sharer can turn off. No telemetry, self-updater or background process.
+maintainer: brainarts-lab
+tier: community
+category: desktop
+docs_url: https://github.com/brainarts-lab/bot-drops/blob/2b2d9f7e698bdef76507491ffef48f7bd18be699/README.md
+image: https://raw.githubusercontent.com/brainarts-lab/bot-drops/2b2d9f7e698bdef76507491ffef48f7bd18be699/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/brainarts-lab/bot-drops/2b2d9f7e698bdef76507491ffef48f7bd18be699/assets/screens/01-find.png
+  - https://raw.githubusercontent.com/brainarts-lab/bot-drops/2b2d9f7e698bdef76507491ffef48f7bd18be699/assets/screens/02-preview.png
+  - https://raw.githubusercontent.com/brainarts-lab/bot-drops/2b2d9f7e698bdef76507491ffef48f7bd18be699/assets/screens/03-share.png
+  - https://raw.githubusercontent.com/brainarts-lab/bot-drops/2b2d9f7e698bdef76507491ffef48f7bd18be699/assets/screens/04-live.png
+# Empty would mean "every platform". Add windows only after the Windows test run on GitHub is green.
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools: [bot_drops_prepare]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Publishing needs the GitHub CLI signed in (gh auth login). Without it Bot Drops prepares the files for a manual upload.
+  - Shared bots are public repositories; private sharing is not supported.
+  - Built and tested on macOS. Windows support is new in 0.5.0 and not yet confirmed on a Windows machine, so this entry lists Linux and macOS.
+  - On Hermes 0.23.0 a bot name that was removed earlier cannot be reused for a new bot; fixed in Hermes 0.23.1.
+  - Profiles are not a security sandbox. Only adopt bots from people you trust.
+requires_hermes: ">=0.23.0"

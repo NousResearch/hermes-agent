@@ -76,7 +76,7 @@ export function showBootFailure(error: unknown, reload: () => void = () => locat
   })
 
   const wordmark = document.createElement('p')
-  wordmark.textContent = 'HERMES AGENT'
+  wordmark.textContent = 'UNITALK'
   wordmark.setAttribute('aria-hidden', 'true')
   Object.assign(wordmark.style, {
     color: palette?.accent ?? 'currentColor',

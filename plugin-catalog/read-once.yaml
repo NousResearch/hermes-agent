@@ -1,12 +1,13 @@
 name: read-once
 title: Read Once
 repo: https://github.com/batmnnn/read-once
-sha: 879233ad3a5bac7cb2e5ff94ada8f1aac1ebb397
-version: "0.1.0"
+sha: e75af1680ab2ebe12b539fdcbe9f6f2431f6270d
+version: "0.2.0"
 description: >-
-  Replaces a repeated identical local read_file with a short reference when
-  READ_ONCE_HITS=1, the file bytes are unchanged, and that exact result is
-  still in the latest model request. Observe-only otherwise. Disclosure —
+  On a repeated identical local read_file, tells the model to answer from
+  the earlier result when READ_ONCE_HITS=1, the file bytes are unchanged,
+  and that exact result is still in the latest model request. Observe-only
+  otherwise. /read-once stats shows hits. Disclosure —
   reads and SHA-256-hashes regular files under READ_ONCE_ROOT (1 MiB max),
   inspects the model request in memory for that result digest, and keeps
   ephemeral metadata only. No network, no telemetry, no disk cache, and no

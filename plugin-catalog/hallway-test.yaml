@@ -1,6 +1,6 @@
 name: hallway-test
 repo: https://github.com/lexipej/hallway-test
-sha: f287e9cb54224c9f05f80357cf1bc8ed816b7e2a
+sha: 7e5381a56f411114e52e0a61d73664142dba7803
 description: Five simulated people with code-enforced limits (low vision, screen reader, colour blindness, tremor) usability-test your web page in real browsers and report who got stuck and why.
 maintainer: lexipej
 tier: community
@@ -10,7 +10,7 @@ docs_url: https://github.com/lexipej/hallway-test#readme
 version: "0.1.0"
 title: Hallway Test
 screenshots:
-  - https://raw.githubusercontent.com/lexipej/hallway-test/f287e9cb54224c9f05f80357cf1bc8ed816b7e2a/assets/group.jpg
+  - https://raw.githubusercontent.com/lexipej/hallway-test/7e5381a56f411114e52e0a61d73664142dba7803/assets/group.jpg
 capabilities:
   provides_tools: [hallway_test]
   provides_hooks: []

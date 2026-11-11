@@ -42,6 +42,11 @@ def status_chat_type(source: Any) -> Any:
     return "group" if getattr(source, "shared_session", False) else getattr(source, "chat_type", None)
 
 
+def is_terminal_failure_status(message: Any) -> bool:
+    from gateway.warning_notifications import TerminalFailureText
+    return isinstance(message, TerminalFailureText)
+
+
 def hidden_outside_dm(chat_type: Any, message: str) -> bool:
     """True when ``message`` is a DM-only status and ``chat_type`` is not a DM."""
     kind = str(getattr(chat_type, "value", chat_type) or "").strip().lower()

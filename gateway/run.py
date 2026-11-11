@@ -37,7 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
-from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm
+from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -656,7 +656,7 @@ def _gateway_provider_error_reply(text: str) -> str:
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
 _PROVIDER_ERROR_MARKERS = (
     r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
-    r"rate\s+limited\s+after\s+\d+\s+retries", r"error\s+code\s*:", r"http\s*\d{3}\b",
+    r"rate\s+limited\s+after\s+\d+\s+(?:retries|attempts?)\b", r"error\s+code\s*:", r"http\s*\d{3}\b",
     r"incorrect\s+api\s+key", r"invalid\s+api\s+key")
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
@@ -724,7 +724,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
-    if hidden_outside_dm(chat_type, str(message or "")):
+    if hidden_outside_dm(chat_type, str(message or "")) or is_terminal_failure_status(message):
         return None
 
     text = _redact_gateway_user_facing_secrets(text)
@@ -734,7 +734,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     ):
         return None
     if _looks_like_gateway_provider_error(text):
-        return _gateway_provider_error_reply(text)
+        return None
     return text
 
 
@@ -2378,12 +2378,12 @@ def _resolve_gateway_model_context(
 
     def _read_runtime() -> None:
         nonlocal provider, base_url, api_key
-        if route and route.get("base_url"):
-            # A session route with its own endpoint (a /model switch) replaces the default runtime
-            # read; a route without one (persisted / SessionDB / plain config) still resolves the
-            # default runtime credentials so a custom endpoint and its context_length pin survive.
+        if route and (route.get("base_url") or route.get("_runtime_resolved")):
+            # A session route with its own endpoint (a /model switch), or provider-specific runtime
+            # already resolved by the caller, replaces the default runtime read. A persisted route
+            # without either still resolves default credentials so a custom endpoint and its pin survive.
             provider = route.get("provider") or provider
-            base_url = route["base_url"]
+            base_url = route.get("base_url") or ""
             api_key = route.get("api_key")
             return
         runtime = _resolve_runtime_agent_kwargs()

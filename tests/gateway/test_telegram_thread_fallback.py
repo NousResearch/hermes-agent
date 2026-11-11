@@ -592,10 +592,19 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread
         return SimpleNamespace(message_id=785)
 
     class _FakeResponse:
-        content = b"image-data"
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
 
         def raise_for_status(self):
             return None
+
+        async def aiter_bytes(self):
+            yield b"image-data"
 
     class _FakeAsyncClient:
         def __init__(self, *args, **kwargs):
@@ -607,7 +616,7 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread
         async def __aexit__(self, *args):
             return None
 
-        async def get(self, _url):
+        def stream(self, _method, _url):
             return _FakeResponse()
 
     adapter._bot = SimpleNamespace(send_photo=mock_send_photo)

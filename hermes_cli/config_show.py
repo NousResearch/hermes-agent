@@ -95,7 +95,10 @@ def _show_terminal_section(config: dict[str, Any]) -> None:
             f"  Modal image:  {terminal.get('modal_image', default_img)}",
             f"  Modal token:  {configured('MODAL_TOKEN_ID')}"],
         'daytona': lambda: [
-            f"  Daytona image: {terminal.get('daytona_image', default_img)}",
+            f"  Mode:         {terminal.get('daytona_create_mode', 'image')}",
+            (f"  Snapshot:     {terminal.get('daytona_snapshot') or '(not set)'}"
+             if terminal.get('daytona_create_mode') == 'snapshot'
+             else f"  Image:        {terminal.get('daytona_image', default_img)}"),
             f"  API key:      {configured('DAYTONA_API_KEY')}"],
         'vercel_sandbox': lambda: [
             f"  Vercel image:   {terminal.get('vercel_runtime') or terminal.get('vercel_image') or _DEFAULT_VERCEL_IMAGE}",

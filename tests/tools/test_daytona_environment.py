@@ -67,6 +67,9 @@ def make_env(daytona_sdk, monkeypatch):
     monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", list)
     monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
+    # Mock _derive_profile_id to return a stable test value
+    monkeypatch.setattr("tools.environments.daytona._derive_profile_id",
+                        lambda: "abcd1234")
 
     def _factory(
         sandbox=None,
@@ -126,6 +129,36 @@ class TestCwdResolution:
         env = make_env(home_dir="/home/testuser")
         assert env.cwd == "/home/testuser"
 
+    def test_tilde_cwd_resolves_home(self, make_env):
+        env = make_env(cwd="~", home_dir="/home/testuser")
+        assert env.cwd == "/home/testuser"
+
+    def test_explicit_cwd_not_overridden(self, make_env):
+        env = make_env(cwd="/workspace", home_dir="/root")
+        assert env.cwd == "/workspace"
+
+    def test_sync_cwd_explicit_source_defaults_commands_to_workspace(self, make_env, monkeypatch, tmp_path):
+        """With a safe explicit host source, CWD-sync commands default to /workspace."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("synced")
+        monkeypatch.setattr(DaytonaEnvironment, "_daytona_bulk_upload", lambda self, files: None)
+
+        sb = _make_sandbox()
+        env = make_env(sandbox=sb, sync_cwd=True, host_cwd=str(project))
+        assert env.cwd == "/workspace"
+
+        env.execute("pwd")
+        command = sb.process.exec.call_args_list[-1].args[0]
+        assert "builtin cd -- /workspace" in command
+
+    def test_home_detection_failure_keeps_default_cwd(self, make_env):
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = RuntimeError("exec failed")
+        env = make_env(sandbox=sb)
+        assert env.cwd == "/home/daytona"  # keeps constructor default
 
     def test_empty_home_keeps_default_cwd(self, make_env):
         env = make_env(home_dir="")
@@ -146,6 +179,41 @@ class TestPersistence:
         env._mock_client.get.assert_called_once_with("hermes-mytask")
         env._mock_client.create.assert_not_called()
 
+    def test_persistent_resumes_legacy_via_list(self, make_env, daytona_sdk):
+        legacy = _make_sandbox(sandbox_id="sb-legacy")
+        legacy.process.exec.return_value = _make_exec_response(result="/root")
+        env = make_env(
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            list_return=iter([legacy]),
+            persistent=True,
+            task_id="mytask",
+        )
+        legacy.start.assert_called_once()
+        # Labels now include hermes_profile_id and hermes_backend
+        env._mock_client.list.assert_called_once_with(
+            labels={
+                "hermes_task_id": "mytask",
+                "hermes_profile_id": "abcd1234",
+                "hermes_backend": "daytona",
+            }, limit=1)
+        env._mock_client.create.assert_not_called()
+
+    def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):
+        env = make_env(
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            persistent=True,
+            task_id="mytask",
+        )
+        env._mock_client.create.assert_called_once()
+        # Verify the name and labels were passed to CreateSandboxFromImageParams
+        # by checking get() was called with the right sandbox name
+        env._mock_client.get.assert_called_with("hermes-mytask")
+        env._mock_client.list.assert_called_once()
+        labels = env._mock_client.list.call_args.kwargs["labels"]
+        assert labels["hermes_task_id"] == "mytask"
+        assert labels["hermes_backend"] == "daytona"
+        assert "hermes_profile_id" in labels
+        assert env._mock_client.list.call_args.kwargs["limit"] == 1
 
     def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)

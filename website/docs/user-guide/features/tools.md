@@ -76,7 +76,7 @@ The terminal tool can execute commands in different environments:
 | `singularity` (plugin) | HPC containers | Cluster computing, rootless |
 | `sprites` (plugin) | Stateful Fly.io cloud sandbox | Persistent cloud environments with checkpoint & restore |
 | `modal` | Cloud execution | Serverless, scale |
-| `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
+| `daytona` | Cloud sandbox workspace | Persistent remote dev environments with image/snapshot modes, profile-scoped naming, lifecycle controls, network isolation, and CWD sync |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
 
 ### Configuration

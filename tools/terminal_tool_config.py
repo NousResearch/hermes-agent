@@ -44,6 +44,30 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
         )
 
 
+def _parse_json_env_var(name: str, default: str, expected_type: type) -> object:
+    """Parse a JSON env var and validate its top-level type (dict or list)."""
+    raw = _tenv(name, default)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError(
+            f"Invalid value for {name}: expected valid JSON. "
+            f"Check terminal.{name.removeprefix('TERMINAL_').lower()} in config.yaml."
+        )
+    if not isinstance(parsed, expected_type):
+        type_name = (
+            "dict" if expected_type is dict
+            else "list" if expected_type is list
+            else expected_type.__name__
+        )
+        raise ValueError(
+            f"Invalid value for {name}: "
+            f"(expected JSON {type_name}, got {type(parsed).__name__}). "
+            f"Check terminal.{name.removeprefix('TERMINAL_').lower()} in config.yaml."
+        )
+    return parsed
+
+
 # (current home, Hermes root) -> profile name; only homes that exist are stored (see home_profile_name).
 _HOME_PROFILE_NAMES: dict[tuple[str, str], str] = {}
 

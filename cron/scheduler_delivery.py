@@ -1506,18 +1506,6 @@ def _deliver_standalone(
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
-    if _standalone_credential_missing(t):
-        # A satellite profile's worker resolves no platform token: the standalone send is a
-        # guaranteed pre-network failure whose ERROR line and failed stamps are pure noise on
-        # every degraded-window delivery. Skip it and go straight to the queue gate.
-        msg = (f"standalone send skipped for {t.where}: no {t.platform_name} credential resolved "
-               "in this worker (satellite profile) — the send would fail closed before any "
-               "network IO")
-        logger.warning("Job '%s': %s", job["id"], msg)
-        target_errors.append(msg)
-        delivery_errors.extend(target_errors)
-        _queue_for_live_reconnect(t, content, media_files, delivery_errors)
-        return
     result, err, in_flight = _standalone_send(t, content, media_files)
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
@@ -1859,4 +1847,4 @@ from cron.scheduler_delivery_media import _send_media_via_adapter
 from cron import scheduler_preflight as _preflight
 from cron import scheduler_script as _script
 from cron.scheduler_delivery_standalone import (
-    _queue_for_live_reconnect, _standalone_credential_missing, _standalone_send)
+    _queue_for_live_reconnect, _standalone_send)

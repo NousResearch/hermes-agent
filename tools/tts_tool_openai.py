@@ -90,6 +90,8 @@ def _openai_extra_body(oai_config: dict[str, Any]) -> dict[str, Any]:
     if oai_config.get("consent_attestation"):
         extra_body["consent_attestation"] = oai_config["consent_attestation"]
     return extra_body
+
+
 def _is_response_format_rejection(exc: Exception) -> bool:
     """True when a speech.create() error is a backend rejecting response_format.
 
@@ -108,7 +110,7 @@ def _is_response_format_rejection(exc: Exception) -> bool:
     return "response_format" in str(exc)
 
 
-def _openai_speech_create_with_format_fallback(client, create_kwargs: Dict[str, Any]):
+def _openai_speech_create_with_format_fallback(client, create_kwargs: dict[str, Any]):
     """Call ``audio.speech.create``; on an *opus* rejection, retry mp3.
 
     Native opus is always requested first (from a ``.ogg`` target), so backends

@@ -1,17 +1,19 @@
 name: vellum
 repo: https://github.com/0xsaltylollipop/vellum
-sha: 286b44d587500bd4792decdc73370791262aec0b
+sha: 509d282a27631657129e48dc864c094d599c2233
 description: >-
   Vellum: Hermes draws inside the paper. Highlight a passage in an arXiv paper (HTML version) in Hermes's browser
   and your own Hermes session gives you the gist like a friend at a whiteboard, talking while it sketches a live,
   interactive figure right under the paragraph (built from the paper's own example and numbers); follow-ups, typed
   or spoken, change the same sketch. Adds tools (vellum_draw / vellum_look / vellum_clear / vellum_read), a skill,
-  and hooks on turns started from the paper. Disclosure — reads arXiv HTML pages (arxiv.org/html, ar5iv) with
-  Desktop's per-site consent; puts Visualize/Ask drafts into your chat box for you to send (never submits a turn
-  itself), and the highlighted passage and nearby paper text go to your configured model as part of that turn (the
-  full paper when Hermes calls vellum_read, and a picture of the figure when it calls vellum_look); runs
-  model-written drawing code only in a sandboxed iframe (opaque origin, CSP default-src none with scripts pinned by
-  hash, WebRTC constructors removed; best effort, since CSP does not cover a frame navigating itself); speaks with
+  hooks on turns started from the paper, a Desktop plugin and dashboard routes under /api/plugins/vellum/.
+  Disclosure — reads arXiv HTML pages (arxiv.org/html, ar5iv) with Desktop's per-site consent and saves the open
+  paper's text when you switch it on; puts Visualize/Ask drafts into your chat box for you to send (never submits a
+  turn itself); the highlighted passage and nearby paper text go to your configured model as part of that turn (the
+  full paper when Hermes calls vellum_read, and a picture of the figure when it calls vellum_look), marked as web
+  text; runs model-written drawing code only in a sandboxed iframe (opaque origin, CSP default-src none with scripts
+  pinned by hash plus 'unsafe-eval' for the drawing steps, WebRTC constructors removed; best effort, since CSP does
+  not cover a frame navigating itself); tools reach the card through plugin events (plugin.vellum.*); speaks with
   Hermes's own text_to_speech, one call per spoken sentence and at most 60 per turn (Edge TTS by default, an online
   service; a paid provider bills each sentence); stores the text of the 20 most recently opened papers, the ids of
   the 50 most recent figure cards opened, the current Ask passage and short-lived request/voice files under
@@ -22,7 +24,7 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/0xsaltylollipop/vellum#readme
-version: "0.4.0"
+version: "0.5.0"
 platforms: []
 capabilities:
   provides_tools: [vellum_draw, vellum_look, vellum_clear, vellum_read]

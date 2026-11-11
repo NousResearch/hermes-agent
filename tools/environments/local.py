@@ -231,15 +231,23 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
 
 # --- Child-process environment construction ---
-def _apply_profile_home(env: dict) -> None:
+def _apply_profile_home(env: dict, *, explicit_mode: bool = False, explicit_home: str | None = None) -> None:
     """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
-    from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
+    from hermes_constants import (apply_subprocess_home_env, get_hermes_home_override,
+                                  reset_hermes_home_override, set_hermes_home_override)
+    if explicit_home:
+        token = set_hermes_home_override(explicit_home)
+        try:
+            apply_subprocess_home_env(env, use_terminal_scope=not explicit_mode)
+        finally:
+            reset_hermes_home_override(token)
+        return
     try:
         if value := get_hermes_home_override():
             env["HERMES_HOME"] = value
     except Exception:
         pass
-    apply_subprocess_home_env(env)
+    apply_subprocess_home_env(env, use_terminal_scope=not explicit_mode)
 
 
 def _inject_session_context_env(env: dict) -> None:
@@ -306,11 +314,11 @@ def _filter_secret_env(
             out[key] = value
 
 
-def _finalize_child_env(env: dict) -> dict:
+def _finalize_child_env(env: dict, *, explicit_mode: bool = False, explicit_home: str | None = None) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
-    _apply_profile_home(env)
+    _apply_profile_home(env, explicit_mode=explicit_mode, explicit_home=explicit_home)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     strip_supervised_process_identity(env)
@@ -319,7 +327,8 @@ def _finalize_child_env(env: dict) -> dict:
     return delegated_child_subprocess_env(env)
 
 
-def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
+def _scrubbed_env(parts, plugin_strip: frozenset, fix_path, *,
+                  explicit_mode: bool = False, explicit_home: str | None = None) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
@@ -338,14 +347,15 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     # already applies this invariant; Cron scripts use this sanitizer directly (#92998).
     if path_key is not None:
         out[path_key] = _prepend_hermes_bin_dir(fix_path(out.get(path_key, "")))
-    return _finalize_child_env(out)
+    return _finalize_child_env(out, explicit_mode=explicit_mode, explicit_home=explicit_home)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None, *,
+                             explicit_mode: bool = False, explicit_home: str | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
     return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+                         _plugin_terminal_env_strip_keys(), lambda p: p, explicit_mode=explicit_mode, explicit_home=explicit_home)
 
 
 def _terminal_env(env: dict) -> dict:
@@ -392,19 +402,29 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
 def build_subprocess_env(
     base: Mapping[str, str] | None = None, *, inherit_profile_home: bool = True,
     scrub_secrets: bool = True, extra: Mapping[str, str] | None = None,
-    strip_launch_profile: bool = False) -> dict[str, str]:
+    strip_launch_profile: bool = False, base_is_snapshot: bool = False) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
     ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base's secrets
     (git credential flows, ``bws``/``op``); ``inherit_profile_home``
-    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win. Both modes
-    drop the supervised process's own identity (:func:`strip_supervised_process_identity`).
+    bridges HERMES_HOME + HOME and ``extra`` supplies caller overrides.
+    ``base`` and ``extra`` carry intentional home mode; set ``base_is_snapshot=True`` for an
+    inherited process snapshot. Without an explicit mode the bound terminal scope owns policy.
+    Both modes drop the supervised process's own identity (:func:`strip_supervised_process_identity`).
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
     acts for a routed profile sees only that profile's declared names, never the launch profile's.
     Under multiplex semantics it then overlays the bound secret scope (the routed profile's own
     ``.env`` + source values, which never enter ``os.environ``) and re-applies the managed keys,
     all BEFORE the scrub, so those values pass the same scrub / passthrough rules as any other."""
+    # A supplied base/extra is intentional; ambient snapshots must be identified by the caller.
+    from tools.terminal_scope import get_terminal_scope
+    scoped = get_terminal_scope() is not None
+    explicit_mode = bool((extra or {}).get("TERMINAL_HOME_MODE") or
+                         (base is not None and not base_is_snapshot and base.get("TERMINAL_HOME_MODE")))
+    explicit_home = (((extra or {}).get("HERMES_HOME") or
+                      (base.get("HERMES_HOME") if base is not None and not base_is_snapshot else None))
+                     if scoped else None)
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if strip_launch_profile:
         strip_launch_profile_env(env)
@@ -417,10 +437,13 @@ def build_subprocess_env(
             # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
             restore_managed_env(env)
     if scrub_secrets:
-        return _sanitize_subprocess_env(env, dict(extra) if extra else None)
+        return _sanitize_subprocess_env(env, dict(extra) if extra else None,
+                                        explicit_mode=explicit_mode, explicit_home=explicit_home)
+    if scoped and (explicit_mode or explicit_home) and extra:
+        env.update(extra)
     if inherit_profile_home:
-        _apply_profile_home(env)
-    if extra:
+        _apply_profile_home(env, explicit_mode=explicit_mode, explicit_home=explicit_home)
+    if extra and not (scoped and (explicit_mode or explicit_home)):
         env.update(extra)
     strip_supervised_process_identity(env)
     from agent.delegation_context import delegated_child_subprocess_env

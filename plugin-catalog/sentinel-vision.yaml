@@ -1,0 +1,39 @@
+name: sentinel-vision
+version: "0.1.0"
+repo: https://github.com/StarAtNyte/hermes-sentinel
+sha: fb48bf5c835fa2e8acb74dfc05c52458b3c1194d
+subdir: sentinel-vision
+title: Sentinel Vision
+description: "Tell Hermes what to watch on a camera, screen or video, and Sentinel detects events, stores snapshots and injects alerts into your chat. A local change detector and configurable call caps reduce vision-model usage; rules, event history and feedback make the watcher useful over time. Frames and rule text are sent to your configured model; see the README for setup, privacy and limitations."
+maintainer: StarAtNyte
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/StarAtNyte/hermes-sentinel/blob/fb48bf5c835fa2e8acb74dfc05c52458b3c1194d/sentinel-vision/README.md
+platforms: []
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/StarAtNyte/hermes-sentinel/fb48bf5c835fa2e8acb74dfc05c52458b3c1194d/sentinel-vision/docs/images/live-test-alert.jpg
+  - https://raw.githubusercontent.com/StarAtNyte/hermes-sentinel/fb48bf5c835fa2e8acb74dfc05c52458b3c1194d/sentinel-vision/docs/images/pane-preview-wide.png
+known_issues:
+  - "Registers a /sentinel slash command, which another listed plugin (SENTINEL OS) also uses; the two conflict only if both are installed."
+  - "Outside the classic CLI, alerts are only delivered after you add plugins.entries.sentinel-vision.allow_gateway_injection: true to config.yaml; /sentinel status shows the exact snippet when delivery is refused."
+  - "Needs a vision-capable model routed to the sentinel_vision auxiliary task, otherwise judging fails (the gate keeps running)."
+  - "On Telegram/Discord send /sentinel here once so alerts return to that chat."
+  - "Screen capture needs a display; it is not available on a headless server."
+  - "Vision only (no audio, no video-site streams such as YouTube). Movement is judged from up to 3 recent frames, not video; the slow-drift check misses very small or very large gradual changes. Expect misses and false alarms. Not a safety device."
+  - "Plugins cannot read allow_gateway_injection; run /sentinel setup --test-delivery to test delivery. On a multiplexing gateway, cameras that need a ${SECRET} wait until the first /sentinel command or sentinel_* tool call after start-up."
+capabilities:
+  provides_tools:
+    - sentinel_sources
+    - sentinel_watch
+    - sentinel_rules
+    - sentinel_update
+    - sentinel_look
+    - sentinel_events
+    - sentinel_feedback
+    - sentinel_teach
+    - sentinel_setup_check
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []   # matches plugin.yaml (none). The optional SENTINEL_STREAM_URL_1..4 slots are config_schema secrets, not requires_env.

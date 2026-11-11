@@ -161,6 +161,20 @@ def _store_executor() -> ThreadPoolExecutor:
         return _executor
 
 
+@contextmanager
+def _home_bound(home: Path) -> Iterator[None]:
+    """``home`` as the current Hermes home while a store opens, so the opening reads that profile's configuration
+    (``database.*`` connection settings among it), as main's open under the served profile's scope does."""
+    from hermes_constants import get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+
+    token = None if hermes_home_key(home) == hermes_home_key(get_hermes_home()) else set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
 class SQLiteBackend:
     """Every store one assembly was built for; ``open(scope)`` binds a handle to one of them. See the module
     docstring."""
@@ -227,7 +241,7 @@ class SQLiteBackend:
                 return held
             if current is not None and (self.read_only or not reacquire):
                 return current
-        with translated():
+        with translated(), _home_bound(path.parent):
             fresh = (StoreHolder(path, read_only=True, read_patience_s=self._read_patience_s) if self.read_only
                      else _registry.acquire(path))
         with self._lock:

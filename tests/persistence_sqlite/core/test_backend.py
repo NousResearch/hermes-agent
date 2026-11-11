@@ -18,6 +18,7 @@ from persistence import (
 )
 from persistence.sqlite import SQLiteBackend, translated
 from persistence.sqlite import _registry
+from hermes_constants import get_hermes_home
 from hermes_state_errors import StateDbCorruptError, StateDbReplacedError
 from tests.persistence_sqlite.conftest import store_for
 
@@ -101,6 +102,22 @@ def test_a_handle_opened_after_its_file_is_replaced_writes_the_replacement_while
     assert sqlite3.connect(path).execute("SELECT value FROM state_meta WHERE key = 'k'").fetchone() == ("new",)
     backend.close()
     assert _registry.stats() == {"live_generations": 0, "retired_generations": 0, "total_refcounts": 0}
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_a_store_opens_with_its_own_profiles_database_settings_whichever_profile_the_caller_runs_as(backend, scope_a, read_only):
+    (get_hermes_home() / "config.yaml").write_text("database:\n  synchronous: OFF\n  cache_size: -1111\n")
+    (store_for(scope_a).parent / "config.yaml").write_text("database:\n  synchronous: EXTRA\n  cache_size: -2222\n")
+    backend.open(scope_a).state_meta.set("k", "v")
+    if read_only:
+        backend.close()
+        backend = SQLiteBackend({scope_a.hermes_home_key: store_for(scope_a)}, read_only=True)
+    try:
+        conn = backend.open(scope_a).holder()._conn
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 3
+        assert conn.execute("PRAGMA cache_size").fetchone()[0] == -2222
+    finally:
+        backend.close()
 
 
 def test_close_refuses_further_use(backend, scope_a):

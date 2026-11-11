@@ -30418,6 +30418,7 @@
         "type": "object"
       },
       "ProfileCreateReceipt": {
+        "additionalProperties": false,
         "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
         "properties": {
           "path": {

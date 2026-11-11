@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import socket
+import ssl
 import sys
 import time
 from typing import Iterable, Optional
@@ -186,9 +187,30 @@ def telegram_verify(extra: Optional[dict], default):
         return default
     if not value:
         return default
-    from agent.ssl_verify import classic_key_exchange_context
     logger.info("[Telegram] TLS: classic X25519 key exchange (tls_classic_key_exchange)")
-    return classic_key_exchange_context()
+    return _classic_key_exchange_context()
+
+
+_CLASSIC_CONTEXTS: dict[int, ssl.SSLContext] = {}
+
+
+def _classic_key_exchange_context() -> ssl.SSLContext:
+    """A context with ``platform_ssl_context()``'s trust (platform store plus ``SSL_CERT_FILE``)
+    offering only the classic X25519 share: a ~0.5 KB ClientHello instead of the ~1.5 KB
+    post-quantum hybrid one. Cached per base context so clients keep one stable identity.
+    truststore's injected context class keeps an inner context and does not forward
+    ``set_ecdh_curve``, so the group is set on that inner context when there is one."""
+    base = platform_ssl_context()
+    ctx = _CLASSIC_CONTEXTS.get(id(base))
+    if ctx is None:
+        ctx = type(base)(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_default_certs()
+        ca = os.environ.get("SSL_CERT_FILE", "").strip()
+        if ca and os.path.isfile(ca):
+            ctx.load_verify_locations(cafile=ca)
+        getattr(ctx, "_ctx", ctx).set_ecdh_curve("X25519")
+        _CLASSIC_CONTEXTS[id(base)] = ctx
+    return ctx
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:

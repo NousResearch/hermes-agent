@@ -130,32 +130,6 @@ def platform_ssl_context() -> ssl.SSLContext:
     return _shared_context(None)
 
 
-_CLASSIC_CONTEXTS: dict[int, ssl.SSLContext] = {}
-
-
-def classic_key_exchange_context() -> ssl.SSLContext:
-    """``platform_ssl_context()`` trust (platform store plus ``SSL_CERT_FILE``), offering only the
-    classic X25519 key-exchange group. OpenSSL 3.5's default post-quantum hybrid share makes the TLS
-    ClientHello ~1.5 KB, and some network paths reset a hello that large; the classic one is
-    ~0.5 KB. Cached per base context so clients keep one stable identity.
-
-    truststore's injected context class keeps its own inner context and does not forward
-    ``set_ecdh_curve``, so the groups are set on that inner context when there is one."""
-    base = platform_ssl_context()
-    with _CA_CONTEXTS_LOCK:
-        ctx = _CLASSIC_CONTEXTS.get(id(base))
-        if ctx is None:
-            ca = os.environ.get("SSL_CERT_FILE", "").strip()
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            if not _installed:
-                ctx.load_default_certs()
-            if ca and Path(ca).is_file():
-                ctx.load_verify_locations(cafile=str(Path(ca).resolve()))
-            getattr(ctx, "_ctx", ctx).set_ecdh_curve("X25519")  # one group: every TLS 1.3 server offers it
-            _CLASSIC_CONTEXTS[id(base)] = ctx
-        return ctx
-
-
 _STALE_BUNDLE_OUTCOMES: dict[str, Optional[str]] = {}
 _STALE_BUNDLE_LOCK = threading.Lock()
 

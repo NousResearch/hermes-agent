@@ -134,14 +134,25 @@ HERMES_FORK_IMAGE=ghcr.io/jzkk720/hermes-agent@sha256 <digest> \
 
 ### Published pin for this sync
 
+`main` is now the synced tree (PR #3 merged as `5c41a470be`), and the image was
+rebuilt **from main** so `latest`/`main` finally correspond to it.
+
 | | |
 |---|---|
-| workflow run | `43066031645` (success, 10m04s) |
-| commit | `c633bd9e367a858dca3c41d9f9bcb7dc4b86e56e` |
-| immutable tag | `ghcr.io/jzkk720/hermes-agent:sha-c633bd9` |
-| digest | `ghcr.io/jzkk720/hermes-agent@sha256:b7d0d0ba05945df6b6df84ebd5c7a94b6c60683a86cbd22669d83347b50516d4` |
+| workflow run | `43079387505` (success, 8m09s) |
+| commit | `5c41a470bed60d9ceef41f390a4e109df1f929b2` |
+| immutable tag | `ghcr.io/jzkk720/hermes-agent:sha-5c41a47` |
+| digest | `ghcr.io/jzkk720/hermes-agent@sha256:5262a913be47de2920cdbbaa9ac08cadd2ca41f85ee852b3431485f9512fd8d3` |
 
-The first dispatch (`43062782083`) failed at `docker.build_agent` — see phase 7.
+The deployed pin lives in the gitignored root `.env` as `HERMES_FORK_IMAGE`.
+
+Earlier dispatches, kept for the build-failure record:
+
+| run | branch | result |
+|---|---|---|
+| `43062782083` | upgrade branch | failed — lost frontend COPY lines (phase 7) |
+| `43066031645` | upgrade branch | success, `sha-c633bd9` |
+| `43079387505` | `main` | success, `sha-5c41a47` — **deployed** |
 
 ## 6. Phases and gates
 

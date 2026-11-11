@@ -334,9 +334,14 @@ class AssemblyResult:
     activated: bool
     deferred_count: int = 0
     deferred_tokens: int = 0
-    # 0 = passthrough; 1 = bridge + per-tool listing; 2 = bare bridge / server summary only.
-    tier: int = 0
     listing_form: str = "none"  # "full" | "names" | "mixed" | "groups" | "none"
+
+    @property
+    def tier(self) -> int:
+        """0 = passthrough; 1 = bridge + per-tool listing; 2 = bare bridge / server summary only."""
+        if not self.activated:
+            return 0
+        return 1 if self.listing_form in ("full", "names", "mixed") else 2
 
 
 def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optional[int] = None,
@@ -351,13 +356,13 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
     if not deferrable:
         if should_activate(config, 0, connections_granted=connections_granted):
             return AssemblyResult(tool_defs=incoming + bridge_tool_schemas(0, connections_granted=connections_granted),
-                                  activated=True, tier=2)
+                                  activated=True)
         return AssemblyResult(tool_defs=incoming, activated=False)
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
     if not should_activate(config, deferrable_tokens):
         return AssemblyResult(
             tool_defs=incoming, activated=False, deferred_count=len(deferrable),
-            deferred_tokens=deferrable_tokens, tier=0)
+            deferred_tokens=deferrable_tokens)
     listing, listing_form = None, "none"
     listing_budget = listing_token_budget(config, context_length)
     if config.listing != "off":
@@ -365,15 +370,14 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
             deferrable, max_tokens=listing_budget)
     bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form,
                                  connections_granted=connections_granted)
-    tier = 1 if listing_form in ("full", "names", "mixed") else 2
+    result = AssemblyResult(
+        tool_defs=visible + bridge, activated=True, deferred_count=len(deferrable),
+        deferred_tokens=deferrable_tokens, listing_form=listing_form)
     logger.info(
         "tool_search activated (tier %d): %d core/visible tools kept, %d deferred "
         "(~%d tokens), listing %s (budget ~%d tokens)",
-        tier, len(visible), len(deferrable), deferrable_tokens, listing_form, listing_budget)
-    return AssemblyResult(
-        tool_defs=visible + bridge, activated=True, deferred_count=len(deferrable),
-        deferred_tokens=deferrable_tokens,
-        tier=tier, listing_form=listing_form)
+        result.tier, len(visible), len(deferrable), deferrable_tokens, listing_form, listing_budget)
+    return result
 
 
 def is_bridge_tool(name: str) -> bool:

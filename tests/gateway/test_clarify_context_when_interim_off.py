@@ -106,3 +106,22 @@ async def test_codex_clarify_sends_draft_not_commentary_when_interim_messages_ar
 
     assert result["final_response"] == "done"
     assert [call["content"] for call in adapter.sent] == [draft]
+
+
+@pytest.mark.asyncio
+async def test_clarify_card_posts_when_its_explanation_send_never_returns(monkeypatch):
+    """An adapter send that hangs must not hold back the question the turn is waiting on."""
+    import gateway.run_turn_runner_clarify_delivery as delivery
+    from gateway.run_turn_runner import TurnRunner
+
+    monkeypatch.setattr(delivery, "CARD_WAITS_FOR_CONTEXT", 0.2)
+    order: list[str] = []
+
+    async def send_clarify(**_kwargs):
+        order.append("card")
+        return SimpleNamespace(success=True)
+
+    runner = SimpleNamespace(_ctx=SimpleNamespace(_status_adapter=SimpleNamespace(send_clarify=send_clarify)),
+                             _approval_owner=None, _clarify_context_send=concurrent.futures.Future())
+    await asyncio.wait_for(TurnRunner._send_shared_clarify(runner, entry=None), 5)
+    assert order == ["card"]

@@ -2,7 +2,7 @@ name: ball
 repo: https://github.com/getaskclaw/hermes-ball
 sha: 036ef752cf21d5b18f3f391b3311222b5a964676
 description: >-
-  Shows which Hermes chats are waiting on you and what the AI asked (/ball; Matrix: !ball). A phrase heuristic, not a guarantee. Reads each inbound message to track turns but never stores it; keeps short AI-reply excerpts in local SQLite. No network unless you enable the optional LLM judge.
+  Estimates which Hermes chats are waiting on you and what the AI asked (/ball; Matrix: !ball). Heuristic; misses happen. Reads inbound messages (never stored) and, read-only, Hermes' state.db (non-public schema); stores short AI-reply excerpts in local SQLite. Optional LLM judge sends reply tails to your active model.
 maintainer: getaskclaw
 tier: community
 category: general

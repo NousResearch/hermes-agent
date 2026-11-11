@@ -1,0 +1,32 @@
+name: formwork
+title: Formwork
+repo: https://github.com/ladyFaye1998/hermes-formwork
+sha: b367b7021eef71ba051b8d585ed49edf807c9a6b
+description: >-
+  Complete a packet of fillable PDFs inside Hermes Desktop. See each suggested
+  answer on the original form, open its exact source page and quote, and review
+  it before export. Enter a missing fact once and choose which matching fields
+  should reuse it. Save editable PDFs and a review record in one ZIP.
+maintainer: ladyFaye1998
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/ladyFaye1998/hermes-formwork#readme
+version: "0.1.0"
+readme: true
+platforms: [windows]
+image: https://raw.githubusercontent.com/ladyFaye1998/hermes-formwork/b367b7021eef71ba051b8d585ed49edf807c9a6b/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ladyFaye1998/hermes-formwork/b367b7021eef71ba051b8d585ed49edf807c9a6b/docs/screenshots/native-review.png
+  - https://raw.githubusercontent.com/ladyFaye1998/hermes-formwork/b367b7021eef71ba051b8d585ed49edf807c9a6b/docs/screenshots/native-source.png
+  - https://raw.githubusercontent.com/ladyFaye1998/hermes-formwork/b367b7021eef71ba051b8d585ed49edf807c9a6b/docs/screenshots/native-reuse.png
+  - https://raw.githubusercontent.com/ladyFaye1998/hermes-formwork/b367b7021eef71ba051b8d585ed49edf807c9a6b/docs/screenshots/native-export.png
+known_issues:
+  - "Native workflow verified on Windows with Hermes 0.23.1."
+  - "Supported AcroForms and text-bearing source PDFs only; printable ASCII for text output. No OCR, XFA, signing or interactive calculations."
+  - "The Formwork extraction auxiliary model must accept images. It inherits Hermes Vision until configured separately."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

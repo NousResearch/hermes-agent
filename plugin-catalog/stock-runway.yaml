@@ -16,6 +16,11 @@ category: tools
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/usegreymatter/hermes-stock-runway#readme
 version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/harness-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/popup-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/card-1440-dark.png
+  - https://raw.githubusercontent.com/usegreymatter/hermes-stock-runway/34b148604c92648137a7506daba6ce47c8e5fe1b/docs/screens/harness-360-dark.png
 readme: true
 platforms: []
 title: Stock Runway

@@ -1,0 +1,15 @@
+name: lookahead
+repo: https://github.com/ericklindberg/lookahead
+sha: 4ba97988a76e49e60a037901f05063ae03828974
+description: Conversation-captured commitments with grounded preparation briefs and one post-event follow-up.
+maintainer: ericklindberg
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools: [lookahead_status]
+  provides_hooks: [post_gateway_admission, post_llm_call]
+  provides_middleware: []
+  requires_env: []

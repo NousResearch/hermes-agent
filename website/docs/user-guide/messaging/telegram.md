@@ -1469,12 +1469,13 @@ platforms:
 ```
 
 This covers both Bot API requests and long polling, including proxy and
-fallback-IP connections. TLS 1.3, hostname checks, and certificate verification
-remain enabled; `SSL_CERT_FILE` and `SSL_CERT_DIR` are still respected. The
-tradeoff is opting out of post-quantum key exchange for Telegram. Other
-platforms and model-provider clients keep their existing TLS settings.
-The default is `false`; remove the setting or set it to `false` to restore
-OpenSSL's default groups. See also [the related OpenSSL 3.5 report](https://github.com/NousResearch/hermes-agent/issues/106384).
+fallback-IP connections, and one-shot sends (cron, `send_message`). TLS 1.3,
+hostname checks, and certificate verification remain enabled; the platform
+trust store and `SSL_CERT_FILE` are still used. The tradeoff is opting out of
+post-quantum key exchange for Telegram. Other platforms and model-provider
+clients keep their existing TLS settings. The default is `false`; remove the
+setting or set it to `false` to restore OpenSSL's default groups. A value other
+than true/false is ignored with a warning in the gateway log. See also [the related OpenSSL 3.5 report](https://github.com/NousResearch/hermes-agent/issues/106384).
 
 ## Message Reactions
 

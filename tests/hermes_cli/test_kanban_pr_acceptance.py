@@ -145,11 +145,14 @@ def cold_secret_profiles(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "launch-github-token")
     monkeypatch.setenv("GH_CONFIG_DIR", str(launch / "gh"))
     for home in (launch, target):
+        (home / ".env").parent.mkdir(parents=True, exist_ok=True)
+        (home / ".env").write_text(f"FIXTURE_BOOTSTRAP={home.name}-bootstrap\n", encoding="utf-8")
         plugin = home / "plugins" / "fixture-vault"
         plugin.mkdir(parents=True)
         (plugin / "plugin.yaml").write_text("name: fixture-vault\n", encoding="utf-8")
         (plugin / "__init__.py").write_text('''
 from agent.secret_sources.base import FetchResult, SecretSource
+from agent.secret_scope import get_secret, is_multiplex_active
 from hermes_constants import get_hermes_home
 
 class FixtureVault(SecretSource):
@@ -157,13 +160,19 @@ class FixtureVault(SecretSource):
     shape = "bulk"
 
     def fetch(self, cfg, home_path):
+        with (home_path / "fetch-count").open("a", encoding="utf-8") as stream:
+            stream.write("fetch\\n")
         (home_path / "fetched").write_text("yes", encoding="utf-8")
         if (home_path / "fail").exists():
             raise RuntimeError("offline fixture fetch failure")
+        if (home_path / "protected").exists():
+            return FetchResult(secrets={"FIXTURE_PLANE_TOKEN": "must-not-publish"})
         return FetchResult(secrets={"GH_TOKEN": home_path.name + "-vault-token"})
 
 def register(ctx):
     home = get_hermes_home()
+    assert get_secret("FIXTURE_BOOTSTRAP") == home.name + "-bootstrap"
+    (home / "multiplex").write_text(str(is_multiplex_active()), encoding="utf-8")
     (home / "registered").write_text(str(home), encoding="utf-8")
     ctx.register_secret_source(FixtureVault())
 ''', encoding="utf-8")
@@ -172,7 +181,7 @@ def register(ctx):
             "secrets:\n  sources: [fixturevault]\n  fixturevault:\n    enabled: true\n",
             encoding="utf-8",
         )
-    shim = tmp_path / "bin"
+    shim = tmp_path / "cold-bin"
     shim.mkdir()
     gh = shim / "gh"
     gh.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
@@ -201,7 +210,7 @@ def test_cold_acceptance_loads_only_the_assignee_plugin_secrets(cold_secret_prof
     original_home = get_hermes_home_override()
     original_multiplex = is_multiplex_active()
     assert env_loader.get_secret_source_values(target) == {}
-    captured = _api("user", profile_home=str(target))
+    captured = _api("user", env=_gh_env(str(target)))
     assert captured["GH_TOKEN"] == "worker-vault-token"
     assert captured["GITHUB_TOKEN"] is None
     assert captured["GH_CONFIG_DIR"] != str(launch / "gh")
@@ -228,7 +237,7 @@ def test_cold_acceptance_fetch_failure_never_uses_launch_login(cold_secret_profi
     original_home = get_hermes_home_override()
     original_multiplex = is_multiplex_active()
     with pytest.raises(_GateAuthError, match="no login"):
-        _api("user", profile_home=str(target))
+        _api("user", env=_gh_env(str(target)))
     assert (target / "fetched").exists()
     env = _gh_env(str(target))
     assert env is not None
@@ -238,6 +247,104 @@ def test_cold_acceptance_fetch_failure_never_uses_launch_login(cold_secret_profi
     assert get_hermes_home() == launch
     assert get_hermes_home_override() == original_home
     assert is_multiplex_active() == original_multiplex
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("routed", [False, True])
+@pytest.mark.parametrize("multiplex", [False, True])
+def test_discovery_binds_owner_secrets_and_restores_the_caller(cold_secret_profiles, routed, multiplex):
+    from agent.secret_scope import (
+        current_secret_scope, current_secret_scope_home, is_multiplex_active,
+        reset_multiplex_context, reset_secret_scope, set_multiplex_context, set_secret_scope,
+    )
+    from hermes_cli.kanban_pr_acceptance import _gh_env
+    from hermes_constants import get_hermes_home_override
+
+    launch, target = cold_secret_profiles
+    home = target if routed else launch
+    caller_scope = {"FIXTURE_BOOTSTRAP": "caller-only"}
+    secret_token = set_secret_scope(caller_scope, profile_home="caller")
+    multiplex_token = set_multiplex_context(multiplex)
+    original_home = get_hermes_home_override()
+    try:
+        env = _gh_env(str(home))
+        assert env is not None
+        assert (home / "registered").read_text() == str(home)
+        assert (home / "multiplex").read_text() == str(routed or multiplex)
+        assert env["GH_TOKEN"] == ("worker-vault-token" if routed else "launch-token")
+        # A second discovery must reuse a correctly loaded manager, not a cached failed plugin.
+        assert _gh_env(str(home))["GH_TOKEN"] == env["GH_TOKEN"]
+        assert current_secret_scope() is caller_scope
+        assert current_secret_scope_home() == "caller"
+        assert is_multiplex_active() is multiplex
+        assert get_hermes_home_override() == original_home
+        assert os.environ["GH_TOKEN"] == "launch-token"
+    finally:
+        reset_multiplex_context(multiplex_token)
+        reset_secret_scope(secret_token)
+
+
+def test_config_backend_refusal_is_a_redacted_auth_receipt(cold_secret_profiles, monkeypatch):
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_cli import config_backend
+    from hermes_cli.kanban_pr_acceptance import collect_acceptance
+    from hermes_constants import get_hermes_home_override
+
+    _launch, target = cold_secret_profiles
+    (target / "protected").touch()
+
+    class ProtectedBackend(config_backend.FileBackend):
+        name = "fixture-remote"
+
+        def protected_env_names(self):
+            return frozenset({"FIXTURE_PLANE_TOKEN"})
+
+    monkeypatch.setattr(config_backend, "get_config_backend", lambda: ProtectedBackend())
+    original = get_hermes_home_override(), current_secret_scope(), is_multiplex_active()
+    receipt = collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7", assignee="worker")
+    assert (target / "fetched").exists()
+    assert receipt["classification"] == "auth" and not receipt["ok"]
+    assert "must-not-publish" not in json.dumps(receipt)
+    assert "FIXTURE_PLANE_TOKEN" not in os.environ
+    assert os.environ["GH_TOKEN"] == "launch-token"
+    assert (get_hermes_home_override(), current_secret_scope(), is_multiplex_active()) == original
+
+
+@pytest.mark.platforms("posix")
+def test_acceptance_freezes_one_env_even_when_a_source_fails(github, cold_secret_profiles, tmp_path, monkeypatch):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    _launch, target = cold_secret_profiles
+    (target / "fail").touch()
+    monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ["PATH"])
+    monkeypatch.setattr(acceptance, "_assignee_profile_home", lambda assignee: str(target))
+    original_env = acceptance._gh_env
+    original_run = acceptance.subprocess.run
+    builds, used = [], []
+
+    def build(home):
+        env = original_env(home)
+        builds.append(env)
+        return env
+
+    def capture(*args, **kwargs):
+        if args[0][:2] == ["gh", "api"]:
+            used.append(kwargs["env"])
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(acceptance, "_gh_env", build)
+    invalid = acceptance.collect_acceptance("acme/repo", "https://github.com/other/repo/pull/7", assignee="worker")
+    assert not invalid["ok"] and builds == []
+    monkeypatch.setattr(acceptance.subprocess, "run", capture)
+    receipt = acceptance.collect_acceptance("acme/repo", "https://github.com/acme/repo/pull/7", assignee="worker")
+    assert receipt["ok"]
+    assert len(github["requests"]) == 5
+    assert len(builds) == 1
+    assert len(used) == 5 and all(env is builds[0] for env in used)
+    # Discovery refresh + explicit hydration can each try once; API reads never re-pull.
+    assert len((target / "fetch-count").read_text().splitlines()) == 2
+    assert "GH_TOKEN" not in builds[0] and "GITHUB_TOKEN" not in builds[0]
+    assert os.environ["GH_TOKEN"] == "launch-token"
 
 
 # --- #122689: acceptance must read the repo as the ASSIGNEE profile's gh login ---

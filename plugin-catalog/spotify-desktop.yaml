@@ -1,0 +1,17 @@
+name: spotify-desktop
+repo: https://github.com/amitamit10/hermes-spotify-desktop
+sha: f7599b765507ee89ee7bddb40eb846fe522c71a4
+title: Spotify Desktop
+description: 'Spotify Connect remote for Hermes Desktop: a status-bar mini player (now playing, transport, volume, device transfer) plus a picker popover with playlists, track search and the queue. Reuses the Hermes Spotify login; the plugin never handles credentials.'
+maintainer: amitamit10
+tier: community
+category: desktop
+requires_hermes: '>=0.23'
+docs_url: https://github.com/amitamit10/hermes-spotify-desktop
+version: "0.1.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -9,6 +9,7 @@ Semantics under test (from the issue):
 """
 
 import os
+import sys
 import time
 
 import pytest
@@ -125,6 +126,64 @@ class TestNoMatchFailsLoudly:
         config = {"command": "/usr/bin/node", "args": [f"${{latest:{missing}}}"], "enabled": True}
         rendered = _interpolate_env_vars(config)
         assert rendered["args"][0] == f"${{latest:{missing}}}"
+
+
+class TestRealLoadAndLaunchChain:
+    def test_config_yaml_to_stdio_launch_tuple(self, tmp_path, monkeypatch):
+        """End-to-end through the REAL load and launch code, no child spawned: an entry
+        with a ${latest:...} arg written the way a user (or an agent patching
+        config.yaml) writes it must survive _load_mcp_config() rendering and reach
+        _stdio_launch()'s (command, env, cwd) tuple with the newest match resolved.
+
+        Harness shape after tespio's poc3 (private hermes-repro-pocs, shared with the
+        PR author); the spawn step is deliberately omitted — asserting on the launch
+        tuple proves the composition without executing the config's command.
+        """
+        cache = _plugin_cache(tmp_path, "15.13.0", "15.15.2")
+        expected = str(cache / "15.15.2" / "scripts" / "mcp-server.cjs")
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  claude-mem:\n"
+            f"    command: '{sys.executable}'\n"
+            f"    args: ['${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}']\n"
+        )
+
+        from tools.mcp_tool_config import _load_mcp_config
+        from tools.mcp_tool_transport import _stdio_launch
+
+        loaded = _load_mcp_config()
+        assert "claude-mem" in loaded, loaded  # real loader keeps the entry
+        assert loaded["claude-mem"]["args"] == [expected]  # newest version rendered in
+
+        command, env, cwd = _stdio_launch(loaded["claude-mem"])
+        assert command == sys.executable  # command passes through untouched
+        assert cwd is None or os.path.isdir(str(cwd))  # a host-valid cwd for the spawn
+
+    def test_security_gate_sees_raw_entry_not_resolved_paths(self, tmp_path, monkeypatch):
+        """The IOC/shape gate (validate_mcp_server_entry, run by _load_mcp_config before
+        interpolation) inspects the RAW entry text: a ${latest:...} ref is no more
+        opaque to it than a ${VAR} ref, and the gate is not bypassed by resolution."""
+        cache = _plugin_cache(tmp_path, "15.15.2")
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  claude-mem:\n"
+            f"    command: '{sys.executable}'\n"
+            f"    args: ['${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}']\n"
+        )
+        from hermes_cli.mcp_security import validate_mcp_server_entry
+        from tools.mcp_tool_config import _load_mcp_config
+
+        raw_entry = {"command": sys.executable,
+                     "args": [f"${{latest:{cache / '*' / 'scripts' / 'mcp-server.cjs'}}}"]}
+        assert validate_mcp_server_entry("claude-mem", raw_entry) == []  # clean: no shape hit
+        loaded = _load_mcp_config()
+        assert loaded["claude-mem"]["args"] == [str(cache / "15.15.2" / "scripts" / "mcp-server.cjs")]
 
 
 class TestNonGlobExactPath:

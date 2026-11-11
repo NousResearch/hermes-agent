@@ -3,7 +3,8 @@ import { act, cleanup } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { appendMidTurnUserMessage } from '@/app/session/hooks/use-prompt-actions/rewind'
-import { chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { renderMessageStream } from './test-harness'
 
@@ -49,6 +50,56 @@ it('settles identical tool-interim completion once while retaining every complet
     expect(hydrate).not.toHaveBeenCalled()
     cleanup()
   }
+})
+
+it('does not append a final answer already present in a hydrated folded tool card', async () => {
+  const folded: ChatMessage = {
+    id: 'stored-folded-turn',
+    role: 'assistant',
+    rowId: 8,
+    parts: [
+      { type: 'text', text: 'I will inspect the fixture, then give the final result.' },
+      { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+      { type: 'text', text: 'The result is 71.' }
+    ]
+  }
+
+  const user: ChatMessage = { id: 'stored-user', role: 'user', rowId: 7, parts: [textPart('inspect the fixture')] }
+
+  const states = new Map([
+    [
+      SID,
+      {
+        ...createClientSessionState(),
+        messages: [user, folded],
+        interimBoundaryPending: true,
+        sawAssistantPayload: true,
+        turnLive: true
+      }
+    ]
+  ])
+
+  const hydrate = vi.fn(async () => undefined)
+  const stream = renderMessageStream(SID, { hydrateFromStoredSession: hydrate, states })
+
+  await act(() =>
+    stream.handleEvent({
+      type: 'message.complete',
+      session_id: SID,
+      payload: { text: 'The result is 71.' }
+    })
+  )
+
+  const messages = stream.state().messages
+
+  const finalTexts = messages.flatMap(message =>
+    message.parts.filter(part => part.type === 'text' && part.text === 'The result is 71.')
+  )
+
+  expect(messages).toHaveLength(2)
+  expect(finalTexts).toHaveLength(1)
+  expect(messages.at(-1)?.id).toBe('stored-folded-turn')
+  expect(hydrate).not.toHaveBeenCalled()
 })
 
 it('keeps distinct segments, user boundaries, and failures on their own side of completion', async () => {

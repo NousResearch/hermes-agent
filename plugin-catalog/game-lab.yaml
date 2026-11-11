@@ -1,8 +1,8 @@
 name: game-lab
 title: Game Lab
 repo: https://github.com/flabanabba8/game-lab
-sha: 889b60d8e4f7c4701e0cf7fdcb6ed297d2982ce2
-version: 0.2.1
+sha: 3173e1b09860be1c4aac3c952cf97b9447cdc55e
+version: 0.2.2
 description: Game Lab combines ModLab, Game Localization Studio, Sprites and experimental
   Playtest Pilot. ModLab works on a private game copy and invokes separately installed
   tools; localization drafts and exports RPG Maker text; Sprites inspects and previews
@@ -13,8 +13,8 @@ maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: '>=0.22.0'
-docs_url: https://github.com/flabanabba8/game-lab/blob/889b60d8e4f7c4701e0cf7fdcb6ed297d2982ce2/README.md
-image: https://raw.githubusercontent.com/flabanabba8/game-lab/889b60d8e4f7c4701e0cf7fdcb6ed297d2982ce2/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/game-lab/blob/3173e1b09860be1c4aac3c952cf97b9447cdc55e/README.md
+image: https://raw.githubusercontent.com/flabanabba8/game-lab/3173e1b09860be1c4aac3c952cf97b9447cdc55e/assets/thumbnail.jpg
 platforms:
 - linux
 capabilities:
@@ -33,6 +33,7 @@ capabilities:
   - localize_validate
   - localize_export
   - localize_list_drafts
+  - playtest_run
   - playtest_start
   - playtest_action
   - playtest_check

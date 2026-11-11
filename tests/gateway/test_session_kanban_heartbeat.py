@@ -36,7 +36,7 @@ class _Agent:
     def get_messages_as_conversation(self, _sid):
         return [{"role": "user", "content": "from-store"}]
 
-    def run_conversation(self, message, conversation_history=None, turn_author=None):
+    def run_conversation(self, message, conversation_history=None, turn_author=None, task_id=None):
         self.calls.append((message, conversation_history))
         return self.results.pop(0)
 

@@ -2714,3 +2714,60 @@ class TestAsyncHookOnCallerLoop:
             results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
         assert results == [{"seen": "e"}, {"seen_async": "e"}]
         assert "async plugin blew up" in caplog.text
+
+
+class TestDispatchContextRepo:
+    """BYP-1 — ``_dispatch_context_repo`` resolves the dispatch-context repo from
+    the SERVER-SIDE Kanban card body (``source_repo``), so the ownership gate's
+    ``pre_tool_call`` claims a bare ``GH-n`` on the card's OWN repo instead of
+    assuming ``DEFAULT_REPO_*``. Best-effort and read-only: every absence (no
+    task_id, no DB, no card, no ``source_repo``) is ``None``."""
+
+    @staticmethod
+    def _card(tmp_path, monkeypatch, body):
+        """Create a real card in a private ``tmp_path`` board; return its id."""
+        from hermes_cli import kanban_db as kb
+        from hermes_cli.kanban_db_connect import connect
+
+        db = tmp_path / "kanban.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        conn = connect(db_path=db)
+        conn.row_factory = sqlite3.Row
+        try:
+            return kb.create_task(conn, title="card", body=body, workspace_kind="scratch")
+        finally:
+            conn.close()
+
+    def test_returns_the_normalized_source_repo_from_a_real_card(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+
+        task_id = self._card(
+            tmp_path, monkeypatch,
+            body="source_repo: OtherOwner/other-repo\nsource_issue: 47",
+        )
+        # normalized: lowercase slug, no scheme/host/.git, no issue fragment
+        assert plugins_mod._dispatch_context_repo(task_id) == "otherowner/other-repo"
+
+    def test_returns_none_when_the_card_is_absent(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+
+        self._card(tmp_path, monkeypatch, body="source_repo: OtherOwner/other-repo")
+        assert plugins_mod._dispatch_context_repo("no-such-task") is None
+
+    def test_returns_none_when_the_card_has_no_source_repo(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+
+        task_id = self._card(
+            tmp_path, monkeypatch,
+            body="title: no repo on this card\nsource_issue: 47",
+        )
+        assert plugins_mod._dispatch_context_repo(task_id) is None
+
+    def test_returns_none_for_an_empty_task_id(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+
+        self._card(tmp_path, monkeypatch, body="source_repo: OtherOwner/other-repo")
+        assert plugins_mod._dispatch_context_repo("") is None

@@ -12,6 +12,9 @@ and the batch-scan algorithm; this module pins the HOOK contract:
   (d) post_tool_call releases the claim when the call failed (and keeps it on success)
   (e) enforcement defaults OFF — the plugin is inert until the flag is enabled
   (f) the plugin manifest + register() wire both hooks
+  (g) the Direct-scanner repo derivation: a non-default dispatch-context repo is
+      honoured for bare ``GH-n`` / ``#n`` refs, and ``DEFAULT_REPO_*`` applies
+      ONLY when the context carries no repo at all
 """
 from __future__ import annotations
 
@@ -328,6 +331,144 @@ def test_f_plugin_manifest_and_register_wire_both_hooks():
     mod.register(_Ctx())
     assert registered["pre_tool_call"] is gate.pre_tool_call
     assert registered["post_tool_call"] is gate.post_tool_call
+
+
+# --------------------------------------------------------------------------
+# (g) Direct-scanner repo derivation — a non-default dispatch-context repo is
+#     honoured; DEFAULT_REPO_* applies ONLY when the context carries no repo.
+# --------------------------------------------------------------------------
+OTHER_OWNER = "otherowner"
+OTHER_REPO = "other-repo"
+SCOPE_OTHER_47 = "gh:otherowner/other-repo#47"
+SCOPE_OTHER_48 = "gh:otherowner/other-repo#48"
+
+
+def test_g_scopes_from_text_derives_a_non_default_repo():
+    """A bare ``GH-n`` / ``#n`` ref takes its repo from the dispatch context,
+    in every accepted shape — not from DEFAULT_REPO_*."""
+    assert gate._scopes_from_text("Work GH-47 now", "otherowner/other-repo") == {SCOPE_OTHER_47}
+    assert gate._scopes_from_text("Work GH-47 now", ("otherowner", "other-repo")) == {SCOPE_OTHER_47}
+    assert gate._scopes_from_text(
+        "Work GH-47 now", {"owner": "otherowner", "name": "other-repo"}
+    ) == {SCOPE_OTHER_47}
+    assert gate._scopes_from_text("Work otherowner/other-repo#47 now", "otherowner/other-repo") == {SCOPE_OTHER_47}
+    # Every ref in the text lands on the context repo.
+    assert gate._scopes_from_text("GH-47 and GH-48", "otherowner/other-repo") == {
+        SCOPE_OTHER_47, SCOPE_OTHER_48,
+    }
+    # Ref matching is unchanged: the same refs are found, only the repo differs.
+    assert gate._scopes_from_text("GH-47 and GH-48") == {
+        "gh:andrew288369/andrew-grp#47", "gh:andrew288369/andrew-grp#48",
+    }
+
+
+def test_g2_scopes_from_text_falls_back_to_default_repo_only_without_context():
+    """The default repo is a FALLBACK, not an override: it applies only when the
+    context carries no repo at all (unset, None, or an unparseable value)."""
+    assert (gate.DEFAULT_REPO_OWNER, gate.DEFAULT_REPO_NAME) == (REPO_OWNER, REPO_NAME)
+    assert gate._scopes_from_text("Work GH-47 now") == {SCOPE_47}
+    assert gate._scopes_from_text("Work GH-47 now", None) == {SCOPE_47}
+    # Unparseable context values are treated as "no context".
+    assert gate._scopes_from_text("Work GH-47 now", "not-a-repo-slug") == {SCOPE_47}
+    assert gate._scopes_from_text("Work GH-47 now", {"owner": "otherowner"}) == {SCOPE_47}
+    assert gate._scopes_from_text("Work GH-47 now", ("otherowner",)) == {SCOPE_47}
+
+
+def test_g3_scan_dispatch_scope_derives_the_repo_per_text():
+    """``scan_dispatch_scope`` resolves the repo per text: explicit
+    ``default_repo``, else the batch's own repo field, else the individual
+    ``tasks[]`` entry's repo field, else ``DEFAULT_REPO_*``."""
+    batch = {"goal": "Work GH-47", "context": ""}
+    assert gate.scan_dispatch_scope(batch, default_repo="otherowner/other-repo") == [SCOPE_OTHER_47]
+    # No context at all -> DEFAULT_REPO_*.
+    assert gate.scan_dispatch_scope(batch) == [SCOPE_47]
+    # The batch's OWN repo field is honoured even without ``default_repo``.
+    batch_repo = {"goal": "Work GH-47", "context": "", "repo": "otherowner/other-repo"}
+    assert gate.scan_dispatch_scope(batch_repo) == [SCOPE_OTHER_47]
+    # An explicit ``default_repo`` outranks the batch's own repo field.
+    batch_both = {"goal": "Work GH-47", "context": "", "repo": "someone/else"}
+    assert gate.scan_dispatch_scope(batch_both, default_repo="otherowner/other-repo") == [SCOPE_OTHER_47]
+    # A tasks[] entry's own repo applies to its own text; the top-level goal
+    # keeps the batch/default repo.
+    batch_tasks = {
+        "goal": "Work GH-47",
+        "context": "",
+        "tasks": [{"goal": "Review GH-48", "context": "", "source_repo": "otherowner/other-repo"}],
+    }
+    assert gate.scan_dispatch_scope(batch_tasks) == [SCOPE_47, SCOPE_OTHER_48]
+    # A tasks[] entry with no repo inherits the batch repo.
+    batch_tasks_inherit = {
+        "goal": "Work GH-47",
+        "context": "",
+        "tasks": [{"goal": "Review GH-48", "context": ""}],
+    }
+    assert gate.scan_dispatch_scope(batch_tasks_inherit, default_repo="otherowner/other-repo") == [
+        SCOPE_OTHER_47, SCOPE_OTHER_48,
+    ]
+
+
+def test_g4_pre_tool_call_claims_the_context_repo_not_default(_private_ledger, monkeypatch):
+    """With enforcement ON, ``pre_tool_call(..., default_repo=...)`` claims the
+    bare ref on the CONTEXT repo — the default repo's same-number issue is
+    left free."""
+    monkeypatch.setenv("HERMES_OWNERSHIP_DIRECT_ENFORCE", "1")
+    res = gate.pre_tool_call(
+        tool_name="delegate_task",
+        args=_args("Work GH-47 per directive"),
+        session_id="session-A", tool_call_id="call-g4",
+        default_repo="otherowner/other-repo",
+    )
+    assert res is None, res
+    assert gate.claimed_scopes("call-g4") == [SCOPE_OTHER_47]
+    assert inspect_ownership(_open(_private_ledger), SCOPE_OTHER_47)["verdict"] == VERDICT_OWNED
+    assert inspect_ownership(_open(_private_ledger), SCOPE_47)["verdict"] == VERDICT_FREE
+
+
+def test_g5_pre_tool_call_falls_back_to_default_repo_without_context(_private_ledger, monkeypatch):
+    """The same call with NO context repo claims DEFAULT_REPO_* — the fallback
+    the context repo is meant to replace."""
+    monkeypatch.setenv("HERMES_OWNERSHIP_DIRECT_ENFORCE", "1")
+    res = gate.pre_tool_call(
+        tool_name="delegate_task",
+        args=_args("Work GH-47 per directive"),
+        session_id="session-A", tool_call_id="call-g5",
+    )
+    assert res is None, res
+    assert gate.claimed_scopes("call-g5") == [SCOPE_47]
+    assert inspect_ownership(_open(_private_ledger), SCOPE_47)["verdict"] == VERDICT_OWNED
+    assert inspect_ownership(_open(_private_ledger), SCOPE_OTHER_47)["verdict"] == VERDICT_FREE
+
+
+def test_g6_pre_tool_call_context_repo_changes_the_conflict_key(_private_ledger, monkeypatch):
+    """The derivation is not cosmetic: a foreign owner on the CONTEXT repo blocks
+    the dispatch, while the same-number issue on the default repo stays free
+    (and the foreign owner on the other repo must not block a default-repo
+    dispatch)."""
+    monkeypatch.setenv("HERMES_OWNERSHIP_DIRECT_ENFORCE", "1")
+    _seed(_private_ledger, SCOPE_OTHER_47, "session-other")
+
+    # The dispatch is about the OTHER repo -> blocked on the other repo's key.
+    res = gate.pre_tool_call(
+        tool_name="delegate_task",
+        args=_args("Work GH-47 per directive"),
+        session_id="session-A", tool_call_id="call-g6a",
+        default_repo="otherowner/other-repo",
+    )
+    assert isinstance(res, dict) and res.get("action") == "block", res
+    assert SCOPE_OTHER_47 in res["message"], res
+    assert gate.claimed_scopes("call-g6a") == []
+    # all-or-nothing: neither repo's #47 was claimed.
+    assert inspect_ownership(_open(_private_ledger), SCOPE_47)["verdict"] == VERDICT_FREE
+
+    # The same text with NO context repo claims the DEFAULT repo's #47, which is
+    # free: the foreign owner on the other repo must not block it.
+    res2 = gate.pre_tool_call(
+        tool_name="delegate_task",
+        args=_args("Work GH-47 per directive"),
+        session_id="session-A", tool_call_id="call-g6b",
+    )
+    assert res2 is None, res2
+    assert gate.claimed_scopes("call-g6b") == [SCOPE_47]
 
 
 def _open(db_path):

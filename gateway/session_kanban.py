@@ -830,7 +830,8 @@ def _run_task_turns(agent, frame, history, context):
         _heartbeat_claims_once(context, owner_session)
 
     beat()
-    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
+    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR,
+                                    task_id=context['task_id'])
 
     def recover(nudge):
         nonlocal result
@@ -838,7 +839,8 @@ def _run_task_turns(agent, frame, history, context):
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
                                         agent._session_db.get_messages_as_conversation(agent.session_id),
-                                        turn_author=KANBAN_TURN_AUTHOR)
+                                        turn_author=KANBAN_TURN_AUTHOR,
+                                        task_id=context['task_id'])
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
@@ -862,7 +864,8 @@ def _run_task_turns(agent, frame, history, context):
         nonlocal result
         beat()
         result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
-                                        turn_author=KANBAN_TURN_AUTHOR)
+                                        turn_author=KANBAN_TURN_AUTHOR,
+                                        task_id=context['task_id'])
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,

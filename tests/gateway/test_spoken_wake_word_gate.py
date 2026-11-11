@@ -488,3 +488,34 @@ async def test_a_group_control_command_never_waits_on_an_earlier_voice_check(tmp
                 break
             await asyncio.sleep(0.02)
     assert seen == ["s1", "v1", "t1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [
+    {"type": "attachment", "name": "p.png", "mimeType": "image/png", "data": "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+    {"type": "attachment", "name": "a.pdf", "mimeType": "application/pdf", "data": "JVBERi0xLjQ="},
+])
+async def test_a_busy_session_sends_only_the_admitted_envelopes_audio_to_stt(tmp_path, monkeypatch, first):
+    """An envelope speech admitted is VOICE; when it lands on a busy session (interrupt, steer, queue
+    drain) only its audio enters STT, never the photo or PDF beside it."""
+    import base64
+    from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    adapter.handle_message = AsyncMock()
+    transcribe, _calls = _stt("hermes, look at this")
+    content = {"type": "group", "items": [{"content": first}, {"content": {
+        "type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}}]}
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._dispatch_inbound({
+            "messageId": "mx1", "space": {"id": "group-guid", "type": "group", "phone": None},
+            "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_type == MessageType.VOICE and len(event.media_urls) == 2
+    stt_paths = GatewayInboundTranscriptionMixin._pending_event_audio_paths(None, event)
+    assert len(stt_paths) == 1 and stt_paths[0].endswith(".ogg")

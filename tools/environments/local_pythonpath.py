@@ -136,10 +136,10 @@ def _is_hermes_install_environment_site_packages(path: Path) -> bool:
     location proves provenance even if collection has removed pyvenv.cfg.
     """
     try:
+        from hermes_cli._startup_fast import project_root_str
         from pm.environments import install_state_dir, site_packages
 
-        root = Path(__file__).resolve().parents[2]
-        environments = install_state_dir(root) / "environments"
+        environments = install_state_dir(Path(project_root_str())) / "environments"
         relative = path.relative_to(environments)
         if not relative.parts:
             return False

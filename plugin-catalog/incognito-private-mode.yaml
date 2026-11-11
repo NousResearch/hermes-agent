@@ -1,0 +1,17 @@
+name: incognito-private-mode
+repo: https://github.com/Tranquil-Flow/incognito-private-mode
+sha: cdae5d2ee026d08a8eac51deef13ec017e4a5465
+version: 0.3.0
+description: >-
+  Private mode, honestly: provider privacy flags, memory blocks stripped from
+  main-chat requests (provenance-checked against the last 6 observed file
+  versions, fail-closed outside that window), tool vetoes on unclassified
+  tools, honest coverage labels, and consent-gated fenced history cleanup on
+  close (exact-id + transcript + closed-state fences, archived chats excluded).
+  Content-free outbound audit log (endpoints + verdicts only, local 0600). No
+  telemetry; the plugin itself makes no network calls. Disclosed limits:
+  auxiliary-call fan-out not stripped, MoA advisors receive the full
+  unstripped request before private mode blocks the aggregation,
+  provider-side retention guarantees impossible.
+maintainer: Tranquil-Flow
+license: AGPL-3.0

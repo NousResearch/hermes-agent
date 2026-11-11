@@ -1,0 +1,26 @@
+name: recloc
+title: "recloc"
+version: "0.1.0"
+repo: https://github.com/SomeoneElseSt/recloc
+sha: 4079d05cf859848f472349d16326dad84c1f3f53
+description: "Location reminders that never leave your phone: ask the agent to remind you at a place, and Apple Reminders alerts you when you arrive. The plugin posts a brrr notification whose subtitle is the validated address; an iOS Shortcuts automation turns it into a reminder with a When I Arrive alert, and iOS watches the geofence on-device. Nothing listens on your machine — outbound HTTPS only."
+maintainer: SomeoneElseSt
+tier: community
+category: automation
+requires_hermes: ">=0.23"
+docs_url: https://github.com/SomeoneElseSt/recloc#readme
+readme: true
+capabilities:
+  provides_tools:
+    - add_reminder
+    - list_reminders
+    - cancel_reminder
+    - save_place
+    - edit_place
+    - list_places
+    - remove_place
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - BRRR_WEBHOOK_URL

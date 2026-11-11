@@ -1,0 +1,37 @@
+name: innerscape
+title: Innerscape
+repo: https://github.com/KyaniteLabs/Innerscape
+sha: 82f88c84ef9ac141dde91e8ec36bb717f7a768f2
+subdir: plugins/innerscape-hermes
+description: >-
+  Gentle check-ins, journaling and an Unstuck Coach with your own Innerscape server: save a
+  mood check-in in your words, save a journal entry or park an inbox item only after you say
+  yes to the exact text, and look back on today. When you're frozen or overloaded, the
+  bundled unstuck skill names what's in the way, gives one next move and holds the rest. The
+  skills never score, label or diagnose a mood. Disclosure: calls your Innerscape REST
+  API (default http://127.0.0.1:3001) with INNERSCAPE_TOKEN, which can read and write your
+  whole account; plain http only to this machine, no proxies or redirects. Tool results go to
+  your model provider and stay in session history; mood and journal text is sensitive, and
+  your provider sees it like any other chat. Consent is real but model-mediated: save tools
+  refuse unless the assistant has asked you and set user_confirmed; there is no separate
+  approval step (see README). Reads and saves are off on chat platforms
+  by default and saves are off in scheduled runs. No telemetry, no background jobs.
+maintainer: KyaniteLabs
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.3.0"
+docs_url: https://github.com/KyaniteLabs/Innerscape/blob/82f88c84ef9ac141dde91e8ec36bb717f7a768f2/plugins/innerscape-hermes/README.md
+readme: true
+platforms: [linux]
+known_issues:
+  - "Needs a running Innerscape backend and a login token; tokens expire after 7 days by default."
+  - "\"Today\" is the server's day, which may differ from your time zone."
+  - "Not a crisis service; the skill points to local emergency services."
+  - "Saving is confirmed by the assistant in conversation (it sets the confirmation flag); Hermes has no separate approval step for plugin tools."
+  - "Tested on Linux and in Hermes Desktop on macOS; Windows unverified."
+capabilities:
+  provides_tools: [innerscape_checkin, innerscape_journal, innerscape_today, innerscape_capture]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [INNERSCAPE_TOKEN]

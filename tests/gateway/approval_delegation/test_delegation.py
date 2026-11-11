@@ -432,6 +432,58 @@ class TestDelegatedAwaySelfApproveGate:
                 time.monotonic() - ad._DELEGATION_TTL - 1
             assert is_session_delegated_away("sk_u") is False
 
+    def test_is_session_delegated_away_stays_live_while_bound_pending_past_ttl(self):
+        # Finding: is_session_delegated_away gated purely on the 600s TTL, but
+        # approvals.timeout is operator-configurable (>600 opens a self-approve
+        # window). A TTL-expired entry bound (request_id) to a STILL-pending
+        # approval must keep the gate closed so the non-admin cannot self-approve.
+        self._reset()
+        with patch("hermes_cli.config.load_config", return_value=self.CFG):
+            from gateway.approval_delegation import (
+                register_delegation, is_session_delegated_away)
+            import gateway.approval_delegation as ad
+            from tools import approval as mod
+            register_delegation(admin_platform="feishu", admin_chat_id="oc_admin",
+                                session_key="sk_u", user_platform="weixin",
+                                user_chat_id="u1", request_id="req-42")
+            ad._delegation_map["feishu:oc_admin"]["sk_u"]["created_at"] = \
+                time.monotonic() - ad._DELEGATION_TTL - 1
+            unlock = threading.Event()
+            class E:
+                result = None
+                data = {"command": "x", "request_id": "req-42"}
+                authority = {}
+            e = E(); e.event = unlock
+            mod._gateway_queues["sk_u"] = [e]
+            assert is_session_delegated_away("sk_u") is True
+            # Once that approval settles, the aged entry stops gating.
+            mod._gateway_queues.pop("sk_u", None)
+            assert is_session_delegated_away("sk_u") is False
+
+    def test_is_session_delegated_away_stale_entry_does_not_gate_new_approval(self):
+        # A TTL-expired entry bound to req-OLD must NOT block self-approve of a
+        # newer, unrelated approval (req-NEW) in the same session — else a stale
+        # delegation would false-lock the user's own fresh approval.
+        self._reset()
+        with patch("hermes_cli.config.load_config", return_value=self.CFG):
+            from gateway.approval_delegation import (
+                register_delegation, is_session_delegated_away)
+            import gateway.approval_delegation as ad
+            from tools import approval as mod
+            register_delegation(admin_platform="feishu", admin_chat_id="oc_admin",
+                                session_key="sk_u", user_platform="weixin",
+                                user_chat_id="u1", request_id="req-OLD")
+            ad._delegation_map["feishu:oc_admin"]["sk_u"]["created_at"] = \
+                time.monotonic() - ad._DELEGATION_TTL - 1
+            unlock = threading.Event()
+            class E:
+                result = None
+                data = {"command": "x", "request_id": "req-NEW"}
+                authority = {}
+            e = E(); e.event = unlock
+            mod._gateway_queues["sk_u"] = [e]
+            assert is_session_delegated_away("sk_u") is False
+
     # ── handler-level regression (the PoC itself) ────────────────────────
 
     SK = "agent:main:weixin:dm:o9user"

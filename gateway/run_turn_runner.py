@@ -879,6 +879,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                                 user_chat_meta=ctx._status_thread_metadata,
                                 command=cmd,
                                 description=desc,
+                                request_id=approval_data.get("request_id"),
                             )
                             logger.info(
                                 "[approval-delegation] Redirected approval to admin %s:%s",

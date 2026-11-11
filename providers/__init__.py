@@ -93,6 +93,10 @@ class _HomeLayer:
     # module names of plugins whose profiles this layer already holds as plugin-host proxies: the
     # hosted path's ``sys.modules`` check, so a rescan never re-imports, re-warns or swaps proxies
     hosted: set[str] = field(default_factory=set)
+    # module name -> the plugin tree it was imported from, and the profile names it registered here:
+    # what ``providers.plugin_reload`` compares and drops when the plugin is updated (#153300)
+    trees: dict[str, tuple] = field(default_factory=dict)
+    owners: dict[str, set[str]] = field(default_factory=dict)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -107,6 +111,8 @@ _COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None
 # Profile names an in-process import may register (None = all). Set while a hosted plugin's
 # profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
+# Module name of the ``$HERMES_HOME`` plugin being imported, so its registrations can be dropped on update.
+_IMPORTING: ContextVar[str | None] = ContextVar("_provider_importing", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -161,6 +167,8 @@ def register_provider(profile: ProviderProfile) -> None:
         layer.registry[profile.name] = profile
         for alias in profile.aliases:
             layer.aliases[alias] = profile.name
+        if owner := _IMPORTING.get():
+            layer.owners.setdefault(owner, set()).add(profile.name)
     else:
         _REGISTRY[profile.name] = profile
         _SOURCES[profile.name] = _current_source or "runtime"
@@ -429,8 +437,11 @@ def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
 
 def refresh_bound_home() -> None:
     """Re-scan the bound home's plugin dirs now and forget its remembered misses: a plugin was just
-    installed there, and the periodic check (or a name's miss back-off) would hide it for up to a TTL."""
-    _home_layer(force_stamp_check=True).misses.clear()
+    installed or updated there, and the periodic check (or a name's miss back-off) would hide it for up
+    to a TTL. The scan runs even when no plugin dir was added: an update changes files inside one."""
+    layer, home, key = _bound_home_layer()
+    _refresh_home_layer(layer, home, key, force=True, rescan=True)
+    layer.misses.clear()
 
 
 def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
@@ -448,8 +459,10 @@ def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
     return layer, home, key
 
 
-def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force: bool = False) -> bool:
+def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force: bool = False,
+                        rescan: bool = False) -> bool:
     """Re-stat the layer's plugin dirs when due (or *force*d); True when it stat'ed this call.
+    *rescan* scans even when the dir stamps did not move (an update rewrites files inside a plugin).
 
     Stamps are read before the scan: a plugin that lands mid-scan changes them and the next
     check picks it up. Checking on a short cadence keeps a newly installed plugin discoverable
@@ -466,7 +479,7 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     ):
         return False
     stamps = _plugin_dir_stamps(home)
-    if stamps != layer.stamps or _skipped_plugin_enabled(layer):
+    if rescan or stamps != layer.stamps or _skipped_plugin_enabled(layer):
         # Judge the stamps' age before scanning: a slow scan must not let a stamp read before it
         # look settled afterwards and get remembered over an install that landed mid-scan.
         settled = _plugin_dir_stamps_settled(stamps)
@@ -637,21 +650,34 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     if source != "bundled" and _plugin_disabled(plugin_dir):
         logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
         return
-    if source != "bundled":
-        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-        if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
-            _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
-            return
-
-    # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
-    # so relative imports within the plugin work. User plugins load via
-    # ``importlib.util.spec_from_file_location`` under a per-home module name so
-    # multiple HERMES_HOME profiles don't alias each other.
     if source == "bundled":
-        module_name = f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
-    else:
-        module_name = _user_module_name(plugin_dir, home_key)
-    _exec_plugin_module(plugin_dir, source, module_name)
+        # A stable import path (``plugins.model_providers.<name>``) so relative imports work.
+        _exec_plugin_module(plugin_dir, source, f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}")
+        return
+    # User plugins load under a per-home module name so profiles don't alias each other.
+    _import_user_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
+
+
+def _import_user_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:
+    """Import a ``$HERMES_HOME`` plugin into the layer being scanned, first dropping a copy imported from
+    an older tree of the same plugin (an update), so the new version loads whole (#153300)."""
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    from providers.plugin_reload import tree_identity, unload_changed
+
+    layer = _REGISTRATION_TARGET.get()
+    if layer is not None and unload_changed(layer, plugin_dir, module_name):
+        logger.info("Provider plugin %s changed on disk; reloading it", plugin_dir.name)
+    token = _IMPORTING.set(module_name)
+    try:
+        if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
+            _import_hosted_plugin_dir(plugin_dir, source, module_name)
+        else:
+            _exec_plugin_module(plugin_dir, source, module_name)
+    finally:
+        _IMPORTING.reset(token)
+    if layer is not None and module_name not in layer.trees and (
+            module_name in sys.modules or module_name in layer.hosted):
+        layer.trees[module_name] = tree_identity(plugin_dir)
 
 
 def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:

@@ -100,7 +100,11 @@ def apply_unattended(name: str) -> None:
     target = pc._user_installed_plugin_dir(name)
     if target is None:
         raise pc.PluginOperationError(f"Plugin '{name}' is no longer installed.")
-    update_one(name, target, pc._console(), interactive=False, unattended=True)
+    if update_one(name, target, pc._console(), interactive=False, unattended=True):
+        # The tick runs in the gateway: reload the plugin here, or the gateway keeps serving the old
+        # version and a lazily imported file of the new one mixes in (#153300).
+        from hermes_cli.plugins_activation import load_and_go_live
+        load_and_go_live(target.name)
 
 
 # ── the auto-update switch ────────────────────────────────────────────────────────────────────

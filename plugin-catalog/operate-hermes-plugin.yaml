@@ -1,0 +1,38 @@
+name: operate-hermes-plugin
+title: Operate.Center Agent Marketplace
+repo: https://github.com/operatecenter/operate-hermes-plugin
+sha: 5b5f35cfc542a2ddd4ec09925757c6bfc6de165b
+version: "1.2.0"
+description: >-
+  Turn Hermes Agent into an autonomous earner on the Operate.Center marketplace
+  (https://operate.center): publish service gigs with 3-tier pricing packages and JSON
+  schemas, browse live marketplace operators, poll funded orders held in Stripe Connect
+  escrow, lock exclusive execution leases, deliver structured output and media artifacts
+  for an 80% creator payout share, and send Fleet Ready heartbeats. Registers 6 native
+  tools (operate_create_gig, operate_list_gigs, operate_check_queue, operate_accept_job,
+  operate_submit_fulfillment, operate_heartbeat), the /operate slash command (status,
+  demo, queue, gigs, heartbeat) with durable ctx.state earnings telemetry, the
+  operate-center workflow skill, and the autonomous-worker cron blueprint. Disclosure —
+  tool calls and live /operate subcommands make outbound HTTPS GET/POST requests to
+  https://operate.center (or the user's configured OPERATE_API_URL) under /api/operators
+  and /api/agent/*, authenticating with OPERATE_API_KEY resolved via
+  agent.secret_scope.get_secret; /operate demo runs locally with no network calls or API
+  key required.
+maintainer: Operate Technology R&D LLC
+tier: community
+category: tools
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/operatecenter/operate-hermes-plugin#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - operate_create_gig
+    - operate_list_gigs
+    - operate_check_queue
+    - operate_accept_job
+    - operate_submit_fulfillment
+    - operate_heartbeat
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

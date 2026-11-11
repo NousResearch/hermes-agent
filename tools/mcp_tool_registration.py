@@ -458,6 +458,121 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     return registered
 
 
+def _tools_digest(tools: Iterable[Any]) -> str:
+    """Stable digest of a ``tools/list`` contract (names, descriptions, schemas, annotations)."""
+    def _plain(value):
+        dump = getattr(value, "model_dump", None)
+        return dump(mode="json", exclude_none=True) if callable(dump) else value
+    rows = sorted(
+        (getattr(t, "name", "") or "", getattr(t, "description", "") or "",
+         _plain(mcp_field(t, "input_schema", "inputSchema")), _plain(getattr(t, "annotations", None)))
+        for t in tools)
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, default=repr).encode()).hexdigest()
+
+
+def _owned_in_scope(tool_name: str, scope, toolset: str) -> bool:
+    from tools.registry import registry
+    entry = registry.snapshot_registration(tool_name, scope=scope)
+    return entry is not None and entry.toolset == toolset
+
+
+def _sync_teardown_ledger(name: str, key, server: "MCPServerTask", extra: Iterable[str] = ()) -> None:
+    """``_registered_tool_names`` is the union of every served scope's registrations (park/shutdown
+    deregister from it): keep exactly the names some scope of this connection still holds."""
+    toolset = f"mcp-{name}"
+    with _core._lock:
+        scopes = set(_core._server_tool_scopes.get(key, ())) | {_core._server_registry_scope(key)}
+        names = set(getattr(server, "_registered_tool_names", ()) or ()) | set(extra)
+    held = {n for n in names if any(_owned_in_scope(n, s, toolset) for s in scopes)}  # registry lock: not under _core._lock
+    with _core._lock:  # keep names another pass added meanwhile
+        current = set(getattr(server, "_registered_tool_names", ()) or ())
+        server._registered_tool_names = sorted(held | (current - names))
+    for tool_name in names - held:
+        _forget_mcp_tool_server(tool_name)
+    _restore_server_toolset_alias(key)
+
+
+def _republish_reconnected_tools(name: str, server: "MCPServerTask", config: dict, *,
+                                 contract_changed: bool) -> list[str]:
+    """Publish a reconnected session's freshly listed tools for a server whose registrations
+    survived the outage (a reconnect that did not park).
+
+    The owner scope is updated in place (no transient missing handler) and loses only names it no
+    longer serves. A changed contract also refreshes every adopter overlay with THAT profile's own
+    tool policy (``_refresh_adopter_overlays``); an unchanged one leaves adopters untouched."""
+    from tools.registry import registry
+
+    toolset = f"mcp-{name}"
+    key = _server_key_for_task(server)
+    owner_scope = _core._server_registry_scope(key)
+    with _core._lock:
+        adopters = set(_core._server_tool_scopes.get(key, ())) - {owner_scope}
+    owner_before = {n for n in (getattr(server, "_registered_tool_names", ()) or ())
+                    if _owned_in_scope(n, owner_scope, toolset)}
+    registered = _register_server_tools(name, server, config)
+    for tool_name in owner_before - set(registered):
+        registry.deregister(tool_name, scope=owner_scope)
+    _sync_teardown_ledger(name, key, server, registered)
+    if contract_changed and adopters:
+        _run_off_mcp_loop(lambda: _refresh_adopter_overlays(name, key, server, adopters))
+    return registered
+
+
+def _refresh_adopter_overlays(name: str, key, server: "MCPServerTask", scopes: Iterable[str]) -> None:
+    """Re-register a shared connection's current tools into each adopter scope under that profile's
+    own home, secret scope and ``mcp_servers`` entry (tool filter, resources/prompts utilities).
+    The connection was adopted after a resolved-identity match and its route has not changed, so
+    only the static route is re-checked. Upsert first, then drop names the profile no longer gets;
+    a profile that no longer matches (or fails to load) loses its overlay for this server."""
+    from pathlib import Path
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.registry import registry
+
+    toolset = f"mcp-{name}"
+    for scope in scopes:
+        before = {n for n in (getattr(server, "_registered_tool_names", ()) or ())
+                  if _owned_in_scope(n, scope, toolset)}
+        names: list[str] = []
+        home_token = secret_token = None
+        try:
+            home_token = set_hermes_home_override(scope)
+            secret_token = set_secret_scope(build_profile_secret_scope(Path(scope)), profile_home=scope)
+            config = (_config._load_mcp_config() or {}).get(name)
+            if (config is not None and mcp_server_enabled(config) and _core._servers.get(key) is server
+                    and _same_server_route(server, config)):
+                names = _register_adopted_overlay(name, key, server, config, scope)
+                # The identity check above ran before the (slow) registration: a shutdown or park
+                # that raced it has already deregistered the adopter tools, so re-check and retract
+                # what was just published. Otherwise those names would survive teardown as phantoms.
+                with _core._lock:
+                    still_serving = _core._servers.get(key) is server
+                if not still_serving:
+                    for tool_name in names:
+                        registry.deregister(tool_name, scope=scope)
+        except Exception:
+            logger.debug("MCP server '%s': refreshing profile scope %s failed", name, scope, exc_info=True)
+        finally:
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
+        for tool_name in before - set(names):
+            registry.deregister(tool_name, scope=scope)
+        _sync_teardown_ledger(name, key, server, names)
+
+
+def _run_off_mcp_loop(fn: Callable[[], None]) -> None:
+    """Profile config loads may resolve external secrets: never block the MCP event loop on them."""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        fn()
+        return
+    loop.run_in_executor(None, fn)
+
+
 def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates or secures it (``config_fingerprint`` deliberately excludes
@@ -612,19 +727,25 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         _record_scope_trust(name, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
-        candidates += _utility_candidates(
-            name, _select_utility_schemas(name, server, config), server.tool_timeout)
-        names = _register_candidates(
-            name, _resolve_name_collisions(name, candidates),
-            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key,
-            execution_timeout=config.get("timeout"))
-        if names:
+        if _register_adopted_overlay(name, key, server, config, scope):
             registered_servers += 1
-            with _core._lock:
-                server._registered_tool_names = sorted(
-                    set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
     return registered_servers
+
+
+def _register_adopted_overlay(name: str, key, server: "MCPServerTask", config: dict, scope: str) -> list[str]:
+    """Register a shared connection's tools into adopter *scope* with that profile's *config*."""
+    candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+    candidates += _utility_candidates(
+        name, _select_utility_schemas(name, server, config), server.tool_timeout)
+    names = _register_candidates(
+        name, _resolve_name_collisions(name, candidates),
+        check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key,
+        execution_timeout=config.get("timeout"))
+    if names:
+        with _core._lock:
+            server._registered_tool_names = sorted(
+                set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
+    return names
 
 
 def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]:

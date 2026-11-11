@@ -321,7 +321,7 @@ def _parse_env_value(raw_value: str) -> str:
 # turn, cron fire, MCP/browser adoption and housekeeping drain, and each call used to re-read and
 # re-parse the whole file.
 #
-# FRESHNESS: every call still OPENS and READS the file (a few hundred bytes) and keys on its exact
+# FRESHNESS: every call still OPENS and READS a regular file (a few hundred bytes) and keys on its exact
 # bytes; only the decode + parse is skipped. A stat identity is not enough: a kernel that stamps
 # mtime/ctime from the coarse (jiffy) clock leaves (mtime, size, inode, ctime) unchanged across an
 # in-place same-size rewrite inside one tick, and ``/reload`` then served the old value (CI run
@@ -329,6 +329,8 @@ def _parse_env_value(raw_value: str) -> str:
 # fails the open and is never cached (a transient EACCES must not become "this profile has no
 # secrets"). ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.
 # invalidate_env_cache()`` calls it for Hermes's own .env writers.
+# Mounted FIFOs instead share a process-lifetime byte snapshot via hermes_cli.env_file;
+# reopening a secret-manager pipe on hot paths can block or compete with another reader.
 _ENV_FILE_CACHE: OrderedDict[str, tuple[bytes, dict[str, str]]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
@@ -336,6 +338,8 @@ _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
 def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
     """Drop one path from the ``load_env_file()`` memo, or all of them."""
+    from hermes_cli.env_file import invalidate_fifo_cache
+    invalidate_fifo_cache(env_path)
     with _ENV_FILE_CACHE_LOCK:
         if env_path is None:
             _ENV_FILE_CACHE.clear()
@@ -383,8 +387,8 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     """
     key = str(env_path)
     try:
-        with open(env_path, "rb") as handle:
-            raw = handle.read()
+        from hermes_cli.env_file import read_env_bytes
+        raw = read_env_bytes(env_path)
     except OSError:
         # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
         invalidate_env_file_cache(env_path)

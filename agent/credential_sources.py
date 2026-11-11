@@ -130,9 +130,10 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
     try:
         env_path = get_env_path()
         if env_path.exists():
+            from hermes_cli.env_file import read_env_bytes
             env_in_dotenv = any(
                 line.strip().startswith(f"{env_var}=")
-                for line in env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                for line in read_env_bytes(env_path).decode("utf-8-sig", errors="replace").splitlines()
             )
     except OSError:
         pass

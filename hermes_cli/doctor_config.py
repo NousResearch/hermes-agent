@@ -176,10 +176,12 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
         # UTF-8 first; latin-1 fallback for Windows Notepad/cp1252 files (matches env_loader._load_dotenv_with_fallback).
+        from hermes_cli.env_file import read_env_bytes
+        raw = read_env_bytes(env_path)
         try:
-            content = env_path.read_text(encoding="utf-8-sig")
+            content = raw.decode("utf-8-sig")
         except UnicodeDecodeError:
-            content = env_path.read_text(encoding="latin-1")
+            content = raw.decode("latin-1")
         if not check_bool(_has_provider_env_config(content), "API key or custom endpoint configured", f"No API key found in {_DHH}/.env"):
             f.issues.append("Run 'hermes setup' to configure API keys")
     elif (PROJECT_ROOT / '.env').exists():  # project root as fallback

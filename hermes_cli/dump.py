@@ -25,7 +25,8 @@ def _dotenv_key_names() -> set[str]:
     """
     try:
         env_path = get_env_path()
-        text = env_path.read_text(encoding="utf-8-sig", errors="ignore")
+        from hermes_cli.env_file import read_env_bytes
+        text = read_env_bytes(env_path).decode("utf-8-sig", errors="ignore")
     except (OSError, UnicodeError):
         return set()
     names: set[str] = set()

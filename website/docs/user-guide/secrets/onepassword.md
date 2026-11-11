@@ -11,6 +11,28 @@ Resolve provider API keys from [1Password](https://1password.com/) at process st
 
 Hermes never authenticates on your behalf and never downloads `op`: it shells out to your already-installed, already-trusted CLI. If `op` is missing, your session is locked, or a reference is wrong, Hermes prints a one-line warning and continues with whatever credentials `.env` already had — it never blocks startup.
 
+## Mounted 1Password Environments
+
+On macOS and Linux, you can instead mount a 1Password Environment directly at your
+profile's `.env` path. This uses a named pipe (FIFO), not `op://` item mappings.
+Leave `secrets.onepassword.enabled` disabled unless you also intend to use item mappings.
+
+Hermes reads a mounted environment once per process and holds the result in memory.
+It does not rewrite or sanitize the pipe, and secret-saving commands refuse to replace
+it: edit credentials in 1Password instead. An adjacent `.env.read.lock` file coordinates
+cooperating Hermes readers; the lock contains no credentials. Other applications reading
+the mount are not covered by this lock, so avoid opening it in an editor while starting Hermes.
+
+Unlock 1Password and approve access when prompted. Reads and lock waits have a combined
+10-second deadline and a 1 MiB limit; a timeout does not install partial credentials.
+Async code must load a cold mounted environment in a worker thread rather than blocking
+the gateway's event loop.
+
+Restart the gateway after changing credentials to load a fresh snapshot. Locking 1Password
+does not erase secrets already held in a running process. Ordinary `.env` files retain
+their existing reload behavior. This feature adds no plaintext credential files or
+secret-value disk cache; the separate native `op://` integration has its own cache policy below.
+
 ## Authentication
 
 `op` supports two non-interactive-friendly modes; Hermes works with either:

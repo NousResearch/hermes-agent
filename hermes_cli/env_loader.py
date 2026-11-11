@@ -349,7 +349,8 @@ def _sanitize_loaded_credentials() -> None:
 
 def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order."""
-    raw = path.read_bytes()
+    from hermes_cli.env_file import read_env_bytes
+    raw = read_env_bytes(path)
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
         # first key name and silently drop it from os.environ under its canonical name.
@@ -455,7 +456,8 @@ def _dotenv_assignments(path: Path) -> list:
     """``(name, raw value)`` pairs of one dotenv file as the loader will see it once
     ``_sanitize_env_file_if_needed`` has run: :func:`_parse_dotenv_file` plus the sanitizer's UTF-16
     rewrite and NUL strip, for the pre-boot bootstrap reads that run before the sanitizer."""
-    raw = path.read_bytes()
+    from hermes_cli.env_file import read_env_bytes
+    raw = read_env_bytes(path)
     if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
         # Notepad "Unicode": ``_sanitize_env_file_if_needed`` rewrites it as UTF-8 before the loader
         # reads it, so parse it as that rewrite will -- bootstrap / stage2 run before the sanitizer
@@ -553,7 +555,8 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
     decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
     we never fall through to the errors=replace corruption path."""
-    if not path.exists():
+    from hermes_cli.env_file import is_fifo
+    if not path.exists() or is_fifo(path):
         return
     try:
         from hermes_cli.config import _sanitize_env_lines
@@ -621,6 +624,9 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
 
 def dotenv_unreadable(path: Path) -> bool:
     """True when *path* exists but this process may not read it."""
+    from hermes_cli.env_file import is_fifo
+    if is_fifo(path):
+        return not os.access(path, os.R_OK)
     try:
         with open(path, "rb"):
             return False

@@ -141,7 +141,8 @@ def build_profile_terminal_scope(
         # profile .env must fail closed here, unless managed scope pins the backend: a sandbox
         # launcher withholds the .env and pins the backend there, and load_env_file reads it as {}.
         try:
-            env_path.read_bytes()
+            from hermes_cli.env_file import read_env_bytes
+            read_env_bytes(env_path)
         except Exception as exc:
             if not isinstance(exc, PermissionError) or managed_scope.pinned_terminal_backend() is None:
                 raise TerminalPolicyUnavailable(f"cannot read {env_path}: {exc}") from exc

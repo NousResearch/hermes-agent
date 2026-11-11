@@ -976,17 +976,10 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
     if not env_file.exists():
         return False
     try:
-        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
-            line = line.strip()
-            if line.startswith("#") or "=" not in line:
-                continue
-            line = line.removeprefix("export ")
-            key, _, val = line.partition("=")
-            if key.strip() in provider_env_vars and val.strip().strip("'\""):
-                return True
+        from agent.secret_scope import load_env_file
+        return any(value for key, value in load_env_file(env_file).items() if key in provider_env_vars)
     except Exception:
-        pass
-    return False
+        return False
 
 
 def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool) -> bool:

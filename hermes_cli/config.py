@@ -32,6 +32,7 @@ import hermes_yaml as yaml
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
+from hermes_cli.config_env_files import sanitize_env_file
 from hermes_cli import managed_scope
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.left_core_migration import profile_env_names as _left_core_profile_env
@@ -2467,27 +2468,11 @@ def _sanitize_env_lines(lines: list) -> list:
     return sanitized
 
 
-def sanitize_env_file() -> int:
-    """Rewrite ~/.hermes/.env with normalized line formatting; returns the number of changed lines."""
-    env_path = get_env_path()
-    if not env_path.exists():
-        return 0
-    with _env_write_lock(env_path):
-        with open(env_path, encoding="utf-8-sig", errors="replace") as f:
-            original_lines = f.readlines()
-        sanitized = _sanitize_env_lines(original_lines)
-        if sanitized == original_lines:
-            return 0
-        fixes = abs(len(sanitized) - len(original_lines)) or sum(
-            1 for a, b in zip(original_lines, sanitized) if a != b)
-        _write_env_lines(env_path, sanitized, preserve_mode=False)
-    invalidate_env_cache()
-    return fixes
-
-
 def _read_env_lines(env_path: Path) -> list:
     """Read ``.env`` lines, normalized. Explicit UTF-8 (Windows defaults to cp1252) with BOM
     tolerance (Notepad adds one)."""
+    from hermes_cli.env_file import require_regular_env_target
+    require_regular_env_target(env_path)
     with open(env_path, encoding="utf-8-sig", errors="replace") as f:
         return _sanitize_env_lines(f.readlines())
 
@@ -2539,6 +2524,8 @@ def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> Non
     """Atomically replace ``.env`` (tmp file + fsync + rename).
     ``preserve_mode`` keeps the original file mode (e.g. 0640 for Docker volume mounts) instead of
     letting ``_secure_file`` tighten to 0600; a new file is always secured."""
+    from hermes_cli.env_file import require_regular_env_target
+    require_regular_env_target(env_path)
     original_mode = None
     try:
         original_mode = stat.S_IMODE(env_path.stat().st_mode) if preserve_mode else None
@@ -2655,6 +2642,9 @@ def env_write_refusal(key: str, action: str) -> Optional[str]:
     (administrator-pinned env key — the managed .env wins at load anyway)."""
     if is_managed():
         return format_managed_message(f"{action} {key}")
+    from hermes_cli.env_file import is_fifo
+    if is_fifo(get_env_path()):
+        return f"Cannot {action} {key}: .env is a mounted environment; edit it in your secret manager."
     if managed_scope.is_env_managed(key):
         return (
             f"Cannot {action} {key}: it is managed by your administrator ({_managed_source('.env')}) "

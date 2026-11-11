@@ -123,7 +123,7 @@ def _interrupted_tool_tail():
     ]
 
 
-def _finalize(agent, messages, *, interrupted, final_response=None):
+def _finalize(agent, messages, *, interrupted, final_response=None, exit_reason="interrupted_by_user"):
     return finalize_turn(
         agent,
         final_response=final_response,
@@ -137,7 +137,7 @@ def _finalize(agent, messages, *, interrupted, final_response=None):
         user_message="edit the file",
         original_user_message="edit the file",
         _should_review_memory=False,
-        _turn_exit_reason="interrupted_by_user",
+        _turn_exit_reason=exit_reason,
     )
 
 
@@ -263,3 +263,36 @@ def test_tool_tail_with_non_tool_last_role_is_untouched():
     )
     assert result["turn_exit_reason"] == "interrupted_by_user"  # unchanged passthrough
     assert result["failed"] is False
+
+def test_review_input_budget_tail_preserves_real_stop_reason_and_closes_alternation():
+    """A completed skill_view result is not a *pending* tool result. On the
+    NEXT iteration the aggregate budget stops the review before model synthesis.
+    Do not reclassify a known budget stop as a transport/tool failure."""
+    agent = _StubAgent()
+    agent._review_input_token_budget = 250_000
+    agent.session_input_tokens = 305_700
+    messages = _pending_tool_result_tail()
+    result = _finalize(
+        agent, messages, interrupted=False, final_response=None,
+        exit_reason="review_input_budget_exhausted",
+    )
+    assert result["turn_exit_reason"] == "review_input_budget_exhausted"
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert "305,700" in result["final_response"]
+    assert "250,000" in result["final_response"]
+    assert "review" in result["final_response"].lower()
+    assert "pending" not in result["final_response"].lower()
+    assert messages[-1]["role"] == "assistant"
+    assert agent.persisted_messages[-1]["role"] == "assistant"
+    _assert_no_tool_then_user(agent.persisted_messages + [{"role": "user", "content": "continue"}])
+
+
+def test_other_unfinished_tool_tail_keeps_existing_pending_result_fallback():
+    """An unrelated tool loop error must retain its original generic tail guard."""
+    agent = _StubAgent()
+    result = _finalize(
+        agent, _pending_tool_result_tail(), interrupted=False,
+        exit_reason="repeated_outer_errors",
+    )
+    assert result["turn_exit_reason"] == "pending_tool_result"

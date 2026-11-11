@@ -1163,6 +1163,8 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: list[dict] = field(default_factory=list)
     review_usage: dict[str, Any] = field(default_factory=dict)
+    review_result: Optional[dict] = None
+    review_input_budget: int = 0
 
 
 def _release_fork_clients(review_agent: Any) -> None:
@@ -1225,7 +1227,7 @@ def _run_review_fork(
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
-            st.review_agent.run_conversation(
+            st.review_result = st.review_agent.run_conversation(
                 user_message=(
                     prompt + "\n\nYou can only call " + memory_phrase_prompt +
                     "management tools. Other tools will be denied "
@@ -1240,6 +1242,7 @@ def _run_review_fork(
         # still attributed. The recorder never raises.
         if st.review_agent is not None:
             st.review_usage.update(_snapshot_review_usage(st.review_agent))
+            st.review_input_budget = getattr(st.review_agent, "_review_input_token_budget", 0) or 0
             _record_review_usage_to_parent(agent, st.review_usage)
         # Publish completion as soon as the provider-capable phase has returned or startup
         # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
@@ -1322,8 +1325,28 @@ def _run_review_in_thread(
                 e,
             )
             actions = []
-        _log_review_completion(st.review_usage, _classify_review_result(actions))
-        if actions:
+        budget_limited = (
+            isinstance(st.review_result, dict)
+            and st.review_result.get("turn_exit_reason") == "review_input_budget_exhausted"
+        )
+        _log_review_completion(
+            st.review_usage,
+            "input_budget_exhausted" if budget_limited else _classify_review_result(actions),
+        )
+        if budget_limited:
+            # The hard aggregate cap has fired. Do not make more provider calls
+            # or imply that inspection produced a finished set of findings.
+            used = int(st.review_usage.get("input_tokens") or 0)
+            budget = st.review_input_budget
+            detail = f" ({used:,}/{budget:,} tokens)" if budget > 0 else ""
+            note = (
+                f"Review incomplete: aggregate input budget reached{detail}; "
+                "no final findings were produced. "
+                + ("Only the confirmed updates listed above were applied."
+                   if actions else "No skill or memory updates were confirmed.")
+            )
+            _publish_review_summary(agent, [*actions, note])
+        elif actions:
             _publish_review_summary(agent, actions)
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)

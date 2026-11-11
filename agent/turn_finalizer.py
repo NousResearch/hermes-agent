@@ -655,17 +655,34 @@ def finalize_turn(
         and messages[-1].get("role") == "tool"
         and not (getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
     ):
-        _turn_exit_reason = "pending_tool_result"
+        budget_limited_review = _turn_exit_reason == "review_input_budget_exhausted"
+        if not budget_limited_review:
+            _turn_exit_reason = "pending_tool_result"
+        # The last tool result DID arrive. A deliberate review input-budget
+        # stop cannot be reported as an outstanding tool result (#136889).
         failed = True
         final_response = ""
         try:
-            if agent._turn_completion_explainer_enabled():
+            if not budget_limited_review and agent._turn_completion_explainer_enabled():
                 final_response = (
                     agent._format_turn_completion_explanation("pending_tool_result", None) or ""
                 )
         except Exception:
             final_response = ""
-        if not final_response:
+        if not final_response and budget_limited_review:
+            used = getattr(agent, "session_input_tokens", 0)
+            limit = getattr(agent, "_review_input_token_budget", None)
+            detail = (
+                f" ({used:,}/{limit:,} input tokens)"
+                if isinstance(used, int) and isinstance(limit, int) and limit > 0
+                else ""
+            )
+            final_response = (
+                f"Background review stopped at its aggregate input budget{detail}. "
+                "The last tool result was received, but no final review summary was produced. "
+                "Completed updates, if any, remain recorded."
+            )
+        elif not final_response:
             # The turn-completion explainer opt-out must not reintroduce the silent stop.
             final_response = (
                 "No reply: the turn stopped while a tool result was still pending. "

@@ -9,7 +9,6 @@ import { afterEach, test, vi } from 'vitest'
 import {
   gitFor,
   repoStatus,
-  resolveRenamePath,
   REVIEW_FILE_CAP,
   reviewCreatePr,
   reviewList,
@@ -47,10 +46,6 @@ function makeRepo() {
 
   return dir
 }
-
-test('resolveRenamePath: plain path is unchanged', () => {
-  assert.equal(resolveRenamePath('src/a.ts'), 'src/a.ts')
-})
 
 test('gitFor accepts an internally resolved git binary path containing spaces', () => {
   assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe'))
@@ -230,18 +225,6 @@ test.skipIf(process.platform === 'win32')(
   }
 )
 
-test('resolveRenamePath: simple rename resolves to the new path', () => {
-  assert.equal(resolveRenamePath('old.ts => new.ts'), 'new.ts')
-})
-
-test('resolveRenamePath: brace rename resolves to the new path', () => {
-  assert.equal(resolveRenamePath('src/{old => new}/file.ts'), 'src/new/file.ts')
-})
-
-test('resolveRenamePath: brace rename collapsing a segment', () => {
-  assert.equal(resolveRenamePath('src/{lib => }/file.ts'), 'src/file.ts')
-})
-
 test('repoStatus reports an untracked directory without recursively listing its contents', async () => {
   const dir = makeRepo()
   const nested = path.join(dir, 'generated', 'deep')
@@ -329,4 +312,32 @@ test('reviewCreatePr falls back to the generic message when gh reports no stderr
   failGh('')
 
   await assert.rejects(reviewCreatePr(dir, 'git', 'gh'), /is gh installed and authenticated\?/)
+})
+
+test('reviewList keys counts by literal paths: non-ASCII names and renames, both scopes', async () => {
+  const dir = makeRepo()
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: dir })
+
+  fs.writeFileSync(path.join(dir, 'café.txt'), '1\n')
+  fs.writeFileSync(path.join(dir, 'old name.txt'), '1\n2\n3\n')
+  git('add', '.')
+  git('commit', '-qm', 'base')
+  const base = git('rev-parse', 'HEAD').toString().trim()
+  fs.appendFileSync(path.join(dir, 'café.txt'), '2\n3\n')
+  fs.mkdirSync(path.join(dir, 'dir'))
+  git('mv', 'old name.txt', 'dir/new name.txt')
+  fs.appendFileSync(path.join(dir, 'dir', 'new name.txt'), '4\n')
+  git('add', '-A')
+
+  const expected = [
+    ['café.txt', 2, 0],
+    ['dir/new name.txt', 1, 0]
+  ]
+
+  const uncommitted = await reviewList(dir, 'uncommitted', null, 'git')
+  assert.deepEqual(uncommitted.files.map(f => [f.path, f.added, f.removed]), expected)
+
+  git('commit', '-qm', 'turn')
+  const lastTurn = await reviewList(dir, 'lastTurn', base, 'git')
+  assert.deepEqual(lastTurn.files.map(f => [f.path, f.added, f.removed]), expected)
 })

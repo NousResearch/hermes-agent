@@ -156,6 +156,7 @@ describe('connection-request store', () => {
     const launch = { kind: 'stdio' as const, target: 'npx -y @acme/mcp' }
     const mcp = { action: 'enable' as const, kind: 'mcp' as const, launch, name: 'acme', state: 'pending' as const }
     const req = normalizeConnectionRequest({ ...WIRE, targets: [mcp] }, 's1')!
+
     const status = (next: typeof launch & { cwd?: string; env?: string[] }) =>
       applyOperationStatus(req, {
         deadline_at: WIRE.deadline_at,

@@ -74,11 +74,14 @@ test('existing, default and explicitly launched profiles are kept', () => {
 // hermes_constants.named_profile_is_live refuses both shapes, so `--profile`
 // would fail every launch while the preference survived.
 test.each([
-  ['tombstoned by `hermes profile delete`', (home: string) => {
-    fs.writeFileSync(path.join(home, 'config.yaml'), '')
-    fs.mkdirSync(path.join(profilesRoot, '.deleted'))
-    fs.writeFileSync(path.join(profilesRoot, '.deleted', 'ghost'), 'deleted\n')
-  }],
+  [
+    'tombstoned by `hermes profile delete`',
+    (home: string) => {
+      fs.writeFileSync(path.join(home, 'config.yaml'), '')
+      fs.mkdirSync(path.join(profilesRoot, '.deleted'))
+      fs.writeFileSync(path.join(profilesRoot, '.deleted', 'ghost'), 'deleted\n')
+    }
+  ],
   ['a marker-less runtime leftover', (home: string) => fs.mkdirSync(path.join(home, 'logs'))]
 ])('a remembered profile directory that is %s is forgotten', (_label, shape) => {
   const home = path.join(profilesRoot, 'ghost')
@@ -96,18 +99,27 @@ test.each([
 // Unprivileged Windows cannot create symlinks. Python's path predicates read a
 // dangling or looping link as one absent path and keep checking the rest.
 test.skipIf(process.platform === 'win32').each([
-  ['its only identity marker is a dangling symlink', (home: string) => {
-    fs.symlinkSync(path.join(root, 'missing-config.yaml'), path.join(home, 'config.yaml'))
-  }],
-  ['a marker is a symlink loop next to a real .env', (home: string) => {
-    fs.symlinkSync('config.yaml', path.join(home, 'config.yaml'))
-    fs.writeFileSync(path.join(home, '.env'), '')
-  }],
-  ['its tombstone path is a symlink loop', (home: string) => {
-    fs.writeFileSync(path.join(home, 'config.yaml'), '')
-    fs.mkdirSync(path.join(profilesRoot, '.deleted'))
-    fs.symlinkSync('cloned', path.join(profilesRoot, '.deleted', 'cloned'))
-  }]
+  [
+    'its only identity marker is a dangling symlink',
+    (home: string) => {
+      fs.symlinkSync(path.join(root, 'missing-config.yaml'), path.join(home, 'config.yaml'))
+    }
+  ],
+  [
+    'a marker is a symlink loop next to a real .env',
+    (home: string) => {
+      fs.symlinkSync('config.yaml', path.join(home, 'config.yaml'))
+      fs.writeFileSync(path.join(home, '.env'), '')
+    }
+  ],
+  [
+    'its tombstone path is a symlink loop',
+    (home: string) => {
+      fs.writeFileSync(path.join(home, 'config.yaml'), '')
+      fs.mkdirSync(path.join(profilesRoot, '.deleted'))
+      fs.symlinkSync('cloned', path.join(profilesRoot, '.deleted', 'cloned'))
+    }
+  ]
 ])('a profile where %s stays live, as in the CLI', (_label, shape) => {
   const home = path.join(profilesRoot, 'cloned')
   fs.mkdirSync(home)

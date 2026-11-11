@@ -111,8 +111,8 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
         logger.debug("/new model reset to config default failed", exc_info=True)
 
 
-def _apply_new_session_title(cli, title: str) -> Optional[str]:
-    """Sanitize + persist a /new title; returns the stored title or None (untitled)."""
+def _sanitize_new_session_title_or_say_why(title: str) -> Optional[str]:
+    """A /new title cleaned as the session store keeps it, or None after saying why it was dropped."""
     from cli import _cprint
     from hermes_state import SessionDB
     try:
@@ -122,6 +122,15 @@ def _apply_new_session_title(cli, title: str) -> Optional[str]:
         return None
     if not sanitized:
         _cprint(f"  {t('cli.session.title_empty_untitled')}")
+        return None
+    return sanitized
+
+
+def _apply_new_session_title(cli, title: str) -> Optional[str]:
+    """Sanitize + persist a /new title; returns the stored title or None (untitled)."""
+    from cli import _cprint
+    sanitized = _sanitize_new_session_title_or_say_why(title)
+    if sanitized is None:
         return None
     try:
         cli._session_db.set_session_title(cli.session_id, sanitized)
@@ -659,6 +668,8 @@ class CLISessionMixin:
                 self._notify_session_boundary("on_session_reset")
 
         if not silent:
+            if title:  # _cprint writes \001..\002 raw: clean every title shown (a stored one is already clean)
+                title = _sanitize_new_session_title_or_say_why(title)
             _cprint(t("cli.session.new_session_titled", title=title) if title else t("cli.session.new_session"))
 
     def _consume_pending_resume_selection(self, text: str) -> bool:

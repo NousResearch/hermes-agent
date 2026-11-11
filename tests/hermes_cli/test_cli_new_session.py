@@ -314,8 +314,8 @@ def test_new_session_with_title(monkeypatch):
 
 
 def test_the_new_session_line_is_kept_for_a_resize_to_replay(monkeypatch):
-    """/new's line goes through the CLI's printer like the rest of its output: a resize repaints it,
-    and inside the running CLI the print keeps the footer on the terminal's last rows."""
+    """/new's line goes through the CLI's printer like the rest of its output, so a resize repaints
+    it (and inside the running CLI the printer's floor bookkeeping keeps the footer down)."""
     from collections import deque
 
     import cli as cli_mod
@@ -329,3 +329,42 @@ def test_the_new_session_line_is_kept_for_a_resize_to_replay(monkeypatch):
     cli.new_session(title="Kept Title")
 
     assert any("Kept Title" in line for line in cli_mod._OUTPUT_HISTORY)
+
+
+def _new_session_printing(monkeypatch, *, store, title):
+    import cli as cli_mod
+
+    cli = _make_cli()  # re-imports cli: patch it after
+    printed = []
+    monkeypatch.setattr(cli_mod, "_cprint", printed.append)
+    cli.conversation_history = []
+    if store == "no agent yet":
+        cli.agent = None
+    else:
+        cli.agent, cli._session_db = _FakeAgent("old_session_id", datetime.now()), None
+    cli.new_session(title=title)
+    return printed
+
+
+@pytest.mark.parametrize("store", ["no agent yet", "no session store"])
+def test_a_title_that_was_not_stored_carries_no_escape_sequence(monkeypatch, store):
+    """With no session row to store /new's title in, its line still goes through the CLI's printer,
+    which passes what sits between \\001 and \\002 to the terminal unchanged: the title is cleaned
+    as a stored one is (here, an OSC 52 clipboard write)."""
+    printed = _new_session_printing(monkeypatch, store=store, title="Plain \x01\x1b]52;c;aGk=\x07\x02title")
+
+    shown = [line for line in printed if "Plain" in line]
+    assert shown and not any(control in line for line in shown for control in "\x01\x02\x07\x1b")
+
+
+@pytest.mark.parametrize(("title", "reason"), [("x" * (SessionDB.MAX_TITLE_LENGTH + 1), "Title too long"), ("\x01\x07", "empty after cleanup")],
+                         ids=["too long", "nothing left"])
+def test_a_title_that_cannot_be_kept_starts_an_untitled_session_and_says_why(monkeypatch, title, reason):
+    """Before the first turn as after it: a title the session store would refuse is named as refused."""
+    from agent.i18n import t
+
+    printed = _new_session_printing(monkeypatch, store="no agent yet", title=title)
+
+    assert any(reason in line for line in printed)
+    assert t("cli.session.new_session") in printed
+    assert not any("x" * SessionDB.MAX_TITLE_LENGTH in line for line in printed)

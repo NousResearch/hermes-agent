@@ -1,19 +1,19 @@
 name: gif-tool
 repo: https://github.com/tuancookiez-hub/hermes-gif-tool
-sha: b80d71344f544af20eacbb84908a87f5384086cb
+sha: 0c3cdbdfe81886bdbeab30855225f9b4701cd766
 title: GIF Tool
 description: "Show, edit and compress GIFs in Hermes. `gif_open` turns any GIF, animated WebP, APNG, PNG or JPEG (a file path or an https link) into a card in Hermes Desktop where you add exact captions, change speed, reverse, boomerang, trim, drop frames and crop with a live preview; the original file is never changed. `gif_export` and the card's export buttons compress for Discord (10 MB), Discord emoji (256 KB), Telegram, X (5 MB), under 1 MB, animated WebP or a size you name, shrinking until the file fits and reporting before and after sizes (pure Pillow: shared palette, frame differencing, size-targeted ladder). `gif_edit` gives the agent the same edits. `gif_create` makes a four-frame meme GIF from a prompt. A GIF Studio tab lists every GIF in the profile and takes a dropped file or a pasted link. Disclosure — editing, previews and compression are local and free. Opening a link downloads that one https URL (no cookies or credentials; private, local and link-local addresses refused; redirects re-checked; a GIPHY or Tenor page is followed once to its og:image). `gif_create` sends one request per call to chatgpt.com/backend-api/codex/images/generations through Hermes' credentialed_provider_request with the user's OpenAI Codex sign-in (the plugin never sees the token); each call uses one image from the user's ChatGPT plan, only the text prompt is sent, and the endpoint neither honours nor reports a model version. Reads the image file whose path the user gives and a system font for captions. Stores each project (a copy of the source plus an edit list) under plugin-data/gif-tool and rendered files under cache/generated/images. No shell commands, background work, telemetry or stored credentials."
 maintainer: tuancookiez-hub
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/tuancookiez-hub/hermes-gif-tool/blob/b80d71344f544af20eacbb84908a87f5384086cb/README.md
-version: "1.0.0"
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/b80d71344f544af20eacbb84908a87f5384086cb/assets/card-caption.png
+docs_url: https://github.com/tuancookiez-hub/hermes-gif-tool/blob/0c3cdbdfe81886bdbeab30855225f9b4701cd766/README.md
+version: "1.0.1"
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/card-caption.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/b80d71344f544af20eacbb84908a87f5384086cb/assets/card-caption.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/b80d71344f544af20eacbb84908a87f5384086cb/assets/card-export.png
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/b80d71344f544af20eacbb84908a87f5384086cb/assets/studio.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/card-caption.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/card-export.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/studio.png
 platforms: []
 known_issues:
   - "Restart Hermes once after installing: the card's backend routes mount at startup."

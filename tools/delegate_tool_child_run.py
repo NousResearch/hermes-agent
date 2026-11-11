@@ -558,9 +558,10 @@ def _validate_child_output_schema(
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
-    # Exactly one retry turn, carrying the validation errors verbatim (no
-    # schema re-paste — the child already holds the contract in its context).
+    # Exactly one retry turn, carrying the validation errors verbatim (no schema re-paste: the
+    # retry continues the child's conversation, whose first user turn holds the contract).
     _retry_result = None
+    _history = result.get("messages") if isinstance(result.get("messages"), list) else None
     try:
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
@@ -569,7 +570,7 @@ def _validate_child_output_schema(
         with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
                 user_message=build_retry_message(_schema_errors), task_id=child_task_id,
-                stream_callback=relay_child_text,
+                stream_callback=relay_child_text, conversation_history=_history,
             )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
@@ -582,8 +583,8 @@ def _validate_child_output_schema(
         except (TypeError, ValueError):
             pass
         _retry_messages = _retry_result.get("messages")
-        if isinstance(_retry_messages, list) and isinstance(result.get("messages"), list):
-            result["messages"] = result["messages"] + _retry_messages
+        if isinstance(_retry_messages, list) and _history is not None:
+            result["messages"] = _retry_messages  # already continues the first turn's history
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 

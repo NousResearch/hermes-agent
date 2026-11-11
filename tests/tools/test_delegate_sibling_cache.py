@@ -37,6 +37,35 @@ def test_siblings_send_one_system_prompt_and_get_their_context_in_the_user_turn(
     assert "The parent is fixing the gateway." in second["messages"][1]["content"]
 
 
+def test_schema_correction_turn_still_carries_the_context_and_contract():
+    """The contract lives in the first user turn, so the one correction turn continues that conversation."""
+    import json
+
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+    from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
+    from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+    from tools.delegate_tool import delegate_task
+
+    home = Path(os.environ["HERMES_HOME"])
+    schema = {"type": "object", "properties": {"count": {"type": "integer"}}, "required": ["count"]}
+    with FakeLLMServer([]) as srv:
+        write_hermes_home(home, srv.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW)
+        srv.push(Text("there are three"), Text('{"count": 3}'))
+        parent = AIAgent(provider="custom", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
+                         session_db=SessionDB(db_path=home / "state.db"), session_id="parent", quiet_mode=True, platform="cli")
+        parent._ensure_db_session()
+        entry = json.loads(delegate_task(goal="count the files", context="Only count .py files.", output_schema=schema,
+                                         parent_agent=parent))["results"][0]
+        parent.close()
+        first, correction = srv.main_requests()
+
+    assert entry["schema_valid"] is True
+    sent = [m["content"] for m in correction["messages"] if m["role"] in ("user", "assistant")]
+    assert sent[0] == first["messages"][1]["content"] and "Only count .py files." in sent[0] and '"count"' in sent[0]
+    assert sent[1] == "there are three" and len(sent) == 3
+
+
 def test_codex_siblings_share_the_session_header_the_backend_caches_under():
     from agent.chat_completion_helpers import _build_api_kwargs_for_mode
     from run_agent import AIAgent
@@ -56,6 +85,10 @@ def test_codex_siblings_share_the_session_header_the_backend_caches_under():
     ]
     one, two = (request(child) for child in children)
     own = request(parent)
+    # A child that lands on a slot-keyed route (xAI) after it was built goes back to its own scope.
+    from agent.prompt_cache_scope import resolve_prompt_cache_scope
+    children[0].provider, children[0].base_url = "xai", "https://api.x.ai/v1"
+    isolated = resolve_prompt_cache_scope(children[0])
     for agent in (*children, parent):
         agent.close()
 
@@ -65,3 +98,4 @@ def test_codex_siblings_share_the_session_header_the_backend_caches_under():
     # The delegation tree gets its own scope; the parent keeps its physical session id.
     assert own["extra_headers"]["session_id"] == "parent" != one["extra_headers"]["session_id"]
     assert own["prompt_cache_key"] != one["prompt_cache_key"]
+    assert isolated == children[0].session_id

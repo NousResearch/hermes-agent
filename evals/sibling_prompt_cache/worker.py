@@ -68,6 +68,11 @@ CHILDREN = [
     ("B", "The parent is fixing a flaky gateway test. End your final reply with the exact word FLAKY-OK.", "beta", "9310", "FLAKY-OK"),
     ("C", "The parent is auditing numbers. End your final reply with the exact word AUDIT-OK.", "gamma", "5586", "AUDIT-OK"),
 ]
+def _ends_with(final, marker):
+    """The context asks for the reply to END with the marker; trailing punctuation or markdown is tolerated."""
+    return str(final or "").rstrip().rstrip(".*`_\"'").endswith(marker)
+
+
 GOAL = "Use the terminal to list this directory, then read {}.txt and reply with the number in it."
 if os.environ.get("SC_LONG") == "1":  # several rounds per child, to see in-session reads past the shared prefix
     GOAL = ("Run these one per terminal call, in this order, never combined: `ls -la`, `cat alpha.txt`, `cat beta.txt`, "
@@ -81,7 +86,8 @@ if os.environ.get("SC_PARALLEL") == "1":  # one batch: do concurrent siblings un
         by_sid.setdefault(c["sid"], []).append((c["prompt"], c["cache_read"]))
     rec = {"arm": ARM, "route": PROVIDER, "model": MODEL, "parallel": True, "nonce": NONCE,
            "task_ok": [c[3] in str(r.get("summary") or "") for c, r in zip(CHILDREN, results)],
-           "context_followed": [c[4] in str(r.get("summary") or "") for c, r in zip(CHILDREN, results)],
+           "context_followed": [_ends_with(r.get("summary"), c[4]) for c, r in zip(CHILDREN, results)],
+           "n_results": len(results), "finals": [str(r.get("summary") or "")[-200:] for r in results],
            "calls": list(by_sid.values())}
     with open(OUT, "a") as f:
         f.write(json.dumps(rec) + "\n")
@@ -96,7 +102,7 @@ for name, context, fname, want, marker in CHILDREN:
     except ValueError:
         entry = {"summary": raw}
     final = str(entry.get("summary") or "")
-    rec = {"arm": ARM, "route": PROVIDER, "model": MODEL, "child": name, "task_ok": want in final, "context_followed": marker in final,
+    rec = {"arm": ARM, "route": PROVIDER, "model": MODEL, "child": name, "task_ok": want in final, "context_followed": _ends_with(final, marker), "final": final[-200:],
            "status": entry.get("status"), "calls": [{"prompt": c["prompt"], "cache_read": c["cache_read"]} for c in calls], "nonce": NONCE, "wall": round(time.time() - t0, 1),
            "error": str(entry.get("error") or "")[:200]}
     with open(OUT, "a") as f:

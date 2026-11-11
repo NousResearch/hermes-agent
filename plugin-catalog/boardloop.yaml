@@ -1,22 +1,22 @@
 name: boardloop
 title: BoardLoop
 repo: https://github.com/LSUDOKO/BoardLoop
-sha: 25987e5272773bbda95475cd537b47cc852a4452
+sha: 950586cd231d8f3d0905fdc53eecf8bba1319c3e
 subdir: ""
 description: "Hermes writes ESP32 and Arduino code, compiles it with arduino-cli, tests it in the Wokwi simulator (sets sensor values, presses buttons, checks pins, serial output and OLED screenshots), fixes it within bounded attempts, and flashes real boards with approval. Disclosure — runs the user-installed arduino-cli and wokwi-cli as subprocesses (no shell, with timeouts); wokwi-cli sends compiled firmware and the circuit diagram to Wokwi's cloud using the user's Wokwi CI token (stored as a Hermes secret) and uses their Wokwi simulation minutes; arduino-cli may download cores and libraries on request; flashing a board and writing to a serial port always go through Hermes's approval prompt; projects, run folders, screenshots and history are stored in the plugin data directory; no telemetry."
 maintainer: LSUDOKO
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/LSUDOKO/BoardLoop/blob/25987e5272773bbda95475cd537b47cc852a4452/README.md
-version: "0.2.3"
-image: https://raw.githubusercontent.com/LSUDOKO/BoardLoop/25987e5272773bbda95475cd537b47cc852a4452/assets/banner.png
+docs_url: https://github.com/LSUDOKO/BoardLoop/blob/950586cd231d8f3d0905fdc53eecf8bba1319c3e/README.md
+version: "0.2.4"
+image: https://raw.githubusercontent.com/LSUDOKO/BoardLoop/950586cd231d8f3d0905fdc53eecf8bba1319c3e/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/25987e5272773bbda95475cd537b47cc852a4452/assets/film/5-verified.png
-  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/25987e5272773bbda95475cd537b47cc852a4452/assets/film/3-test-fail.png
-  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/25987e5272773bbda95475cd537b47cc852a4452/assets/film/6-approval.png
-  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/25987e5272773bbda95475cd537b47cc852a4452/assets/demo.gif
-  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/25987e5272773bbda95475cd537b47cc852a4452/assets/wokwi-live.png
+  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/950586cd231d8f3d0905fdc53eecf8bba1319c3e/assets/film/5-verified.png
+  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/950586cd231d8f3d0905fdc53eecf8bba1319c3e/assets/film/3-test-fail.png
+  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/950586cd231d8f3d0905fdc53eecf8bba1319c3e/assets/film/6-approval.png
+  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/950586cd231d8f3d0905fdc53eecf8bba1319c3e/assets/demo.gif
+  - https://raw.githubusercontent.com/LSUDOKO/BoardLoop/950586cd231d8f3d0905fdc53eecf8bba1319c3e/assets/wokwi-live.png
 platforms: []
 capabilities:
   provides_tools: [mcu_doctor, mcu_project_new, mcu_project_info, mcu_libraries, mcu_compile, mcu_simulate, mcu_test, mcu_verify, mcu_ports, mcu_upload, mcu_serial_read, mcu_serial_write, mcu_wiring_check, mcu_export]

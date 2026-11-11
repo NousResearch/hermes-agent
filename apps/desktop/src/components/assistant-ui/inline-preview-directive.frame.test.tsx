@@ -48,6 +48,8 @@ async function mountFrame() {
 // No pixel width taken from the content: the block spans the transcript
 // column up to the frame cap, and CSS follows the column on resize.
 function expectColumnWide(box: HTMLElement | null) {
+  // Height is the only inline size the frame takes from the content.
+  expect(box?.style.cssText).toMatch(/^height: \d+px;$/)
   expect(box?.style.width).toBe('')
   expect(box?.classList.contains('w-full')).toBe(true)
   expect(box?.closest('.max-w-160')).toBeNull()

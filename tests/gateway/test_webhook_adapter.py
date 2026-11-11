@@ -28,6 +28,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
+from tests.waiting import async_wait_until
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
@@ -643,7 +644,7 @@ class TestHTTPHandling:
                 cli.post("/webhooks/signed", data=body, headers=headers) for _ in range(2)
             ))
             assert sorted(response.status for response in responses) == [200, 202]
-            await asyncio.gather(*tuple(adapter._background_tasks))
+            await async_wait_until(lambda: captured, what="the admitted V2 run")
         assert len(captured) == 1
         assert captured[0].message_id == "signed-delivery"
 

@@ -504,7 +504,8 @@ webhook 适配器包含多层安全机制：
 
 - **GitHub**：`X-Hub-Signature-256` 请求头——以 `sha256=` 为前缀的 HMAC-SHA256 十六进制摘要
 - **GitLab**：`X-Gitlab-Token` 请求头——明文 secret 字符串匹配
-- **通用**：`X-Webhook-Signature` 请求头——原始 HMAC-SHA256 十六进制摘要
+- **通用（V2）**：`X-Webhook-Signature-V2` + `X-Webhook-Timestamp` 请求头——`<timestamp>.<body>` 的 HMAC-SHA256 十六进制摘要，时间戳须在服务器时钟 ±300 秒内
+- **通用（V1，已拒绝）**：仅对请求体签名的 `X-Webhook-Signature` 可被重放，返回 `401 Unauthorized`；请改用 V2
 
 若已配置 secret 但请求中不存在已识别的签名请求头，则请求被拒绝。
 

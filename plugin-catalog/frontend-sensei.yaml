@@ -1,0 +1,27 @@
+name: frontend-sensei
+version: "1.0.0"
+repo: https://github.com/daniels-martins/frontend-sensei
+sha: b68f24b0040ecc87bf9f2261d16135e948890216
+requires_hermes: ">=0.21.0"
+description: >
+  Professional frontend expertise plugin — audits accessibility, CSS quality,
+  color contrast, animation performance, and component quality via MCP tools.
+  Includes 10 skill files covering UI/UX, WCAG, CSS, animation, React, Vue, and more.
+author: Martins Daniels
+license: MIT
+categories:
+  - Web
+  - Development
+  - Design
+capabilities:
+  tools:
+    - audit-accessibility-tool
+    - audit-animation-tool
+    - audit-component-tool
+    - audit-css-tool
+    - check-color-contrast-tool
+    - frontend-score-tool
+screenshots:
+  - screenshots/tools-list.png
+  - screenshots/contrast-check.png
+  - screenshots/accessibility-audit.png

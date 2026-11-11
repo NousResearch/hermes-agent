@@ -52,10 +52,37 @@ def _clip(text):
     return (text, False) if len(text) <= _CAPTURE_LIMIT else (text[:_CAPTURE_LIMIT], True)
 
 
+_MODULE_MTIMES = {}
+_STDLIB_DIR = os.path.dirname(os.__file__)
+
+
+def _edited_modules(report):
+    """Record the source mtime of every imported project module; with *report*, name those
+    whose file changed since it was recorded (each change is named once)."""
+    edited = []
+    for name, module in list(sys.modules.items()):
+        path = getattr(module, "__file__", None)
+        if (not isinstance(path, str) or not path.endswith(".py") or path.startswith(_STDLIB_DIR)
+                or "site-packages" in path or "dist-packages" in path):
+            continue
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            continue
+        if report and _MODULE_MTIMES.get(name, mtime) != mtime:
+            edited.append(name)
+        if report or name not in _MODULE_MTIMES:
+            _MODULE_MTIMES[name] = mtime
+    return sorted(edited)
+
+
 def run_cell(request, execution_count):
     """Exec one cell; returns (response payload, FULL stdout text)."""
     out, err = io.StringIO(), io.StringIO()
     status, trace = "ok", ""
+    # An imported module keeps the code it was loaded with: name the ones edited on disk since
+    # the last cell, so a fix that "still fails" is not mistaken for a wrong fix.
+    stale_modules = _edited_modules(True)
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exec(compile(request["code"], "<cell>", "exec"), GLOBALS)
@@ -63,9 +90,11 @@ def run_cell(request, execution_count):
         status, trace = "exit", "SystemExit: " + repr(exc.code)
     except BaseException:
         status, trace = "error", traceback.format_exc()
+    _edited_modules(False)  # modules this cell imported are watched from now on
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
     return {
+        "stale_modules": stale_modules,
         "id": request.get("id", ""), "status": status,
         "stdout": stdout_text, "stderr": stderr_text,
         "stdout_clipped": stdout_clipped, "stderr_clipped": stderr_clipped,
@@ -749,6 +778,17 @@ def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> tuple[st
         return "success", payload
 
 
+def stale_modules_warning(payload: dict[str, Any]) -> str:
+    """Tell the model which modules this kernel imported before they were edited on disk."""
+    names = [str(name) for name in payload.get("stale_modules") or []]
+    if not names:
+        return ""
+    shown = ", ".join(names[:8]) + (f" and {len(names) - 8} more" if len(names) > 8 else "")
+    return (f"Edited on disk after this kernel imported it: {shown}. Unless this cell reloaded it, "
+            "the cell ran the OLD code. Run importlib.reload(<module>) (and re-import any names "
+            "taken from it), or call again with reset=true to start from fresh imports.")
+
+
 def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
@@ -791,6 +831,9 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
             f'— page it with read_file(path="{cell_spill}", offset=...) instead of re-running. '
             "(Kernel state persists: printing a narrower slice next call is often cheaper.)"
         )
+    stale_warning = stale_modules_warning(payload)
+    if stale_warning:
+        result["warning"] = " ".join(filter(None, [result.get("warning"), stale_warning]))
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "
                    "state was lost. The next execute_code call starts a fresh kernel.")

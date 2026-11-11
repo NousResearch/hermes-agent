@@ -103,6 +103,43 @@ class TestSessionStatePersistence(unittest.TestCase):
         self.assertIn('{"k": 1}', second["output"])
 
 
+class TestEditedModuleWarning(unittest.TestCase):
+    """A module the kernel already imported keeps its old code after an edit on disk; the cell
+    that runs next must say so instead of letting a correct fix look like it failed."""
+
+    def _module(self, body):
+        folder = tempfile.mkdtemp(prefix="hermes-kernel-mod-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        path = Path(folder) / "editme_mod.py"
+        path.write_text(body, encoding="utf-8")
+        return folder, path
+
+    def test_edit_after_import_is_named_once_and_reload_picks_it_up(self):
+        folder, path = self._module("def answer():\n    return 'old'\n")
+        with _kernel_config():
+            first = _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_mod; print(editme_mod.answer())")
+            self.assertNotIn("warning", first, first)
+            path.write_text("def answer():\n    return 'new'\n", encoding="utf-8")
+            later = time.time() + 5
+            os.utime(path, (later, later))
+            second = _run("print(editme_mod.answer())")
+            third = _run("import importlib; importlib.reload(editme_mod); print(editme_mod.answer())")
+        self.assertIn("old", second["output"], second)
+        self.assertIn("editme_mod", second.get("warning", ""), second)
+        self.assertIn("reset=true", second["warning"])
+        self.assertEqual(second["kernel"]["reused"], True)
+        self.assertIn("new", third["output"], third)
+        self.assertNotIn("warning", third, third)
+
+    def test_unedited_module_draws_no_warning(self):
+        folder, _ = self._module("VALUE = 1\n")
+        with _kernel_config():
+            _run(f"import sys; sys.path.insert(0, {folder!r}); import editme_mod")
+            second = _run("print(editme_mod.VALUE)")
+        self.assertEqual(second["status"], "success", second)
+        self.assertNotIn("warning", second, second)
+
+
 class TestKernelLifecycle(unittest.TestCase):
     def test_kernel_exits_when_its_backend_parent_dies(self):
         """A kernel must not outlive the host that spawned it, even when the

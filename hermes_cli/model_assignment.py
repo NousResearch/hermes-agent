@@ -88,7 +88,7 @@ def normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str
     return prov_in, model_in
 
 
-_BARE_CUSTOM_SELECTORS = frozenset({"custom", "local"})
+BARE_CUSTOM_SELECTORS = frozenset({"custom", "local"})
 
 
 def _same_endpoint(a: Any, b: Any) -> bool:
@@ -105,14 +105,14 @@ def entry_points_elsewhere(entry: Any, base_url: str) -> bool:
 def is_explicit_custom_endpoint(provider: str, base_url: str) -> bool:
     """A bare ``custom`` / ``local`` pick that carries its own endpoint URL defines a route; it is
     never a reference to an already-configured provider."""
-    return provider.strip().lower() in _BARE_CUSTOM_SELECTORS and bool((base_url or "").strip())
+    return provider.strip().lower() in BARE_CUSTOM_SELECTORS and bool((base_url or "").strip())
 
 
 def validated_main_model_selection(
     cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = "",
     explicit_endpoint: Optional[bool] = None,
 ) -> ModelSwitchResult:
-    """Route a dashboard main-slot pick through ``switch_model`` (catalog/alias/credential
+    """Route a main-slot pick through ``switch_model`` (catalog/alias/credential
     validation) seeded with the configured route, exactly like a ``/model <model> --provider
     <provider> --global``. A bare ``custom`` target carries the submitted endpoint as the current
     one, which is how ``switch_model`` binds a custom base_url/key. A rejection raises
@@ -121,7 +121,7 @@ def validated_main_model_selection(
     from hermes_cli.model_switch import switch_model
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    is_bare_custom = provider.strip().lower() in _BARE_CUSTOM_SELECTORS
+    is_bare_custom = provider.strip().lower() in BARE_CUSTOM_SELECTORS
     # An explicit endpoint must not resolve through the configured providers: the legacy
     # bare-``custom`` recovery in ``resolve_custom_provider`` would bind the FIRST named entry, and
     # a ``providers.custom`` / ``providers.local`` block (same key as the bare selector) would win
@@ -132,7 +132,7 @@ def validated_main_model_selection(
     user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
     if explicit_endpoint:
         user_providers = {k: v for k, v in user_providers.items()
-                          if not (str(k).strip().lower() in _BARE_CUSTOM_SELECTORS
+                          if not (str(k).strip().lower() in BARE_CUSTOM_SELECTORS
                                   and entry_points_elsewhere(v, base_url))}
     # The submitted endpoint is seeded as a current bare-``custom`` route so the credential step
     # keeps it: arriving from another provider it re-resolves ``custom`` from config and would

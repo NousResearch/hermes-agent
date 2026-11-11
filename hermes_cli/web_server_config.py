@@ -657,7 +657,9 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
     from hermes_cli.free_tier_bootstrap import reconcile_record
-    from hermes_cli.model_assignment import apply_main_model_assignment, entry_points_elsewhere, is_explicit_custom_endpoint
+    from hermes_cli.model_assignment import (
+        BARE_CUSTOM_SELECTORS, apply_main_model_assignment, entry_points_elsewhere, is_explicit_custom_endpoint,
+    )
     # Recorded from the SUBMITTED args, before preparation fills a URL from a named entry.
     explicit_endpoint = is_explicit_custom_endpoint(provider, base_url)
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
@@ -669,7 +671,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     # (keep the existing shape — #76324).
     provider_lc = provider.strip().lower()
     endpoint_already_known = (
-        provider_lc in {"custom", "local"} and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
+        provider_lc in BARE_CUSTOM_SELECTORS and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
     model_cfg = apply_main_model_assignment(cfg.get("model", {}), result, api_key)
     if not (explicit_endpoint and entry_points_elsewhere(provider_entry, base_url)):
         # A submitted endpoint carries its own key (or none); a ``providers.custom`` block for
@@ -684,7 +686,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     # above, or on its CAS retry) refuses the whole save instead of being omitted from it.
     with refusing_locked_omissions("model"):
         save_config(cfg)
-    if new_provider in {"custom", "local"} and base_url and not endpoint_already_known:
+    if new_provider in BARE_CUSTOM_SELECTORS and base_url and not endpoint_already_known:
         _register_custom_endpoint(base_url, api_key, model)
     # The serve process's boot record may still say "nothing configured"; the chat gates on it.
     reconcile_record()

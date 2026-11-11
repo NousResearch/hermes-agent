@@ -1,6 +1,6 @@
 name: voicestudio-tts
 repo: https://github.com/EternalShade3D/voicestudio-hermes-plugin
-sha: "24b1c32d60a681e62d0c7b18f6fe658a4729f56a"
+sha: "06997b106e5a9c3bd44ee6cce438716ea69aaec1"
 description: >-
   VoiceStudio TTS provider for Hermes: registers a TTS provider so replies can be read aloud, or
   auto-spoken, in the user's own voices from the local VoiceStudio app, per profile. Settings are

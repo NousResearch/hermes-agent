@@ -1,22 +1,21 @@
 name: hermes-notify
 title: Hermes Pocket
 repo: https://github.com/Belweave/hermes-notify
-sha: "698b66b6d64a87d317ba97938f37f9ed75f04cd6"
-description: "Release workspaces, progress, replies and exact phone approvals through Notify. Disclosure — when enabled, sends release workspace data, model-written notifications and questions, and each Hermes approval request's redacted command and description to the third-party Notify service (notify.belweave.ai) and to a Cloudflare Worker you deploy and configure yourself; once you select `security.approval.transport: notify`, Hermes command approvals are answered from your phone through Notify (approve-once or deny only, denied on timeout or error); phone replies are injected into the session only when you set allow_reply_injection; uses NOTIFY_API_TOKEN (and HERMES_NOTIFY_PUBLISH_TOKEN for the Worker) and runs one background delivery thread."
+sha: "15651c9220ccf780f988b57f5ab1d249a9cbf654"
+description: "Phone notifications, questions, release progress and exact command approvals through Notify. Run `hermes notify setup` to sign in, connect the phone app and send a test. Disclosure — when enabled, sends model-written notifications and questions, optional release workspace data, and (only if you select `security.approval.transport: notify`) each Hermes approval request's redacted command and description to the third-party Notify service (notify.belweave.ai); release Apps also go to a Cloudflare Worker you deploy yourself. Command approvals are approve-once or deny only, denied on timeout or error; phone replies are injected into the session only when you set allow_reply_injection; `hermes notify setup` saves NOTIFY_API_TOKEN to the profile .env; runs one background delivery thread."
 maintainer: belweave
 tier: community
 category: automation
-version: "0.2.0"
+version: "0.2.1"
 readme: true
-platforms: [macos]
+platforms: [macos, linux, windows]
 screenshots:
   - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/release-phone.png
   - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/approval-phone.png
   - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/shipped-phone.png
 known_issues:
-  - One native phone approval passed; the full deployed App, sign-in and Live Activity flow remain unverified.
-  - A configured Cloudflare Worker and verified origin-specific owner are needed for private Apps.
-  - Requires the public approval transport and Desktop SDK; a minimum released Hermes version is not yet verified.
+  - Hosted release Apps need a configured Cloudflare Worker and a verified origin-specific owner; notifications and questions do not.
+  - The Notify iPhone app is distributed through public TestFlight; Android is a self-built APK.
 capabilities:
   provides_tools:
     - notify_release

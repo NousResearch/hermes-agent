@@ -1,0 +1,24 @@
+name: blast-radius
+repo: https://github.com/namanomar/blast-radius
+sha: 53e474158451717d24c099ecb0569ffe5f64f242
+version: "1.0.0"
+description: "Measures what a command will destroy before it runs: real file counts, bytes, uncommitted git work and credentials at risk. Harmless calls pass silently, risky ones get a concrete impact report (0-100 score with reasons) at the approval prompt, catastrophic targets (.git, home, system dirs, raw devices, Hermes' own data) are blocked, and files git cannot restore are copied into a recovery capsule so /blast undo can bring them back without overwriting newer edits. Disclosure — hooks pre_tool_call and post_tool_call on terminal, execute_code, write_file and patch only; runs read-only `git rev-parse --show-toplevel` and `git status --porcelain=v1 -z -uall --ignored=traditional` (argv lists, GIT_OPTIONAL_LOCKS=0, timeouts) in the directories a pending destructive command would touch; reads the targets' names, sizes and git state, and file contents only to copy them into a capsule; writes capsules and a ledger.jsonl under <HERMES_HOME>/plugin-data/blast-radius/ (pruned after 14 days / 200 capsules by default), and writes to a captured file's original path only when you run /blast restore or /blast undo or the agent calls blast_restore (which never overwrites files changed after the capsule; only a human can force that); the ledger stores each assessed command truncated to 300 characters with token=/key=/password= style values masked; no network calls, no telemetry, no credentials, no background processes, no self-updates; fails open on internal errors; the analyzer reads shell text only, so a script that deletes files internally is not seen until it runs."
+maintainer: namanomar
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/namanomar/blast-radius/blob/53e474158451717d24c099ecb0569ffe5f64f242/README.md
+readme: true
+known_issues:
+  - "Only terminal, execute_code, write_file and patch calls are inspected; other tools (for example MCP filesystem servers) are not."
+  - "A script that deletes files internally (./cleanup.sh) is invisible to the shell-text analyzer until it runs."
+  - "Capsules are capped at 200 MB per command; larger captures are marked partial and raise the risk score."
+capabilities:
+  provides_tools:
+    - blast_radius
+    - blast_restore
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -84,3 +84,38 @@ def test_interim_commentary_drops_echoed_memory_block():
     agent._emit_interim_assistant_message({"role": "assistant", "content": f"{ECHOED_BLOCK}\n\nChecking the inbox."})
 
     assert seen == ["Checking the inbox."]
+
+
+def test_transformed_reply_original_drops_echoed_memory_block(monkeypatch):
+    """``pre_transform_response`` is display text too (replay-gap recovery paints it), not a raw copy."""
+    def invoke_hook(hook_name, **kwargs):
+        return [kwargs["response_text"] + "\n\n-- footer"] if hook_name == "transform_llm_output" else []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
+    result = _run(f"Auth restored.\n\n{ECHOED_BLOCK}")
+
+    assert result["response_transformed"] is True
+    assert SENTINEL not in result["final_response"]
+    assert result["pre_transform_response"] == "Auth restored."
+    assert result["final_response"].startswith(result["pre_transform_response"])
+
+
+def test_memory_only_commentary_does_not_fall_back_to_partial_answer():
+    """Commentary filtered to nothing is still commentary: the tool round's partial answer in
+    ``content`` must not be published as progress in its place."""
+    agent = _make_agent()
+    seen = []
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: seen.append(text)
+    msg = {
+        "role": "assistant",
+        "content": "Partial final answer.",
+        "codex_message_items": [{
+            "type": "message", "role": "assistant", "phase": "commentary",
+            "content": [{"type": "output_text", "text": ECHOED_BLOCK}],
+        }],
+    }
+
+    agent._emit_interim_assistant_message(msg)
+
+    assert seen == []
+    assert agent._interim_assistant_visible_text(msg) == ""

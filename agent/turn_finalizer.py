@@ -586,15 +586,18 @@ def fence_result_reply(result: Any) -> None:
     """Strip echoed ``<memory-context>`` spans from the reply every surface delivers (#81312).
     Streamed deltas pass the stateful scrubber, but a non-streamed reply reaches adapters (email
     bodies included) only through ``final_response``; the transcript row keeps the raw text."""
-    if not isinstance(result, dict) or not isinstance(result.get("final_response"), str):
+    if not isinstance(result, dict):
         return
     from agent.memory_context import fence_recalled_context
-    raw = result["final_response"]
-    fenced = fence_recalled_context(raw)
-    if fenced != raw:
-        result["final_response"] = fenced
-        if result.get("error") == raw:
-            result["error"] = fenced
+    # ``pre_transform_response`` is display text too: replay-gap recovery and post-stream suffix
+    # painting deliver it.
+    for key in ("final_response", "pre_transform_response"):
+        raw = result.get(key)
+        fenced = fence_recalled_context(raw) if isinstance(raw, str) else raw
+        if fenced != raw:
+            result[key] = fenced
+            if key == "final_response" and result.get("error") == raw:
+                result["error"] = fenced
 
 
 def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:

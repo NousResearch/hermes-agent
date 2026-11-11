@@ -1,6 +1,6 @@
 name: rule-injector
 repo: https://github.com/klautimus/hermes-rule-injector
-sha: 57b1a00d1ef796186a31307146d79ae2c04e8f0e
+sha: dc6edbb5dc5e54eb176e4f06a8d40d69054cf1e1
 description: >-
   Moves agent behavioural rules out of the system prompt and injects each one at
   the point of need, through three hooks: pre_llm_call for behavioural guards,
@@ -9,19 +9,25 @@ description: >-
   tool name, tool error, path or session scope, or a boolean compound of those —
   with a per-turn injection budget and an undroppable always-on floor. An
   optional adjudicator adds a semantic second pass over ambiguous turns, and
-  propose.py drafts a rule from a user correction. Ships six starter rules;
-  rules.json is a template the user replaces. Disclosure — writes one activation
-  trace line per fired rule to ~/.hermes/logs/rule-injector-trace.jsonl, and
-  writes rules.json when a rule is created through its own CLI; no network calls,
-  no shell, no telemetry; the optional adjudicator, only when enabled, sends the
-  current turn to the auxiliary provider the user has configured, using Hermes'
-  own auxiliary client and credentials (the plugin stores and reads no keys).
+  propose.py drafts a rule from a user correction. Ships a local web dashboard
+  (`python3 dashboard.py`, FastAPI, read-only) that lists the rule set and the
+  recent activation trace, and six starter rules; rules.json is a template the
+  user replaces. Disclosure — writes one activation trace line per fired rule to
+  ~/.hermes/logs/rule-injector-trace.jsonl, and writes rules.json when a rule is
+  created through its own CLI; no network calls, no shell, no telemetry; the
+  dashboard reads that rules file and trace log from disk and adds fastapi +
+  uvicorn only if the user installs and runs it; the optional adjudicator, only
+  when enabled, sends the current turn to the auxiliary provider the user has
+  configured, using Hermes' own auxiliary client and credentials (the plugin
+  stores and reads no keys).
 maintainer: klautimus
 tier: community
 category: automation
 docs_url: https://github.com/klautimus/hermes-rule-injector#readme
 version: "1.0.0"
 platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/klautimus/hermes-rule-injector/dc6edbb5dc5e54eb176e4f06a8d40d69054cf1e1/docs/dashboard.png
 capabilities:
   provides_tools: []
   provides_hooks:

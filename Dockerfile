@@ -388,6 +388,11 @@ RUN cd plugins/platforms/photon/sidecar && \
     npm ci --no-audit --fetch-retries=5 && \
     npm cache clean --force
 
+# Shared product outputs are independent of application dependency assembly.
+COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
+COPY --from=frontend_build /opt/products/web /opt/hermes/hermes_cli/web_dist
+COPY --from=webapp_build /opt/hermes/apps/desktop/dist-webapp /opt/hermes/apps/desktop/dist-webapp
+
 # ---------- Bot Screen X socket directory ----------
 # Xvnc would create this itself (/tmp is 1777); pre-creating it keeps ownership
 # deterministic when HERMES_UID is remapped between boots.

@@ -1,0 +1,27 @@
+name: llmux
+title: LLMUX
+repo: https://github.com/ivcained/llmux
+# Verified 0.1.1 release; later metadata-only pin commits do not change this tree.
+sha: 356118cf7f06dd08352636b2b3cc3795f4cc6e4e
+description: "Compare Surplus Intelligence, Antseed and Solid offers in the Hermes composer, then route through one local provider by price, speed or balanced policy. Includes seller trust signals, explicit mid-chat switching, cached market data and a local usage ledger."
+maintainer: ivcained
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+version: "0.1.1"
+docs_url: https://github.com/ivcained/llmux#readme
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Installed-Desktop mid-chat switching and a real paid reply/ledger row have not yet been verified. Automated card interactions use a simulated SDK host."
+  - "Inference is billable at the selected seller with no hard spending ceiling. Cross-source failover is off by default; LLMUX_ALLOW_FAILOVER=1 permits additional potentially billable attempts after upstream failures."
+  - "Marketplace keys resolve through agent.secret_scope.get_secret. Each proxy port is bound to one profile/configuration; mismatches fail closed. Antseed-only operation without any marketplace key is not supported. Solid prices are a dated manual table; speed and trust are unpublished."
+  - "Trusted view excludes explicit marketplace untrusted signals, but still includes sources with no published trust verdict. Lists are ranked shortlists, not every marketplace seller."
+  - "Starts a detached loopback proxy which can outlive Hermes. It reads configured marketplace credentials, sends inference context to the selected upstream and writes proxy logs, public market-cache snapshots and a local usage ledger. The ledger is off by default and enabled only with LLMUX_TRACK_USAGE=1."
+  - "Default upstreams are api.surplusintelligence.ai, accounts.solid.xyz and the optional Antseed buyer proxy at 127.0.0.1:8377. Base URLs are configurable."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SURPLUS_API_KEY

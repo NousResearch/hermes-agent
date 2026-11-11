@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 import gateway.run  # load bootstrap before the per-test home I/O guard
+from gateway.config import Platform
+from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
+
+_CHAT = SessionSource(platform=Platform.TELEGRAM, chat_id="a", chat_type="dm", user_id="u")
 from gateway.run_turn_runner import TurnRunner
 from gateway.run_turn_runner_approval_transport import approval_transport
 
@@ -21,7 +25,7 @@ def test_background_prompt_ignores_completed_stream(monkeypatch):
         def pause_typing_for_chat(self, chat_id):
             raise AssertionError("completed turn typing state was reused")
 
-    ctx = TurnContext(session_key="chat-a", _status_adapter=Adapter(),
+    ctx = TurnContext(session_key="chat-a", source=_CHAT, _status_adapter_pinned=Adapter(),
                       _status_chat_id="a", _status_thread_metadata={"thread_id": "t"},
                       _run_still_current=lambda: False)
     turn = TurnRunner(None, ctx)
@@ -57,8 +61,8 @@ def test_background_transport_refusal_fails_closed(monkeypatch, buttons):
             sent.append((kwargs["chat_id"], kwargs["session_key"]))
             return SimpleNamespace(success=False)
 
-    ctx = TurnContext(session_key="origin-session", _status_chat_id="origin-chat",
-                      _status_adapter=ButtonAdapter() if buttons else Adapter())
+    ctx = TurnContext(session_key="origin-session", _status_chat_id="origin-chat", source=_CHAT,
+                      _status_adapter_pinned=ButtonAdapter() if buttons else Adapter())
     transport = approval_transport(TurnRunner(None, ctx))
 
     def schedule(self, coro, *args):

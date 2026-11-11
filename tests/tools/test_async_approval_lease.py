@@ -17,6 +17,7 @@ def test_child_approval_after_parent_finished(monkeypatch, choice):
 
     def notify(data):
         notified.set()
+    notify.background_notify = notify  # the transport a gateway turn publishes for its children
 
     def child():
         ready.set()
@@ -96,7 +97,11 @@ def test_concurrent_children_have_independent_single_use_consent(monkeypatch):
     monkeypatch.setattr(approval.approval_context, "_get_approval_timeout", lambda: 5)
     key = "concurrent-children"
     published = threading.Semaphore(0)
-    approval.register_gateway_notify(key, lambda data: published.release())
+
+    def publish(data):
+        published.release()
+    publish.background_notify = publish
+    approval.register_gateway_notify(key, publish)
     leases = [acquire(key), acquire(key)]
     approval.unregister_gateway_notify(key)
     results, executions = [], []
@@ -139,7 +144,11 @@ def test_cleared_session_revokes_child_transport():
 
     key = "session-clear-child"
     delivered = []
-    approval.register_gateway_notify(key, delivered.append)
+
+    def deliver(data):
+        delivered.append(data)
+    deliver.background_notify = deliver
+    approval.register_gateway_notify(key, deliver)
     lease = acquire(key)
     try:
         approval.clear_session(key)

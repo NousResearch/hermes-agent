@@ -792,12 +792,14 @@ class GatewayTurnPersistenceMixin:
         if agent_result.get("already_sent") and not agent_result.get("failed"):
             # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
             # would upload every file a second time.
+            _footer_captioned = False  # the footer rode the last photo's caption (#74547)
             if response and adapter and not agent_result.get("media_already_delivered"):
-                await self._deliver_media_from_response(response, event, adapter)
+                _footer_captioned = await self._deliver_media_from_response(
+                    response, event, adapter, footer_line="" if _intentional_silence else _footer_line)
             if response and adapter and agent_result.get("delivery_uncertain"):
                 await self._ledger_uncertain_streamed_final(event, session_key, response, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
-            if _footer_line and adapter and not _intentional_silence:
+            if _footer_line and adapter and not _intentional_silence and not _footer_captioned:
                 try:
                     await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:

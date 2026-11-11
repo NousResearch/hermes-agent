@@ -84,3 +84,11 @@ def persist_turn_cwd(runner, session_key: str | None, token: object | None) -> N
         runner.session_store.set_session_metadata(session_key, _METADATA_KEY, cwd)
     except Exception as exc:  # health: allow BLE001 -- runs in the turn's finally: a failed save must not fail the finished turn
         logger.warning("Could not save the terminal cwd of %s: %s", session_key, exc)
+
+
+def forget_turn_cwd(runner, session_key: str) -> None:
+    """Drop the chat's saved cwd along with its record (a workspace move): the next turn must start in
+    the new binding's directory, not restore the old one."""
+    entry = _routing_entry(runner, session_key)
+    if entry is not None and entry.metadata.get(_METADATA_KEY) is not None:
+        runner.session_store.set_session_metadata(session_key, _METADATA_KEY, None)

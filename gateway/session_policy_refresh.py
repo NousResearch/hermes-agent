@@ -277,6 +277,8 @@ def drop_session_terminal(authority, ref):
             # The turn's workspace binding goes with them: it wins over the new binding's cwd too.
             unbind_turn_workspace(key)
             clear_session_cwd(key)
+        from gateway.session_terminal_cwd import forget_turn_cwd
+        forget_turn_cwd(authority.runner, route)  # its saved copy too, or the next turn restores it
     for key in keys:
         cleanup_vm(key)
 

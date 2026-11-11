@@ -102,11 +102,11 @@ export const introFr: Translations['intro'] = {
       'Petite coquille ou gros refactoring — peu importe. Je livre du code propre aujourd’hui. Donne la tâche et au BOULOT.'
     ],
     none: [
-      'Posez une question, collez une erreur ou indiquez-moi un dépôt. Je peux lire du code, utiliser des outils et vous aider à livrer.',
-      'Décrivez la tâche avec vos mots. Je choisis les bons outils, explique mon plan et vous consulte avant les étapes risquées.',
-      'Indiquez un chemin de fichier, une traceback ou une idée brute. J’enquête, propose les étapes suivantes et garde tout réversible.',
-      'Cherchez dans le dépôt, modifiez des fichiers, lancez les tests, ouvrez des PR. Donnez-moi l’objectif, je gère la partie mécanique.',
-      'Saisissez une tâche, une question ou un extrait. Je garde en mémoire la session, cite mes sources et m’arrête pour demander en cas de doute.'
+      'Confiez une mission à votre Collaborateur IA, posez une question ou partagez un document. Je m’adapte aux méthodes de votre entreprise.',
+      'Décrivez votre objectif commercial, administratif ou stratégique. Je mobilise les compétences métier adaptées.',
+      'Explorez vos expertises, créez des visuels, préparez vos réunions ou rédigez vos contenus. Que souhaitez-vous accomplir aujourd’hui ?',
+      'Posez une question, analysez un fichier ou déléguez une mission complète en gardant toujours le contrôle.',
+      'Votre Collaborateur IA est prêt. Indiquez une mission, un projet ou un sujet pour commencer.'
     ]
   },
   custom: label => [

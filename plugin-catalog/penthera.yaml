@@ -1,14 +1,14 @@
 name: penthera
 title: Penthera
 repo: https://github.com/danoszz/penthera
-sha: "9b67e8dce0267e587deb5ccebd5ffa7a15235806"
+sha: "e3c62111a5541c3715a23175a83941690d52b2a6"
 subdir: plugin
 version: "2.4.0"
 description: "Offline, rule-based security checks run through the terminal: a repo scan, dependency capabilities, a passive scan of a URL you own, and an audit of your AI agent config (skills, MCP servers, hooks, permissions). A skill only: no tools, hooks, middleware or MCP server. It runs the pinned penthera npm package with npx, which downloads that package on first use (Node.js 22 or later). Rules decide every finding; a model never does. No telemetry, no stored credentials, no background process, no self-updater."
 maintainer: danoszz
 tier: community
 category: tools
-docs_url: https://github.com/danoszz/penthera/tree/9b67e8dce0267e587deb5ccebd5ffa7a15235806/plugin
+docs_url: https://github.com/danoszz/penthera/tree/e3c62111a5541c3715a23175a83941690d52b2a6/plugin
 requires_hermes: ">=0.21.6"
 readme: true
 platforms: [linux, macos]

@@ -808,13 +808,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         "exec approval undeliverable: connector egress declined "
                         "this destination"
                     )
-                logger.warning("Button-based approval failed (send returned error), falling back to text")
+                logger.warning("Button-based approval failed (send returned error)")
             except _ExecApprovalDeclined:
                 # Must escape this handler: the fallback below is a text send to
                 # the destination the connector just refused.
                 raise
             except Exception as e:
-                logger.warning("Button-based approval failed, falling back to text: %s", e)
+                logger.warning("Button-based approval failed: %s", e)
+        if approval_data.get("approval_policy") == "mandatory":
+            # A generic /approve fallback cannot select the operation whose card failed.
+            # Raising lets the wait side retire this request as undeliverable immediately.
+            raise RuntimeError("mandatory approval requires a request-selected native prompt; native delivery unavailable")
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
         msg = approval_text_prompt(adapter, ctx._status_chat_id, ctx.session_key or "", approval_data.get("request_id"),

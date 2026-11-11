@@ -198,10 +198,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     while True:
         with _approval._lock:
             leader = None
-            if not preparing_terminal_approval():
+            if not preparing_terminal_approval() and approval_data.get("approval_policy") != "mandatory":
                 leader = next((e for e in _approval._gateway_queues.get(session_key, [])
                                if e.data.get("command") == approval_data.get("command")
                                and list(e.data.get("pattern_keys") or []) == keys
+                               and e.data.get("approval_policy") != "mandatory"
                                and _same_answerers(e.authority, entry.authority)), None)
             if leader is None:
                 _enqueue()

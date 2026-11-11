@@ -72,6 +72,7 @@
         "hermes_cli.dashboard_auth",
         "hermes_cli.platform_actions",
         "hermes_cli.plugins:PluginContext",
+        "hermes_cli.plugins:VALID_TOOL_APPROVAL_POLICIES",
         "hermes_cli.plugins_ledger:PluginRegistration",
         "hermes_cli.plugins_state:PluginState"
       ]

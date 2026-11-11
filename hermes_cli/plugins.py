@@ -1128,8 +1128,8 @@ def _get_pre_tool_call_directive_details(
     the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
     human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). Precedence is
     ``block`` > ``approve`` > none, not registration order: any plugin's valid veto wins over an
-    earlier plugin's request for human confirmation (#87420); among approves the first valid one
-    wins. Irrelevant returns are ignored."""
+    earlier plugin's request for human confirmation (#87420); mandatory approves take priority
+    over ordinary approves. Irrelevant returns are ignored."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
@@ -1198,7 +1198,7 @@ def resolve_pre_tool_block(
     tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
 ) -> Optional[str]:
     """Resolve the pre_tool_call directive to a final block message (or ``None`` to proceed),
-    running the human-approval gate for ``approve``. See :func:`_resolve_block_from_details`."""
+    running the human-approval gate for ``approve``."""
     return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
 
 

@@ -149,7 +149,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
-    relayed to the agent in the BLOCKED message. Returns the number resolved.
+    relayed to the agent in the BLOCKED message. Mandatory grants require *request_id*;
+    generic FIFO and aggregate answers can only deny them. Returns the number resolved.
     """
     with _lock:
         queue = _gateway_queues.get(session_key)
@@ -159,12 +160,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
                 return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)
-            queue.clear()
         else:
-            targets = [queue.pop(0)]
+            targets = [queue[0]]
+        # Mandatory consent names one request, not the oldest item in a session or
+        # an aggregate. Deny remains safe without a selector; ordinary approvals keep FIFO.
+        targets = [entry for entry in targets if request_id or choice == "deny"
+                   or entry.data.get("approval_policy") != "mandatory"]
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's
@@ -247,9 +251,11 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
 
 
 def list_gateway_approval_authority(session_key: str) -> list[dict]:
-    """Per unresolved approval: its ``request_id`` and who may answer it (requester, approvers)."""
+    """Per unresolved approval: its request ID, answerers and mandatory selection policy."""
     with _lock:
-        return [{"request_id": e.data.get("request_id"), **e.authority} for e in _gateway_queues.get(session_key, [])]
+        return [{"request_id": e.data.get("request_id"), **e.authority,
+                 **({"approval_policy": "mandatory"} if e.data.get("approval_policy") == "mandatory" else {})}
+                for e in _gateway_queues.get(session_key, [])]
 
 
 def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
@@ -985,6 +991,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "pattern_keys": pattern_keys, "description": display_description,
                 "allow_permanent": not (smart_denied or mandatory),
                 "allow_session": not (smart_denied or mandatory),
+                "approval_policy": "mandatory" if mandatory else "",
             }
             if smart_denied:
                 data["smart_denied"] = True

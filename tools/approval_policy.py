@@ -20,7 +20,13 @@ def request_mandatory_tool_approval(tool_name, description, rule_key, effective_
     from agent.redact import redact_sensitive_text
     from tools import approval as a
 
+    from agent.delegation_context import is_delegated_child_process_context
+
     callback, is_cli, is_gateway, is_ask = a._presence(approval_callback)
+    if is_delegated_child_process_context():
+        # A worker's CLI callback can be the configured automatic Once answer,
+        # not a human. A real gateway notifier may still ask its own request.
+        callback, is_cli = None, False
     if not (is_cli or is_gateway or is_ask):
         return a._blocked("BLOCKED: mandatory approval requires a human channel",
                           pattern_key=rule_key, description=description)

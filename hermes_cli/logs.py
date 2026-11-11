@@ -21,6 +21,7 @@ Usage examples::
     hermes logs --since 30m -f     # follow, starting 30 min ago
 """
 
+import os
 import re
 import sys
 import time
@@ -234,7 +235,7 @@ def tail_log(
     ]
     filter_desc = f" [{', '.join(filter_parts)}]" if filter_parts else ""
     mode = "Ctrl+C to stop" if follow else f"last {num_lines}"
-    print(f"--- {display_hermes_home()}/logs/{filename}{filter_desc} ({mode}) ---")
+    print(f"--- {display_hermes_home(log_path.parent.parent)}/logs/{filename}{filter_desc} ({mode}) ---")
 
     for line in lines:
         print(line, end="")
@@ -293,19 +294,33 @@ def _read_last_n_lines(path: Path, n: int) -> list:
         return _read_all_lines(path)[-n:]
 
 
+def _replaced(path: Path, f) -> bool:
+    """Whether *path* now names a different file than the open *f* (the handler rolled it over)."""
+    try:
+        return os.stat(path).st_ino != os.fstat(f.fileno()).st_ino
+    except FileNotFoundError:  # between the handler's rename and its reopen
+        return False
+
+
 def _follow_log(path: Path, **filters) -> None:
-    """Poll a log file for new content and print matching lines."""
+    """Poll a log file for new content and print matching lines; after a rollover, read the new file."""
     keep = _LineFilter(**filters)
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        # Seek to end
-        f.seek(0, 2)
+    f = open(path, "r", encoding="utf-8-sig", errors="replace")
+    f.seek(0, 2)
+    try:
         while True:
             line = f.readline()
-            if not line:
+            if line:
+                if keep(line):
+                    print(line, end="")
+                    sys.stdout.flush()
+            elif _replaced(path, f):
+                f.close()
+                f = open(path, "r", encoding="utf-8-sig", errors="replace")
+            else:
                 time.sleep(0.3)
-            elif keep(line):
-                print(line, end="")
-                sys.stdout.flush()
+    finally:
+        f.close()
 
 
 def _size_label(size: int) -> str:
@@ -340,7 +355,7 @@ def list_logs() -> None:
     found = False
     entries = sorted(log_dir.iterdir()) if log_dir.exists() else []
     for entry in [*entries, *root_logs]:
-        if entry.is_file() and entry.suffix == ".log":
+        if entry.is_file() and re.fullmatch(r".+\.log(\.\d+)?", entry.name):
             st = entry.stat()
             age_str = _age_label(datetime.fromtimestamp(st.st_mtime))
             label = entry.name if entry.parent == log_dir else f"{entry.name} (root)"

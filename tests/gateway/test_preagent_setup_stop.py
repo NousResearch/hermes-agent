@@ -66,9 +66,9 @@ async def test_stop_ends_a_turn_wedged_in_setup(monkeypatch):
 
     await runner._interrupt_and_clear_session(key, source, interrupt_reason="stop", invalidation_reason="stop_command")
 
-    # The turn returns (no second reply: /stop's own answers the user), so whatever awaits it,
-    # the session's FIFO drain included, settles and moves on.
-    assert await asyncio.wait_for(task, 5) is None
+    # Past the short grace the turn returns (no second reply: /stop's own answers the user), so
+    # whatever awaits it, the session's FIFO drain included, settles and moves on.
+    assert await asyncio.wait_for(task, 15) is None
     assert not task.cancelled()
     assert runner._peek_session_state(key).turn.setup_stop is None
 
@@ -78,7 +78,7 @@ async def test_setup_past_its_deadline_ends_with_a_visible_notice(monkeypatch):
     runner, _source, key, task, entered = _wedged_turn(monkeypatch, "0.2")
     await asyncio.wait_for(entered.wait(), 5)
 
-    reply = await asyncio.wait_for(task, 5)
+    reply = await asyncio.wait_for(task, 15)
 
     assert "Turn setup stalled" in reply and "resend" in reply  # never dropped silently
     assert runner._peek_session_state(key).turn.setup_stop is None

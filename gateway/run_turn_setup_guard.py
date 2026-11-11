@@ -22,6 +22,10 @@ logger = logging.getLogger("gateway.run")
 
 _TIMEOUT = "timeout"
 _STOPPED = "stopped"
+# A /stop or /new gives setup this long to reach the agent, where the Stop is delivered as for any
+# running turn (the authority latches it for adoption, and a moved route drops the claim). Only a
+# setup still running past it, the wedge, is cancelled.
+STOP_GRACE_S = 3.0
 
 
 class PreagentSetupStopped(Exception):
@@ -43,11 +47,12 @@ async def preagent_setup_guard(runner, session_key: str):
     task = asyncio.current_task()
     turn = runner._session_state(session_key).turn
     reason = None
+    active = True
 
     def _end(why: str) -> bool:
         nonlocal reason
-        if reason is not None or task is None or task.done():
-            return False
+        if not active or reason is not None or task is None or task.done():
+            return False  # never cancels the agent run that follows setup on this task
         reason = why
         task.cancel()
         return True
@@ -87,6 +92,7 @@ async def preagent_setup_guard(runner, session_key: str):
                 raise PreagentSetupTimeout from None
             raise PreagentSetupStopped from None
     finally:
+        active = False
         if handle is not None:
             handle.cancel()
         if turn.setup_stop is stop:
@@ -94,12 +100,18 @@ async def preagent_setup_guard(runner, session_key: str):
 
 
 def cancel_preagent_setup(runner, session_key: str) -> bool:
-    """End the session's turn if it is still in setup (before any agent ran). True when it was."""
+    """End the session's turn if it is still in setup ``STOP_GRACE_S`` from now (no agent ran yet).
+    True when a turn was in setup."""
     state = runner._peek_session_state(session_key)
     stop = state.turn.setup_stop if state is not None else None
-    if stop is None or not stop():
+    if stop is None:
         return False
-    logger.info("Cancelled pre-agent setup for session %s", session_key)
+
+    def _cancel() -> None:
+        if stop():
+            logger.info("Cancelled pre-agent setup for session %s", session_key)
+
+    asyncio.get_running_loop().call_later(STOP_GRACE_S, _cancel)
     return True
 
 
@@ -131,6 +143,11 @@ async def run_preagent_setup(runner, event, source, quick_key: str, run_generati
             await runner.hooks.emit("agent:start", hook_ctx)
     except (PreagentSetupTimeout, PreagentSetupStopped) as ended:
         runner._clear_session_env([])  # prepare may have bound them before the hang
+        if isinstance(ended, PreagentSetupStopped):
+            from gateway.session_results import execution_result
+            captured = execution_result.get()
+            if captured is not None:  # a claimed admission settles interrupted, as the Stop would have
+                captured['result'] = {'final_response': '', 'messages': [], 'interrupted': True}
         return None, (t("gateway.busy.setup_timeout") if isinstance(ended, PreagentSetupTimeout) else None)
     return (source, session_entry, session_key, prepared, env_tokens, hook_ctx), None
 

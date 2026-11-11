@@ -838,23 +838,31 @@ class GatewayBusySessionMixin:
         except Exception:
             pass  # don't let interrupt failure block the ack
 
-    def _busy_steer_ack_enabled(self, event: MessageEvent, session_key: str) -> bool:
-        # Some mobile chat setups want silent steering — keep the behavior, drop the bubble.
+    # Busy-ack toggles: display setting → its process-env override (a service-manager knob that wins
+    # when set). ``busy_steer_ack_enabled`` applies to steer mode only.
+    _BUSY_ACK_TOGGLES = (
+        ("busy_ack_enabled", "HERMES_GATEWAY_BUSY_ACK_ENABLED"),
+        ("busy_steer_ack_enabled", "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"),
+    )
+
+    def _busy_ack_enabled(self, event: MessageEvent, session_key: str, *, is_steer_mode: bool) -> bool:
+        """Whether this busy event gets an ack bubble: every toggle that applies must allow it. Each
+        reads its env var when set, else ``display.platforms.<platform>.<key>`` → ``display.<key>``
+        → on, so an inbound-only surface (email) can stay silent while chat platforms still ack."""
         from gateway.run import _load_gateway_config, _platform_config_key
         from gateway.display_config import resolve_display_setting
-        steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
-        if steer_ack_env is not None:
-            steer_ack_enabled = steer_ack_env.strip().lower() in {"1", "true", "yes", "on"}
-        else:
-            steer_ack_enabled = bool(
-                resolve_display_setting(
-                    _load_gateway_config(), _platform_config_key(event.source.platform),
-                    "busy_steer_ack_enabled", True,
-                )
-            )
-        if not steer_ack_enabled:
-            logger.debug("Busy steer ack suppressed for session %s", session_key)
-        return steer_ack_enabled
+        toggles = self._BUSY_ACK_TOGGLES if is_steer_mode else self._BUSY_ACK_TOGGLES[:1]
+        for setting, env_var in toggles:
+            raw = os.environ.get(env_var)
+            if raw is not None:
+                enabled = raw.strip().lower() in {"1", "true", "yes", "on"}
+            else:
+                enabled = bool(resolve_display_setting(
+                    _load_gateway_config(), _platform_config_key(event.source.platform), setting, True))
+            if not enabled:
+                logger.debug("Busy ack suppressed for session %s (%s)", session_key, setting)
+                return False
+        return True
 
     @property
     def _BUSY_DEMOTED_TAIL(self) -> str:
@@ -1025,18 +1033,14 @@ class GatewayBusySessionMixin:
         ):
             await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent)
 
-        # Disabled ack: still process input. Checked before debounce so an undelivered ack never
-        # stamps the "last ack" timestamp.
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
-            logger.debug("Busy ack suppressed for session %s", session_key)
-            return  # input still processed, just no ack sent
-
         # Debounce (30s) before the config-heavy display lookup.
         now = time.time()
         if now - (_busy_state.turn.busy_ack_ts if _busy_state else 0) < 30:
             return  # interrupt sent (if not queue), ack already delivered recently
 
-        if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
+        # Disabled ack: the input above is still handled. Checked before stamping so an undelivered
+        # ack never starts the debounce window (nor consumes the one-time onboarding hint).
+        if not self._busy_ack_enabled(event, session_key, is_steer_mode=is_steer_mode):
             return
 
         self._session_state(session_key).turn.busy_ack_ts = now

@@ -108,3 +108,26 @@ async def test_busy_voice_note_interrupts_with_transcript_in_interrupt_mode(tmp_
         assert sent, 'no busy ack'
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_platform_busy_ack_off_still_steers_without_an_ack(tmp_path, monkeypatch):
+    """``display.platforms.whatsapp.busy_ack_enabled: false`` holds on the authority's preempt too:
+    the follow-up still steers into the run, but no ack is sent and no debounce window starts."""
+    import gateway.run as gateway_run
+    monkeypatch.delenv('HERMES_GATEWAY_BUSY_ACK_ENABLED', raising=False)
+    monkeypatch.setattr(gateway_run, '_load_gateway_config', lambda *_a, **_k: {
+        'display': {'platforms': {'whatsapp': {'busy_ack_enabled': False}}}})
+    runner, authority, source, agent, sent, turn = await _setup(tmp_path, monkeypatch, 'steer')
+    try:
+        handled = asyncio.ensure_future(runner._handle_message(MessageEvent(
+            text='also check the tests', source=source, message_id='s1', reply_expected=True)))
+        done, _ = await asyncio.wait({handled}, timeout=10)
+        handled.cancel()
+        assert done, 'the follow-up was admitted as a turn behind the running one instead of steering'
+        assert len(agent.steers) == 1 and agent.steers[0].endswith('also check the tests'), agent.steers
+        assert sent == []
+        assert turn.busy_ack_ts == 0.0
+        assert _admitted(authority) == []
+    finally:
+        authority.db.close()

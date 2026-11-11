@@ -25,6 +25,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    # The ⚡/⏳/⏩ busy ack (interrupt/queue/redirect/steer). Off only hides the reply, the input is
+    # still handled: e.g. an inbound-only email inbox stays silent while chat platforms keep acking.
+    "busy_ack_enabled": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
@@ -188,6 +191,7 @@ _NORMALISERS: dict[str, Any] = {
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
+    "busy_ack_enabled": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,

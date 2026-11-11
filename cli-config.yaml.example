@@ -2032,6 +2032,20 @@ display:
   # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
+  # Gateway busy acknowledgment: the "⚡ Interrupting current task…" /
+  # queued / steered reply sent when a message arrives while a turn runs.
+  # false hides it; the message is still interrupted/queued/steered as above.
+  # busy_steer_ack_enabled: false hides only the steer-mode reply. Both can be
+  # set per platform, e.g. silence an inbound-only email inbox:
+  #   display:
+  #     platforms:
+  #       email:
+  #         busy_ack_enabled: false
+  # HERMES_GATEWAY_BUSY_ACK_ENABLED / HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED
+  # override them on every platform when set.
+  # busy_ack_enabled: true
+  # busy_steer_ack_enabled: true
+
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.

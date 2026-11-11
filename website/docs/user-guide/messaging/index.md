@@ -504,11 +504,20 @@ display:
   busy_text_hard_cap_seconds: 1.0    # never hold merged busy text longer than this
 ```
 
-All four keys are read from each profile's own `config.yaml`, so multiplexed profiles keep independent busy policies; there is no process-environment override.
+All four keys are read from each profile's own `config.yaml`, so multiplexed profiles keep independent busy policies; the one process-environment override is `HERMES_GATEWAY_BUSY_ACK_ENABLED` (below), which applies to every profile when set.
 
 The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
-If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message is hidden.
+If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message (and the first-time tip riding on it) is hidden. To silence it on one platform only — for example an email inbox used purely as an inbound trigger, where an automatic reply on the thread is unwanted — set it per platform; the other platforms keep acknowledging:
+
+```yaml
+display:
+  platforms:
+    email:
+      busy_ack_enabled: false
+```
+
+A per-platform value beats the global `display.busy_ack_enabled`. `busy_steer_ack_enabled: false` (global or per platform) hides only steer mode's "Steered into current run" reply; a steer is acknowledged only when both keys allow it. The `HERMES_GATEWAY_BUSY_ACK_ENABLED` and `HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED` environment variables, when set, override the matching key on every platform.
 
 ## Clarify Questions (Multi-Select)
 

@@ -226,7 +226,7 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
     """
     from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
 
     home = Path(home)
     launch = Path(launch_home if launch_home is not None else get_process_hermes_home())
@@ -235,7 +235,11 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
             if is_multiplex_active():
                 stack.enter_context(launch_profile_runtime_scope(launch))
             else:
+                # Unbind an enclosing secondary's home and terminal, or the launch secrets would
+                # pair with that profile's config. Unset already means the launch home here.
+                stack.callback(reset_hermes_home_override, set_hermes_home_override(None))
                 stack.callback(reset_secret_scope, set_secret_scope(launch_secret_scope(launch)))
+                stack.callback(reset_terminal_scope, set_terminal_scope(None))
         else:
             secrets = build_profile_secret_scope(home)
             stack.callback(reset_hermes_home_override, set_hermes_home_override(str(home)))

@@ -2,7 +2,7 @@ name: esp32-debug
 title: ESP32 Debug
 repo: https://github.com/snakeyear/hermes-esp32-debug
 sha: 6b13b16a994187bc2d3ccbd16ab8f78fadd5d657
-description: "Read-only ESP32 debugging: find ESP32 boards on serial ports, read chip info, capture a bounded serial log, and decode panic backtraces to function and file:line against a hash-checked ELF."
+description: "Read-only ESP32 debugging: find ESP32 boards on serial ports, read chip info, capture a bounded serial log, and decode panic backtraces to function and file:line against a hash-checked ELF. Disclosure — runs esptool (read-only flash-id/chip-id; resets the board, only when the call sets confirm_reset=true) and the Espressif addr2line as subprocesses with a minimal environment and the plugin data dir as working directory; opens the serial port the model names; reads the .elf path the model names and returns a few source lines around each decoded frame from the files that ELF's debug info points to; keeps the last redacted capture in <hermes home>/plugin-data/esp32-debug; no network calls."
 maintainer: snakeyear
 tier: community
 category: tools

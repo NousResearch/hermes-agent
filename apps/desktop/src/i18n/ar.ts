@@ -14,9 +14,9 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
   gatewayGroupOpen: {
-    opening: "جارٍ فتح محادثة المجموعة…",
-    lookupFailed: "تعذّر العثور على هذه المجموعة على البوابة. حاول مجددًا.",
-    missing: "لم تعد محادثة المجموعة هذه موجودة."
+    opening: 'جارٍ فتح محادثة المجموعة…',
+    lookupFailed: 'تعذّر العثور على هذه المجموعة على البوابة. حاول مجددًا.',
+    missing: 'لم تعد محادثة المجموعة هذه موجودة.'
   },
 
   catalog: {

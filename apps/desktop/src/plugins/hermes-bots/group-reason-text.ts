@@ -30,7 +30,9 @@ export function groupReasonText(reason: string | undefined, labels: GroupReasonM
   const text = reason?.trim() ?? ''
   const key = REASON_LABELS.get(text)
 
-  if (key) {return labels[key]}
+  if (key) {
+    return labels[key]
+  }
 
   return /^[a-z][\w.:-]*$/i.test(text) || text === 'member turn cancelled' ? '' : text
 }

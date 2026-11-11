@@ -13,15 +13,20 @@ export function observeDownloads() {
   })
 
   const revoke = vi.fn()
-  vi.stubGlobal('URL', class extends URL {
-    static createObjectURL = create
-    static revokeObjectURL = revoke
-  })
+  vi.stubGlobal(
+    'URL',
+    class extends URL {
+      static createObjectURL = create
+      static revokeObjectURL = revoke
+    }
+  )
 
   const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
     const blob = blobs.get(this.href)
 
-    if (!blob) {throw new Error('Download did not use the provided bytes')}
+    if (!blob) {
+      throw new Error('Download did not use the provided bytes')
+    }
     downloads.push({ blob, name: this.download, connected: this.isConnected })
   })
 
@@ -29,7 +34,11 @@ export function observeDownloads() {
 }
 
 export async function expectDownloaded(
-  observed: ReturnType<typeof observeDownloads>, bytes: Uint8Array, name: string, mime: string, index = 0
+  observed: ReturnType<typeof observeDownloads>,
+  bytes: Uint8Array,
+  name: string,
+  mime: string,
+  index = 0
 ) {
   const entry = observed.downloads[index]
   expect(entry.name).toBe(name)

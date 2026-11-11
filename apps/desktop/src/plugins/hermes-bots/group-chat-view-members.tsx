@@ -116,7 +116,9 @@ function onOtherMachine(bot: RosterRow, connectionId: null | string): boolean {
 }
 
 function memberSaveFailed(bot: RosterRow, meta: Record<string, BotMeta>): Error {
-  return new Error(botsText().crossGateway.memberSaveFailed(connectionName(bot), displayName(bot, botRosterMeta(bot, meta))))
+  return new Error(
+    botsText().crossGateway.memberSaveFailed(connectionName(bot), displayName(bot, botRosterMeta(bot, meta)))
+  )
 }
 
 /** A remote row's write that provably did not land on its machine. An older
@@ -194,7 +196,9 @@ async function reconcileStuckWrites(group: string, previous: RosterRow[], stuck:
 
   for (const write of stuck) {
     const server = await readBotMetaFromServer(write.bot)
-    const groups = server ? botGroups(server) : botGroups(groupMembershipPatch(botRosterMeta(write.bot, $botMeta.get()), group, write.enabled))
+    const groups = server
+      ? botGroups(server)
+      : botGroups(groupMembershipPatch(botRosterMeta(write.bot, $botMeta.get()), group, write.enabled))
     await setLocalBotMeta(write.bot, { group: groups[0] || null, groups })
 
     const key = botRosterKey(write.bot)
@@ -234,7 +238,10 @@ async function writeMembershipChanges(group: string, writes: MembershipWrite[], 
         const held = stuck[0].bot
 
         throw new Error(
-          botsText().crossGateway.memberRollbackFailed(connectionName(held), displayName(held, botRosterMeta(held, meta)))
+          botsText().crossGateway.memberRollbackFailed(
+            connectionName(held),
+            displayName(held, botRosterMeta(held, meta))
+          )
         )
       }
 

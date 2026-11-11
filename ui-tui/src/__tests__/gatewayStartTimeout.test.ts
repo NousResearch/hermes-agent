@@ -10,10 +10,13 @@ beforeEach(() => resetTurnState())
 it('shows a terminal bootstrap verdict and its remedy, never "still waiting"', () => {
   const statuses: string[] = []
 
-  reportGatewayStartTimeout('Command failed: python3 gateway_bootstrap.py --start\n' +
-    'gateway unavailable: bootstrap_dependencies\n' +
-    'dependency environment unavailable: no dependency environment is committed for this install\n' +
-    'gateway unavailable: run `hermes pm repair`, then restart the TUI\n', s => statuses.push(s))
+  reportGatewayStartTimeout(
+    'Command failed: python3 gateway_bootstrap.py --start\n' +
+      'gateway unavailable: bootstrap_dependencies\n' +
+      'dependency environment unavailable: no dependency environment is committed for this install\n' +
+      'gateway unavailable: run `hermes pm repair`, then restart the TUI\n',
+    s => statuses.push(s)
+  )
 
   const messages = getTurnState().activity.map(a => a.text)
 
@@ -26,11 +29,16 @@ it('shows a terminal bootstrap verdict and its remedy, never "still waiting"', (
 // warning plus the bootstrap's own verdict lines: the `ticket_unavailable` head, then the refusal's
 // cause or repair command. These are the lines gateway_bootstrap.py prints (its pytest pins them).
 it.each([
-  ['a control home with unsafe permissions', 'gateway inaccessible: /h/control has mode 0755, expected 0700; chmod 700 /h/control'],
+  [
+    'a control home with unsafe permissions',
+    'gateway inaccessible: /h/control has mode 0755, expected 0700; chmod 700 /h/control'
+  ],
   ['an owner that answers ok: false', 'gateway inaccessible: invalid_control_response']
 ])('shows a refused ticket mint inline for %s', (_case, cause) => {
-  reportGatewayStartTimeout(`Command failed: python3 gateway_bootstrap.py\ngateway inaccessible: ticket_unavailable\n${cause}\n`,
-    () => {})
+  reportGatewayStartTimeout(
+    `Command failed: python3 gateway_bootstrap.py\ngateway inaccessible: ticket_unavailable\n${cause}\n`,
+    () => {}
+  )
 
   const messages = getTurnState().activity.map(a => a.text)
 

@@ -38,7 +38,7 @@ function comeBack(how: 'focus' | 'visibilitychange') {
 
 function expectFullyReset() {
   expect($tabFlashText.get()).toBeNull()
-  expect(document.title).toBe('Hermes')
+  expect(document.title).toBe('Unitalk')
   expect(link.href).toBe(ICON)
   expect(vi.getTimerCount()).toBe(0)
 }
@@ -90,7 +90,7 @@ describe('flagTabAttention', () => {
       expect(link.href).toBe(BADGED)
 
       vi.advanceTimersByTime(1000)
-      expect(document.title).toBe('Hermes')
+      expect(document.title).toBe('Unitalk')
 
       flagTabAttention('Question for you')
       expect(document.title).toBe('Question for you')
@@ -105,7 +105,7 @@ describe('flagTabAttention', () => {
       // Listeners are gone too: a later away/back cycle without a new event changes nothing.
       away = true
       vi.advanceTimersByTime(5000)
-      expect(document.title).toBe('Hermes')
+      expect(document.title).toBe('Unitalk')
     }
   )
 
@@ -121,7 +121,7 @@ describe('flagTabAttention', () => {
     away = false
     flagTabAttention('Approval needed')
 
-    expect(document.title).toBe('Hermes')
+    expect(document.title).toBe('Unitalk')
     expect(images).toHaveLength(0)
     expect(vi.getTimerCount()).toBe(0)
   })

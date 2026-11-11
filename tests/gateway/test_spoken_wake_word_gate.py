@@ -421,3 +421,30 @@ async def test_photon_caf_attachment_voice_note_wakes_on_the_spoken_wake_word(tm
 
     assert len(calls) == 1 and adapter.handle_message.await_count == 1
     assert adapter.handle_message.await_args.args[0].message_type == MessageType.VOICE
+
+
+@pytest.mark.asyncio
+async def test_photon_document_first_envelope_still_sends_its_spoken_audio_to_stt(tmp_path, monkeypatch):
+    """A group envelope whose first item is a document normalises to DOCUMENT, which the runner never
+    transcribes; admitted by speech, its audio must still reach the turn's STT pass."""
+    import base64
+    from gateway.run_inbound import GatewayInboundMixin
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    adapter.handle_message = AsyncMock()
+    transcribe, _calls = _stt("hermes, read this")
+    content = {"type": "group", "items": [
+        {"content": {"type": "attachment", "name": "a.pdf", "mimeType": "application/pdf", "data": base64.b64encode(b"%PDF").decode()}},
+        {"content": {"type": "voice", "name": "voice.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}}]}
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        await adapter._dispatch_inbound({
+            "messageId": "dv1", "space": {"id": "group-guid", "type": "group", "phone": None},
+            "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
+
+    event = adapter.handle_message.await_args.args[0]
+    _images, stt_paths, audio_files, _videos = GatewayInboundMixin._classify_inbound_media(event, False)
+    assert len(stt_paths) == 1 and stt_paths[0].endswith(".ogg") and audio_files == []

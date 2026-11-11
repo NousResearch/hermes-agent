@@ -1,0 +1,60 @@
+name: chat-tree
+title: Chat Tree
+repo: https://github.com/Ronitron007/hermes-chat-tree
+sha: "eb94f1082838db82a85d9b869ef70e443d220374"
+subdir: chat-tree
+description: >-
+  One window for branching chats in Hermes Desktop. A side pane draws the open
+  chat and its branches as a git graph, one node for each exchange. Branch
+  from a node, ask on a model you pick, and merge back into any ancestor chat
+  with Merge as-is or Digest. The model writes each digest through ctx.llm
+  (auxiliary task chat_tree_digest, which follows the title generation model
+  unless you set auxiliary.chat_tree_digest). Disclosure: the desktop half
+  reads up to 500 persisted session summaries (host.listPersistedSessions),
+  the messages of the chats in the open lineage (session.transcript,
+  session.history), context sizes (session.usage, session.stats,
+  session.context_breakdown) and subagent.list. It calls session.branch only
+  when you click Branch. It calls prompt.submit only for the question that you
+  typed for a branch, and for Merge as-is, which sends the merge text as a
+  message in the ancestor chat that you picked. Digest puts its text into the
+  composer of the ancestor chat as a draft (host.composer.setDraft) and never
+  sends it. config.set sets the model that you picked for a branch. A node click sends the app event hermes:timeline-reveal to the
+  main chat viewport and scrolls the exchange into view. It finds the
+  viewport and the exchange through app markup (data-session-anchor,
+  data-slot, data-message-id). This is outside the Desktop SDK surface
+  (catalog rule 8), because the SDK has no scroll API. The pane keeps its
+  branch ids and digests in its plugin storage. It also shares
+  its list of branch ids with the side-chat plugin (localStorage key __hermesSideChatBranchIds).
+  The Python half serves two plugin RPC methods.
+  plugin.chat-tree.digest.write sends the exchanges of one chat (at most
+  24,000 characters, secrets redacted) to your configured model and returns
+  the digest as a session event. plugin.chat-tree.history.read opens the
+  local session store of Hermes (state.db in the profile home) read-only
+  through hermes_state.SessionDB. It returns the messages of at most 30 chats
+  of the open chat's lineage, never a hidden or archived chat, and at most
+  400,000 characters of text. That text stays on the machine and goes to no
+  model. No other network calls, credentials, file writes, shell, telemetry
+  or self-updater.
+maintainer: Ronitron007
+tier: community
+category: desktop
+requires_hermes: ">=0.23"
+version: "0.1.0"
+docs_url: https://github.com/Ronitron007/hermes-chat-tree/tree/outbox/competition-entry/chat-tree#readme
+readme: true
+platforms: []
+known_issues:
+  - Requires Hermes Desktop.
+  - >-
+    A node click scrolls the main chat to that exchange through the app event
+    hermes:timeline-reveal and the app markup (data-session-anchor, data-slot,
+    data-message-id). Neither is Desktop SDK surface (catalog rule 8), and
+    hermes plugins validate warns about the markup selector. We chose this on
+    purpose, because the SDK has no scroll API. A Desktop update can break it
+    without notice. Then a click only opens the chat of the node.
+  - Digests and stored histories need hermes plugins enable chat-tree and a gateway restart.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

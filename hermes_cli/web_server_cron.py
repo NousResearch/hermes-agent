@@ -319,10 +319,12 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
 
 
 def _profile_env_value(home: Path, key: str) -> str:
-    """One value from a profile's .env (``""`` when absent/unreadable)."""
-    from agent.secret_scope import load_env_file
+    """One value from a profile's own secret scope (``""`` when absent): ``build_profile_secret_scope``
+    expands ``${VAR}`` references the way that profile's gateway does, so a templated
+    ``API_SERVER_PORT=${PORT}`` is the port it listens on, not the literal template (#137080)."""
+    from agent.secret_scope import build_profile_secret_scope
 
-    return load_env_file(home / ".env").get(key, "")
+    return build_profile_secret_scope(home).get(key, "")
 
 
 def _gateway_listener(profile: str, home: Path) -> tuple[bool, str, Path]:

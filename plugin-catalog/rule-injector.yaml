@@ -1,0 +1,32 @@
+name: rule-injector
+repo: https://github.com/klautimus/hermes-rule-injector
+sha: 57b1a00d1ef796186a31307146d79ae2c04e8f0e
+description: >-
+  Moves agent behavioural rules out of the system prompt and injects each one at
+  the point of need, through three hooks: pre_llm_call for behavioural guards,
+  transform_tool_result for corrections the model reads in place, and pre_verify
+  as a completion gate. A rule is {trigger, inject} — matched on keywords, regex,
+  tool name, tool error, path or session scope, or a boolean compound of those —
+  with a per-turn injection budget and an undroppable always-on floor. An
+  optional adjudicator adds a semantic second pass over ambiguous turns, and
+  propose.py drafts a rule from a user correction. Ships six starter rules;
+  rules.json is a template the user replaces. Disclosure — writes one activation
+  trace line per fired rule to ~/.hermes/logs/rule-injector-trace.jsonl, and
+  writes rules.json when a rule is created through its own CLI; no network calls,
+  no shell, no telemetry; the optional adjudicator, only when enabled, sends the
+  current turn to the auxiliary provider the user has configured, using Hermes'
+  own auxiliary client and credentials (the plugin stores and reads no keys).
+maintainer: klautimus
+tier: community
+category: automation
+docs_url: https://github.com/klautimus/hermes-rule-injector#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - transform_tool_result
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

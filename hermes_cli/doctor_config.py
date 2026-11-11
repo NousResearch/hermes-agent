@@ -425,14 +425,14 @@ def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
 
 
 def _failing_boot_migration():
-    """The error of this install's last boot migration when it stopped at a failing step, else None."""
+    """Why this install's last boot migration stopped at a failing step, else None."""
     try:
-        from hermes_cli.boot_bootstrap import read_last_known, record_path
+        from hermes_cli.boot_bootstrap import owed_config_migration, read_last_known, record_path
         from pm.paths import install_root
-        last = (read_last_known(record_path(install_root())).get("results") or {}).get("migrate_config") or {}
+        owed = owed_config_migration(read_last_known(record_path(install_root())))
     except (ImportError, OSError, ValueError):
         return None
-    return last.get("error") if last.get("failed_step") else None
+    return (owed.get("failed_warning") or owed.get("error")) if owed else None
 
 
 def _drift_stale_root_keys(f: Finding, should_fix: bool, config_path) -> None:

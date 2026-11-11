@@ -145,6 +145,13 @@ def needs_bootstrap(project_root: Path) -> str | None:
     return identity
 
 
+def owed_config_migration(known: dict) -> dict | None:
+    """The record's ``migrate_config`` result when that migration stopped at a failing step
+    (``failed_step``; ``failed_warning`` says why), else None. *known*: :func:`read_last_known`."""
+    owed = (known.get("results") or {}).get("migrate_config") or {}
+    return owed if owed.get("failed_step") else None
+
+
 # ---------------------------------------------------------------------------
 # single-flight lock
 # ---------------------------------------------------------------------------
@@ -221,10 +228,13 @@ def run_boot_bootstrap(project_root: Path) -> dict:
     """Bound home maintenance to one attempt per installed revision."""
     from hermes_cli import post_update
 
-    identity = needs_bootstrap(project_root)
+    identity = current_install_identity(project_root)
     if not identity:
-        return {"home": _retry_owed_migration(project_root)}
+        return {"home": "skipped"}
     record = record_path(project_root)
+    known = read_last_known(record)
+    if known.get("identity") == identity:
+        return {"home": _retry_owed_migration(record, identity, known)}
     lock = _RecordLock(record)
     if not lock.acquire():
         return {"home": "lost-race"}
@@ -240,35 +250,30 @@ def run_boot_bootstrap(project_root: Path) -> dict:
         lock.release()
 
 
-def _owes_migration(known: dict) -> bool:
-    return bool(((known.get("results") or {}).get("migrate_config") or {}).get("failed_step"))
-
-
-def _retry_owed_migration(project_root: Path):
+def _retry_owed_migration(record: Path, identity: str, known: dict):
     """This revision's maintenance is done, but its config migration stopped at a failing step
     (``failed_step`` in the record): rerun that one step on every start until it succeeds. It
     warns once per start; the other steps stay bounded to one attempt per revision."""
     from hermes_cli import post_update
 
-    record = record_path(project_root)
-    if not _owes_migration(read_last_known(record)):
+    if owed_config_migration(known) is None:
         return "skipped"
     lock = _RecordLock(record)
     if not lock.acquire():
         return "lost-race"
     try:
         known = read_last_known(record)
-        if not _owes_migration(known) or known.get("identity") != current_install_identity(project_root):
+        owed = owed_config_migration(known)
+        if owed is None or known.get("identity") != identity:
             return "skipped"
-        results = known["results"]
         retried = post_update.run_steps(
             [step for step in post_update.BOOT_HOME_STEPS if step[0] == "migrate_config"])
         outcome = retried.get("migrate_config") or {}
         if not outcome.get("ok") and not outcome.get("failed_step"):
             # The retry raised (a full disk, a lock): the step is still owed, so the next start
             # retries it too. Only a retry that succeeded clears it.
-            retried["migrate_config"] = {**outcome, "failed_step": results["migrate_config"]["failed_step"]}
-        _write_record(record, known["identity"], {**results, **retried})
+            retried["migrate_config"] = {**owed, **outcome, "failed_step": owed["failed_step"]}
+        _write_record(record, identity, {**known["results"], **retried})
         return retried
     finally:
         lock.release()

@@ -639,12 +639,13 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
     _expect_no_args(args, "config migrate")
     from hermes_cli.config import migrate_config
     results = migrate_config(interactive=False, quiet=False)
-    if results.get("env_added") or results.get("config_added"):
-        print("Configuration updated.")
-    else:
-        print("Configuration is up to date.")
     for warning in results.get("warnings") or []:
         print(f"Warning: {warning}")
+    if results.get("failed_step") is not None:
+        raise ConsoleCommandError(f"config migrate: stopped at v{results['failed_step']}; "
+                                  "the steps before it are kept, the rest run again next time")
+    print("Configuration updated." if results.get("env_added") or results.get("config_added")
+          else "Configuration is up to date.")
 
 
 def _guard_exports(db, session_ids: list[str]) -> None:

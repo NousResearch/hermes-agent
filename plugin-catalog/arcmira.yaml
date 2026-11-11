@@ -1,7 +1,7 @@
 name: arcmira
 title: "Arcmira: YouTube Transcript Search"
 repo: https://github.com/arcmira/hermes-plugin
-sha: 34231f97eaacb5461a3f9e23c22d851330df98f6
+sha: 87b038801e58b6032e9e1c96d82cf36bb0e13b64
 description: >-
   YouTube transcript search and monitoring for your AI. Arcmira understands YouTube and
   podcasts like it watched them: the exact quote, often who said it, the full transcript
@@ -20,9 +20,9 @@ maintainer: arcmira
 tier: community
 category: web
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/arcmira/hermes-plugin/blob/34231f97eaacb5461a3f9e23c22d851330df98f6/README.md
-version: "0.10.14"
-image: https://raw.githubusercontent.com/arcmira/hermes-plugin/34231f97eaacb5461a3f9e23c22d851330df98f6/assets/arcmira-catalog-card.svg
+docs_url: https://github.com/arcmira/hermes-plugin/blob/87b038801e58b6032e9e1c96d82cf36bb0e13b64/README.md
+version: "0.10.16"
+image: https://raw.githubusercontent.com/arcmira/hermes-plugin/87b038801e58b6032e9e1c96d82cf36bb0e13b64/assets/arcmira-catalog-card.svg
 readme: true
 platforms: []
 known_issues:

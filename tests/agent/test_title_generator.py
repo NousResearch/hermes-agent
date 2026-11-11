@@ -273,6 +273,17 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("how do I rename a session?") is None
 
+    def test_rejects_cjk_answer_hidden_past_the_length_cap(self):
+        """A long URL prefix pushes most of a Chinese answer past _clean_title's 80-char cut; the
+        guard measures the reply before that cut, so the shortened fragment is still rejected."""
+        answer = "https://example.com/" + "a" * 40 + " 这个链接我没法访问，也无法判断它对你当前的任务是否有用。"
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = answer
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("这个对你有用吗") is None
+
     def test_accepts_a_short_cjk_title(self):
         """A real CJK title (13 characters) stays under the character budget."""
         title = "修复会话标题被中文回复覆盖"

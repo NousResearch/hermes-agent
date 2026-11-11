@@ -385,7 +385,7 @@ class GatewayTurnPersistenceMixin:
         return agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure
 
     async def _hmwa_compression_exhaustion_reset(
-        self, agent_result, response, session_entry, session_key, source,
+        self, agent_result, response, session_entry, session_key, source, event=None,
     ):
         """Auto-reset a permanently oversized session so the next message starts fresh instead of
         replaying the oversized context forever. Never on a lock-contended defer — that is the
@@ -417,8 +417,35 @@ class GatewayTurnPersistenceMixin:
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             if not self._hmwa_defer_exhaustion_reset(session_entry, session_key, source):
                 session_entry = await self._hmwa_rotate_exhausted_session(session_entry, session_key, source)
+                self._hmwa_replay_exhausted_request(event, agent_result, session_key, source)
             response = (response or "") + t("gateway.session.auto_reset_context_exhausted")
         return response, session_entry
+
+    def _hmwa_replay_exhausted_request(self, event, agent_result, session_key, source):
+        """Re-run the request whose turn exhausted the context on the fresh session, once (#137565).
+
+        The reset drops the old transcript, and with it the user's request: nothing answered it. It
+        goes back in the head slot, ahead of any follow-up, so the adapter's post-handler drain runs
+        it on the fresh session after this turn's lease and active slot are released. Never twice (a
+        replay that exhausts again resets without another replay), never an internal event, and
+        never when the turn already acted (a tool ran) or showed the user output: a re-run would
+        repeat it. A voice note would re-run STT and its transcript echo, so it keeps the resend notice."""
+        if (event is None or event.internal
+                or agent_result.get("already_sent") or agent_result.get("response_previewed")
+                or self._pending_event_audio_paths(event)):
+            return
+        new_messages = (agent_result.get("messages") or [])[agent_result.get("history_offset", 0) or 0:]
+        if any(m.get("role") in ("tool", "function") or m.get("tool_calls") for m in new_messages):
+            return
+        adapter = self._delivery_adapter_for(source)
+        persistent = self._session_state(session_key).persistent
+        identity = f"{event.message_id or ''}\0{event.text or ''}"  # the drain re-runs a copy of the event
+        if (adapter is None or not isinstance(getattr(adapter, "_pending_messages", None), dict)
+                or persistent.exhaustion_replayed == identity):
+            return
+        persistent.exhaustion_replayed = identity
+        self._requeue_event_at_front(session_key, event, adapter)
+        logger.info("Re-running the request of session %s's exhausted turn on its fresh session", session_key)
 
     def _hmwa_defer_exhaustion_reset(self, session_entry, session_key, source):
         """True when the reset was handed to the authority drain. A LOCAL session (the Bot Chat a

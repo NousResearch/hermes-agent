@@ -256,7 +256,7 @@ def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optiona
             with SessionDB(path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
                 conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
             return "ok"
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- status probe: reports the exception type name in the status string; the caller degrades
         return f"check-failed: {type(exc).__name__}"
     if not path.exists():
         return "absent"

@@ -998,7 +998,7 @@ def _cmd_optimize(db, args):
         try:
             db.optimize_fts()
             size_mb = db.logical_size_bytes() / (1024 * 1024)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- user-facing failure: print the error and exit 1; a traceback is noise
             print(f"Error: optimization failed: {exc}")
             return 1
         print("PostgreSQL search index optimized.")

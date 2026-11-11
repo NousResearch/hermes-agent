@@ -79,6 +79,6 @@ class SessionPostgresMaintenanceMixin:
                 finally:
                     conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (lock_key,))
         except Exception as exc:
-            logger.warning("PostgreSQL session maintenance failed: %s", exc)
+            logger.warning("PostgreSQL session maintenance failed: %s", exc, exc_info=True)
             result["error"] = str(exc)
         return result

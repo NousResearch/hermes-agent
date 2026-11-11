@@ -523,7 +523,7 @@ def get_profiles_sessions_sidebar(
             if not db_path.exists() and resolve_database_settings(db_path).backend == "sqlite":
                 continue
             fingerprint = _sidebar_db_fingerprint(db_path)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- one unreadable profile is reported per profile; the sidebar keeps rendering
             _warn_profile_read_error(name, exc)
             errors.append({"profile": name, "error": str(exc)})
             continue

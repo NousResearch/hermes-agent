@@ -492,7 +492,7 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
     # Opening SQLite first would add another database holder.
     try:
         settings = resolve_database_settings(state_db_path)
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- doctor degrades to a warning (the type name in the message); the run continues
         check_warn("Session database configuration is invalid", f"({type(exc).__name__})")
         f.manual_issues.append("Check database settings in this profile's config.yaml and .env")
         return
@@ -502,7 +502,7 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
             with SessionDB(state_db_path, read_only=True, database_settings=settings) as db, db._read_ctx() as conn:
                 count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             check_ok(f"PostgreSQL session database is reachable ({count} sessions)")
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- an unreachable PostgreSQL degrades to a warning; the doctor run continues
             check_warn("PostgreSQL session database is unavailable", f"({type(exc).__name__})")
             f.manual_issues.append("Check PostgreSQL connectivity, database.schema, and this profile's HERMES_DATABASE_URL")
         return

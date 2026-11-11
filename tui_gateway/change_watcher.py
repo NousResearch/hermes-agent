@@ -309,7 +309,10 @@ def _sessions_sig():
             if settings.backend == "postgres":
                 signatures.append(_postgres_sessions_sig(path, settings))
                 continue
-        except Exception:
+        # resolve_database_settings' documented raise surface: an unreadable config
+        # file (OSError family) or a readable-but-invalid database section (ValueError).
+        # An unresolvable backend degrades to the SQLite file digest.
+        except (OSError, ValueError):
             pass
         signatures.append(_session_db_content_sig(path))
     return tuple(signatures)
@@ -325,7 +328,7 @@ def _postgres_sessions_sig(db_path: Path, settings):
             revision = db.get_change_revision()
         database_id = hashlib.sha256(settings.database_url.encode()).hexdigest()
         return ("postgres", database_id, settings.schema, revision)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- an unreachable store fingerprints as "unavailable"; the tick stays quiet
         return ("postgres", "unavailable")
 
 

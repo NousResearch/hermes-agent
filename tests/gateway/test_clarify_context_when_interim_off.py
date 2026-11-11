@@ -9,6 +9,10 @@ The real ``StreamDeliveryMixin._emit_interim_assistant_message`` runs inside a r
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+from types import SimpleNamespace
+
 import pytest
 
 from agent.agent_runtime_helpers import strip_think_blocks
@@ -46,6 +50,8 @@ async def test_prose_before_clarify_is_sent_when_interim_messages_are_off(monkey
 
     assert result["final_response"] == "done"
     assert [call["content"] for call in adapter.sent] == ["Draft: Hello Bob, lunch at noon?"]
+    # Not the turn's final: unmarked, it would seal a live stream or be cached as the answer.
+    assert adapter.sent[0]["metadata"].get("_interim_send") is True
 
 
 @pytest.mark.asyncio
@@ -56,3 +62,28 @@ async def test_other_commentary_stays_suppressed_when_interim_messages_are_off(m
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_clarify_card_waits_for_an_explanation_still_sending():
+    """The agent thread stops waiting for the explanation after its ack window; the card must not
+    overtake it anyway (the card path does not take Telegram's text-send lock)."""
+    from gateway.run_turn_runner import TurnRunner
+
+    order: list[str] = []
+    explanation = concurrent.futures.Future()
+
+    async def send_clarify(**_kwargs):
+        order.append("card")
+        return SimpleNamespace(success=True)
+
+    runner = SimpleNamespace(_ctx=SimpleNamespace(_status_adapter=SimpleNamespace(send_clarify=send_clarify)),
+                             _approval_owner=None, _clarify_context_send=explanation)
+    card = asyncio.ensure_future(TurnRunner._send_shared_clarify(runner, entry=None))
+    for _ in range(20):  # let the card task run as far as it can
+        await asyncio.sleep(0)
+    assert order == [], "the card went out while its explanation was still sending"
+    order.append("explanation")
+    explanation.set_result(True)
+    await asyncio.wait_for(card, 5)
+    assert order == ["explanation", "card"]

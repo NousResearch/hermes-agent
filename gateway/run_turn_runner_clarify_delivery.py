@@ -11,7 +11,9 @@ the window releases the wait with the delivery notice instead of the inactivity 
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -200,12 +202,25 @@ def clarify_context_sink(runner) -> Optional[Callable[..., None]]:
         if (already_streamed or adapter is None or not str(text or "").strip() or not ctx._run_still_current()
                 or not automatic_notices_allowed(ctx.source)):
             return
-        fut = runner._schedule(adapter.send(ctx._status_chat_id, text, metadata=ctx._status_thread_metadata),
-                               "clarify context send failed to schedule")
+        from gateway.run import _interim_metadata
+        fut = runner._schedule(
+            adapter.send(ctx._status_chat_id, text, metadata=_interim_metadata(ctx._status_thread_metadata)),
+            "clarify context send failed to schedule")
         if fut is None:
             return
+        runner._clarify_context_send = fut  # the card waits for it even after this wait gives up
         try:
             fut.result(timeout=SEND_ACK_WINDOW)
         except Exception:
             logger.warning("Clarify context could not be sent before the prompt", exc_info=True)
     return send
+
+
+async def await_clarify_context(runner) -> None:
+    """Hold the clarify card until its explanation's send has finished. The agent thread waits only
+    ``SEND_ACK_WINDOW`` for it, and the card path does not take the adapter's text-send lock, so a
+    slow split send would otherwise let the buttons land above the rest of the explanation."""
+    fut, runner._clarify_context_send = getattr(runner, "_clarify_context_send", None), None
+    if fut is not None and not fut.done():
+        with suppress(Exception):  # a failed explanation send was already logged; the card still goes
+            await asyncio.wrap_future(fut)

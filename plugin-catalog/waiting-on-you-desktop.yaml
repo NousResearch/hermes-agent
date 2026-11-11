@@ -1,0 +1,28 @@
+name: waiting-on-you-desktop
+repo: https://github.com/clientamp/waiting-on-you-desktop
+sha: b685d1a898837cfbb2da8c7ac7b671f437bea51b
+description: "Desktop panel listing every question your agents are waiting on you to answer, across all chats and profiles, sorted by urgent/important and answerable in place (Yes, No, Reply, Later) with five seconds to undo. Disclosure: sends chat endings to your configured Hermes model (and an optional decision provider you choose) to find asks; reads every local profile's state.db and projects.db read-only; runs a background scan in the gateway; optional satellite push between your own machines, optional SSH reads, optional chat archiving and optional local action-handler commands, all off by default; keys only via Hermes secrets; no telemetry"
+maintainer: clientamp
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/clientamp/waiting-on-you-desktop#readme
+version: "1.0.0"
+title: "Waiting On You"
+platforms: [macos, linux]
+screenshots:
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/b685d1a898837cfbb2da8c7ac7b671f437bea51b/assets/readme/panel.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/b685d1a898837cfbb2da8c7ac7b671f437bea51b/assets/readme/nested.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/b685d1a898837cfbb2da8c7ac7b671f437bea51b/assets/readme/next-up.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/b685d1a898837cfbb2da8c7ac7b671f437bea51b/assets/readme/settings.png
+  - https://raw.githubusercontent.com/clientamp/waiting-on-you-desktop/b685d1a898837cfbb2da8c7ac7b671f437bea51b/assets/readme/first-run.png
+known_issues:
+  - "Inline answers work only for chats open in this Desktop window; chats on another machine or profile get Open instead."
+  - "Satellite pairing uses a private Hermes token-route helper until a public seam exists (hermes-agent #143507)."
+capabilities:
+  provides_tools:
+  - wou_list
+  provides_hooks:
+  - post_llm_call
+  provides_middleware: []
+  requires_env: []

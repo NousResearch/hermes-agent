@@ -1,0 +1,32 @@
+name: grok-bot-twin
+title: Grok Bot Twin
+repo: https://github.com/hudsonwa/grok-bot-twin
+sha: 3ab3b9185fdeb9dfc9408c790fba2b90b9f99094
+subdir: ""
+version: "0.1.0"
+description: "Try Hermes without leaving Grok. Gives each Grok desktop-app bot a Hermes twin profile and a Desktop Twins page (conflicts, restore points); `hermes twin demo` needs no Grok account. Name and description changes reach the twin in seconds; instructions stay on the by-hand list; skills travel through your own optional Mirror bot; routines and connectors stay by hand. Unofficial; not affiliated with xAI. Disclosure — Runs the user-installed external botport CLI (never bundled or downloaded; setup runs `gh attestation verify` against hudsonwa/botport's release workflow and pins the binary's digest; `hermes twin setup --allow-unattested` is a recorded opt-out), plus `gh` and, on \"Ready to switch\", `hermes cron resume` for that twin's paused jobs, each with a minimal environment; via botport it reads the Grok desktop app's bot list and the selected bots' local transcript files (capped, parsed for routine changes only) and writes the twin Hermes profiles it manages; the plugin writes only plugin-data/grok-bot-twin/, reads twin profiles' cron/jobs.json read-only, keeps one owner-only pair key per twin, runs one background metadata-check/sync thread (default every 60 s) once a session starts, makes no network calls of its own and sends no telemetry; the optional activity digest (off by default, per twin) goes to the user's own Grok bot on xAI's service; it calls Hermes' internal skill scanner (tools.skills_guard, fail-open) for the demo's skill preview."
+maintainer: hudsonwa
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/hudsonwa/grok-bot-twin/blob/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/README.md
+screenshots:
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/conflict-card.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/ready-to-switch.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/twins-page.png
+  - https://raw.githubusercontent.com/hudsonwa/grok-bot-twin/3ab3b9185fdeb9dfc9408c790fba2b90b9f99094/docs/screenshots/add-twins-preview.png
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - "Real twins need botport v0.2.1 (the release `hermes twin setup` verifies; other releases via botport_release_tag) on PATH (or botport_path), installed by you from its GitHub release; setup verifies the GitHub build attestation. Without it only the demo works (`hermes twin demo`)."
+  - "From the Grok desktop app's local files, botport opens only the bot list (id, name, description) and the selected bots' transcript files (capped, parsed only for routine-change events); those files hold no instructions, skills, schedules or connectors. Instructions, routines and connectors stay on the by-hand list; skills can travel through your own Mirror bot routine."
+  - "Under plugins.isolation: host, Hermes skips plugin CLI commands, so `hermes twin` is unavailable; use `/twin` or the Twins page in Hermes Desktop."
+capabilities:
+  provides_tools:
+    - twin_status
+    - twin_recent
+  provides_hooks:
+    - pre_llm_call
+    - on_session_start
+    - on_session_end
+  requires_env: []

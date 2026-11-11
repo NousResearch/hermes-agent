@@ -186,8 +186,9 @@ method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
 
 
 class ProfilesCreateParams(ProfileParams):
-    """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on
-    so a headless bot has a provider."""
+    """``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the
+    active profile, no bundled skills); ``mirror_credentials`` and
+    ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider."""
 
     name: str
     description: str | None = None
@@ -204,7 +205,8 @@ class ProfilesCreateParams(ProfileParams):
 
 
 class ProfileMirrored(Result):
-    """What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``."""
+    """What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no
+    auth.json of its own and reads the default root's."""
 
     env: bool = False
     auth: bool | Literal["shared"] = False
@@ -219,6 +221,7 @@ class ProfilesCreateResult(Result):
     soul_written: bool = False
     model_set: bool = False
     mirrored: ProfileMirrored
+    warnings: list[str] = []  # best-effort steps that did not fully apply (create still succeeded)
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,

@@ -259,6 +259,11 @@ def _select_files(
             "error: --files and --files-from are mutually exclusive", file=sys.stderr
         )
         sys.exit(2)
+    named = args.paths_positional or args.files or args.files_from or args.paths != ":".join(_DEFAULT_ROOTS)
+    if args.require_paths and not named:
+        print("error: name a test path (scripts/run_tests.sh with no path runs the full suite)",
+              file=sys.stderr)
+        sys.exit(2)
     roots: list[Path] = []
     if args.files:
         files = [repo_root / f for f in _split_pathspec(args.files)]
@@ -1246,13 +1251,9 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "-j",
-        "--jobs",
-        type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4)),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count)",
-    )
+    parser.add_argument("-j", "--jobs", type=int,
+                        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4)),
+                        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count)")
     parser.add_argument(
         "--paths",
         default=os.environ.get("HERMES_TEST_PATHS", ":".join(_DEFAULT_ROOTS)),
@@ -1338,6 +1339,7 @@ def main() -> int:
             "the per-argv-element cap; mutually exclusive with --files."
         ),
     )
+    parser.add_argument("--require-paths", action="store_true", help="Refuse to run with no test path (`just test`).")
     parser.add_argument(
         "--fail-on-skip",
         action="store_true",
@@ -1376,7 +1378,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
-        "--files-from", "--fail-on-skip",
+        "--files-from", "--fail-on-skip", "--require-paths",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}

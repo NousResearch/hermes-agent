@@ -76,9 +76,7 @@ def make_startup_runner(tmp_path):
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._stop_task = None
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._background_tasks = set()
     runner._failed_platforms = {}
     runner._voice_mode = {}

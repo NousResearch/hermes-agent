@@ -1,11 +1,12 @@
 name: hermes-muse-code
 repo: https://github.com/TheStreamCode/hermes-muse-code
-sha: e33501185e328b5597fd98c6de916495922ec727
-description: Muse Spark in Hermes billed to the Muse Code monthly login (device-code login, no API key).
+sha: 1d0d806f7f1ab1364ca5426d109872f8c3253eed
+description: "Muse Spark in Hermes billed to the Muse Code monthly login (device-code login, no API key). Disclosure — Unofficial: uses a Muse Code subscription credential outside Meta's Muse Code client, which Meta's terms (Model API ToS §3.2) restrict; a local 127.0.0.1 proxy renames tool declarations so Meta's client check does not refuse the request; Meta may suspend the account or subscription. The key is cached in the Hermes home (muse-code-sub.json) and sent only to auth.meta.com and api.meta.ai; `*-contributor` models in the picker let Meta use that traffic, including background calls on the picked model, as training data."
 maintainer: TheStreamCode
 tier: community
 category: models
-requires_hermes: ">=0.21.3"
+requires_hermes: ">=0.23.0"
+version: "0.6.2"
 docs_url: https://github.com/TheStreamCode/hermes-muse-code
 platforms: []
 capabilities:

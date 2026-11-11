@@ -1,30 +1,32 @@
 name: hindsight-curator
 repo: https://github.com/trenthalden/hindsight-curator
-sha: "01087e27a85f71c572402e29447886ea464c970f"
-version: "0.2.0"
+sha: "17ebcebaa24c1f4650416cdade9be6764808881d"
+version: "0.2.1"
 description: >-
   Bulk-curate stale Hindsight memories from chat via /memory-curate or tools,
-  or from the Desktop Memory curation page: scan by topic (keyword/regex),
-  review a dry-run plan, invalidate a selected subset with a reason, write one
-  checkpoint fact, and restore via a local SQLite journal. Separate from the
-  official hindsight memory-provider plugin — talks only to the public HTTP API.
-  Disclosure — network calls only to the configured Hindsight base URL (list,
-  GET, PATCH invalidate/restore, retain checkpoint); optional Bearer auth via
-  HINDSIGHT_API_KEY through Hermes secrets; writes invalidations, restores, and
-  one checkpoint fact to that server; stores plans/apply events/whitelist/history
-  in the profile plugin-data directory; Desktop half uses ctx.rest to the plugin
-  dashboard API; no shell, no background daemons, does not read other plugins'
-  config or credential files.
+  or from the Desktop Memory curation page: keyword/regex scan, the agent reads
+  each match and plans only verified-stale ids (coincidental hits recorded as
+  skipped / left untouched), waits for the owner's explicit OK, invalidates,
+  writes one checkpoint fact in the owner's words, and restores via a local
+  SQLite journal. Bundles the memory-curate skill (hindsight-curator:memory-curate).
+  Separate from the official hindsight memory-provider plugin — talks only to the
+  public HTTP API. Disclosure — network calls only to the configured Hindsight
+  base URL (list, GET, PATCH invalidate/restore, retain checkpoint); optional
+  Bearer auth via HINDSIGHT_API_KEY through Hermes secrets; writes invalidations,
+  restores, and one checkpoint fact to that server; stores plans/apply
+  events/whitelist/history/skipped reasons in the profile plugin-data directory;
+  Desktop half uses ctx.rest to the plugin dashboard API; no shell, no background
+  daemons, does not read other plugins' config or credential files.
 maintainer: trenthalden
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/trenthalden/hindsight-curator#readme
-image: https://raw.githubusercontent.com/trenthalden/hindsight-curator/01087e27a85f71c572402e29447886ea464c970f/assets/banner.png
+image: https://raw.githubusercontent.com/trenthalden/hindsight-curator/17ebcebaa24c1f4650416cdade9be6764808881d/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/trenthalden/hindsight-curator/01087e27a85f71c572402e29447886ea464c970f/assets/shot-1.png
-  - https://raw.githubusercontent.com/trenthalden/hindsight-curator/01087e27a85f71c572402e29447886ea464c970f/assets/shot-2.png
-  - https://raw.githubusercontent.com/trenthalden/hindsight-curator/01087e27a85f71c572402e29447886ea464c970f/assets/shot-3.png
+  - https://raw.githubusercontent.com/trenthalden/hindsight-curator/17ebcebaa24c1f4650416cdade9be6764808881d/assets/shot-1.png
+  - https://raw.githubusercontent.com/trenthalden/hindsight-curator/17ebcebaa24c1f4650416cdade9be6764808881d/assets/shot-2.png
+  - https://raw.githubusercontent.com/trenthalden/hindsight-curator/17ebcebaa24c1f4650416cdade9be6764808881d/assets/shot-3.png
 capabilities:
   provides_tools:
     - curate_scan

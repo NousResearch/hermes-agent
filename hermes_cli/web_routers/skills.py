@@ -120,6 +120,23 @@ async def update_skills_hub(
         log_msg="Failed to spawn skills update", prefix="Failed to update skills")
 
 
+@hub_router.get("/api/skills/hub/updates")
+async def list_skill_hub_updates(profile: Optional[str] = None):
+    """Hub-installed skills with an upstream update, scoped to ``profile`` (the
+    ``hermes skills check`` pass; fetches from each skill's recorded source)."""
+
+    def _run():
+        from tools.skills_hub_install import check_for_skill_updates
+
+        rows = check_for_skill_updates()
+        return {"updates": [
+            {k: row.get(k, "") for k in ("name", "identifier", "source")}
+            for row in rows if row.get("status") == "update_available"]}
+
+    with http_failure("skills hub update check failed", 502, "Update check failed"):
+        return await scoped_to_thread(profile, _run)
+
+
 @hub_router.get("/api/skills/hub/official")
 async def list_official_skills(profile: Optional[str] = None):
     """The ENTIRE optional-skills catalog (local scan), marked installed for ``profile``."""

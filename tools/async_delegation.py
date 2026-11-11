@@ -1092,6 +1092,8 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record = _records.get(delegation_id)
         if record is None or record.get("status") not in _ACTIVE_STATES:
             return
+        # Read before the status flips: the stall monitor stopped this unit (``_push_completion_event``).
+        record["_stall_stopped"] = record.get("status") == "stalling"
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
@@ -1118,6 +1120,10 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
     The queued event is the parent's in-process copy and honours ``security.redact_secrets: false``;
     ``_persist_completion`` re-scrubs with force for the durable row (and the worker IPC)."""
     result = redact_child_result(result, force=False)
+    if record.get("_stall_stopped") and "stall_grace_seconds" not in result:
+        # Its runner unwound on the stall monitor's stop inside the grace window: the children read as
+        # interrupted, exactly like a user stop. The stall context says which one it was.
+        result = {**result, **_stall_meta(record)}
     is_batch = bool(record.get("is_batch"))
     label = " batch" if is_batch else ""
     try:
@@ -1304,20 +1310,24 @@ def _stalled_error_text(event_record: dict[str, Any]) -> str:
             "ask me to run it again if you still need it.")
 
 
+def _stall_meta(event_record: dict[str, Any]) -> dict[str, Any]:
+    """Structured stall context: lets parents/UIs tell a stall-monitor stop from other outcomes
+    without parsing the error string."""
+    stall_in_tool = event_record.get("_stall_in_tool")
+    return {
+        "stalled_after_quiet_seconds": event_record.get("_stall_quiet_seconds"),
+        "stall_threshold_seconds": event_record.get("_stall_threshold_seconds"),
+        "stall_phase": "in_tool" if stall_in_tool else "idle" if stall_in_tool is not None else None,
+        "stall_grace_seconds": _STALL_GRACE_SECONDS}
+
+
 def _stalled_result(delegation_id: str, event_record: dict[str, Any]) -> dict[str, Any]:
     """Synthetic terminal result for a stalling delegation whose runner never returned."""
     completed_at = event_record.get("completed_at") or time.time()
     duration = round(completed_at - (event_record.get("dispatched_at") or completed_at), 2)
     error = _stalled_error_text(event_record)
     logger.error("Async delegation %s force-finalized as stalled after %.0fs", delegation_id, duration)
-    # Structured stall metadata lets parents/UIs distinguish a stall-monitor
-    # kill from other failures without parsing the error string.
-    stall_in_tool = event_record.get("_stall_in_tool")
-    stall_meta = {
-        "stalled_after_quiet_seconds": event_record.get("_stall_quiet_seconds"),
-        "stall_threshold_seconds": event_record.get("_stall_threshold_seconds"),
-        "stall_phase": "in_tool" if stall_in_tool else "idle" if stall_in_tool is not None else None,
-        "stall_grace_seconds": _STALL_GRACE_SECONDS}
+    stall_meta = _stall_meta(event_record)
     if event_record.get("is_batch"):
         return {**_batch_crash(error, duration), **stall_meta}
     return {**_single_crash(error, duration), "status": "stalled", "exit_reason": "stalled", **stall_meta}
@@ -1424,6 +1434,12 @@ def refuse_for_session(token: Any, *, session_key: str = "", parent_session_ids=
         _refused[token] = frozenset(fence)
         for selector in fence:
             _refused_by.setdefault(selector, set()).add(token)
+
+
+def refused_for_session(token: Any) -> bool:
+    """Whether *token*'s session is closed to new dispatches (``refuse_for_session``, not yet lifted)."""
+    with _records_lock:
+        return token in _refused
 
 
 def allow_for_session(token: Any) -> None:

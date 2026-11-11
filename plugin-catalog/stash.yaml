@@ -1,0 +1,26 @@
+name: stash
+repo: https://github.com/RegeneratusLabs/hermes-stash
+sha: 97d1667527c5a9508e733c82246b42f732f9d970
+title: Stash
+description: "A capture bin for the Desktop sidebar: paste links, YouTube urls, image urls, uploaded images or plain notes and they wait there, out of the chat. One item per line, so a block of links becomes several items; titles and thumbnails are filled in server-side, so capture costs no model calls. Each row carries a Chat button that opens a new session with that item as the opening message. Adds stash_add, stash_list and stash_update, so the agent reads and empties the same store the page writes. Disclosure — saving an item issues one GET to that url from the Hermes host (4 s timeout, 400 KB cap) to read its <title> and og: metadata, refused for loopback, link-local, private and reserved targets and re-checked on every redirect hop; YouTube urls also use www.youtube.com/oembed and i.ytimg.com thumbnails, and the Desktop page loads each item's og:image thumbnail directly from whatever host the page names. No credentials, no telemetry, no shell commands, no Python dependencies beyond the FastAPI Hermes already ships. Items are plain JSON at ~/.hermes/stash/items.json (shared by every profile) and uploads (max 8 MB) in ~/.hermes/stash/media/."
+maintainer: RegeneratusLabs
+tier: community
+category: desktop
+version: "0.3.1"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/RegeneratusLabs/hermes-stash#readme
+readme: true
+platforms: [linux, macos, windows]
+screenshots:
+  - https://raw.githubusercontent.com/RegeneratusLabs/hermes-stash/97d1667527c5a9508e733c82246b42f732f9d970/assets/screenshot.png
+known_issues:
+  - "The desktop half ships switched off: after `hermes plugins enable stash`, restart the app and enable Stash under Capabilities → Plugins."
+  - "Install it on the machine that runs the desktop app; a copy installed only on a remote backend never reaches the sidebar."
+capabilities:
+  provides_tools:
+    - stash_add
+    - stash_list
+    - stash_update
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

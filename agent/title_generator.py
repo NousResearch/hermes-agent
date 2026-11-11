@@ -60,21 +60,28 @@ MAX_DERIVED_TITLE_CHARS = 48
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
 # Answer-shaped guard, CJK half: Han, kana and Hangul have no inter-word spaces, so the word count above
-# cannot see a full reply in those scripts (a 76-character Chinese answer counts as three "words"). A title
-# stays short in characters too; a reply does not. 12 words is roughly 20 characters in CJK text, which is
-# also where the Desktop sidebar target sits, so 20 is the ceiling for a title and 28+ is an answer.
+# cannot see a full reply in those scripts (a 76-character Chinese answer counts as three "words"). Length
+# alone does not separate them: a plain Japanese title such as "クラウドストレージの同期エラーを解決する方法"
+# runs 22 characters. A reply is a sentence, so over 20 characters it is rejected when it carries sentence
+# punctuation, and past 40 (twice a sidebar title, where the 80-char cut would truncate it anyway) always.
 _MAX_TITLE_CJK_CHARS = 20
-# CJK script ranges counted by _cjk_char_count: Han (Unified Ideographs + Extension A), kana, Hangul
-# syllables, and the CJK punctuation/fullwidth blocks a reply in those scripts is written with, so a
-# 32-character "可以，直接在这说。…" counts as 32 characters, not as the 26 letters it has.
+_MAX_UNPUNCTUATED_TITLE_CJK_CHARS = 40
+# CJK script ranges counted by _cjk_char_count (after NFC): Han (Unified Ideographs, Extension A and the
+# supplementary-plane extensions), kana, Hangul syllables, and the CJK punctuation/fullwidth/halfwidth
+# blocks a reply in those scripts is written with, so "可以，直接在这说。…" counts its punctuation too.
 _CJK_RANGES = (
     ("\u3000", "\u303f"),
     ("\u3040", "\u30ff"),
     ("\u3400", "\u4dbf"),
     ("\u4e00", "\u9fff"),
     ("\uac00", "\ud7af"),
-    ("\uff01", "\uff60"),
+    ("\uff01", "\uff9f"),
+    ("\U00020000", "\U0003134f"),
 )
+# Sentence punctuation after NFKC (fullwidth ！？，． fold to ASCII): the ideographic full stop, and ASCII
+# ! ? , or a full stop that ends a sentence (followed by space or the end, so "Node.js" is not one).
+# Not "、" or ":": list commas and "Topic: detail" prefixes are title shapes.
+_SENTENCE_PUNCTUATION = re.compile(r"[\u3002!?,]|\.(?:\s|$)")
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
@@ -486,7 +493,8 @@ def _is_prompt_example_echo(title: str) -> bool:
 
 
 def _cjk_char_count(text: str) -> int:
-    """Count CJK script characters after canonical normalization, without rewriting stored titles."""
+    """CJK script characters in ``text`` after canonical composition (NFD Hangul is conjoining jamo,
+    outside the syllable block, so the same visible reply would otherwise count 0)."""
     return sum(1 for ch in unicodedata.normalize("NFC", text) if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
 
 
@@ -495,8 +503,16 @@ def _is_answer_shaped(title: str) -> bool:
 
     Titling is a 3-7 word task with a short result; a reply is a full sentence. The word count covers
     space-delimited text and the character budget covers CJK, where ``str.split()`` sees no boundaries.
+    NFKC first, for the judgement only (the stored title keeps its bytes): decomposed Hangul is the
+    same text as precomposed, and fullwidth punctuation the same as ASCII. The character count reads
+    the NFC text, where fullwidth punctuation still counts as CJK text.
     """
-    return len(title.split()) > _MAX_TITLE_WORDS or _cjk_char_count(title) > _MAX_TITLE_CJK_CHARS
+    text = unicodedata.normalize("NFKC", title)
+    if len(text.split()) > _MAX_TITLE_WORDS:
+        return True
+    cjk = _cjk_char_count(title)
+    return cjk > _MAX_UNPUNCTUATED_TITLE_CJK_CHARS or (
+        cjk > _MAX_TITLE_CJK_CHARS and _SENTENCE_PUNCTUATION.search(text) is not None)
 
 
 def generate_title(

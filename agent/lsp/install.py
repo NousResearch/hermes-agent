@@ -261,11 +261,12 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     from tools.environments.local import hermes_subprocess_env
 
     try:
-        env = with_hermes_node_path(hermes_subprocess_env(), for_subprocess=pm == "npm")
         if pm == "npm":
-            pm_bin = shutil.which("npm.cmd" if _is_windows() else "npm", path=env.get("PATH", ""))
-            if pm_bin is None:
-                raise pm_store.InstallError("npm", "npm is missing from the prepared PM environment")
+            from pm.user_facing import npm_command
+
+            pm_bin, env = npm_command(hermes_subprocess_env())
+        else:
+            env = with_hermes_node_path(hermes_subprocess_env())
     except (pm_store.InstallError, OSError) as exc:
         logger.warning("[install] cannot prepare %s for %s: %s", pm, pkg, exc)
         return None

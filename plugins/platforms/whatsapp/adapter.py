@@ -7,7 +7,6 @@ import mimetypes
 import os
 import platform
 import re
-import shutil
 import signal
 import subprocess
 from contextlib import suppress
@@ -502,6 +501,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
             import pm
+            from pm.user_facing import npm_command
 
             _npm_bin = find_node_executable("npm")
             if _npm_bin is None:
@@ -509,10 +509,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 installed = pm.installed_package("npm")
                 if installed is None or installed.binary is None:
                     raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            env = with_hermes_node_path(for_subprocess=True)
-            _npm_bin = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
-            if _npm_bin is None:
-                raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
+            _npm_bin, env = npm_command()
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
                                             env=env, **_RUN_TEXT, check=False)
             if install_result.returncode == 0:

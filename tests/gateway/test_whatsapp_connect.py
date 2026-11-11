@@ -39,6 +39,7 @@ def _pm_node(monkeypatch, tmp_path):
     npm.chmod(0o755)
     monkeypatch.setattr(whatsapp_adapter, "find_node_executable", lambda name: f"/pm/{name}")
     monkeypatch.setattr(whatsapp_adapter, "with_hermes_node_path", lambda env=None, **kwargs: dict(env or {}, PATH=str(tmp_path)))
+    monkeypatch.setattr("pm.user_facing.npm_command", lambda env=None, **kwargs: (str(npm), dict(env or {}, PATH=str(tmp_path))))
 
 
 def _make_adapter():

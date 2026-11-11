@@ -9,7 +9,6 @@ from unittest.mock import Mock
 
 import pytest
 
-import hermes_constants
 import pm
 import pm.install
 from pm import paths
@@ -17,6 +16,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Runner
 from pm.packages import Nodejs, Npm
 from pm.store import current_target, tree_digest
+from pm.user_facing import node_env
 
 pytestmark = pytest.mark.platforms("windows")
 
@@ -68,14 +68,14 @@ def packaged_tools(tmp_path, monkeypatch):
 
 
 def test_read_only_context_does_not_copy_packaged_tools(packaged_tools):
-    env = hermes_constants.with_hermes_node_path({"PATH": "ambient"})
+    env = node_env({"PATH": "ambient"})
     assert str(packaged_tools.shipped) in env["PATH"]
     assert not packaged_tools.writable.exists()
 
 
 def test_subprocess_context_copies_both_pins_and_preserves_caller_env(packaged_tools):
     original = {"PATH": "ambient", "PRESERVE_THIS": "value"}
-    env = hermes_constants.with_hermes_node_path(original, for_subprocess=True)
+    env = node_env(original, for_subprocess=True)
     directories = env["PATH"].split(os.pathsep)
     assert directories == [
         str(packaged_tools.writable / f"{name}-test-{current_target()}")
@@ -96,11 +96,11 @@ def test_copy_obeys_lazy_policy_and_explicit_setup_then_reuses_copies(
 ):
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: False)
     with pytest.raises(InstallError, match="lazy installs are disabled"):
-        hermes_constants.with_hermes_node_path(for_subprocess=True)
+        node_env(for_subprocess=True)
     assert not packaged_tools.writable.exists()
-    env = hermes_constants.with_hermes_node_path(for_subprocess=True, explicit=True)
+    env = node_env(for_subprocess=True, explicit=True)
     assert str(packaged_tools.shipped) not in env["PATH"]
-    assert hermes_constants.with_hermes_node_path(for_subprocess=True) == env
+    assert node_env(for_subprocess=True) == env
 
 
 @pytest.fixture
@@ -160,20 +160,26 @@ SETUP_PATHS = [
 ]
 
 
+@pytest.mark.parametrize("sealed", [True, False], ids=["sealed", "unsealed"])
 @pytest.mark.parametrize("setup_path", SETUP_PATHS, indirect=True)
 def test_setup_entry_points_use_writable_paired_context(
-    packaged_tools, setup_path, monkeypatch
+    packaged_tools, setup_path, sealed, tmp_path, monkeypatch
 ):
+    if not sealed:
+        (packaged_tools.shipped.parent / "manifest.json").unlink()
+    (tmp_path / "npm.cmd").write_text("synthetic cwd decoy", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    selected_store = packaged_tools.writable if sealed else packaged_tools.shipped
     calls = []
 
     def installed(command, **kwargs):
         expected_npm = Npm().binary(
-            packaged_tools.writable / f"npm-test-{current_target()}", current_target()
+            selected_store / f"npm-test-{current_target()}", current_target()
         )
         assert command[0] == str(expected_npm)
         directories = kwargs["env"]["PATH"].split(os.pathsep)
         assert directories[:2] == [
-            str(packaged_tools.writable / f"{name}-test-{current_target()}")
+            str(selected_store / f"{name}-test-{current_target()}")
             for name in ("npm", "node")
         ]
         calls.append(command)
@@ -182,6 +188,37 @@ def test_setup_entry_points_use_writable_paired_context(
     monkeypatch.setattr("subprocess.run", installed)
     setup_path()
     assert calls
+
+
+@pytest.mark.parametrize("path_key", ["Path", "path"])
+def test_subprocess_context_preserves_path_key_casing(packaged_tools, path_key):
+    original = {path_key: "ambient", "KEEP_THIS": "value"}
+    env = node_env(original, for_subprocess=True)
+    assert [key for key in env if key.upper() == "PATH"] == [path_key]
+    assert env[path_key].split(os.pathsep) == [
+        str(packaged_tools.writable / f"{name}-test-{current_target()}")
+        for name in ("npm", "node")
+    ] + ["ambient"]
+    assert original == {path_key: "ambient", "KEEP_THIS": "value"}
+
+
+@pytest.mark.parametrize("sealed", [True, False], ids=["sealed", "unsealed"])
+def test_npm_command_rejects_missing_managed_npm(
+    packaged_tools, sealed, tmp_path, monkeypatch
+):
+    from pm.user_facing import npm_command
+
+    if not sealed:
+        (packaged_tools.shipped.parent / "manifest.json").unlink()
+    binary = Npm().binary(
+        packaged_tools.shipped / f"npm-test-{current_target()}", current_target()
+    )
+    assert binary is not None
+    binary.unlink()
+    (tmp_path / "npm.cmd").write_text("synthetic cwd decoy", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(InstallError, match="npm"):
+        npm_command({"PATH": str(tmp_path)})
 
 
 @pytest.mark.parametrize(
@@ -234,10 +271,11 @@ def test_lsp_automatic_setup_obeys_disabled_lazy_copies(
     run.assert_not_called()
 
 
+@pytest.mark.parametrize("lazy_copies", [True, False])
 @pytest.mark.parametrize("manager", ["pnpm", "yarn"])
 @pytest.mark.parametrize("setup_path", ["lsp_npm"], indirect=True)
 def test_lsp_preserves_selected_external_package_manager(
-    packaged_tools, setup_path, manager, tmp_path, monkeypatch
+    packaged_tools, setup_path, manager, lazy_copies, tmp_path, monkeypatch
 ):
     from agent.lsp import install as lsp_install
 
@@ -245,6 +283,7 @@ def test_lsp_preserves_selected_external_package_manager(
     executable.write_text("", encoding="utf-8")
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(lsp_install, "_node_package_manager", lambda: manager)
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: lazy_copies)
     calls = []
 
     def install(command, **kwargs):

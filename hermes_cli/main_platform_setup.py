@@ -5,7 +5,6 @@ Split out of ``hermes_cli/main.py``. Names that still live in main are imported 
 
 import contextlib
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -118,7 +117,8 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
 
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import find_node_executable
+    from pm.user_facing import npm_command
     from utils import env_int
     if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
@@ -133,10 +133,7 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "npm binary is missing after preparation")
-        env = with_hermes_node_path(for_subprocess=True, explicit=True)
-        npm = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
-        if npm is None:
-            raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
+        npm, env = npm_command(explicit=True)
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,

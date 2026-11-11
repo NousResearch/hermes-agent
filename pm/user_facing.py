@@ -113,8 +113,8 @@ def node_env(base_env: dict[str, str] | None = None, *,
              for_subprocess: bool = False, explicit: bool = False) -> dict[str, str]:
     """PM's paired npm/Node environment, optionally runnable through cmd.exe in a Windows package.
 
-    Dependency setup surfaces refused or failed copies. Callers resolve npm from this PATH
-    so both the batch file and the Node it starts live outside the package.
+    Dependency setup surfaces refused or failed copies. Use :func:`npm_command` to select
+    the matching npm executable without searching the current directory or ambient PATH.
     """
     from pm.install import env_for
     from pm.package import InstallError
@@ -133,11 +133,38 @@ def node_env(base_env: dict[str, str] | None = None, *,
             raise InstallError(name, "installed tool is unavailable outside the Windows package")
         copied_dirs = _dirs(*location, name)
         swap.update((os.path.normcase(directory), copied_dirs) for directory in packaged_dirs)
-    env["PATH"] = os.pathsep.join(dict.fromkeys(
-        copied for directory in env.get("PATH", "").split(os.pathsep)
+    path_key = next((key for key in env if key.upper() == "PATH"), "PATH")
+    env[path_key] = os.pathsep.join(dict.fromkeys(
+        copied for directory in env.get(path_key, "").split(os.pathsep)
         for copied in swap.get(os.path.normcase(directory), [directory]) if copied
     ))
     return env
+
+
+def npm_command(base_env: dict[str, str] | None = None, *,
+                explicit: bool = False) -> tuple[str, dict[str, str]]:
+    """The selected PM npm executable and its runnable, paired Node environment.
+
+    Resolve from installed facts, including the writable copy on sealed Windows. Never
+    search CWD or PATH for Hermes's npm. The caller provisions missing packages first.
+    """
+    from pm.filesystem import native
+    from pm.install import _installed_location, _lockfile
+    from pm.package import InstallError
+    from pm.registry import get_package
+    from pm.store import current_target
+
+    env = node_env(base_env, for_subprocess=True, explicit=explicit)
+    package, target = get_package("npm"), current_target()
+    location = (writable_copy("npm", realize=False) if applies()
+                else _installed_location(package, _lockfile(), target))
+    if location is None:
+        raise InstallError("npm", "npm is missing from the prepared PM environment")
+    facts, store = location
+    binary = package.binary(store.entry(facts.get("npm")["entry"]), target)
+    if binary is None:
+        raise InstallError("npm", "npm has no executable for this platform")
+    return native(binary), env
 
 
 def _python_stub_dir(directory: str) -> bool:

@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import threading
 import time
@@ -418,7 +417,8 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     if (bridge_dir / "node_modules").exists():
         return
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import find_node_executable
+    from pm.user_facing import npm_command
     from utils import env_int
     import pm
 
@@ -430,10 +430,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "npm binary is missing after preparation")
-        env = with_hermes_node_path(for_subprocess=True, explicit=True)
-        npm = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
-        if npm is None:
-            raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
+        npm, env = npm_command(explicit=True)
         # npm output is UTF-8; encoding= guards the Windows ANSI-code-page
         # default against undefined bytes crashing the reader thread.
         result = subprocess.run(

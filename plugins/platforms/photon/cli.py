@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
-import shutil
 import subprocess
 import sys
 from typing import Optional
@@ -17,7 +16,7 @@ from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
 from .adapter import sidecar_deps_installed
-from hermes_constants import find_node_executable, with_hermes_node_path
+from hermes_constants import find_node_executable
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _npm_error_log, _sidecar_dir
 import contextlib
 
@@ -357,6 +356,7 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 
 def _install_sidecar() -> int:
     import pm
+    from pm.user_facing import npm_command
 
     try:
         npm = find_node_executable("npm")
@@ -365,10 +365,7 @@ def _install_sidecar() -> int:
             installed = pm.installed_package("npm")
             if installed is None or installed.binary is None:
                 raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-        env = with_hermes_node_path(for_subprocess=True, explicit=True)
-        npm = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH", ""))
-        if npm is None:
-            raise pm.InstallError("npm", "npm is missing from the prepared PM environment")
+        npm, env = npm_command(explicit=True)
     except (pm.InstallError, OSError) as exc:
         print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1

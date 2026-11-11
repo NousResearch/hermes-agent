@@ -4,7 +4,7 @@ import os
 import pytest
 
 from gateway.config_loader import load_yaml_layer
-from gateway.platforms._shared import bridged_env_marker, yaml_env_setter
+from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, yaml_env_setter
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +38,7 @@ def test_lazy_plugin_failure_preserves_configured_value_on_first_and_later_loads
     for _ in range(2):
         load_yaml_layer(tmp_path, {})
         assert os.environ.get("TELEGRAM_REACTIONS") == "false"
-        assert os.environ.get(bridged_env_marker("TELEGRAM_REACTIONS")) == "false"
+        assert os.environ.get(bridged_env_marker("TELEGRAM_REACTIONS")) == bridged_env_digest("false")
     assert calls == ["load"]
 
 
@@ -56,7 +56,7 @@ def test_blank_real_dotenv_does_not_claim_a_later_yaml_bridge_value(tmp_path, re
     load_yaml_layer(tmp_path, {})
 
     assert os.environ.get("TELEGRAM_REACTIONS") == expected
-    assert os.environ.get(bridged_env_marker("TELEGRAM_REACTIONS")) == expected
+    assert os.environ.get(bridged_env_marker("TELEGRAM_REACTIONS")) == bridged_env_digest(expected)
 
 
 def test_platform_plugin_whose_import_fails_keeps_its_bridged_value(tmp_path, monkeypatch):
@@ -74,15 +74,16 @@ def test_platform_plugin_whose_import_fails_keeps_its_bridged_value(tmp_path, mo
     registry = registry_module.PlatformRegistry()
     monkeypatch.setattr(registry_module, "platform_registry", registry)
     monkeypatch.setattr(plugins, "discover_plugins", lambda: None)
-    for key in ("BRIDGEPROBE_FLAG", bridged_env_marker("BRIDGEPROBE_FLAG")):
-        monkeypatch.setenv(key, "false")  # a previous gateway generation's bridge wrote it
+    # a previous gateway generation's bridge wrote it
+    monkeypatch.setenv("BRIDGEPROBE_FLAG", "false")
+    monkeypatch.setenv(bridged_env_marker("BRIDGEPROBE_FLAG"), bridged_env_digest("false"))
     (tmp_path / "config.yaml").write_text("bridgeprobe:\n  flag: false\n", encoding="utf-8")
     PluginManager()._register_deferred_platform(manifest)
 
     for _ in range(2):
         load_yaml_layer(tmp_path, {})
         assert os.environ.get("BRIDGEPROBE_FLAG") == "false"
-        assert os.environ.get(bridged_env_marker("BRIDGEPROBE_FLAG")) == "false"
+        assert os.environ.get(bridged_env_marker("BRIDGEPROBE_FLAG")) == bridged_env_digest("false")
     assert registry.get("bridgeprobe") is None
 
 
@@ -91,8 +92,9 @@ def test_lowercase_dotenv_key_is_the_operators_value_on_windows(tmp_path, monkey
     """Windows env names are case-insensitive: ``telegram_reactions`` in .env owns TELEGRAM_REACTIONS."""
     from hermes_cli.env_loader import load_hermes_dotenv
 
-    for key in ("TELEGRAM_REACTIONS", bridged_env_marker("TELEGRAM_REACTIONS")):
-        monkeypatch.setenv(key, "false")  # inherited from the previous generation's bridge
+    # inherited from the previous generation's bridge
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_REACTIONS"), bridged_env_digest("false"))
     (tmp_path / ".env").write_text("telegram_reactions=false\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=tmp_path, load_external_secrets=False)
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")

@@ -7,6 +7,7 @@ import it at module top level without cycles.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -153,12 +154,42 @@ def profile_scoped() -> bool:
 # Marker prefix for values this bridge itself wrote into ``os.environ``. A CLI-started gateway
 # hands its environment to the restart child, so a bridged value outlives the YAML read that
 # produced it; without the marker the bridge would skip on the next start ("env is set") and the
-# edited YAML would never take effect (#109032's mirror image).
+# edited YAML would never take effect (#109032's mirror image). The marker holds a digest, never
+# the value: bridged names include credential-bearing ones (``TELEGRAM_PROXY``) and allowlists the
+# subprocess scrub strips, and ownership only needs equality. The scrub also drops the markers
+# (``local_env_policy._is_hermes_internal_secret``); only a same-profile restart child gets them back.
 BRIDGED_ENV_MARKER_PREFIX = "HERMES_BRIDGED_"
 
 
 def bridged_env_marker(name: str) -> str:
     return f"{BRIDGED_ENV_MARKER_PREFIX}{name}"
+
+
+def bridged_env_digest(value: Optional[str]) -> Optional[str]:
+    """What the marker stores for *value* (None stays None, so an unset name never matches)."""
+    return None if value is None else "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _is_bridge_leftover(name: str, marker_value: Optional[str]) -> bool:
+    return marker_value is not None and bridged_env_digest(os.getenv(name)) == marker_value
+
+
+def bridge_env_skipped() -> bool:
+    """True when this load must not touch the launch profile's ``os.environ`` bridge values.
+
+    A multiplexed secondary's scope (``profile_scoped``), and also any load for a home other than the
+    process's own: a HERMES_HOME override or a secret scope stamped with another home. Without the
+    second half a cross-home load with no bound secret scope would refresh or retract the launch
+    profile's allowlist with another profile's YAML. The default profile's own unscoped loads under
+    multiplex still bridge, as on main.
+    """
+    if profile_scoped():
+        return True
+    from agent.secret_scope import current_secret_scope_home
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    own = hermes_home_key(get_routing_process_hermes_home())
+    return any(home and hermes_home_key(home) != own
+               for home in (get_hermes_home_override(), current_secret_scope_home()))
 
 
 def _supplied_by_operator(name: str) -> bool:
@@ -195,7 +226,7 @@ def cancel_yaml_env_refresh() -> None:
 @contextlib.contextmanager
 def yaml_env_refresh():
     """Retract only unchanged bridge-owned leftovers after one complete, successful YAML load."""
-    if profile_scoped():
+    if bridge_env_skipped():
         yield
         return
     with _YAML_ENV_LOCK:
@@ -209,10 +240,10 @@ def yaml_env_refresh():
         try:
             yield
             if not load.failed:
-                for name, value in before.items():
+                for name, digest in before.items():
                     marker = bridged_env_marker(name)
-                    if (name not in load.seen and os.getenv(name) == value
-                            and os.getenv(marker) == value and not _supplied_by_operator(name)):
+                    if (name not in load.seen and os.getenv(marker) == digest
+                            and _is_bridge_leftover(name, digest) and not _supplied_by_operator(name)):
                         os.environ.pop(name, None)
                         os.environ.pop(marker, None)
         finally:
@@ -222,7 +253,7 @@ def yaml_env_refresh():
 def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     """``set_env(name, value)`` for ``apply_yaml_config_fn`` hooks: writes ``os.environ[name]``
     unless the operator set that var themselves, and NEVER while a multiplexed secondary
-    profile's scope is active — the gateway loads every secondary's config inside
+    profile's scope (or any other home's load, ``bridge_env_skipped``) is active — the gateway loads every secondary's config inside
     ``_profile_runtime_scope``, so a write there would pin that profile's policy process-wide and the
     default profile's adapters would read it as their own (first-writer-wins poisoning, #80099).
     Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
@@ -232,7 +263,7 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
     wrote last time is the bridge's own leftover (a restarted gateway inherits it) and is refreshed
     from YAML, while any other preset value is an operator's and wins.
     """
-    skip = profile_scoped()
+    skip = bridge_env_skipped()
 
     def set_env(name: str, value: Any) -> None:
         if value is None or skip:
@@ -247,10 +278,10 @@ def yaml_env_setter(*, fallback: bool = False) -> Callable[[str, Any], None]:
             marker = bridged_env_marker(name)
             current = os.getenv(name)
             if current is not None and current.strip():
-                if current != os.getenv(marker) or _supplied_by_operator(name):
+                if not _is_bridge_leftover(name, os.getenv(marker)) or _supplied_by_operator(name):
                     return  # the operator's value, not this bridge's leftover
             os.environ[name] = bridged
-            os.environ[marker] = bridged
+            os.environ[marker] = bridged_env_digest(bridged)
 
     return set_env
 

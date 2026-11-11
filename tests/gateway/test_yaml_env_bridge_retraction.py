@@ -6,7 +6,7 @@ import pytest
 from hermes_yaml import YAMLError
 
 from gateway.config_loader import load_yaml_layer
-from gateway.platforms._shared import bridged_env_marker
+from gateway.platforms._shared import bridged_env_digest, bridged_env_marker
 
 
 _NAMES = ("TELEGRAM_REACTIONS", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_REQUIRE_MENTION", "SIGNAL_REQUIRE_MENTION")
@@ -71,7 +71,7 @@ def test_malformed_yaml_never_retracts_last_successful_value(tmp_path):
     with pytest.raises(YAMLError):
         _load(tmp_path, "telegram: [\n")
     assert os.environ["TELEGRAM_REACTIONS"] == "false"
-    assert os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == "false"
+    assert os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("false")
 
 
 @pytest.mark.parametrize("failure", ["discovery", "hook", "core"])
@@ -97,7 +97,7 @@ def test_failed_load_does_not_treat_unseen_keys_as_deleted(tmp_path, monkeypatch
     else:
         _load(tmp_path, "telegram: {}\n")
     assert os.environ["TELEGRAM_REACTIONS"] == "false"
-    assert os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == "false"
+    assert os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("false")
 
 
 def test_secondary_load_neither_refreshes_nor_retracts_launch_environment(tmp_path):
@@ -110,7 +110,7 @@ def test_secondary_load_neither_refreshes_nor_retracts_launch_environment(tmp_pa
         _load(tmp_path, "{}\n")
         _load(tmp_path, "telegram:\n  reactions: true\n")
         assert os.environ["TELEGRAM_REACTIONS"] == "false"
-        assert os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == "false"
+        assert os.environ[bridged_env_marker("TELEGRAM_REACTIONS")] == bridged_env_digest("false")
     finally:
         reset_secret_scope(token)
         set_multiplex_active(False)

@@ -46,7 +46,7 @@ description: >-
   existence. It lists the run's project read-only to tell a file-scoped test run from the full suite (bounded, no
   symlinks) and, during /cap, stats a file the agent says it created (existence, size, modification time). `hermes
   nocap demo --ladder` (and /nocap demo ladder, CLI/TUI only, in the background) runs the bundled demo/run_ladder.sh
-  with /bin/sh in a throwaway HERMES_HOME under /tmp, under `env -i` with only PATH, HOME, LANG, TMPDIR, TERM and the
+  with /bin/sh in a throwaway HERMES_HOME in the system temp directory, under `env -i` with only PATH, HOME, LANG, TMPDIR, TERM and the
   demo's own settings (no provider keys), a scripted model on 127.0.0.1 and a uv install of the hash-pinned
   demo/requirements-ladder.txt (pytest, pyte, Pillow) into a throwaway venv; that fetch is the demo's one network use.
   Network: none by default; with self_verify_http: true, /cap may send one HTTP HEAD to a URL the agent claimed is

@@ -5,9 +5,9 @@ description: >-
   Deduplicates byte-identical repeated tool results inside Hermes Agent: repeats of terminal,
   search_files, MCP, web and connector output are saved to a local SQLite table and replaced by a
   one-line stub before they enter model context, with a recall_result tool that restores the
-  original bytes on demand. Fail-open, stdlib only, no core patches. Disclosure — writes a local
-  SQLite store under $HERMES_HOME (tool_recall_light.db); no network calls, no credentials, no shell
-  commands, no background processes.
+  original bytes on demand. Fail-open, stdlib only, no core patches. Disclosure — stores original bytes in
+  Hermes's plugin storage (<HERMES_HOME>/plugin-data/toolrecall-light/data.db, SQLite WAL); no network
+  calls, no credentials, no shell commands, no background processes.
 maintainer: whiskybeer
 tier: community
 category: memory

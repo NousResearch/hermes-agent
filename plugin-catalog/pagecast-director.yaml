@@ -1,15 +1,15 @@
 name: pagecast-director
 title: "PageCast Director"
 repo: https://github.com/flabanabba8/pagecast-director
-sha: 0d197f3403117bc309f24b9583e3c31c57a5ec4e
-version: "0.3.4"
-description: "Editable cast narration with locked voices, source passage IDs, resumable synthesis and selective regeneration. Disclosure: Stores books and generated audio privately. Voices are local (Flite, or a Higgs server already running on your computer) unless you choose hosted Inworld, ElevenLabs or Google Gemini, which send passage text and voice choices to that provider with your own key or Google login and use your credits. Runs local Flite and FFmpeg; mpv only plays a preview aloud when you approve it. The optional Android tools check GitHub for the PageCast app and can download it; installing it on a phone with adb, replacing a locked voice and playing a preview aloud each ask for your approval (one pre_tool_call hook). No background processes beyond a render or preview you start."
+sha: c809ffcf8405b6f5b0058be2ffc3e2b6c3dab9d4
+version: "0.3.5"
+description: "Editable cast narration with locked voices, source passage IDs, resumable synthesis and selective regeneration. Disclosure: Stores books and generated audio privately. Voices are local (Flite, or a Higgs server already running on your computer) unless you choose hosted Inworld, ElevenLabs or Google Gemini, which send passage text and voice choices to that provider with your own key, or for Gemini on Vertex a Google sign-in that Hermes holds for your own OAuth client (hermes auth add pagecast-director:google), and use your credits. Runs local Flite and FFmpeg; mpv only plays a preview aloud when you approve it. The optional Android tools check GitHub for the PageCast app and can download it; installing it on a phone with adb, replacing a locked voice and playing a preview aloud each ask for your approval (one pre_tool_call hook). No background processes beyond a render or preview you start."
 maintainer: flabanabba8
 tier: community
 category: voice
-requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/pagecast-director/blob/0d197f3403117bc309f24b9583e3c31c57a5ec4e/README.md
-image: https://raw.githubusercontent.com/flabanabba8/pagecast-director/0d197f3403117bc309f24b9583e3c31c57a5ec4e/assets/thumbnail.jpg
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/flabanabba8/pagecast-director/blob/c809ffcf8405b6f5b0058be2ffc3e2b6c3dab9d4/README.md
+image: https://raw.githubusercontent.com/flabanabba8/pagecast-director/c809ffcf8405b6f5b0058be2ffc3e2b6c3dab9d4/assets/thumbnail.jpg
 platforms: [linux]
 capabilities:
   provides_tools:

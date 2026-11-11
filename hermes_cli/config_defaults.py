@@ -28,15 +28,12 @@ DEFAULT_CONFIG = {
     "fallback": {"min_switch_reset_seconds": 0},
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
-    # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
-    # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
+    # journal_mode: "wal" default; use "delete" on weak-fsync/shared filesystems (macOS virtiofs, NFS, SMB).
     "database": {
-        "backend": "sqlite",
-        "schema": None,
+        "backend": "sqlite",  # conversation-state store: sqlite (default) or postgres (opt-in)
+        "schema": None,  # postgres schema; None = stable per-profile derived name
         "journal_mode": "wal",
-        # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
-        "wal_autocheckpoint": None,
-        "journal_size_limit": None,
+        "wal_autocheckpoint": None, "journal_size_limit": None,  # optional WAL sizing pragmas (ints); None = SQLite defaults
     },
     # Server-process fd soft limit (clamped to the hard limit) + glibc arena cap; 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096, "malloc_arena_max": 4},
@@ -2714,9 +2711,7 @@ from hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _ms
 # checklists; category: provider|tool|skill|messaging|setting, advanced=True hides from checklists,
 # tools=[...] lists the model tools the key unlocks. Provider entries: config_provider_env (on first read).
 OPTIONAL_ENV_VARS = OptionalEnvVars({
-    "HERMES_DATABASE_URL": _setting(
-        "PostgreSQL connection URL for this profile's session database",
-        "PostgreSQL connection URL", password=True),
+    "HERMES_DATABASE_URL": _setting("PostgreSQL connection URL for this profile's session database", "PostgreSQL connection URL", password=True),
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": _base_url("Nous Portal"),
     "HERMES_ANON_API_SECRET": _env(

@@ -164,3 +164,84 @@ def test_dispatch_refuses_provider_hold_and_second_costar_owner(kanban_home: Pat
         assert waiting not in [task_id for task_id, _, _ in result.spawned]
         owner_rejection = [event for event in kb.list_events(conn, waiting) if event.kind == "costar_dispatch_rejected"]
         assert owner_rejection[-1].payload["reason"] == "single_owner"
+
+
+def test_generic_costar_helper_is_refused_while_provider_hold_is_active(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="CoStar Florida root", body=_costar_body(), assignee="operator")
+        kb.claim_task(conn, parent)
+        assert kb.complete_task(conn, parent, result="done")
+        blocked = kb.create_task(conn, title="CoStar denied", body=_costar_body(), assignee="operator")
+        kb.claim_task(conn, blocked)
+        blocked_task = kb.get_task(conn, blocked)
+        assert blocked_task is not None
+        assert kb.block_task(conn, blocked, reason="Access Denied", expected_run_id=blocked_task.current_run_id)
+
+    created = json.loads(kt._handle_create({
+        "title": "prepare result", "body": "generic helper child", "assignee": "operator", "parents": [parent],
+    }))
+    assert created["ok"] is True, created
+    spawned: list[str] = []
+    with kbc.connect() as conn:
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, workspace, board=None: spawned.append(task.id))
+        assert spawned == []
+        assert created["task_id"] not in [task_id for task_id, _, _ in result.spawned]
+        rejected = [event for event in kb.list_events(conn, created["task_id"]) if event.kind == "costar_dispatch_rejected"]
+        assert rejected
+        assert rejected[-1].payload["reason"] == "provider_hold"
+
+
+def test_generic_costar_helper_is_refused_while_another_costar_owner_runs(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="CoStar Florida root", body=_costar_body(), assignee="operator")
+        kb.claim_task(conn, parent)
+        assert kb.complete_task(conn, parent, result="done")
+        owner = kb.create_task(conn, title="CoStar owner", body=_costar_body(), assignee="operator")
+
+    created = json.loads(kt._handle_create({
+        "title": "prepare result", "body": "generic helper child", "assignee": "operator", "parents": [parent],
+    }))
+    assert created["ok"] is True, created
+    spawned: list[str] = []
+    with kbc.connect() as conn:
+        first = kbd.dispatch_once(conn, spawn_fn=lambda task, workspace, board=None: spawned.append(task.id))
+        assert first.spawned and first.spawned[0][0] == owner
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, workspace, board=None: spawned.append(task.id))
+        assert created["task_id"] not in [task_id for task_id, _, _ in result.spawned]
+        rejected = [event for event in kb.list_events(conn, created["task_id"]) if event.kind == "costar_dispatch_rejected"]
+        assert rejected
+        assert rejected[-1].payload["reason"] == "single_owner"
+
+
+def test_generic_costar_helper_denial_records_provider_hold(kanban_home: Path) -> None:
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="CoStar Florida root", body=_costar_body(), assignee="operator")
+        kb.claim_task(conn, parent)
+        assert kb.complete_task(conn, parent, result="done")
+
+    created = json.loads(kt._handle_create({
+        "title": "prepare result", "body": "generic helper child", "assignee": "operator", "parents": [parent],
+    }))
+    assert created["ok"] is True, created
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, created["task_id"])
+        assert task is not None
+        kb.claim_task(conn, task.id)
+        claimed = kb.get_task(conn, task.id)
+        assert claimed is not None
+        assert kb.block_task(conn, task.id, reason="unusual_activity", expected_run_id=claimed.current_run_id)
+        holds = [event for event in kb.list_events(conn, task.id) if event.kind == "costar_provider_hold"]
+        assert holds
+        assert holds[-1].payload == {"task_id": task.id, "reason": "access_denied", "immutable": True}

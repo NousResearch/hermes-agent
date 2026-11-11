@@ -26,6 +26,27 @@ def is_costar_card(title: str | None, body: str | None) -> bool:
     return "costar" in f"{title or ''}\n{body or ''}".casefold()
 
 
+def has_costar_contract(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether a card carries the durable CoStar creation contract."""
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'created' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, ValueError):
+        return False
+    return payload.get("costar_contract") == CONTRACT
+
+
+def is_costar_task(conn: sqlite3.Connection, task_id: str, title: str | None, body: str | None) -> bool:
+    """Recognize CoStar work by text or the inherited durable contract."""
+    return is_costar_card(title, body) or has_costar_contract(conn, task_id)
+
+
 def has_costar_parent_lineage(conn: sqlite3.Connection, parents: tuple[str, ...]) -> bool:
     """Return whether any direct or transitive parent establishes a CoStar contract."""
     if not parents:
@@ -139,16 +160,18 @@ def provider_hold_owner(conn: sqlite3.Connection) -> str | None:
 
 def admission_reason(conn: sqlite3.Connection, task_id: str, title: str | None, body: str | None) -> str | None:
     """Return a dispatch refusal without touching browser/CDP state."""
-    if not is_costar_card(title, body):
+    if not is_costar_task(conn, task_id, title, body):
         return None
     if provider_hold_active(conn):
         return "provider_hold"
-    owner = conn.execute(
-        "SELECT id FROM tasks WHERE status = 'running' AND id != ? "
-        "AND (lower(title) LIKE '%costar%' OR lower(COALESCE(body, '')) LIKE '%costar%') LIMIT 1",
+    owners = conn.execute(
+        "SELECT id, title, body FROM tasks WHERE status = 'running' AND id != ?",
         (task_id,),
-    ).fetchone()
-    return "single_owner" if owner else None
+    ).fetchall()
+    return "single_owner" if any(
+        is_costar_task(conn, owner["id"], owner["title"], owner["body"])
+        for owner in owners
+    ) else None
 
 
 def is_denial(reason: str | None) -> bool:

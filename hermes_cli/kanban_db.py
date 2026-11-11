@@ -3187,8 +3187,8 @@ def block_task(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
-        from hermes_cli.kanban_costar_policy import is_costar_card, is_denial
-        if is_costar_card(cur_row["title"], cur_row["body"]) and is_denial(reason):
+        from hermes_cli.kanban_costar_policy import is_costar_task, is_denial
+        if is_costar_task(conn, task_id, cur_row["title"], cur_row["body"]) and is_denial(reason):
             _append_event(
                 conn, task_id, "costar_provider_hold",
                 {"task_id": task_id, "reason": "access_denied", "immutable": True}, run_id=run_id,

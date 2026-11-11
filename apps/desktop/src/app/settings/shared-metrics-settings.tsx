@@ -7,8 +7,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { setDesktopMetricsGate } from '@/store/desktop-metrics'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsScopeProfile, settingsScopeIsActiveProfile } from '@/store/settings-scope'
 import {
   readSharedMetricsConsent,
   saveSharedMetricsConsent,
@@ -74,10 +73,7 @@ export function SharedMetricsSettings() {
 
       // This page applies to the focused profile (unscoped, or scoped to it by name): Desktop
       // telemetry follows its switch at once.
-      const focused =
-        scopeProfile === null || normalizeProfileKey(scopeProfile) === normalizeProfileKey($activeGatewayProfile.get())
-
-      if (saved && focused) {
+      if (saved && settingsScopeIsActiveProfile(scopeProfile)) {
         setDesktopMetricsGate(saved.enabled ? 'on' : 'off')
       }
     } catch (err) {

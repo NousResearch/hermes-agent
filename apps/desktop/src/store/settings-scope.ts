@@ -56,6 +56,18 @@ export const $settingsRequestProfile = computed($settingsScopeProfile, (selected
   selected === 'custom' ? undefined : selected
 )
 
+// Whether an edit scoped to `requested` lands on the profile the live UI stores follow — "the
+// focused profile": unscoped (`null`/`undefined`) or scoped to the ACTIVE profile by name.
+//
+// Every page that repaints an app-wide store after a scoped save needs this, not `== null`:
+// `$settingsRequestProfile` carries the concrete profile key (#118432), so an edit of the active
+// profile arrives here AS THAT NAME. A bare `scopeProfile == null` test therefore only matched a
+// `custom` HERMES_HOME, and the save silently skipped its own repaint (#153133: Apply saved the new
+// main model, new sessions kept the previous manual pick).
+export function settingsScopeIsActiveProfile(requested?: null | string): boolean {
+  return requested == null || normalizeProfileKey(requested) === normalizeProfileKey($activeGatewayProfile.get())
+}
+
 // Select the profile the settings pages should edit. Picking the app's active
 // profile stores `null` (no override) so the scope keeps following the app on
 // profile switches — and requests keep their unscoped default shape.

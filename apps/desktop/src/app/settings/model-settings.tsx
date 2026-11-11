@@ -40,6 +40,7 @@ import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
+import { settingsScopeIsActiveProfile } from '@/store/settings-scope'
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -912,7 +913,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
-      if (scopeProfile == null) {
+      if (settingsScopeIsActiveProfile(scopeProfile)) {
         onMainModelChanged?.(provider, model)
       }
 

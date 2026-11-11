@@ -11,7 +11,7 @@
 name: hermes-focus-widget
 title: "Focus Widget"
 repo: https://github.com/elianjuan-g/hermes-focus-widget
-sha: "be8be4277eec9ab9cac6358e7c2eab0c1843500b"
+sha: "1b6bdcf7330539a69a23733a545dabe7025dcf37"
 version: "1.0.0"
 description: >-
   A Pomodoro widget for Hermes Desktop that only counts focus time while
@@ -38,12 +38,11 @@ category: desktop
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/elianjuan-g/hermes-focus-widget
 screenshots:
-  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/be8be4277eec9ab9cac6358e7c2eab0c1843500b/docs/screenshots/_float.png"
-  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/be8be4277eec9ab9cac6358e7c2eab0c1843500b/docs/screenshots/_page.png"
-  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/be8be4277eec9ab9cac6358e7c2eab0c1843500b/docs/screenshots/_settings.png"
-  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/be8be4277eec9ab9cac6358e7c2eab0c1843500b/docs/screenshots/_chip.png"
-  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/be8be4277eec9ab9cac6358e7c2eab0c1843500b/docs/screenshots/_01-main.png"
-  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/be8be4277eec9ab9cac6358e7c2eab0c1843500b/docs/screenshots/_chip-popover.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_float.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_page.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_settings.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_chip.png"
+  - "https://raw.githubusercontent.com/elianjuan-g/hermes-focus-widget/1b6bdcf7330539a69a23733a545dabe7025dcf37/docs/screenshots/_01-main.png"
 readme: true
 known_issues:
   - "Agent activity is not human focus: the timer knows when the agent is working, not whether the operator is focused."

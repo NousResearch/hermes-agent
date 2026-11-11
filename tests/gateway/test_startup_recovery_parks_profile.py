@@ -129,8 +129,9 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
             return None
 
         monkeypatch.setattr("gateway.session_hosted_service._ensure_hosted_service", ensure_hosted)
-        monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions",
-                            lambda authority, schedule=False: local.append(authority.profile_id))
+        async def recover_local(authority, schedule=False):
+            local.append(authority.profile_id)
+        monkeypatch.setattr("gateway.session_local_startup.recover_local_sessions_async", recover_local)
         monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
         asyncio.run(run_runtime.recover_gateway_native_sessions(runner))
         assert str(homes["beta"]) not in local

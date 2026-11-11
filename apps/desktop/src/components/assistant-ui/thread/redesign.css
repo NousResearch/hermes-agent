@@ -1,45 +1,78 @@
-/* Brand rev 491:40652–40672: 600px prose, 30px turns, 20px output blocks.
-   Keep the existing text-scale and tool disclosure behavior in both layouts. */
+/* Variation 1, Desktop 10 (147:7470): wide conversation, right-aligned
+   content-sized prompts, and 661px left-aligned assistant prose. */
 [data-portal-redesign='true'] [data-slot='aui_thread-content'] {
+  --conversation-text-base-size: 0.875rem;
+  --conversation-base-line-height: 1.1875rem;
   --message-text-indent: 0px;
+  --paragraph-gap: 0.8125rem;
   --turn-block-gap: 1.25rem;
-  --dt-user-bubble: color-mix(in srgb, var(--ui-base) 5%, transparent);
-  padding-inline: 1.25rem;
-  padding-top: 3.125rem;
+  --dt-user-bubble: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  max-width: none;
+  padding-inline: clamp(1rem, 6%, 4rem);
+  padding-top: 1.25rem;
 }
 
 [data-portal-redesign='true'] [data-slot='aui_user-bubble-actions'] {
   width: fit-content;
-  max-width: min(100%, 23.75rem);
+  max-width: 100%;
   align-self: flex-end;
 }
 
 [data-portal-redesign='true'] [data-slot='aui_turn-pair'] {
-  gap: 1.875rem;
+  gap: 2.5rem;
 }
 
 [data-portal-redesign='true'] [data-slot='aui_message-group'] {
-  padding-bottom: 1.875rem;
+  padding-bottom: 2.5rem;
+}
+
+/* The existing hover actions reserve 32px; count that toward the turn gap. */
+[data-portal-redesign='true'] [data-slot='aui_message-group']:has([data-slot='aui_msg-actions']) {
+  padding-bottom: 0.5rem;
 }
 
 [data-portal-redesign='true'] [data-slot='aui_user-message-root'] {
-  --human-msg-line-height: 1.6;
+  --human-msg-line-height: calc(17 / 14);
   padding-block: 0;
 }
 
 [data-portal-redesign='true'] [data-slot='aui_assistant-message-content'] {
-  line-height: 1.6;
+  line-height: calc(19 / 14);
+}
+
+[data-portal-redesign='true'] [data-slot='aui_assistant-message-content'] > .aui-md {
+  max-width: 41.3125rem;
+  line-height: inherit;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote) {
+  line-height: inherit;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_user-bubble-actions'] [data-slot='timeline-timestamp'] {
+  order: -1;
+  margin-bottom: 0.5rem;
+  padding: 0;
+  font-size: 0.625rem;
+  line-height: 0.75rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--ui-base) 25%, transparent);
 }
 
 [data-portal-redesign='true'] [data-slot='aui_edit-composer-root'] .composer-human-message-container {
-  max-width: min(100%, 23.75rem);
+  max-width: 100%;
   align-self: flex-end;
 }
 
 [data-portal-redesign='true'] .composer-human-message {
-  border-radius: 0.375rem;
-  border-color: transparent;
-  padding-inline-start: 0.625rem;
+  border-radius: 0.5rem;
+  border-color: color-mix(in srgb, var(--ui-base) 30%, transparent);
+  padding: calc(0.875rem - 1px) calc(1rem - 1px);
+  line-height: var(--human-msg-line-height);
+}
+
+[data-portal-redesign='true'] .composer-human-message :has(> [data-slot='aui_user-message-text']) {
+  min-height: 0;
 }
 
 /* Single-call runs have no aggregate header. Give their collapsed row the same
@@ -49,10 +82,10 @@
   --conversation-tool-font-size: calc(0.75rem * var(--chat-text-scale, 1));
   --conversation-line-height: calc(1.05rem * var(--chat-text-scale, 1));
   --disclosure-caret-rest: 0.6;
-  padding: 0.5rem 0.625rem;
-  border: 1px dashed color-mix(in srgb, var(--ui-base) 10%, transparent);
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed color-mix(in srgb, var(--ui-base) 15%, transparent);
   border-radius: 0.375rem;
-  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
   opacity: 1;
 }
 

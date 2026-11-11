@@ -265,7 +265,9 @@ async function exerciseManagementEntries(page: Page, redesigned: boolean) {
 
   await expect(page).toHaveURL(/#\/cron/)
   await page.getByRole('heading', { name: 'Schedules', exact: true }).first().waitFor({ state: 'visible' })
-  const newSchedule = page.getByRole('button', { name: 'New schedule', exact: true }).first()
+  // The empty-state button is replaced when the async blueprint catalog arrives.
+  // Use the schedule-list action so this assertion tracks the same opener.
+  const newSchedule = page.locator('button[aria-label="New schedule"]')
   await newSchedule.click()
   const schedule = page.getByRole('dialog', { name: 'New schedule', exact: true })
   await schedule.getByRole('textbox', { name: /^Name\b/ }).fill('Weekly briefing')

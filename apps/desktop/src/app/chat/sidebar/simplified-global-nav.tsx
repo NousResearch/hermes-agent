@@ -78,7 +78,13 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: { onNavigate: (item:
       id: icon,
       icon: (props: { className?: string }) =>
         portal && icon === 'robot'
-          ? <img alt="" aria-hidden className={cn('size-5 brightness-0 dark:brightness-100', props.className)} src={figmaRobot} />
+          ? (
+              <span
+                aria-hidden
+                className={cn('size-5 bg-current', props.className)}
+                style={{ mask: `url("${figmaRobot}") center / contain no-repeat` }}
+              />
+            )
           : <Codicon name={icon} {...props} />
     })),
     ...pluginPages.map(page => ({

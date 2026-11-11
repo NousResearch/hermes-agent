@@ -239,6 +239,11 @@
   padding-block: 0.4375rem 0.625rem;
 }
 
+.portal-sidebar [data-slot='agent-group'] {
+  /* Keep the separate collapse control inside the machine card. */
+  padding-inline-start: 1rem;
+}
+
 .portal-sidebar [data-slot='agent-group'] + [data-slot='agent-group'] {
   margin-top: 0.4375rem;
 }
@@ -285,7 +290,7 @@
   flex-shrink: 0;
   width: 1.5rem;
   height: 1.5rem;
-  margin-inline-end: 0.625rem;
+  margin-inline-end: 0.125rem;
   opacity: 0;
 }
 
@@ -301,7 +306,7 @@
 
 .portal-agent-collapse {
   position: absolute;
-  inset-inline-start: -0.75rem;
+  inset-inline-start: -1rem;
   top: 50%;
   transform: translateY(-50%);
   opacity: 0;
@@ -343,8 +348,10 @@
   line-height: 0.9375rem;
 }
 
-.portal-agent-sessions [data-session-key]:is(:hover, :has(:focus-visible), :has([data-state='open'])) {
-  background: var(--chrome-action-hover);
+.portal-agent-sessions
+  [data-session-key]:is(:hover, :has(:focus-visible), :has([data-state='open']))
+  [data-slot='session-title'] {
+  color: var(--ui-text-primary);
 }
 
 .portal-agent-sessions [data-session-key] > button:first-child {

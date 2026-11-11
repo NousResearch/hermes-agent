@@ -94,14 +94,15 @@ never invent team names, sharing counts, or connection state.
 
 The agent name/avatar opens that owner's canonical chat without a redundant
 child row. Its menu offers **New chat with this agent**, **Open agent**, and
-**Hide from chat list**. Collapse remains a separate keyboard/touch control.
-Nested 31px session rows have a 1px, 20% neutral indentation guide centered
-beneath the avatar, 20px from the machine's edge. Titles align with agent names
-at 38px. Empty and collapsed agents have no dangling guide. Figma's static box
-does not specify hover variants: preserve full-machine-width session hover/click
-targets, including the guide gutter, with a single neutral highlight. Reveal
-actions for hover, visible keyboard focus, or an open menu, not lingering mouse
-focus; touch controls remain visible. Only truncated titles need a tooltip.
+**Hide from chat list**. Collapse remains a separate keyboard/touch control:
+reserve a 16px leading gutter so its 24px target stays inside the machine card
+without overlapping the avatar. Nested 31px session rows have a 1px, 20% neutral
+indentation guide centered beneath the avatar, 36px from the machine's edge.
+Titles align with agent names at 54px. Empty and collapsed agents have no
+dangling guide. Session hover and selection brighten only the name, like agent
+rows; the click target still includes the guide gutter. Reveal actions for
+hover, visible keyboard focus, or an open menu, not lingering mouse focus;
+touch controls remain visible. Only truncated titles need a tooltip.
 Screen is a tool rather than a conversation: use **Open Screen** in the command
 palette for the focused owner; classic/Bot Mode entry points remain available.
 
@@ -127,7 +128,7 @@ Finished settings and management frames use bundled, OFL-licensed Oswald for
 display headings and Mona Sans for body text. The Figma trial navigation font
 is not redistributed. Redesigned geometry is root-scoped because route
 overlays render outside the shell: 60px rails, navigation up to 320px, and a
-640px conversation/settings reading column. Native titlebar sizing,
+640px settings reading column. Chat uses the wide layout described below. Native titlebar sizing,
 user-controlled panes, themes, and the classic layout remain functional.
 
 Appearance starts with working Light/Dark/System previews, text size,
@@ -240,9 +241,12 @@ in both LTR and RTL layouts.
 Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 10% fills.
 
-Session rows retain their full-width hover fill. The trailing status dot yields
-its exact position to the action ellipsis on hover, keyboard focus, or an open
-menu; the timestamp does not disappear or move. Touch exposes the action directly.
+Session rows remain transparent on hover and selection. Their trailing status
+dot yields its exact position to the action ellipsis on hover, keyboard focus,
+or an open menu; the timestamp does not disappear or move. Agent actions align
+with that same trailing column. Touch exposes the action directly.
+The global Agents icon uses the Figma robot silhouette tinted by `currentColor`,
+sharing its peers' inactive, hover, and selected tones in both light and dark themes.
 The Hermes Portal theme uses the current Figma navy canvas (`#07071a`) and
 floating surface (`#0d0d1e`) without generic neutral blending. Foreground-derived
 card fills remain subtle; custom theme choices and classic styling stay available.
@@ -259,12 +263,18 @@ An unqualified Settings entry opens Accounts in the redesign rather than a
 legacy Model page tucked under Advanced; explicit destinations and the classic
 default remain unchanged.
 
-Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`:
-600px prose, 30px turn spacing, 20px output gaps, 1.6 leading, and user bubbles
-capped at 380px. Collapsed tool runs, including single-tool runs, use the dashed
-summary frame. The composer's static 2px spectrum edge replaces animation;
-its native base text is 14px before the user's scale, retaining the browser
-minimum. Floating dialogs inherit redesigned padding, display typography, and
+Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
+following the user-selected **Variation 1: Flattened gateway/host** (`147:7470`):
+full-width conversation with side insets up to 64px (shrinking for narrow panes),
+left-aligned assistant prose capped at 661px, 40px turn gaps, and 20px output gaps.
+User bubbles hug their text at the right edge without a 380px cap, with 8px corners,
+16px horizontal/14px vertical insets, 10% fill, and a 30% inside border. Base text
+is 14px with 19px assistant leading and 17px prompt leading before user scaling.
+Retain the current branded body font, timestamp preference, and working message
+actions; enabled prompt timestamps sit above the bubble. Collapsed tool runs,
+including single-tool runs, use the dashed summary frame. The composer's static
+2px spectrum edge replaces animation; its native base text is 14px before the
+user's scale, retaining the browser minimum. Floating dialogs inherit redesigned padding, display typography, and
 brand-blue primary actions through root-scoped rules; their classic defaults
 remain unchanged. Route overlays and body-portalled dialogs are siblings of the
 chat shell, so their redesign styles must not require the shell as an ancestor.
@@ -295,10 +305,11 @@ Usage collection belongs to a consenting connection/profile, not merely the
 foreground UI. Changing scope revokes the old metrics binding immediately;
 events during rebinding are discarded, never replayed under later consent.
 
-The redesigned composer is 480 × 148 on an empty landing and 640 × 148 in a
-populated native conversation, with model/effort above the input and attachment,
-microphone, and labeled Send controls below. Browser touch targets keep their
-larger accessibility sizing. Gateway menus distinguish connection from inference
+The redesigned composer is 480 × 148 on an empty landing. In a populated native
+conversation it keeps the 148px base height and aligns with both transcript edges,
+with model/effort above the input and attachment, microphone, and labeled Send
+controls below. Browser touch targets keep their larger accessibility sizing.
+Gateway menus distinguish connection from inference
 readiness. Simple mode keeps reconnect and lazy recent activity; Advanced adds
 system/restart/logs, with 28px icon controls and destructive restart styling at rest.
 

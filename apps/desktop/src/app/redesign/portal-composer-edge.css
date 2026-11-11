@@ -15,8 +15,9 @@
   );
 }
 
-[data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
-  --composer-width: 40rem;
+[data-chat-landing='false'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+  /* Match the transcript inset while preserving the 5px drag margin. */
+  width: calc(100% - clamp(2rem, 12%, 8rem) + 10px);
 }
 
 [data-redesigned-composer] [data-slot='composer-surface'] {

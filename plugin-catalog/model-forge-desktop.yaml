@@ -3,7 +3,7 @@ title: Model Forge Desktop
 repo: https://github.com/mr-pewpy/model-forge
 sha: c0bbe666f95966762025a0c00bea0e9a9d32e599
 subdir: model-forge-desktop
-description: "Model Forge cockpit pane for Hermes Desktop — compute targets, live engines, loaded models and hardware at a glance. Companion UI for the Model Forge plugin. Disclosure — renders local plugin state only; no network calls, no shell commands, no credentials, no background processes."
+description: "Model Forge cockpit pane for Hermes Desktop — compute targets, live engines, loaded models and hardware at a glance. Companion UI for the Model Forge plugin. Disclosure — the pane polls each compute target the user registers in Model Forge (plus http://127.0.0.1:8080 by default) with read-only GET requests to /v1/models, /api/tags and /system_stats to show which local engines are running; no shell commands, no credentials, no background processes."
 maintainer: mr-pewpy
 tier: community
 category: desktop

@@ -86,7 +86,8 @@ def forward_body(att: dict, render_blocks: RenderBlocks) -> str:
     """The original's content: its blocks through the adapter's renderer, else ``text``, else
     Slack's own ``fallback`` rendering."""
     blocks = _forward_blocks(att)
-    body = "\n".join(p for p in [render_blocks(blocks).strip(), *_layout_texts(blocks)] if p)
+    body = "\n".join(p for block in blocks
+                     for p in [render_blocks([block]).strip(), *_layout_texts([block])] if p)
     if not body:
         body = re.sub(r"&(lt|gt|amp);", lambda m: _ENTITIES[m.group(0)], str(att.get("text") or "")).strip()
     return body or str(att.get("fallback") or "").strip()
@@ -128,7 +129,7 @@ def append_forwards(text: str, attachments: Any, render_blocks: RenderBlocks) ->
             continue
         body = forward_body(att, render_blocks)
         if len(body) >= _DEDUPE_MIN_CHARS and " ".join(body.split()) in flat_text:
-            continue  # already quoted in the message itself
+            body = "[Content already quoted above]"  # keep provenance and files, not a second body
         section = forward_section(att, render_blocks, limit=budget, body=body)
         budget = max(budget - len(body), 0)
         sections.append(section)

@@ -66,12 +66,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_slash_payload import slash_command_text, slash_thread_id
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_forwarded import (
-        append_forwards, files_with_forwarded, forward_section, is_forward, slack_file_marker as _slack_file_marker)
+        append_forwards, files_with_forwarded, is_forward, slack_file_marker as _slack_file_marker)
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_image_batch import collect_image_uploads
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_forwarded import (  # type: ignore
-        append_forwards, files_with_forwarded, forward_section, is_forward, slack_file_marker as _slack_file_marker)
+        append_forwards, files_with_forwarded, is_forward, slack_file_marker as _slack_file_marker)
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
@@ -627,8 +627,7 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
         return ""
     lines: list[str] = []
     for att in attachments:
-        if is_forward(att):  # a forward IS content: render it, never skip it as an unfurl
-            lines.append(forward_section(att, _extract_text_from_slack_blocks))
+        # Forwards use the same collection budget/dedupe as live inbound, after ordinary text.
         # Permalink unfurls repeat a message the agent already reads (inbound path skips them too).
         if not isinstance(att, dict) or att.get("is_msg_unfurl") or is_forward(att):
             continue
@@ -5738,7 +5737,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         if extras:
             addendum = "\n".join(extras)
             msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum
-        return msg_text
+        return append_forwards(msg_text, attachments, _extract_text_from_slack_blocks)
 
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str, team_id: str = "", limit: int = 30,

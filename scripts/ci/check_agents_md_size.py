@@ -25,7 +25,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from hermes_agent.compat.paths import tree_moves
 
 ROOT_MAX_CHARS = 12_100
-CHAIN_MAX_CHARS = 30_700
+CHAIN_MAX_CHARS = 30_600  # 30,720 at 128k, less the "## <label>" header and join the loader adds per file
 
 
 def _int_constant(source: Path, name: str) -> int:

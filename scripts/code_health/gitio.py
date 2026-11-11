@@ -143,7 +143,8 @@ def changed_files(repo: Path, base: str, head: str | None, *diff_args: str) -> l
         changes.extend(Change("A", None, p) for p in untracked.split("\0") if p)
     moves = tree_moves(repo, head)
     if moves:
-        changes = _pair_moves(changes, PathMoves(moves).original, set(tracked_files(repo, base)))
+        changes = _pair_moves(changes, PathMoves(moves).original,
+                              set(tracked_files(repo, base)) - generated_files(repo, base))
     generated = generated_files(repo, head)
     return [c for c in changes if c.new not in generated]
 

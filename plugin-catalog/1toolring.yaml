@@ -4,7 +4,7 @@ repo: https://github.com/khmuhtadin/1toolring-mcp
 sha: d4df0c005dd6cfd85f85f26872ffc9c82a97ec76
 version: "1.0.0"
 description: |
-  One API key and one prepaid balance for thousands of pay-per-call tools, right inside your agent: search and SEO data, maps and places, shopping prices, market data, web pages, images, video, voice and more. Connects to 1ToolRing's hosted MCP server with your API key.
+  One API key and one prepaid balance for thousands of pay-per-call tools: search and SEO data, maps, shopping prices, market data, web pages, images, video and voice. Runs on 1ToolRing's hosted MCP server.
 
   - Search and SEO: Google search results, keyword and SEO data
   - Maps and places: Google Maps places

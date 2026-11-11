@@ -109,12 +109,39 @@ Two further reasons the rebuild is mandatory rather than optional:
    image built before this change has no `piper`/`edge-tts`, and the new compose
    no longer installs them.
 
-Rebuild path (needs `workflow_dispatch`; the push trigger has proven unreliable
-on this fork):
+Rebuild path — **CI only, never a local build.** The compose lanes resolve the
+image from `HERMES_FORK_IMAGE` and declare no `build:` key, so the workflow is the
+single producer. Its push trigger has proven unreliable on this fork, so dispatch:
 
 ```bash
-gh workflow run fork-ghcr-publish.yml --repo JZKK720/hermes-agent --ref main
+gh workflow run "Fork Docker Build and Publish to GHCR" \
+  --repo JZKK720/hermes-agent --ref main
 ```
+
+The run's step summary prints the immutable pin for that build:
+
+```
+ghcr.io/jzkk720/hermes-agent:sha-<short>        # immutable tag
+ghcr.io/jzkk720/hermes-agent@sha256:<digest>    # strongest pin
+```
+
+Deploy that exact build (no rebuild, no `latest` drift):
+
+```bash
+HERMES_FORK_IMAGE=ghcr.io/jzkk720/hermes-agent@sha256 <digest> \
+  docker compose -f docker-compose.upstream.yml up -d --force-recreate --remove-orphans
+```
+
+### Published pin for this sync
+
+| | |
+|---|---|
+| workflow run | `43066031645` (success, 10m04s) |
+| commit | `c633bd9e367a858dca3c41d9f9bcb7dc4b86e56e` |
+| immutable tag | `ghcr.io/jzkk720/hermes-agent:sha-c633bd9` |
+| digest | `ghcr.io/jzkk720/hermes-agent@sha256:b7d0d0ba05945df6b6df84ebd5c7a94b6c60683a86cbd22669d83347b50516d4` |
+
+The first dispatch (`43062782083`) failed at `docker.build_agent` — see phase 7.
 
 ## 6. Phases and gates
 
@@ -126,8 +153,18 @@ gh workflow run fork-ghcr-publish.yml --repo JZKK720/hermes-agent --ref main
 | 4 | Converge deployment files (compose argv, dead env vars, `--insecure`) | `docker compose config --quiet` = 0 on all three |
 | 5 | Static checks | `compileall` = 0; `check_lazy_deps_imports.py` = 0; `buildx --check` clean |
 | 6 | Test | fork test files run; failures compared against the **fork-tip baseline**, never against zero |
-| 7 | Build image | `docker buildx build --load` succeeds |
-| 8 | Rebuild GHCR + redeploy | workflow green; `docker compose pull` gets the new digest |
+| 7 | Build image | **CI only** (`fork-ghcr-publish.yml`); the workflow must succeed |
+| 8 | Rebuild GHCR + redeploy | pin `sha-<short>` or the digest; `docker compose pull` gets it |
+
+Phase 5's `buildx --check` is necessary but **not sufficient**: it validates
+syntax and base-image resolution, not whether a `COPY --from` source path is
+actually produced by its stage. The first CI run failed at
+`python -m docker.build_agent` with
+`FileNotFoundError: required agent input missing: /opt/hermes/hermes_cli/web_dist`
+because resolving the Dockerfile conflict dropped upstream's three product COPY
+lines. The real gate for a Dockerfile is therefore: **diff the merged file against
+`upstream/main` and confirm every remaining hunk is intended** — that diff is what
+proved the fix (3 intended hunks, nothing else).
 
 Phase 6 matters most: `tests/gateway/test_api_server.py` has **17 failures on the
 fork tip before any of this work**. Comparing the merged run against that

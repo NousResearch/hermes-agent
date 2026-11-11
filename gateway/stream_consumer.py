@@ -230,9 +230,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._final_content_delivered = False  # content landed even if the cosmetic edit failed
         self._delivered_final_text: Optional[str] = None
         self._turn_split_delivery = False
-        # The adapter capped the turn-final split delivery and posted its truncation notice: the
-        # delivery is final by design, though it never matches the full final_response.
-        self._split_capped = False
+        # The raw text a capped turn-final split was cut from ("" = not capped): the adapter posted its
+        # truncation notice, so the delivery is final by design though it never matches final_response.
+        self._split_capped = ""
         # True when a full-final send timed out in a way that MAY have reached the platform
         # (``_send_empty_fallback_final`` → "ambiguous"). The only case where a payload-less delivery flag
         # keeps legacy trust in ``delivered_final_matches`` (#95382 tightening) — re-sending there risks a
@@ -331,6 +331,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if record is not None:
             self._record_turn_final_payload(record)
 
+    def _capped_source(self, text: str) -> str:
+        """The raw source of a capped split edit of ``text`` (the whole stream on a split turn)."""
+        source = self._stream_ledger if self._turn_split_delivery and self._stream_ledger else text
+        return self._clean_for_display(source).strip()
+
     def _display_payload(self, text: str) -> str:
         """Normalize like ``_send_or_edit`` output: directive strip + fence close + strip."""
         return ensure_closed_code_fences(self._clean_for_display(text or "")).strip()
@@ -352,8 +357,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         target = self._display_payload(final_text)
         if not target:
             return None
-        capped = getattr(self, "_split_capped", False)  # fixtures built with object.__new__ lack it
-        if capped and self._delivered_final_text and target.startswith(self._delivered_final_text):
+        capped = getattr(self, "_split_capped", None)  # fixtures built with object.__new__ lack it
+        # Compared raw, before display-only fence closing: a capped edit cut inside a code block
+        # records a closed fence the final continues past.
+        if capped and self._clean_for_display(final_text).strip().startswith(capped):
             # A capped split shows the head chunks and a truncation notice; the final it was cut from
             # (also a longer final the cancel path only saw a prefix of) would be capped to the same head.
             return True
@@ -1040,7 +1047,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if best_effort_ok and not self._final_response_sent:
             # The gateway cancels a consumer still delivering a huge final after its flush window; a
             # capped split from this edit is the turn's delivery, so no normal send repeats its heads.
-            self._split_capped = getattr(self, "_split_capped", False) or getattr(self, "_last_edit_capped", False)
+            if getattr(self, "_last_edit_capped", False) and not getattr(self, "_split_capped", None):
+                self._split_capped = self._capped_source(self._accumulated)
             self._mark_final_delivered(record=self._accumulated)
 
     def _wake_flush_waiters(self) -> None:

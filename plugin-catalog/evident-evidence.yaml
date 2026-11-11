@@ -1,0 +1,21 @@
+name: evident-evidence
+title: "Evident — Is this evident?"
+repo: https://github.com/Evident-Scalelabs/evident-hermes-plugin
+sha: 1d9248cde733b8a77320322278db133b96c5240c
+description: >-
+  Follow real buyer journeys, compare website claims with independent AI answers
+  and suggested competitors, and produce one visual report with highlighted
+  evidence, practical changes and repeatable checks.
+maintainer: Evident-Scalelabs
+tier: community
+category: web
+version: "0.19.3"
+platforms: [linux, macos]
+known_issues:
+  - Requires a vision-capable configured model for interpreted reports; model calls may incur charges.
+  - Anonymous desktop capture has bounded coverage; account actions, purchases and protected pages remain outside scope.
+capabilities:
+  provides_tools: [evident_memory, evident_save_test, evident_scan, evident_finish, evident_demo, evident_report, evident_browse, evident_screenshot, evident_explain, evident_observe, evident_verify, evident_inspect, evident_delete]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

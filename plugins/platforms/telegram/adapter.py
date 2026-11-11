@@ -4410,9 +4410,16 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
                 state = getattr(self, states).get(chat_id) or {}  # one gate for every picker: admitted, then its opener or an admin
-                if chat_id and await self._callback_authorized(query, cb, _unauthorized()) and not await refuse_tap(query, picker_refusal(
-                        state.get("on_model_selected") or state.get("on_choice_selected"), query.from_user.id, extra=self.config.extra)):
-                    await handler(query, data, chat_id)
+                if chat_id and await self._callback_authorized(query, cb, _unauthorized()):
+                    # Old cards keep their callback_data after a restart; bind taps to the sent message.
+                    if state and (state.get("msg_id") is None
+                                  or str(state["msg_id"]) != str(getattr(query.message, "message_id", None))):
+                        await answer_or_note(self, query, _toast("platform.telegram.picker.expired_rerun"))
+                        return
+                    if not await refuse_tap(query, picker_refusal(
+                            state.get("on_model_selected") or state.get("on_choice_selected"), query.from_user.id,
+                            extra=self.config.extra)):
+                        await handler(query, data, chat_id)
                 return
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),

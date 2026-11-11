@@ -637,9 +637,6 @@ class PluginLoaderMixin:
             self._dispose_registrations(owned)
             self._forget_registrations(owned)
             loaded.error = _load_error_text(exc)
-            # register() may have subscribed before raising; a failed plugin must leave no callable reachable
-            # from later event dispatch.
-            self._remove_plugin_subscriptions(plugin_key)
             logger.warning("Failed to load plugin '%s': %s", manifest.name, _load_error_text(exc), exc_info=_PLUGINS_DEBUG)
         # The failure path swept this plugin's whole ledger (not just the registration_start slice), so
         # discovery-time pre-registrations are gone too.

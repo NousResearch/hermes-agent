@@ -88,7 +88,7 @@ def _fire_off_turn_workers(launch_manager_hook_seen):
         observed.append({"home": get_hermes_home().name, "bound": get_hermes_home_override() is not None})
 
     manager._hooks.setdefault("on_stream_end", []).append(observer)
-    manager._subscribe_event("stub", "stub:tick", observer)
+    subscription = manager._subscribe_event("stub:tick", observer)
     try:
         assert plugin_stream_hooks.enqueue_plugin_stream_hook("on_stream_end", session_id="s")
         assert manager._dispatch_event("stub:tick", {}) == 1
@@ -96,7 +96,7 @@ def _fire_off_turn_workers(launch_manager_hook_seen):
         plugin_stream_hooks.shutdown_plugin_stream_hook_dispatcher(timeout=5.0)
     finally:
         manager._hooks["on_stream_end"].remove(observer)
-        manager._remove_plugin_subscriptions("stub")
+        manager._remove_subscription("stub:tick", subscription)
     return observed
 
 

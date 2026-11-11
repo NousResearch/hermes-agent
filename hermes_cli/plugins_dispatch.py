@@ -157,9 +157,8 @@ class RenderedPluginSystemPromptSection:
 
 @dataclass(frozen=True)
 class _EventSubscription:
-    """Host-owned subscription ledger entry."""
+    """Host-owned subscription entry; removal matches the entry by identity."""
 
-    owner: str
     callback: Callable
 
 
@@ -434,32 +433,20 @@ class PluginDispatchMixin:
             raise failure["exc"]
         return outcome.get("value")
 
-    def _subscribe_event(self, owner: str, event: str, callback: Callable) -> None:
-        """Add an owner-tagged event subscription in registration order."""
+    def _subscribe_event(self, event: str, callback: Callable) -> _EventSubscription:
+        """Add an event subscription in registration order and return its entry."""
         if not callable(callback):
             raise TypeError("Event subscriber callback must be callable")
+        subscription = _EventSubscription(callback)
         with self._event_lock:
-            self._subscriptions.setdefault(event, []).append(_EventSubscription(owner, callback))
+            self._subscriptions.setdefault(event, []).append(subscription)
+        return subscription
 
-    def _remove_plugin_subscriptions(self, owner: str) -> int:
-        """Remove every subscription owned by *owner*; return the count. Queued envelopes re-check
-        membership per callback, so this also cancels already-snapshotted deliveries.
-
-        TODO(#64229): when the central plugin ownership ledger / registration handles land, route this
-        owner-tagged bookkeeping through that ledger so per-plugin unload cancels event subscriptions
-        alongside every other registration surface. This method is the integration seam.
-        """
-        removed = 0
+    def _remove_subscription(self, event: str, subscription: _EventSubscription) -> None:
+        """Remove exactly *subscription*. Queued envelopes re-check membership per callback, so this
+        also cancels already-snapshotted deliveries."""
         with self._event_lock:
-            for event in list(self._subscriptions):
-                entries = self._subscriptions[event]
-                retained = [entry for entry in entries if entry.owner != owner]
-                removed += len(entries) - len(retained)
-                if retained:
-                    self._subscriptions[event] = retained
-                else:
-                    del self._subscriptions[event]
-        return removed
+            self._remove_callback(self._subscriptions, event, subscription)
 
     def _ensure_event_worker_locked(self) -> None:
         worker = self._event_worker
@@ -613,9 +600,10 @@ class PluginDispatchMixin:
         where an ``async def`` callback runs: here it is awaited on the caller's own loop, so a
         callback that awaits anything scheduled on that loop can make progress. Through the
         sync path it runs on a helper thread while the caller blocks in ``done.wait()`` — on the
-        gateway that stalls the whole event loop for the callback's duration. Sync callbacks
-        run inline. Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
-        (the coroutine is cancelled, not abandoned); a timed-out ``pre_tool_call`` fails closed.
+        gateway that stalls the whole event loop for the callback's duration. Bounded hooks keep
+        ``plugins.hook_callback_timeout``: a sync callback runs through the sync path's bounded
+        worker off the loop, an async one under ``asyncio.wait_for`` (cancelled, not abandoned);
+        a timed-out ``pre_tool_call`` fails closed. Sync callbacks of other hooks run inline.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         if hook_name != "gateway_platform_event":
@@ -627,7 +615,14 @@ class PluginDispatchMixin:
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                if use_timeout and not inspect.iscoroutinefunction(cb):
+                    ret = await asyncio.to_thread(self._run_hook_callback_bounded, hook_name, cb, kwargs, timeout)
+                    if ret is _HOOK_SKIPPED:
+                        if fail_closed:
+                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                        continue
+                else:
+                    ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
                 if ret is not None:

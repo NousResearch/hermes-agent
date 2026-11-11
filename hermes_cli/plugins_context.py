@@ -815,13 +815,15 @@ class PluginContext(PluginCapabilityCtxMixin):
             raise TypeError(f"Plugin '{plugin_key}' emit() payload must be a dict or None")
         return self._manager._dispatch_event(f"{plugin_key}:{event}", payload or {})
 
-    def subscribe(self, event: str, callback: Callable) -> None:
+    def subscribe(self, event: str, callback: Callable) -> PluginRegistration:
         """Subscribe to a fully-qualified ``<plugin_key>:<event>`` name (unrestricted — only
-        emitting is namespace-gated). Owner-tagged so unload removes zombie callbacks."""
+        emitting is namespace-gated). Tracked so unload and reload end the subscription."""
         if not event or not isinstance(event, str):
             raise ValueError(f"Plugin '{self.manifest.name}' subscribe() requires a non-empty event name")
-        self._manager._subscribe_event(self.plugin_id, event, callback)
+        subscription = self._manager._subscribe_event(event, callback)
         _facade().logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
+        return self._track("event_subscription", event,
+                           lambda: self._manager._remove_subscription(event, subscription))
 
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
     from hermes_cli.plugin_rpc import emit_to_session, register_rpc

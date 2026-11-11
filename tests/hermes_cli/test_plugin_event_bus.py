@@ -279,14 +279,13 @@ def test_async_subscriber_is_awaited():
     assert observed == [7]
 
 
-def test_remove_plugin_subscriptions_cancels_owner_entries():
+def test_disposed_subscription_receives_nothing():
     manager = _fresh_manager()
     ctx_a = _make_ctx(manager, "plugin_a", key="a")
     ctx_b = _make_ctx(manager, "plugin_b", key="b")
     observed = []
 
-    ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload))
-    manager._remove_plugin_subscriptions("a")
+    ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload)).dispose()
 
     assert ctx_b.emit("ping", {"value": 1}) == 0
     _drain(manager)
@@ -294,7 +293,7 @@ def test_remove_plugin_subscriptions_cancels_owner_entries():
     assert "b:ping" not in manager._subscriptions
 
 
-def test_owner_removal_cancels_callback_already_snapshotted_in_queue():
+def test_disposal_cancels_callback_already_snapshotted_in_queue():
     manager = _fresh_manager()
     ctx_gate = _make_ctx(manager, "gate", key="gate")
     ctx_a = _make_ctx(manager, "plugin_a", key="a")
@@ -308,10 +307,10 @@ def test_owner_removal_cancels_callback_already_snapshotted_in_queue():
         release.wait(timeout=2.0)
 
     ctx_gate.subscribe("b:ping", blocking)
-    ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload))
+    subscription = ctx_a.subscribe("b:ping", lambda **payload: observed.append(payload))
     assert ctx_b.emit("ping", {"value": 1}) == 2
     assert entered.wait(timeout=1.0)
-    manager._remove_plugin_subscriptions("a")
+    subscription.dispose()
     release.set()
     _drain(manager)
 

@@ -137,7 +137,7 @@ def test_event_subscriber_failure_warns_once(manager, caplog):
     def on_event(tool_data, **kwargs):  # the emitter sends its own payload, never tool_data
         return None
 
-    manager._subscribe_event("listener", "emitter:tick", on_event)
+    manager._subscribe_event("emitter:tick", on_event)
     with caplog.at_level(logging.DEBUG, logger="hermes_cli.plugins"):
         for i in range(4):
             assert manager._dispatch_event("emitter:tick", {"n": i}) == 1

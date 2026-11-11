@@ -75,7 +75,7 @@ FILE_EXT = {"py", "md", "mdx", "txt", "yaml", "yml", "json", "toml", "ts", "tsx"
 TEXT_SUFFIXES = (".md", ".mdx", ".txt")
 YAML_SUFFIXES = (".yaml", ".yml", ".yaml.example", ".yml.example")
 _TOKEN = re.compile(r"(?<![\w.\-~$@%#])[A-Za-z_][\w.\-]*(?:/[\w.\-*<>{}\[\]]*)*")
-_BLOB = re.compile(r"github\.com/[\w.\-]+/hermes-agent/blob/[\w.\-]+/")
+_BLOB = re.compile(r"github\.com/[\w.\-]+/hermes-agent/blob/main/")  # a commit or tag permalink keeps its old path
 _DOTTED = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _IMPORT = re.compile(r"(?:^|(?<=[\s`'\"(]))(from\s+|import\s+|-m\s+|-m[\"'],\s*[\"'])([A-Za-z_][\w.]*)(?![\w/\-])")
 _CODE_SPAN = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)")

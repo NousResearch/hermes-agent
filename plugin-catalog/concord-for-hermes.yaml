@@ -3,7 +3,7 @@ title: Concord for Hermes
 repo: https://github.com/Null007Void/concord-for-hermes
 sha: d0b0e4c1ca46d09952dc76f217b00efb4853ccc2
 subdir: plugin
-description: Coordinates allowlisted GitHub existing-file writes with revision checks, verified receipts and exact-operation replay.
+description: "Coordinates allowlisted GitHub existing-file writes with revision checks, verified receipts and exact-operation replay. Disclosure — writes file contents directly to the GitHub repositories you allowlist, via your own `gh` CLI and its authentication (GH_TOKEN/GITHUB_TOKEN are forwarded to `gh` only, never logged or stored); keeps a local coordination/receipt database under the Hermes plugin-data directory, which `hermes plugins remove` does not delete."
 maintainer: Null007Void
 tier: community
 category: tools

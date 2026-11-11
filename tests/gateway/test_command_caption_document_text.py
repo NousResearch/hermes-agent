@@ -11,8 +11,6 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.platforms.helpers import inline_document_text
-
 
 @pytest.mark.parametrize("caption, injection, expected", [
     ("look at this", "[Content of a.txt]:\nx", ("[Content of a.txt]:\nx\n\nlook at this", [True])),
@@ -23,6 +21,8 @@ from gateway.platforms.helpers import inline_document_text
     ("@file:/tmp/a.txt\n/goal go", "[Content of a.txt]:\nx", ("@file:/tmp/a.txt\n/goal go", [False])),
 ])
 def test_inline_document_text_keeps_a_command_caption_first(caption, injection, expected):
+    from gateway.platforms.helpers import inline_document_text  # here, so the adapter cases run on any base
+
     assert inline_document_text(caption, injection, [True]) == expected
 
 
@@ -90,3 +90,44 @@ async def test_feishu_self_mentioned_command_caption_on_a_text_file_stays_a_comm
     assert event.get_command() == "goal"
     assert "quarterly numbers" not in event.get_command_args()
     assert event.media_urls == ["/cache/report.txt"] and event.media_text_inlined == [False]
+
+
+async def _telegram_album(tmp_path, monkeypatch, captions):
+    from tests.gateway.test_telegram_documents import _make_document, _make_file_obj, _make_message, _make_update
+    from tests.waiting import async_wait_until
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    for attr in ("DOCUMENT_CACHE_DIR", "IMAGE_CACHE_DIR"):
+        monkeypatch.setattr(f"gateway.platforms.base.{attr}", tmp_path / attr)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={"media_group_wait_seconds": 0.05}))
+    adapter.handle_message = AsyncMock()
+    adapter._is_callback_user_authorized = lambda user_id, **_kw: True
+    for name, caption in zip(("a.txt", "b.txt"), captions):
+        body = f"SECRETBODY_{name}: 42\n".encode()  # a trailing newline, as real files have
+        doc = _make_document(file_name=name, mime_type="text/plain", file_size=len(body), file_obj=_make_file_obj(body))
+        await adapter._handle_media_message(_make_update(_make_message(document=doc, caption=caption, media_group_id="mg")),
+                                            MagicMock())
+    await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
+    return adapter.handle_message.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_telegram_album_with_a_plain_caption_still_inlines_every_file(tmp_path, monkeypatch):
+    event = await _telegram_album(tmp_path, monkeypatch, ("compare these", None))
+    assert "SECRETBODY_a.txt" in event.text and "SECRETBODY_b.txt" in event.text
+    assert event.media_text_inlined == [True, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("captioned", [0, 1])
+async def test_telegram_album_with_a_command_caption_keeps_sibling_files_as_attachments(captioned, tmp_path, monkeypatch):
+    """Only one album item carries the caption. Its uncaptioned sibling inlined its text, which
+    then became the goal's arguments (caption on item 1) or hid the command (caption on item 2)."""
+    captions = tuple("/goal summarize both reports" if i == captioned else None for i in range(2))
+    event = await _telegram_album(tmp_path, monkeypatch, captions)
+    assert event.get_command() == "goal"
+    assert event.get_command_args() == "summarize both reports"
+    assert "SECRETBODY" not in event.text
+    assert len(event.media_urls) == 2 and event.media_text_inlined == [False, False]

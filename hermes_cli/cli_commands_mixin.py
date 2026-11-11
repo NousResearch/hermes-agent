@@ -730,9 +730,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         running_deadline = None
         next_heartbeat = None
         last_state = "pending"
+        recovered = None  # the row read right after a pending timeout's CAS-fail
         while True:
             try:
-                state_row = read_state()
+                state_row, recovered = (recovered or read_state()), None
             except Exception:
                 state_row = None
             current = (state_row or {}).get("state") or "pending"
@@ -761,11 +762,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 if now >= pending_deadline:
                     with suppress(Exception):  # unclaimed: CAS-clear so the user can retry
                         fail_pending("timed out waiting for gateway")
-                    # A claim that won the race may finish first: report what the row says now.
+                    # A claim that won the race goes through the branches above (running starts
+                    # its own deadline); our own failed row, or an unreadable one, is the timeout.
                     with suppress(Exception):
-                        if ((read_state() or {}).get("state") or "") in ("running", "completed"):
-                            pending_deadline = float("inf")
-                            continue
+                        recovered = read_state()
+                    if ((recovered or {}).get("state") or "") in ("running", "completed"):
+                        continue
                     break
             else:  # running
                 if next_heartbeat is not None and now >= next_heartbeat:

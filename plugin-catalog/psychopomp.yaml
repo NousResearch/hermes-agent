@@ -1,6 +1,6 @@
 name: psychopomp
 repo: https://github.com/ponzgpt/psychopomp
-sha: 2a897718101d44f62f3707b0a750b5d819821155
+sha: fa86a14ee3f0924c6071b8c4887f6116963f649e
 description: >-
   Every week, Hermes helps you write a page of your life (your Book) from what it already knows of your week:
   proposed as a card in the chat, added only when you approve; once a year, a year in review. Seal letters for
@@ -9,21 +9,21 @@ description: >-
   Rehearse the whole passage in 20 seconds on a virtual clock, on the Desktop page or in any chat.
   Disclosure: sends weekly nudges, check-ins, a code request and (after the code) your Book and letters to the
   chats you set; reads inbound gateway messages at ingress to catch PSY- codes (those are consumed); stores the
-  Book and letters in plain text under $HERMES_HOME/plugin-data/psychopomp; imports Hermes'
-  tools.send_message_tool to send (no public send API yet).
+  Book and letters in plain text under $HERMES_HOME/plugin-data/psychopomp; delivers each message by
+  running Hermes' own `hermes send` CLI (text over stdin), its only subprocess.
 maintainer: ponzgpt
 tier: community
 category: general
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ponzgpt/psychopomp
-version: "0.3.1"
-image: https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/banner.png
+version: "0.4.0"
+image: https://raw.githubusercontent.com/ponzgpt/psychopomp/fa86a14ee3f0924c6071b8c4887f6116963f649e/docs/screenshots/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/page.png
-  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/rehearsal.png
-  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/chat-card.png
-  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/book.png
-  - https://raw.githubusercontent.com/ponzgpt/psychopomp/2a897718101d44f62f3707b0a750b5d819821155/docs/screenshots/first-run.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/fa86a14ee3f0924c6071b8c4887f6116963f649e/docs/screenshots/page.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/fa86a14ee3f0924c6071b8c4887f6116963f649e/docs/screenshots/rehearsal.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/fa86a14ee3f0924c6071b8c4887f6116963f649e/docs/screenshots/chat-card.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/fa86a14ee3f0924c6071b8c4887f6116963f649e/docs/screenshots/book.png
+  - https://raw.githubusercontent.com/ponzgpt/psychopomp/fa86a14ee3f0924c6071b8c4887f6116963f649e/docs/screenshots/first-run.png
 platforms: [linux, macos]
 capabilities:
   provides_tools: [psychopomp_status, psychopomp_draft_page, psychopomp_write_page, psychopomp_read_book, psychopomp_seal_letter]

@@ -1,6 +1,6 @@
 name: playbox-witness
 repo: https://github.com/Epistetechnician/playbox
-sha: 666ec4be6878576559910c0622318252d6edeb92
+sha: 994abe979b24c11a91e4b1652cdec41d7095ad6e
 subdir: hermes-plugin-witness
 description: >-
   Companion to playbox. Records a session's tool calls into a signed hash-chained log (digests only) and pauses write-capable tools for the rest of any turn that read text from another room member, until the user sends their next message.

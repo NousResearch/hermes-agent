@@ -1296,7 +1296,8 @@ class GatewaySlashCommandsMixin(
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — bare: privacy notice only; ``upload``: upload ONLY the summary (system
         info + log tails), never full logs; ``hermes debug share`` from the CLI does full uploads."""
-        from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _GATEWAY_UPLOAD_HINT,
+        from hermes_cli.debug import (_GATEWAY_NOUS_REFUSED, _GATEWAY_PRIVACY_NOTICE,
+                                      _GATEWAY_UPLOAD_HINT,
                                       _best_effort_sweep_expired_pastes, _capture_dump,
                                       _is_dpaste_url, _schedule_auto_delete,
                                       collect_debug_report, upload_to_pastebin)
@@ -1322,6 +1323,10 @@ class GatewaySlashCommandsMixin(
                 return collect_share_bundle(log_lines=200)["report"]
 
             return await self._run_in_executor_with_context(_collect_local)
+        if "nous" in words:
+            # `/debug nous upload` consents to private Nous storage; the gateway only has the public
+            # paste, so refuse rather than publish under a consent that named another destination.
+            return _GATEWAY_NOUS_REFUSED
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()

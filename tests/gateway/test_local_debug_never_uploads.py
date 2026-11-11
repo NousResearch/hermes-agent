@@ -107,6 +107,24 @@ async def test_messaging_debug_local_is_refused_without_uploading():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('platform', [Platform.TELEGRAM, Platform.LOCAL])
+@pytest.mark.parametrize('text', ['/debug nous upload', '/debug upload nous', '/debug NOUS UPLOAD'])
+async def test_debug_nous_upload_never_publishes_to_the_public_paste(platform, text):
+    """``/debug nous upload`` consents to private Nous storage, not a public paste: the gateway
+    has no Nous pipeline, so it refuses and uploads nothing (#94876)."""
+    guard = _NoNetwork()
+    with patch('hermes_cli.debug.upload_to_pastebin', guard), \
+            patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \
+            patch('hermes_cli.debug._schedule_auto_delete', guard), \
+            patch('hermes_cli.debug._best_effort_sweep_expired_pastes', guard), \
+            patch('hermes_cli.debug.collect_debug_report', guard), \
+            patch.object(socket.socket, 'connect', guard):
+        out = await _runner()._handle_debug_command(_event(platform, text))
+    assert guard.calls == []
+    assert 'hermes debug share --nous' in out and 'http' not in out.lower()
+
+
+@pytest.mark.asyncio
 async def test_local_debug_local_real_collector_opens_no_socket(tmp_path, monkeypatch):
     """The real collector, unpatched: no socket connect and no upload helper is reached."""
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))

@@ -144,7 +144,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/paste` | Attach a clipboard image |
 | `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
-| `/debug [upload\|nous upload\|local]` | Debug report. Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads to a public paste and returns shareable links, `/debug nous upload` uploads to Nous-internal storage, `/debug local` prints the report without uploading. Also available in messaging. |
+| `/debug [upload\|nous upload\|local]` | Debug report. Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads to a public paste and returns shareable links, `/debug nous upload` uploads to Nous-internal storage (CLI/TUI only: messaging refuses it and points to `hermes debug share --nous`), `/debug local` prints the report without uploading. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/profile` | Show active profile name and home directory |
 

@@ -149,6 +149,11 @@ _GATEWAY_PRIVACY_NOTICE = (
 
 _GATEWAY_UPLOAD_HINT = "Nothing was uploaded. Send `/debug upload` to upload the summary report."
 
+_GATEWAY_NOUS_REFUSED = (
+    "Nothing was uploaded. Private Nous uploads aren't available from here: run "
+    "`hermes debug share --nous` in a terminal, or use Send diagnostics in the desktop app. "
+    "`/debug upload` uploads the summary to a public paste instead.")
+
 
 def _extract_paste_id(url: str) -> Optional[str]:
     """Paste ID from a paste.rs URL (dpaste.com pastes have no deletable ID)."""

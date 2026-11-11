@@ -60,10 +60,14 @@ class LongLivedProcessMixin:
             # own; a ``/bin/sh -c`` wrapper records its pid and execs the service (argv passed as positional
             # words, so it keeps the pid and stdin/stdout stay the service's). The wrapper is POSIX sh by
             # absolute path: child_env is already exported when it starts, so its PATH or BASH_ENV must
-            # not decide whether (or how) it runs; the service is still found through that PATH.
+            # not decide whether (or how) it runs; the service is still found through that PATH. Next to
+            # the pid goes its start time (field 22 of /proc/<pid>/stat, the 20th after the last ``)``
+            # since the command name may hold both; exec keeps it), so the stop never signals a process
+            # that reused the pid. The fields are split inside ``$( )``, so ``"$@"`` stays the service's.
             pidfile = f"{sandbox_temp_dir(self)}/hermes_llp_{uuid.uuid4().hex[:16]}.pid"  # type: ignore[arg-type]
-            wrapper = ["/bin/sh", "-c", f"echo $$ > {shlex.quote(pidfile)} 2>/dev/null; exec \"$@\"", "sh",
-                       *(str(word) for word in argv)]
+            record = ("echo $$ $({ read -r s < /proc/$$/stat; } 2>/dev/null; s=${s##*\\)}; set -- $s; echo \"${20:-}\")"
+                      f" > {shlex.quote(pidfile)} 2>/dev/null")
+            wrapper = ["/bin/sh", "-c", f"{record}; exec \"$@\"", "sh", *(str(word) for word in argv)]
             exports = {key: str(value) for key, value in (child_env or {}).items()}
             proc = open_stream(self, wrapper, child_env=exports)  # type: ignore[arg-type]
             proc._hermes_remote_pidfile = pidfile  # type: ignore[attr-defined]  # teardown metadata, not a pipe
@@ -125,14 +129,21 @@ class LongLivedProcessMixin:
     def _stop_remote_service(self, proc: subprocess.Popen, scope: Any) -> None:
         """Best-effort stop of a service that runs inside a backend (docker exec / ssh / a plugin
         prefix): its pid was recorded in the sandbox at spawn; kill it there, where the local
-        client's death alone would leave it running."""
+        client's death alone would leave it running. A recorded start time must still match the
+        pid's current one (else the pid was reused and nothing is signalled); a pidfile without one
+        (a sandbox with no /proc) is signalled as is. Only a plain decimal pid above 1 is ever signalled
+        (never a group, 0 or init). POSIX sh: it runs in the backend's shell, with errexit turned off
+        so a ``set -e`` there cannot skip the pidfile's removal."""
         pidfile = getattr(proc, "_hermes_remote_pidfile", None)
         execute = getattr(self, "execute", None)
         if pidfile is None or not callable(execute):
             return
-        quoted = shlex.quote(pidfile)
-        command = (f"pkill -TERM -P $(cat {quoted}) 2>/dev/null; kill -TERM $(cat {quoted}) 2>/dev/null; "
-                   f"rm -f {quoted}")
+        command = (f"(set +e; f={shlex.quote(pidfile)}; p=; t=; {{ read -r p t < \"$f\"; }} 2>/dev/null; "
+                   "case \"$p\" in \"\"|*[!0-9]*) p=;; esac; [ -n \"$p\" ] && [ \"$p\" -gt 1 ] 2>/dev/null || p=; "
+                   "if [ -n \"$p\" ] && [ -n \"$t\" ]; then c=$(cat /proc/\"$p\"/stat 2>/dev/null); "
+                   "c=${c##*\\)}; set -- $c; [ \"${20:-}\" = \"$t\" ] || p=; fi; "
+                   "if [ -n \"$p\" ]; then pkill -TERM -P $p 2>/dev/null; kill -TERM $p 2>/dev/null; fi; "
+                   "rm -f \"$f\")")
         try:
             from tools.environments.sandbox_scope import accepts_scope
             if scope is not None and accepts_scope(execute):

@@ -58,7 +58,7 @@ class Model(BaseHTTPRequestHandler):
 
 
 
-def _pwd_after_restart(tmp_path, *, remove_sub_before_restart):
+def _pwd_after_restart(tmp_path, *, remove_sub_before_restart=False, new_before_restart=False):
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
     home.mkdir(mode=0o700)
@@ -106,14 +106,26 @@ def _pwd_after_restart(tmp_path, *, remove_sub_before_restart):
             push('where now')
             wait_for(lambda: len(model.tool_outputs) >= 2, diagnostic)
             assert pwd(1) == str(work / 'sub'), diagnostic()
+            if new_before_restart:
+                before = len(bot.sent)
+                push('/new')
+                wait_for(lambda: any(word in m.get('text', '') for m in bot.sent[before:]
+                                     for word in ('Confirm', 'reset', 'New session')), diagnostic)
+                if any('Confirm' in m.get('text', '') for m in bot.sent[before:]):
+                    push('/approve')
+                    wait_for(lambda: any('reset' in m.get('text', '') or 'New session' in m.get('text', '')
+                                         for m in bot.sent[before:]), diagnostic)
+                push('where in the new conversation')
+                wait_for(lambda: len(model.tool_outputs) >= 3, diagnostic)
+                assert pwd(2) == str(work), diagnostic()
             proc.terminate()
             proc.wait(timeout=60)
         if remove_sub_before_restart:
             shutil.rmtree(work / 'sub')
         with daemon(root, home, env, barrier=False) as (proc, _desc):
             push('where after restart')
-            wait_for(lambda: len(model.tool_outputs) >= 3, diagnostic)
-            return pwd(2), work
+            wait_for(lambda: len(model.tool_outputs) >= 3 + new_before_restart, diagnostic)
+            return pwd(2 + new_before_restart), work
     finally:
         for peer in (model, bot):
             peer.shutdown()
@@ -134,4 +146,11 @@ def test_a_chats_cd_survives_a_gateway_restart(tmp_path):
 
 def test_a_directory_gone_after_the_restart_falls_back_to_terminal_cwd(tmp_path):
     after, work = _pwd_after_restart(tmp_path, remove_sub_before_restart=True)
+    assert after == str(work)
+
+
+def test_a_new_conversation_starts_in_terminal_cwd_and_keeps_it_across_a_restart(tmp_path):
+    """/new after a cd: the fresh conversation starts in terminal.cwd, and the old directory is not
+    saved onto it, so the next restart keeps it there too."""
+    after, work = _pwd_after_restart(tmp_path, new_before_restart=True)
     assert after == str(work)

@@ -42,6 +42,10 @@ def typing_may_fire(adapter: Any, chat_id: Any) -> bool:
     now = asyncio.get_running_loop().time()
     if now - last.get(key, float("-inf")) < TYPING_CHAT_MIN_INTERVAL_SECS:
         return False
+    from plugins.platforms.telegram.telegram_draft_budget import claim_ai_action
+
+    if claim_ai_action(adapter, chat_id):
+        return False  # drafts and typing share one per-chat budget; the draft frame shows activity
     for stale in [k for k, t in last.items() if now - t >= TYPING_CHAT_MIN_INTERVAL_SECS]:
         del last[stale]  # bounded dict
     last[key] = now

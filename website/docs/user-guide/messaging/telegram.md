@@ -1169,7 +1169,19 @@ gateway:
 
 **What about groups, supergroups and group forum topics?** Telegram restricts `sendMessageDraft` to private chats (DMs). The gateway transparently falls back to the edit-based path for those — same UX as before. Topics inside a private chat count as DMs: they try drafts and fall back to edits if Telegram rejects them.
 
-**What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
+**How often does the preview update?** At most once per `streaming.edit_interval`: deltas that arrive in between are combined, so the next frame carries the latest text instead of a burst of near-identical frames. Telegram meters draft frames and the typing indicator together per chat (20 calls per 5 seconds, 40 per 30 seconds; see [Telegram's streaming notes](https://core.telegram.org/api/bots/ai)), and Hermes keeps both inside that budget, so lowering `edit_interval` cannot push more updates than Telegram allows.
+
+**What if a draft frame fails?** A Telegram `RetryAfter` (flood control) pauses preview updates until the wait is over and then resumes with the latest text; the response stays on native drafts. Any other failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt. The complete answer is always delivered by the normal final send.
+
+**Preview text growing in place (`plain_drafts`).** By default the draft preview is rendered with the same MarkdownV2 formatting as the final reply, which means text already on screen can re-render as a code block or bold span closes. Set `plain_drafts: true` to stream the preview as raw text instead: every frame then only adds characters to the previous one, so Telegram animates just the new text. The final reply keeps its normal formatting either way.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        plain_drafts: true   # default false
+```
 
 ## Rendering: Rich Messages, Tables and Link Previews
 

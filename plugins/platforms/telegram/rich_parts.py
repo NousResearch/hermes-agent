@@ -216,29 +216,51 @@ async def send_rich_parts(
         or getattr(adapter, "_rich_send_disabled", False)
     ):
         return None
-    parts = split_rich_parts(content, adapter.RICH_MESSAGE_MAX_CHARS)
-    cap = adapter.RICH_MESSAGE_MAX_CHARS
-    if len(parts) < 2 or not all(
-        len(part) <= cap and adapter._rich_content_ok(part, check_size=False) for part in parts
-    ):
+    parts = _fitting_parts(adapter, content)
+    if parts is None or not all(adapter._rich_content_ok(part, check_size=False) for part in parts):
         return None
     sent: list[SendResult] = []
     for index, part in enumerate(parts):
         # Only the first part anchors the reply; later parts continue the same reply in order.
         result = await adapter._try_send_rich(chat_id, part, reply_to if index == 0 else None, metadata)
-        if result is None:
-            if index == 0:
-                return None  # nothing delivered — the legacy path may own the whole message
-            # A mid-message capability loss: a legacy resend would duplicate the parts already in
-            # the chat, so the partial delivery is reported instead (#141272).
-            return SendResult(
-                success=False, error="rich_parts_unavailable",
-                message_id=sent[-1].message_id,
-                continuation_message_ids=tuple(
-                    str(r.message_id) for r in sent if r.message_id is not None),
-                retryable=False)
-        if not result.success:
-            return result
+        if result is None and index == 0:
+            return None  # nothing delivered — the legacy path may own the whole message
+        if result is None or not result.success:
+            return _partial_failure(result, sent, len(parts)) if sent else result
         sent.append(result)
     logger.info("Telegram: delivered an oversized rich message in %d parts (%d chars)", len(parts), len(content))
-    return sent[-1]
+    return SendResult(
+        success=True, message_id=sent[0].message_id,
+        raw_response={"message_ids": [r.message_id for r in sent if r.message_id is not None]})
+
+
+def _fitting_parts(adapter: Any, content: str) -> Optional[list[str]]:
+    """Parts whose SENT markdown fits the cap. Normalization grows a part a little (hard breaks,
+    paragraph spacer rows, ``\\$`` escapes), so a split whose parts overflow is redone with a
+    smaller budget; ``None`` when even that leaves one part (nothing to split) or an overflow."""
+    cap = adapter.RICH_MESSAGE_MAX_CHARS
+    for budget in (cap, cap * 7 // 8, cap * 3 // 4):
+        parts = split_rich_parts(content, budget)
+        if len(parts) < 2:
+            return None
+        if all(adapter._content_fits_rich_limits(part) for part in parts):
+            return parts
+    return None
+
+
+def _partial_failure(result: Optional[SendResult], sent: list[SendResult], total: int) -> SendResult:
+    """A failure after earlier parts landed, under the ``partial_overflow`` contract
+    (``BasePlatformAdapter._is_partial_delivery``): ``_send_with_retry`` then neither re-sends the
+    whole message nor falls back to plain text, either of which would duplicate the visible parts.
+    No resumable tail is attached (the legacy resume sends MarkdownV2, not rich parts)."""
+    if result is None:  # a mid-message capability loss
+        result = SendResult(success=False, error="rich_parts_unavailable", retryable=False)
+    ids = [str(r.message_id) for r in sent if r.message_id is not None]
+    raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+    raw.update({
+        "partial_overflow": True, "delivered_chunks": len(sent), "total_chunks": total,
+        "last_message_id": ids[-1] if ids else None, "continuation_message_ids": tuple(ids[1:])})
+    result.raw_response = raw
+    result.message_id = ids[-1] if ids else result.message_id
+    result.continuation_message_ids = tuple(ids[1:])
+    return result

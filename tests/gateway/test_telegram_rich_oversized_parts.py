@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter, _rich_normalize_linebreaks
+from plugins.platforms.telegram.adapter import TelegramAdapter
 from plugins.platforms.telegram.rich_parts import split_rich_parts
 
 
@@ -76,8 +76,8 @@ async def test_oversized_rich_parts_keep_every_details_block_whole():
     for part in parts:
         assert part.count("<details") == part.count("</details>")
     # Nothing dropped, reordered or re-wrapped: the parts re-join into the original message (after
-    # the payload's own soft-break normalization).
-    assert "\n\n".join(parts) == _rich_normalize_linebreaks(content)
+    # the payload's own normalization).
+    assert "\n\n".join(parts) == adapter._rich_message_payload(content)["markdown"]
 
 
 @pytest.mark.asyncio
@@ -161,3 +161,52 @@ def test_split_rich_parts_returns_the_original_when_it_fits():
     content = "<details><summary>small</summary>\nbody\n</details>"
 
     assert split_rich_parts(content, 4096) == [content]
+
+
+@pytest.mark.asyncio
+async def test_a_part_refused_after_earlier_parts_landed_is_never_resent_whole(monkeypatch):
+    """Part 2 fails on a transient error: _send_with_retry must not re-send the whole message
+    (rich or plain), which would duplicate part 1 in the chat."""
+    adapter = _make_adapter()
+    monkeypatch.setattr("gateway.platforms.base.asyncio.sleep", AsyncMock())
+    outcomes = iter([SimpleNamespace(message_id=501)] + [RuntimeError("Bad Gateway")] * 10)
+
+    async def do_api_request(method, api_kwargs=None):
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    adapter._bot.do_api_request = AsyncMock(side_effect=do_api_request)
+
+    result = await adapter._send_with_retry("12345", _details_content())
+
+    assert result.success is False
+    assert result.raw_response["partial_overflow"] is True and result.raw_response["delivered_chunks"] == 1
+    first_part = _rich_markdown(adapter._bot.do_api_request.await_args_list[0])
+    assert sum(_rich_markdown(c) == first_part for c in adapter._bot.do_api_request.await_args_list) == 1
+    adapter._bot.send_message.assert_not_called()
+
+
+def test_standalone_send_delivers_an_oversized_rich_message_in_parts(monkeypatch):
+    """Cron delivery and the send_message tool use the same rich-parts split as the gateway."""
+    import asyncio
+    import sys
+
+    from plugins.platforms.telegram.standalone import _send_telegram
+
+    for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("gateway.platforms.base._detect_macos_system_proxy", lambda: None)
+    bot = _make_adapter()._bot
+    parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
+    constants = SimpleNamespace(ParseMode=parse_mode)
+    monkeypatch.setitem(sys.modules, "telegram", SimpleNamespace(Bot=lambda *a, **k: bot, constants=constants))
+    monkeypatch.setitem(sys.modules, "telegram.constants", constants)
+
+    result = asyncio.run(_send_telegram("tok", "12345", _details_content(), extra={"rich_messages": True}))
+
+    assert result["success"] is True
+    calls = [c for c in bot.do_api_request.await_args_list if c.args[0] == "sendRichMessage"]
+    assert len(calls) >= 2 and all(len(_rich_markdown(c)) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS for c in calls)
+    bot.send_message.assert_not_called()

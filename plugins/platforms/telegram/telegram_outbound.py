@@ -63,14 +63,12 @@ def _metadata(thread_id, notify) -> dict:
 
 async def send_rich_standalone(bot, extra: dict, chat_id, content: str, *, thread_id=None, notify=None):
     """The gateway's ``sendRichMessage`` fast-path for an out-of-process send: the same gates
-    (``rich_messages`` opt-in, constructs MarkdownV2 degrades, Desktop crash/garble shapes, size cap,
-    capability latch) and routing. ``None`` = not eligible or permanently rejected, so the caller
+    (``rich_messages`` opt-in, constructs MarkdownV2 degrades, Desktop crash/garble shapes, size cap
+    per part, capability latch) and routing; an oversized rich message goes out in rich parts. ``None`` = not eligible or permanently rejected, so the caller
     sends legacy MarkdownV2; otherwise the adapter's ``SendResult``. A transient failure is returned,
     not resent as legacy, because the rich request may have landed."""
-    adapter = _standalone_adapter(bot, extra)
-    if not adapter._should_attempt_rich(content):
-        return None
-    return await adapter._try_send_rich(str(chat_id), content, None, _metadata(thread_id, notify))
+    from plugins.platforms.telegram.rich_parts import send_rich_parts
+    return await send_rich_parts(_standalone_adapter(bot, extra), str(chat_id), content, None, _metadata(thread_id, notify))
 
 
 async def send_album_standalone(bot, extra: dict, chat_id, paths: list[str], *, thread_id=None, notify=None):

@@ -1,0 +1,44 @@
+name: bundlebees
+title: bundlebees
+repo: https://github.com/mojomast/bundlebees
+sha: "57a6f12cdcfa789c5aba5f22f3f46efd2b8b3d5c"
+subdir: ""
+description: >-
+  Orchestrate CUA bees from Hermes: check launcher health, dispatch leased
+  briefs, watch attempts, and generate a paste-ready host setup prompt.
+  Tools: bundlebees_status, bundlebees_dispatch, bundlebees_attempt,
+  bundlebees_host_prompt. Skill id bundlebees:bundlebees-operator.
+  Disclosure — talks to a local or user-configured worker launcher (loopback
+  by default; a private or LAN launcher URL requires allow_private=true in
+  plugin settings); dispatching a bee can spend model budget on that worker
+  machine; secrets are read only through Hermes get_secret; the user-run CLI
+  (hermes bundlebees verify / deploy) can push a feature branch and, when you
+  invoke it, reach a remote host. A Cua sandbox is not a sandbox for the
+  Hermes process. The Desktop pane never shows tokens or host addresses.
+  Hermes Desktop 0.23 or newer can show a pane through ctx.rest; the four
+  tools still run when that pane is unavailable.
+maintainer: mojomast
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mojomast/bundlebees#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/mojomast/bundlebees/57a6f12cdcfa789c5aba5f22f3f46efd2b8b3d5c/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/bundlebees/57a6f12cdcfa789c5aba5f22f3f46efd2b8b3d5c/docs/screenshots/pane-health.png
+readme: true
+platforms: []
+known_issues:
+  - >-
+    The Desktop pane has been exercised through its FastAPI backend and a
+    screenshot; it has not yet been proven on a live Hermes Desktop host.
+capabilities:
+  provides_tools:
+    - bundlebees_status
+    - bundlebees_dispatch
+    - bundlebees_attempt
+    - bundlebees_host_prompt
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BUNDLEBEES_LAUNCHER_TOKEN

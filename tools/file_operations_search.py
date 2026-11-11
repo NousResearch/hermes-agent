@@ -421,20 +421,16 @@ _OUTPUT_MODE_FLAGS = {"files_only": "-l", "count": "-c"}
 def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                          context: int, warning: Optional[str] = None) -> SearchResult:
     """Parse rg/grep ``| head`` output into a SearchResult (shared by both engines).
-    Direct engines use 0 for matches, 1 for no matches, and 2 for errors;
-    find folds a failed grep invocation into exit 1. Diagnostics distinguish
-    that failure from an empty search. Keep usable matches on partial errors
-    (one unreadable file).
-    ``warning`` is attached to files_only/content results."""
+    Exit codes: 0=matches, 1=none, 2=error — but both tools return 2 on PARTIAL
+    errors (one unreadable file), so an error is surfaced only when exit==2 AND no
+    usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(stdout)
     if result.exit_code in _SHELL_EXEC_FAILURE_CODES:
         # The shell could not run the engine at all (126 not executable, 127 not found).
         return SearchResult(error=f"Search failed: {result.stdout.strip() or 'Search error'}",
                             total_count=0)
-    # find's exit 1 is an error only when grep complained; permission skips alone stay empty.
-    folded = result.exit_code == 1 and diagnostics.strip() and not _is_permission_only_error(diagnostics.strip())
-    if (result.exit_code == 2 or folded) and not payload.strip():
+    if result.exit_code == 2 and not payload.strip():
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         if _is_permission_only_error(error_msg):
             # Pure unreadable-path failure: rg read nothing but the invocation was
@@ -1320,7 +1316,7 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: list[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
+                             line_cap: bool = False, folded_error=None) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -1334,6 +1330,9 @@ class SearchMixin:
             if output_mode not in ("files_only", "count"):
                 parts += ["|", "cut", "-c1-2000"]
             result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
+            error = folded_error(result) if folded_error and result.exit_code == 1 else None
+            if error:
+                return SearchResult(error=f"Search failed: {error}", total_count=0)
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
                                           shell_prefix="set -o pipefail; ")
@@ -1424,8 +1423,9 @@ class SearchMixin:
                                  protected_paths: list[str], literal: bool = False) -> SearchResult:
         """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
         path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
-        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Capture diagnostics
-        because find folds grep's error exit code into its own failure status."""
+        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). find folds every
+        grep status into its own exit 1, so an empty exit 1 with diagnostics reruns the
+        same grep on /dev/null: only a broken invocation (bad regex) exits 2 there."""
         grep_parts = self._grep_cmd(["grep", "-nH"], pattern, output_mode, context, literal=literal)
         q_root = self._escape_shell_arg(path or ".")
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
@@ -1441,7 +1441,14 @@ class SearchMixin:
         # ``Permission denied`` lines must reach the parser so an unreadable
         # subtree beside a readable match is reported, not silently dropped.
         find_parts.extend(["-exec", *grep_parts, "{}", "+"])
-        return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True)
+        def grep_failed(result) -> Optional[str]:
+            diagnostics, payload = _split_tool_diagnostics(result.stdout or "")
+            if payload.strip() or not diagnostics.strip():
+                return None
+            probe = self._exec(" ".join([*grep_parts, "/dev/null", "2>&1", ">/dev/null"]), timeout=30)
+            return (probe.stdout.strip() or "grep error") if probe.exit_code >= 2 else None
+        return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True,
+                                         folded_error=grep_failed)
 
 
 def _filename_glob_hint(result: SearchResult, pattern: str) -> SearchResult:

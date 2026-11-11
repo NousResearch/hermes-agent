@@ -477,3 +477,43 @@ def test_pruned_grep_permission_only_empty_keeps_skip_warning(tmp_path):
     assert result.warning == (
         f"Skipped 1 unreadable path(s) with restricted permissions: {root}/locked. Results may be "
         "incomplete; fix permissions or run as a user that can read them to include them.")
+
+
+def _pruned_grep_ops(tmp_path, find_output=None):
+    """A grep-only backend whose root sits under a dot-dir (the find -exec grep lane).
+    ``find_output`` replaces the find run with an exit-1 result carrying that text."""
+    from tools.file_operations_common import ExecuteResult
+
+    root = tmp_path / ".hidden" / "repo"
+    root.mkdir(parents=True)
+    (root / "a.py").write_text("nothing here\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    ops._has_command = lambda name, _has=ops._has_command: name != "rg" and _has(name)
+    if find_output is not None:
+        real_exec = ops._exec
+
+        def fake_exec(command, **kwargs):
+            if command.startswith("set -o pipefail; find "):
+                return ExecuteResult(stdout=find_output, exit_code=1)
+            return real_exec(command, **kwargs)
+        ops._exec = fake_exec
+    return ops, root
+
+
+@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+@pytest.mark.parametrize("diagnostic", [
+    "find: '{root}/locked': Keine Berechtigung",
+    "find: {root}/locked: Operation not permitted",
+], ids=["german-locale", "eperm"])
+def test_pruned_grep_traversal_diagnostics_stay_non_fatal(tmp_path, diagnostic):
+    """find's own traversal complaints, in any wording, leave an empty search empty."""
+    ops, root = _pruned_grep_ops(tmp_path, find_output=diagnostic.format(root=tmp_path / ".hidden" / "repo") + "\n")
+    result = ops.search("needle", path=str(root), target="content")
+    assert result.error is None and result.total_count == 0, result
+
+
+@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+def test_pruned_grep_invalid_regex_is_a_search_error(tmp_path):
+    ops, root = _pruned_grep_ops(tmp_path)
+    result = ops.search("foo(", path=str(root), target="content")
+    assert result.error and result.error.startswith("Search failed: grep: "), result

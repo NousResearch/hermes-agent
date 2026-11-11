@@ -80,7 +80,6 @@ from hermes_cli.cli_render import (
     _ACCENT,
     _ACCENT_ANSI_DEFAULT,
     _BOLD,
-    _CHROME_FLOOR_AT_LAST_ROW,
     _DA1_REPLY_RE,
     _DIM,
     _FALSE_RE,
@@ -109,6 +108,7 @@ from hermes_cli.cli_render import (
     _cprint,
     _d,
     _detect_light_mode_uncached,
+    _following_stdout_rows,
     _heal_cooked_mode_drift,
     _hex_to_ansi,
     _install_skin_light_mode_hook,
@@ -1411,7 +1411,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         if not self._claim_active_session("cli"):
             return
 
-        self._tui_print_startup()
+        self._tui_startup_screen()
         self._tui_init_run_state()
         kb = self._tui_build_key_bindings()
         layout, style = self._tui_build_layout(kb)

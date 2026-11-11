@@ -268,6 +268,19 @@ class CLITuiRuntimeMixin:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
 
+    def _tui_startup_screen(self):
+        """Print the startup output from the top row, then hand the rows left below it to the footer.
+
+        CPR is off, so the cursor's row is followed through what startup writes to stdout
+        (``_following_stdout_rows``). Told those rows (the chrome floor), the bottom-aligned footer
+        fills them: the composer starts on the last rows (#4412), and each print takes the row under
+        the one before. While the row is unknown the floor stays unknown, as before startup armed it.
+        """
+        from cli import _following_stdout_rows, _set_chrome_floor
+        with _following_stdout_rows() as startup_output:
+            self._tui_print_startup()
+        _set_chrome_floor(startup_output.rows_below)
+
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
         from cli import _accent_hex, _detect_light_mode
@@ -288,7 +301,7 @@ class CLITuiRuntimeMixin:
             # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
             print(f"Error: {exc}", file=sys.stderr)
             raise SystemExit(2) from None
-        self.show_banner(from_last_row=True)
+        self.show_banner()
         self._show_security_advisories()
 
         # First-run: an unconfigured install routes into provider onboarding instead of

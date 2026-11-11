@@ -1,7 +1,7 @@
 name: hermis
 title: H.E.R.M.I.S
 repo: https://github.com/gabogabucho/H.E.R.M.I.S
-sha: 52da38508922de04c8fefba7981d75b8e131d51f
+sha: 6c9582c634d106df888d934dc30fa03951448b4c
 description: >-
   Disclosure: runs a background WebSocket server on 127.0.0.1 (ephemeral port +
   session token) in a daemon thread; launches a bundled transparent
@@ -25,7 +25,14 @@ description: >-
   state.json, overlay.json and overlay.log to the plugin data dir; Windows only.
   Autopilot Mode turns your Windows desktop into an agent OS: Hermes answers by
   voice, draws floating data surfaces over your real desktop (the agent sends
-  data, not HTML) and arranges your real windows.
+  data, not HTML) and arranges your real windows. Disclosure extras: while
+  Autopilot is on, the titles of up to 15 open desktop windows are sent to the
+  model provider on every turn; launch_app opens apps by name only (shells,
+  interpreters and paths are rejected, and with arguments or outside a small
+  safe allowlist Hermes asks the user for confirmation first — a browser with
+  exactly one http/https URL is the only exception); every child process (npm,
+  the Electron overlay, launched apps, the read-only Get-StartApps lookup)
+  inherits only an allowlisted minimal environment, never provider API keys.
 maintainer: gabogabucho
 tier: community
 category: desktop

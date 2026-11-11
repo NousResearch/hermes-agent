@@ -21,11 +21,7 @@ pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group gateway harness"),
 ]
 
-KNOWN: dict[str, tuple[str, str]] = {
-    "planned_restart_notice": (
-        r"a redelivered /restart restarted the gateway again|a second restart ack means the replayed /restart was obeyed",
-        "#121325 a replayed /restart restarts the gateway again (guard needs Telegram update ids)"),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 SKIP: dict[str, str] = {
     "heic_as_image": "image attachments are fetched by URL behind the SSRF guard, which refuses the loopback "
                      "stand-in's CDN URL (a real cdn.discordapp.com URL passes)",

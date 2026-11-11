@@ -14,6 +14,9 @@ import pytest
 
 from gateway import delivery_ledger as dl
 from gateway.platforms.base import SendResult
+from persistence_assembly import profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _run_with_agent
 
 FIRST = "The complete first answer."
@@ -24,13 +27,15 @@ SECOND = "The follow-up answer."
 def _ledger_db(tmp_path, monkeypatch):
     home = tmp_path / "ledger"
     home.mkdir()
-    monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
+    monkeypatch.setattr(dl, "_scope", lambda: profile_scope(home=home))
     monkeypatch.setattr(dl, "_owner_stamp", lambda: (os.getpid(), 202))
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: True)
 
 
 def _rows():
-    with dl._connect() as conn:
+    with raw_holder(storage_handle(dl._scope().profile_dir))._read_ctx() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'delivery_obligations'").fetchone() is None:
+            return []  # the ledger creates its table on its first use of the store
         return [dict(zip(("state", "content", "last_error"), r)) for r in conn.execute(
             "SELECT state, content, last_error FROM delivery_obligations").fetchall()]
 

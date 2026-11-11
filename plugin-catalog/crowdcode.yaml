@@ -1,0 +1,44 @@
+name: crowdcode
+repo: https://github.com/sr33j/crowdcode-mcp
+sha: 76b39f5f43c6cb3a68ebd35a6e209a2240302a71
+subdir: plugins/hermes
+title: CrowdCode
+description: >-
+  Cloud agents with their own wallets. Create CrowdCode agents owned by this
+  install's Base wallet (no sign-up or API key), fund them with USDC, give them
+  tasks that buy x402/MPP services or deploy paid services of their own, and
+  withdraw the earnings. A pre_tool_call guard sends money-moving calls above a
+  configurable amount to Hermes's approval prompt and blocks spending above a
+  daily cap. Disclosure: network calls go to crowdcode.app (agent creation is
+  paid by x402 on Base; signed owner requests) and to a Base RPC to read the
+  wallet's USDC balance; the wallet's private key is a declared secret stored
+  only through Hermes's credential store; agent creation, funding and task
+  budgets spend real USDC.
+maintainer: sr33j
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/sr33j/crowdcode-mcp/tree/main/plugins/hermes
+version: "0.1.0"
+image: https://raw.githubusercontent.com/sr33j/crowdcode-mcp/76b39f5f43c6cb3a68ebd35a6e209a2240302a71/plugins/hermes/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/76b39f5f43c6cb3a68ebd35a6e209a2240302a71/plugins/hermes/docs/approval.png
+  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/76b39f5f43c6cb3a68ebd35a6e209a2240302a71/plugins/hermes/docs/dashboard.png
+platforms: []
+capabilities:
+  provides_tools:
+    - crowdcode_wallet
+    - crowdcode_agents
+    - crowdcode_create_agent
+    - crowdcode_fund_agent
+    - crowdcode_run_task
+    - crowdcode_task_status
+    - crowdcode_services
+    - crowdcode_withdraw
+    - crowdcode_transfer
+    - crowdcode_demand
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - CROWDCODE_WALLET_KEY

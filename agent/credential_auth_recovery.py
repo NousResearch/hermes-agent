@@ -102,6 +102,30 @@ def _retry_after_backoff(agent: Any, pool: Any, episode: dict[str, Any], *, fail
     return True, has_retried_429
 
 
+def pool_runtime_refresh_profile(pool: Any) -> Any:
+    """Only an explicit provider override owns failed-row runtime renewal."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(getattr(pool, "provider", ""))
+    hook = getattr(type(profile), "refresh_pool_runtime_credentials", None)
+    if hook is not None and hook is not getattr(ProviderProfile, "refresh_pool_runtime_credentials", None):
+        return profile
+    return None
+
+
+def agent_pool_runtime_refresh_profile(agent: Any) -> Any:
+    """The active route's scoped renewal owner; ignore a primary pool on fallback."""
+    from agent.credential_pool import credential_pool_matches_provider
+
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or not credential_pool_matches_provider(
+        pool, getattr(agent, "provider", ""), base_url=getattr(agent, "base_url", None)
+    ):
+        return None
+    return pool_runtime_refresh_profile(pool)
+
+
 def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint,
                          credential_id, rotate_and_swap):
     from agent.agent_runtime_helpers import _is_entitlement_403
@@ -133,7 +157,15 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
     refresh_kwargs = {"api_key_hint": api_key_hint}
     if credential_id:
         refresh_kwargs["credential_id"] = credential_id
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
+    if pool_runtime_refresh_profile(pool) is not None:
+        from agent.credential_pool import CredentialPool
+        from agent.credential_pool_plugin import _scoped_row
+        if isinstance(pool, CredentialPool) and _scoped_row(pool, credential_id, api_key_hint) is None:
+            return False, has_retried_429
+        refreshed = pool.try_refresh_runtime_matching(
+            credential_id=credential_id, api_key_hint=api_key_hint, reason="unauthorized")
+    else:
+        refreshed = pool.try_refresh_matching(**refresh_kwargs)
     if refreshed is None:
         # Refresh failed; rotate (the failed entry is already marked exhausted).
         return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)

@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
-from hermes_cli.plugin_host_wire import PluginHostUnavailable, decode, signature_from
+from hermes_cli.plugin_host_wire import PluginHostUnavailable, declared_return, decode, restore, signature_from
 from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
@@ -121,7 +121,9 @@ def _host_call(plugin_dir: str, module_name: str, profile: str, attr: str) -> Ca
         host = user_plugin_host()
         if host is None:
             raise PluginHostUnavailable("plugins.isolation is no longer 'host'; restart Hermes")
-        return host.profile_call(plugin_dir, module_name, profile, attr, args, kwargs)
+        from providers.base import ProviderProfile
+        result = host.profile_call(plugin_dir, module_name, profile, attr, args, kwargs)
+        return restore(result, declared_return(ProviderProfile, attr))
     return call
 
 
@@ -130,6 +132,8 @@ def _profile_proxy(base: type, plugin_dir: str, module_name: str, entry: dict[st
     namespace: dict[str, Any] = {"__module__": __name__,
                                  "__repr__": lambda self_: f"<plugin-host profile {name!r}>"}
     fields = {key: decode(value) for key, value in (entry.get("fields") or {}).items()}
+    if "credential_pool_base_urls" in fields:
+        fields["credential_pool_base_urls"] = restore(fields["credential_pool_base_urls"], tuple[str, ...])
     for attr, meta in (entry.get("calls") or {}).items():
         call = _host_call(plugin_dir, module_name, name, attr)
         if meta.get("async"):

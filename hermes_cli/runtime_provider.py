@@ -468,6 +468,15 @@ def _pool_entry_base_url(entry: Any) -> str:
     return getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or ""
 
 
+def _durable_pool_entry_base_url(entry: Any) -> str:
+    """The row's endpoint ignoring any derived runtime override."""
+    from agent.credential_pool_plugin import active_runtime_override
+    override = active_runtime_override(entry)
+    if override is not None and override.base_url:
+        return getattr(entry, "base_url", None) or ""
+    return _pool_entry_base_url(entry)
+
+
 def _nous_entry_key_usable(entry: Any, min_ttl: int) -> bool:
     return _agent_key_is_usable({k: getattr(entry, k, None) for k in ("agent_key", "agent_key_expires_at", "scope")}, min_ttl)
 
@@ -636,14 +645,34 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
 
 def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, requested_provider: str,
                                      model_cfg: Optional[dict[str, Any]] = None, pool: Optional[CredentialPool] = None,
-                                     target_model: Optional[str] = None) -> dict[str, Any]:
+                                     target_model: Optional[str] = None) -> Optional[dict[str, Any]]:
     model_cfg = model_cfg or _get_model_config()
-    api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
-                                                  _pool_entry_base_url(entry).rstrip("/"))
+    effective_model = _effective_model(model_cfg, target_model)
+    prepare: Any = getattr(pool, "prepare_runtime_entry", None)
+    # Route from the row's durable endpoint so an active derived override cannot hide a configured relay.
+    row_base = (_durable_pool_entry_base_url(entry) if callable(prepare) else _pool_entry_base_url(entry)).rstrip("/")
+    api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, row_base)
     declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
     base_url = _finalize_base_url(provider, api_mode, base_url)
     if declared:  # the URL's owner supplies the key; the built-in's pool rows are another account's
         return _runtime(provider, api_mode, base_url, entry_key, source="config:providers", requested_provider=requested_provider)
+    if callable(prepare):
+        relayed = base_url.rstrip("/") != _finalize_base_url(provider, api_mode, row_base).rstrip("/")
+        # Initial resolution has no dispatched source route. Without a relay, preparation may move the
+        # row; a configured relay stays the active route, and a moved derived credential must be
+        # admitted for that route (never redirecting the session away from it).
+        entry = prepare(entry, source_base_url=None)
+        if entry is None:
+            return None
+        if _pool_entry_base_url(entry).rstrip("/") != row_base:
+            if relayed:
+                entry = prepare(entry, source_base_url=base_url)
+                if entry is None:
+                    return None
+            else:
+                base_url = _finalize_base_url(provider, api_mode, _pool_entry_base_url(entry) or base_url)
+    if not has_usable_secret(_pool_entry_api_key(entry)):
+        return None
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
 
@@ -705,16 +734,11 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
     entry = pool.select(model=target_model or None)
     if entry is None:
         return None
-    pool_api_key = _pool_entry_api_key(entry)
     if provider == "nous":
-        entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
-    else:
-        from providers import get_provider_profile
-        if (profile := get_provider_profile(provider)) is not None:
-            pool_api_key = profile.prepare_pool_entry(entry, pool_api_key)
-    if not has_usable_secret(pool_api_key):
-        return None
-    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
+        entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, _pool_entry_api_key(entry))
+        if not has_usable_secret(pool_api_key):
+            return None
+    if credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
                                                 model_cfg=model_cfg, pool=pool, target_model=target_model)
     return None

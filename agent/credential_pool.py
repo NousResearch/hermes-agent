@@ -24,6 +24,7 @@ from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
+from agent.credential_pool_plugin import PoolRuntimeCredentialMixin, active_runtime_override, durable_runtime_key
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -286,26 +287,16 @@ class PooledCredential:
 
     @property
     def runtime_api_key(self) -> str:
-        if self.provider == "nous":
-            # Nous stores the runtime inference credential in agent_key for
-            # compatibility. It must be a NAS invoke JWT.
-            for token, expires_at in (
-                (self.agent_key, self.agent_key_expires_at),
-                (self.access_token, self.expires_at),
-            ):
-                if (
-                    isinstance(token, str)
-                    and token.strip()
-                    and auth_mod._nous_invoke_jwt_is_usable(
-                        token, scope=getattr(self, "scope", None), expires_at=expires_at,
-                    )
-                ):
-                    return token.strip()
-            return ""
-        return str(self.access_token or "")
+        override = active_runtime_override(self)
+        return override.api_key if override is not None else durable_runtime_key(self)
+
+    def durable_runtime_api_key(self) -> str:
+        return durable_runtime_key(self)
 
     @property
     def runtime_base_url(self) -> Optional[str]:
+        if (override := active_runtime_override(self)) is not None and override.base_url:
+            return override.base_url
         if self.provider == "nous":
             return self.inference_base_url or self.base_url
         if self.provider == "openai-codex":
@@ -939,7 +930,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin, PoolRuntimeCredentialMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)

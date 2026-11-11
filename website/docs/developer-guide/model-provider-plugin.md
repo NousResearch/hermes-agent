@@ -302,7 +302,9 @@ meaning says otherwise.
 | `ambient_credentials` | Credentials are ambient: never auto-detected; aux fallback skips unless configured | `False` |
 | `resolve_api_key_secret()` | Provider-owned `(runtime_api_key, source)` | `None` (env/pool ladder) |
 | `runtime_base_url()` | Base URL derived from the credential | `None` (env or default) |
-| `prepare_pool_entry()` | Turns the selected pool row's secret into the runtime key | the secret as-is |
+| `credential_pool_base_urls` | Constructor `tuple[str, ...]` of additional endpoints eligible for this provider's pool routing | `()` |
+| `prepare_pool_entry(entry, api_key)` | Selected-row preparation: returns a legacy key string or `PoolRuntimeCredential(api_key, base_url)` | the secret as-is |
+| `refresh_pool_runtime_credentials(entry, *, reason)` | Re-mints a transient key/endpoint pair for this selected row only; returns `PoolRuntimeCredential` or declines with `None` | `None` |
 | `seed_pool_credentials(suppressed_sources, explicitly_configured)` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself, skipping sources in `suppressed_sources` (plain values, so it works under `plugins.isolation: host`); overriding it replaces generic env seeding (return `[]` for none) | not overridden = generic env seeding |
 | `remove_credential_source()` | `hermes auth remove`: `(sources_to_suppress, hints)` | `None` (generic removal) |
 | `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only | `None` |
@@ -546,6 +548,41 @@ login: `api_key` profiles get the built-in key prompt / env-var resolution; ever
 **provider-owned** — the plugin ships the two hooks below, and a non-api-key profile without an
 `auth_handler` makes `hermes auth add <name>` fail with a clear "ships no auth_handler" error instead of
 silently doing nothing.
+
+## Selected-row runtime credentials
+
+A provider that exchanges a persisted login for a short-lived inference key should return
+`providers.base.PoolRuntimeCredential(api_key, base_url)` from `prepare_pool_entry(entry, api_key)`.
+The value validates `api_key` as `str` and `base_url` as `str | None`; its repr omits the key.
+A legacy string return remains supported, including an identity string when the persisted key
+already serves inference. A refresh-only profile likewise need not derive a key before dispatch.
+Declare extra pool-routing endpoints with the keyword-only constructor argument
+`credential_pool_base_urls=("https://gateway.example",)`. Runtime endpoint changes require both
+the source and destination to match an allowlisted **exact HTTPS origin**: no `/v1`, trailing slash,
+query, fragment, userinfo, or non-default port. These are routing hints, not permission to move
+credentials between accounts.
+
+For error-path recovery, override
+`refresh_pool_runtime_credentials(entry, *, reason) -> PoolRuntimeCredential | None`.
+The input is the **selected pool row**, not whichever login happens to be globally current.
+Use that row's identity and persisted secret to mint the replacement; return `None` when it
+cannot be refreshed. Reasons are `unauthorized`, `stale`, and `auxiliary_unauthorized`.
+This hook may perform I/O. It is separate from `refresh_credential`, which rotates persisted
+OAuth credentials, and from the legacy provider-wide `refresh_runtime_credentials` hook.
+Never fall back to another account's ambient credential when row-specific refresh fails.
+Recovery deliberately requires the dispatched row ID **and exact bearer** to match the live row.
+Missing attribution refuses renewal and benching rather than guessing the current account.
+A late 401 after another request renewed that row is also refused when the bearer differs: without
+a dispatch-generation identity, sharing a row ID does not prove that the new bearer belongs to
+the failed dispatch. This fail-closed tradeoff may forgo a retry; do not relax it to an ID-only match.
+
+The returned pair is transient client state: do not persist a runtime key or its account-specific
+endpoint over the OAuth row. Keep the key and endpoint together, especially when an exchange
+changes the account's endpoint. Under `plugins.isolation: host`, row data is copied into the
+subprocess, so mutations there do not update the parent row. Return the pair instead. The host
+restores it to `PoolRuntimeCredential` (including the `str | PoolRuntimeCredential` return union),
+restores `credential_pool_base_urls` to a tuple, and leaves legacy strings and untyped mappings
+unchanged. An untyped mapping is **not** a substitute for the credential dataclass.
 
 ## Provider-owned auth (`auth_handler`, `refresh_credential`)
 

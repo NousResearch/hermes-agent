@@ -128,7 +128,6 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
-from agent.credential_pool_model_cooldowns import pool_failure_reason
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
@@ -197,8 +196,6 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
-    # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
-    # wall time on a hung endpoint before Hermes sees one failure.
     # Hermes owns auxiliary retry + provider/model fallback policy (the same-provider transient retry in
     # call_llm plus the except-chain fallback). The OpenAI SDK's own default (max_retries=2 → up to 3
     # attempts) silently multiplies the effective wall time of every aux call by 3× on a slow/hung endpoint,
@@ -209,9 +206,6 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
-# Interrupt protection for atomic aux tasks: a compression summary killed by an ordinary
-# gateway interrupt degrades to a static marker, so a thread-local flag marks such calls
-# protected. Explicit host cancel (Ctrl+C, /stop) still overrides it, timeouts still fire.
 # ── Interrupt protection for atomic auxiliary tasks ────────────────────── Some auxiliary tasks must NOT be
 # aborted mid-flight by a gateway interrupt (e.g. an incoming user message while the agent is busy). Context
 # compression is the prime case: if the summary LLM call is interrupted part-way, compression falls back to
@@ -1022,21 +1016,29 @@ def _to_openai_base_url(base_url: str) -> str:
 
 def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
     """``load_pool(provider)`` when it has credentials, else None (never raises)."""
+    from agent.auxiliary_pool_recovery import rehydrate
     try:
-        pool = load_pool(provider)
+        pool = rehydrate(load_pool(provider))  # re-attach this profile's derived runtime bearers
     except Exception as exc:
         logger.debug("Auxiliary client: could not load pool for %s%s: %s", provider, note, exc)
         return None
     return pool if pool and pool.has_credentials() else None
 
 
-def _select_pool_entry(provider: str, model: Optional[str] = None) -> tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
+def _select_pool_entry(provider: str, model: Optional[str] = None,
+                       source_base_url: Optional[str] = None) -> tuple[bool, Optional[Any]]:
+    """Return (pool_exists_for_provider, selected_entry), the entry prepared for dispatch.
+
+    A provider that derives runtime bearers gets its row prepared (never the durable grant), admitted
+    only for ``source_base_url`` when one is given; a refused row yields ``(True, None)``.
+    """
+    from agent.auxiliary_pool_recovery import prepare_entry
     pool = _load_pool_with_credentials(provider)
     if pool is None:
         return False, None
     try:
-        return True, pool.select(model=_normalize_resolved_model(model, provider)) if model else pool.select()
+        entry = pool.select(model=_normalize_resolved_model(model, provider)) if model else pool.select()
+        return True, prepare_entry(pool, entry, source_base_url=source_base_url)
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
         return True, None
@@ -2183,20 +2185,11 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         model = _get_aux_model_for_provider(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
-        pool_present, entry = _select_pool_entry(provider_id, model)
-        if pool_present:
-            api_key = _pool_runtime_api_key(entry)
-            if not api_key:
-                continue
-            raw_base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
-            via = " via pool"
-        else:
-            creds = resolve_api_key_provider_credentials(provider_id)
-            api_key = str(creds.get("api_key", "")).strip()
-            if not api_key:
-                continue
-            raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
-            via = ""
+        from agent import auxiliary_pool_recovery as _recovery
+        picked = _recovery.api_key_chain_credentials(provider_id, pconfig, model, resolve_api_key_provider_credentials)
+        if picked is None:
+            continue
+        api_key, raw_base_url, entry, via = picked
         # The session's own endpoint wins for its provider: the key was issued for that gateway, and
         # sending it to the registry default 401s, then quarantines the provider the main model is on.
         runtime = _normalize_main_runtime(None)
@@ -2211,7 +2204,8 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         if provider_id == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
             if is_native_gemini_base_url(base_url):
-                return _tag_backend(GeminiNativeClient(api_key=api_key, base_url=base_url), provider_id), model
+                client = GeminiNativeClient(api_key=api_key, base_url=base_url)
+                return _tag_backend(_recovery.stamp_entry(client, entry, api_key), provider_id), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
@@ -2223,7 +2217,8 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         if merged:
             extra["default_headers"] = merged
         client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
-        return _tag_backend(_maybe_wrap_anthropic(client, model, api_key, raw_base_url), provider_id), model
+        client = _recovery.stamp_entry(_maybe_wrap_anthropic(client, model, api_key, raw_base_url), entry, api_key)
+        return _tag_backend(client, provider_id), model
     return None, None
 
 
@@ -3537,6 +3532,7 @@ def _recoverable_pool_provider(
 
 
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "",
+                           failed_credential_id: Optional[str] = None,
                            verdict: Optional[aux_errors.ClassifiedError] = None, base_url: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
@@ -3544,8 +3540,9 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     rotated (current() would be None). ``base_url``: where the failed request went (a custom entry rotates its rows bound there).
     """
     normalized = _normalize_aux_provider(provider)
+    from agent.auxiliary_pool_recovery import live_loader
     try:
-        pool = pool_for_aux_provider(provider, normalized, load_pool, base_url)
+        pool = pool_for_aux_provider(provider, normalized, live_loader(load_pool), base_url)
     except Exception as load_exc:
         logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
         return False
@@ -3553,33 +3550,11 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
     if verdict is None:  # the ladder hands in the failed request's own verdict: hooks fire once per request
         verdict = aux_errors.classify_attempt(exc, normalized)
-    status_code = verdict.status_code
-    gated = verdict.reason is FailoverReason.model_entitlement
-
-    def _rotate(fallback_status: int) -> bool:
-        # Sized as the main loop's recover_with_credential_pool sizes it: real status, pool failure reason, model.
-        error_context: dict[str, Any] = {"message": str(exc)}
-        if status_code is not None:
-            error_context["status_code"] = status_code
-        next_entry = pool.mark_exhausted_and_rotate(
-            status_code=fallback_status if status_code is None else status_code,
-            error_context=error_context, api_key_hint=failed_api_key or None,
-            failure_reason=pool_failure_reason(verdict.reason, verdict.error_context, verdict.billing_unverified),
-            model=verdict.model or None,
-        )
-        if next_entry is None:
-            return False
-        _evict_cached_clients(normalized)
-        return True
-
-    if aux_errors.auth_refresh(verdict):
-        if pool.try_refresh_current() is not None:
-            _evict_cached_clients(normalized)
-            return True
-        return _rotate(401)
-    if not verdict.should_rotate_credential:  # e.g. an overloaded server or an upstream model throttle
-        return False
-    return _rotate(402 if aux_errors.benches_provider(verdict) else 400 if gated else 429)
+    from agent.auxiliary_pool_recovery import recover_loaded_pool
+    return recover_loaded_pool(
+        pool, normalized, exc, verdict,
+        failed_api_key=failed_api_key, failed_credential_id=failed_credential_id,
+    )
 
 
 def _prepare_same_provider_retry(
@@ -3727,6 +3702,10 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
         from providers import get_provider_profile
         profile = get_provider_profile(normalized)
         if profile is None:
+            return False
+        from agent.credential_auth_recovery import pool_runtime_refresh_profile
+        if pool_runtime_refresh_profile(SimpleNamespace(provider=normalized)) is not None:
+            # Scoped renewal is owned by the pool rung, not the ambient auth resolver.
             return False
         refresher = lambda: profile.refresh_runtime_credentials(reason="auxiliary_unauthorized")
     try:
@@ -3939,12 +3918,21 @@ def _plan_fallback_auth_retry(
     rebuild: Callable[[str, Any, Optional[str]], tuple[_FallbackDestination, dict[str, Any]]], *,
     async_mode: bool,
     failed_api_key: str = "",
+    failed_credential_id: Optional[str] = None,
+    failure: Optional[aux_errors.Failure] = None,
 ) -> tuple[str, Optional[tuple[Any, dict[str, Any], _FallbackDestination]]]:
     """After an auth error on a fallback candidate: refresh credentials and rebuild the request.
     Returns ``(refresh_provider, retry)``; ``retry`` = ``(client, kwargs, destination)`` or None."""
     fb_provider = _auth_refresh_provider_for_route(destination.provider, destination.base_url)
     refresh_kwargs = {"failed_api_key": failed_api_key} if fb_provider == "anthropic" else {}
-    if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider, **refresh_kwargs):
+    from agent.credential_auth_recovery import pool_runtime_refresh_profile
+    if failure is not None and pool_runtime_refresh_profile(SimpleNamespace(provider=fb_provider)) is not None:
+        refreshed = _recover_provider_pool(
+            fb_provider, failure.error, failed_api_key=failed_api_key,
+            failed_credential_id=failed_credential_id, verdict=failure.verdict)
+    else:
+        refreshed = fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider, **refresh_kwargs)
+    if refreshed:
         retry_client, retry_model = _get_cached_client(
             fb_provider, destination.model, **({"async_mode": True} if async_mode else {}),
             base_url=destination.base_url or None, api_mode=destination.api_mode,
@@ -3965,7 +3953,8 @@ def _fallback_candidate_ladder(fb_client: Any, fb_kwargs: dict[str, Any], destin
     fb_provider = destination.provider
     if failure is not None and aux_errors.auth_refresh(failure.verdict):
         fb_provider, retry = _plan_fallback_auth_retry(
-            destination, rebuild, async_mode=async_mode, failed_api_key=getattr(fb_client, "api_key", ""))
+            destination, rebuild, async_mode=async_mode, failed_api_key=getattr(fb_client, "api_key", ""),
+            failed_credential_id=getattr(fb_client, "_hermes_credential_pool_entry_id", None), failure=failure)
         if retry is not None:  # re-apply the first attempt's strips; a failure after any strip is after a spent rung
             resp, failure, more = yield _LadderStep("attempt", (retry[0], reapply_repairs(retry[1], repairs), retry[2]))
             destination, repairs = retry[2], (*repairs, *more)  # a failure from here is the refreshed destination's
@@ -7629,8 +7618,11 @@ def _failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> tuple[Opt
 
 def _recover_failure_pool(route: _LadderRoute, failure: aux_errors.Failure) -> bool:
     pool_provider, failed_api_key = _failure_pool(route, failure)
+    identity = getattr(_failure_sender(route, failure), "_hermes_credential_pool_entry_id", None)
+    scoped_kwargs = {"failed_credential_id": identity} if isinstance(identity, str) and identity else {}
     return bool(pool_provider) and _recover_provider_pool(
-        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict, base_url=str(getattr(_failure_sender(route, failure), "base_url", "") or ""))
+        pool_provider, failure.error, failed_api_key=failed_api_key, verdict=failure.verdict,
+        base_url=str(getattr(_failure_sender(route, failure), "base_url", "") or ""), **scoped_kwargs)
 
 
 def _ladder_credential_rungs(

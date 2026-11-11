@@ -87,7 +87,7 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
     calls = []
     def acquire(name, **kwargs):
         calls.append((name, kwargs))
-        pytest.fail("the installed npm/Node pair must not be provisioned again")
+        return context
     monkeypatch.setattr(pm, "ensure", acquire)
     dependency, plugin = tmp_path / "side-dep", tmp_path / "plugin"
     dependency.mkdir()
@@ -111,7 +111,7 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
     assert result.stdout.strip() == "isolated"
     assert not (tmp_path / "node_modules").exists()
     assert dict(os.environ) == ambient
-    assert calls == []
+    assert calls == [("npm", {"explicit": True})] * 2
     (plugin / "package.json").write_text("{malformed")
     reason = install_node_sidecar(plugin, explicit=True)
     assert "exited" in reason and "JSON" in reason

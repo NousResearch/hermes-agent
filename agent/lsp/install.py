@@ -260,6 +260,9 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     except (pm_store.InstallError, OSError) as exc:
         logger.warning("[install] cannot prepare %s for %s: %s", pm, pkg, exc)
         return None
+    except Exception as exc:
+        logger.warning("[install] cannot prepare %s for %s: %s", pm, pkg, exc, exc_info=True)
+        return None
     staging = hermes_lsp_bin_dir().parent  # <HERMES_HOME>/lsp/
     install_targets = [pkg] + list(extra_pkgs or [])
     cmd = [pm_bin, *_NODE_PM_ARGV[pm](str(staging)), *install_targets]

@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -293,8 +293,43 @@ def test_lsp_automatic_setup_obeys_disabled_lazy_copies(
     monkeypatch.setattr("subprocess.run", run)
     assert setup_path() is None
     assert "lazy installs are disabled" in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
     assert not packaged_tools.writable.exists()
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("setup_path", ["plugin_sidecar"], indirect=True)
+def test_plugin_sidecar_verifies_installed_toolchain_on_explicit_setup(
+    packaged_tools, setup_path, monkeypatch
+):
+    ensure = Mock(return_value=Runner("npm", pm.env_for("npm")))
+    monkeypatch.setattr(pm, "ensure", ensure)
+    monkeypatch.setattr(
+        "subprocess.run", Mock(return_value=SimpleNamespace(returncode=0))
+    )
+    assert setup_path() is None
+    assert setup_path() is None
+    assert ensure.call_args_list == [call("npm", explicit=True)] * 2
+
+
+@pytest.mark.parametrize("setup_path", ["lsp_npm"], indirect=True)
+def test_automatic_lsp_reports_unexpected_provisioning_failure(
+    packaged_tools, setup_path, monkeypatch, caplog
+):
+    binary = Npm().binary(
+        packaged_tools.shipped / f"npm-test-{current_target()}", current_target()
+    )
+    assert binary is not None
+    binary.unlink()
+    ensure = Mock(side_effect=RuntimeError("synthetic unexpected PM failure"))
+    monkeypatch.setattr(pm, "ensure", ensure)
+    run = Mock(side_effect=AssertionError("failed provisioning must not launch npm"))
+    monkeypatch.setattr("subprocess.run", run)
+    assert setup_path() is None
+    ensure.assert_called_once_with("npm", explicit=False)
+    run.assert_not_called()
+    assert "synthetic unexpected PM failure" in caplog.text
+    assert any(record.exc_info for record in caplog.records)
 
 
 @pytest.mark.parametrize("lazy_copies", [True, False])

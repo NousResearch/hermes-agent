@@ -111,7 +111,7 @@ def test_node_sidecar_retains_output_and_exit_status(
         return result
 
     monkeypatch.setattr(pm, "ensure", acquire)
-    monkeypatch.setattr("pm.npm_command", lambda env=None, **kwargs: (str(npm), acquire("npm", **kwargs).env))
+    monkeypatch.setattr("pm.npm_command", lambda env=None, **kwargs: (str(npm), context.env))
     monkeypatch.setattr("pm.package.subprocess.run", run_npm)
     error = ws.install_node_sidecar(tmp_path)
 

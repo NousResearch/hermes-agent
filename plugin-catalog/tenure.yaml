@@ -1,0 +1,56 @@
+name: tenure
+title: tenure
+repo: https://github.com/otsoa-dubief/tenure
+sha: f4a62855e592b9e170ab0c54d9278aabef05f370
+subdir: tenure
+version: "1.0.0"
+description: >-
+  Revocable trust for Hermes agents, per action type. By default every kind of action works as with Hermes alone
+  (files, memory, subagents, known dev tools: npm, pytest, cargo, git...), and every local change is saved first:
+  file writes and plain rm, mv, cp, sed -i or `> file` on project files act, then tell you, with `/tenure undo`
+  for 24 hours. The first mistake on a kind of action (an undo, a flag, a refusal of Hermes's own prompt, a file
+  it wrote that no longer parses) puts that kind, for every model of the profile, on probation: it asks first,
+  earns back acting-then-notifying on a run of approvals, then acting alone with random spot checks, from a rule
+  preregistered on OSF (Wald SPRT to the middle tier, Dodge's CSP-1 series to the top, a guarantee you choose).
+  What leaves the machine (push, publish, deploy, registry logins, cloud writes, payments), unreadable shell, and
+  anything after the agent read outside content keep asking; one "Allow for this session" covers a session.
+  Signed, hash-chained, replayable autonomy passport (`hermes tenure verify`), a per-model benchmark of your own
+  work, a switch preview before you change model, a Desktop page and a dashboard tab at parity, five languages.
+  Linux, macOS and Windows (on Windows, plain shell file commands keep asking instead of acting with an undo).
+  A friction bench in the repo replays an ordinary 30-call coding session: 3 questions Hermes would not ask, against 23 when every kind of action asks first.
+  Disclosure — hooks only (pre_api_request, pre_tool_call, post_approval_response, post_tool_call,
+  post_llm_call, subagent_start, subagent_stop), no tools. No network, no LLM call, runs no command. Reads the
+  profile's config.yaml and its own plugin settings; writes them back only through
+  hermes_cli.plugins_settings.save_plugin_settings when the owner saves Settings. Writes under
+  plugin-data/tenure: a SQLite record and a hash-chained ledger (action types and outcomes, no paths, no
+  commands, no free text), a signing key and an undo HMAC key, and undo snapshots of the project files an action
+  is about to change (file bytes and paths, owner-only, deleted after 24 hours, 5 MB per action). Imports
+  plugins.plugin_storage.plugin_data_dir, hermes_cli.config, agent.i18n.get_language,
+  hermes_cli.plugin_events.broadcast_plugin_event and, for the switch preview's model list,
+  hermes_cli.inventory (disk cache only), each guarded.
+maintainer: otsoa-dubief
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/otsoa-dubief/tenure#readme
+image: https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/social-preview.png
+screenshots:
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/hero.gif
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/desktop-trusted.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/desktop-probation.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/desktop-asks-first.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/f4a62855e592b9e170ab0c54d9278aabef05f370/docs/images/passport.gif
+platforms: []
+known_issues: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - pre_tool_call
+    - post_approval_response
+    - post_tool_call
+    - post_llm_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

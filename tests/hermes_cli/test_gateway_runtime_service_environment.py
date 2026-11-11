@@ -1,18 +1,6 @@
-"""What the manager environment reader refuses, and how it says so.
-
-``service_identity_unverified`` covers every way the systemd manager environment
-can fail to read, and on its own it gives no hint that an unrelated session
-variable is the reason the gateway did not start. The reason code stays the
-stable contract; ``detail`` carries the variable and the reason, which Desktop
-prints after the code.
-
-Every refusal names the variable and none of them carries its value: the value
-can hold a secret, and upstream's redaction cannot know what this module put
-into the message.
-
-The reader is picked from the shape of the output, so both shapes of the same
-block have to decode to the same mapping.
-"""
+"""What the manager environment reader refuses, and how it says so: every refusal names the
+variable and never its value, the reason code stays the stable contract, and both shapes of
+the same block decode to the same mapping."""
 import json
 import re
 import subprocess
@@ -51,6 +39,7 @@ def test_a_refusal_names_the_variable_it_refused(dump, variable):
 @pytest.mark.parametrize("dump, expected", [
     ("NOVALUE\n", "not an assignment"),
     ("Z=$'abc", "never closes"),
+    ("Z=$'a'b'", "closes its ANSI-C quote"),
     ("Z=$'a\\qc'", "escape \\q"),
     ("Z=$'a\\12'", "incomplete octal escape"),
 ])

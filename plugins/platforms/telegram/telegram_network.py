@@ -170,16 +170,25 @@ def proxy_target_hosts(base_url: Optional[str], fallback_ips: Iterable[str] = ()
     return [_TELEGRAM_API_HOST, *fallback_ips]
 
 
-def telegram_tls_kwargs(classic_key_exchange=False) -> dict:
-    """Opt out of PQ key shares only for Telegram on incompatible network paths."""
-    if str(classic_key_exchange).lower() not in {"true", "1", "yes", "on"}:
-        return {}
-    # Keep httpx's CA selection (including SSL_CERT_FILE/SSL_CERT_DIR), hostname
-    # verification and TLS versions. OpenSSL 3.5's larger hybrid ClientHello can
-    # be reset mid-handshake on paths where a classic X25519 hello succeeds.
-    context = httpx.create_ssl_context()
-    context.set_ecdh_curve("X25519")
-    return {"verify": context}
+def telegram_verify(extra: Optional[dict], default):
+    """The TLS context every Telegram client verifies with: ``default`` (the platform trust
+    context; ``None`` lets ``build_ptb_requests`` pick it), or, with ``platforms.telegram.extra.tls_classic_key_exchange: true``, the same trust
+    offering only the classic X25519 key share. That is for network paths that reset OpenSSL 3.5's
+    larger post-quantum ClientHello, where every Bot API path then fails with an empty
+    ``ConnectError`` (#147179). It keeps TLS 1.3, certificate and hostname checks. A value other
+    than a boolean is refused with a warning and keeps the default."""
+    value = (extra or {}).get("tls_classic_key_exchange", False)
+    if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes", "on", "false", "0", "no", "off", ""}:
+        value = value.strip().lower() in {"true", "1", "yes", "on"}
+    if not isinstance(value, bool):
+        logger.warning("[Telegram] Ignoring platforms.telegram.extra.tls_classic_key_exchange=%r: expected true or false",
+                       value)
+        return default
+    if not value:
+        return default
+    from agent.ssl_verify import classic_key_exchange_context
+    logger.info("[Telegram] TLS: classic X25519 key exchange (tls_classic_key_exchange)")
+    return classic_key_exchange_context()
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:

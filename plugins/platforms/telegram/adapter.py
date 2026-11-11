@@ -203,7 +203,7 @@ from gateway.approval_actor import picker_refusal, update_prompt_refusal
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
-    proxy_target_hosts)
+    proxy_target_hosts, telegram_verify)
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind
@@ -2808,8 +2808,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, safe_proxy_url_for_log(proxy_url))
         elif disable_fallback:
             logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-        request, get_updates_request = build_ptb_requests(
-            HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy_url, verify=platform_ssl_context())
+        verify = telegram_verify(self.config.extra, platform_ssl_context())
+        request, get_updates_request = build_ptb_requests(HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy_url, verify=verify)
         return request, self._instrument_polling_request(get_updates_request)
 
     async def _initialize_app_with_retries(self, builder) -> None:

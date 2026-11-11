@@ -127,13 +127,14 @@ def _telegram_bot(token, extra=None):
     urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
     try:
         from telegram.request import HTTPXRequest
-        from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts
+        from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts, telegram_verify
         fallback_ips = [] if base_url else _telegram_fallback_ips(extra)  # a custom server is reached directly
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url, fallback_ips),
                                   configured=extra.get("proxy_url"))
         if proxy:
             logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
-        request, updates_request = build_ptb_requests(HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy)
+        request, updates_request = build_ptb_requests(HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy,
+                                                      verify=telegram_verify(extra, None))
         return Bot(token=token, request=request, get_updates_request=updates_request, **urls)
     except Exception as request_err:
         logger.warning("send_message: failed to build the Telegram request (%s), using PTB defaults",

@@ -1483,3 +1483,194 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+# ── Tenant scope (HERMES_TENANT) ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def tenant_env(monkeypatch, tmp_path):
+    """Worker for tenant ``acme`` (its own task claimed), plus a task belonging to
+    tenant ``other`` and an untenanted task, on the same shared board."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "acme-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        mine = kb.create_task(conn, title="mine", assignee="acme-worker", tenant="acme")
+        kb.claim_task(conn, mine)
+        theirs = kb.create_task(conn, title="theirs", assignee="other-worker", tenant="other")
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (theirs,))
+        untenanted = kb.create_task(conn, title="nobody", assignee="x")
+        conn.commit()
+    finally:
+        conn.close()
+    # Profile -> tenant binding lives in each profile's own .env (operator-owned).
+    for name, env in (("acme-peer", "HERMES_TENANT=acme\n"), ("other-worker", "HERMES_TENANT=other\n"),
+                      ("unbound", "")):
+        pdir = home / "profiles" / name
+        pdir.mkdir(parents=True)
+        (pdir / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker
+        (pdir / ".env").write_text(env, encoding="utf-8")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", mine)
+    monkeypatch.setenv("HERMES_TENANT", "acme")
+    return {"mine": mine, "theirs": theirs, "untenanted": untenanted}
+
+
+def _is_scope_error(out: str) -> bool:
+    d = json.loads(out)
+    return d.get("ok") is not True and "tenant scope" in d.get("error", "")
+
+
+def test_tenant_scoped_show_rejects_foreign_and_untenanted(tenant_env):
+    from tools import kanban_tools as kt
+    assert _is_scope_error(kt._handle_show({"task_id": tenant_env["theirs"]}))
+    assert _is_scope_error(kt._handle_show({"task_id": tenant_env["untenanted"]}))
+    own = json.loads(kt._handle_show({"task_id": tenant_env["mine"]}))
+    assert own["task"]["tenant"] == "acme"
+
+
+def test_tenant_scoped_show_does_not_leak_scope_id(tenant_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_show({"task_id": tenant_env["theirs"]})
+    assert "acme" not in out
+
+
+def test_tenant_scoped_comment_rejects_foreign_task(tenant_env):
+    """Comments land in the target's future worker prompts; cross-*task* commenting is
+    allowed (#19713) but not across tenants."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    assert _is_scope_error(kt._handle_comment({"task_id": tenant_env["theirs"], "body": "inject"}))
+    conn = kbc.connect()
+    try:
+        assert kb.list_comments(conn, tenant_env["theirs"]) == []
+    finally:
+        conn.close()
+
+
+def test_tenant_scoped_create_pins_tenant_and_rejects_foreign(tenant_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    # Explicit foreign tenant → rejected (would hand the body to that tenant's dispatcher).
+    assert _is_scope_error(kt._handle_create(
+        {"title": "hostile", "assignee": "other-worker", "tenant": "other"}))
+    # Foreign parent edge → rejected.
+    assert _is_scope_error(kt._handle_create(
+        {"title": "child", "assignee": "acme-worker", "parents": [tenant_env["theirs"]]}))
+    # No tenant given → pinned to the scope, never NULL.
+    out = json.loads(kt._handle_create({"title": "child", "assignee": "acme-worker"}))
+    assert out["ok"] is True
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, out["task_id"]).tenant == "acme"
+        assert not [t for t in kb.list_tasks(conn) if t.title == "hostile"]
+    finally:
+        conn.close()
+
+
+def test_tenant_scoped_create_binds_assignee_to_tenant(tenant_env):
+    """Pinning the row's tenant is not enough: the dispatcher runs the task under the assignee's
+    credentials, so omitted tenant + another tenant's profile must be refused."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    for assignee in ("other-worker", "unbound", "never-installed"):
+        out = json.loads(kt._handle_create({"title": "hostile", "assignee": assignee}))
+        assert out.get("ok") is not True and "not bound to this worker's tenant" in out["error"]
+        assert "acme" not in json.dumps(out)
+    peer = json.loads(kt._handle_create({"title": "peer", "assignee": "acme-peer"}))
+    own = json.loads(kt._handle_create({"title": "self", "assignee": "acme-worker"}))
+    assert peer["ok"] is True and own["ok"] is True
+    conn = kbc.connect()
+    try:
+        assert not [t for t in kb.list_tasks(conn) if t.title == "hostile"]
+        assert kb.get_task(conn, peer["task_id"]).tenant == "acme"
+    finally:
+        conn.close()
+
+
+def test_tenant_scoped_request_review_binds_reviewer_to_tenant(monkeypatch, tenant_env):
+    """``reviewer`` reassigns the task, so it is an execution identity like create's assignee."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    with kbc.connect() as conn:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(kb.get_task(conn, tenant_env["mine"]).current_run_id))
+    out = json.loads(kt._handle_request_review({"summary": "done", "reviewer": "other-worker"}))
+    assert out.get("ok") is not True and "not bound to this worker's tenant" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tenant_env["mine"]).status == "running"
+    out = json.loads(kt._handle_request_review({"summary": "done", "reviewer": "acme-peer"}))
+    assert out["ok"] is True
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tenant_env["mine"]).assignee == "acme-peer"
+
+
+def test_tenant_scoped_list_does_not_promote_foreign_rows(monkeypatch, tenant_env):
+    """The list's ready-promotion sweep is confined to the scope: a foreign blocked row with no
+    parents and no sticky block stays put, while the caller's own tenant still gets promoted."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    conn = kbc.connect()
+    try:
+        own_blocked = kb.create_task(conn, title="own blocked", assignee="acme-worker", tenant="acme")
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (own_blocked,))
+        conn.commit()
+        before = kb.list_events(conn, tenant_env["theirs"])
+    finally:
+        conn.close()
+    assert json.loads(kt._handle_list({}))["promoted"] == 1
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tenant_env["theirs"]).status == "blocked"
+        assert kb.list_events(conn, tenant_env["theirs"]) == before
+        assert kb.get_task(conn, own_blocked).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_tenant_scoped_list_is_forced_to_scope(monkeypatch, tenant_env):
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_KANBAN_TASK")  # orchestrator-style call, still tenant-scoped
+    ids = [t["id"] for t in json.loads(kt._handle_list({}))["tasks"]]
+    assert ids == [tenant_env["mine"]]
+    ids = [t["id"] for t in json.loads(kt._handle_list({"tenant": "acme"}))["tasks"]]
+    assert ids == [tenant_env["mine"]]
+    assert _is_scope_error(kt._handle_list({"tenant": "other"}))
+
+
+def test_tenant_scoped_unblock_link_attachments_reject_foreign(monkeypatch, tenant_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    assert _is_scope_error(kt._handle_attachments({"task_id": tenant_env["theirs"]}))
+    assert _is_scope_error(kt._handle_link(
+        {"parent_id": tenant_env["mine"], "child_id": tenant_env["theirs"]}))
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    assert _is_scope_error(kt._handle_unblock({"task_id": tenant_env["theirs"]}))
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tenant_env["theirs"]).status == "blocked"
+        assert kb.child_ids(conn, tenant_env["mine"]) == []
+    finally:
+        conn.close()
+
+
+def test_unscoped_process_sees_every_tenant(monkeypatch, tenant_env):
+    """No HERMES_TENANT = single-tenant install / trusted orchestrator: unchanged behaviour."""
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_TENANT")
+    assert json.loads(kt._handle_show({"task_id": tenant_env["theirs"]}))["task"]["tenant"] == "other"
+    assert json.loads(kt._handle_show({"task_id": tenant_env["untenanted"]}))["task"]["tenant"] is None

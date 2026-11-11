@@ -1,6 +1,6 @@
 name: sightline
 repo: https://github.com/OutstandingVick/sightline
-sha: dcd08141e8e3a72ac0eda111ce60e9f9f5bb9cc9
+sha: 86992a5cf7f054fb4f04ca254f511bf9c7ebb0b3
 title: Sightline
 description: "Give your Hermes agent a Solana wallet without giving it your wallet. Intent-level SOL and SPL tools; every send is simulated, explained in plain English and checked by a firewall against human-issued, time-boxed, revocable grants before the plugin signs it. The model never sees the key, has no raw-transaction tool and cannot create or widen grants. ALLOW / APPROVE / BLOCK with a hash-chained audit log and a Desktop pane. Devnet by default. Disclosure: stores a Solana secret key in the profile .env (never shown to the model or in output); sends simulation and transaction requests to the configured Solana RPC (default api.devnet.solana.com); mainnet only with SIGHTLINE_ALLOW_MAINNET=1; no telemetry."
 maintainer: OutstandingVick
@@ -8,10 +8,12 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/OutstandingVick/sightline#readme
-version: "0.6.2"
+version: "0.6.3"
 screenshots:
-  - https://raw.githubusercontent.com/OutstandingVick/sightline/dcd08141e8e3a72ac0eda111ce60e9f9f5bb9cc9/docs/screenshots/04-block-light.png
-  - https://raw.githubusercontent.com/OutstandingVick/sightline/dcd08141e8e3a72ac0eda111ce60e9f9f5bb9cc9/docs/screenshots/03-allow-sent-light.png
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86992a5cf7f054fb4f04ca254f511bf9c7ebb0b3/docs/screenshots/demo.gif
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86992a5cf7f054fb4f04ca254f511bf9c7ebb0b3/docs/screenshots/pane-04-block-light.png
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86992a5cf7f054fb4f04ca254f511bf9c7ebb0b3/docs/screenshots/pane-03-allow-sent-light.png
+  - https://raw.githubusercontent.com/OutstandingVick/sightline/86992a5cf7f054fb4f04ca254f511bf9c7ebb0b3/docs/screenshots/pane-06-approve-after-revoke-dark.png
 capabilities:
   provides_tools:
     - sightline_status

@@ -1,0 +1,17 @@
+name: aunx-decompose
+repo: https://github.com/aunysillyme-dev/aunx-decompose
+sha: 024208f83e2d6bf87b19b5cd0cb7967ad206f04b
+description: "Break a task into the smallest checkable units and parallel waves: typed units, real data edges, clause coverage, an advisor gate and a plan table."
+maintainer: AunySillyMe
+tier: community
+category: tools
+title: Decompose
+version: "0.3.0"
+requires_hermes: ">=0.19.0"
+docs_url: https://hermes-agent.nousresearch.com/marketplace/aunx-decompose
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

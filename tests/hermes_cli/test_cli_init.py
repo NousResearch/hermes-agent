@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 
@@ -167,7 +168,33 @@ class TestBusyInputMode:
         cli.process_command("/queue move 1 9")
         assert cli._pending_input_items() == ["only item"]
 
+    @pytest.mark.parametrize("command, usage_key", [
+        ("/queue rm", "cli.queue.usage_remove"),
+        ("/queue rm 1 extra", "cli.queue.usage_remove"),
+        ("/queue rm \u2461", "cli.queue.usage_remove"),         # ② : isdigit() but not int()
+        ("/queue rm " + "9" * 5000, "cli.queue.usage_remove"),  # past int()'s digit limit
+        ("/queue edit \u00b2 new text", "cli.queue.usage_edit"),  # ²
+        ("/queue move \u2466 1", "cli.queue.usage_move"),       # ⑦
+        ("/queue move 1 \u2466", "cli.queue.usage_move"),
+    ], ids=["rm-bare", "rm-trailing-words", "rm-circled-digit", "rm-over-int-limit",
+            "edit-superscript", "move-src-circled", "move-dst-circled"])
+    def test_queue_malformed_index_prints_usage_instead_of_raising(self, command, usage_key):
+        """A bad index used to raise ValueError out of the slash handler, which
+        escapes the prompt_toolkit key handler and kills the TUI."""
+        cli = _make_cli()
+        import cli as _cli_mod
+        printed = []
+        with patch.object(_cli_mod, "_cprint", side_effect=lambda s, *a, **k: printed.append(s)):
+            cli.process_command("/queue first prompt")
+            cli.process_command(command)
+        assert cli._pending_input_items() == ["first prompt"]
+        assert printed[-1].strip() == t(usage_key)
 
+    def test_queue_edit_accepts_tab_after_index(self):
+        cli = _make_cli()
+        cli.process_command("/queue first prompt")
+        cli.process_command("/queue edit 1\treplacement")
+        assert cli._pending_input_items() == ["replacement"]
 
 
     def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
@@ -184,6 +211,7 @@ class TestBusyInputMode:
 
 
 class TestPromptToolkitTerminalCompatibility:
+    @pytest.mark.platforms("linux")
     def test_lf_enter_binding_respects_multiline_shortcuts(self):
         """Ctrl+J is reserved by default, with legacy LF-submit available as an opt-out.
 
@@ -252,7 +280,7 @@ class TestPromptToolkitTerminalCompatibility:
             assert bindings[("c-m",)] is submit_handler
             assert ("c-j",) not in bindings
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_leaves_ctrl_j_unbound(self):
         """On native Windows only enter submits; c-j is free for the newline
         binding added separately in the prompt setup."""
@@ -281,12 +309,13 @@ class TestPromptToolkitTerminalCompatibility:
 
 
 
+    @pytest.mark.platforms("linux")
     def test_cpr_gating_posix_suppresses_without_ssh(self, monkeypatch):
         """POSIX suppresses CPR without SSH.
 
         The native-Windows arm (``_terminal_may_leak_cpr() is False``, plus
         the ``PROMPT_TOOLKIT_NO_CPR`` override that outranks it) lives in
-        ``tests/hermes_cli/test_cpr_local_leak.py`` under ``windows_only``, where it
+        ``tests/hermes_cli/test_cpr_local_leak.py`` under ``platforms("windows")``, where it
         runs against a real Windows console.
         """
         from cli import _terminal_may_leak_cpr
@@ -356,7 +385,7 @@ class TestHistoryDisplay:
         cli._handle_resume_command("/resume")
         output = capsys.readouterr().out
 
-        assert "Recent sessions" in output
+        assert t("cli.session.recent_header") in output
         assert "Checking Running Hermes Agent" in output
 
 
@@ -387,7 +416,7 @@ class TestHistoryDisplay:
         output = capsys.readouterr().out
 
         assert "Unknown command" not in output
-        assert "Recent sessions" in output
+        assert t("cli.session.recent_header") in output
         assert "Checking Running Hermes Agent" in output
         assert "20260401_201329_d85961" in output
 
@@ -506,7 +535,7 @@ class TestRootLevelProviderOverride:
 
     def test_model_provider_wins_over_root_provider(self, tmp_path, monkeypatch):
         """model.provider takes priority — root-level provider is only a fallback."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -529,7 +558,7 @@ class TestRootLevelProviderOverride:
 
     def test_root_provider_used_as_fallback_when_model_provider_missing(self, tmp_path, monkeypatch):
         """Legacy root-level provider still populates model.provider in the CLI loader."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -552,7 +581,7 @@ class TestRootLevelProviderOverride:
 
     def test_root_base_url_used_as_fallback_when_model_base_url_missing(self, tmp_path, monkeypatch):
         """Legacy root-level base_url still populates model.base_url in the CLI loader."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -574,7 +603,7 @@ class TestRootLevelProviderOverride:
 
     def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
         """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
-        import yaml
+        import hermes_yaml as yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -730,51 +759,39 @@ class TestRootLevelProviderOverride:
 
 
 class TestPluginToolsetStartupValidation:
-    """A toolset that is merely *not registered yet* must not be reported as unknown.
+    """Plugin toolsets are only known where plugins load (the gateway), so the CLI's toolset init
+    neither probes plugins nor judges names (#71650, PLG-7): the gateway refuses an unknown picked
+    name at session.create and reports a stale profile one with the session
+    (tests/hermes_cli/test_cli_profile_toolsets.py)."""
 
-    Plugins register their toolsets during background discovery, while the CLI validates
-    the configured list during construction -- i.e. before that thread has landed. Judging
-    by the live registry alone therefore flags every configured plugin toolset as a typo on
-    every launch, including one-shot/quiet runs whose stdout is machine-parsed.
-    """
-
-    @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+    def test_init_probes_no_plugins_and_keeps_the_list(self, monkeypatch):
         import cli as _cli_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
-        monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
-        monkeypatch.setattr(
-            "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
-            lambda: set(plugin_keys),
-        )
-        stub._init_toolsets(list(toolsets))
-        return stub, printed
-
-    def test_plugin_toolset_not_yet_registered_is_not_flagged(self, monkeypatch):
-        stub, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stack"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
+        for name in ("get_plugin_toolset_keys_nowait", "discover_plugins", "get_plugin_manager"):
+            monkeypatch.setattr(f"hermes_cli.plugins.{name}", lambda *_a: pytest.fail("probed plugins"))
+        stub._init_toolsets(["terminal", "voice_stack", "voice_stak"])
         assert printed == []
-        # The configured list is kept verbatim; only the false warning is silenced.
-        assert stub.enabled_toolsets == ["terminal", "voice_stack"]
-
-    def test_real_typo_still_warns(self, monkeypatch):
-        _, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stak"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
-        assert len(printed) == 1
-        assert "voice_stak" in printed[0]
-        assert "voice_stack" not in printed[0]
+        assert stub.enabled_toolsets == ["terminal", "voice_stack", "voice_stak"]
 
 
 
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({"OPENROUTER_API_KEY": "", "OPENAI_API_KEY": "fake-openai-project-key"}, ""),
+        ({"OPENROUTER_API_KEY": "", "OPENAI_API_KEY": "sk-or-v1-fake-in-openai-var"}, "sk-or-v1-fake-in-openai-var"),
+        ({"OPENROUTER_API_KEY": "sk-or-v1-fake-router", "OPENAI_API_KEY": "fake-openai-project-key"}, "sk-or-v1-fake-router"),
+    ],
+    ids=["real-openai-key-not-seeded", "sk-or-in-openai-var", "openrouter-key-wins"],
+)
+def test_openrouter_startup_key_never_holds_a_real_openai_key(env, expected):
+    # The startup key can reach /model before the first turn resolves runtime,
+    # so it must already follow the sk-or- gate for openrouter.ai.
+    cli = _make_cli(env_overrides=env)
+    assert (cli.api_key or "") == expected

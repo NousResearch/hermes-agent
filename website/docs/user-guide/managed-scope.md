@@ -90,6 +90,11 @@ usual "an environment variable overrides config.yaml" rule, and it applies only
 to the specific keys the managed layer specifies.
 :::
 
+When the managed `config.yaml` pins a non-empty `terminal.backend`, a profile
+`.env` that exists but cannot be read (a sandbox launcher withholds it and
+passes the keys as environment) loads as absent with a warning; without that
+pin the read error still stops Hermes.
+
 ## Seeing what's managed
 
 ```bash

@@ -505,8 +505,12 @@ def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):
 
         with patch.object(run_agent, "AIAgent", _make_recorder_class()):
             fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+            btw, _rt, _ = build_cache_parity_fork(agent, max_iterations=5, write_origin="side_question")
 
         assert not routed
+        # Only the review fork may derive its own xAI scope after compacting; /btw never does.
+        tags = [getattr(f, "_prompt_cache_fork_tag", None) for f in (fork, btw)]
+        assert tags == ["review", None], tags
         parent_scope = resolve_prompt_cache_scope(agent)
         assert parent_scope.startswith("gwk_"), parent_scope
         # The fork stamps the parent's resolved scope; both resolvers honor it.

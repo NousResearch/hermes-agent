@@ -5,7 +5,7 @@
  * on every route so the embedded chat PTY survives tab switches. The downside
  * is that the PTY-connect effect would otherwise open `/api/pty` — which spawns
  * the whole TUI + agent bootstrap (on a fresh checkout this prints
- * `Installing TUI dependencies…` and runs `npm install`) — the moment the
+ * `Installing TUI dependencies…` and installs them) — the moment the
  * dashboard loads *any* page, even one the user never navigates the chat into.
  *
  * The fix is to only open the PTY once the chat tab has actually been active,

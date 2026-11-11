@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Drive the Hermes TUI under HERMES_DEV_PERF and summarize the pipeline.
 
 Usage:
@@ -7,7 +7,7 @@ Usage:
 Defaults: picks the session with the most messages, holds PageUp for 8s at
 ~30 Hz (matching xterm key-repeat), summarizes ~/.hermes/perf.log on exit.
 
-The --tui build must exist (run `npm run build` in ui-tui first). This script
+The --tui build must exist (run `pnpm run build` in ui-tui first). This script
 launches `node dist/entry.js` directly with HERMES_TUI_RESUME set so it
 bypasses the hermes_cli wrapper — we want repeatable timing, not the CLI's
 session-picker flow.
@@ -115,7 +115,7 @@ def summarize(log: Path, since_ts_ms: int) -> dict[str, Any]:
     frame_events: list[dict[str, Any]] = []
     if not log.exists():
         return {"error": f"no log at {log}", "react": [], "frame": []}
-    for line in log.read_text(encoding="utf-8").splitlines():
+    for line in log.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -364,7 +364,7 @@ def format_diff(before: dict[str, float], after: dict[str, float]) -> str:
         b = before.get(k, 0.0)
         a = after.get(k, 0.0)
         d = a - b
-        pct_change = ((a / b) - 1) * 100 if b not in {0, 0.0} else float("inf") if a else 0
+        pct_change = ((a / b) - 1) * 100 if b not in {0} else float("inf") if a else 0
 
         # Flag improvements vs regressions. For _p99 / _max / _total / gaps_over /
         # patches / writeBytes / backpressure, LOWER is better.  For fps / gaps_under,
@@ -407,7 +407,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
     tui_dir = Path(args.tui_dir).resolve()
     entry = tui_dir / "dist" / "entry.js"
     if not entry.exists():
-        sys.exit(f"{entry} missing — run `npm run build` in {tui_dir} first")
+        sys.exit(f"{entry} missing — run `pnpm run build` in {tui_dir} first")
 
     sid = args.session or pick_longest_session(DEFAULT_STATE_DB)
     print(f"• session: {sid}")
@@ -517,7 +517,7 @@ def main() -> int:
         if not path.exists():
             print(f"\n⚠ no baseline at {path} — run with --save {args.compare} first")
         else:
-            before = json.loads(path.read_text(encoding="utf-8"))
+            before = json.loads(path.read_text(encoding="utf-8-sig"))
             print(f"\n═══ A/B diff vs {path} ═══")
             print(format_diff(before, metrics))
 
@@ -570,10 +570,11 @@ def loop_mode(args: argparse.Namespace) -> int:
             if iteration > 1:
                 print("• rebuilding…")
                 result = subprocess.run(
-                    ["npm", "run", "build"],
+                    ["pnpm", "run", "build"],
                     cwd=tui_dir,
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',
+                    check=False,
                 )
                 if result.returncode != 0:
                     print("✗ build failed:")

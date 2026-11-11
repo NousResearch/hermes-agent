@@ -76,6 +76,9 @@ def on_tool_execution(**kwargs):
     return result
 ```
 
+As with hooks, a callback without `**kwargs` receives only the fields its
+signature names, so a field added to the payload later does not break it.
+
 If multiple plugins register the same execution middleware kind, Hermes runs
 them as a nested chain in registration order. Middleware failures are fail-open:
 Hermes logs a warning and continues with the next middleware or the base
@@ -137,13 +140,16 @@ hermes plugins enable <plugin-name>
 hermes chat --query 'Reply exactly ok'
 ```
 
-For source checkouts, prefer the source command so the runtime sees plugins and
-middleware from the working tree:
+For source checkouts, use the [PM developer workflow](../reference/package-management.md#developer-workflow)
+and a separate development home so the runtime sees plugins and middleware from
+the working tree:
 
 ```bash
-uv sync
-uv run hermes plugins enable <plugin-name>
-uv run hermes chat --query 'Reply exactly ok'
+export HERMES_HOME="$HOME/hermes-middleware-test"
+export HERMES_RUNTIME_DIR="$HERMES_HOME/tools"
+source ./activate
+python hermes plugins enable <plugin-name>
+python hermes chat --query 'Reply exactly ok'
 ```
 
 ## Generic Plugin Examples
@@ -245,8 +251,9 @@ Execution middleware may call `next_call(modified_args)` to pass a changed
 payload to later middleware and the base tool dispatcher.
 
 Plugin-specific examples should live with the plugin that owns the behavior.
-NeMo Relay execution middleware is installed through an explicitly selected
-Relay `plugins.toml`; see
+NeMo Relay execution middleware is installed through Relay's discovered user
+and system configuration, or through an explicit `plugins.toml` selected with
+`HERMES_NEMO_RELAY_PLUGINS_TOML`; see
 [Relay shared metrics](relay-shared-metrics.md).
 
 ## Safety Notes

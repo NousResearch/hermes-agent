@@ -1,10 +1,10 @@
-"""Interactive messaging-platform setup wizards: WhatsApp (bridge + Cloud API), Slack manifest,
-Skill Sync.
+"""Interactive messaging-platform setup wizards: WhatsApp (bridge + Cloud API), Slack manifest.
 
 Split out of ``hermes_cli/main.py``. Names that still live in main are imported lazily at call time.
 """
 
 import contextlib
+import json
 import shutil
 import subprocess
 import sys
@@ -94,22 +94,54 @@ def _whatsapp_allowed_users(wa_mode: str, get_env_value, save_env_value) -> None
         print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
 
+def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
+    """An existing node_modules directory can still contain the previous bridge build."""
+    try:
+        desired = json.loads((bridge_dir / "package-lock.json").read_text(encoding="utf-8-sig"))
+        installed = json.loads((bridge_dir / "node_modules" / ".package-lock.json").read_text(encoding="utf-8-sig"))
+        packages = desired["packages"]
+        actual = installed["packages"]
+        dependencies = packages[""]["dependencies"]
+        for name in dependencies:
+            key = "node_modules/" + name
+            expected = packages[key]
+            present = actual.get(key, {})
+            if any(present.get(field) != expected.get(field) for field in ("version", "integrity")):
+                return False
+            if not (bridge_dir / key / "package.json").is_file():
+                return False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
     from hermes_constants import find_node_executable, with_hermes_node_path
-    if (bridge_dir / "node_modules").exists():
+    from utils import env_int
+    if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
         return True
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
+    import pm
+
     npm = find_node_executable("npm")
-    if not npm:
-        print("  ✗ npm not found on PATH — install Node.js first")
-        return False
     try:
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm", explicit=True).env
+            installed = pm.installed_package("npm")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("npm", "npm binary is missing after preparation")
+            npm = str(installed.binary)
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", env=with_hermes_node_path())
+            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
+            encoding="utf-8", errors="replace", env=env, check=False)
+    except (pm.InstallError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f"  ✗ Bridge dependency preparation failed: {exc}")
+        return False
     except KeyboardInterrupt:
         print("\n  ✗ Install cancelled")
         return False
@@ -120,6 +152,17 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         return False
     print("  ✓ Dependencies installed")
     return True
+
+
+def _whatsapp_has_paired_identity(session_dir):
+    """Baileys writes an identity only after validating the primary's pairing response."""
+    try:
+        creds = json.loads((session_dir / "creds.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(creds, dict) or not isinstance(creds.get("me"), dict):
+        return False
+    return isinstance(creds["me"].get("id"), str) and bool(creds["me"]["id"])
 
 
 def cmd_whatsapp(args):
@@ -163,6 +206,9 @@ def cmd_whatsapp(args):
             session_dir.mkdir(parents=True, exist_ok=True)
             print("  ✓ Session cleared")
         else:
+            if not _whatsapp_has_paired_identity(session_dir):
+                print("Pairing is incomplete. Run 'hermes whatsapp' again and choose to re-pair.")
+                return
             # Older installs may have lost WHATSAPP_ENABLED; a kept pairing re-asserts it.
             if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
                 save_env_value("WHATSAPP_ENABLED", "true")
@@ -176,13 +222,29 @@ def cmd_whatsapp(args):
     else:
         print("📱 Open WhatsApp on your phone, then scan:")
     _say("", "   Settings → Linked Devices → Link a Device", "─" * 50, "")
+    import pm
+
+    node = find_node_executable("node")
+    if node is None:
+        try:
+            pm.ensure("node", explicit=True)
+            installed = pm.installed_package("node")
+            if installed is None or installed.binary is None:
+                raise pm.InstallError("node", "Node.js binary is missing after preparation")
+            node = str(installed.binary)
+        except pm.InstallError as exc:
+            print(f"  ✗ Node.js preparation failed: {exc}")
+            return
+    pair_command = [node, str(bridge_script), "--pair-only", "--session", str(session_dir)]
+    if getattr(args, "passkey_browser", None):
+        pair_command.extend(["--passkey-browser", args.passkey_browser])
+    pair_result = None
     with contextlib.suppress(KeyboardInterrupt):
-        subprocess.run(
-            [find_node_executable("node") or "node", str(bridge_script), "--pair-only", "--session", str(session_dir)],
-            cwd=str(bridge_dir), env=with_hermes_node_path())
+        # health: allow HX006 -- interactive child: ends on success, failure or Ctrl+C; a fixed bound kills it mid-prompt
+        pair_result = subprocess.run(pair_command, cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
 
     print()
-    if not (session_dir / "creds.json").exists():
+    if pair_result is None or pair_result.returncode != 0 or not _whatsapp_has_paired_identity(session_dir):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
         return
     # Only enable WhatsApp now that pairing actually succeeded (see above).
@@ -204,178 +266,11 @@ def cmd_whatsapp(args):
 
 def cmd_whatsapp_cloud(args):
     """Set up WhatsApp Business Cloud API (official Meta integration) — complementary to the
-    ``hermes whatsapp`` Baileys bridge wizard. See ``hermes_cli/setup_whatsapp_cloud.py``."""
+    ``hermes whatsapp`` Baileys bridge wizard. See ``plugins/platforms/whatsapp_cloud/setup_wizard.py``."""
     from hermes_cli.main import _require_tty
     _require_tty("whatsapp-cloud")
-    from hermes_cli.setup_whatsapp_cloud import run_whatsapp_cloud_setup
+    from plugins.platforms.whatsapp_cloud.setup_wizard import run_whatsapp_cloud_setup
     return run_whatsapp_cloud_setup()
-
-
-_SYNC_USAGE = (
-    "usage: hermes sync "
-    "<status|pull|push|now|enable|disable|device|propose>\n"
-    "\n"
-    "Your skills, across your devices:\n"
-    "  status            Show what is synced, and from where\n"
-    "  pull              Pull your synced skills\n"
-    "  push              Push your opted-in skills\n"
-    "  now               Reconcile now: pull then push\n"
-    "  enable <skill>    Include a skill in your sync\n"
-    "  disable <skill>   Exclude a skill from your sync\n"
-    "  device [--name N] Show or set this device's label\n"
-    "\n"
-    "Shared with your team:\n"
-    "  propose <skill>   Share a skill with your organisation")
-
-
-def _sync_device(args, ssc) -> int:
-    name = getattr(args, "device_name", None)
-    if name is not None:
-        try:
-            stored = ssc.set_device_name(name)
-        except ValueError as e:
-            _err(f"error: {e}")
-            return 1
-        print(f"device label set to '{stored}'.")
-        _err("New commits from this device will use this label; existing commits keep their previous one.")
-        return 0
-    # No --name: print the current (creating a default on first use).
-    print(ssc.stable_device_id())
-    return 0
-
-
-def _sync_propose(args, ssc) -> int:
-    from tools.skills_sync_client_org import propose_skill
-    name = args.name
-    try:
-        result = propose_skill(name, message=args.message)
-    except ssc.SyncInertError as e:
-        _err(f"cannot share this skill: {e}")
-        return 1
-    except ssc.SyncError as e:
-        _err(f"could not share '{name}': {e}")
-        return 1
-    if result.get("proposal_pending"):
-        print(f"Shared '{name}' with your organisation — an admin needs to "
-              f"approve it (proposal #{result.get('proposal_id')}). It is "
-              f"not live for the team until then.")
-    else:
-        print(f"Added '{name}' to your organisation's shared skills.")
-    return 0
-
-
-def _sync_toggle(args, sub: str) -> int:
-    from tools.skill_usage import set_sync, is_curation_eligible
-    skill = args.skill
-    if not is_curation_eligible(skill):
-        _err(f"'{skill}' is not sync-eligible (bundled, hub-installed, "
-             f"external, or not found). Only agent-created / user-authored "
-             f"skills under ~/.hermes/skills/ can sync.")
-        return 1
-    set_sync(skill, sub == "enable")
-    print(f"sync {'enabled' if sub == 'enable' else 'disabled'} for '{skill}'.")
-    return 0
-
-
-def _sync_status(ssc) -> int:
-    import json as _json
-    status = ssc.sync_status()
-    print(_json.dumps(status, indent=2, ensure_ascii=False))
-    if status.get("org_available"):
-        n = len(status.get("org_skills") or [])
-        modified = status.get("org_skills_modified") or []
-        _err(f"\nOrg skills: {n} shared skill(s) from your organisation "
-             f"(your role: {status.get('org_role')}). They load alongside "
-             f"your own, labeled by origin, and you can edit them.")
-        if modified:
-            _err(f"  {len(modified)} with local edits not yet shared: "
-                 f"{', '.join(modified)}\n"
-                 f"  Share them back with `hermes sync propose <skill>`. "
-                 f"Org updates will not overwrite them.")
-    elif status.get("logged_in"):
-        _err("\nOrg skills: not applicable — this account isn't a member of a shared organisation.")
-    if not status.get("logged_in"):
-        _err("\nNot logged into Nous Portal — sync is inert.")
-    elif not status.get("nous_admin"):
-        _err("\nSync is not enabled for your account yet.")
-    elif not status.get("feature_enabled"):
-        _err("\nSync feature is off for this instance (set HERMES_SYNC_ENABLED=1 "
-             "or config.yaml sync.enabled: true). Sync is inert.")
-    elif not status.get("base_url"):
-        _err("\nNo sync base URL configured (config.yaml sync.base_url or HERMES_SYNC_BASE_URL). Sync is inert.")
-    return 0
-
-
-def _sync_pull(ssc, identity):
-    result = ssc.pull_skills(identity=identity)
-    # Refresh the org mirror too when this account belongs to an organisation (no-op
-    # otherwise), so one pull covers both.
-    from tools.skills_sync_client_org import maybe_pull_org_skills
-    org_result = maybe_pull_org_skills()
-    if org_result:
-        n = len(org_result.get("updated") or [])
-        _err(f"org: refreshed {n} shared skill(s) from your organisation.")
-        clashes = org_result.get("conflicted") or []
-        if clashes:
-            _err(f"org: {len(clashes)} skill(s) have BOTH local edits "
-                 f"and org updates, so they were left as-is: "
-                 f"{', '.join(clashes)}\n"
-                 f"     Your local version is intact. Review it, then "
-                 f"either propose it or delete the local copy and pull "
-                 f"again to take the org version.")
-    return result
-
-
-# gated (identity-checked) sync subcommands: name -> (ssc, identity) -> result
-_SYNC_GATED = {
-    "pull": _sync_pull,
-    "push": lambda ssc, identity: ssc.push_skills(identity=identity, message="hermes sync push"),
-    "now": lambda ssc, identity: {"pull": ssc.pull_skills(identity=identity),
-                                  "push": ssc.push_skills(identity=identity, message="hermes sync now")}}
-
-
-def cmd_sync(args):
-    """Skill Sync — personal sync across devices, plus sharing with your org."""
-    import json as _json
-    sub = getattr(args, "sync_command", None)
-    if sub in {None, ""}:
-        _err(_SYNC_USAGE)
-        return 1
-    if sub in {"enable", "disable"}:
-        return _sync_toggle(args, sub)
-
-    from tools import skills_sync_client as ssc
-    if sub == "device":
-        return _sync_device(args, ssc)
-    if sub == "propose":
-        return _sync_propose(args, ssc)
-    if sub == "status":
-        return _sync_status(ssc)
-
-    # pull / push / now — enforce the gate up front with a clear message.
-    try:
-        identity = ssc.resolve_identity()
-    except ssc.SyncInertError as e:
-        _err(f"sync inert: {e}")
-        return 1
-    if not identity.get("nous_admin"):
-        _err("sync unavailable: not enabled for your account yet.")
-        return 1
-    if not ssc.resolve_sync_base_url():
-        _err("sync inert: no sync base URL configured (config.yaml sync.base_url or HERMES_SYNC_BASE_URL).")
-        return 1
-
-    action = _SYNC_GATED.get(sub)
-    if action is None:
-        _err(f"Unknown sync subcommand: {sub}")
-        return 1
-    try:
-        result = action(ssc, identity)
-    except ssc.SyncError as e:
-        _err(f"sync failed: {e}")
-        return 1
-    print(_json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
 
 
 def cmd_slack(args):

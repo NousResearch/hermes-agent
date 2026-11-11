@@ -36,7 +36,7 @@ def _shim_browser_processes(tmp_path: Path) -> list[str]:
     ]
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_handoff_opens_no_browser_window_when_chrome_is_default(tmp_path):
     # Chrome is the system default https handler: the case the
     # default-browser gate let through.

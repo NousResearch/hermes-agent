@@ -12,6 +12,7 @@ We shim the imports at module load so collection doesn't fail.
 """
 
 import asyncio
+import html
 import json
 import os
 import sys
@@ -19,6 +20,8 @@ import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from agent.i18n import t
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
@@ -125,12 +128,12 @@ _ensure_google_mocks()
 # (which targets bare ``import adapter`` / ``from adapter import …`` and
 # ``sys.path.insert`` into ``plugins/platforms/``) does not flag this
 # fully-qualified form.
-import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
+import plugins.platforms.google_chat.adapter as _gc_mod
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
-from plugins.platforms.google_chat.adapter import (  # noqa: E402
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.google_chat.adapter import (
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
@@ -815,8 +818,22 @@ class TestSend:
         assert buttons[0]["text"] == "Simple"
         assert buttons[0]["onClick"]["action"]["function"] == "hermes_clarify"
         assert {"key": "choice", "value": "Simple"} in buttons[0]["onClick"]["action"]["parameters"]
-        assert buttons[-1]["text"] == "Other / type answer"
+        assert buttons[-1]["text"] == t("platform.google_chat.clarify.other_button")
         assert adapter._clarify_state["clarify123"] == "session-key"
+
+        long_choice = "Wrap the output in <b>bold</b> tags & a <br> after every paragraph"
+        await adapter.send_clarify("spaces/S", "Format?", [long_choice, "Plain"], "clarify124", "sk")
+        widgets = adapter._create_message.await_args.args[1]["cardsV2"][0]["card"]["sections"][0]["widgets"]
+        text = widgets[0]["textParagraph"]["text"]
+        assert "1. Wrap the output in &lt;b&gt;bold&lt;/b&gt; tags &amp; a &lt;br&gt; after" in text
+        assert [b["text"] for b in widgets[1]["buttonList"]["buttons"]][:2] == ["1", "2"]
+        # The card's Markdown pass must not fold a literal ``**bold**`` option into ``*bold*``.
+        pair = [f"Write the markdown token {tok} literally in the output file" for tok in ("**bold**", "*bold*")]
+        await adapter.send_clarify("spaces/S", "Format?", pair, "clarify125", "sk")
+        text = adapter._create_message.await_args.args[1]["cardsV2"][0]["card"]["sections"][0]["widgets"][0][
+            "textParagraph"]["text"]
+        listed = [html.unescape(ln.split(". ", 1)[1]) for ln in text.splitlines() if ln[:2] in ("1.", "2.")]
+        assert listed == pair
 
 
 # ===========================================================================
@@ -970,7 +987,7 @@ class TestTypingLifecycle:
         await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
         adapter._patch_message.assert_awaited_once()
         # Patched with a final-state label, not deleted.
-        args, kwargs = adapter._patch_message.call_args
+        args, _kwargs = adapter._patch_message.call_args
         assert "interrupted" in args[1]["text"].lower()
         assert "spaces/S" not in adapter._typing_messages
 
@@ -1519,6 +1536,22 @@ class TestADCFallback:
 
 class TestSupervisorReconnect:
     @pytest.mark.asyncio
+    async def test_unauthenticated_status_does_not_guess_credential_cause(
+        self, adapter
+    ):
+        """An auth rejection may have causes other than a revoked SA key."""
+        adapter._subscriber.subscribe.side_effect = (
+            _gc_mod.gax_exceptions.Unauthenticated("request rejected")
+        )
+
+        await adapter._run_supervisor()
+
+        assert adapter.fatal_error_code == "pubsub_auth"
+        assert adapter.fatal_error_message == (
+            "Pub/Sub authentication failed; check service-account credentials and gateway logs"
+        )
+
+    @pytest.mark.asyncio
     async def test_fatal_after_max_retries(self, adapter, monkeypatch):
         """Simulate 10+ failing subscribe() calls and assert fatal error set."""
         # Stub out sleep so the test doesn't actually wait minutes.
@@ -1553,12 +1586,16 @@ class TestAuthorizationEmailMatch:
     back without a test failing.
     """
 
-    def test_allowlist_matches_when_user_id_is_email(self, monkeypatch):
+    def test_allowlist_matches_when_user_id_is_email(self, monkeypatch, tmp_path):
         """Email allowlist match — the canonical case.
 
         The adapter assigns ``user_id = sender_email`` so the generic
         check_ids path picks it up. No platform-specific bridge needed.
         """
+        from pathlib import Path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource

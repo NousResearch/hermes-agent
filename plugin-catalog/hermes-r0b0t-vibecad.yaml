@@ -1,0 +1,37 @@
+name: hermes-r0b0t-vibecad
+title: vibeCAD
+repo: https://github.com/r0b0tlab/hermes-r0b0t-vibeCAD
+sha: "921938cd4d85d33a483c85b7b944106418f481b7"
+description: >
+  Profile-driven FDM CAD: executes trusted build123d workspace models or
+  prepares a local single-shell STL, checks printer fit, renders depth-tested
+  full and detail views, and writes geometry handoffs. Bambu adapters cover X2D
+  and P2S; native process projects, live AMS binding and print dispatch are not
+  produced. Meshy is an optional separate plugin; its paid service calls are not
+  made by vibeCAD. CAD libraries require a separately bootstrapped Python
+  3.12/3.13 environment. Disclosure: reads/writes workspace files and runs
+  trusted Python in a local subprocess. Agent execution requires approval of
+  the final script path and bytes; direct runtime calls bypass the agent gate.
+  The subprocess environment is minimized, not a sandbox: approved code can
+  access files, credentials and the network. Approval binds only the top-level
+  script. Internal Hermes approval and interrupt APIs may change and produce
+  catalog rule 9 warnings. The plugin itself makes no runtime network calls
+  or telemetry.
+maintainer: am423
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.4.0"
+capabilities:
+  provides_tools:
+    - vibecad_list_printer_profiles
+    - vibecad_execute_and_export
+    - vibecad_inspect_metrics
+    - vibecad_generate_preview_renders
+    - vibecad_modify_parameter
+    - vibecad_stage_for_slicer
+    - vibecad_prepare_mesh
+    - vibecad_stage_for_bambu
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

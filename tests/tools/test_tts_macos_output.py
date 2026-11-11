@@ -38,7 +38,7 @@ def _run_stream(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.get_env_value",
                         lambda name, default=None: "fake-key"
                         if name == "ELEVENLABS_API_KEY" else default)
-    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {})
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
 
     class _FakeTTS:
         def __init__(self, *a, **k):
@@ -74,12 +74,12 @@ def _run_stream(monkeypatch):
     return sd_called["hit"]
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_streaming_tts_skips_sounddevice_on_macos(monkeypatch):
     assert _run_stream(monkeypatch) is False
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_streaming_tts_uses_sounddevice_off_macos(monkeypatch):
     # Off macOS the OutputStream setup runs; _import_sounddevice raising here
     # is caught by the function's own guard, so the call itself is what we assert.

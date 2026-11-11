@@ -17,6 +17,7 @@ from agent.message_sanitization import _sanitize_messages_surrogates
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
+from agent.turn_empty_response import add_empty_response_retry_hint
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -115,7 +116,11 @@ def assemble_api_request(
         _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
         _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        estimate_native_anthropic_messages_tokens_rough,
+        estimate_tokens_rough,
+    )
 
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
@@ -143,6 +148,12 @@ def assemble_api_request(
         agent, api_messages, messages, _sel_incoming, logger=request_logger
     )
 
+    # Context selection may replace the request with a fresh clone of canonical history.
+    # Re-apply durable rejection suppression after that final replacement hook.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+
+    apply_rejected_thinking_suppression(agent, api_messages)
+
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.
     api_messages = agent._sanitize_api_messages(api_messages)
@@ -151,8 +162,9 @@ def assemble_api_request(
     # OpenAI-style tool-result image_url parts. The per-call clone is rewritten in
     # place; persisted history is untouched.
     from agent.context_compressor import evict_stale_outbound_tool_images
+    from agent.image_eviction_policy import outbound_retired_image_ids
 
-    evict_stale_outbound_tool_images(api_messages)
+    evict_stale_outbound_tool_images(api_messages, outbound_retired_image_ids(agent))
 
     # One-time repeated-heal notice goes out via the status/warning callback, NEVER
     # appended to messages: the cached prompt prefix stays byte-identical.
@@ -186,6 +198,8 @@ def assemble_api_request(
     # Strip lone surrogates (U+D800-U+DFFF) that some Ollama-served models emit;
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
+
+    _empty_retry_suffix = add_empty_response_retry_hint(agent, api_messages)
 
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
@@ -225,6 +239,10 @@ def assemble_api_request(
     # prepared request instead of running the advisors again.
     _moa_prepared_request = None
     if agent.provider == "moa":
+        # Advisors fan out inside prepare: the request-only replay price leaves the copies first.
+        from agent.message_metadata import drop_request_reasoning_tokens
+
+        drop_request_reasoning_tokens(api_messages)
         _moa_prepared_request, api_messages, pending_moa_prepared_request = _prepare_moa_request(
             agent, api_messages, pending_moa_prepared_request
         )
@@ -235,7 +253,17 @@ def assemble_api_request(
     from agent.turn_context import _agent_stale_thinking_on_wire
 
     if _agent_stale_thinking_on_wire(agent):
-        approx_tokens = estimate_messages_tokens_rough(api_messages)
+        if getattr(agent, "api_mode", "") == "anthropic_messages":
+            from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+            if native_anthropic_preserves_prior_thinking(
+                getattr(agent, "base_url", ""), getattr(agent, "model", "")
+            ):
+                approx_tokens = estimate_native_anthropic_messages_tokens_rough(api_messages)
+            else:
+                approx_tokens = estimate_messages_tokens_rough(api_messages)
+        else:
+            approx_tokens = estimate_messages_tokens_rough(api_messages)
     else:
         approx_tokens = estimate_messages_tokens_rough(api_messages, charge_stale_thinking=False)
     # Route-aware: native Responses compaction prunes the wire payload, so the raw
@@ -252,7 +280,7 @@ def assemble_api_request(
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
     agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
-        request_pressure_tokens = _anchored_pressure
+        request_pressure_tokens = _anchored_pressure + estimate_tokens_rough(_empty_retry_suffix)
     else:
         # Rough fallback only: floor at the provider's last REAL prompt size (an anchored
         # figure is provider-exact and is never floored — on MoA turns that would re-add
@@ -260,6 +288,10 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
+    # Measured: the request-only replay price must not reach a provider.
+    from agent.message_metadata import drop_request_reasoning_tokens
+
+    drop_request_reasoning_tokens(api_messages)
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

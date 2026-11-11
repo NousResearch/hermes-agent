@@ -11,11 +11,15 @@ full content), ``dedup_hits`` (stub-loop breaker), ``read_timestamps``
 task has paged through at one file version — contiguous pages that reach the last line
 count as a whole-file read), ``full_write_baselines`` (resolved paths whose
 whole-file content this task saw via unredacted read_file page(s) or wrote via
-write_file; required before write_file may overwrite an existing file — patch
-never qualifies) and ``not_found`` (short-TTL negative cache). Every
+write_file, or patched from a baseline it already held; required before write_file
+may overwrite an existing file), ``blind_patches`` (resolved path -> sha256 a patch
+of this task wrote without such a baseline, for the refusal wording) and
+``not_found`` (short-TTL negative cache). Every
 container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
 """
 
+import contextlib
+import contextvars
 import hashlib
 import logging
 import os
@@ -52,7 +56,8 @@ def _task_data(task_id: str) -> dict:
     (search_tool / tests create partial entries). Lock must be held."""
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
-    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines"):
+    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines",
+                "blind_patches"):
         task_data.setdefault(key, {})
     task_data.setdefault("dedup_generation_reads", set())
     return task_data
@@ -90,6 +95,7 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("read_timestamps", _READ_TIMESTAMPS_CAP),
         ("read_coverage", _READ_TIMESTAMPS_CAP),
         ("full_write_baselines", _FULL_WRITE_BASELINES_CAP),
+        ("blind_patches", _FULL_WRITE_BASELINES_CAP),
         ("not_found", _NOT_FOUND_CAP)):
         container = task_data.get(key)
         if container is not None and len(container) > cap:
@@ -144,8 +150,47 @@ def _record_not_found(op: str, resolved_str: str, task_id: str, error_json: str)
         _cap_read_tracker_data(task_data)
 
 
+# Set while an ``execute_code`` cell dispatches a tool. The cell consumes the result in code, so
+# the "you already have this" stub only breaks it (``result["content"]`` raises), and the read
+# shows the model nothing, so it must not count as content the conversation has seen.
+_programmatic_read: contextvars.ContextVar[bool] = contextvars.ContextVar("programmatic_file_read", default=False)
+
+
+@contextlib.contextmanager
+def programmatic_file_read():
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
+
+
+def _dedup_lookup(task_id: str, dedup_key: tuple) -> tuple[dict, object, bool]:
+    """``(task_data, cached_version, stub_eligible)`` for a read. Eligible means the model was
+    already served this region since the last compaction boundary (the summary may have dropped
+    exact bytes, so the first read after one serves content); never for a programmatic read."""
+    with _read_tracker_lock:
+        task_data = _task_data(task_id)
+        return (task_data, task_data["dedup"].get(dedup_key),
+                dedup_key in task_data["dedup_generation_reads"] and not _programmatic_read.get())
+
+
+def _note_read_served(task_data: dict, dedup_key: tuple, path: str, offset: int, limit: int) -> tuple[int, dict]:
+    """Record that a read's content was served; returns ``(consecutive count, dedup map)``. Lock
+    must be held. A programmatic read leaves the model-facing state alone: count 1 and a
+    throwaway map, so a later read by the model is never told it already has these bytes."""
+    if _programmatic_read.get():
+        return 1, {}  # the map is discarded: nothing is remembered as shown to the model
+    task_data["dedup_hits"].pop(dedup_key, None)
+    task_data["dedup_generation_reads"].add(dedup_key)
+    return _bump_consecutive(task_data, ("read", path, offset, limit)), task_data["dedup"]
+
+
 def _bump_consecutive(task_data: dict, key: tuple) -> int:
-    """Update last_key/consecutive for *key* and return the new count. Lock must be held."""
+    """Update last_key/consecutive for *key* and return the new count. Lock must be held.
+    A cell repeating a read or search in a loop is code, not a model stuck re-asking: count 1."""
+    if _programmatic_read.get():
+        return 1
     if task_data["last_key"] == key:
         task_data["consecutive"] += 1
     else:
@@ -154,7 +199,7 @@ def _bump_consecutive(task_data: dict, key: tuple) -> int:
     return task_data["consecutive"]
 
 
-def reset_file_dedup(task_id: str = None):
+def reset_file_dedup(task_id: str | None = None):
     """Advance the read-dedup generation after context compression (one task, or all
     when ``task_id`` is None). The per-key ``dedup`` metadata map is PRESERVED so unchanged
     files keep returning stubs instead of re-bloating the reclaimed context; the
@@ -281,6 +326,7 @@ def _mark_full_write_baseline(resolved: str, task_id: str, expected_sha256: str 
     with _read_tracker_lock:
         task_data = _task_data(task_id)
         task_data["full_write_baselines"][str(resolved)] = version
+        task_data["blind_patches"].pop(str(resolved), None)
         _cap_read_tracker_data(task_data)
 
 
@@ -289,6 +335,61 @@ def _has_full_write_baseline(resolved: str, task_id: str) -> bool:
         task_data = _read_tracker.get(task_id) or {}
         baseline = task_data.get("full_write_baselines", {}).get(str(resolved))
     return baseline is not None and _file_version(resolved) == baseline
+
+
+def _known_full_content_sha256(resolved_paths, task_id: str) -> dict:
+    """``{resolved: sha256 hex}`` for each path whose recorded full-write baseline still
+    matches the bytes on disk. Call under the per-path locks, before a patch reads."""
+    with _read_tracker_lock:
+        baselines = dict((_read_tracker.get(task_id) or {}).get("full_write_baselines", {}))
+    known = {}
+    for resolved in {str(r) for r in resolved_paths if r}:
+        baseline = baselines.get(resolved)
+        if baseline is not None and _file_version(resolved) == baseline:
+            known[resolved] = baseline[-1].hex()
+    return known
+
+
+def _carry_full_write_baselines(task_id: str, known: dict, writes, path_to_resolved: dict) -> None:
+    """After this task's own successful patch: keep the whole-file baseline of each written
+    path when the task knew the exact bytes the patch read (``known``, from
+    ``_known_full_content_sha256``) or the patch created the file (read sha ``""``). Then
+    the task knows every byte it wrote. ``writes`` is ``PatchResult._writes`` in order, so
+    a second edit of the same path chains from the first. The mark re-hashes the disk and
+    requires the bytes the patch wrote, so a writer landing after the patch leaves no
+    baseline. A write the task could not vouch for is noted in ``blind_patches``."""
+    lookup = {raw: r for raw, r in path_to_resolved.items() if r}
+    lookup.update({r: r for r in lookup.values()})
+    known = dict(known)
+    written: dict = {}
+    for path, read_sha, written_sha in writes:
+        resolved = lookup.get(path)
+        if resolved is None:
+            continue  # a backend-side path (sandbox, translated mount): no host baseline
+        vouched = read_sha == "" or (read_sha is not None and read_sha == known.get(resolved))
+        known[resolved] = written_sha if vouched else None
+        written[resolved] = written_sha
+    for resolved, written_sha in written.items():
+        if written_sha is None:
+            continue
+        if known[resolved] is not None:
+            _mark_full_write_baseline(resolved, task_id, written_sha)
+            continue
+        with _read_tracker_lock:
+            task_data = _task_data(task_id)
+            task_data["blind_patches"][resolved] = written_sha
+            _cap_read_tracker_data(task_data)
+
+
+def _is_own_blind_patch(resolved: str, task_id: str) -> bool:
+    """True when the bytes on disk are exactly what this task's own patch wrote without a
+    full-content baseline (a blind patch, or one after a partial view)."""
+    with _read_tracker_lock:
+        written_sha = ((_read_tracker.get(task_id) or {}).get("blind_patches") or {}).get(str(resolved))
+    if written_sha is None:
+        return False
+    version = _file_version(resolved)
+    return version is not None and version[-1].hex() == written_sha
 
 
 _READ_COVERAGE_RANGES_CAP = 256

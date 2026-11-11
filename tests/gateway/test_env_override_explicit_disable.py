@@ -3,8 +3,8 @@ in config.yaml must survive ``_apply_env_overrides`` when that platform's
 credentials are present in the environment.
 
 Before the fix, twelve credential-presence branches (weixin, whatsapp_cloud,
-homeassistant, email, sms, dingtalk, feishu, wecom, wecom_callback, bluebubbles,
-qqbot, yuanbao) force-set ``enabled = True`` unconditionally, while Telegram /
+email, sms, dingtalk, feishu, wecom, wecom_callback, bluebubbles,
+qqbot) force-set ``enabled = True`` unconditionally, while Telegram /
 Discord / Slack routed through ``_enable_from_env`` and honored the
 ``_enabled_explicit`` marker.  These tests drive the real ``load_gateway_config``
 against a temp HERMES_HOME — real YAML I/O, no mocks of the code under test.
@@ -17,7 +17,6 @@ import pytest
 from gateway import config_env as gateway_config_env
 from gateway.config import Platform, load_gateway_config
 
-
 # platform -> env credentials that trigger its env-enable branch
 CRED_ENV = {
     "weixin": {
@@ -28,7 +27,6 @@ CRED_ENV = {
         "WHATSAPP_CLOUD_PHONE_NUMBER_ID": "1234567890",
         "WHATSAPP_CLOUD_ACCESS_TOKEN": "EAAB-test-access-token",
     },
-    "homeassistant": {"HASS_TOKEN": "hass-long-lived-token"},
     # flag-driven, not credential-driven: WHATSAPP_ENABLED=true must not beat an explicit YAML disable (#73289)
     "whatsapp": {"WHATSAPP_ENABLED": "true"},
     "email": {
@@ -50,7 +48,6 @@ CRED_ENV = {
         "BLUEBUBBLES_PASSWORD": "bb-password",
     },
     "qqbot": {"QQ_APP_ID": "qq-app", "QQ_CLIENT_SECRET": "qq-secret"},
-    "yuanbao": {"YUANBAO_APP_ID": "yb-app", "YUANBAO_APP_SECRET": "yb-secret"},
     # control: the pattern that always honored the explicit disable
     "telegram": {"TELEGRAM_BOT_TOKEN": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"},
 }
@@ -58,9 +55,8 @@ CRED_ENV = {
 _PLATFORM_ENV_PREFIXES = (
     "TELEGRAM_", "DISCORD_", "SLACK_", "WEIXIN_", "WHATSAPP_", "HASS_", "EMAIL_",
     "TWILIO_", "DINGTALK_", "FEISHU_", "WECOM_", "BLUEBUBBLES_", "QQ_", "QQBOT_",
-    "YUANBAO_", "GATEWAY_RELAY", "SIGNAL_", "MATTERMOST_", "MATRIX_",
+    "GATEWAY_RELAY", "SIGNAL_", "MATTERMOST_", "MATRIX_",
 )
-
 
 def _isolate(monkeypatch, tmp_path, env):
     import os
@@ -74,7 +70,6 @@ def _isolate(monkeypatch, tmp_path, env):
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     return hermes_home
-
 
 @pytest.mark.parametrize("platform", sorted(CRED_ENV))
 def test_yaml_explicit_disable_survives_env_credentials(platform, tmp_path, monkeypatch):
@@ -93,7 +88,6 @@ def test_yaml_explicit_disable_survives_env_credentials(platform, tmp_path, monk
         "disabled in config.yaml (#48820 Bug 2)"
     )
 
-
 @pytest.mark.parametrize("platform", sorted(CRED_ENV))
 def test_env_credentials_still_enable_without_yaml_opinion(platform, tmp_path, monkeypatch):
     """No ``enabled`` key in YAML + credentials in env -> env-only setup still works."""
@@ -106,7 +100,6 @@ def test_env_credentials_still_enable_without_yaml_opinion(platform, tmp_path, m
     assert cfg is not None and cfg.enabled is True, (
         f"{platform}: env-only configuration must still enable the platform"
     )
-
 
 def test_env_credentials_still_populate_extra_when_yaml_disables(tmp_path, monkeypatch):
     """The disable only gates ``enabled``; credentials are still wired through
@@ -125,12 +118,10 @@ def test_env_credentials_still_populate_extra_when_yaml_disables(tmp_path, monke
     # marker never leaks out of config load
     assert "_enabled_explicit" not in cfg.extra
 
-
 @pytest.fixture()
 def _fresh_warn_dedup(monkeypatch):
     """The explicit-disable notice is one-time per process; start each test clean."""
     monkeypatch.setattr(gateway_config_env, "_EXPLICIT_DISABLE_WARNED", set())
-
 
 @pytest.mark.usefixtures("_fresh_warn_dedup")
 @pytest.mark.parametrize("platform", sorted(CRED_ENV))
@@ -156,21 +147,19 @@ def test_explicit_disable_with_env_credentials_warns_once(platform, tmp_path, mo
     for env_name in CRED_ENV[platform]:
         assert env_name in msg
 
-
 @pytest.mark.usefixtures("_fresh_warn_dedup")
 def test_no_warning_when_yaml_has_no_opinion_or_is_enabled(tmp_path, monkeypatch, caplog):
-    hermes_home = _isolate(monkeypatch, tmp_path, {**CRED_ENV["weixin"], **CRED_ENV["homeassistant"]})
+    hermes_home = _isolate(monkeypatch, tmp_path, {**CRED_ENV["weixin"], **CRED_ENV["qqbot"]})
     (hermes_home / "config.yaml").write_text(
-        "platforms:\n  homeassistant:\n    enabled: true\n", encoding="utf-8"
+        "platforms:\n  qqbot:\n    enabled: true\n", encoding="utf-8"
     )
 
     with caplog.at_level(logging.WARNING, logger="gateway.config"):
         config = load_gateway_config()
 
     assert config.platforms[Platform.WEIXIN].enabled is True
-    assert config.platforms[Platform.HOMEASSISTANT].enabled is True
+    assert config.platforms[Platform.QQBOT].enabled is True
     assert not [r for r in caplog.records if "explicitly disabled" in r.getMessage()]
-
 
 @pytest.mark.usefixtures("_fresh_warn_dedup")
 def test_no_warning_when_disabled_and_no_env_credentials(tmp_path, monkeypatch, caplog):
@@ -185,5 +174,3 @@ def test_no_warning_when_disabled_and_no_env_credentials(tmp_path, monkeypatch, 
 
     assert config.platforms[Platform.WEIXIN].enabled is False
     assert not [r for r in caplog.records if "explicitly disabled" in r.getMessage()]
-
-

@@ -1,7 +1,7 @@
 """Test that overlay providers with mismatched models.dev keys resolve correctly.
 
-HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot") while
-_PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").  The slug
+HERMES_OVERLAYS keys may be models.dev IDs (e.g. "kimi-for-coding") while
+_PROVIDER_MODELS and config.yaml use Hermes IDs ("kimi-coding").  The slug
 resolution in list_authenticated_providers() Section 2 must bridge this gap.
 
 Covers: #5223, #6492
@@ -14,21 +14,21 @@ from unittest.mock import patch
 from hermes_cli.model_switch import list_authenticated_providers
 
 
-# -- Copilot slug resolution (env var path) ----------------------------------
+# -- Overlay slug resolution (env var path) ----------------------------------
 
-@patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "fake-ghu"}, clear=False)
-def test_copilot_uses_hermes_slug():
-    """github-copilot overlay should resolve to slug='copilot' with curated models."""
-    providers = list_authenticated_providers(current_provider="copilot")
+@patch.dict(os.environ, {"KIMI_API_KEY": "fake-kimi"}, clear=False)
+def test_overlay_provider_uses_hermes_slug():
+    """kimi-for-coding overlay should resolve to slug='kimi-coding' with curated models."""
+    providers = list_authenticated_providers(current_provider="kimi-coding")
 
-    copilot = next((p for p in providers if p["slug"] == "copilot"), None)
-    assert copilot is not None, "copilot should appear when COPILOT_GITHUB_TOKEN is set"
-    assert copilot["total_models"] > 0, "copilot should have curated models"
-    assert copilot["is_current"] is True
+    kimi = next((p for p in providers if p["slug"] == "kimi-coding"), None)
+    assert kimi is not None, "kimi-coding should appear when KIMI_API_KEY is set"
+    assert kimi["total_models"] > 0, "kimi-coding should have curated models"
+    assert kimi["is_current"] is True
 
     # Must NOT appear under the models.dev key
-    gh_copilot = next((p for p in providers if p["slug"] == "github-copilot"), None)
-    assert gh_copilot is None, "github-copilot slug should not appear (resolved to copilot)"
+    kimi_md = next((p for p in providers if p["slug"] == "kimi-for-coding"), None)
+    assert kimi_md is None, "kimi-for-coding slug should not appear (resolved to kimi-coding)"
 
 
 

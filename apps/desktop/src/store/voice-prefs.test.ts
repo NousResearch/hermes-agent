@@ -9,10 +9,14 @@ import { saveHermesConfig } from '@/hermes'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 
 import {
+  $bargeInEnabled,
   $bargeInThresholdMultiplier,
+  $voiceSilenceMs,
   $voiceStopPhrase,
   $voiceStopPhraseConfig,
+  applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
+  applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
 } from './voice-prefs'
 
@@ -169,5 +173,72 @@ describe('applyBargeInThresholdFromConfig', () => {
 
     applyBargeInThresholdFromConfig(null)
     expect($bargeInThresholdMultiplier.get()).toBeNull()
+  })
+})
+
+// `voice.barge_in` mirrors the gateway's `_arm_barge_listener_if_enabled`
+// (tui_gateway/methods_voice.py): the listener is armed unless the key is
+// explicitly false.
+describe('applyBargeInEnabledFromConfig', () => {
+  it('disarms only an explicit false', () => {
+    applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+    expect($bargeInEnabled.get()).toBe(false)
+
+    applyBargeInEnabledFromConfig({ voice: { barge_in: true } })
+    expect($bargeInEnabled.get()).toBe(true)
+  })
+
+  it('absent, null, or malformed values keep barge-in enabled', () => {
+    for (const voice of [undefined, {}, { barge_in: null }, { barge_in: 'nope' }, { barge_in: 0 }]) {
+      applyBargeInEnabledFromConfig({ voice: { barge_in: false } })
+      applyBargeInEnabledFromConfig({ voice })
+      expect($bargeInEnabled.get()).toBe(true)
+    }
+
+    applyBargeInEnabledFromConfig(null)
+    expect($bargeInEnabled.get()).toBe(true)
+  })
+})
+
+// `voice.silence_duration` drives the desktop loop the way it drives the
+// CLI/TUI capture paths, but only when the user actually changed it: `/api/config`
+// merges DEFAULT_CONFIG, so an untouched install reports the backend default
+// (3.0) rather than omitting the key, and reading that unconditionally would
+// triple the hold for everyone (the loop was tuned to 1.25 s).
+describe('applyVoiceSilenceMsFromConfig', () => {
+  const backendDefault = { voice: { silence_duration: 3.0 } }
+
+  it('a user-set silence_duration overrides the desktop hold (seconds to ms)', () => {
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: 0.7 } }, backendDefault)
+    expect($voiceSilenceMs.get()).toBe(700)
+
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: 10 } }, backendDefault)
+    expect($voiceSilenceMs.get()).toBe(10_000)
+
+    applyVoiceSilenceMsFromConfig({ voice: { silence_duration: '2' } }, backendDefault)
+    expect($voiceSilenceMs.get()).toBe(2_000)
+  })
+
+  it('an untouched install keeps the tuned 1.25 s desktop hold', () => {
+    applyVoiceSilenceMsFromConfig(backendDefault, backendDefault)
+    expect($voiceSilenceMs.get()).toBe(1_250)
+
+    // Defaults endpoint unavailable: the backend default is still recognisable.
+    applyVoiceSilenceMsFromConfig(backendDefault, {})
+    expect($voiceSilenceMs.get()).toBe(1_250)
+
+    applyVoiceSilenceMsFromConfig({ voice: {} }, backendDefault)
+    expect($voiceSilenceMs.get()).toBe(1_250)
+
+    applyVoiceSilenceMsFromConfig(null)
+    expect($voiceSilenceMs.get()).toBe(1_250)
+  })
+
+  it('malformed or non-positive values keep the default like the gateway lookup', () => {
+    for (const raw of [0, -1, true, 'quiet', null, {}]) {
+      applyVoiceSilenceMsFromConfig({ voice: { silence_duration: 0.7 } }, backendDefault)
+      applyVoiceSilenceMsFromConfig({ voice: { silence_duration: raw } }, backendDefault)
+      expect($voiceSilenceMs.get()).toBe(1_250)
+    }
   })
 })

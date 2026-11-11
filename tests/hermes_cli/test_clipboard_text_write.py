@@ -17,7 +17,7 @@ def _completed(returncode=0):
     return subprocess.CompletedProcess(args=[], returncode=returncode)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_darwin_uses_pbcopy():
     with patch.object(clip.subprocess, "run", return_value=_completed()) as run:
         assert clip.write_clipboard_text("hello") is True
@@ -26,7 +26,7 @@ def test_darwin_uses_pbcopy():
     assert run.call_args[1]["input"] == b"hello"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_linux_falls_through_backends_until_success():
     calls = []
 

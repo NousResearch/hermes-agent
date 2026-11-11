@@ -1,0 +1,17 @@
+name: cmi
+repo: https://github.com/jeremiebergel/context-manager-intelligence
+sha: 399468f0687c051476961e4bb045eb84263be6b1
+subdir: cmi
+version: "1.11.4"
+title: CMI — Context Manager Intelligence
+description: "Deterministic, zero-LLM context engine (context.engine: cmi). Shortens old tool results, stale screenshots and old write payloads to digests while keeping tool pairs and a byte-stable cache prefix; every original is stored first and comes back byte-exact with cmi_recall. Replay of 26 real sessions with the provider cache modelled: 28% fewer tokens on average, modelled API cost -24%, no session costlier; live 195-request sessions: 49% fewer tokens. Disclosure - originals and a full-text index (SQLite FTS5) are written under $HERMES_HOME (0700/0600, 30-day retention, 512 MiB cap); regex credential detection skips recognized secrets but can miss some; no network calls, no LLM calls, no dependencies. Project memory (experimental) is on for sessions opened in a Hermes Desktop project folder and stores only claims a model publishes with the user's exact words as proof; turn it off with context.cmi.auto_project_binding false. Disclosure — originals and a full-text index (SQLite FTS5) are written under $HERMES_HOME (0700/0600, 30-day retention, 512 MiB cap); regex credential detection skips recognized secrets but can miss some; no network calls, no LLM calls, no dependencies; project memory (experimental) is on for sessions opened in a Hermes Desktop project folder and stores only claims a model publishes with the user's exact words as proof (turn it off with context.cmi.auto_project_binding false); it imports private core helpers (token estimator, tool-summary helper, ContextCompressor) that can break on a Hermes release."
+maintainer: jeremiebergel
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+docs_url: https://github.com/jeremiebergel/context-manager-intelligence/blob/399468f0687c051476961e4bb045eb84263be6b1/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

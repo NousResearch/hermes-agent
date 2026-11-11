@@ -1,0 +1,40 @@
+name: hermes-windows-startup
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: a2162423aeaa5f5b1379a9290de810ea48f9d12e
+subdir: windows-startup
+description: >-
+  Answer "what launches itself on this machine" on Windows: win_startup_table lists every
+  autostart entry across the six Run/RunOnce registry keys (HKCU and HKLM, plus the 32-bit
+  views) and the two Startup folders, with where each one comes from, whether it is machine-
+  or user-scoped, and whether the person switched it off in Task Manager - Explorer's
+  StartupApproved verdict, with the date it was last changed, a state Win32_StartupCommand
+  has no field for; approval records uninstalled programs left behind are reported as
+  leftovers, their unknown state bytes surfaced as-is rather than guessed into verdicts.
+  win_startup_detail takes one entry and resolves its command the way the loader does -
+  quoting, arguments, environment variables, and unquoted paths with spaces resolved by
+  longest existing prefix - and says whether the binary is still on disk, plus a folder
+  file's size and last change. Use it for what added itself since last month, for slimming
+  a slow sign-in, and for a launcher whose program is already gone. Read-only: nothing is
+  enabled, disabled or deleted; the Startup folders are read through Explorer's User Shell
+  Folders values so OneDrive-redirected folders are found. The sweep is registry and
+  directory reads only - about a millisecond for three Run values and two folders on the
+  machine it was written on, no PowerShell, no WMI. The plugin declares no Python
+  dependencies; there is no network call and no file write. Windows only. Disclosure - the
+  tools report program names, launch commands, binary paths under C:\Program Files and
+  C:\Users\<name>, and what the person chose to keep from starting, to the model; treat
+  the output like the Startup tab of the person's own Task Manager.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-startup
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_startup_table
+  - win_startup_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -73,6 +73,18 @@ export function workspaceOwnerTitle(
   return $workspaceOwnerLabels.get()[scope.workspaceOwnerKey] ?? title
 }
 
+/** May the user rename this session? A canonical Bot Chat's exact title is its
+ *  identity — Bot Mode re-resolves it by name on every open and the backend's
+ *  #95397 guard refuses a user rename — so surfaces that show one must not
+ *  offer the verb (the write can never reach the caption it names). Only a bot
+ *  workspace's OWN canonical tab is non-renameable; a plain session that merely
+ *  happens to be open in Bot Mode keeps the verb. */
+export function workspaceSessionRenameable(
+  scope: { workspaceMode?: WorkspaceMode; workspaceTabTitle?: string } | undefined
+): boolean {
+  return !(scope?.workspaceMode === 'bots' && scope.workspaceTabTitle)
+}
+
 /** One key for window-local active-pane memory. Owner keys stay opaque. */
 export function workspaceScopeKey(mode: WorkspaceMode, ownerKey: string | null): string {
   return mode === 'sessions' ? 'sessions' : `bots:${ownerKey ?? ''}`

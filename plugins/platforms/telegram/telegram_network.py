@@ -5,11 +5,17 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
+import os
 import socket
+import sys
+import time
 from typing import Iterable, Optional
 
 import httpx
+
+from agent.ssl_verify import platform_ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +54,9 @@ def tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
 # DNS-over-HTTPS providers: discover Telegram API IPs the (possibly unreachable) local resolver may not
 # return. Bounded so connect() isn't delayed.
 _DOH_TIMEOUT = 4.0
+# A real A-record answer is well under 1 KiB; anything past this is a misbehaving endpoint, captive
+# portal or proxy, so that provider is ignored rather than buffered (#55087).
+_DOH_MAX_BODY_BYTES = 64 * 1024
 _DOH_PROVIDERS: list[dict] = [
     {"url": "https://dns.google/resolve", "params": {"name": _TELEGRAM_API_HOST, "type": "A"}, "headers": {}},
     {
@@ -58,6 +67,99 @@ _DOH_PROVIDERS: list[dict] = [
 # first-try connect targets so a blackholed IPv6 AAAA for the hostname can't pin initialize().
 SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 _UNSET = object()
+# One request's whole fallback walk shares this CONNECT budget: half the adapter's 30s telegram-send
+# deadline, so the walk ends with its own (safely retryable) ConnectTimeout before that deadline fires
+# and masks it as an ambiguous, non-retryable TimeoutError (#136412).
+_WALK_CONNECT_BUDGET_S = 15.0
+
+
+def _env_number(key: str, default, cast):
+    raw = os.getenv(key, "").strip()
+    try:
+        return cast(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
+def ptb_request_kwargs() -> dict:
+    """PTB ``HTTPXRequest`` sizing and timeouts (``HERMES_TELEGRAM_HTTP_*`` overrides): PTB's 1s pool
+    timeout trips "Pool timeout" on flaky networks. ``media_write_timeout`` is httpx's per-write
+    stall budget, so 60s rides out congested-link buffer stalls."""
+    return {
+        "connection_pool_size": _env_number("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512, int),
+        "pool_timeout": _env_number("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0, float),
+        "connect_timeout": _env_number("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0, float),
+        "read_timeout": _env_number("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0, float),
+        "write_timeout": _env_number("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0, float),
+        "media_write_timeout": 60.0,
+    }
+
+
+def getupdates_keepalive_connections() -> int:
+    """Pooled sockets the getUpdates long-poll may reuse. Windows keeps 0: a long-poll socket the
+    server closed sits in CLOSE_WAIT there and a reused one deadlocks polling (#87057). Elsewhere a
+    fresh TCP+TLS connection per ~10 s poll parks every closed socket in client-side TIME_WAIT,
+    which exhausts macOS's 16k ephemeral range after ~2 days and turns each connect blip on the
+    path into a polling gap (#107880); one reused socket is enough for the single in-flight poll."""
+    return 0 if sys.platform == "win32" else 1
+
+
+def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None) -> tuple:
+    """The (general, getUpdates) ``request_cls`` (PTB ``HTTPXRequest``) pair the gateway adapter and
+    the standalone sender both use: the fallback-IP transport when ``fallback_ips`` and no proxy,
+    else the explicit proxy, else direct DNS; every client verifies with ``verify`` (default: the
+    cached ``platform_ssl_context()``).
+
+    CLOSE_WAIT fd leak (#31599, #18451): PTB builds its httpx client with only
+    ``max_connections`` and httpx's default 5s keepalive, so behind an HTTP proxy a peer FIN can
+    sit in CLOSE_WAIT and leak fds; ``platform_httpx_limits()`` keepalive tuning is injected while
+    keeping PTB's pool size. Both fallback transports bound their path walk's total connect time
+    (``_WALK_CONNECT_BUDGET_S``) so failover finishes inside the send deadline. getUpdates keeps
+    ``getupdates_keepalive_connections()`` sockets (see there for the per-OS reason). httpx ignores client ``limits`` when a custom
+    ``transport`` is supplied (#58790), so the fallback branch hands them to the transport."""
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    verify = platform_ssl_context() if verify is None else verify
+    kwargs = ptb_request_kwargs()
+    base = platform_httpx_limits()
+    pool = updates = None
+    if base is not None:
+        pool = httpx.Limits(max_connections=kwargs["connection_pool_size"],
+                            max_keepalive_connections=base.max_keepalive_connections, keepalive_expiry=base.keepalive_expiry)
+        updates = httpx.Limits(max_connections=kwargs["connection_pool_size"],
+                               max_keepalive_connections=getupdates_keepalive_connections(),
+                               keepalive_expiry=base.keepalive_expiry)
+
+    def pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
+        return (request_cls(**kwargs, **extra, httpx_kwargs={"verify": verify, **general_httpx}),
+                request_cls(**kwargs, **extra, httpx_kwargs={"verify": verify, **updates_httpx}))
+
+    def limited(limits) -> dict:
+        return {"limits": limits} if limits is not None else {}
+
+    if fallback_ips and not proxy_url:
+        transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify,
+                            "connect_budget": _WALK_CONNECT_BUDGET_S}
+        return pair({"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(pool))},
+                    {"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(updates))})
+    return pair(limited(pool), limited(updates), **({"proxy": proxy_url} if proxy_url else {}))
+
+
+def proxy_target_hosts(base_url: Optional[str], fallback_ips: Iterable[str] = ()) -> list[str]:
+    """The hosts a Bot API request actually reaches, for the NO_PROXY check: a configured
+    ``base_url`` server's ``host:port`` (a local ``telegram-bot-api`` on 127.0.0.1:8081 must
+    match ``NO_PROXY=127.0.0.1``), else api.telegram.org and its fallback IPs."""
+    if base_url:
+        from urllib.parse import urlsplit
+        parts = urlsplit(base_url if "//" in base_url else f"//{base_url}")
+        try:
+            port = parts.port or (80 if parts.scheme == "http" else 443)
+        except ValueError:
+            port = None
+        host = parts.hostname or ""
+        if host:
+            host = f"[{host}]" if ":" in host else host
+            return [f"{host}:{port}" if port else host]
+    return [_TELEGRAM_API_HOST, *fallback_ips]
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -73,7 +175,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     # See #63311.
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(self, fallback_ips: Iterable[str], *, connect_budget: Optional[float] = None, **transport_kwargs):
+        # Seconds of CONNECT time one request's whole walk may spend; ``None`` leaves each path the
+        # client's full per-request connect timeout.
+        self._connect_budget = connect_budget
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
@@ -138,12 +243,29 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             order.append(None)
         return order
 
+    def _connect_share(self, order: list, index: int, walk_started: float) -> float:
+        """This path's slice of the remaining walk budget. The first (sticky / last-known-good) path
+        keeps all but one average share, so at stock defaults (10s connect, 15s budget, 3 paths) it
+        keeps its full 10s; later paths split what is left evenly."""
+        remaining = self._connect_budget - (time.monotonic() - walk_started)
+        paths_left = len(order) - index
+        return remaining - remaining / paths_left if index == 0 and paths_left > 1 else remaining / paths_left
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
         last_error: Exception | None = None
-        for ip in self._attempt_order():
-            candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
+        order = self._attempt_order()
+        walk_started = time.monotonic()
+        for index, ip in enumerate(order):
+            candidate = request
+            if self._connect_budget is not None:
+                share = self._connect_share(order, index, walk_started)
+                if share <= 0 and last_error is not None:
+                    break  # budget spent: surface the last ConnectTimeout before the send deadline masks it
+                candidate = _request_with_connect_budget(request, share)
+            if ip is not None:
+                candidate = _rewrite_request_for_ip(candidate, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
                 response = await transport.handle_async_request(candidate)
@@ -235,11 +357,19 @@ def _resolve_system_dns() -> set[str]:
 
 
 async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list[str]:
-    """Query one DoH provider and return A-record IPs."""
+    """Query one DoH provider and return A-record IPs; a body over ``_DOH_MAX_BODY_BYTES`` counts as a
+    failed provider. The raw (identity-requested) stream is counted, so a compressed body cannot
+    inflate past the cap before it is measured."""
     try:
-        resp = await client.get(provider["url"], params=provider["params"], headers=provider["headers"])
-        resp.raise_for_status()
-        data = resp.json()
+        headers = {**provider["headers"], "Accept-Encoding": "identity"}
+        async with client.stream("GET", provider["url"], params=provider["params"], headers=headers) as resp:
+            resp.raise_for_status()
+            body = bytearray()
+            async for chunk in resp.aiter_raw():
+                body.extend(chunk)
+                if len(body) > _DOH_MAX_BODY_BYTES:
+                    raise ValueError(f"DoH response exceeds {_DOH_MAX_BODY_BYTES} bytes")
+        data = json.loads(body)
         ips: list[str] = []
         for answer in data.get("Answer", []):
             if answer.get("type") != 1:  # A record
@@ -258,14 +388,15 @@ async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list
 
 async def discover_fallback_ips() -> list[str]:
     """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order. IPs matching the
-    system resolver are deliberately KEPT (often the most reliable path). Falls back to
-    ``SEED_FALLBACK_IPS`` only when DoH yields nothing usable.
+    system resolver are deliberately KEPT (often the most reliable path); ``SEED_FALLBACK_IPS`` always
+    form the tail, so a one-record DoH answer cannot make one edge the fallback path's single point of
+    failure (the adapter discovers once per connect, so a dead lone IP would strand polling).
 
     IPs that match the local system resolver are kept rather than excluded: in many networks the system-DNS
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
     against the same address via the IP-rewrite path before the seed list is consulted (#14520).
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=platform_ssl_context()) as client:
         system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
         results = await asyncio.gather(*[_query_doh_provider(client, p) for p in _DOH_PROVIDERS], return_exceptions=True)
     # The getaddrinfo leg has no timeout of its own and only feeds the log line below — bound it.
@@ -283,8 +414,9 @@ async def discover_fallback_ips() -> list[str]:
     doh_ips = [ip for r in results if isinstance(r, list) for ip in r]
     validated = _normalize_fallback_ips(list(dict.fromkeys(doh_ips)))  # dedupe, keep order
     if validated:
-        logger.debug("Discovered Telegram fallback IPs via DoH: %s", ", ".join(validated))
-        return validated
+        fallback_ips = list(dict.fromkeys([*validated, *SEED_FALLBACK_IPS]))
+        logger.debug("Discovered Telegram fallback IPs via DoH; effective fallback pool: %s", ", ".join(fallback_ips))
+        return fallback_ips
     logger.info(
         "DoH discovery yielded no usable IPs (system DNS: %s); using seed fallback IPs %s",
         ", ".join(system_ips) or "unknown", ", ".join(SEED_FALLBACK_IPS))
@@ -299,6 +431,18 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
     extensions = dict(request.extensions)
     extensions["sni_hostname"] = original_host
     return httpx.Request(method=request.method, url=url, headers=headers, stream=request.stream, extensions=extensions)
+
+
+def _request_with_connect_budget(request: httpx.Request, connect_budget: float) -> httpx.Request:
+    """``request`` with its httpx ``timeout`` extension's connect phase narrowed to ``connect_budget``
+    (the transport honours it per request). A tighter configured connect, or a request with no
+    timeout dict, is returned unchanged."""
+    timeout = request.extensions.get("timeout")
+    if not isinstance(timeout, dict) or (timeout.get("connect") is not None and timeout["connect"] <= connect_budget):
+        return request
+    extensions = {**request.extensions, "timeout": {**timeout, "connect": max(connect_budget, 0.0)}}
+    return httpx.Request(method=request.method, url=request.url, headers=request.headers, stream=request.stream,
+                         extensions=extensions)
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:

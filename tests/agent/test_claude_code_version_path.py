@@ -47,7 +47,7 @@ def test_gui_launch_reports_installed_version_not_fallback(monkeypatch, tmp_path
     assert _detect_claude_code_version() == "2.1.276" != _CLAUDE_CODE_VERSION_FALLBACK
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="PATH lookup of an extensionless shim is POSIX-only")
+@pytest.mark.platforms("posix")  # PATH lookup of an extensionless shim is POSIX-only
 def test_path_hit_is_probed_first(monkeypatch, tmp_path):
     """A PATH ``claude-code`` beats a stale prefix ``claude``: every PATH hit precedes every prefix."""
     on_path = _install(tmp_path / "path", "claude-code")

@@ -13,6 +13,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent.image_gen_provider import ImageGenProvider
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
 logger = logging.getLogger(__name__)
 
 # Providers that can ground generation on a reference image, in preference order.
@@ -29,11 +32,12 @@ class GenerationError(RuntimeError):
 
 @dataclass(frozen=True)
 class SpriteProvider:
-    """Resolved provider plus whether it can take reference images."""
+    """Logical provider choice, the backend serving it, and a model only a managed redirect pins."""
 
     name: str
-    provider: object
+    provider: ImageGenProvider
     supports_references: bool
+    model: str | None = None
 
 
 def _discover() -> None:
@@ -41,7 +45,7 @@ def _discover() -> None:
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
-    except Exception as exc:  # noqa: BLE001 - discovery is best-effort
+    except Exception as exc:
         logger.debug("image-gen plugin discovery failed: %s", exc)
 
 
@@ -53,31 +57,70 @@ def _available(name: str):
     return provider if provider is not None and provider.is_available() else None
 
 
+def _managed_krea_model() -> str | None:
+    """The stored native Krea id when the stored selection routes to the Krea gateway (a managed
+    ``nous`` pick, or no provider set), else ``None``."""
+    from plugins.image_gen._common import load_image_gen_config
+    from tools.image_generation_managed import KREA, managed_route
+
+    cfg = load_image_gen_config()
+    model = cfg.get("model")
+    if not isinstance(model, str) or managed_route(cfg.get("provider"), model) != KREA:
+        return None
+    return model.strip()
+
+
+def _candidate(name: str) -> SpriteProvider | None:
+    """The sprite backend for the logical choice *name*, or ``None`` when it cannot serve.
+
+    Nous Subscription is one choice spanning several gateways: a native Krea id under it goes to the
+    Krea backend (the Portal 404s on it), pinned so ``KREA_IMAGE_MODEL`` cannot swap the model, as the
+    image tool's managed route does; with Krea unavailable, Nous cannot serve. Every other choice keeps
+    its own model resolution (env override, ``image_gen.<provider>.model``): the top-level
+    ``image_gen.model`` may be another backend's id.
+    """
+    if (provider := _available(name)) is None:
+        return None
+    if name == NOUS_MANAGED_PROVIDER and (model := _managed_krea_model()):
+        krea = _available("krea")
+        return None if krea is None else SpriteProvider(name=name, provider=krea, supports_references=True, model=model)
+    return SpriteProvider(name=name, provider=provider, supports_references=True)
+
+
 def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
     """Pick the image provider for sprite work.
 
     Preference: ``HERMES_PET_IMAGE_PROVIDER`` (QA override, unknown values ignored),
     then *prefer* (desktop picker), then the active provider, then the first available
-    — each only if ref-capable and configured. With *require_references* off, any
-    available active provider is accepted (prompt-only base drafts).
+    — each only if ref-capable and configured (Nous with a native Krea model only while the
+    Krea backend is available). With *require_references* off, any available active
+    provider is accepted (prompt-only base drafts).
     """
     _discover()
     from agent.image_gen_registry import get_active_provider
 
     forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
     for name in (forced, prefer):
-        if name in _REF_CAPABLE and (chosen := _available(name)) is not None:
-            return SpriteProvider(name=name, provider=chosen, supports_references=True)
+        if name in _REF_CAPABLE and (sprite := _candidate(name)) is not None:
+            return sprite
     try:
         active = get_active_provider()
-    except Exception:  # noqa: BLE001
+    except Exception:
         active = None
     active_name = getattr(active, "name", "") if active is not None else ""
-    if active_name in _REF_CAPABLE and active.is_available():
-        return SpriteProvider(name=active_name, provider=active, supports_references=True)
+    if active_name in _REF_CAPABLE and (sprite := _candidate(active_name)) is not None:
+        return sprite
     for name in _REF_CAPABLE:
-        if (provider := _available(name)) is not None:
-            return SpriteProvider(name=name, provider=provider, supports_references=True)
+        if (sprite := _candidate(name)) is not None:
+            return sprite
+    # The scan above found Nous unable to serve; when it is configured, that means its Krea model
+    # lacks the Krea backend. Raised before the prompt-only fallback, which would send the Krea id
+    # to another backend (FAL swaps in its default model; the Portal 404s on it).
+    if _available(NOUS_MANAGED_PROVIDER) is not None:
+        raise GenerationError(
+            "The selected Nous image model needs the Krea gateway, but that backend is "
+            "unavailable. Check Nous Subscription under `hermes tools` → Image Generation."
+        )
     if not require_references and active is not None and active.is_available():
         return SpriteProvider(name=getattr(active, "name", "unknown"), provider=active, supports_references=False)
     raise GenerationError(
@@ -97,7 +140,7 @@ def list_sprite_providers() -> list[dict]:
     return [
         {"name": name, "label": _PROVIDER_LABELS.get(name, name), "default": name == default_name}
         for name in _REF_CAPABLE
-        if _available(name) is not None
+        if _candidate(name) is not None
     ]
 
 
@@ -146,11 +189,14 @@ def generate(
     # ``reference_images``, OpenAI's gpt-image-2 reads ``reference_image_urls``.
     # Send both; each ignores the other.
     ref_kwargs = {"reference_images": refs, "reference_image_urls": refs} if refs else {}
+    model_kwargs = {"model": sprite.model} if sprite.model else {}
 
     def _run(extra: dict) -> tuple[Path | None, str]:
         try:
-            result = sprite.provider.generate(prompt, aspect_ratio=aspect_ratio, **extra, **ref_kwargs)
-        except Exception as exc:  # noqa: BLE001 - normalize provider crashes
+            result = sprite.provider.generate(
+                prompt, aspect_ratio=aspect_ratio, **extra, **ref_kwargs, **model_kwargs
+            )
+        except Exception as exc:
             logger.debug("provider.generate crashed: %s", exc)
             return None, str(exc)
         if not isinstance(result, dict):
@@ -161,7 +207,7 @@ def generate(
             return None, "provider returned no image"
         try:
             return _save_local(str(image_ref), prefix=prefix), ""
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return None, f"could not save generated image: {exc}"
 
     out: list[Path] = []

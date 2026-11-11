@@ -6,8 +6,11 @@ the UI said "disabled" while the provider kept loading at every agent init.
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from plugins.memory import find_provider_dir, load_memory_provider
 
 _PROVIDER = """
@@ -28,23 +31,43 @@ def register(ctx):
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes-home"
-    d = hermes_home / "plugins" / "fakemem"
-    d.mkdir(parents=True)
-    (d / "plugin.yaml").write_text("name: fakemem-manifest\nkind: exclusive\n", encoding="utf-8")
-    (d / "__init__.py").write_text(_PROVIDER, encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    return hermes_home
+def homes(tmp_path, monkeypatch):
+    enabled, disabled = tmp_path / "enabled", tmp_path / "disabled"
+    for hermes_home in (enabled, disabled):
+        provider_dir = hermes_home / "plugins" / "fakemem"
+        provider_dir.mkdir(parents=True)
+        (provider_dir / "plugin.yaml").write_text(
+            "name: fakemem-manifest\nkind: exclusive\n", encoding="utf-8"
+        )
+        (provider_dir / "__init__.py").write_text(_PROVIDER, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(enabled))
+    return enabled, disabled
 
 
-def test_disabled_user_provider_is_found_but_never_loaded(home):
-    (home / "config.yaml").write_text("memory:\n  provider: fakemem\nplugins:\n  disabled: [fakemem-manifest]\n",
-                                      encoding="utf-8")
-    # Still discoverable (installed, so no catalog re-clone at startup) ...
-    assert find_provider_dir("fakemem") == home / "plugins" / "fakemem"
-    # ... but the deny-list wins over memory.provider, under the manifest-name spelling the CLI writes.
-    assert load_memory_provider("fakemem") is None
+@contextlib.contextmanager
+def _scoped_home(home):
+    token = set_hermes_home_override(home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
 
-    (home / "config.yaml").write_text("memory:\n  provider: fakemem\nplugins:\n  disabled: []\n", encoding="utf-8")
-    assert load_memory_provider("fakemem") is not None
+
+def test_disabled_user_provider_is_found_but_never_loaded(homes):
+    enabled, disabled = homes
+    (enabled / "config.yaml").write_text(
+        "memory:\n  provider: fakemem\nplugins:\n  disabled: []\n", encoding="utf-8"
+    )
+    (disabled / "config.yaml").write_text(
+        "memory:\n  provider: fakemem\nplugins:\n  disabled: [fakemem-manifest]\n", encoding="utf-8"
+    )
+
+    with _scoped_home(enabled):
+        assert load_memory_provider("fakemem") is not None
+    with _scoped_home(disabled):
+        # Still discoverable (installed, so no catalog re-clone at startup) ...
+        assert find_provider_dir("fakemem") == disabled / "plugins" / "fakemem"
+        # ... but this profile's deny-list wins over its memory.provider setting.
+        assert load_memory_provider("fakemem") is None
+    with _scoped_home(enabled):
+        assert load_memory_provider("fakemem") is not None

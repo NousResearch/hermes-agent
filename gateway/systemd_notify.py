@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import math
 import os
 import socket
@@ -42,6 +43,13 @@ def watchdog_interval_seconds() -> float | None:
     return interval if math.isfinite(interval) and interval > 0 else None
 
 
+class _WatchdogPhase(enum.Enum):
+    FEEDING = enum.auto()
+    UNHEALTHY = enum.auto()  # a late tick ended feeding, so systemd's watchdog timeout fires
+    STOPPING = enum.auto()  # stop() runs; STOPPING=1 not sent yet
+    STOPPED = enum.auto()
+
+
 class SystemdWatchdog:
     """Feed systemd while the asyncio event loop continues to make progress."""
 
@@ -50,10 +58,10 @@ class SystemdWatchdog:
         self.interval_seconds = watchdog_interval_seconds()
         self._lag_tolerance_seconds = lag_tolerance_seconds
         self._task: asyncio.Task[None] | None = None
-        self._unhealthy = self._stopping = self._stopping_notified = False
+        self._phase = _WatchdogPhase.FEEDING
 
     enabled = property(lambda self: self._config_enabled and self.interval_seconds is not None)
-    unhealthy = property(lambda self: self._unhealthy)
+    unhealthy = property(lambda self: self._phase is _WatchdogPhase.UNHEALTHY)
     task = property(lambda self: self._task)
 
     def _lag_tolerance(self) -> float:
@@ -72,7 +80,7 @@ class SystemdWatchdog:
             asyncio.get_running_loop()
         except RuntimeError:
             return False
-        self._stopping = self._unhealthy = self._stopping_notified = False
+        self._phase = _WatchdogPhase.FEEDING
         self._task = asyncio.create_task(self._run(), name="hermes-systemd-watchdog")
         return True
 
@@ -82,14 +90,14 @@ class SystemdWatchdog:
 
     def record_tick(self, *, scheduled_at: float, now: float) -> bool:
         """Feed systemd only when the event loop woke within its lag budget."""
-        if not self.enabled or self._stopping or self._unhealthy:
+        if not self.enabled or self._phase is not _WatchdogPhase.FEEDING:
             return False
         try:
             lag = float(now) - float(scheduled_at)
         except (TypeError, ValueError):
             lag = float("inf")
         if not math.isfinite(lag) or lag > self._lag_tolerance():
-            self._unhealthy = True
+            self._phase = _WatchdogPhase.UNHEALTHY
             notify("STATUS=watchdog unhealthy: event loop progress is late")
             return False
         notify("WATCHDOG=1")
@@ -102,7 +110,7 @@ class SystemdWatchdog:
         loop = asyncio.get_running_loop()
         scheduled_at = loop.time() + cadence
         with contextlib.suppress(asyncio.CancelledError):
-            while not self._stopping and not self._unhealthy:
+            while self._phase is _WatchdogPhase.FEEDING:
                 await asyncio.sleep(max(0.0, scheduled_at - loop.time()))
                 now = loop.time()
                 if not self.record_tick(scheduled_at=scheduled_at, now=now):
@@ -113,13 +121,15 @@ class SystemdWatchdog:
 
     async def stop(self) -> None:
         """Stop feeding systemd and emit ``STOPPING=1`` at most once."""
-        self._stopping = True
+        if self._phase is not _WatchdogPhase.STOPPED:
+            self._phase = _WatchdogPhase.STOPPING
         task = self._task
         if task is not None and task is not asyncio.current_task():
             task.cancel()  # no-op on a finished task
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._task = None
-        if self.enabled and not self._stopping_notified:
-            notify("STOPPING=1")
-            self._stopping_notified = True
+        if self._phase is _WatchdogPhase.STOPPING:
+            self._phase = _WatchdogPhase.STOPPED
+            if self.enabled:
+                notify("STOPPING=1")

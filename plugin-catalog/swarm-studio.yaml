@@ -1,0 +1,27 @@
+name: swarm-studio
+repo: https://github.com/Pukujan/swarm-studio
+sha: 363070f8cac7c1c65649fe3cb395c4907c85b6eb
+title: Swarm Studio
+description: "A whole creative studio inside Hermes. One prompt, and a crew of agents you can watch and steer builds the whole launch on a live canvas: a multi-page website, a working web app with a database, a playable game (also as a Godot, Unity or Unreal project), a promo film and the social posts. Open it from the Desktop sidebar, ask for a site in any chat (the swarm_design tool), type /swarm, or run `hermes swarm`. The crew uses the models you already set up in Hermes, through two picker slots (planner and builders). Builds can be posted to Swarm Feed, where others try them live and remix them with credit. Disclosure — starts a small Node server (Node 18+ needed) that listens on 127.0.0.1 only and keeps running after Hermes closes; it calls the chat endpoint you configure with your brief; the canvas loads Tailwind from cdn.tailwindcss.com and fonts from Google Fonts; Publish runs your gh CLI (GitHub Pages) or calls Vercel / Cloudflare Pages with a token you connect, stored under $HERMES_HOME/swarm-studio/ with mode 0600; the first promo video installs hyperframes and ffmpeg from npm, and the first app build installs the vendored dyad app engine's packages from npm (about 1.5 GB, once); Swarm Feed (https://swarm.design-bakery.com) is contacted only when you run /swarm connect, post, remix or login. No telemetry. It writes only under $HERMES_HOME/swarm-studio/. SWARM_STUDIO_API_KEY (optional override of the Hermes model slots) and ELEVENLABS_API_KEY (optional, film music) are read via the secret scope."
+maintainer: Pukujan
+tier: community
+category: desktop
+requires_hermes: ">=0.23"
+version: "0.2.0"
+docs_url: https://github.com/Pukujan/swarm-studio#readme
+screenshots:
+- https://raw.githubusercontent.com/Pukujan/swarm-studio/363070f8cac7c1c65649fe3cb395c4907c85b6eb/docs/catalog/studio-home.png
+- https://raw.githubusercontent.com/Pukujan/swarm-studio/363070f8cac7c1c65649fe3cb395c4907c85b6eb/docs/catalog/studio-canvas.png
+platforms: []
+known_issues:
+- "Needs Node.js 18 or newer on PATH (or set SWARM_STUDIO_NODE)."
+- "The first app build downloads the app engine's packages from npm (about 1.5 GB, once)."
+capabilities:
+  provides_tools:
+  - swarm_design
+  - swarm_canvas
+  - swarm_studio
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SWARM_STUDIO_API_KEY

@@ -14,6 +14,7 @@ import {
   type ComponentProps,
   isValidElement,
   memo,
+  type ClipboardEvent as ReactClipboardEvent,
   type ReactNode,
   useEffect,
   useMemo,
@@ -35,6 +36,7 @@ import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { selectionTextWithLatex } from '@/lib/latex-copy'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -692,6 +694,40 @@ function MarkdownTextSurface({
   const code = useCodePlugin()
   const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
 
+  // Markdown owns the copy payload whenever the selection includes rendered
+  // math: Chromium would otherwise serialize KaTeX's per-glyph visual text.
+  // Any other selection is left untouched for the native clipboard.
+  const copyWithLatex = (event: ReactClipboardEvent<HTMLDivElement>) => {
+    surfaceContainerProps?.onCopy?.(event)
+
+    if (event.defaultPrevented) {
+      return
+    }
+
+    const selection = window.getSelection()
+
+    if (!selection) {
+      return
+    }
+
+    const copiedText = selectionTextWithLatex(event.currentTarget, selection)
+
+    if (copiedText === null) {
+      return
+    }
+
+    event.preventDefault()
+    event.clipboardData?.setData('text/plain', copiedText)
+  }
+
+  // The surface props are composed, never replaced: an explicit Text direction
+  // still has to reach the container alongside the copy handler.
+  const composedContainerProps = useMemo(
+    () => ({ ...surfaceContainerProps, onCopy: copyWithLatex }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- copyWithLatex closes over surfaceContainerProps only
+    [surfaceContainerProps]
+  )
+
   const components = useMemo(
     () =>
       ({
@@ -845,7 +881,7 @@ function MarkdownTextSurface({
       <StreamdownTextPrimitive
         components={components}
         containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-        containerProps={surfaceContainerProps}
+        containerProps={composedContainerProps}
         defer={defer}
         lineNumbers={false}
         mode="streaming"

@@ -79,3 +79,27 @@ def test_sessions_signature_sees_a_commit_inside_the_same_mtime_tick(tmp_path, m
     conn.close()
 
     assert server._sessions_sig() != before
+
+
+def test_sessions_signature_of_a_current_store_reads_no_session_rows(tmp_path, monkeypatch):
+    """A store with the list-revision triggers is signed from one state_meta row, so a write costs the
+    watcher the same whatever the history size (#146643); the row digest is only for older stores."""
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session("session-1", source="cli")
+    monkeypatch.setattr(server, "_watcher_home", lambda: tmp_path)
+    monkeypatch.setattr(server, "_served_profile_homes", [])
+    digests = []
+    monkeypatch.setattr(server, "_session_rows_digest", lambda *args: digests.append(args) or ("digest", b""))
+    try:
+        before = server._sessions_sig()
+        db.set_session_title("session-1", "Renamed")
+        after = server._sessions_sig()
+    finally:
+        db.close()
+
+    assert after != before
+    assert after[0][0] == "revision"
+    assert digests == []

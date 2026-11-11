@@ -19,7 +19,9 @@ import hermes_state_common
 import hermes_state_schema
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from hermes_state import SessionDB
-from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
+from hermes_state_common import (
+    FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION, SESSIONS_LIST_REVISION_TRIGGERS,
+)
 
 
 def _activity_snapshot(db, session_id):
@@ -2145,6 +2147,9 @@ class TestReconcileColumnsErrorHandling:
         seed.close()
         conn = sqlite3.connect(str(db_path))
         try:
+            # A store that lacks the column predates the triggers naming it, too.
+            for trigger in SESSIONS_LIST_REVISION_TRIGGERS:
+                conn.execute(f"DROP TRIGGER {trigger}")
             conn.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
             conn.commit()
         finally:

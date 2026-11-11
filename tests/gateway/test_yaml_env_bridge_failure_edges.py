@@ -168,9 +168,35 @@ def test_a_value_an_external_secret_source_supplies_is_the_operators(tmp_path, m
     proxy = "http://user:pw@proxy:3128"
     monkeypatch.setenv("TELEGRAM_PROXY", proxy)
     monkeypatch.setenv(bridged_env_marker("TELEGRAM_PROXY"), bridged_env_digest(proxy))  # inherited
-    monkeypatch.setitem(env_loader._SECRET_SOURCES, "TELEGRAM_PROXY", "onepassword")
+    monkeypatch.setitem(env_loader._SECRET_SOURCE_VALUES_BY_HOME, _launch_home_key(), {"TELEGRAM_PROXY": proxy})
     (tmp_path / "config.yaml").write_text(yaml_text, encoding="utf-8")
 
     load_yaml_layer(tmp_path, {})
 
     assert os.environ.get("TELEGRAM_PROXY") == proxy
+
+
+def _launch_home_key() -> str:
+    from hermes_constants import get_routing_process_hermes_home
+
+    return str(get_routing_process_hermes_home().resolve())
+
+
+@pytest.mark.parametrize("history", ["removed_mapping", "other_profile"])
+def test_source_history_the_launch_home_no_longer_owns_does_not_block_a_yaml_edit(tmp_path, monkeypatch, history):
+    """Only the launch home's CURRENT source snapshot owns a value: a vault mapping removed since, or a
+    sibling profile's vault supplying the same name, must not freeze the bridge's own leftover."""
+    from hermes_cli import env_loader
+
+    proxy = "http://user:pw@proxy:3128"
+    monkeypatch.setenv("TELEGRAM_PROXY", proxy)
+    monkeypatch.setenv(bridged_env_marker("TELEGRAM_PROXY"), bridged_env_digest(proxy))  # inherited
+    monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", {"TELEGRAM_PROXY"})
+    if history == "other_profile":
+        monkeypatch.setitem(env_loader._SECRET_SOURCE_VALUES_BY_HOME, str((tmp_path / "other").resolve()),
+                            {"TELEGRAM_PROXY": proxy})
+    (tmp_path / "config.yaml").write_text("telegram:\n  proxy_url: 'http://other:3128'\n", encoding="utf-8")
+
+    load_yaml_layer(tmp_path, {})
+
+    assert os.environ.get("TELEGRAM_PROXY") == "http://other:3128"

@@ -196,10 +196,13 @@ def _supplied_by_operator(name: str) -> bool:
     must not clobber or retract.
     """
     try:
-        from hermes_cli.env_loader import has_nonblank_dotenv_value, source_supplied_names
+        from hermes_cli.env_loader import get_secret_source_values, has_nonblank_dotenv_value
     except ImportError:  # bridging must not fail because the loader is unavailable
         return False
-    return has_nonblank_dotenv_value(name) or name in source_supplied_names()
+    from hermes_constants import get_routing_process_hermes_home
+    # The launch home's CURRENT source snapshot, never the lifetime all-homes name history
+    # (``source_supplied_names``): a mapping removed since, or another profile's vault, owns nothing here.
+    return has_nonblank_dotenv_value(name) or name in get_secret_source_values(get_routing_process_hermes_home())
 
 
 @dataclass

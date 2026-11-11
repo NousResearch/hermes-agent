@@ -161,3 +161,20 @@ def test_interrupted_create_only_leaves_no_temp_file(remote_ops, tmp_path, monke
     assert proc.returncode != 0
     assert not target.exists()
     assert not list(target.parent.glob(".hermes-create-*"))
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("python", ["hermes-missing-python3", None])
+@pytest.mark.parametrize("parent", ["dir\n", "dir\n\n", "-dir"])
+def test_remote_create_only_keeps_the_parent_path_exact(remote_ops, tmp_path, monkeypatch, python, parent):
+    import sys
+
+    from tools.file_operations_create import atomic_create
+
+    monkeypatch.setattr(remote_ops, "_python_interpreter_cmd", lambda: python or sys.executable)
+    target = tmp_path / parent / "new.txt"
+    result = atomic_create(remote_ops, str(target), "body\n")
+    assert result.exit_code == 0, result
+    assert target.read_bytes() == b"body\n"
+    assert not (tmp_path / "dir").exists()
+    assert not list(tmp_path.rglob(".hermes-create-*"))

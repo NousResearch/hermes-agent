@@ -7,7 +7,10 @@ import json
 # makes the same link(2) call as os.link, so every existing entry (dangling
 # symlinks and directories included) is refused and nothing is overwritten.
 _SHELL_CREATE = (
-    'd="$(dirname -- "$t")"; mkdir -p -- "$d" || exit 1; '
+    # Parameter expansion, not $(dirname): command substitution strips the
+    # trailing newlines a directory name may end with.
+    'case $t in */*) d=${t%/*};; *) d=.;; esac; [ -n "$d" ] || d=/; '
+    'mkdir -p -- "$d" || exit 1; '
     'command -v link >/dev/null 2>&1 || { cat >/dev/null; '
     'echo "create_only needs python3 or link(1) on the terminal backend"; exit 1; }; '
     # dash/ash skip the EXIT trap on a fatal signal, so trap the catchable ones

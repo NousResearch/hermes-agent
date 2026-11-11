@@ -3320,8 +3320,11 @@
       };
       if (parent) body.parents = [parent];
       // Parse comma-separated skills into a clean list. Blank = no
-      // extras (omit key so backend leaves it null). The dispatcher
-      // always auto-loads kanban-worker; these are extras on top.
+      // extras (omit key so backend leaves it null). Nothing is
+      // auto-loaded: the dispatcher runs exactly the skills listed
+      // on the card (plus sdlc-review in the review lane); a worker
+      // gets kanban-worker only if the card lists it or opens it
+      // via skill_view.
       const skillList = skills
         .split(",")
         .map(function (s) { return s.trim(); })

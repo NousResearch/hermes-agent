@@ -118,7 +118,7 @@ def validate_server_url(server_url: str) -> str:
     return candidate
 
 
-def apply_server_url_to_env(env: Dict[str, str], server_url: str) -> Optional[str]:
+def apply_server_url_to_env(env: dict[str, str], server_url: str) -> Optional[str]:
     """Set ``BWS_SERVER_URL`` on ``env`` for a bws child. Returns a warning.
 
     Every value that reaches ``BWS_SERVER_URL`` passes :func:`validate_server_url` here,
@@ -386,7 +386,7 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
     env.setdefault("NO_COLOR", "1")
     # Empty server_url keeps whatever BWS_SERVER_URL the shell already had (manual
     # overrides keep working), but only once it validates — see apply_server_url_to_env.
-    env_warnings: List[str] = []
+    env_warnings: list[str] = []
     if inherited_warning := apply_server_url_to_env(env, server_url):
         logger.warning("%s", inherited_warning)
         env_warnings.append(inherited_warning)

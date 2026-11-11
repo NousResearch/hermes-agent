@@ -921,6 +921,12 @@ class GatewayAgentCacheMixin:
                 except Exception:
                     logger.warning("Could not resolve the owning profile for %s; releasing under the default profile",
                                    session_key, exc_info=True)
+                else:
+                    named_for = getattr(store, "_named_profile_for_key", None)
+                    named = named_for(session_key) if owner is None and named_for is not None else None
+                    if named:  # a profile whose home is gone: the memory guard refuses its hooks under root
+                        logger.warning("Profile %r owning %s has no home; releasing under the default profile, "
+                                       "so its end-of-session memory is not saved", named, session_key)
             owner_home = Path(owner) if owner else get_default_hermes_root()
             # No key names no owner: an in-turn caller's own scope is the owner's, never swap it for the default.
             if current_secret_scope() is None or (session_key and hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home)):

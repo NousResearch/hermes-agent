@@ -146,3 +146,21 @@ async def test_reset_gateway_events_reach_only_the_owning_profile_hooks(tmp_path
         ("b", "session:end", key, str(prof_b), "key-of-b"),
         ("b", "session:reset", key, str(prof_b), "key-of-b"),
     ]
+
+
+def test_a_key_whose_profile_home_is_gone_warns_before_releasing_under_root(tmp_path, monkeypatch, caplog):
+    """``agent:ghost:…`` names a profile with no directory: the release falls back to the default root,
+    where the memory guard refuses its hooks. That loss must be logged, not silent."""
+    _profile_b(tmp_path, monkeypatch)
+    runner = _runner({})
+    runner.session_store._named_profile_for_key = lambda key: key.split(":")[1]
+    seen: dict = {}
+    secret_scope.set_multiplex_active(True)
+    try:
+        with caplog.at_level("WARNING", logger="gateway.run"):
+            runner._run_release_in_profile_scope(lambda: seen.__setitem__("home", str(get_hermes_home())), (),
+                                                 "agent:ghost:telegram:dm:1")
+    finally:
+        secret_scope.set_multiplex_active(False)
+    assert seen["home"] == str(tmp_path / ".hermes")
+    assert any("'ghost'" in r.getMessage() and "no home" in r.getMessage() for r in caplog.records), caplog.text

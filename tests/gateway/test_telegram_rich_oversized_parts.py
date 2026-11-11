@@ -210,3 +210,37 @@ def test_standalone_send_delivers_an_oversized_rich_message_in_parts(monkeypatch
     calls = [c for c in bot.do_api_request.await_args_list if c.args[0] == "sendRichMessage"]
     assert len(calls) >= 2 and all(len(_rich_markdown(c)) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS for c in calls)
     bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_raw_text_under_the_cap_whose_sent_markdown_is_over_it_still_goes_out_rich():
+    """Normalization (hard breaks) pushes a just-under-cap table report over the cap: it must be
+    split at a smaller budget, not handed whole to the MarkdownV2 chunker."""
+    adapter = _make_adapter()
+    prose = "\n".join(f"line {index:04d} of the long report text" for index in range(940))
+    content = "| a | b |\n|---|---|\n| 1 | 2 |\n\n" + prose
+    assert len(content) <= adapter.RICH_MESSAGE_MAX_CHARS
+    assert len(adapter._rich_message_payload(content)["markdown"]) > adapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.send("12345", content)
+
+    calls = _rich_calls(adapter)
+    assert result.success is True and len(calls) >= 2
+    assert all(len(_rich_markdown(call)) <= adapter.RICH_MESSAGE_MAX_CHARS for call in calls)
+    adapter._bot.send_message.assert_not_called()
+
+
+def test_a_four_backtick_fence_holding_a_triple_backtick_example_stays_one_fence():
+    inner = "```python\nprint('hi')\n```"
+    body = "\n".join(f"step {index}: see the example below" for index in range(30))
+    fence = "````markdown\n" + body + "\n" + inner + "\n" + body + "\n````"
+    content = "\n\n".join(["intro paragraph", fence, "closing paragraph"])
+
+    whole = split_rich_parts(content, len(fence) + 10)
+    assert [part for part in whole if "````markdown" in part] == [fence]
+
+    parts = split_rich_parts(fence, 600)
+    assert len(parts) >= 2
+    for part in parts:
+        lines = part.splitlines()
+        assert len(part) <= 600 and lines[0] == "````markdown" and lines[-1] == "````"

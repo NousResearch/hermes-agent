@@ -49,6 +49,7 @@ def repo(tmp_path: Path) -> Path:
         "hermes_agent/oldpkg/data.py": "# copied byte for byte\nX = 1\n",
         "hermes_agent/oldtop.py": "",
         "oldtop.py": "# hand-written\n",
+        "hermes_bootstrap.py": "import sys\nsys.stderr.write('bootstrap ran\\n')\n",
         ".gitattributes": "*.py text eol=lf\n" + BLOCK,
         ".gitignore": "__pycache__/\noldpkg/build/\n",
         "pyproject.toml": '[tool.hermes]\nupdate-startup-files = ["oldtop.py"]\n',
@@ -82,6 +83,14 @@ def test_old_updater_package_reaches_the_moved_module_through_the_shim(repo):
 def test_run_as_a_script_runs_the_moved_main_with_its_argv(repo, argv):
     result = _run(repo, *argv, "a", "b")
     assert result.stdout.strip() == "argv ['a', 'b']", result.stderr
+
+
+def test_old_name_launch_repairs_a_torn_update_before_importing_hermes_agent(repo):
+    # The entry's first import, hermes_bootstrap, repairs a killed update; a merge killed while writing
+    # hermes_agent/ must not stop `python -m <old name>` from reaching it.
+    (repo / "hermes_agent/compat/moves.py").write_text('MOVES = {"oldpkg": "hermes_', encoding="utf-8")
+    assert "bootstrap ran" in _run(repo, "-m", "oldpkg.tool").stderr
+    assert "bootstrap ran" not in _run(repo, "-c", "import oldpkg").stderr  # a plain import stays light
 
 
 def test_loaded_by_path_carries_the_moved_names(repo):

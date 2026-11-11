@@ -26,6 +26,14 @@ comment. The text is fixed by the releases that read it.
 
 REQUIRED_NAMES: dict[str, str] = {
     "acp_adapter": "package",  # fresh processes: -m, launchers, service units
+    # An editor's ACP server outlives the update (it survives the gateway restart): its handlers
+    # import these lazily, and Python looks for them on the old package's __path__.
+    "acp_adapter.catalog": "module",  # v0.22.1..v0.23.1: acp_adapter/gateway_server.py:350@v0.23.1
+    "acp_adapter.edit_approval": "module",  # v0.21.6..v0.23.1: acp_adapter/events.py:165@v0.23.1
+    "acp_adapter.elicitation": "module",  # v0.22.1..v0.23.1: acp_adapter/gateway_server.py:1162@v0.23.1
+    "acp_adapter.gateway_commands": "module",  # v0.22.3..v0.23.1: acp_adapter/gateway_server.py:42@v0.23.1
+    "acp_adapter.gateway_media": "module",  # v0.22.3..v0.23.1: acp_adapter/gateway_server.py:785@v0.23.1
+    "acp_adapter.gateway_session_meta": "module",  # v0.22.3..v0.23.1: acp_adapter/gateway_commands.py:38@v0.23.1
     "agent": "package",  # fresh processes: -m, launchers, service units
     "agent.secret_sources": "package",  # parent of agent.secret_sources.registry
     "cron": "package",  # fresh processes: -m, launchers, service units

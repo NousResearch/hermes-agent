@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.plugin_capabilities import _child_dict
+from hermes_cli.plugin_capabilities import GRANTED_KEY, _child_dict
 
 
 def _pc():
@@ -19,12 +19,15 @@ def _pc():
     return plugins_cmd
 
 
-def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
-    """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.yaml."""
+def _set_tool_override_grant(plugin_id: str, allowed: bool) -> None:
+    """Write ``plugins.entries.<plugin_id>.allow_tool_override``; a revoke also drops the
+    ``tools.override`` consent grant, which the capability gate checks first."""
     from hermes_cli.config import load_config, save_config
     config = load_config()
     entry = _child_dict(_child_dict(_child_dict(config, "plugins"), "entries"), plugin_id)
-    entry[key] = bool(value)
+    entry["allow_tool_override"] = bool(allowed)
+    if not allowed and GRANTED_KEY in entry:
+        entry[GRANTED_KEY] = [cap for cap in entry[GRANTED_KEY] if cap != "tools.override"]
     save_config(config)
 
 
@@ -159,7 +162,7 @@ def _resolve_tool_override_grant(console, key: str, allow_tool_override: Optiona
             "  Grant it? [y/N] ",
             console.input,
         )
-    _set_plugin_entry_flag(key, "allow_tool_override", allow_tool_override)
+    _set_tool_override_grant(key, allow_tool_override)
     if allow_tool_override:
         console.print(
             f"[green]✓[/green] Granted [bold]{key}[/bold] permission to "

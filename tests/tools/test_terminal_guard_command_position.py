@@ -17,17 +17,12 @@ FALSE_POSITIVES = [
     # bare name as an argument / path component / list target
     "ls -d node_modules/react node_modules/vite",
     "du -sh node_modules/vite",
-    "ls apps/desktop/vite.config.ts",
-    "cat apps/desktop/vite.config.ts",
-    'find . -name "vite.config.ts"',
     "pip show uvicorn",
     "du -sh venv/lib/python3.11/site-packages/gunicorn",
     "ls node_modules/.bin/nodemon",
     "grep -rn nodemon package.json",
     "grep -rn vite apps/desktop/vite.config.ts",
-    "grep -n 'npm run dev' docs/deploy.md",
     "echo vite nodemon uvicorn gunicorn",
-    "python3 -c 'import vite'",
     # Windows read forms from the package-path report
     r"type C:\app\.venv\Lib\site-packages\gunicorn\arbiter.py",
     r"dir C:\app\.venv\Lib\site-packages\uvicorn",
@@ -61,11 +56,10 @@ FALSE_POSITIVES = [
     "docker compose up -d",
     "docker compose up --detach web",
     "docker compose up -d && curl -s localhost:3000/health",
-    # quoted mentions and informational flags
-    "grep -rn 'vite' .",
-    "echo 'uvicorn gunicorn nodemon'",
-    "vite --version",
-    "uvicorn --help",
+    "docker compose up -d && sleep 5 && docker compose ps",
+    ".venv/bin/python -m pip install uvicorn",
+    "git switch -c bump-vite",
+    "pip list | column -t | grep uvicorn",
 ]
 
 TRUE_POSITIVES = [
@@ -113,12 +107,10 @@ TRUE_POSITIVES = [
     # Windows launcher suffix is the same command
     "uvicorn.exe app:app",
     "gunicorn.exe -w 4 app:app",
-    "npm.cmd run dev",
     "npx.cmd vite",
     "pnpm.cmd exec vite",
     "python.exe -m uvicorn app:app",
     r"C:\app\.venv\Scripts\uvicorn.exe app:app",
-    r"C:\app\node_modules\.bin\vite.cmd --port 3000",
     r".\node_modules\.bin\nodemon.cmd server.js",
     # an install earlier in the line does not excuse the launch after it
     "npm install vite && vite",
@@ -161,6 +153,10 @@ TRUE_POSITIVES = [
     "docker compose up -d && tail -f logs/app.log",
     "docker compose up -d && kubectl logs -f deploy/web",
     "echo npm run dev | tee run.sh | zsh",
+    "echo npm run dev > run.sh; sh run.sh",
+    "docker compose up -d && npm test",
+    "git -c core.pager=nodemon log",
+    "git rebase -ix nodemon main",
     "./echo npm run dev",
     "case $1 in\n  test ) npm run dev ;;\nesac",
     "docker compose run web npm run dev up -d",

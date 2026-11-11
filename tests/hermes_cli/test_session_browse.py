@@ -15,6 +15,9 @@ import pytest
 from hermes_cli.sessions_cmd_browse import _session_browse_picker
 
 
+WHEEL_DOWN = 0x200000  # curses.BUTTON5_PRESSED, absent from curses built against older ncurses
+
+
 # ─── Sample session data ──────────────────────────────────────────────────────
 
 def _make_sessions(n=5):
@@ -101,8 +104,9 @@ class TestSessionBrowsePicker:
 class TestCursesBrowse:
     """Tests for the curses-based interactive picker via simulated key sequences."""
 
-    def _run_with_keys(self, sessions, key_sequence):
-        """Simulate running the curses picker with a given key sequence."""
+    def _run_with_keys(self, sessions, key_sequence, mouse_events=()):
+        """Simulate running the curses picker with a given key sequence; each ``curses.KEY_MOUSE`` key
+        consumes the next ``(y, button_state)`` from *mouse_events*."""
 
         # Build a mock stdscr that returns keys from the sequence
         mock_stdscr = MagicMock()
@@ -119,8 +123,11 @@ class TestCursesBrowse:
                     pass  # key sequence exhausted
 
             mock_wrapper.side_effect = run_inner
-            with patch("curses.curs_set"):
-                with patch("curses.has_colors", return_value=False):
+            events = [(0, 0, y, 0, state) for y, state in mouse_events]
+            with patch("curses.curs_set"), patch("curses.mousemask") as mousemask, \
+                    patch("curses.BUTTON5_PRESSED", WHEEL_DOWN, create=True):
+                with patch("curses.has_colors", return_value=False), patch("curses.getmouse", side_effect=events):
+                    self.mousemask = mousemask
                     return _session_browse_picker(sessions)
 
 
@@ -146,8 +153,49 @@ class TestCursesBrowse:
 
 
 
+    def test_mouse_events_are_requested(self):
+        import curses
 
+        self._run_with_keys(_make_sessions(3), [27])
+        self.mousemask.assert_called_once_with(
+            curses.BUTTON1_CLICKED | curses.BUTTON4_PRESSED | WHEEL_DOWN
+        )
 
+    def test_click_selects_the_row_under_the_pointer(self):
+        import curses
+
+        sessions = _make_sessions(5)
+        # Rows start at screen line 3.
+        result = self._run_with_keys(sessions, [curses.KEY_MOUSE], [(5, curses.BUTTON1_CLICKED)])
+        assert result == sessions[2]["id"]
+
+    @pytest.mark.parametrize("y", [0, 2, 8])
+    def test_click_outside_the_rows_selects_nothing(self, y):
+        import curses
+
+        result = self._run_with_keys(_make_sessions(3), [curses.KEY_MOUSE, 27], [(y, curses.BUTTON1_CLICKED)])
+        assert result is None
+
+    def test_wheel_down_moves_the_cursor_then_enter_selects(self):
+        import curses
+
+        sessions = _make_sessions(5)
+        result = self._run_with_keys(sessions, [curses.KEY_MOUSE, 10], [(3, WHEEL_DOWN)])
+        assert result == sessions[3]["id"]
+
+    def test_wheel_up_stops_at_the_first_row(self):
+        import curses
+
+        sessions = _make_sessions(5)
+        result = self._run_with_keys(sessions, [curses.KEY_MOUSE, 10], [(3, curses.BUTTON4_PRESSED)])
+        assert result == sessions[0]["id"]
+
+    def test_wheel_down_stops_at_the_last_row(self):
+        import curses
+
+        sessions = _make_sessions(2)
+        result = self._run_with_keys(sessions, [curses.KEY_MOUSE, 10], [(3, WHEEL_DOWN)])
+        assert result == sessions[1]["id"]
 
 
 # ─── Argument parser registration ──────────────────────────────────────────

@@ -28,10 +28,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator, Optional
 
 from pm.network import retry_network
@@ -358,15 +361,94 @@ def npm_dist_tags(name: str) -> dict:
     return _get_json(f"{npm_registry(os.environ)}-/package/{name}/dist-tags")
 
 
-def node_latest_versions() -> list[str]:
-    """Newest-first node versions from nodejs.org's index (strip the 'v')."""
+def node_latest_versions(target: str | None = None) -> list[str]:
+    """Newest-first node versions from nodejs.org's index (strip the 'v').
+
+    Capped at the newest major whose darwin binaries still link against a
+    macOS SDK this host's libc++ can satisfy. Node built against an SDK newer
+    than the host's references symbols the host libc++ never had (e.g.
+    ``__libcpp_verbose_abort`` on macOS 12 with an SDK 15 build), so the
+    binary aborts in dyld on every launch and each startup "repair" would
+    re-download the same unusable tarball.
+    """
+    ceiling = node_darwin_major_ceiling() if target is None or target.startswith("darwin") else None
     out = []
     for entry in _get_json("https://nodejs.org/dist/index.json"):
         v = entry.get("version", "")
         v = v.removeprefix("v")
         if re.fullmatch(r"\d+\.\d+\.\d+", v):
+            if ceiling is not None and int(v.split(".")[0]) > ceiling:
+                continue
             out.append(v)
     return out
+
+
+_NODE_MAJOR_SDK = (
+    # newest major first: (node major, the SDK its darwin build is linked for)
+    (26, "15.0"),
+    (24, "15.0"),
+    (23, "14.0"),
+    (22, "11.0"),
+)
+
+# The lowest SDK the Node majors above tolerate. The 22 line is always
+# covered; only a host below THIS floor is capped.
+_NODE_SDK_FLOOR = "11.0"
+
+
+def node_darwin_major_ceiling() -> int | None:
+    """Highest Node major this darwin host can execute, or None when unknown.
+
+    Only darwin is gated, and only below the oldest entry's SDK floor: the
+    table above describes Apple's toolchain, every other target (and every
+    host new enough for the table's newest line) keeps resolving upstream's
+    newest release.
+    """
+    if sys.platform != "darwin":
+        return None
+    sdk = _installed_macos_sdk()
+    if sdk is None:
+        return None
+    host = (int(sdk[0]), int(sdk[1]))
+
+    def at_least(required: str) -> bool:
+        need = [int(part) for part in required.split(".")[:2]]
+        while len(need) < 2:
+            need.append(0)
+        return host[0] > need[0] or (host[0] == need[0] and host[1] >= need[1])
+
+    if at_least(_NODE_MAJOR_SDK[0][1]):
+        return None  # New enough for the newest listed major: no cap at all.
+    for major, built_with in _NODE_MAJOR_SDK:
+        if at_least(built_with):
+            return major
+    return None
+
+
+def _installed_macos_sdk() -> tuple[int, int] | None:
+    """Highest MacOSX SDK version on this host (xcrun, then the CLT SDKs)."""
+    try:
+        raw = subprocess.run(["xcrun", "--show-sdk-version"], capture_output=True,
+                             text=True, timeout=30, check=False).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        raw = ""
+    if not raw:
+        sdk_root = Path(
+            subprocess.run(["xcode-select", "-p"], capture_output=True, text=True,
+                           timeout=30, check=False).stdout.strip()
+            or "/"
+        ) / "SDKs"
+        names = [p.name for p in sdk_root.glob("MacOSX*.sdk")] if sdk_root.is_dir() else []
+        if not names:
+            return None
+        raw = max(names).removeprefix("MacOSX").removesuffix(".sdk")
+    try:
+        parts = [int(p) for p in raw.split(".")[:2]]
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    return (parts[0], parts[1] if len(parts) > 1 else 0)
 
 
 def martin_riedl_index() -> dict[str, dict[str, str]]:

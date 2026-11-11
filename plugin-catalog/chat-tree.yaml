@@ -48,8 +48,9 @@ known_issues:
   - >-
     A node click scrolls the main chat to that exchange through the app event
     hermes:timeline-reveal and the app markup (data-session-anchor, data-slot,
-    data-message-id). Neither is Desktop SDK surface (catalog rule 8), and
-    hermes plugins validate warns about the markup selector. We chose this on
+    data-message-id, data-chat-surface, data-session-switching). Neither is
+    Desktop SDK surface (catalog rule 8), and hermes plugins validate warns
+    about the markup selectors. We chose this on
     purpose, because the SDK has no scroll API. A Desktop update can break it
     without notice. Then a click only opens the chat of the node.
   - Digests and stored histories need hermes plugins enable chat-tree and a gateway restart.

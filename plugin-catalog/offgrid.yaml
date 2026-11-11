@@ -1,8 +1,9 @@
 name: offgrid
 repo: https://github.com/emmaGH1/hermes-offgrid
-sha: "b7a3416bab78ddf89dc117295064df6542221e63"
+sha: "5332d4d62ea75ff68011059d73a6562e79f08b86"
 version: "1.0.0"
 title: Offgrid
+image: https://raw.githubusercontent.com/emmaGH1/hermes-offgrid/5332d4d62ea75ff68011059d73a6562e79f08b86/assets/logo.png
 description: "Chat with your Hermes agent by plain SMS, with no mobile data, through Africa's Talking, plus a USSD menu as a fallback for basic phones. Texts become normal Hermes messages on the offgrid platform, one conversation per phone number, and replies come back as a single SMS (Markdown and emoji stripped, capped at five billed segments). A safe subset of gateway commands works by text: NEW, SESSIONS, RESUME <n>, MODEL, STATUS, HELP and /retry, /stop, /title; every other slash command is refused by default. Disclosure — every question and every reply is sent through Africa's Talking and the mobile network as SMS, in plain text, and each outbound SMS segment is billed to the operator's Africa's Talking account (incoming SMS and USSD sessions may also be billed). Requires an Africa's Talking API key, a callback secret and an explicit allowlist of phone numbers; the callback must be reachable over public HTTPS. SMS sender numbers can be spoofed, so commands that change config, approve tools or reveal other sessions are blocked. Verified in the Africa's Talking sandbox only, not on a live carrier. Uses its own platform name and OFFGRID_* settings, so it installs alongside ussd-platform."
 maintainer: emmaGH1
 tier: community

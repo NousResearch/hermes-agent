@@ -138,7 +138,7 @@ class SessionState:
             nested = payload.get("usage")
             flat = isinstance(payload.get("api_calls"), int) or not isinstance(nested, dict)
             self.apply_usage(payload if flat else nested)
-        elif kind == "request.cancel" and isinstance(payload, dict):
+        elif kind in ("request.cancel", "approval.settled", "clarify.settled") and isinstance(payload, dict):
             for listener in list(self.request_listeners):
                 listener(payload)
         elif kind == "session.replay_gap":

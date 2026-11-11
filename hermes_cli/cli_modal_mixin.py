@@ -982,11 +982,14 @@ class CLIModalMixin:
         return {"answers": partial, "outcome": "timed_out"}
 
     def _withdraw_gateway_modal(self, method) -> None:
-        """The gateway withdrew the server request this CLI's modal is answering (``request.cancel``:
-        another viewer completed it, or its wait ended): close that modal as if cancelled locally, so
-        the blocked agent thread returns. Called from the gateway connection's thread."""
+        """The gateway withdrew or settled the request this CLI's modal is answering (``request.cancel``,
+        ``approval.settled``, ``clarify.settled``: another viewer answered it, or its wait ended): close
+        that modal as if cancelled locally, so the blocked agent thread returns. Called from the gateway
+        connection's thread."""
         # Each modal's response queue is an unbounded queue.Queue: put() never blocks or raises.
-        if method == "clarify" and self._clarify_state:
+        if method == "approval" and self._approval_state:
+            self._approval_state["response_queue"].put("deny")
+        elif method == "clarify" and self._clarify_state:
             state = self._clarify_state
             self._clarify_teardown()
             state["response_queue"].put(None)

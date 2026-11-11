@@ -1110,12 +1110,15 @@ class GatewayAgent:
         choices = list(payload.get("choices") or [])
         choice = "deny"
         if callback is not None:
+            self._open_request = (payload.get("prompt_id"), "approval")
             try:
                 choice = callback(payload.get("command") or "", payload.get("description") or "",
                                   allow_permanent="always" in choices, allow_session="session" in choices,
                                   smart_denied=False)
             except TypeError:
                 choice = callback(payload.get("command") or "", payload.get("description") or "")
+            finally:
+                self._open_request = None
         if choice not in choices:
             choice = "deny"
         self.connection.call("approval.respond", session_id=self.session_id,
@@ -1126,9 +1129,13 @@ class GatewayAgent:
         answer = ""
         if self.clarify_callback is not None:
             qid = payload.get("prompt_id") or "q0"
-            reply = self.clarify_callback([{"qid": qid, "question": payload.get("question") or "",
-                                            "choices": list(payload.get("choices") or []),
-                                            "multi_select": bool(payload.get("multi_select"))}])
+            self._open_request = (payload.get("prompt_id"), "clarify")
+            try:
+                reply = self.clarify_callback([{"qid": qid, "question": payload.get("question") or "",
+                                                "choices": list(payload.get("choices") or []),
+                                                "multi_select": bool(payload.get("multi_select"))}])
+            finally:
+                self._open_request = None
             if isinstance(reply, dict):
                 value = (reply.get("answers") or {}).get(qid)
                 answer = ", ".join(map(str, value)) if isinstance(value, (list, tuple)) else (value or "")
@@ -1184,12 +1191,14 @@ class GatewayAgent:
             self.connection.reply(frame["id"], {"value": answer if isinstance(answer, str) else ""})
 
     def _on_request_withdrawn(self, payload):
-        """``request.cancel`` (connection loop thread): the gateway settled or withdrew a request. When
+        """``request.cancel`` (by request ``id``) or ``approval.settled`` / ``clarify.settled`` (by
+        ``prompt_id``), on the connection loop thread: the gateway settled or withdrew a request. When
         this agent thread is parked in the modal answering it (another viewer completed the form, the
         turn timed out or was interrupted), release that modal so the pump reads the turn's remaining
         frames; its late reply to the already-settled request is dropped by the gateway."""
         current = self._open_request
-        if current is None or payload.get("id") != current[0] or self.modal_withdraw_callback is None:
+        if (current is None or (payload.get("id") or payload.get("prompt_id")) != current[0]
+                or self.modal_withdraw_callback is None):
             return
         try:
             self.modal_withdraw_callback(current[1])

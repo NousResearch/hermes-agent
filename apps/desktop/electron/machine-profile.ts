@@ -7,8 +7,6 @@ export interface MachineProfile {
   ageDays: number | null
   arch: string
   locale: string
-  model: string
-  nvidia: boolean
   platform: NodeJS.Platform
   release: string
   username: string
@@ -18,7 +16,7 @@ export function registerMachineProfile(): void {
   ipcMain.handle('hermes:machine:profile', readMachineProfile)
 }
 
-async function readMachineProfile(): Promise<MachineProfile> {
+function readMachineProfile(): MachineProfile {
   let ageDays: number | null = null
   let username = ''
 
@@ -43,30 +41,8 @@ async function readMachineProfile(): Promise<MachineProfile> {
     ageDays,
     arch: process.arch,
     locale: app.getLocale() || '',
-    model: readHardwareModel(),
-    nvidia: await hasNvidiaGpu(),
     platform: process.platform,
     release: os.release(),
     username
-  }
-}
-
-function readHardwareModel(): string {
-  try {
-    // ARM firmware supplies model names such as NVIDIA_DGX_Spark here.
-    return fs.readFileSync('/proc/device-tree/model', 'utf8').replace(/\0/g, '').trim()
-  } catch {
-    return ''
-  }
-}
-
-async function hasNvidiaGpu(): Promise<boolean> {
-  try {
-    // Chromium already enumerates GPUs; no vendor tools or subprocess are needed.
-    const info = (await app.getGPUInfo('basic')) as { gpuDevice?: { vendorId?: number }[] }
-
-    return (info.gpuDevice ?? []).some((device): boolean => device.vendorId === 0x10de)
-  } catch {
-    return false
   }
 }

@@ -21,7 +21,7 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -110,6 +110,7 @@ Examples:
     hermes fallback [list]        Show fallback provider chain
     hermes fallback add           Add a fallback provider (same picker as `hermes model`)
     hermes fallback remove        Remove a fallback provider from the chain
+    hermes fallback check [--live]  Check each fallback entry can be used (exit 1 if not)
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
@@ -156,6 +157,10 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(estimated cost, token counts, model, api_calls) to PATH. "
         "The report is written even when the run fails, so pipelines "
         "can always account for spend. No effect outside -z/--oneshot."))
+    add("--cpu-profile", metavar="PATH", default=None, help=(
+        "Profile this process with cProfile and write PATH (pstats) plus PATH.txt (top functions) "
+        "on exit. A relative PATH goes under the profile's logs/profiles/. Adds overhead for as "
+        "long as the process runs; under --tui it profiles the launcher, not the agent backend."))
     # --model / --provider are accepted at the top level so they can pair with -z without the
     # `chat` subcommand; if neither -z nor a subcommand consumes them, they fall through as None.
     inherited(parser, "-m", "--model", default=None, help=(
@@ -197,6 +202,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Bypass all dangerous command approval prompts (use at your own risk)")
     inherited(parser, "--pass-session-id", action="store_true", default=False,
               help="Include the session ID in the agent's system prompt")
+    inherited(parser, "--checkpoints", action="store_true", default=False,
+              help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     inherited(parser, "--ignore-user-config", action="store_true", default=False,
               help=f"Ignore {_cfg_path()} and fall back to built-in defaults (credentials in .env are still loaded)")
     inherited(parser, "--ignore-rules", action="store_true", default=False,
@@ -238,8 +245,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "interpreted, so quotes, $(...), and backticks are preserved "
         "verbatim. Mutually exclusive with -q."))
     # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking and its dispatch sites do
-    # `if args.oneshot: _run_and_exit_oneshot(args.oneshot)` — a shared boolean dest would be
-    # passed as the prompt.
+    # read `args.oneshot` as the prompt — a shared boolean dest would be passed as the prompt.
     add("--oneshot", dest="oneshot_exit", action="store_true", default=False, help=(
         "With -q/--query-file: answer the query and exit (legacy "
         "single-query behavior) instead of seeding an interactive "
@@ -258,6 +264,12 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     # too; runtime resolution (resolve_runtime_provider) validates, same as the top-level flag.
     inherited(chat_parser, "--provider", default=SUPPRESS,
               help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.")
+    # Explicit endpoint launches (custom provider, --safe-mode isolation) are frozen into the
+    # session policy by the gateway; the key lives only in the authority's memory, never on disk.
+    add("--base-url", dest="base_url", default=SUPPRESS, metavar="URL",
+        help="OpenAI-compatible endpoint for --provider custom (e.g. http://127.0.0.1:8000/v1).")
+    add("--api-key", dest="api_key", default=SUPPRESS, metavar="KEY",
+        help="API key for this launch only; not persisted.")
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")
@@ -285,8 +297,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "Auto-approve any unseen shell hooks declared in config.yaml "
         "without a TTY prompt (see also HERMES_ACCEPT_HOOKS env var and "
         "hooks_auto_accept: in config.yaml)."))
-    add("--checkpoints", action="store_true", default=False,
-        help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
+    inherited(chat_parser, "--checkpoints", action="store_true", default=SUPPRESS,
+              help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)")
     add("--max-turns", type=int, default=None, metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)")
     add("--run-budget", type=float, default=None, metavar="SECONDS", dest="run_budget", help=(
@@ -319,6 +331,27 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     return chat_parser
 
 
+def _plugin_command_install_hint(prog: str, value: str):
+    """Install command when *value* names a catalog memory plugin that resolves nowhere: its
+    ``hermes <name>`` command exists only once the plugin is installed. Top level only; never raises."""
+    if prog != "hermes" or not re.fullmatch(r"[a-z0-9_-]{1,64}", value):
+        return None
+    try:
+        from plugins.memory import find_provider_dir
+        if find_provider_dir(value) is not None:
+            return None
+        from hermes_cli.memory_provider_migration import catalog_install_hint
+        return catalog_install_hint(value, category="memory")
+    except Exception:
+        return None
+
+
+def _moved_command_hint(prog: str, value: str) -> str:
+    """Where a command that left core went (``hermes auth spotify``, ``hermes mcp serve``, ...)."""
+    from hermes_cli.left_core_migration import moved_command_hint
+    return moved_command_hint(prog, value)
+
+
 class HermesArgumentParser(argparse.ArgumentParser):
     """argparse parser whose unknown-subcommand error is three short lines, not a 70-name dump.
 
@@ -334,7 +367,14 @@ class HermesArgumentParser(argparse.ArgumentParser):
             # (argparse hands add_parser() the parent's class), so the copy stays correct for both.
             lines = [f"{self.prog}: '{value}' is not a `{self.prog}` command."]
             close = difflib.get_close_matches(str(value), list(action.choices), n=3, cutoff=0.6)
-            if close:
+            install = _plugin_command_install_hint(self.prog, str(value))
+            moved = "" if install else _moved_command_hint(self.prog, str(value))
+            if install:
+                # A provider that left core (``hermes honcho``) registers its command only once installed.
+                lines.append(f"The '{value}' memory plugin is not installed. Install it with: {install}")
+            elif moved:
+                lines.append(moved)
+            elif close:
                 lines.append(f"Did you mean: {', '.join(close)}?")
             lines.append(f"Run `{self.prog} --help` to see all commands.")
             self.exit(2, "\n".join(lines) + "\n")

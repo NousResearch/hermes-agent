@@ -1,0 +1,15 @@
+name: hermes-body
+repo: https://github.com/Itsmetibo/hermes-body
+sha: a061ee8d698ccce7d76cf84d64240a2213505bc7
+version: "0.2.0"
+description: "Hermes Body turns a phone into a first-class Hermes channel: a private camera-and-voice page streams frames and speech transcripts into the gateway, and the full agent answers out loud and can act with any tool. Disclosure — the plugin runs a local HTTP/WebSocket server (default 127.0.0.1:8788, token-gated) that serves the phone page and receives camera frames, speech transcripts and recorded voice clips; it stores the pairing token (0600) and the newest 50 received frames and voice clips in the plugin data directory; frames reach the configured model provider the same way any photo attachment does, and voice clips go through Hermes' configured speech-to-text like any voice note; it opens no outbound connections of its own and sends no telemetry; the page must be served over HTTPS (Tailscale Serve or another proxy) for browser camera and microphone access."
+maintainer: Itsmetibo
+tier: community
+category: platform
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Itsmetibo/hermes-body#readme
+capabilities:
+  provides_tools: [body_status, body_speak]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

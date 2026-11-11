@@ -40,7 +40,7 @@ def test_a_refusal_names_the_variable_it_refused(dump, variable):
     ("NOVALUE\n", "not an assignment"),
     ("Z=$'abc", "never closes"),
     ("Z=$'a'b'", "closes its ANSI-C quote"),
-    ("Z=$'a\\qc'", "escape \\q"),
+    ("Z=$'a\\qc'", "escape systemd does not write"),
     ("Z=$'a\\12'", "incomplete octal escape"),
 ])
 def test_a_refusal_says_what_went_wrong(dump, expected):
@@ -115,7 +115,8 @@ def test_the_check_reaches_the_runtime_start_error(monkeypatch, tmp_path):
         if "show-environment" in argv:
             # A manager that answered with a name systemd would never print.
             stdout = "1AB=x\n" if "--output=json" not in argv else '{"1AB":"x"}'
-            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+            # The manager environment is read as bytes: a value can hold a raw CR.
+            return SimpleNamespace(returncode=0, stdout=stdout.encode(), stderr=b"")
         if "show" in argv:
             if "--system" in argv:
                 # No unit in the system scope: it must not take the finding away.
@@ -155,7 +156,8 @@ def test_a_readable_manager_environment_is_not_refused(monkeypatch):
 
     def run(argv, *_args, **_kwargs):
         stdout = '{"HOME":"/home/u","LANG":"C"}' if "--output=json" in argv else "HOME=/home/u\nLANG=C\n"
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        # The manager environment is read as bytes: a value can hold a raw CR.
+        return SimpleNamespace(returncode=0, stdout=stdout.encode(), stderr=b"")
 
     monkeypatch.setattr(service, "_run", run)
     assert service._manager_environment(("systemctl", "--user"), 0) == {"HOME": "/home/u", "LANG": "C"}
@@ -167,7 +169,7 @@ def _text_form(mapping):
     """The block as systemd prints it in text, quoting the values that need it."""
     lines = []
     for key, val in mapping.items():
-        if val and re.search(r"[\\'\"$*?[]()<>|&;!#\s]", val):
+        if val and re.search(r"[\\'\"$*?\[\]()<>|&;!#\s]", val):
             escaped = val.replace("\\", "\\\\").replace("'", "\\'")
             lines.append(f"{key}=$'{escaped}'")
         else:

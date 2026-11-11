@@ -2,6 +2,7 @@
 tested against a model of systemd's own writer, not hand-written samples, and refuses what
 systemd never writes."""
 import itertools
+import json
 import os
 import random
 import subprocess
@@ -181,15 +182,25 @@ def test_the_values_a_real_session_exports_round_trip(value):
 
 def _real_systemctl_dump(value: bytes) -> bytes | None:
     """What the host's systemctl prints for one variable, or None when it cannot be asked."""
-    previous = None
     try:
-        before = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True,
-                                timeout=10, check=False).stdout.decode("utf-8", "surrogateescape")
-        for line in before.split("\n"):
-            # A plain split, not a shell grep: the value can hold a glob character.
-            if line.startswith("HERMES_TEST_VAR="):
-                previous = line[len("HERMES_TEST_VAR="):]
-                break
+        before = subprocess.run(["systemctl", "--user", "show-environment", "--output=json"],
+                                capture_output=True, timeout=10, check=False).stdout.decode(
+            "utf-8", "surrogateescape")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not before.startswith("{"):
+        # This systemd prints no JSON form: the value it holds cannot be read back.
+        return None
+    try:
+        data = json.loads(before)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    # The JSON form carries the value the manager holds, not the form it prints:
+    # the printed form of a quoted value would be restored as its own quoting.
+    previous = data.get("HERMES_TEST_VAR")
+    try:
         subprocess.run(["systemctl", "--user", "unset-environment", "HERMES_TEST_VAR"],
                        capture_output=True, timeout=10, check=False)
         subprocess.run(["systemctl", "--user", "set-environment", f"HERMES_TEST_VAR={value.decode('utf-8', 'surrogateescape')}"],

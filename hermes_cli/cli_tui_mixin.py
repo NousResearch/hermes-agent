@@ -297,9 +297,9 @@ class CLITuiMixin:
             return _state_fragment("class:clarify-selected", "✎")
         if self._clarify_state:
             return _state_fragment("class:prompt-working", "?")
-        if self._command_running:
+        if self._command_spinner_in_composer():
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
-        if self._agent_running:
+        if self._agent_running or self._command_running:  # the glyph layout spins in its top rule
             return _state_fragment("class:prompt-working", "☤")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
@@ -757,12 +757,8 @@ class CLITuiMixin:
             else:
                 hint = "  " + t("cli.tui.hint_clarify_batch")
             return [('class:hint', hint), ('class:clarify-countdown', countdown)]
-        if self._command_running:
-            frame = self._command_spinner_frame()
-            if self._command_blocks_input:
-                detail = t("cli.tui.hint_input_disabled")
-            else:
-                detail = t("cli.tui.hint_input_queues")
+        if self._command_spinner_in_composer():
+            frame, detail = self._command_spinner_frame(), self._command_input_detail()
             return [('class:hint', "  " + t("cli.tui.hint_command_running", frame=frame, detail=detail))]
         return []
 
@@ -787,8 +783,10 @@ class CLITuiMixin:
             return t("cli.tui.placeholder_answer")
         if self._clarify_state:
             return ""
-        if self._command_running:
+        if self._command_spinner_in_composer():
             return f"{self._command_spinner_frame()} {self._command_status or t('cli.tui.placeholder_processing_command')}"
+        if self._command_running:  # the glyph layout's top rule already spins beside the status
+            return self._command_input_detail()
         if self._agent_running:
             if getattr(self, "_modern_layout", False):
                 return t(f"cli.modern.placeholder_busy_{self.busy_input_mode}")
@@ -1808,7 +1806,7 @@ class CLITuiMixin:
     def _tui_hint_height(self):
         if (
             self._sudo_state or self._secret_state or self._approval_state or self._connection_state
-            or self._slash_confirm_state or self._clarify_state or self._command_running):
+            or self._slash_confirm_state or self._clarify_state or self._command_spinner_in_composer()):
             return 1
         # Keep a spacer while the agent runs on roomy terminals; reclaim the row on narrow screens.
         return self._agent_spacer_height()

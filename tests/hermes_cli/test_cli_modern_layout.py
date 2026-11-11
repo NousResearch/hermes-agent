@@ -1,5 +1,7 @@
 """The glyph CLI layout (``display.cli_layout: modern``): scrollback rows never depend on the
 terminal width, and the status line renders under the composer instead of above it."""
+import asyncio
+import io
 import re
 
 import pytest
@@ -226,6 +228,74 @@ def test_refused_skill_write_reads_neutral_not_failed():
     # A failed rollback left partial changes on disk: that one stays a red failure.
     broken = refused.replace('(limit: 100,000)."', '(limit: 100,000). — batch aborted, ROLLBACK FAILED for demo."')
     assert _plain(tool_row("skill_manage", {"operations": []}, 1.1, broken)).startswith("✗ ")
+
+
+class _Tty(io.StringIO):
+    encoding = "utf-8"
+
+    def isatty(self):
+        return True
+
+    def fileno(self):
+        return 1
+
+
+def _paint_once(layout, style) -> str:
+    """One frame of the real layout through the CPR-disabled vt100 output the CLI ships; returns
+    the painted characters with escapes and whitespace removed (blank cells go out as cursor moves)."""
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output.vt100 import Vt100_Output
+
+    tty = _Tty()
+    output = Vt100_Output(tty, lambda: Size(rows=30, columns=120), term="xterm-256color", enable_cpr=False)
+    frames: list[str] = []
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app = Application(layout=layout, style=style, full_screen=False, input=pipe, output=output)
+            painted = asyncio.Event()
+
+            def record(_app):
+                frames.append(tty.getvalue())
+                painted.set()
+
+            app.after_render += record
+            task = asyncio.create_task(app.run_async())
+            await asyncio.wait_for(painted.wait(), 5)
+            app.exit()  # repaints the layout once more as it leaves; only the first frame counts
+            await asyncio.wait_for(task, 3)
+
+    asyncio.run(run())
+    return "".join(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frames[0]).split())
+
+
+@pytest.mark.parametrize("blocks_input", [True, False])
+def test_a_running_slash_command_spins_only_in_the_top_rule(monkeypatch, blocks_input):
+    """A slow slash command (``/compress``, ``/skills search``) shows one spinner in this layout: the
+    composer's top rule, which also names the command. The classic hint row and the spinning
+    prompt and placeholder repeated it three more times. The composer still says what typing does."""
+    from prompt_toolkit.key_binding import KeyBindings
+    from agent.i18n import t
+    from cli import _COMMAND_SPINNER_FRAMES, HermesCLI
+
+    monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+    cli = HermesCLI(model="fixture", provider="openai-compat", api_key="fixture", base_url="http://127.0.0.1:1/v1")
+    cli._tui_init_run_state()
+    cli._modern_layout = True
+    layout, style = cli._tui_build_layout(KeyBindings())
+    idle_rows = layout.container.preferred_height(120, 30).preferred
+    cli._command_running, cli._command_blocks_input = True, blocks_input
+    cli._command_status = "Compressing context..."
+
+    painted = _paint_once(layout, style)
+
+    assert sum(painted.count(frame) for frame in _COMMAND_SPINNER_FRAMES) == 1, painted
+    assert painted.count("Compressingcontext...") == 1, painted
+    detail = t("cli.tui.hint_input_disabled" if blocks_input else "cli.tui.hint_input_queues")
+    assert "".join(detail.split()) in painted, painted
+    assert layout.container.preferred_height(120, 30).preferred == idle_rows  # no row added for it
 
 
 def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):

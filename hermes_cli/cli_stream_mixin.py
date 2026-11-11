@@ -608,6 +608,15 @@ class CLIStreamMixin:
         from cli import _COMMAND_SPINNER_FRAMES
         return _COMMAND_SPINNER_FRAMES[int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)]
 
+    def _command_spinner_in_composer(self) -> bool:
+        """True while a slow command runs in the classic layout, whose hint row, prompt and
+        placeholder spin. The glyph layout spins once, in the composer's top rule beside the status."""
+        return self._command_running and not getattr(self, "_modern_layout", False)
+
+    def _command_input_detail(self) -> str:
+        """What typing does while a slow command runs (``_busy_command(blocks_input=...)``)."""
+        return t("cli.tui.hint_input_disabled" if self._command_blocks_input else "cli.tui.hint_input_queues")
+
     @contextmanager
     def _busy_command(self, status: str, *, blocks_input: bool = True):
         """Expose a temporary busy state in the TUI while a slash command runs.

@@ -39,8 +39,11 @@ def notification_mode_surfaces(mode: object, evt: dict) -> bool:
     normalized = normalize_notification_mode(mode)
     if normalized == "off":
         return False
-    if str(evt.get("type") or "completion") == "heartbeat":
+    event_type = str(evt.get("type") or "completion")
+    if event_type == "heartbeat":
         return normalized not in {"result", "error"}
+    if event_type.startswith("watch_"):
+        return True  # an explicit watch trigger or diagnostic is not a process exit
     if normalized == "error":
         return evt.get("exit_code") not in (0, None)
     return True

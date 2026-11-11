@@ -178,3 +178,15 @@ def test_error_mode_still_lands_a_subagent_result(monkeypatch):
                   "results": [{"status": "completed", "summary": "done", "goal": "audit"}]}
     queued = _drain(monkeypatch, [_event("proc_ok", 0), delegation], "error")
     assert [q.display_kind for q in queued] == ["async_delegation_complete"]
+
+
+@pytest.mark.parametrize("event_type", ["watch_match", "watch_disabled"])
+def test_error_mode_keeps_explicit_watch_events(monkeypatch, event_type):
+    """A requested watch trigger or diagnostic is not a successful process exit."""
+    event = {
+        "type": event_type, "session_id": "proc_watched", "session_key": "display-session",
+        "command": "python worker.py", "pattern": "READY", "output": "READY",
+        "message": "watch patterns disabled",
+    }
+    assert len(_drain(monkeypatch, [event], "error")) == 1
+    assert _drain(monkeypatch, [event], "off") == []

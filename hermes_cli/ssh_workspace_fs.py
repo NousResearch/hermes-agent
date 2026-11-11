@@ -64,9 +64,9 @@ class SshWorkspaceFs:
 
     @property
     def cwd(self) -> str:
-        return self._normalize(self._env.cwd)
+        return self.normalize(self._env.cwd)
 
-    def _normalize(self, path: str) -> str:
+    def normalize(self, path: str) -> str:
         raw = str(path or "").strip()
         if not raw:
             raise SshWorkspaceFsError("EINVAL", "Path is required")
@@ -98,7 +98,7 @@ class SshWorkspaceFs:
         return fallback
 
     def list_dir(self, path: str, hidden_names: set[str] | frozenset[str]) -> dict[str, Any]:
-        target = self._normalize(path)
+        target = self.normalize(path)
         quoted = shlex.quote(target)
         command = f"""
 p={quoted}
@@ -142,7 +142,7 @@ done
         max_bytes: int,
         read_limit: int | None = None,
     ) -> tuple[bytes, int, str]:
-        target = self._normalize(path)
+        target = self.normalize(path)
         quoted = shlex.quote(target)
         read_command = (
             f"set -o pipefail; head -c {int(read_limit)} < \"$p\" | base64"
@@ -178,7 +178,7 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
 
     def inspect_file(self, path: str) -> tuple[str, int]:
         """Return a regular file's resolved remote path and size without reading it."""
-        target = self._normalize(path)
+        target = self.normalize(path)
         command = f"""
 p={shlex.quote(target)}
 target=$(realpath "$p" 2>/dev/null || readlink -f "$p" 2>/dev/null) || {{ printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; }}
@@ -211,7 +211,7 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
     ) -> Iterator[bytes]:
         """Stream an already-authorized remote file without buffering it in memory. ``offset`` and
         ``length`` read one byte range of it instead (a media element's ``Range`` request)."""
-        target = self._normalize(path)
+        target = self.normalize(path)
         source = f"< {shlex.quote(target)}"
         if offset or length is not None:
             script = f"tail -c +{int(offset) + 1} {source}"
@@ -238,7 +238,7 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
             process.wait()
 
     def write_text(self, path: str, content: str, *, max_bytes: int) -> tuple[str, int]:
-        target = self._normalize(path)
+        target = self.normalize(path)
         encoded_size = len(content.encode("utf-8"))
         if encoded_size > max_bytes:
             raise SshWorkspaceFsError("EFBIG")
@@ -262,7 +262,7 @@ cat > "$tmp" && mv -f "$tmp" "$target"
         return target, encoded_size
 
     def git_root(self, path: str) -> str | None:
-        target = self._normalize(path)
+        target = self.normalize(path)
         quoted = shlex.quote(target)
         command = f"""
 p={quoted}
@@ -280,7 +280,7 @@ exit 1
         return (result.get("output") or "").strip() or None
 
     def git_branch(self, path: str) -> str:
-        target = self._normalize(path)
+        target = self.normalize(path)
         result = self._execute(f"git -C {shlex.quote(target)} branch --show-current 2>/dev/null")
         return (result.get("output") or "").strip() if result.get("returncode") == 0 else ""
 

@@ -99,6 +99,9 @@ def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
             calls.append(("read", path, max_bytes, read_limit))
             return b"hello", 5, path
 
+        def normalize(self, path):
+            return path
+
         def write_text(self, path, content, *, max_bytes):
             calls.append(("write", path, content, max_bytes))
             return path, len(content.encode("utf-8"))
@@ -885,6 +888,9 @@ class _NotOnTheSshMachine:
     def __init__(self):
         self.asked = []
         self.written = []
+
+    def normalize(self, path):
+        return path
 
     def write_text(self, path, content, *, max_bytes):
         self.written.append((path, content))

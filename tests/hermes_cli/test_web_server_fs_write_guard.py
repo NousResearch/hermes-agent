@@ -10,6 +10,7 @@ import os
 import pytest
 
 from hermes_cli import web_server
+from hermes_cli.ssh_workspace_fs import SshWorkspaceFs
 from hermes_cli.web_routers import files as file_routes
 
 pytest.importorskip("starlette.testclient")
@@ -93,19 +94,35 @@ def test_write_text_stays_inside_a_locked_files_root(client, tmp_path, monkeypat
 
 
 def test_write_text_never_hands_a_credential_path_to_the_ssh_workspace(client, monkeypatch):
-    written = []
+    """The guard judges the path the SSH adapter writes, so padding it with whitespace (which the
+    adapter strips) or ``..`` still lands on the refusal."""
+    sent = []
 
-    class SshWorkspace:
-        def write_text(self, path, content, *, max_bytes):
-            written.append(path)
-            return path, len(content.encode("utf-8"))
+    class SshMachine:
+        cwd = "/srv/app"
+        timeout = 30
+        _remote_home = "/home/dev"
 
-    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: SshWorkspace())
+        def execute(self, command, **_kwargs):
+            sent.append(command)
+            return {"returncode": 0, "output": ""}
 
-    for path in ("/srv/app/.env", "/srv/app/sub/../mcp-tokens/x.json", "/srv/app/config.yaml"):
-        assert _save(client, path, profile="remote-dev").status_code == 403, path
-    assert _save(client, "/srv/app/README.md", profile="remote-dev").status_code == 200
-    assert written == ["/srv/app/README.md"]
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: SshWorkspaceFs(SshMachine()))
+
+    for path in (
+        "/srv/app/.env",
+        "/srv/app/sub/../mcp-tokens/x.json",
+        "/srv/app/config.yaml",
+        "/srv/app/.env ",
+        " /srv/app/auth.json\n",
+        "/srv/app/.env\t",
+        "mcp-tokens/x.json ",
+    ):
+        assert _save(client, path, profile="remote-dev").status_code == 403, repr(path)
+    assert sent == []
+    saved = _save(client, "/srv/app/README.md ", profile="remote-dev")
+    assert (saved.status_code, saved.json()["path"]) == (200, "/srv/app/README.md")
+    assert len(sent) == 1
 
 
 def test_write_text_still_saves_an_ordinary_file(client, tmp_path):

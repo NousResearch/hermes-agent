@@ -12,7 +12,6 @@ import hashlib
 import logging
 import mimetypes
 import os
-import posixpath
 import re
 import secrets
 import shutil
@@ -1145,13 +1144,20 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
     backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
     if backend is not None:
-        # The SSH write replaces the lexical path (mv onto a link swaps the link), so judge that.
-        if _is_sensitive_path(Path(posixpath.normpath(payload.path))):
+        # The SSH write replaces the lexical path (mv onto a link swaps the link), so judge that
+        # path exactly as the adapter writes it: stripped, ``~`` and cwd expanded, ``..`` folded.
+        from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+        try:
+            target = backend.normalize(payload.path)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        if _is_sensitive_path(Path(target)):
             raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
         try:
             target, byte_size = await asyncio.to_thread(
                 backend.write_text,
-                payload.path,
+                target,
                 text,
                 max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
             )

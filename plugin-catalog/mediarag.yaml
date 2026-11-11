@@ -1,22 +1,41 @@
 name: mediarag
 repo: https://github.com/dyiapanis/mediarag
 sha: fbfb34b9ec804814e08e35d4058ac60d80ee7c4a
-description: "Local, offline semantic search across your documents, notes, images, audio and subtitles: one index you query by meaning from Hermes or any MCP client, with snippets, timestamps and thumbnails from PDFs, Office files, photos and recordings.\n\nDisclosures\n\n- Downloads about 480 MB of EmbeddingGemma-2 ONNX weights from Hugging Face at a pinned revision on first setup; offline after that.\n- Reads the folders you point it at, which sit outside the plugin's own directory.\n- Runs pandoc, pdftotext, ffmpeg and curl from PATH to convert files.\n- Fetches http(s) URLs you add, from public hosts only, re-checked on every redirect.\n- Runs source adapters as local subprocesses; the optional Raindrop adapter sends RAINDROP_API_TOKEN to the Raindrop API.\n- The standalone MCP launcher can build its own environment with uv from PyPI, about 1.7 GB, only when MEDIARAG_AUTO_BOOTSTRAP=1. Disclosure — downloads about 480 MB of EmbeddingGemma-2 ONNX weights from Hugging Face (pinned revision) on first setup, offline after that; reads the folders you point it at, outside the plugin's own directory; runs pandoc, pdftotext, ffmpeg and curl from PATH to convert files; mediarag_add_source fetches user-supplied http(s) URLs (public hosts only, re-checked on every redirect) and runs packaged or user sources.d adapters as local subprocesses, including the optional Raindrop.io adapter, which sends RAINDROP_API_TOKEN to Raindrop's API; the standalone MCP launcher can build its own Python environment with uv from PyPI (about 1.7 GB incl. torch) only when MEDIARAG_AUTO_BOOTSTRAP=1."
+description: 'Local, offline semantic search across your documents, notes, images, audio and subtitles: one index you query by meaning from Hermes or any MCP client, with snippets, timestamps and thumbnails from PDFs, Office files, photos and recordings.
+
+
+  Disclosures
+
+
+  - Downloads about 480 MB of model weights from Hugging Face at a pinned revision on first setup; offline after that.
+
+  - Reads the folders you point it at, outside the plugin directory.
+
+  - Runs pandoc, pdftotext, ffmpeg and curl from PATH.
+
+  - Fetches the http(s) URLs you add, from public hosts only.
+
+  - Runs source adapters as local subprocesses; the optional Raindrop adapter sends RAINDROP_API_TOKEN to the Raindrop API.
+
+  - With MEDIARAG_AUTO_BOOTSTRAP=1, the standalone MCP launcher installs its Python environment from PyPI, about 1.7 GB.'
 maintainer: dyiapanis
 tier: community
 category: tools
 docs_url: https://github.com/dyiapanis/mediarag#readme
-version: "0.1.21"
+version: 0.1.21
 image: https://raw.githubusercontent.com/dyiapanis/mediarag/fbfb34b9ec804814e08e35d4058ac60d80ee7c4a/assets/banner.jpg
 readme: true
-platforms: [linux, macos, windows]
+platforms:
+- linux
+- macos
+- windows
 capabilities:
   provides_tools:
-    - mediarag_search
-    - mediarag_add_note
-    - mediarag_ingest_dir
-    - mediarag_add_source
-    - mediarag_status
+  - mediarag_search
+  - mediarag_add_note
+  - mediarag_ingest_dir
+  - mediarag_add_source
+  - mediarag_status
   provides_hooks: []
   provides_middleware: []
   requires_env: []

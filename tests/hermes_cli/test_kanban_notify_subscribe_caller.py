@@ -52,6 +52,17 @@ def test_subscribing_the_callers_own_group_records_the_caller(kanban_home):
     assert _row(kanban_home)["user_id"] == "111"
 
 
+def test_another_topic_of_the_callers_group_is_left_alone(kanban_home, monkeypatch):
+    """A turn in topic 77 subscribing topic 88 is not that topic's requester: no stamp."""
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "77")
+    _subscribe(kanban_home, "--platform", "telegram", "--chat-id", GROUP, "--thread-id", "88")
+    assert _row(kanban_home)["user_id"] is None
+    with kbc.connect() as conn:
+        same = kb.create_task(conn, title="same topic", assignee="worker")
+    _subscribe(same, "--platform", "telegram", "--chat-id", GROUP, "--thread-id", "77")
+    assert _row(same)["user_id"] == "111"
+
+
 def test_another_chat_and_an_explicit_id_are_left_alone(kanban_home):
     _subscribe(kanban_home, "--platform", "telegram", "--chat-id", "-100999", "--chat-type", "group")
     assert _row(kanban_home)["user_id"] is None

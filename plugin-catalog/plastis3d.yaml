@@ -1,0 +1,33 @@
+name: plastis3d
+title: Plastis3D
+repo: https://github.com/midnightbobarun/Plastis3D
+sha: 3c76c5c7f206fa31ae765931c955812e541098e0
+description: A local 3D scene editor for Hermes Desktop, with agent tools to build and edit scenes.
+maintainer: midnightbobarun
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - plastis3d_list_scenes
+    - plastis3d_new_scene
+    - plastis3d_get_scene
+    - plastis3d_check_gltf
+    - plastis3d_analyze
+    - plastis3d_cleanup
+    - plastis3d_build_scene
+    - plastis3d_add_node
+    - plastis3d_update_node
+    - plastis3d_set_material
+    - plastis3d_duplicate_node
+    - plastis3d_delete_node
+    - plastis3d_import_model
+    - plastis3d_open_in_desktop
+    - plastis3d_export_glb
+    - plastis3d_undo
+    - plastis3d_redo
+    - plastis3d_curve
+    - plastis3d_clone
+    - plastis3d_displace
+    - plastis3d_screenshot
